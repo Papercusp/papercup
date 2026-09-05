@@ -70,6 +70,8 @@ export interface PromoterItem {
   kind: string;
   admission: string | null;
   conditionKey: string | null;
+  /** Stable recurrence key carried in payload by machine producers. */
+  watchdogKey?: string | null;
   createdAtMs: number;
   /**
    * D-008: the complete mutable identity/evidence snapshot this exact model
@@ -86,11 +88,14 @@ export interface AdmissionMergeIncomingReference {
 }
 
 export interface AdmissionMergeDependency {
+  id: string;
   blockedKind: string;
   blockedRef: string;
   blockerKind: string;
   blockerRef: string;
+  depType: string;
   satisfaction: 'settled' | 'success';
+  createdBy: string | null;
   active: boolean;
 }
 
@@ -109,6 +114,8 @@ export interface AdmissionMergeSnapshot {
   state: string;
   kind: string;
   admission: string | null;
+  admittedAt: string | null;
+  admittedBy: string | null;
   conditionKey: string | null;
   createdAtMs: number;
   updatedAtMs: number;
@@ -118,6 +125,8 @@ export interface AdmissionMergeSnapshot {
   completionRef: unknown;
   terminalCompletionRef: string | null;
   terminalOwner: string | null;
+  terminalReason: string | null;
+  closedAtMs: number | null;
   completionAuthority: string | null;
   sourcePlanSlug: string | null;
   sourcePlanItemIds: string[];
@@ -793,12 +802,16 @@ interface AdmissionMergeSnapshotRow extends WorkItemRow {
   workspace_id: string;
   harness_slug: string;
   updated_ts: string | number | null;
+  admitted_at: Date | string | null;
+  admitted_by: string | null;
   origin: string | null;
   taken_by: string | null;
   payload: unknown;
   completion_ref: unknown;
   terminal_completion_ref: string | null;
   terminal_owner: string | null;
+  terminal_reason: string | null;
+  closed_ts: string | number | null;
   authority: string | null;
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
@@ -812,11 +825,14 @@ interface IncomingReferenceRow {
 }
 
 interface DependencyRow {
+  id: string | number;
   blocked_kind: string;
   blocked_ref: string;
   blocker_kind: string;
   blocker_ref: string;
+  dep_type: string;
   satisfaction: string | null;
+  created_by: string | null;
 }
 
 interface ReferencedStateRow {
@@ -833,6 +849,18 @@ function normalizedStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))].sort()
     : [];
+}
+
+function nullableFiniteMs(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function nullableIso(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.valueOf()) ? null : date.toISOString();
 }
 
 /** Canonical JSON for a fingerprint: object key insertion order is not evidence. */
@@ -889,8 +917,9 @@ export async function readAdmissionMergeSnapshots(
   const rows = await sql<AdmissionMergeSnapshotRow[]>`
     SELECT wi.workspace_id, wi.harness_slug, wi.feature_id, wi.title, wi.summary,
            wi.status, wi.item_kind, wi.admission, wi.condition_key, wi.created_ts,
-           wi.updated_ts, wi.origin, wi.taken_by, wi.payload, wi.completion_ref,
-           wi.terminal_completion_ref, wi.terminal_owner, wi.authority,
+           wi.updated_ts, wi.admitted_at, wi.admitted_by, wi.origin, wi.taken_by,
+           wi.payload, wi.completion_ref, wi.terminal_completion_ref, wi.terminal_owner,
+           wi.terminal_reason, wi.closed_ts, wi.authority,
            wi.source_plan_slug, wi.source_plan_item_ids, wi.see_also
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${input.workspaceId}
@@ -912,8 +941,8 @@ export async function readAdmissionMergeSnapshots(
   const endpointRefs = [...new Set(rows.flatMap(snapshotRefKeys))].sort();
   const dependencies = endpointRefs.length
     ? await sql<DependencyRow[]>`
-        SELECT d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref,
-               d.satisfaction
+        SELECT d.id, d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref,
+               d.dep_type, d.satisfaction, d.created_by
           FROM harness_shared.work_item_deps d
          WHERE d.workspace_id = ${input.workspaceId}
            AND d.dep_type = 'blocks'
@@ -969,11 +998,14 @@ export async function readAdmissionMergeSnapshots(
       .filter((dependency) => endpointKeys.has(dependency.blocked_ref) || endpointKeys.has(dependency.blocker_ref))
       .map(
         (dependency): AdmissionMergeDependency => ({
+          id: String(dependency.id),
           blockedKind: dependency.blocked_kind,
           blockedRef: dependency.blocked_ref,
           blockerKind: dependency.blocker_kind,
           blockerRef: dependency.blocker_ref,
+          depType: dependency.dep_type,
           satisfaction: dependency.satisfaction === 'success' ? 'success' : 'settled',
+          createdBy: dependency.created_by ?? null,
           active: dependencyIsActive(dependency, endpointKeys, resolveState),
         }),
       );
@@ -986,6 +1018,8 @@ export async function readAdmissionMergeSnapshots(
       state: row.status ?? 'open',
       kind: row.item_kind ?? 'task',
       admission: row.admission ?? null,
+      admittedAt: nullableIso(row.admitted_at),
+      admittedBy: row.admitted_by?.trim() || null,
       conditionKey: row.condition_key ?? null,
       createdAtMs: finiteMs(row.created_ts),
       updatedAtMs: finiteMs(row.updated_ts),
@@ -995,6 +1029,8 @@ export async function readAdmissionMergeSnapshots(
       completionRef: row.completion_ref ?? null,
       terminalCompletionRef: row.terminal_completion_ref?.trim() || null,
       terminalOwner: row.terminal_owner?.trim() || null,
+      terminalReason: row.terminal_reason ?? null,
+      closedAtMs: nullableFiniteMs(row.closed_ts),
       completionAuthority: row.authority?.trim() || null,
       sourcePlanSlug: row.source_plan_slug?.trim() || null,
       sourcePlanItemIds: normalizedStringArray(row.source_plan_item_ids),
@@ -1023,6 +1059,10 @@ export function bindAdmissionMergeSnapshot(
     kind: snapshot.kind,
     admission: snapshot.admission,
     conditionKey: snapshot.conditionKey,
+    watchdogKey:
+      typeof recordValue(snapshot.payload).watchdogKey === 'string'
+        ? String(recordValue(snapshot.payload).watchdogKey).trim() || null
+        : null,
     createdAtMs: snapshot.createdAtMs,
     mergeSnapshot: snapshot,
   };
@@ -1430,6 +1470,140 @@ export function planPromoterDispositions(
     }
   }
   return { dispositions, adjudications, relatedPairs };
+}
+
+interface AdmissionRecurrenceIdentity {
+  conditionKey: string | null;
+  watchdogKey: string | null;
+  watchdogSignalOrigin: string;
+  watchdogLane: string;
+}
+
+function recurrenceIdentity(item: PromoterItem | undefined): AdmissionRecurrenceIdentity {
+  const payload = recordValue(item?.mergeSnapshot?.payload);
+  const directWatchdog = item?.watchdogKey?.trim();
+  const payloadWatchdog = typeof payload.watchdogKey === 'string' ? payload.watchdogKey.trim() : '';
+  const ei = recordValue(payload._ei);
+  return {
+    conditionKey: item?.conditionKey?.trim() || null,
+    watchdogKey: directWatchdog || payloadWatchdog || null,
+    watchdogSignalOrigin:
+      typeof ei.signal_origin === 'string' && ei.signal_origin.trim() ? ei.signal_origin.trim() : 'organic',
+    watchdogLane: typeof payload.lane === 'string' && payload.lane.trim() ? payload.lane.trim() : 'improvement',
+  };
+}
+
+function watchdogIdentityKey(identity: AdmissionRecurrenceIdentity): string | null {
+  return identity.watchdogKey
+    ? `${identity.watchdogKey}\0${identity.watchdogSignalOrigin}\0${identity.watchdogLane}`
+    : null;
+}
+
+/**
+ * Select one recurrence-safe canonical for every judged merge component.
+ *
+ * The original planner prefers established history. Machine producers need a
+ * stronger invariant: the survivor must retain both singleton identities
+ * (`condition_key` and the payload watchdog tuple), or the next emission
+ * recreates the duplicate. Prefer the endpoint already carrying the widest
+ * identity, then let the transactional writer copy any compatible missing
+ * half. Two distinct identities of the same kind are not mergeable.
+ */
+export function selectAdmissionRecurrenceCanonicals(
+  plan: PromoterPlan,
+  items: ReadonlyMap<string, PromoterItem>,
+): PromoterPlan {
+  const membersByCanonical = new Map<string, Set<string>>();
+  for (const adjudication of plan.adjudications) {
+    if (adjudication.verdict !== 'r-finding-merge' || !adjudication.canonical) continue;
+    const members = membersByCanonical.get(adjudication.canonical) ?? new Set<string>();
+    members.add(adjudication.canonical);
+    members.add(adjudication.a);
+    members.add(adjudication.b);
+    membersByCanonical.set(adjudication.canonical, members);
+  }
+
+  const replacementByCanonical = new Map<string, string>();
+  const componentByItem = new Map<string, string>();
+  for (const [plannedCanonical, memberIds] of membersByCanonical) {
+    const members = [...memberIds]
+      .map((id) => items.get(id))
+      .filter((item): item is PromoterItem => item !== undefined);
+    for (const id of memberIds) componentByItem.set(id, plannedCanonical);
+    if (members.length !== memberIds.size) {
+      throw new Error(`admission recurrence-identity guard missing endpoint(s) for component ${plannedCanonical}`);
+    }
+
+    const conditionKeys = [
+      ...new Set(members.map((item) => recurrenceIdentity(item).conditionKey).filter(Boolean)),
+    ].sort() as string[];
+    const watchdogKeys = [
+      ...new Set(members.map((item) => watchdogIdentityKey(recurrenceIdentity(item))).filter(Boolean)),
+    ].sort() as string[];
+    if (conditionKeys.length > 1 || watchdogKeys.length > 1) {
+      const conflicts = [
+        conditionKeys.length > 1 ? `condition=[${conditionKeys.join(', ')}]` : null,
+        watchdogKeys.length > 1
+          ? `watchdog=[${watchdogKeys.map((key) => key.replaceAll('\0', '/')).join(', ')}]`
+          : null,
+      ].filter(Boolean);
+      throw new Error(
+        `admission recurrence-identity guard blocked component ${plannedCanonical}: ` +
+          `conflicting stable producer identities ${conflicts.join(' ')}`,
+      );
+    }
+    if (conditionKeys.length === 0 && watchdogKeys.length === 0) continue;
+
+    const selected = members.slice().sort((a, b) => {
+      const aIdentity = recurrenceIdentity(a);
+      const bIdentity = recurrenceIdentity(b);
+      const aWatchdog = watchdogIdentityKey(aIdentity) === watchdogKeys[0] ? 1 : 0;
+      const bWatchdog = watchdogIdentityKey(bIdentity) === watchdogKeys[0] ? 1 : 0;
+      if (aWatchdog !== bWatchdog) return bWatchdog - aWatchdog;
+      const aCondition = aIdentity.conditionKey === conditionKeys[0] ? 1 : 0;
+      const bCondition = bIdentity.conditionKey === conditionKeys[0] ? 1 : 0;
+      if (aCondition !== bCondition) return bCondition - aCondition;
+      const aTerminal = isTerminal(a) ? 1 : 0;
+      const bTerminal = isTerminal(b) ? 1 : 0;
+      if (aTerminal !== bTerminal) return aTerminal - bTerminal;
+      if (a.id === plannedCanonical) return -1;
+      if (b.id === plannedCanonical) return 1;
+      return a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id);
+    })[0]!;
+    if (selected.id !== plannedCanonical) replacementByCanonical.set(plannedCanonical, selected.id);
+  }
+  if (replacementByCanonical.size === 0) return plan;
+
+  const dispositionsById = new Map(plan.dispositions.map((disposition) => [disposition.itemId, disposition]));
+  for (const [plannedCanonical, replacement] of replacementByCanonical) {
+    const memberIds = membersByCanonical.get(plannedCanonical) ?? new Set<string>();
+    for (const id of memberIds) {
+      const current = dispositionsById.get(id);
+      if (current?.action === 'hold') continue;
+      const item = items.get(id);
+      if (!item) continue;
+      if (id === replacement) {
+        if (current || item.admission === 'pending' || item.admission === 'unreviewed') {
+          dispositionsById.set(id, { itemId: id, action: 'promote' });
+        } else {
+          dispositionsById.delete(id);
+        }
+      } else if (isTerminal(item)) {
+        dispositionsById.delete(id);
+      } else {
+        dispositionsById.set(id, { itemId: id, action: 'merge', canonicalId: replacement });
+      }
+    }
+  }
+
+  return {
+    ...plan,
+    dispositions: [...dispositionsById.values()].sort((a, b) => a.itemId.localeCompare(b.itemId)),
+    adjudications: plan.adjudications.map((adjudication) => {
+      const replacement = adjudication.canonical ? replacementByCanonical.get(adjudication.canonical) : undefined;
+      return replacement ? { ...adjudication, canonical: replacement } : adjudication;
+    }),
+  };
 }
 
 /**
@@ -2162,40 +2336,51 @@ function endpointProtection(
   return null;
 }
 
-function producerIdentities(snapshot: AdmissionMergeSnapshot): string[] {
+function snapshotRecurrenceIdentity(snapshot: AdmissionMergeSnapshot): AdmissionRecurrenceIdentity {
   const payload = recordValue(snapshot.payload);
-  const keys = [
-    snapshot.conditionKey ? `condition:${snapshot.conditionKey}` : null,
-    typeof payload.watchdogKey === 'string' && payload.watchdogKey.trim()
-      ? `watchdog:${payload.watchdogKey.trim()}`
-      : null,
-  ];
-  return keys.filter((key): key is string => key !== null).sort();
+  const ei = recordValue(payload._ei);
+  return {
+    conditionKey: snapshot.conditionKey?.trim() || null,
+    watchdogKey: typeof payload.watchdogKey === 'string' ? payload.watchdogKey.trim() || null : null,
+    watchdogSignalOrigin:
+      typeof ei.signal_origin === 'string' && ei.signal_origin.trim() ? ei.signal_origin.trim() : 'organic',
+    watchdogLane: typeof payload.lane === 'string' && payload.lane.trim() ? payload.lane.trim() : 'improvement',
+  };
 }
 
 function mergePairProtection(
   loser: AdmissionMergeSnapshot,
   canonical: AdmissionMergeSnapshot,
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
-  const canonicalIdentities = new Set(producerIdentities(canonical));
-  const missingIdentities = producerIdentities(loser).filter((identity) => !canonicalIdentities.has(identity));
-  if (missingIdentities.length > 0) {
+  const loserIdentity = snapshotRecurrenceIdentity(loser);
+  const canonicalIdentity = snapshotRecurrenceIdentity(canonical);
+  const conflictingIdentities = [
+    loserIdentity.conditionKey &&
+    canonicalIdentity.conditionKey &&
+    loserIdentity.conditionKey !== canonicalIdentity.conditionKey
+      ? `condition:${loserIdentity.conditionKey} != condition:${canonicalIdentity.conditionKey}`
+      : null,
+    loserIdentity.watchdogKey &&
+    canonicalIdentity.watchdogKey &&
+    watchdogIdentityKey(loserIdentity) !== watchdogIdentityKey(canonicalIdentity)
+      ? `watchdog:${watchdogIdentityKey(loserIdentity)?.replaceAll('\0', '/')} != ` +
+        `watchdog:${watchdogIdentityKey(canonicalIdentity)?.replaceAll('\0', '/')}`
+      : null,
+  ].filter((identity): identity is string => identity !== null);
+  if (conflictingIdentities.length > 0) {
     return {
       reason: 'producer-identity-mismatch',
-      detail: `canonical ${canonical.id} would not preserve ${loser.id} producer identity: ${missingIdentities.join(', ')}`,
+      detail:
+        `canonical ${canonical.id} conflicts with ${loser.id} producer identity: ` + conflictingIdentities.join(', '),
     };
   }
-  if (loser.sourcePlanSlug) {
-    const canonicalItems = new Set(canonical.sourcePlanItemIds);
-    const missingItems = loser.sourcePlanItemIds.filter((itemId) => !canonicalItems.has(itemId));
-    if (canonical.sourcePlanSlug !== loser.sourcePlanSlug || missingItems.length > 0) {
-      return {
-        reason: 'plan-obligation-mismatch',
-        detail:
-          `canonical ${canonical.id} does not carry ${loser.id}'s plan obligation ` +
-          `${loser.sourcePlanSlug}${missingItems.length ? `/${missingItems.join(',')}` : ''}`,
-      };
-    }
+  if (loser.sourcePlanSlug && canonical.sourcePlanSlug && canonical.sourcePlanSlug !== loser.sourcePlanSlug) {
+    return {
+      reason: 'plan-obligation-mismatch',
+      detail:
+        `canonical ${canonical.id} belongs to ${canonical.sourcePlanSlug}; ` +
+        `loser ${loser.id} belongs to incompatible ${loser.sourcePlanSlug}`,
+    };
   }
   return null;
 }
@@ -2229,6 +2414,528 @@ function snapshotIdentityProblem(
   return endpointProtection(live, role);
 }
 
+interface AdmissionMergeMutableRow {
+  feature_id: string;
+  status: string | null;
+  admission: string | null;
+  admitted_at: Date | string | null;
+  admitted_by: string | null;
+  condition_key: string | null;
+  payload: unknown;
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  see_also: string[] | null;
+  closed_ts: string | number | null;
+  terminal_reason: string | null;
+  terminal_owner: string | null;
+}
+
+type AdmissionMergeDependencyRow = DependencyRow;
+
+interface AdmissionMergeIncomingRow {
+  feature_id: string;
+  see_also: string[] | null;
+  updated_ts: string | number | null;
+}
+
+interface AdmissionMergeOccurrenceRow {
+  occurrence_id: string | number;
+  canonical_harness_slug: string;
+  canonical_work_item_id: string;
+}
+
+interface JsonFieldState {
+  present: boolean;
+  value: unknown;
+}
+
+function jsonFieldState(value: Record<string, unknown>, key: string): JsonFieldState {
+  return Object.prototype.hasOwnProperty.call(value, key)
+    ? { present: true, value: value[key] ?? null }
+    : { present: false, value: null };
+}
+
+function payloadIdentityState(payloadValue: unknown): {
+  watchdogKey: JsonFieldState;
+  watchdogSignalOrigin: JsonFieldState;
+  watchdogLane: JsonFieldState;
+  admissionMergeSources: JsonFieldState;
+} {
+  const payload = recordValue(payloadValue);
+  const ei = recordValue(payload._ei);
+  return {
+    watchdogKey: jsonFieldState(payload, 'watchdogKey'),
+    watchdogSignalOrigin: jsonFieldState(ei, 'signal_origin'),
+    watchdogLane: jsonFieldState(payload, 'lane'),
+    admissionMergeSources: jsonFieldState(payload, 'admissionMergeSources'),
+  };
+}
+
+function repointAdmissionDependencyRef(ref: string, loserId: string, canonicalId: string, harnessSlug: string): string {
+  if (ref === loserId) return canonicalId;
+  if (ref === `${harnessSlug}#${loserId}`) return `${harnessSlug}#${canonicalId}`;
+  return ref;
+}
+
+function dependencyReceiptRow(row: AdmissionMergeDependencyRow): Record<string, unknown> {
+  return {
+    id: String(row.id),
+    blockedKind: row.blocked_kind,
+    blockedRef: row.blocked_ref,
+    blockerKind: row.blocker_kind,
+    blockerRef: row.blocker_ref,
+    depType: row.dep_type,
+    satisfaction: row.satisfaction === 'success' ? 'success' : 'settled',
+    createdBy: row.created_by ?? null,
+  };
+}
+
+async function persistApprovedAdmissionMerge(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    runId: string;
+    nowMs: number;
+    actor: string;
+    loserId: string;
+    canonicalId: string;
+    mergeAnyAdmission: boolean;
+    loserSnapshot: AdmissionMergeSnapshot;
+    canonicalSnapshot: AdmissionMergeSnapshot;
+  },
+): Promise<void> {
+  const [loserPrior] = await sql<AdmissionMergeMutableRow[]>`
+    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+           source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.loserId}`;
+  if (!loserPrior) throw new Error(`admission merge guard conditional-write-miss: loser ${input.loserId}`);
+
+  const terminal = [...ALL_TERMINAL_STATUSES];
+  const mergeMarker = {
+    schemaVersion: 2,
+    state: 'applying',
+    canonicalId: input.canonicalId,
+    canonicalHarness: input.harnessSlug,
+    runId: input.runId,
+    actor: input.actor,
+    mergedAtMs: input.nowMs,
+  };
+  const eligibility = input.mergeAnyAdmission
+    ? sql`(status IS NULL OR NOT (status = ANY(${terminal}::text[])))`
+    : sql`admission IN ('pending', 'unreviewed')`;
+  const terminalized = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items
+       SET status = 'dropped',
+           admission = 'admitted',
+           admitted_at = COALESCE(admitted_at, now()),
+           admitted_by = COALESCE(admitted_by, ${input.actor}),
+           condition_key = NULL,
+           terminal_reason = ${`duplicate of ${input.canonicalId} (${input.actor} ${input.runId})`},
+           terminal_owner = ${input.actor},
+           closed_ts = ${input.nowMs},
+           payload = (
+             CASE WHEN admission = 'unreviewed' THEN
+               COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+                 'admissionReview', COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
+                   'state', 'terminal',
+                   'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                   'retryAttempts', CASE
+                     WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
+                       THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
+                     ELSE 1
+                   END,
+                   'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                   'reviewedBy', ${input.actor}::text,
+                   'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                   'terminalOutcome', 'duplicate-merge',
+                   'alert', jsonb_build_object(
+                     'key', ${ADMISSION_REVIEW_ALERT_KEY}::text,
+                     'state', 'cleared',
+                     'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
+                     'reason', 'review completed'
+                   )
+                 )
+               )
+             ELSE COALESCE(payload, '{}'::jsonb) END
+           ) || jsonb_build_object('admissionMerge', ${JSON.stringify(mergeMarker)}::text::jsonb),
+           updated_ts = ${input.nowMs}
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.loserId}
+       AND ${eligibility}
+    RETURNING feature_id`;
+  if (terminalized.length !== 1) {
+    throw new Error(`admission merge guard conditional-write-miss: merge ${input.loserId} -> ${input.canonicalId}`);
+  }
+
+  const [canonicalPrior] = await sql<AdmissionMergeMutableRow[]>`
+    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+           source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.canonicalId}`;
+  if (!canonicalPrior) throw new Error(`admission merge guard conditional-write-miss: canonical ${input.canonicalId}`);
+
+  const loserIdentity = snapshotRecurrenceIdentity(input.loserSnapshot);
+  const canonicalPayload = { ...recordValue(canonicalPrior.payload) };
+  const canonicalIdentity: AdmissionRecurrenceIdentity = {
+    conditionKey: canonicalPrior.condition_key?.trim() || null,
+    watchdogKey: typeof canonicalPayload.watchdogKey === 'string' ? canonicalPayload.watchdogKey.trim() || null : null,
+    watchdogSignalOrigin:
+      typeof recordValue(canonicalPayload._ei).signal_origin === 'string' &&
+      String(recordValue(canonicalPayload._ei).signal_origin).trim()
+        ? String(recordValue(canonicalPayload._ei).signal_origin).trim()
+        : 'organic',
+    watchdogLane:
+      typeof canonicalPayload.lane === 'string' && canonicalPayload.lane.trim()
+        ? canonicalPayload.lane.trim()
+        : 'improvement',
+  };
+  if (
+    loserIdentity.conditionKey &&
+    canonicalIdentity.conditionKey &&
+    loserIdentity.conditionKey !== canonicalIdentity.conditionKey
+  ) {
+    throw new Error(`admission recurrence identity changed before consolidation for ${input.loserId}`);
+  }
+  if (
+    loserIdentity.watchdogKey &&
+    canonicalIdentity.watchdogKey &&
+    watchdogIdentityKey(loserIdentity) !== watchdogIdentityKey(canonicalIdentity)
+  ) {
+    throw new Error(`admission watchdog identity changed before consolidation for ${input.loserId}`);
+  }
+
+  if (!canonicalIdentity.watchdogKey && loserIdentity.watchdogKey) {
+    canonicalPayload.watchdogKey = loserIdentity.watchdogKey;
+    const loserPayload = recordValue(input.loserSnapshot.payload);
+    const loserEi = recordValue(loserPayload._ei);
+    if (Object.prototype.hasOwnProperty.call(loserEi, 'signal_origin')) {
+      canonicalPayload._ei = { ...recordValue(canonicalPayload._ei), signal_origin: loserEi.signal_origin };
+    }
+    if (Object.prototype.hasOwnProperty.call(loserPayload, 'lane')) canonicalPayload.lane = loserPayload.lane;
+  }
+  const priorSources = canonicalPayload.admissionMergeSources;
+  let sourceEntryAdded = false;
+  if (priorSources === undefined || Array.isArray(priorSources)) {
+    const sources = Array.isArray(priorSources) ? [...priorSources] : [];
+    if (
+      !sources.some(
+        (source) => recordValue(source).loserId === input.loserId && recordValue(source).runId === input.runId,
+      )
+    ) {
+      sources.push({
+        schemaVersion: 1,
+        loserId: input.loserId,
+        runId: input.runId,
+        actor: input.actor,
+        mergedAtMs: input.nowMs,
+      });
+      sourceEntryAdded = true;
+    }
+    canonicalPayload.admissionMergeSources = sources;
+  }
+
+  if (
+    loserPrior.source_plan_slug &&
+    canonicalPrior.source_plan_slug &&
+    loserPrior.source_plan_slug !== canonicalPrior.source_plan_slug
+  ) {
+    throw new Error(`admission plan obligation changed before consolidation for ${input.loserId}`);
+  }
+  const canonicalPlanSlug = canonicalPrior.source_plan_slug ?? loserPrior.source_plan_slug ?? null;
+  const canonicalPlanItems = normalizedStringArray([
+    ...normalizedStringArray(canonicalPrior.source_plan_item_ids),
+    ...normalizedStringArray(loserPrior.source_plan_item_ids),
+  ]);
+  const canonicalSeeAlso = normalizedStringArray([
+    ...normalizedStringArray(canonicalPrior.see_also),
+    ...normalizedStringArray(loserPrior.see_also),
+    input.loserId,
+  ]).filter((id) => id !== input.canonicalId);
+  const canonicalPriorSeeAlso = normalizedStringArray(canonicalPrior.see_also);
+  const canonicalOutgoingAdded = canonicalSeeAlso.filter((id) => !canonicalPriorSeeAlso.includes(id));
+  const canonicalConditionKey = canonicalIdentity.conditionKey ?? loserIdentity.conditionKey;
+  const canonicalUpdated = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items
+       SET condition_key = ${canonicalConditionKey},
+           payload = ${JSON.stringify(canonicalPayload)}::text::jsonb,
+           source_plan_slug = ${canonicalPlanSlug},
+           source_plan_item_ids = ${canonicalPlanItems.length > 0 ? canonicalPlanItems : null}::text[],
+           see_also = ${canonicalSeeAlso}::text[],
+           updated_ts = ${input.nowMs}
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.canonicalId}
+    RETURNING feature_id`;
+  if (canonicalUpdated.length !== 1) {
+    throw new Error(`admission merge guard conditional-write-miss: canonical ${input.canonicalId}`);
+  }
+
+  const loserPriorSeeAlso = normalizedStringArray(loserPrior.see_also);
+  const loserAppliedSeeAlso = normalizedStringArray([...loserPriorSeeAlso, input.canonicalId]).filter(
+    (id) => id !== input.loserId,
+  );
+  await sql`
+    UPDATE harness_shared.work_items
+       SET see_also = ${loserAppliedSeeAlso}::text[], updated_ts = ${input.nowMs}
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.loserId}`;
+
+  const incomingRows = await sql<AdmissionMergeIncomingRow[]>`
+    SELECT source.feature_id, source.see_also, source.updated_ts
+      FROM harness_shared.work_items source
+     WHERE source.workspace_id = ${input.workspaceId}
+       AND source.harness_slug = ${input.harnessSlug}
+       AND ${input.loserId} = ANY(COALESCE(source.see_also, ARRAY[]::text[]))
+     ORDER BY source.feature_id`;
+  const incomingReferenceSources: string[] = [];
+  for (const source of incomingRows) {
+    if (source.feature_id === input.loserId || source.feature_id === input.canonicalId) continue;
+    const priorSeeAlso = normalizedStringArray(source.see_also);
+    if (priorSeeAlso.includes(input.canonicalId)) continue;
+    const updated = await sql<Array<{ feature_id: string }>>`
+      UPDATE harness_shared.work_items
+         SET see_also = ${normalizedStringArray([...priorSeeAlso, input.canonicalId])}::text[],
+             updated_ts = ${input.nowMs}
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND feature_id = ${source.feature_id}
+         AND updated_ts IS NOT DISTINCT FROM ${source.updated_ts}
+      RETURNING feature_id`;
+    if (updated.length === 1) {
+      incomingReferenceSources.push(source.feature_id);
+      continue;
+    }
+    const [current] = await sql<Array<{ see_also: string[] | null }>>`
+      SELECT see_also FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND feature_id = ${source.feature_id}`;
+    if (!normalizedStringArray(current?.see_also).includes(input.canonicalId)) {
+      throw new Error(`admission incoming-reference conditional-write-miss: ${source.feature_id}`);
+    }
+  }
+
+  const loserRefs = [input.loserId, `${input.harnessSlug}#${input.loserId}`];
+  const dependencyRows = await sql<AdmissionMergeDependencyRow[]>`
+    SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
+      FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${input.workspaceId}
+       AND dep_type = 'blocks'
+       AND (blocked_ref = ANY(${loserRefs}::text[]) OR blocker_ref = ANY(${loserRefs}::text[]))
+     ORDER BY id
+     FOR UPDATE`;
+  const dependencyEdges: Array<Record<string, unknown>> = [];
+  for (const dependency of dependencyRows) {
+    const blockedRef = repointAdmissionDependencyRef(
+      dependency.blocked_ref,
+      input.loserId,
+      input.canonicalId,
+      input.harnessSlug,
+    );
+    const blockerRef = repointAdmissionDependencyRef(
+      dependency.blocker_ref,
+      input.loserId,
+      input.canonicalId,
+      input.harnessSlug,
+    );
+    const before = dependencyReceiptRow(dependency);
+    if (dependency.blocked_kind === dependency.blocker_kind && blockedRef === blockerRef) {
+      await sql`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
+      dependencyEdges.push({ before, after: null, targetPrior: null, disposition: 'removed-self-edge' });
+      continue;
+    }
+    const [targetPrior] = await sql<AdmissionMergeDependencyRow[]>`
+      SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by
+        FROM harness_shared.work_item_deps
+       WHERE workspace_id = ${input.workspaceId}
+         AND blocked_kind = ${dependency.blocked_kind}
+         AND blocked_ref = ${blockedRef}
+         AND blocker_kind = ${dependency.blocker_kind}
+         AND blocker_ref = ${blockerRef}
+         AND dep_type = ${dependency.dep_type}
+         AND id <> ${dependency.id}
+       LIMIT 1`;
+    const [after] = await sql<AdmissionMergeDependencyRow[]>`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${input.workspaceId}, ${dependency.blocked_kind}, ${blockedRef},
+              ${dependency.blocker_kind}, ${blockerRef}, ${dependency.dep_type},
+              ${dependency.satisfaction === 'success' ? 'success' : 'settled'}, ${dependency.created_by})
+      ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      DO UPDATE SET satisfaction = CASE
+        WHEN harness_shared.work_item_deps.satisfaction = 'success' OR EXCLUDED.satisfaction = 'success'
+          THEN 'success'
+        ELSE 'settled'
+      END
+      RETURNING id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by`;
+    if (!after) throw new Error(`admission dependency repoint failed for ${String(dependency.id)}`);
+    await sql`DELETE FROM harness_shared.work_item_deps WHERE id = ${dependency.id}`;
+    dependencyEdges.push({
+      before,
+      after: dependencyReceiptRow(after),
+      targetPrior: targetPrior ? dependencyReceiptRow(targetPrior) : null,
+      disposition: targetPrior ? 'merged-with-existing-edge' : 'repointed-edge',
+    });
+  }
+
+  const occurrenceRows = await sql<AdmissionMergeOccurrenceRow[]>`
+    SELECT occurrence_id, canonical_harness_slug, canonical_work_item_id
+      FROM harness_shared.work_item_occurrences
+     WHERE workspace_id = ${input.workspaceId}
+       AND canonical_work_item_id = ${input.loserId}
+     ORDER BY occurrence_id
+     FOR UPDATE`;
+  const occurrenceIds = occurrenceRows.map((row) => String(row.occurrence_id));
+  if (occurrenceIds.length > 0) {
+    await sql`
+      UPDATE harness_shared.work_item_occurrences
+         SET canonical_harness_slug = ${input.harnessSlug},
+             canonical_work_item_id = ${input.canonicalId}
+       WHERE occurrence_id = ANY(${occurrenceIds}::bigint[])`;
+  }
+  const findCurrentDuplicate = async (): Promise<AdmissionMergeOccurrenceRow | undefined> =>
+    (
+      await sql<AdmissionMergeOccurrenceRow[]>`
+        SELECT occurrence_id, canonical_harness_slug, canonical_work_item_id
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${input.workspaceId}
+           AND canonical_harness_slug = ${input.harnessSlug}
+           AND canonical_work_item_id = ${input.canonicalId}
+           AND report_kind = 'duplicate'
+           AND evidence->>'runId' = ${input.runId}
+           AND evidence->>'mergedFrom' = ${input.loserId}
+         ORDER BY occurrence_id
+         LIMIT 1`
+    )[0];
+  let duplicateOccurrence = await findCurrentDuplicate();
+  let duplicateOccurrenceCreated = false;
+  if (!duplicateOccurrence) {
+    const recorded = await recordIssueOccurrence(
+      {
+        canonicalId: input.canonicalId,
+        canonicalHarness: input.harnessSlug,
+        sourceTool: 'system',
+        reportKind: 'duplicate',
+        reportedTitle: input.loserSnapshot.title,
+        evidence: {
+          mergedFrom: input.loserId,
+          summary: input.loserSnapshot.summary,
+          runId: input.runId,
+          disposition: 'r-finding-merge',
+        },
+        admissionIdentity: admissionIdentity(input.loserSnapshot.title, input.loserSnapshot.conditionKey ?? undefined),
+      },
+      sql,
+    );
+    duplicateOccurrenceCreated = recorded !== null;
+    duplicateOccurrence = await findCurrentDuplicate();
+  }
+  if (!duplicateOccurrence) {
+    throw new Error(`admission occurrence persistence failed for ${input.loserId} -> ${input.canonicalId}`);
+  }
+
+  const loserPayload = recordValue(loserPrior.payload);
+  const receipt = {
+    schemaVersion: 2,
+    state: 'complete',
+    canonicalId: input.canonicalId,
+    canonicalHarness: input.harnessSlug,
+    runId: input.runId,
+    actor: input.actor,
+    mergedAtMs: input.nowMs,
+    judgmentIdentity: {
+      loser: input.loserSnapshot.fingerprint,
+      canonical: input.canonicalSnapshot.fingerprint,
+    },
+    prior: {
+      status: loserPrior.status,
+      admission: loserPrior.admission,
+      admittedAt: nullableIso(loserPrior.admitted_at),
+      admittedBy: loserPrior.admitted_by,
+      conditionKey: loserPrior.condition_key,
+      watchdogIdentity: payloadIdentityState(loserPrior.payload),
+      sourcePlanSlug: loserPrior.source_plan_slug,
+      sourcePlanItemIds: loserPrior.source_plan_item_ids
+        ? normalizedStringArray(loserPrior.source_plan_item_ids)
+        : null,
+      seeAlso: loserPrior.see_also ? loserPriorSeeAlso : null,
+      closedAtMs: nullableFiniteMs(loserPrior.closed_ts),
+      terminalReason: loserPrior.terminal_reason,
+      terminalOwner: loserPrior.terminal_owner,
+      admissionReview: jsonFieldState(loserPayload, 'admissionReview'),
+    },
+    canonical: {
+      prior: {
+        conditionKey: canonicalPrior.condition_key,
+        watchdogIdentity: payloadIdentityState(canonicalPrior.payload),
+        sourcePlanSlug: canonicalPrior.source_plan_slug,
+        sourcePlanItemIds: canonicalPrior.source_plan_item_ids
+          ? normalizedStringArray(canonicalPrior.source_plan_item_ids)
+          : null,
+        seeAlso: canonicalPrior.see_also ? canonicalPriorSeeAlso : null,
+      },
+      applied: {
+        conditionKey: canonicalConditionKey,
+        watchdogIdentity: payloadIdentityState(canonicalPayload),
+        sourcePlanSlug: canonicalPlanSlug,
+        sourcePlanItemIds: canonicalPlanItems.length > 0 ? canonicalPlanItems : null,
+        seeAlso: canonicalSeeAlso,
+      },
+      sourceEntryAdded,
+    },
+    transfers: {
+      canonicalOutgoingAdded,
+      loserCanonicalReferenceAdded: !loserPriorSeeAlso.includes(input.canonicalId),
+      incomingReferenceSources: incomingReferenceSources.sort(),
+      occurrences: occurrenceRows.map((row) => ({
+        occurrenceId: String(row.occurrence_id),
+        priorCanonicalHarness: row.canonical_harness_slug,
+        priorCanonicalId: row.canonical_work_item_id,
+      })),
+      duplicateOccurrenceId: String(duplicateOccurrence.occurrence_id),
+      duplicateOccurrenceCreated,
+      dependencyEdges,
+    },
+    reversalInstructions: {
+      schemaVersion: 1,
+      transactionRequired: true,
+      compareAppliedStateBeforeRestore: true,
+      order: [
+        'restore-or-delete dependency after-edges from targetPrior, then reinsert each before-edge',
+        'repoint transferred occurrence IDs to their prior canonical and delete the duplicate occurrence only when duplicateOccurrenceCreated=true',
+        'remove canonical only from the recorded incomingReferenceSources and canonicalOutgoingAdded entries',
+        'restore canonical identity, plan and reference fields only when they still equal canonical.applied',
+        'restore loser lifecycle, admission, condition, plan, references and admissionReview from prior; then remove admissionMerge',
+      ],
+    },
+  };
+  const receiptWritten = await sql<Array<{ feature_id: string }>>`
+    UPDATE harness_shared.work_items
+       SET payload = jsonb_set(
+             COALESCE(payload, '{}'::jsonb),
+             '{admissionMerge}',
+             ${JSON.stringify(receipt)}::text::jsonb,
+             true
+           ),
+           updated_ts = ${input.nowMs}
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND feature_id = ${input.loserId}
+       AND payload #>> '{admissionMerge,runId}' = ${input.runId}
+    RETURNING feature_id`;
+  if (receiptWritten.length !== 1) {
+    throw new Error(`admission reversal receipt conditional-write-miss: ${input.loserId}`);
+  }
+}
+
 interface PersistAdmissionPlanInput {
   workspaceId: string;
   harnessSlug: string;
@@ -2252,10 +2959,15 @@ interface PersistAdmissionPlanInput {
   actor?: string;
 }
 
-async function persistAdmissionPlanUnchecked(
-  sql: OrgSql,
-  input: Omit<PersistAdmissionPlanInput, 'snapshots' | 'withinTransaction'>,
-): Promise<void> {
+interface PersistAdmissionPlanUncheckedInput extends Omit<
+  PersistAdmissionPlanInput,
+  'snapshots' | 'withinTransaction'
+> {
+  /** Guarded, locked endpoint state used to build exact reversal receipts. */
+  mergeSnapshots: ReadonlyMap<string, AdmissionMergeSnapshot>;
+}
+
+async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissionPlanUncheckedInput): Promise<void> {
   const actor = input.actor ?? PROMOTER_ACTOR;
   const promoteUnmerged = input.promoteUnmerged ?? true;
   const pendingById = new Map(input.pending.map((item) => [item.id, item]));
@@ -2264,7 +2976,6 @@ async function persistAdmissionPlanUnchecked(
     input.plan.dispositions.some(
       (disposition) => disposition.action === 'merge' && !pendingById.has(disposition.itemId),
     );
-  const terminal = [...ALL_TERMINAL_STATUSES];
   const adjudicationRows = input.plan.adjudications.map((adjudication) => {
     const [a, b] = canonicalIds(adjudication.a, adjudication.b);
     return {
@@ -2297,16 +3008,7 @@ async function persistAdmissionPlanUnchecked(
              )
       ON CONFLICT (workspace_id, harness_slug, a, b) DO NOTHING`;
   }
-  const mergePairs = input.plan.dispositions.flatMap((disposition) =>
-    disposition.action === 'merge' ? [{ a: disposition.itemId, b: disposition.canonicalId }] : [],
-  );
-  await persistAdmissionLinks(
-    sql,
-    input.workspaceId,
-    input.harnessSlug,
-    [...input.plan.relatedPairs, ...mergePairs],
-    input.nowMs,
-  );
+  await persistAdmissionLinks(sql, input.workspaceId, input.harnessSlug, input.plan.relatedPairs, input.nowMs);
   for (const disposition of input.plan.dispositions) {
     if (disposition.action === 'hold') {
       // A hold is still a re-review attempt for a fail-open row. Keep the row
@@ -2372,107 +3074,26 @@ async function persistAdmissionPlanUnchecked(
            AND admission IN ('pending', 'unreviewed')`;
       continue;
     }
-    const pending = pendingById.get(disposition.itemId);
-    if (pending) {
-      await recordIssueOccurrence(
-        {
-          canonicalId: disposition.canonicalId,
-          canonicalHarness: input.harnessSlug,
-          sourceTool: 'system',
-          reportKind: 'duplicate',
-          reportedTitle: pending.title,
-          evidence: {
-            mergedFrom: pending.id,
-            summary: pending.summary,
-            runId: input.runId,
-            disposition: 'r-finding-merge',
-          },
-          admissionIdentity: admissionIdentity(pending.title, pending.conditionKey ?? undefined),
-        },
-        sql,
+    const loserSnapshot = input.mergeSnapshots.get(disposition.itemId);
+    const canonicalSnapshot = input.mergeSnapshots.get(disposition.canonicalId);
+    if (!loserSnapshot || !canonicalSnapshot) {
+      throw new Error(
+        `admission merge guard conditional-write-miss: missing guarded snapshots for ` +
+          `${disposition.itemId} -> ${disposition.canonicalId}`,
       );
     }
-    const terminalReason = `duplicate of ${disposition.canonicalId} (${actor} ${input.runId})`;
-    if (mergeAnyAdmission) {
-      await sql`
-        UPDATE harness_shared.work_items
-           SET status = 'dropped',
-               admission = 'admitted',
-               admitted_at = COALESCE(admitted_at, now()),
-               admitted_by = COALESCE(admitted_by, ${actor}),
-               terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
-               payload = CASE WHEN admission = 'unreviewed' THEN
-                 COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
-                   'admissionReview', COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
-                     'state', 'terminal',
-                       'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'retryAttempts', CASE
-                         WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
-                           THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
-                         ELSE 1
-                       END,
-                       'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                     'reviewedBy', ${actor}::text,
-                     'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                     'terminalOutcome', 'duplicate-merge',
-                     'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
-                   ),
-                   'admissionMerge', jsonb_build_object(
-                     'canonicalId', ${disposition.canonicalId}::text,
-                     'runId', ${input.runId}::text,
-                     'actor', ${actor}::text
-                   )
-                 )
-               ELSE COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
-                 'admissionMerge', jsonb_build_object(
-                   'canonicalId', ${disposition.canonicalId}::text,
-                   'runId', ${input.runId}::text,
-                   'actor', ${actor}::text
-                 )
-               ) END,
-               updated_ts = ${input.nowMs}
-         WHERE workspace_id = ${input.workspaceId}
-           AND harness_slug = ${input.harnessSlug}
-           AND feature_id = ${disposition.itemId}
-           AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))`;
-    } else {
-      await sql`
-        UPDATE harness_shared.work_items
-           SET status = 'dropped', admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
-               terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
-               payload = CASE WHEN admission = 'unreviewed' THEN
-                 COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
-                   'admissionReview', COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
-                     'state', 'terminal',
-                       'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                       'retryAttempts', CASE
-                         WHEN (payload #>> '{admissionReview,retryAttempts}') ~ '^[0-9]+$'
-                           THEN ((payload #>> '{admissionReview,retryAttempts}')::int + 1)
-                         ELSE 1
-                       END,
-                       'reviewedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                     'reviewedBy', ${actor}::text,
-                     'terminalAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)),
-                     'terminalOutcome', 'duplicate-merge',
-                     'alert', jsonb_build_object('key', ${ADMISSION_REVIEW_ALERT_KEY}::text, 'state', 'cleared', 'emittedAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0)), 'reason', 'review completed')
-                   ),
-                   'admissionMerge', jsonb_build_object(
-                     'canonicalId', ${disposition.canonicalId}::text,
-                     'runId', ${input.runId}::text
-                   )
-                 )
-               ELSE COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
-                 'admissionMerge', jsonb_build_object(
-                   'canonicalId', ${disposition.canonicalId}::text,
-                   'runId', ${input.runId}::text
-                 )
-               ) END,
-               updated_ts = ${input.nowMs}
-         WHERE workspace_id = ${input.workspaceId}
-           AND harness_slug = ${input.harnessSlug}
-           AND feature_id = ${disposition.itemId}
-           AND admission IN ('pending', 'unreviewed')`;
-    }
+    await persistApprovedAdmissionMerge(sql, {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      runId: input.runId,
+      nowMs: input.nowMs,
+      actor,
+      loserId: disposition.itemId,
+      canonicalId: disposition.canonicalId,
+      mergeAnyAdmission,
+      loserSnapshot,
+      canonicalSnapshot,
+    });
   }
 }
 
@@ -2646,6 +3267,7 @@ async function persistAdmissionPlanInTransaction(
     promoteUnmerged: input.promoteUnmerged,
     mergeAnyAdmission: input.mergeAnyAdmission,
     actor,
+    mergeSnapshots: liveById,
   });
 
   const postRows = relevantIds.length
@@ -2666,7 +3288,10 @@ async function persistAdmissionPlanInTransaction(
     if (disposition.action === 'promote') {
       if (input.promoteUnmerged === false) continue;
       if (post?.admission === 'admitted') {
-        promotedIds.push(disposition.itemId);
+        const before = liveById.get(disposition.itemId);
+        if (before?.admission === 'pending' || before?.admission === 'unreviewed') {
+          promotedIds.push(disposition.itemId);
+        }
         continue;
       }
       throw new Error(`admission merge guard conditional-write-miss: promotion ${disposition.itemId}`);
@@ -2832,7 +3457,16 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensIn = response.inputTokens;
       tokensOut = response.outputTokens;
     }
-    const plan = planPromoterDispositions(pending, pairs, judgements);
+    const recurrenceItems = new Map<string, PromoterItem>();
+    for (const item of pending) recurrenceItems.set(item.id, item);
+    for (const pair of pairs) {
+      recurrenceItems.set(pair.a.id, pair.a);
+      recurrenceItems.set(pair.b.id, pair.b);
+    }
+    const plan = selectAdmissionRecurrenceCanonicals(
+      planPromoterDispositions(pending, pairs, judgements),
+      recurrenceItems,
+    );
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,

@@ -54,7 +54,13 @@ import {
 } from './grader-eligibility';
 import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../acceptance-grader';
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
-import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudit } from '../../grading-integrity';
+import {
+  dispatchPendingGradingAudits,
+  GRADING_INTEGRITY_RUBRIC_REF,
+  gradingAuditGateEnabled,
+  needsGradingAudit,
+  type GradingAuditLaunchContext,
+} from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
@@ -456,6 +462,8 @@ export async function emitScorecard(
     ctxHarness?: string;
     role?: string;
     workspaceId?: string;
+    /** Full request context used by the bounded post-write audit-dispatch repair. */
+    launchContext?: GradingAuditLaunchContext;
     /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
      *  passes its ctx-resolved root; omitted ⇒ the resolver's ctx-less fallback. */
     checkRoot?: string;
@@ -481,6 +489,8 @@ export async function emitScorecard(
     /** EI-21917534129987791: liveness probe backing the author-rebind recovery
      *  hint on the "acceptance must be recorded by the author" refusal. */
     resolveAuthorSessionState?: (ownerId: string, opts: { workspaceId?: string }) => Promise<SessionState | null>;
+    /** Test seam for the bounded post-write pending-audit dispatcher. */
+    dispatchPendingGradingAudits?: typeof dispatchPendingGradingAudits;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -1587,6 +1597,27 @@ export async function emitScorecard(
         input.workspaceId ? { workspaceId: input.workspaceId } : {},
       );
     }
+    // P-013 backlog repair: every newly filed non-audit scorecard is a cheap,
+    // durable trigger for the bounded oldest-first pending-audit dispatcher.
+    // Do not trigger from the audit card itself: its own emit would recursively
+    // fan out the same backlog while the original dispatch is still in flight.
+    // The dispatcher is detached so a historical backlog cannot stretch the
+    // scorecards:emit latency or fail a card that was already written.
+    if (
+      result.created &&
+      result.issue?.id &&
+      input.launchContext &&
+      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF
+    ) {
+      const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
+      void trackDetached(
+        dispatchAudits({
+          targetIds: [],
+          ctx: input.launchContext,
+          harness: input.ctxHarness,
+        }).then(() => undefined),
+      ).catch(() => {});
+    }
     // unified-responder-selection-critique-and-grading-2026-08-30 D-003 [owner]:
     // grading is a CASCADE of up to two graders, and grader 2 is woken holding
     // grader 1's card. Filing the card is the act that discharges a grading, so
@@ -1713,6 +1744,7 @@ export default defineTool({
           ctxHarness,
           role: ctx.role,
           workspaceId: identity.workspaceId ?? undefined,
+          launchContext: ctx,
           // P-011: tests-checks resolve + run against the tree the AGENT edits.
           checkRoot: resolveAgentWorkspaceRoot(ctx),
         },

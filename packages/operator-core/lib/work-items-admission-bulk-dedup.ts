@@ -32,6 +32,7 @@ import {
   promoterEvidenceForPrompt,
   readAdmissionMergeSnapshots,
   responsePayload,
+  selectAdmissionRecurrenceCanonicals,
   type AdmissionMergeGuardRefusal,
   type AdmissionPlanPersistenceResult,
   type AdmissionRunOutcome,
@@ -399,74 +400,16 @@ function itemFromRow(row: BulkMapRow): BulkDedupItem {
   };
 }
 
-function stableProducerKey(item: BulkDedupItem | undefined): string | null {
-  const key = item?.watchdogKey?.trim();
-  return key ? key : null;
-}
-
 /**
- * A bulk merge must leave one live home for every stable producer identity.
- *
- * The ordinary promoter intentionally prefers established/older history. That
- * is unsafe for the bulk corpus when the older twin predates `watchdogKey`:
- * dropping the newer keyed row leaves the producer with no open exact-key home,
- * so its next forced emission creates the same duplicate again. Reselect the
- * keyed endpoint before persistence. If one duplicate component carries more
- * than one distinct producer key, no lossless single canonical exists yet; fail
- * the transaction closed instead of terminalizing either identity.
+ * Backward-compatible bulk name for the one recurrence selector shared with
+ * normal admission. Keeping this export avoids splitting callers while the
+ * implementation and invariant live at the common promoter seam.
  */
 export function guardBulkRecurrenceIdentity(
   plan: PromoterPlan,
   items: ReadonlyMap<string, BulkDedupItem>,
 ): PromoterPlan {
-  const membersByCanonical = new Map<string, Set<string>>();
-  for (const adjudication of plan.adjudications) {
-    if (adjudication.verdict !== 'r-finding-merge' || !adjudication.canonical) continue;
-    const members = membersByCanonical.get(adjudication.canonical) ?? new Set<string>();
-    members.add(adjudication.canonical);
-    members.add(adjudication.a);
-    members.add(adjudication.b);
-    membersByCanonical.set(adjudication.canonical, members);
-  }
-
-  const replacementByCanonical = new Map<string, string>();
-  const componentByItem = new Map<string, string>();
-  for (const [plannedCanonical, memberIds] of membersByCanonical) {
-    for (const id of memberIds) componentByItem.set(id, plannedCanonical);
-    const keyed = [...memberIds]
-      .map((id) => items.get(id))
-      .filter((item): item is BulkDedupItem => stableProducerKey(item) !== null)
-      .sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id));
-    if (keyed.length === 0) continue;
-
-    const keys = [...new Set(keyed.map((item) => stableProducerKey(item)!))].sort();
-    if (keys.length > 1) {
-      throw new Error(
-        `bulk recurrence-identity guard blocked component ${plannedCanonical}: ` +
-          `conflicting stable producer identities ${keys.join(', ')}`,
-      );
-    }
-
-    if (!stableProducerKey(items.get(plannedCanonical))) {
-      replacementByCanonical.set(plannedCanonical, keyed[0]!.id);
-    }
-  }
-  if (replacementByCanonical.size === 0) return plan;
-
-  const dispositions = plan.dispositions.map((disposition) => {
-    if (disposition.action === 'hold') return disposition;
-    const component = componentByItem.get(disposition.itemId);
-    const replacement = component ? replacementByCanonical.get(component) : undefined;
-    if (!replacement) return disposition;
-    return disposition.itemId === replacement
-      ? ({ itemId: disposition.itemId, action: 'promote' } as const)
-      : ({ itemId: disposition.itemId, action: 'merge', canonicalId: replacement } as const);
-  });
-  const adjudications = plan.adjudications.map((adjudication) => {
-    const replacement = adjudication.canonical ? replacementByCanonical.get(adjudication.canonical) : undefined;
-    return replacement ? { ...adjudication, canonical: replacement } : adjudication;
-  });
-  return { ...plan, dispositions, adjudications };
+  return selectAdmissionRecurrenceCanonicals(plan, items);
 }
 
 function signalsForBulk(a: PromoterItem, b: PromoterItem): PromoterPair['signals'] {

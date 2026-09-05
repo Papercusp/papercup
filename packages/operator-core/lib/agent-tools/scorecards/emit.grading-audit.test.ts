@@ -13,6 +13,7 @@ const captureImprovement = vi.fn();
 const getIssue = vi.fn();
 const recordGradingAudit = vi.fn();
 const gateEnabled = vi.fn();
+const dispatchPendingGradingAudits = vi.fn();
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -65,7 +66,11 @@ vi.mock('../../issues-engineer', async (importOriginal) => {
 });
 vi.mock('../../grading-integrity', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../grading-integrity')>();
-  return { ...real, gradingAuditGateEnabled: (...a: unknown[]) => gateEnabled(...a) };
+  return {
+    ...real,
+    dispatchPendingGradingAudits: (...a: unknown[]) => dispatchPendingGradingAudits(...a),
+    gradingAuditGateEnabled: (...a: unknown[]) => gateEnabled(...a),
+  };
 });
 
 import { emitScorecard } from './emit';
@@ -121,9 +126,26 @@ beforeEach(() => {
     gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity', stampedAt: 'x' },
   });
   gateEnabled.mockReset().mockResolvedValue(true);
+  dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
+  it('triggers bounded pending-audit dispatch after a newly filed non-audit scorecard', async () => {
+    const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+    const res = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp', launchContext: launchContext as never },
+    );
+
+    expect(res.ok).toBe(true);
+    await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
+    expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+      targetIds: [],
+      ctx: launchContext,
+      harness: 'papercusp',
+    });
+  });
+
   it('a terminal standard-rubric card is stamped pending and says so in the result', async () => {
     const res = await emitScorecard(
       { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
