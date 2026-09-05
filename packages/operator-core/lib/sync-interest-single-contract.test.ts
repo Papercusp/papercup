@@ -112,13 +112,42 @@ interface SourceFile {
   raw: string;
 }
 
+const isRouteFile = (rel: string) => {
+  const posix = rel.split(sep).join('/');
+  return posix.includes('zero-harness') && posix.endsWith('/sse.ts');
+};
+
+/**
+ * Subject-path seam for falsifiability probing.
+ *
+ * Proving this guard CAN fail needs a source in which the route really did
+ * re-declare the contract. Mutating the tree to produce one is unsafe here —
+ * git-sync sweeps the whole checkout every few minutes and can COMMIT the
+ * mutant even when nothing goes wrong and no handler fails — so the honest
+ * control is a frozen snapshot of a real pre-fix commit
+ * (`scripts/mutation-probe.sh --against-commit`), and that requires the route
+ * file to be pointable somewhere other than its repo path.
+ *
+ * The snapshot is substituted UNDER ITS REAL repo-relative `rel`, so every
+ * assertion, exclusion rule and failure message below behaves exactly as it
+ * does in a normal run: only the bytes change, never the guard.
+ */
+const PROBE_ROUTE_FILE = process.env.PROBE_SSE_ROUTE_FILE;
+
 const SOURCES: SourceFile[] = (() => {
   const files: string[] = [];
   for (const root of SCAN_ROOTS) walk(join(REPO_ROOT, root), files);
-  return files.map((f) => {
+  const sources = files.map((f) => {
     const raw = readFileSync(f, 'utf8');
     return { rel: relative(REPO_ROOT, f), text: stripComments(raw), raw };
   });
+  if (PROBE_ROUTE_FILE) {
+    const idx = sources.findIndex((f) => isRouteFile(f.rel));
+    if (idx === -1) throw new Error('PROBE_SSE_ROUTE_FILE set but no route file was found to replace');
+    const raw = readFileSync(PROBE_ROUTE_FILE, 'utf8');
+    sources[idx] = { rel: sources[idx]!.rel, text: stripComments(raw), raw };
+  }
+  return sources;
 })();
 
 /** Tests may legitimately restate a value to assert against it. */
