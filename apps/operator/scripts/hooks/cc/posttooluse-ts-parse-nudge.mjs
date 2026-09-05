@@ -68,8 +68,9 @@
 //   - `--self-test` runs the embedded cases (no stdin) and exits non-zero on
 //     failure; mirrors the sibling PostToolUse nudges.
 //
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
@@ -84,6 +85,54 @@ const TS_REL = join('node_modules', 'typescript', 'package.json');
 
 /** Parsing a very large file is not worth an edit-time nudge. */
 const MAX_BYTES = 2_000_000;
+
+/** 1 MiB, then rotated to a single `.1` sibling — mirrors bash-resource-gate. */
+const FIRING_LOG_MAX_BYTES = 1 << 20;
+
+/**
+ * EI-19899815073760910: this hook is deliberately ADVISORY, which makes its
+ * effectiveness a BEHAVIOURAL question — does an agent that receives the nudge
+ * actually repair the file before the next bundle? Until now it wrote to stdout and
+ * persisted nothing, so that question was permanently unanswerable: when occurrence
+ * #3 of the backtick-in-SQL-comment class landed ~7.5h AFTER this guard was authored,
+ * the two candidate causes (hook not yet registered in that session vs. hook fired and
+ * was ignored) left no trace, the journal had rotated, and the diagnosis dead-ended.
+ *
+ * One append-only line per firing closes that. Deliberately NOT a behaviour change:
+ * the guard still only advises.
+ *
+ * ⚠ FAIL-OPEN IS THE CONTRACT, and this function is the riskiest place to break it —
+ * it runs AFTER an edit has already succeeded, so anything it throws would turn a
+ * successful edit into a hook error. Every path is inside one try/catch that swallows,
+ * including the rotation probe. It returns nothing and is never awaited on.
+ */
+export function logFiring(relPath, hit, deps = {}) {
+  try {
+    const home = deps.homedir ?? homedir;
+    const dir = deps.logDir ?? join(home(), '.papercusp', 'hooks', 'cc');
+    (deps.mkdir ?? mkdirSync)(dir, { recursive: true });
+    const path = join(dir, 'ts-parse-nudge.firings.log');
+    try {
+      if ((deps.sizeOf ?? ((p) => statSync(p).size))(path) > FIRING_LOG_MAX_BYTES) {
+        (deps.rename ?? renameSync)(path, `${path}.1`);
+      }
+    } catch {
+      // missing (first write) or unrotatable — append anyway, exactly as the sibling does.
+    }
+    const rec = {
+      ts: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      file: relPath,
+      code: hit?.code ?? null,
+      // `line:col` as ONE field: it is read as a position, and splitting it invites a
+      // reader to correlate on line alone across different columns.
+      at: hit?.line != null ? `${hit.line}:${hit.col ?? '?'}` : null,
+      reason: hit?.reason ?? null,
+    };
+    (deps.append ?? appendFileSync)(path, `${JSON.stringify(rec)}\n`);
+  } catch {
+    // Never disturb an edit that already succeeded — see CONTRACT.
+  }
+}
 
 // Run the hook ONLY when executed as a binary — never on import. Without this,
 // importing the module (as the test suite does, to exercise the checker against the
@@ -110,7 +159,7 @@ async function main() {
     const repoRoot = findRepoRootFromDirectory(cwd);
     if (!repoRoot) return done();
 
-    const msg = await nudgeFor(filePath, { repoRoot });
+    const msg = await nudgeFor(filePath, { repoRoot, onFire: logFiring });
     if (msg) {
       process.stdout.write(
         JSON.stringify({
@@ -396,7 +445,19 @@ export async function nudgeFor(filePath, deps = {}) {
   if (!hit) return null;
 
   const rel = relative(repoRoot, resolve(filePath)) || filePath;
-  return formatNudge(rel.split(/[\\/]/).join('/'), hit);
+  const relPath = rel.split(/[\\/]/).join('/');
+  // EI-19899815073760910: the observation seam. Injected rather than called directly so
+  // the firing is assertable WITHOUT touching the filesystem, and so `--self-test` (which
+  // passes no onFire) cannot write synthetic firings into the real log — a self-test that
+  // polluted the instrument would make the instrument's own data untrustworthy.
+  if (typeof deps.onFire === 'function') {
+    try {
+      deps.onFire(relPath, hit);
+    } catch {
+      // An instrument must never break the thing it measures.
+    }
+  }
+  return formatNudge(relPath, hit);
 }
 
 /**
