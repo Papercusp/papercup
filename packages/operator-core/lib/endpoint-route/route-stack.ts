@@ -138,6 +138,120 @@ async function endpointAuthTiersEnabled(): Promise<boolean> {
 
 const SAFE_BROWSER_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+const LOOPBACK_BROWSER_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '10.0.2.2',
+]);
+
+const NATIVE_SHELL_ORIGINS = new Set([
+  'tauri://tauri.localhost',
+  'tauri://localhost',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'capacitor://localhost',
+  'ionic://localhost',
+]);
+
+/**
+ * Browser origins that are intentionally configured by the local launcher.
+ * The old CORS layer accepted every localhost port, which made an unrelated
+ * local dev server a credentialed reader of loopback-only GET routes. Keep the
+ * established :3055 operator-dev origin, but let a launcher override/add its
+ * actual instance through the existing base/origin environment variables.
+ */
+function configuredLocalBrowserOrigins(): Set<string> {
+  const origins = new Set(['http://localhost:3055', 'http://127.0.0.1:3055']);
+  for (const key of [
+    'PAPERCUSP_OPERATOR_BASE',
+    'PAPERCUSP_RELEASE_ORIGIN',
+    'OPERATOR_E2E_BASE_URL',
+    'OPERATOR_BASE_URL',
+  ]) {
+    const value = process.env[key]?.trim();
+    if (!value) continue;
+    try {
+      const url = new URL(value);
+      if (
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
+        !url.username &&
+        !url.password &&
+        (url.pathname === '/' || url.pathname === '') &&
+        !url.search &&
+        !url.hash &&
+        LOOPBACK_BROWSER_HOSTS.has(url.hostname)
+      ) {
+        origins.add(url.origin);
+      }
+    } catch {
+      // A malformed optional launcher hint must not widen the policy.
+    }
+  }
+  return origins;
+}
+
+function effectivePort(url: URL): string {
+  return url.port || (url.protocol === 'https:' ? '443' : '80');
+}
+
+/** Same loopback instance, allowing localhost ↔ 127.0.0.1 sibling sharding. */
+function isSameLoopbackInstance(request: URL, origin: URL): boolean {
+  if (request.protocol !== origin.protocol) return false;
+  if (!LOOPBACK_BROWSER_HOSTS.has(request.hostname) || !LOOPBACK_BROWSER_HOSTS.has(origin.hostname)) {
+    return false;
+  }
+  return effectivePort(request) === effectivePort(origin);
+}
+
+function isNativeShellOrigin(origin: string): boolean {
+  return NATIVE_SHELL_ORIGINS.has(origin);
+}
+
+/**
+ * Safe-browser read policy for loopback routes. No Origin remains valid for
+ * CLI/native transports. Once a browser supplies an Origin, it must be an
+ * explicit route origin, the same loopback instance (including sibling-host
+ * sharding), a configured launcher origin, or a known native shell origin.
+ */
+function enforceBrowserReadPolicy(exec: RouteExecution): Response | null {
+  if (!SAFE_BROWSER_METHODS.has(exec.def.method) || exec.def.auth !== 'loopback') return null;
+
+  const rawOrigin = exec.req.headers.get('origin')?.trim() ?? '';
+  if (!rawOrigin) return null;
+  // Opaque origins are never trusted, even when a caller can reach loopback.
+  if (rawOrigin === 'null') {
+    return errorResponse(403, 'cross_origin_blocked', 'opaque browser origins are not allowed for loopback reads');
+  }
+
+  if (typeof exec.def.cors === 'object' && exec.def.cors.origins.includes(rawOrigin)) return null;
+  if (exec.def.cors === false) {
+    return errorResponse(403, 'cross_origin_blocked', 'browser Origin is not allowed for this route');
+  }
+  if (isNativeShellOrigin(rawOrigin) || configuredLocalBrowserOrigins().has(rawOrigin)) return null;
+
+  try {
+    const origin = new URL(rawOrigin);
+    const request = new URL(exec.req.url);
+    if (
+      !origin.username &&
+      !origin.password &&
+      (origin.pathname === '/' || origin.pathname === '') &&
+      !origin.search &&
+      !origin.hash &&
+      isSameLoopbackInstance(request, origin)
+    ) {
+      return null;
+    }
+  } catch {
+    // Fall through to the common denial below.
+  }
+  return errorResponse(
+    403,
+    'cross_origin_blocked',
+    'loopback reads require the exact trusted browser origin for this instance',
+  );
+}
+
 function allowsBrowserOrigin(
   def: RouteDefinition<ZodTypeAny | undefined>,
   origin: string,
@@ -288,6 +402,11 @@ const authStep: RouteStep = {
       if (browserMutation) {
         exec.status = 'forbidden';
         return browserMutation;
+      }
+      const browserRead = enforceBrowserReadPolicy(exec);
+      if (browserRead) {
+        exec.status = 'forbidden';
+        return browserRead;
       }
     }
     // Direct-remote public/loopback declarations are local compatibility
