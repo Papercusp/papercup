@@ -5321,6 +5321,8 @@ export interface ClaimNextFilter {
   claimantFleetSlug?: string;
   /** EI-13524: the active claim spec structurally names `fleet` and may adopt that lane. */
   claimSpecReferencesFleet?: boolean;
+  /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+  claimSpecReferencesGoal?: boolean;
 }
 
 /**
@@ -5381,6 +5383,8 @@ export interface ClaimFloorsOpts {
   claimantFleetSlug?: string;
   /** EI-13524: the active claim spec structurally names `fleet` and may adopt that lane. */
   claimSpecReferencesFleet?: boolean;
+  /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+  claimSpecReferencesGoal?: boolean;
 }
 
 /** Release-cooldown window (seconds). Env-overridable; small on purpose — the floor only
@@ -5849,6 +5853,24 @@ export function reservedPlanLaneExclusionSql(
   authorization: {
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /**
+     * EI-21398324268952860: the GOAL analogue of `claimSpecReferencesFleet`. A per-goal
+     * standing DRAIN FLEET scopes its claim spec by `{ field:'goal', op:'=', value:<goalId> }`
+     * (see `WorkItem.goalId`), so when its own steward mints plan-stamped work FOR it, the
+     * plan-lane floor reserved that work away from the very fleet the lane belongs to:
+     * `matchedByFilter=7, claimable=0, planLaneReserved=7`, and the drain stalled fleet-wide.
+     *
+     * ⚠ This does NOT reuse `claimSpecReferencesFleet`'s `authorized` flag, deliberately.
+     * A goal is BROADER than a fleet, so a goal match must never let one fleet adopt an item
+     * another fleet explicitly reserved with a `fleet_slug` stamp. Goal authorization
+     * therefore satisfies ONLY the plan-lifecycle leg below, never the fleet-stamp leg.
+     *
+     * There is deliberately NO `claimantGoalId` counterpart to `claimantFleetSlug`: a fleet
+     * slug is carried on the claimant's own presence row, but an agent has no equivalent
+     * standing goal identity, so such a parameter would have no caller and no reachable
+     * branch. Authorization here is spec-derived only.
+     */
+    claimSpecReferencesGoal?: boolean;
   } = {},
 ) {
   // COALESCE the payload so a NULL-payload row (no plan_item back-pointer) reads as
@@ -5884,13 +5906,31 @@ export function reservedPlanLaneExclusionSql(
     : claimantFleetSlug
       ? sql`(${col}->>'fleet_slug' = ${claimantFleetSlug})`
       : sql`FALSE`;
+  // EI-21398324268952860: the goal leg. Unlike `fleet_slug` (a PAYLOAD key), the goal is a
+  // real COLUMN on both relations (`goal_id`, text, present on work_items AND
+  // harness_features_consolidated after migration 785/815) — so it uses the same correlated
+  // -column form as `wsCol`/`idCol` above, keyed off `payloadCol`, rather than a payload read.
+  const goalCol = sql.unsafe(
+    payloadCol === 'wi.payload' ? 'wi.goal_id' : 'harness_shared.harness_features_consolidated.goal_id',
+  );
+  // TIGHTER than the fleet precedent on purpose: where `claimSpecReferencesFleet` resolves to
+  // a bare TRUE, referencing the goal field additionally requires the row to actually CARRY a
+  // goal. A spec may reference `goal` with a negative operator (e.g. `{op:'!='}`), and a bare
+  // TRUE would then authorize goal-LESS rows the spec never meant to adopt.
+  const goalAuthorized = authorization.claimSpecReferencesGoal
+    ? sql`(${goalCol} IS NOT NULL)`
+    : sql`FALSE`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       -- EI-13524: a fleet stamp is a reservation in its own right, independently of
       -- plan lifecycle. The owning fleet, or a spec that explicitly references the
       -- fleet field (and therefore still must pass the compiled filter), may adopt it.
       (NOT (${authorized}) AND COALESCE(${col}, '{}'::jsonb) ? 'fleet_slug')
-      OR (NOT (${authorized}) AND EXISTS (
+      -- EI-21398324268952860: the goal leg joins HERE and nowhere else. The fleet-stamp leg
+      -- above deliberately still reads the fleet authorization alone, so a goal-scoped drain
+      -- fleet can adopt work on its own goal's plan lane WITHOUT being able to take an item
+      -- that another fleet explicitly reserved to itself with a fleet_slug stamp.
+      OR (NOT (${authorized} OR ${goalAuthorized}) AND EXISTS (
         SELECT 1 FROM harness_shared.harness_plans p
          WHERE p.workspace_id = ${wsCol}
            AND p.plan_slug = ${col}->'plan_item'->>'plan_slug'
@@ -7260,6 +7300,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
             rigAvailable: filter.rigAvailable,
             claimantFleetSlug: filter.claimantFleetSlug,
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+            claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })}
             -- caller-supplied NARROWING (not a floor): restrict to one feature-family kind.
             AND ${kind ? sql`item_kind = ${kind}` : sql`TRUE`}
@@ -8075,6 +8116,7 @@ export async function claimNextIssueWorkItem(
             rigAvailable: filter.rigAvailable,
             claimantFleetSlug: filter.claimantFleetSlug,
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+            claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })
         : tx`TRUE`;
       const rows = await tx<FeatureRowDb[]>`
@@ -8154,6 +8196,7 @@ export async function claimNextIssueWorkItem(
           AND ${reservedPlanLaneExclusionSql(tx, filter.assignee, 'wi.payload', {
             claimantFleetSlug: filter.claimantFleetSlug,
             claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+            claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
           })}
           -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller
           -- declared it has rig access.
