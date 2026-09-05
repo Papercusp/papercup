@@ -348,6 +348,16 @@ export default defineTool({
         }
 
         const active = history.blockers.filter((blocker) => blocker.status === 'active');
+        // WI-2146530: lifecycle follows the blockers that REMAIN after this
+        // update, not the shape of the current request. A partial clear has
+        // `input.clear=true`, so `strictHumanAsk` is necessarily false even
+        // when a credential / physical-device / external-service blocker is
+        // still active. Parking that row as generic `blocked` removes it from
+        // the owner-action queue despite the surviving blocker still requiring
+        // owner capability.
+        const remainingStrictHumanAsk = active.some(
+          (blocker) => blocker.kind === 'human' && isStrictOwnerActionCapability(blocker.capability),
+        );
         const updated = await mergeWorkItemPayload(
           input.id,
           { externalBlockers: history.blockers },
@@ -364,10 +374,14 @@ export default defineTool({
         let lifecycle: unknown = null;
         try {
           if (active.length > 0) {
-            lifecycle = await setWorkItemStateWithAliasInfo(input.id, strictHumanAsk ? 'needs-human' : 'blocked', {
-              harness: input.harness,
-              by: identity.ownerId,
-            });
+            lifecycle = await setWorkItemStateWithAliasInfo(
+              input.id,
+              remainingStrictHumanAsk ? 'needs-human' : 'blocked',
+              {
+                harness: input.harness,
+                by: identity.ownerId,
+              },
+            );
           } else if (updated.family === 'feature' && updated.state === 'blocked') {
             // work-item-status-full-unify P-007: restore to the UNIFIED claimable token
             // 'open' directly (was 'todo', which only reached 'open' via the legacy

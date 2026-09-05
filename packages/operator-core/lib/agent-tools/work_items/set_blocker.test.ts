@@ -386,6 +386,67 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('keeps an issue in needs-human when a partial clear leaves a strict owner-capability blocker', async () => {
+    const decisionBlocker = {
+      kind: 'human',
+      capability: 'product-decision',
+      ref: 'epoch-policy',
+      summary: 'Choose the epoch policy.',
+      status: 'active',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const deviceBlocker = {
+      kind: 'human',
+      capability: 'physical-device',
+      ref: 'peer-vm',
+      summary: 'Inspect the peer VM.',
+      status: 'active',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'needs-human',
+      harness: 'papercup',
+      payload: { externalBlockers: [decisionBlocker, deviceBlocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo.mockResolvedValue({
+      workItem: { ...item, state: 'needs-human' },
+      aliased: false,
+      requestedState: 'needs-human',
+      appliedState: 'needs-human',
+    });
+
+    const out = await one({
+      id: 'WI-1',
+      kind: 'human',
+      ref: 'epoch-policy',
+      clear: true,
+      evidence: 'The policy decision is now recorded.',
+    });
+
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([
+      expect.objectContaining({ status: 'active', capability: 'physical-device', ref: 'peer-vm' }),
+    ]);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-1',
+      'needs-human',
+      expect.objectContaining({ by: 'su-a' }),
+    );
+    expect(out.workItem.state).toBe('needs-human');
+  });
+
   it('EI-13301: feature-family clear restores blocked→open and the response reflects POST-write state', async () => {
     const blocker = {
       kind: 'human',
