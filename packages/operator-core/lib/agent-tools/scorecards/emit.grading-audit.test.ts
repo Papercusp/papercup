@@ -55,6 +55,9 @@ vi.mock('../../scout/generation-watermark', () => ({
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
   areAcceptanceLineageRelated: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+  // grader-eligibility resolves the plan's principal implementers before the
+  // author/lineage rails; these cards have no subject plan, so the seat is empty.
+  resolvePlanImplementerIdentities: vi.fn(async () => []),
 }));
 vi.mock('../../issues-engineer', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../issues-engineer')>();
@@ -316,6 +319,56 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     const already = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(already.ok).toBe(false);
     expect((already as { error?: string }).error).toContain('already audited');
+  });
+
+  it('allows a correction to supersede the existing audit card after the subject is settled', async () => {
+    const settledGradedCard = {
+      ...GRADED_CARD,
+      payload: {
+        observation: {
+          ...GRADED_CARD.payload.observation,
+          gradingAudit: {
+            state: 'passed',
+            metaRubricRef: 'grading-integrity',
+            auditIssueId: 'EI-AUDIT-OLD',
+            auditor: 'su-old-auditor',
+            stampedAt: '2026-08-17T12:00:00.000Z',
+          },
+        },
+      },
+    };
+    const priorAudit = {
+      id: 'EI-AUDIT-OLD',
+      createdBy: 'su-old-auditor',
+      payload: {
+        observation: {
+          rubricRef: 'grading-integrity',
+          ratings: RATINGS,
+          subject: { kind: 'scorecard', ref: 'EI-CARD' },
+        },
+      },
+    };
+    getIssue.mockResolvedValueOnce(settledGradedCard).mockResolvedValueOnce(priorAudit);
+
+    const res = await emitScorecard(
+      { ...auditArgs, supersedes: 'EI-AUDIT-OLD' },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: true, created: true, supersedes: 'EI-AUDIT-OLD' });
+    expect(recordGradingAudit).toHaveBeenCalledWith(
+      'EI-CARD',
+      expect.objectContaining({ auditIssueId: 'EI-AUDIT-1', verdict: 'passed' }),
+    );
+    expect(captureImprovement.mock.calls[0]?.[0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          rubricRef: 'grading-integrity',
+          supersedes: 'EI-AUDIT-OLD',
+          subject: { kind: 'scorecard', ref: 'EI-CARD' },
+        },
+      },
+    });
   });
 });
 
