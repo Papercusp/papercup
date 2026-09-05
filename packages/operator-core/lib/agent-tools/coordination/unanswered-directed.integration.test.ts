@@ -458,6 +458,43 @@ describe('fetchOpenAsks (sender-side mirror; WI-4537(c) mirrored exclusion, EI-2
     expect(map.get(LEADER.ownerId)?.count).toBe(1);
   });
 
+  it('EI-22401733710869471: SQL rolls up recipients and partitions ended recipients in one batch', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'member ask 1', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'member ask 2', expectsReply: true });
+    await sendMessage(LEADER, { to: [OTHER.ownerId], summary: 'other ask', expectsReply: true });
+
+    const calls: string[][] = [];
+    const map = await fetchOpenAsks([LEADER.ownerId], {
+      recipientStatesFn: async (ids) => {
+        calls.push(ids);
+        return new Map([[MEMBER.ownerId, 'ended' as const]]);
+      },
+    });
+    const summary = map.get(LEADER.ownerId);
+
+    expect(calls).toEqual([[MEMBER.ownerId, OTHER.ownerId]]);
+    expect(summary?.recipients.map((r) => [r.to, r.count])).toEqual([
+      [MEMBER.ownerId, 2],
+      [OTHER.ownerId, 1],
+    ]);
+    expect(summary?.count).toBe(1); // OTHER is unknown, so it remains owed
+    expect(summary?.staleCount).toBe(2);
+    expect(summary?.newest.find((e) => e.to === MEMBER.ownerId)?.recipientState).toBe('ended');
+    expect(summary?.newest.find((e) => e.to === OTHER.ownerId)?.recipientState).toBe('unknown');
+  });
+
+  it('EI-22401733710869471: a throwing recipient-liveness read fails open through the SQL path', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'still waiting', expectsReply: true });
+
+    const map = await fetchOpenAsks([LEADER.ownerId], {
+      recipientStatesFn: async () => {
+        throw new Error('presence unavailable');
+      },
+    });
+
+    expect(map.get(LEADER.ownerId)).toMatchObject({ count: 1, staleCount: 0 });
+  });
+
   it('baseline: our own plain ack-shaped reply to something the recipient sent does NOT count as a fresh ask on them (mirrored ping-pong)', async () => {
     // MEMBER sent LEADER something first; LEADER's threaded reply back is LEADER's answer
     // arriving, not a fresh ask LEADER is making of MEMBER — must not appear in fetchOpenAsks([LEADER]).
