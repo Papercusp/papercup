@@ -171,6 +171,74 @@ describe('runAcceptanceBarMigrationInDatabase', () => {
       barProvenance: { lifecycle: 'legacy-backfilled' } });
   });
 
+  it('types a nullable legacy criterion key before probing live spec mappings', async () => {
+    const slug = 'nullable-legacy-bar-key';
+    const content = validContent(slug, 'active')
+      .replace(
+        '**R-1 — Canonical outcome.** The migration writes one canonical BAR.',
+        'Legacy requirements predate canonical BAR identifiers.',
+      )
+      .replace(
+        '### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n' +
+          '|---|---|---|\n| R-1 | P-001 | tree |\n\n',
+        '',
+      );
+    await insertPlan(slug, content, 'active');
+
+    const legacy = {
+      kind: 'acceptance',
+      subjectPlan: slug,
+      characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
+      criteria: [{
+        key: 'legacy-outcome',
+        title: 'Legacy outcome',
+        model: 'The live plan item realizes the legacy outcome.',
+        method: 'Inspect the current live spec mapping.',
+        driftMarkers: 'The mapped plan item or its live spec is absent.',
+        role: 'outcome',
+        mandatory: true,
+        barHash: 'a'.repeat(64),
+        evidencePlane: 'tree',
+        passRatings: ['healthy'],
+      }],
+    };
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
+      VALUES (${WORKSPACE},${HARNESS},${`acceptance-${slug}`},'Legacy acceptance','active','legacy body',
+              md5('legacy body'),2,'rubric',${JSON.stringify(legacy)}::text::jsonb)`;
+    await db.sql`INSERT INTO harness_shared.plan_spec_clauses
+      (workspace_id,harness_slug,plan_slug,spec_id,current_revision,created_by)
+      VALUES (${WORKSPACE},${HARNESS},${slug},'SPEC-001',1,'su-migration-test')`;
+    await db.sql`INSERT INTO harness_shared.plan_spec_clause_revisions
+      (workspace_id,harness_slug,plan_slug,spec_id,revision,plan_item_id,behavior,behavior_class,
+       required_evidence,required_test_layers,mutation_required,lifecycle_status,content_hash,
+       created_by,accepted_by,accepted_at)
+      VALUES (${WORKSPACE},${HARNESS},${slug},'SPEC-001',1,'P-001','The legacy outcome remains realized.',
+              'happy-path',ARRAY['real database trace']::text[],ARRAY['integration']::text[],false,
+              'active',${'b'.repeat(64)},'su-migration-test','su-migration-test',now())`;
+
+    const [before] = await db.sql`SELECT content,version,acceptance_bar_epoch,acceptance_bar_cohort,
+      acceptance_bar_set_hash FROM harness_shared.harness_plans WHERE plan_slug=${slug}`;
+    const result = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      actorId: 'su-migration-test',
+      planSlug: slug,
+      dryRun: true,
+    });
+    expect(result.outcomes[0]).toMatchObject({
+      planSlug: slug,
+      status: 'refused',
+      decision: { action: 'legacy-backfill', cohort: 'post-epoch' },
+    });
+    expect(result.outcomes[0]!.detail).toMatch(/bar_rubric_conflict/);
+    expect(result.outcomes[0]!.detail).not.toMatch(/could not determine data type of parameter/i);
+    const [after] = await db.sql`SELECT content,version,acceptance_bar_epoch,acceptance_bar_cohort,
+      acceptance_bar_set_hash FROM harness_shared.harness_plans WHERE plan_slug=${slug}`;
+    expect(after).toEqual(before);
+  });
+
   it('keeps a post-epoch executable plan in its cohort while recording honestly backfilled BARs', async () => {
     await insertPlan('strict-late-bars', validContent('strict-late-bars', 'active'), 'active');
     await db.sql`UPDATE harness_shared.harness_plans

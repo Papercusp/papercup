@@ -236,7 +236,7 @@ export async function runAcceptanceBarMigrationInDatabase(
                  AND c.harness_slug = ${options.harnessSlug}
                  AND c.plan_slug = ${row.plan_slug}
                  AND r.plan_item_id IS NOT NULL
-                 AND (${criterion.barKey ?? null} IS NULL OR r.source_bar_key = ${criterion.barKey ?? null})
+                 AND (${criterion.barKey ?? null}::text IS NULL OR r.source_bar_key = ${criterion.barKey ?? null})
                  AND r.lifecycle_status NOT IN ('retired', 'exempt')
                ORDER BY r.plan_item_id`;
             if (mapRows.length > 0) {

@@ -91,6 +91,7 @@ import {
   runAutoTypecheckRoutes,
   formatLintTscRunStamp,
   gitHeadShaForLintTsc,
+  writeLintTscRunMarker,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
@@ -706,6 +707,87 @@ describe('gitHeadShaForLintTsc — never fabricates a sha it could not read', ()
       expect(gitHeadShaForLintTsc(dir)).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('session-scoped lint:tsc run marker writer (EI-19421388108187854)', () => {
+  const runStartIso = '2026-09-05T23:00:00.000Z';
+
+  it('writes independent marker files for concurrent sessions without a legacy fallback', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-tsc-session-marker-'));
+    const files = ['packages/operator-core/lib/a.ts'];
+    try {
+      expect(
+        writeLintTscRunMarker({
+          root,
+          label: 'operator-core',
+          runStartIso,
+          headSha: 'abc1234567',
+          scope: 'files',
+          files,
+          sessionId: 'session-a',
+        }),
+      ).toBe(true);
+      // A peer writes its own marker in the same checkout; it must not replace A's
+      // standing verdict or cause the hook to read the peer's file set.
+      expect(
+        writeLintTscRunMarker({
+          root,
+          label: 'operator-core',
+          runStartIso: '2026-09-05T23:01:00.000Z',
+          headSha: 'def7654321',
+          scope: 'files',
+          files: ['packages/operator-core/lib/peer.ts'],
+          sessionId: 'session-b',
+        }),
+      ).toBe(true);
+
+      const scratch = join(root, '.papercusp', 'scratch');
+      const own = JSON.parse(
+        readFileSync(join(scratch, 'lint-tsc-last-run.session-a.json'), 'utf8'),
+      );
+      const peer = JSON.parse(
+        readFileSync(join(scratch, 'lint-tsc-last-run.session-b.json'), 'utf8'),
+      );
+      expect(own).toMatchObject({
+        label: 'operator-core',
+        at: runStartIso,
+        atMs: Date.parse(runStartIso),
+        head: 'abc1234567',
+        scope: 'files',
+        files: ['packages/operator-core/lib/a.ts'],
+      });
+      expect(peer).toMatchObject({
+        at: '2026-09-05T23:01:00.000Z',
+        files: ['packages/operator-core/lib/peer.ts'],
+      });
+      expect(files).toEqual(['packages/operator-core/lib/a.ts']);
+      expect(existsSync(join(scratch, 'lint-tsc-last-run.json'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses missing or unsafe session identities instead of writing a shared marker', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-tsc-session-marker-'));
+    const input = {
+      root,
+      label: 'operator-core',
+      runStartIso,
+      headSha: null,
+      scope: 'all',
+      files: null,
+    };
+    try {
+      for (const sessionId of [null, '', '../peer', 'session/peer']) {
+        expect(writeLintTscRunMarker({ ...input, sessionId })).toBe(false);
+      }
+      expect(
+        existsSync(join(root, '.papercusp', 'scratch', 'lint-tsc-last-run.json')),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
