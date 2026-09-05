@@ -51,6 +51,10 @@ import {
   type WorkItemKind,
 } from '../work-items';
 import { claimPlanItem, type PriorHolderWarning } from './liveness';
+// Type-only (erased at runtime) — the guard's implementation is loaded dynamically
+// in assessExecutionRecordTakeover so this lib module stays off the tool layer's
+// static import graph.
+import type { ForceReleaseBasis } from '../agent-tools/work_items/release-force-guard';
 import { releaseClaim, type LivenessMode, type PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 import { planItemTextHash } from './text-drift';
@@ -142,9 +146,74 @@ export type ConvertPlanItemResult =
       /** EI-7189: set when the item's prior (just-lapsed) claim holder still looks
        *  alive — a heads-up to coordinate before continuing, NOT a refusal. */
       priorHolderWarning?: PriorHolderWarning;
+      /** EI-22427741014249929: set when RESUMING required taking the execution
+       *  record off another agent. The transfer used to be entirely invisible —
+       *  the result named only the plan-item claim, so a caller could not tell a
+       *  work-item had changed hands at all, let alone whose. */
+      executionRecordTakeover?: ExecutionRecordTakeover;
     }
   | { status: 'refused'; reason: string; assignee?: string }
   | { status: 'conflict'; conflict: PlanItemClaim };
+
+/** EI-22427741014249929: the forensic record of a cross-agent execution-record
+ *  transfer performed during a plan-item pickup. */
+export interface ExecutionRecordTakeover {
+  workItemId: string;
+  priorHolder: string;
+  basis: ForceReleaseBasis;
+}
+
+/**
+ * EI-22427741014249929 — may this pickup take the linked work-item off the agent
+ * currently holding it?
+ *
+ * `claimWorkItem`'s compare-and-claim refuses ANY held row, regardless of whether
+ * its holder is live. The resume path below read that single failure as "held by a
+ * LAPSED peer" and force-released unconditionally, so a pickup silently reassigned
+ * a LIVE peer's execution record out from under them mid-lane. `work_items:claim`
+ * has required a checked verdict for exactly this mutation since WI-4198; this
+ * routes the plan-item path through the SAME guard so the two surfaces cannot hold
+ * opposite safety postures for the same write.
+ *
+ * `assess` is injected for unit tests; it defaults to the real force guard, loaded
+ * dynamically to keep this lib module off the tool layer's static import graph
+ * (the same posture liveness.ts uses for the shared oracle).
+ */
+export async function assessExecutionRecordTakeover(
+  input: {
+    callerOwnerId: string;
+    holderOwnerId: string;
+    workspaceId: string;
+    itemLastProgressAt: string | null;
+  },
+  deps: {
+    assess?: (i: {
+      callerOwnerId: string;
+      holderOwnerId: string;
+      workspaceId: string;
+      itemLastProgressAt: string | null;
+    }) => Promise<{ allowed: boolean; basis?: ForceReleaseBasis }>;
+  } = {},
+): Promise<{ allowed: boolean; basis?: ForceReleaseBasis }> {
+  // Reclaiming a record already assigned to the caller is not a cross-holder
+  // takeover at all — it never needed a verdict.
+  if (input.holderOwnerId === input.callerOwnerId) return { allowed: true };
+  const assess =
+    deps.assess ??
+    (async (i) => {
+      const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
+      return assessForceRelease(i);
+    });
+  try {
+    return await assess(input);
+  } catch {
+    // FAIL CLOSED. Every other liveness lookup in this plane is best-effort
+    // because it only ever produces an ADVISORY; here the answer authorizes
+    // seizing another agent's work, so an unavailable verdict must refuse the
+    // seizure rather than wave it through.
+    return { allowed: false };
+  }
+}
 
 /**
  * Shared workspace-scope resolver for the implements/relates link plane — see
@@ -667,11 +736,54 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
       };
     }
     let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
+    let takeover: ExecutionRecordTakeover | undefined;
     if (!resumed) {
-      // Held by a lapsed peer. The plan-item lease (step 1) is the exclusion
-      // authority — we hold it, so take the execution record over.
+      // EI-22427741014249929: the row is HELD. This branch used to read that single
+      // failure as "held by a LAPSED peer" and force-release unconditionally — but
+      // claimWorkItem's CAS refuses ANY held row, live holder or not, so the two
+      // cases are indistinguishable here and the unconditional release silently
+      // reassigned live peers' execution records mid-lane (twice in ~10min, on
+      // P-003/P-004). The plan-item lease is the exclusion authority for the LANE;
+      // it was never authority to seize a separate, independently-claimed record.
+      const holder = existing.assignee;
+      const verdict = holder
+        ? await assessExecutionRecordTakeover({
+            callerOwnerId: opts.owner,
+            holderOwnerId: holder,
+            workspaceId: opts.workspaceId,
+            itemLastProgressAt: existing.lastProgressAt ?? null,
+          })
+        : { allowed: true as const };
+      if (holder && !verdict.allowed) {
+        // Refuse rather than steal — and hand back the plan-item lease taken in
+        // step 1, exactly as the claimHold refusal above does: keeping it would
+        // leave the caller owning the lane with no execution record, which is the
+        // split state this whole function exists to prevent.
+        await releaseClaim(
+          opts.workspaceId,
+          opts.harnessSlug,
+          opts.planSlug,
+          opts.itemId,
+          claimRes.claim.claimId,
+          opts.owner,
+        ).catch(() => false);
+        return {
+          status: 'refused',
+          reason:
+            `work item ${existing.id} implements this plan item and is held by ${holder}, who is still live — ` +
+            'coordinate with them (coord:send) rather than taking the execution record. ' +
+            'Use work_items:claim { force:true, reason } if you have the authority to override.',
+          assignee: holder,
+        };
+      }
       await releaseWorkItem(existing.id, { harness: existing.harness ?? undefined });
       resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
+      // Name the transfer in the result. The displaced holder is separately warned
+      // by notifyImplementingWorkItemHolderOfCollision (liveness.ts), but nothing
+      // told the CALLER a work-item had changed hands at all.
+      if (holder && resumed) {
+        takeover = { workItemId: existing.id, priorHolder: holder, basis: verdict.basis ?? 'holder-not-live' };
+      }
     }
     // Self-heal the missing idempotency edge so subsequent reads (the Queue's
     // listConvertedPlanItemRefs, detail views) and the next resume see it again.
@@ -703,6 +815,7 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
       viaAssignment: claimRes.viaAssignment,
       planItem,
       priorHolderWarning: claimRes.priorHolderWarning,
+      ...(takeover ? { executionRecordTakeover: takeover } : {}),
     };
   }
 
