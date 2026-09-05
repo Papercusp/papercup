@@ -112,7 +112,7 @@ describe('parseRefList', () => {
 
 describe('PlanActions component', () => {
   function renderActions(over: { items?: unknown[]; planStatus?: string; startStatus?: string | null } = {}) {
-    const cb = { onChanged: vi.fn(), onOptimisticStatus: vi.fn(), onStartStatusChange: vi.fn(), onPlanStatusChange: vi.fn(), onStartRefused: vi.fn() };
+    const cb = { onChanged: vi.fn(), onOptimisticStatus: vi.fn(), onStartStatusChange: vi.fn(), onPlanStatusChange: vi.fn() };
     render(
       <PlanActions
         slug="proj" items={(over.items ?? []) as never} decisions={[]} currentNow={null}
@@ -197,9 +197,9 @@ describe('PlanActions component', () => {
   // { error: 'plan_inputs_not_ready' }, which the UI once mis-reported as a
   // successful start) is still LIVE SERVER-SIDE — `plans:start` is gated, not
   // deleted. What is gone is this component's ability to reach it. The handler's
-  // start half in PlanActions.tsx is now dead code, tracked for removal with the
-  // rest of the unreachable UI (D-098 follow-up), and the server-side contract
-  // keeps its own coverage.
+  // start half in PlanActions.tsx has now been REMOVED by WI-38240 (the D-098
+  // follow-up this note was tracking), along with the `onStartRefused` prop it
+  // fired; the server-side contract keeps its own coverage.
 
   it('launches a workbench agent', async () => {
     renderActions();

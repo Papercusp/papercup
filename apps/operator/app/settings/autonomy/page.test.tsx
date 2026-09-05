@@ -5,8 +5,9 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { FLAGS } from '@papercusp/flags';
 import type { ReactElement } from 'react';
 
-// The page renders RecentAutoDecisions → DecisionLog, which reads `?decision=<id>`
-// via nuqs; the tree needs a nuqs adapter.
+// WI-38240: the page no longer renders RecentAutoDecisions → DecisionLog (that wrapper
+// was deleted with the rest of the unreachable autonomy UI). The nuqs adapter is kept
+// because the render helper is shared by every case here and costs nothing.
 const render = (ui: ReactElement) => rtlRender(<NuqsTestingAdapter searchParams="">{ui}</NuqsTestingAdapter>);
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
