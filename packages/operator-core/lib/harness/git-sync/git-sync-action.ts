@@ -146,6 +146,7 @@ import {
   type RefAnnounceRoutineState,
 } from './routine-metadata-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
+import { makeSignedProtocolContext } from '../../sync/pot-git/signed-context';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {
   armNoSuchRepoBackoff,
@@ -4776,6 +4777,7 @@ async function runRefAnnounceLeg(
     if (!potHomeSlug) return;
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
+    const signedProtocolContext = makeSignedProtocolContext(potHomeSlug, repoKey);
 
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
@@ -4819,6 +4821,7 @@ async function runRefAnnounceLeg(
       // WI-5738: runtime secrets-guard path exemptions apply here too.
       workspaceId,
       versionFloor: priorPublishVersion,
+      context: signedProtocolContext,
     });
     if (publishOutcome.announcement) {
       const announcement = publishOutcome.announcement;
@@ -4999,6 +5002,7 @@ async function runRefAnnounceLeg(
       // doc for the livelock a 15s ceiling generated against serve-wiring's
       // 30s progress window on the two-machine rig.
       timeoutMs: REF_ANNOUNCE_RECEIVE_IDLE_MS,
+      expectedContext: signedProtocolContext,
     });
 
     // EI-15335 / P-203 Leg A: the receive tick returns one result per driven
@@ -5203,6 +5207,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if (!potHomeSlug) return void (await decline('no_hive_home'));
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
+    const signedProtocolContext = makeSignedProtocolContext(potHomeSlug, repoKey);
 
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     // gh unauthenticated — no device identity to sign/integrate as
@@ -5510,6 +5515,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       // per-pass ref motion) is what makes the integrator-is-the-author case
       // announce at all. Null (never accepted) ⇒ the first integration announces.
       lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
+      context: signedProtocolContext,
       sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
