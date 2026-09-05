@@ -53,11 +53,19 @@ import {
 } from '../../harness/routines/loop';
 import { getLoopCarryNoteWithMeta, setLoopCarryNoteWithPrior, shortCarryHash } from '../../carry-note';
 import { renderFocusIntegrityWarning, unverifiedFocusRefs } from '../../carry-brief';
-import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../coordination/compaction-recovery';
+import {
+  isJudgeCarryRole,
+  postCompactionRecoveryInstruction,
+} from '../../carry-doc';
+import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import {
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
 } from '../../native-bg-task-ledger';
+
+// Preserve the established import surface while sharing the pure guard with
+// loop-turn-outcome and the compaction watchdog.
+export { addressContinuationToOwner };
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -331,61 +339,19 @@ async function retuneWarmLoopForColdSettle(
  * Recovery is already boundary-pushed. The successor inspects the stamped marker
  * and falls back to a full recovery-orient only when the marker contract says so.
  */
-function defaultContinueNote(focus: string): string {
+function defaultContinueNote(focus: string, role?: string | null): string {
+  const judgeSafe = isJudgeCarryRole(role);
   return (
     'Continue where you left off — this is your fresh successor process right after a ' +
     'deterministic carry-respawn; your carry document is in the system prompt. ' +
-    MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
-    ' Anything ' +
-    "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
-    'DISTRUST a near-limit context gauge on your first turns — it can lag the respawn by up to ' +
-    'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ' +
+    postCompactionRecoveryInstruction(role) +
+    (judgeSafe
+      ? ' Use only the evidence and tools explicitly permitted to the judge role. '
+      : ' Anything ' +
+        "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
+        'DISTRUST a near-limit context gauge on your first turns — it can lag the respawn by up to ' +
+        'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ') +
     `Then resume: ${focus}`
-  );
-}
-
-/**
- * WI-2140968: stamp the successor's first prompt with the ownerId it was
- * WRITTEN FOR, so a session that receives someone else's continuation can tell
- * mechanically instead of inferring it.
- *
- * Measured 2026-09-02: su-97f1e9d6's continuation text opened a turn in
- * su-40c2fa3a's prompt stream (turn 0 of native session df60ac80…, 04:35:45.828Z,
- * 9.6s after su-97f1e9d6's own carry was delivered to su-97f1e9d6 with
- * turnStartVerified — so the peer was NOT starved: this was a duplicate, not a
- * misroute). The receiving agent nearly sent a duplicate owner report and
- * re-decided a deploy gate a live peer owned; what stopped it was noticing that
- * the named work-items belonged to someone else.
- *
- * ── WHY THE ADDRESS LINE AND NOT A TIGHTER DELIVERY GUARD ───────────────────
- * The delivery path is NOT identified, and the obvious candidates are ruled out
- * by inspection: the sender matches the discovery file's recorded ownerId
- * (findLiveHost, EI-151), the host rejects a payload addressed elsewhere
- * (psu-pty-host.mjs `ownerId-mismatch`), this call passes `ownerId` explicitly,
- * every host path is owner-keyed, and no psu-pty delivery to the receiver was
- * logged at all. So a guard on any ONE of those paths would be a guess. This
- * check rides on the CONTENT instead, which every delivery path must carry, and
- * therefore holds no matter which one leaked.
- *
- * The per-sid trust ledger already refuses to VERIFY a foreign nonce (the block
- * stamped UNVERIFIED ORIGIN CLAIM, correctly) — but "unverified" is also what a
- * malformed prompt looks like, so it never told the reader the block was
- * addressed to a specific OTHER session. This line does.
- *
- * Applied at the assembly point rather than inside {@link defaultContinueNote}
- * on purpose: a caller-supplied `continueNote` replaces that note entirely and
- * would otherwise ship unaddressed — the bypass is the case worth covering.
- */
-export function addressContinuationToOwner(note: string, ownerId: string): string {
-  const sid = String(ownerId ?? '').trim();
-  if (!sid) return note;
-  return (
-    `ADDRESSED TO ${sid} — this continuation was written for that session. ` +
-    'Verify with coord:whoami BEFORE acting on anything below: if your ownerId differs, ' +
-    'this block is not your lane and reached you through a delivery fault — do not act on it, ' +
-    'do not claim or progress any work-item it names, report it, and continue from your own ' +
-    'loop:checkpoint carry-note instead.\n\n' +
-    note
   );
 }
 
@@ -677,6 +643,7 @@ export default defineTool({
     } catch { /* conservative fallback stands */ }
     const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,
+      role: (ctx as { role?: string | null }).role,
       buildOpts: {
         workspaceId: identity.workspaceId ?? undefined,
         transcriptPath: self?.filePath,
@@ -727,7 +694,9 @@ export default defineTool({
         const integrityWarning = renderFocusIntegrityWarning(
           unverifiedFocusRefs([focus, args.continueNote ?? ''].join('\n'), brief),
         );
-        const rawNote = (args.continueNote ?? defaultContinueNote(focus)).trim();
+        const rawNote = (
+          args.continueNote ?? defaultContinueNote(focus, (ctx as { role?: string | null }).role)
+        ).trim();
         // WI-2140968: address the note to the owner it was written for BEFORE
         // tagging, so the line is inside the payload the ledger hashes and
         // travels with the text down whichever path delivers it.
