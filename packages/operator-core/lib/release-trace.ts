@@ -164,6 +164,17 @@ export interface ReleaseTraceInput {
   consumerGeneration?: number;
   requesterId?: string;
   workItem?: string;
+  /**
+   * P-005 / D-015: FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE as the CALLER read it. This module
+   * stays pure — the flag is resolved at the io seam (agent-tools/release/trace.ts) and handed in,
+   * the same shape freeze-disposition.ts uses for the freeze switch.
+   *
+   * Undefined means ON, so a caller that has not been taught the flag keeps the shipped behaviour
+   * rather than silently losing the certificate. `false` restores the plain checkpoint:await verb.
+   * It gates STEERING only: the D-004 re-triage interlock in safeNextVerb reads the certificate
+   * independently and is deliberately NOT gated (see progressGatedAwait / safeNextVerb).
+   */
+  progressCertificateEnabled?: boolean;
 }
 
 export interface ReleaseTraceCandidateVerdict {
@@ -793,7 +804,17 @@ function progressGatedAwait(
   run: ProgressCertificateInput | null | undefined,
   nowMs: number,
   position: PipelinePosition,
+  enabled: boolean,
 ): ReleaseTraceNextVerb {
+  // P-005 / D-015 kill-switch (FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE, default ON). OFF hands
+  // back the caller's plain await, which is exactly the pre-certificate recommendation — so the
+  // switch is a clean revert of the steering rather than a third behaviour nobody has tested.
+  //
+  // It is deliberately the FIRST statement: the certificate is not consulted at all when the
+  // steering is off, so a threshold judgement that turns out to be wrong cannot reach a reader
+  // through some other field once the owner has switched it off.
+  if (!enabled) return awaitVerb;
+
   const cert: ProgressCertificate = certifyCheckpointProgress(run, nowMs);
 
   if (cert.verdict === 'progressing') {
@@ -954,6 +975,7 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
         checkpointRun,
         input.snapshotGeneration,
         position,
+        input.progressCertificateEnabled !== false,
       );
     }
     if (position.positions.committedLocal) {
@@ -985,6 +1007,7 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
         checkpointRun,
         input.snapshotGeneration,
         position,
+        input.progressCertificateEnabled !== false,
       );
     }
     if (gate.verdictStale || gate.fireStale) {
@@ -1103,6 +1126,12 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   // the flag: the certificate resolves it on every basis including `no-run`, which is precisely
   // the shape production emits here — the auto-refire has VOIDED the previous run, so nothing is
   // active, and an absent run must not be able to launder the prohibition away.
+  //
+  // P-005 / D-015: this read is deliberately NOT gated by input.progressCertificateEnabled. That
+  // flag exists for one carried risk — the 600s stall THRESHOLD is a judgement — and this branch
+  // reads `inRetriageWindow`, which is a window-membership fact that no threshold enters. Gating
+  // it would make a steering kill-switch silently re-arm the discarded-rescue footgun D-004 was
+  // written to close. The falsifier is in release-trace.test.ts: interlock fires with the flag OFF.
   if (certifyCheckpointProgress(retriageReading(input), input.snapshotGeneration).inRetriageWindow) {
     return {
       name: 'checkpoint:await',
