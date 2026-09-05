@@ -866,7 +866,23 @@ describe('buildReleaseTrace', () => {
   // EI-18672078222841101 — the stampede. Three agents read a red here within 15 minutes and
   // each was told to go classify the failures, with nothing saying a fixer already held them.
   describe('a red that someone already owns', () => {
-    const redGate = (redOwner?: ReleaseTraceGate['redOwner']) => ({
+    // These fixtures describe the AUTOMATED-FIXER verdict alone — the input side of the
+    // composition, before any repair holder is read in. So the helper lifts a fixer-only
+    // shape exactly the way describeGateRedOwnership does (`fixerState: fixer.state`,
+    // `repairOwner: null`): a fixture that spelled those out by hand would be asserting a
+    // composition it never performed. A test that DOES want a pre-composed value still
+    // passes fixerState/repairOwner explicitly and they win.
+    type RedOwner = NonNullable<ReleaseTraceGate['redOwner']>;
+    type RedOwnerFixture = Omit<RedOwner, 'fixerState' | 'repairOwner'> &
+      Partial<Pick<RedOwner, 'fixerState' | 'repairOwner'>>;
+    const liftFixerOnly = (redOwner: RedOwnerFixture): RedOwner => ({
+      ...redOwner,
+      fixerState: redOwner.fixerState ?? redOwner.state,
+      repairOwner: redOwner.repairOwner ?? null,
+    });
+    // `null` is meaningful here and distinct from omission — it is the fixture for a red
+    // with the fixer half explicitly absent — so it passes through unlifted.
+    const redGate = (redOwner?: RedOwnerFixture | null) => ({
       state: 'gate-red' as const,
       authoritative: true,
       consecutiveReds: 2,
@@ -875,7 +891,7 @@ describe('buildReleaseTrace', () => {
       fireStaleReason: null,
       verdictStale: false,
       verdictStaleReason: null,
-      redOwner,
+      redOwner: redOwner ? liftFixerOnly(redOwner) : redOwner,
     });
     const onStaging = position({
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
