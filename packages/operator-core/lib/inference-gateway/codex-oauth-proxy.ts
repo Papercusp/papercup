@@ -362,8 +362,13 @@ export async function aggregateCodexNonStreamResponse(
     // settled it with `undefined` — a value outside its own declared type.
     timeoutResolve = () => resolve('timeout');
     timer = setTimeout(() => {
-      opts.onTimeout?.();
+      // Settle the race as 'timeout' BEFORE the transport hook runs: the gateway's onTimeout aborts
+      // the request signal, which resolves the `aborted` racer, and with the hook first the race read
+      // a DEADLINE as a client ABORT — the gateway then destroyed the socket silently (no 504, no
+      // log) instead of answering the timeout it had itself declared (plan
+      // codex-auto-route-all-walled-fail-fast-2026-09-05, P-004).
       resolve('timeout');
+      opts.onTimeout?.();
     }, timeoutMs);
     timer.unref?.();
   });

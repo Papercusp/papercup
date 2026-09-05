@@ -662,6 +662,11 @@ export const MODEL_DOWNGRADED_HEADER = 'x-papercusp-model-downgraded';
  *  terminal, gateway-exhausted condition silently and indefinitely (EI-21921571654476580: 5 client
  *  retries over 2.5 minutes, no error ever surfaced — "Working..." forever). Not forwarded upstream. */
 export const RETRIES_EXHAUSTED_HEADER = 'x-papercusp-retries-exhausted';
+/** A terminal codex 429 names the POOL's recovery horizon — an ISO instant; `now` when a sibling can serve
+ *  but THIS request could not use it (a hard pin, a spent absorb budget, a written head); `unknown` when
+ *  no account has a known reset — so a caller can tell "the pool is walled for 3h" from "retry in a minute"
+ *  without re-asking (plan codex-auto-route-all-walled-fail-fast-2026-09-05, P-003). */
+export const POOL_RECOVERY_AT_HEADER = 'x-papercusp-pool-recovery-at';
 /** Header a spawn sets carrying its coord ownerId (== spawnId), so the gateway can attribute a
  *  rate-limit shed back to THIS bee and a coordinator can wake it once the account recovers
  *  (gateway-rate-limit-stall-autowake P-001). Stripped before the upstream forward. */
@@ -2471,13 +2476,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     return [...byId.values()];
   };
+  /** The egress-probe TRANSPORT recovery readmit. Bounded by the circuit-open ceiling: a transport circuit
+   *  can only ever have parked an account for at most EGRESS_CIRCUIT_OPEN_MAX_MS, so a park longer than
+   *  that is a measured usage WALL (a 5h/7d 429 reset) a healthy proxy does not cure. Unbounded, every
+   *  successful probe readmitted the whole walled pool and the fleet re-burned each account
+   *  (codex-auto-route-all-walled-fail-fast-2026-09-05 P-005 / D-001). */
   const readmitProviderAccount = (accountId: string): void => {
     for (const providerPool of providerPools()) {
       const entries = providerPool.entries?.();
       const belongs = entries
         ? entries.some((entry) => entry.accountId === accountId)
         : providerPool.peek?.().accountId === accountId || providerPool === pool;
-      if (belongs) providerPool.readmit?.(accountId);
+      if (belongs) providerPool.readmit?.(accountId, { reason: 'transport', maxParkMs: EGRESS_CIRCUIT_OPEN_MAX_MS });
     }
   };
   /**
@@ -2915,6 +2925,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       windowResetAt?: number;
       windowResetAt7d?: number;
       burnAction?: AccountBurnAction;
+      /** When the store TOOK this reading (`utilizationAt`). The store↔pool reconciliation clears a
+       *  park only on a reading NEWER than the park — an older reading says nothing about it. */
+      readingAt?: number;
     }
   >();
   /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
@@ -2957,6 +2970,106 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (cooled > 0) return base + cooled * ACCOUNT_INFLIGHT_LOAD_WEIGHT;
     }
     return base;
+  };
+
+  /** accountLoadKey's default `capacityFullAt` — hintRecoveryAt must call a window a wall at EXACTLY the
+   *  utilization accountHealthKey turns into Infinity, or "walled per the store" and "walled per keyOf"
+   *  disagree and the horizon lies about a pool keyOf refuses to pick from. */
+  const HINT_CAPACITY_FULL_AT = 0.99;
+  /** The instant the durable rate hints (+ the transport circuit) say `accountId` is back, or undefined
+   *  when they report it serviceable / know nothing. The SAME walls accountHealthKey scores Infinity —
+   *  a governor pause, a full 5h/7d window that has not reset, a burn SHED, an open egress circuit —
+   *  read back as a RECOVERY INSTANT rather than a boolean, so the codex ladder can ask "when", not
+   *  just "whether" (codex-auto-route-all-walled-fail-fast-2026-09-05, P-003). */
+  const hintRecoveryAt = (accountId: string, at: number): number | undefined => {
+    const h = accountRateHints.get(accountId);
+    let recoverAt = 0;
+    const consider = (value: number | undefined) => {
+      if (value !== undefined && Number.isFinite(value) && value > at) recoverAt = Math.max(recoverAt, value);
+    };
+    if (h) {
+      consider(h.pausedUntil);
+      if ((h.utilization ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt);
+      if ((h.utilization7d ?? 0) >= HINT_CAPACITY_FULL_AT) consider(h.windowResetAt7d);
+      if (h.burnAction === 'shed') consider(h.windowResetAt7d);
+    }
+    consider(egressPauseUntil.get(accountId));
+    return recoverAt > 0 ? recoverAt : undefined;
+  };
+  /** The codex POOL's recovery horizon for ONE 429 decision (0 = a sibling can serve now; epoch ms = the
+   *  earliest known return; Infinity = every account is out with no known reset) — the pool's
+   *  `earliestAvailableAt` under the shared health key + the store's hint horizon, with the account that
+   *  JUST 429'd overlaid as out until `failed.resetAt` whether or not the kernel ladder parked it (the
+   *  kernel settles its last attempt without an onExhausted). A HARD pin narrows the pool to the pinned
+   *  account — no sibling may serve — so its horizon is that account's own reset. A pool without the
+   *  method (a bare test double) reports 0, the ladder's pre-horizon behaviour. */
+  const codexPoolRecoveryAt = (
+    source: AccountPool | null | undefined,
+    at: number,
+    failed: { accountId: string; resetAt: number },
+    hardPin: boolean,
+  ): number => {
+    const failedRecoverAt = Math.max(
+      failed.resetAt > at ? failed.resetAt : 0,
+      hintRecoveryAt(failed.accountId, at) ?? 0,
+    );
+    if (hardPin) return failedRecoverAt > 0 ? failedRecoverAt : Infinity;
+    if (!source?.earliestAvailableAt) return 0;
+    return source.earliestAvailableAt({
+      now: at,
+      keyOf: (a) => (a.accountId === failed.accountId ? Infinity : accountHealthKey(a, at)),
+      recoverAtOf: (a) =>
+        a.accountId === failed.accountId
+          ? failedRecoverAt > 0
+            ? failedRecoverAt
+            : undefined
+          : hintRecoveryAt(a.accountId, at),
+    });
+  };
+  /** Render a pool horizon for the response header / log line. */
+  const describePoolRecovery = (poolRecoveryAt: number, at: number): string =>
+    poolRecoveryAt === Infinity
+      ? 'unknown'
+      : poolRecoveryAt > at
+        ? new Date(poolRecoveryAt).toISOString()
+        : 'now';
+  /** The stall-waker's capacity gate for a terminal codex 429: the POOL horizon when one is known (a
+   *  sibling's park expiring sooner than the failed account's own reset is when capacity actually
+   *  returns), else the failed account's reset, floored at 30s as before. */
+  const codexStallSoonestAt = (poolRecoveryAt: number, failedResetAt: number | null, at: number): number =>
+    Number.isFinite(poolRecoveryAt) && poolRecoveryAt > at
+      ? Math.max(poolRecoveryAt, at + 30_000)
+      : Math.max(failedResetAt ?? 0, at + 30_000);
+  /** STORE↔POOL RECONCILIATION (codex-auto-route-all-walled-fail-fast-2026-09-05 P-008; owner 2026-09-05:
+   *  "auto routing should look at the same system that knows which accounts are available"). The pool's
+   *  in-memory park and the durable availability store (operator_account_pool, refreshed into
+   *  accountRateHints) can disagree: a 7d 429 parks an account here for days, while the store's next
+   *  reading — taken AFTER the park, by a probe or a peer gateway's traffic — shows the window rolled.
+   *  Before this the park won until it expired or a transport probe blindly cleared it. Now a reading
+   *  NEWER than the park (readingAt > parkedAt) that reports the account serviceable (hintRecoveryAt
+   *  undefined) readmits it with reason 'store'; a reading that predates the park, or one that still
+   *  reports a wall, leaves the park alone. Runs after every hint refresh and at every absorb re-entry,
+   *  so a re-pick honours the freshest availability the system has. Returns the readmitted count. */
+  const reconcileParksWithStore = (at: number = Date.now()): number => {
+    let readmitted = 0;
+    for (const providerPool of providerPools()) {
+      if (!providerPool.parkState || !providerPool.readmit || !providerPool.entries) continue;
+      for (const entry of providerPool.entries()) {
+        const park = providerPool.parkState(entry.accountId);
+        if (!park || park.until <= at) continue;
+        const h = accountRateHints.get(entry.accountId);
+        if (!h || h.readingAt === undefined || h.readingAt <= park.parkedAt) continue;
+        if (hintRecoveryAt(entry.accountId, at) !== undefined) continue;
+        if (providerPool.readmit(entry.accountId, { reason: 'store' })) {
+          readmitted++;
+          log(
+            'warn',
+            `inference-gateway: '${entry.accountId}' park (${Math.round((park.until - at) / 1000)}s left) cleared — availability store reports capacity (reading ${Math.round((at - h.readingAt) / 1000)}s old, u5h=${h.utilization ?? '?'}, u7d=${h.utilization7d ?? '?'})`,
+          );
+        }
+      }
+    }
+    return readmitted;
   };
 
   // ROUTING-QUALITY OBSERVABILITY (intelligent-account-routing P-007): one bounded decision ring plus
@@ -3182,7 +3295,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       active: (override) => source.active(override ?? keyOf),
       onExhausted: (accountId, resetAt, override) => source.onExhausted(accountId, resetAt, override ?? keyOf),
       select: (accountId) => source.select?.(accountId) ?? null,
-      readmit: (accountId) => source.readmit?.(accountId),
+      readmit: (accountId, opts) => source.readmit?.(accountId, opts) ?? false,
+      parkState: (accountId) => source.parkState?.(accountId),
+      // The horizon ranks with the SAME health key + hint horizon the picks use, unless the caller
+      // overrides them — so "no account can serve" and "no account will be picked" cannot diverge.
+      earliestAvailableAt: (opts) =>
+        source.earliestAvailableAt?.({
+          ...opts,
+          keyOf: opts?.keyOf ?? ((account) => accountHealthKey(account, opts?.now ?? Date.now())),
+          recoverAtOf: opts?.recoverAtOf ?? ((account) => hintRecoveryAt(account.accountId, opts?.now ?? Date.now())),
+        }) ?? 0,
       healthyCount: (extra) => source.healthyCount?.(extra) ?? 0,
       size: () => source.size?.() ?? source.entries?.().length ?? 0,
       peek: () => source.peek?.() ?? source.active(keyOf),
@@ -6799,6 +6921,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       waitMs: number;
       backoffMs: number;
       resetAt: number | null;
+      /** The POOL horizon at decision time — the absorb sleeps toward THIS, not the failed account's reset. */
+      poolRecoveryAt: number;
       accountId: string;
     };
     const recovery = {
@@ -6821,6 +6945,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       attemptsThisPass = 0;
       // A resumed pass starts from the pool's CURRENT best account instead of
       // blindly re-holding the account that just exhausted. Hard pins remain strict.
+      // First honour the freshest availability reading the system has (P-008): a store reading newer
+      // than a park that says the account is back clears the park BEFORE the re-pick.
+      if (attemptsUsed > 0) reconcileParksWithStore();
       if (attemptsUsed > 0 && !routing.hardPin && codexCliPool) {
         try {
           const candidateId = healthAwareCodexPool(codexCliPool).active().accountId;
@@ -6944,10 +7071,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const parsed = parseCodexRateReset(metadata.headers);
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+                // The absorb is a bet the POOL recovers inside the budget — ask the pool when that is
+                // (codex-auto-route-all-walled-fail-fast-2026-09-05 P-003): an all-walled pool whose
+                // earliest reset is hours out fails fast here instead of sleeping the whole budget.
+                const poolRecoveryAt = codexPoolRecoveryAt(
+                  codexCliPool,
+                  now,
+                  { accountId: metadata.accountId, resetAt: ladderResetAt },
+                  routing.hardPin,
+                );
                 const decision = decideThrottleRecovery({
                   status,
                   retryIntent: true,
                   lastExhaustResetAt: ladderResetAt,
+                  poolRecoveryAt,
                   state: {
                     transientWaitedMs: recovery.transientWaitedMs,
                     retryDeadlineAt: recovery.retryDeadlineAt,
@@ -6967,6 +7104,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     waitMs: decision.waitMs,
                     backoffMs: 0,
                     resetAt: parsed.resetAt,
+                    poolRecoveryAt,
                     accountId: metadata.accountId,
                   };
                   throw INTERCEPT_OAUTH_THROTTLE;
@@ -6977,12 +7115,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     waitMs: 0,
                     backoffMs: decision.backoffMs,
                     resetAt: parsed.resetAt,
+                    poolRecoveryAt,
                     accountId: metadata.accountId,
                   };
                   throw INTERCEPT_OAUTH_THROTTLE;
                 }
                 if (routing.ownerId) {
-                  recordStall(routing.ownerId, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+                  recordStall(routing.ownerId, metadata.accountId, codexStallSoonestAt(poolRecoveryAt, parsed.resetAt, now));
                 }
                 const shaped = shapeTerminalThrottle({
                   attempts: attemptsSeen,
@@ -6994,9 +7133,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   },
                 });
                 Object.assign(outHeaders, shaped.headers);
+                const poolRecovery = describePoolRecovery(poolRecoveryAt, now);
+                outHeaders[POOL_RECOVERY_AT_HEADER] = poolRecovery;
                 log(
                   'warn',
-                  `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${shaped.retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''})`,
+                  `inference-gateway: codex upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (${parsed.transient ? 'transient burst' : 'window walled'}; retry-after ${shaped.retryAfterSec}s${routing.ownerId ? `; stall recorded for '${routing.ownerId}'` : ''}; pool recovery ${poolRecovery})`,
                 );
               }
               recordRoute(routing.ownerId, metadata.accountId, 'codex');
@@ -7036,6 +7177,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   onTimeout: () =>
                     abortRequest(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
                 });
+                // SINK the rejection at creation (P-004): `end()` awaits the ORIGINAL promise and owns
+                // its error path, but a downstream abort / deadline that fires before the kernel ever
+                // reaches end() left this promise rejected with no handler — an unhandledRejection in
+                // the gateway process, not a response. The derived promise is discarded on purpose.
+                aggregatePromise.catch(() => undefined);
                 return;
               }
               res.writeHead(status, outHeaders);
@@ -7148,14 +7294,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           const now = Date.now();
           const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
-          const capacityWaitMs = taken.resetAt
-            ? Math.max(0, taken.resetAt - now)
-            : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+          // Sleep toward the POOL's horizon, not the failed account's reset: a sibling whose park expires
+          // in 40s is the capacity this re-pick will find, while the failed account's 3h reset is not
+          // (codex-auto-route-all-walled-fail-fast-2026-09-05 P-003). A horizon of 0 (a sibling serves now)
+          // takes the short failover backoff so the re-pick lands promptly.
+          const capacityWaitMs =
+            Number.isFinite(taken.poolRecoveryAt) && taken.poolRecoveryAt > now
+              ? taken.poolRecoveryAt - now
+              : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
           const waitMs = Math.min(remainingMs, capacityWaitMs);
           recovery.transientWaitedMs = 0;
           log(
             'warn',
-            `inference-gateway: Codex OAuth absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
+            `inference-gateway: Codex OAuth absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms (pool recovery ${describePoolRecovery(taken.poolRecoveryAt, now)}), then re-enter (${remainingMs}ms budget left)`,
           );
           return kernelAdmission.park(async () => {
             await waitForCodexRecovery(res, waitMs, reqAbort.signal);
@@ -7658,7 +7809,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       tokenTimeoutMs,
       failoverBackoffMs: bare429FailoverBackoffMs,
       dispatcherFor: (account) => dispatcherFor(account),
-      rateResetAt: (headers) => parseRateReset(headers).resetAt ?? null,
+      // The SAME dialect parser the outer ladder consults (parseCodexRateReset reads retry-after
+      // durations + the OpenAI x-ratelimit-reset-* meters); the Anthropic-dialect parseRateReset
+      // read neither, so every bearer 429 with a sub-second retry-after parked the account for the
+      // 15s failover backoff while the outer ladder saw the real 80ms reset — an over-park the pool
+      // horizon (P-003) now surfaces as a false "pool cannot recover in budget" forward.
+      rateResetAt: (headers) => parseCodexRateReset(headers).resetAt ?? null,
       // Prompt-cache policy (P-005/P-008), model-generation-aware: legacy models take
       // prompt_cache_retention:'24h' (writes free there), gpt-5.6+ takes prompt_cache_options.ttl
       // (writes cost 1.25×). The sharded prompt_cache_key steers same-variant sessions onto one
@@ -7707,6 +7863,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       waitMs: number;
       backoffMs: number;
       resetAt: number | null;
+      /** The POOL horizon at decision time — the absorb sleeps toward THIS, not the failed account's reset. */
+      poolRecoveryAt: number;
       accountId: string;
     };
     const recovery = {
@@ -7727,6 +7885,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let continuationActive = false;
       interception.taken = null;
       attemptsThisPass = 0;
+      // Absorb re-entry: honour the freshest availability reading before the re-pick (P-008).
+      if (attemptsUsed > 0) reconcileParksWithStore();
       try {
         await executeGatewayRequestKernel({
           request: {
@@ -7843,10 +8003,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const parsed = parseCodexRateReset(metadata.headers);
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
+                // Same pool-horizon gate as the OAuth lane (P-003): absorb only when the pool can recover
+                // inside the budget; sleep toward the pool, not the failed account.
+                const poolRecoveryAt = codexPoolRecoveryAt(
+                  bearerPool,
+                  now,
+                  { accountId: metadata.accountId, resetAt: ladderResetAt },
+                  hardPin,
+                );
                 const decision = decideThrottleRecovery({
                   status,
                   retryIntent: true,
                   lastExhaustResetAt: ladderResetAt,
+                  poolRecoveryAt,
                   state: {
                     transientWaitedMs: recovery.transientWaitedMs,
                     retryDeadlineAt: recovery.retryDeadlineAt,
@@ -7866,6 +8035,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     waitMs: decision.waitMs,
                     backoffMs: 0,
                     resetAt: parsed.resetAt,
+                    poolRecoveryAt,
                     accountId: metadata.accountId,
                   };
                   throw INTERCEPT_BEARER_THROTTLE;
@@ -7876,12 +8046,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     waitMs: 0,
                     backoffMs: decision.backoffMs,
                     resetAt: parsed.resetAt,
+                    poolRecoveryAt,
                     accountId: metadata.accountId,
                   };
                   throw INTERCEPT_BEARER_THROTTLE;
                 }
                 if (wantOwner) {
-                  recordStall(wantOwner, metadata.accountId, Math.max(parsed.resetAt ?? 0, Date.now() + 30_000));
+                  recordStall(wantOwner, metadata.accountId, codexStallSoonestAt(poolRecoveryAt, parsed.resetAt, now));
                 }
                 const shaped = shapeTerminalThrottle({
                   attempts: attemptsSeen,
@@ -7893,9 +8064,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   },
                 });
                 Object.assign(outHeaders, shaped.headers);
+                const poolRecovery = describePoolRecovery(poolRecoveryAt, now);
+                outHeaders[POOL_RECOVERY_AT_HEADER] = poolRecovery;
                 log(
                   'warn',
-                  `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${shaped.retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''})`,
+                  `inference-gateway: Codex bearer upstream 429 not rescued after ${attemptsSeen} attempt(s) on '${metadata.accountId}' — forwarding terminal 429 (retry-after ${shaped.retryAfterSec}s${wantOwner ? `; stall recorded for '${wantOwner}'` : ''}; pool recovery ${poolRecovery})`,
                 );
               }
               recordRoute(wantOwner, metadata.accountId, 'codex');
@@ -7960,14 +8133,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           const now = Date.now();
           const remainingMs = Math.max(0, recovery.absorbDeadlineAt - now);
-          const capacityWaitMs = taken.resetAt
-            ? Math.max(0, taken.resetAt - now)
-            : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
+          // Sleep toward the POOL's horizon, not the failed account's reset (P-003; see the OAuth twin).
+          const capacityWaitMs =
+            Number.isFinite(taken.poolRecoveryAt) && taken.poolRecoveryAt > now
+              ? taken.poolRecoveryAt - now
+              : Math.max(1, taken.backoffMs || bare429FailoverBackoffMs);
           const waitMs = Math.min(remainingMs, capacityWaitMs);
           recovery.transientWaitedMs = 0;
           log(
             'warn',
-            `inference-gateway: Codex bearer absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms, then re-enter (${remainingMs}ms budget left)`,
+            `inference-gateway: Codex bearer absorb on '${taken.accountId}' → release provider slot, wait ${waitMs}ms (pool recovery ${describePoolRecovery(taken.poolRecoveryAt, now)}), then re-enter (${remainingMs}ms budget left)`,
           );
           return kernelAdmission.park(async () => {
             await waitForCodexRecovery(res, waitMs, reqAbort.signal);
@@ -8594,7 +8769,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? [account]
         : [...new Set(targetPools.flatMap((p) => (p.entries?.() ?? []).map((e) => e.accountId)))];
       for (const targetPool of targetPools) {
-        for (const id of ids) targetPool.readmit?.(id);
+        for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
       }
       const healthyAccounts =
         provider === 'codex'
@@ -9540,6 +9715,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         windowResetAt?: number;
         windowResetAt7d?: number;
         burnAction?: AccountBurnAction;
+        /** When the store took the reading (`utilizationAt`); gates the store↔pool park reconciliation. */
+        readingAt?: number;
       }>,
     ): void {
       accountRateHints.clear();
@@ -9552,9 +9729,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             windowResetAt: h.windowResetAt,
             windowResetAt7d: h.windowResetAt7d,
             burnAction: h.burnAction,
+            readingAt: h.readingAt,
           });
         }
       }
+      // P-008: the store just spoke — let any park it contradicts (with a NEWER reading) clear now,
+      // so routing looks at the same system that knows which accounts are available.
+      reconcileParksWithStore();
     },
     listen(port = 0): Promise<number> {
       return new Promise((resolve, reject) => {

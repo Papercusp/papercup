@@ -316,6 +316,31 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
     expect(returned).toBe(true);
   });
 
+  it('reports a DEADLINE as timeout even when onTimeout aborts the shared signal (P-004, codex-auto-route-all-walled-fail-fast-2026-09-05)', async () => {
+    // The gateway's onTimeout aborts the request signal — the same signal this aggregation races
+    // against. With the hook run BEFORE the race settled, the deadline read as a client 'aborted'
+    // and the gateway destroyed the socket silently instead of answering its own 504.
+    const stalled: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
+          return: async () => ({ done: true, value: undefined as never }),
+        };
+      },
+    };
+    const controller = new AbortController();
+    await expect(
+      aggregateCodexNonStreamResponse(stalled, {
+        contentType: 'text/event-stream',
+        maxBytes: 1_024,
+        timeoutMs: 10,
+        signal: controller.signal,
+        onTimeout: () => controller.abort(),
+      }),
+    ).rejects.toMatchObject({ code: 'timeout' });
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it('cancels aggregation promptly when the downstream signal aborts', async () => {
     let returned = false;
     const stalled: AsyncIterable<Uint8Array> = {

@@ -633,8 +633,16 @@ function createOptionalFailoverPool(
     select(accountId) {
       return inner?.select?.(accountId) ?? null;
     },
-    readmit(accountId) {
-      inner?.readmit?.(accountId);
+    readmit(accountId, opts) {
+      return inner?.readmit?.(accountId, opts) ?? false;
+    },
+    parkState(accountId) {
+      return inner?.parkState?.(accountId);
+    },
+    earliestAvailableAt(opts) {
+      // An EMPTY pool never recovers on its own: Infinity, never 0, so a ladder consulting the horizon
+      // of an unconfigured codex lane fails fast rather than absorbing toward capacity that cannot exist.
+      return inner?.earliestAvailableAt?.(opts) ?? Infinity;
     },
     healthyCount(extra) {
       return inner?.healthyCount?.(extra) ?? 0;
@@ -1212,6 +1220,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           utilization7d: a.rate?.utilization7d,
           windowResetAt: a.rate?.windowResetAt,
           windowResetAt7d: a.rate?.windowResetAt7d,
+          // When the store TOOK the reading — the gateway's store↔pool reconciliation (P-008) clears an
+          // in-memory park only on a reading newer than the park it would clear.
+          readingAt: a.rate?.utilizationAt,
           // Re-evaluate at the hint-read seam instead of trusting the persisted transition stamp:
           // accountBurnAction applies the canonical freshness gate, so a days-old SHED verdict cannot
           // strand an otherwise recovered account after its projection has gone stale.

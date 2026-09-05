@@ -25,6 +25,7 @@ import {
   ACCOUNT_PIN_HEADER,
   OWNER_HEADER,
   PIN_YIELDED_HEADER,
+  POOL_RECOVERY_AT_HEADER,
   RETRIES_EXHAUSTED_HEADER,
   ROUTED_ACCOUNT_HEADER,
   resolveCodexOAuthNonStreamTimeoutMs,
@@ -2272,5 +2273,218 @@ describe('codex cli-exec bridge — attempt ladder (P-005 characterization)', ()
     expect(await res.text()).toContain('VIA PREBODY');
     // The handover must preserve the body: instructions are prepended to the input.
     expect(sawPrompt).toBe('be terse\n\ncarried body');
+  });
+});
+
+/*
+ * Plan `codex-auto-route-all-walled-fail-fast-2026-09-05` (D-001): every auto-routed codex request
+ * hung ~2 minutes on a pool whose earliest reset was ~3h out, because the outer ladder's absorb
+ * slept the whole budget toward the FAILED ACCOUNT's reset instead of asking the POOL when it
+ * could next serve; and a transport-probe readmit cleared 7d usage walls, so the fleet re-burned
+ * every walled account. These pin the fixed decision end-to-end through the real handler.
+ */
+describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (codex-auto-route-all-walled-fail-fast-2026-09-05)', () => {
+  const walled429 = (resetAfterSec: number) =>
+    new Response(JSON.stringify({ error: { message: 'usage limit reached' } }), {
+      status: 429,
+      headers: {
+        'content-type': 'application/json',
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-after-seconds': String(resetAfterSec),
+      },
+    });
+  const burst429 = (retryAfter: string) =>
+    new Response(JSON.stringify({ error: { message: 'brief burst' } }), {
+      status: 429,
+      headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
+    });
+  const sse200 = () =>
+    new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const accountOf = (init?: RequestInit) =>
+    new Headers((init?.headers ?? {}) as HeadersInit).get('chatgpt-account-id') ?? '';
+
+  async function bootOAuthPair(fetchImpl: typeof fetch, gwOpts: Partial<Parameters<typeof createInferenceGateway>[0]>) {
+    const homeA = await makeCodexHome('chatgpt-a');
+    const homeB = await makeCodexHome('chatgpt-b');
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: homeA },
+      { accountId: 'chatgpt-b', home: homeB },
+    ];
+    const codexCliPool = createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' })));
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool,
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+      ...gwOpts,
+    });
+    port = await gw.listen(0);
+    return codexCliPool;
+  }
+
+  it('an ALL-WALLED OAuth pool FAILS FAST: terminal 429 without sleeping the absorb budget, pool horizon on the wire + in the stall', async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(accountOf(init));
+      return walled429(2 * 86_400); // every account's 7d window resets in ~2 days
+    }) as typeof fetch;
+    // The absorb is ON with the production-shaped 2-minute budget: pre-fix, the ladder slept this
+    // entire budget on an all-walled pool before forwarding (the owner-measured hang).
+    await bootOAuthPair(fetchImpl, { requestAbsorbMs: 120_000 });
+
+    const before = Date.now();
+    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true }, { [OWNER_HEADER]: 'su-all-walled' });
+    const elapsedMs = Date.now() - before;
+    expect(res.status).toBe(429);
+    expect(elapsedMs).toBeLessThan(10_000);
+    // The kernel ladder rotated across the pool once; the outer ladder did not absorb + re-enter.
+    expect(new Set(seen)).toEqual(new Set(['chatgpt-a', 'chatgpt-b']));
+    expect(res.headers.get('retry-after')).toBe('60');
+    expect(res.headers.get(RETRIES_EXHAUSTED_HEADER)).toMatch(/^\d+$/);
+    const horizon = res.headers.get(POOL_RECOVERY_AT_HEADER);
+    expect(horizon).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(Date.parse(horizon!)).toBeGreaterThan(before + 1.9 * 86_400_000);
+
+    // The stall carries the POOL horizon, so the stall-waker's capacity gate waits for real capacity.
+    const stalls = (await (await ask('/admin/stalls?since=0')).json()) as {
+      stalls: Array<{ ownerId: string; soonestResetAt: number }>;
+    };
+    const mine = stalls.stalls.find((s) => s.ownerId === 'su-all-walled');
+    expect(mine).toBeDefined();
+    expect(mine!.soonestResetAt).toBeGreaterThan(before + 1.9 * 86_400_000);
+  });
+
+  it('absorbs toward the POOL horizon: a sibling whose park expires in ~150ms is re-picked, not the failed account\'s 2h reset', async () => {
+    let aCalls = 0;
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = accountOf(init);
+      if (account === 'chatgpt-a') {
+        aCalls += 1;
+        return aCalls === 1 ? burst429('150ms') : sse200();
+      }
+      return walled429(7_200); // chatgpt-b: a 2h wall — the LAST account the kernel tries
+    }) as typeof fetch;
+    // Budget 2s: pre-fix the absorb slept min(budget, failed-account reset = 2h) = the full 2s.
+    await bootOAuthPair(fetchImpl, { requestAbsorbMs: 2_000, internalRetryDeadlineMs: 1 });
+
+    const before = Date.now();
+    const res = await postResponses({ model: 'gpt-5.5', input: 'recover via a', stream: true });
+    const elapsedMs = Date.now() - before;
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('[DONE]');
+    expect(aCalls).toBe(2);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+    // Slept ~150ms toward a's park expiry — NOT the 2s budget b's 2h reset would have forced.
+    expect(elapsedMs).toBeLessThan(1_500);
+  });
+
+  it('a HARD pin to a walled account fails fast on that account\'s own horizon even though a sibling could serve', async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(accountOf(init));
+      return accountOf(init) === 'chatgpt-a' ? walled429(7_200) : sse200();
+    }) as typeof fetch;
+    await bootOAuthPair(fetchImpl, { requestAbsorbMs: 120_000 });
+
+    const before = Date.now();
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'hi', stream: true },
+      { [ACCOUNT_HEADER]: 'chatgpt-a', [ACCOUNT_PIN_HEADER]: 'hard' },
+    );
+    expect(res.status).toBe(429);
+    expect(Date.now() - before).toBeLessThan(10_000);
+    expect(seen.every((a) => a === 'chatgpt-a')).toBe(true);
+    expect(Date.parse(res.headers.get(POOL_RECOVERY_AT_HEADER)!)).toBeGreaterThan(before + 3_600_000);
+  });
+
+  it('STORE↔POOL: a store reading NEWER than a park that reports capacity readmits it; a stale or still-walled reading leaves the park', async () => {
+    const codexPool = createFailoverPool([codexAcct('cdx-1'), codexAcct('cdx-2')]);
+    await bootCodex(ok, [codexAcct('cdx-1'), codexAcct('cdx-2')], { codexPool });
+    const parkedAt = Date.now();
+    codexPool.onExhausted('cdx-1', parkedAt + 7 * 86_400_000); // a 7d 429 parked it in THIS process
+    expect(codexPool.parkState!('cdx-1')).toBeDefined();
+
+    // (1) A reading OLDER than the park says nothing about whether the park's cause cleared.
+    gw!.setAccountRateHints([{ accountId: 'cdx-1', utilization7d: 0.1, readingAt: parkedAt - 60_000 }]);
+    expect(codexPool.parkState!('cdx-1')).toBeDefined();
+    // (2) A fresh reading that still reports the wall keeps the park.
+    gw!.setAccountRateHints([
+      { accountId: 'cdx-1', utilization7d: 1, windowResetAt7d: parkedAt + 86_400_000, readingAt: parkedAt + 1_000 },
+    ]);
+    expect(codexPool.parkState!('cdx-1')).toBeDefined();
+    // (3) A fresh reading reporting capacity — the system that knows which accounts are available
+    //     says this one is — clears the park, and routing sees it again.
+    gw!.setAccountRateHints([{ accountId: 'cdx-1', utilization7d: 0.1, readingAt: parkedAt + 1_000 }]);
+    expect(codexPool.parkState!('cdx-1')).toBeUndefined();
+    expect(codexPool.healthyCount!()).toBe(2);
+    expect(codexPool.msSinceReadmit!('cdx-1')).toBeLessThan(5_000);
+  });
+
+  it('/admin/readmit is the OPERATOR lever: it clears even a 7d wall (reason admin carries no transport bound)', async () => {
+    const codexPool = createFailoverPool([codexAcct('cdx-1'), codexAcct('cdx-2')]);
+    await bootCodex(ok, [codexAcct('cdx-1'), codexAcct('cdx-2')], { codexPool });
+    codexPool.onExhausted('cdx-1', Date.now() + 7 * 86_400_000);
+    expect(codexPool.healthyCount!()).toBe(1);
+    const res = await ask('/admin/readmit?provider=codex&account=cdx-1', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(codexPool.parkState!('cdx-1')).toBeUndefined();
+    expect(codexPool.healthyCount!()).toBe(2);
+  });
+
+  it('a downstream disconnect mid-aggregation aborts the OAuth upstream and leaves NO unhandled rejection behind (P-004)', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    let upstreamAborted = false;
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      // A 200 SSE head whose body STALLS after one frame, so aggregation is in flight when the
+      // caller disconnects — the shape that rejected the aggregate promise with no handler.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"type":"response.created"}\n\n'));
+          init?.signal?.addEventListener('abort', () => {
+            upstreamAborted = true;
+            try {
+              controller.error(new Error('oauth upstream aborted'));
+            } catch {
+              /* already errored */
+            }
+          });
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool([{ accountId: 'chatgpt-a', token: async () => '' }]),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+      requestCeilingMs: 5_000,
+    });
+    port = await gw.listen(0);
+
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 80);
+      await ask('/v1/responses', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'chatgpt-a' },
+        body: JSON.stringify({ model: 'gpt-5.5', input: 'disconnect mid-aggregate', stream: false }),
+        signal: controller.signal,
+      }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(upstreamAborted).toBe(true);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 });

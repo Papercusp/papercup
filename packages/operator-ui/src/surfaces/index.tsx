@@ -117,8 +117,11 @@ export const OPERATOR_SURFACES: Record<
   // pane lays out list-beside-detail exactly as /plans does.
   plans: lazy(async () => {
     const mod = await import('../../../../apps/operator/app/_components/plans/PlansPane');
+    // The operator router mounts this globally; external surface hosts do not.
+    // Keep the URL-driven plan/work-item drill-ins with the pane that opens them.
+    const { default: PopupHost } = await import('../../../../apps/operator/app/_components/chat/ChatRefPopupHost');
     const Pane = mod.default;
-    return { default: () => <Pane layout="split" /> };
+    return { default: () => <><Pane layout="split" /><PopupHost /></> };
   }),
   // /inbox — same split contract as /plans.
   inbox: lazy(async () => {
