@@ -88,8 +88,14 @@ export type {
   WorkspaceHostCatalogQuery,
   WorkspaceHostProvider,
 } from "./workspace-host-types";
-export { WORKSPACE_HOST_LIFECYCLE_ACTIONS, WORKSPACE_HOST_HEALTH_STATUSES } from "./workspace-host-types";
-export { resolveWorkspaceHostHealthStatus, unmeasuredHealthCheck } from "./workspace-host-health";
+export {
+  WORKSPACE_HOST_LIFECYCLE_ACTIONS,
+  WORKSPACE_HOST_HEALTH_STATUSES,
+} from "./workspace-host-types";
+export {
+  resolveWorkspaceHostHealthStatus,
+  unmeasuredHealthCheck,
+} from "./workspace-host-health";
 export {
   WORKSPACE_HOST_INITIALIZATION_INVALIDATING_ACTIONS,
   workspaceHostActionInvalidatesInitialization,
@@ -557,6 +563,9 @@ export {
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_LEGACY_BUNDLE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_FILES,
+  WORKSPACE_HOST_AGENT_HOME_OMP_MODELS_RELATIVE_PATH,
+  WORKSPACE_HOST_AGENT_HOME_OLLAMA_BASE_URL,
+  WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML,
   WORKSPACE_HOST_AGENT_HOME_STATE_VERSION,
   WORKSPACE_HOST_AGENT_HOME_FAMILIES,
   WorkspaceHostAgentHomeStateError,
@@ -565,6 +574,7 @@ export {
   parseWorkspaceHostAgentHomeBundle,
   encodeWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths,
+  workspaceHostAgentHomeOmpModelsPath,
   workspaceHostAgentHomeDirectories,
   workspaceHostAgentHomeStatePath,
   encodeWorkspaceHostAgentHomeState,
