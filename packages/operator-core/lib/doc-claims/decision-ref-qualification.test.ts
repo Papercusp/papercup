@@ -23,7 +23,10 @@ import {
 import { planDecisionRef, planItemRef } from '../agent-goal-ref';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EMITTER = path.resolve(HERE, '../agent-tools/plans/add-decision.ts');
+// Overridable so falsifiability can be proven against a COPY (mutation-probe
+// tier 2) instead of mutating this shared, continuously-swept tree.
+const EMITTER =
+  process.env.DECISION_EMITTER_PATH ?? path.resolve(HERE, '../agent-tools/plans/add-decision.ts');
 
 describe('planDecisionRef — the qualified form', () => {
   it('qualifies a decision with its plan', () => {
