@@ -1601,7 +1601,11 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // PROJECTED_DEPS lives in @/lib/projected-tool-deps so the IPC server
 // (and any future transport) can reuse the same telemetry + quota
 // implementation. Don't fork the SQL across transports.
-import { PROJECTED_DEPS, backfillResultDoorOutputRef } from '../../../projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  backfillResultDoorOutputRef,
+  wrapOperatorKernelSpawn,
+} from '../../../projected-tool-deps';
 import { isPreferredDoor } from '../../../code-run-batch-nudge';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
@@ -2292,6 +2296,20 @@ async function buildMcpToolContext(
     signal: new AbortController().signal,
   };
   // Close the ctxRef loop so dispatchTool routes the target through THIS ctx.
+  // Native/plugin subprocesses cross a second execution boundary inside the
+  // handler. Keep the existing capability/path checks in `pluginSpawnImpl`,
+  // then apply the same D-030 kernel seat used by projected dispatch. The
+  // adapter is deliberately evidence-neutral here (no tool-name confinement
+  // inference); a live activation owner may install richer state through the
+  // shared projected-deps resolver.
+  if (typeof wrapOperatorKernelSpawn === 'function') {
+    builtCtx.spawn = wrapOperatorKernelSpawn(
+      pluginSpawnImpl,
+      builtCtx,
+      [],
+      pluginName ? `plugin:${pluginName}:spawn` : 'native:shell',
+    );
+  }
   ctxRef.current = builtCtx;
   return builtCtx;
 }
