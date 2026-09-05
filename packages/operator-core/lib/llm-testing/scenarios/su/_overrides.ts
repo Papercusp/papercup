@@ -703,9 +703,13 @@ export function makeDeltaSnapshotOverride(): ToolDispatchOverride {
 }
 
 /**
- * SU-S19 (reach for harness:overview on "state of X"): a believable one-call overview
- * (status + escalations + open-issues snapshot) so the engineer who calls
- * harness:overview once isn't punished by a stub.
+ * SU-S19 (reach for harness:overview on "state of X"): a faithful, self-contained
+ * one-call overview (status + escalation record + bounded open-issues snapshot)
+ * so the engineer who calls harness:overview once isn't punished by a stub. The
+ * snapshot count deliberately equals `recent.length`: both rows fit under the
+ * production default limit of 25, so advertising a larger count would invent
+ * missing detail and provoke a follow-up this tool-selection scenario does not
+ * intend to measure (WI-2146314).
  */
 export const HARNESS_OVERVIEW_RESULT: ToolDispatchOverride = {
   override(name, args) {
@@ -718,8 +722,19 @@ export const HARNESS_OVERVIEW_RESULT: ToolDispatchOverride = {
               ok: true,
               harness: a.harness ?? 'sheets',
               status: { phase: 'production', features: { total: 14, done: 11, in_progress: 2, blocked: 1 } },
-              escalations: [{ id: 'esc-1', summary: 'validator stuck on F-12', age_h: 3 }],
-              issues: { count: 2, recent: [{ id: 'EI-880', title: 'export picker disabled stub', severity: 'major', state: 'open' }] },
+              escalations: {
+                hasEscalation: true,
+                escalation: 'esc-1: validator stuck on F-12; retry is awaiting the validator trace',
+                supervisorNotes: 'Validator owner is investigating; next update follows the trace.',
+                mtimeMs: 1788602400000,
+              },
+              issues: {
+                count: 2,
+                recent: [
+                  { id: 'EI-880', title: 'export picker disabled stub', severity: 'major', state: 'open' },
+                  { id: 'EI-881', title: 'formula import drops locale', severity: 'minor', state: 'open' },
+                ],
+              },
             }),
           },
         ],
