@@ -75,6 +75,7 @@
     "gen:authored-docs:check": "tsx ../../scripts/project-authored-docs.mts --check",
     "gen:client-docs:check": "node ../../scripts/project-doc-parts.mjs",
     "gen:compaction:check": "tsx ../../scripts/gen-compaction.ts --check",
+    "gen:su-decomposition:check": "tsx ../../libs/papercusp/packages/orchestrator/bin/gen-su-decomposition.ts --check",
     "lint:post-compaction-recovery-contract": "tsx ../../scripts/check-post-compaction-recovery-contract.ts",
     "gen:knowledge-packs:check": "node ../../scripts/gen-knowledge-packs.mjs --check",
     "gen:tool-catalog:check": "tsx ../../scripts/gen-tool-catalog.ts --check",

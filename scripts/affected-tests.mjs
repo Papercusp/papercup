@@ -2748,6 +2748,29 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/gen-knowledge-packs.mjs",
   },
   {
+    // WI-2144666 — `gen:su-decomposition:check` verifies that the committed su identity
+    // part documents and the pinned COMPOSITION_MODEL.md section still derive byte-for-byte
+    // from the canonical su.md + tiling. The guard was declared only in root package.json,
+    // but this registry executes workspace-owned scripts; exposing the same check through
+    // operator-core makes the existing invariant reachable without adding a second checker.
+    //
+    // Measured 2026-09-05: the check passes on the current tree, is DB/network-free, and
+    // completes in under one second. It is therefore safe to attach narrowly to every
+    // source or derived file that can change the generator's result.
+    workspace: "@papercusp/operator-core",
+    script: "gen:su-decomposition:check",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "libs/papercusp/packages/orchestrator/bin/gen-su-decomposition.ts" ||
+      f === "libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts" ||
+      f === "libs/papercusp/packages/orchestrator/src/blueprint/slots.ts" ||
+      f === "libs/papercusp/packages/harness/paths.ts" ||
+      f === "libs/papercusp/packages/orchestrator/docs/COMPOSITION_MODEL.md" ||
+      f.startsWith("libs/papercusp/packages/harness/blueprints/"),
+  },
+  {
     // WI-38239 — `gen:tool-catalog:check`, the last WIRE-able member of the orphaned `gen:*:check`
     // cohort the census widening exposed. It guards `.papercusp/tool-catalog.json`, the 1.1MB
     // projection of the `defineTool` registry (docs-and-memory-as-projections D-002).
