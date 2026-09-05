@@ -17,10 +17,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  annotateCandidatesWithDisk,
   DEFAULT_SIMILARITY_THRESHOLD,
   fetchRedundancyCandidates,
   formatRedundancyMessage,
   judgeRedundantReservation,
+  PLACEHOLDER_SLUG,
   slugOfMigrationFilename,
   slugSimilarity,
 } from '../../../scripts/lib/migration-slug-dedup.mjs';
@@ -225,6 +227,234 @@ describe('formatRedundancyMessage', () => {
 
   it('returns null when there is nothing to say', () => {
     expect(formatRedundancyMessage({ verdict: 'clear', matches: [] }, { slug: 'x' })).toBeNull();
+  });
+});
+
+/**
+ * EI-20300821494280085 — the case both windowed rules miss by construction.
+ *
+ * Fixtures are the real 998/1000/1004 chain from
+ * `harness_shared.migration_reservations`: ONE author reserved the identical
+ * slug three times over 109 minutes, wrote nothing at the first two, and finally
+ * wrote the file at 1004. No stampede (far outside the 30-minute race window)
+ * and nothing applied, so the shipped guard could only warn.
+ */
+const UNWRITTEN_SLUG = 'acceptance-rubric-subject-uniqueness';
+const RE_RESERVER = 'su-9fe66521';
+
+/** Reserved, never written, and its number is still free on disk. */
+const m998 = {
+  num: 998,
+  filename: '998-acceptance-rubric-subject-uniqueness.sql',
+  reservedBy: RE_RESERVER,
+  reservedAtMs: ms('2026-09-02T10:00:00.000Z'),
+  appliedAtMs: null,
+  fileOnDisk: false,
+  numberOnDisk: false,
+};
+
+/** 70 minutes later — the point at which the third reservation was requested. */
+const RE_RESERVE_AT = ms('2026-09-02T11:10:00.000Z');
+
+describe('unwritten-reservation rule', () => {
+  it('BLOCKS re-reserving an exact slug whose file was never written, long after every window', () => {
+    const j = judgeRedundantReservation({
+      slug: UNWRITTEN_SLUG,
+      candidates: [m998],
+      nowMs: RE_RESERVE_AT,
+    });
+    expect(j.verdict).toBe('block');
+    expect(j.matches[0]!.rule).toBe('unwritten-reservation');
+    expect(j.matches[0]!.num).toBe(998);
+    // Age-independent on purpose: the same judgement must hold a week later.
+    expect(
+      judgeRedundantReservation({
+        slug: UNWRITTEN_SLUG,
+        candidates: [m998],
+        nowMs: RE_RESERVE_AT + 7 * 24 * 60 * 60 * 1000,
+      }).verdict,
+    ).toBe('block');
+  });
+
+  it('names the held number and its DRAFT path, so the remedy is executable not advisory', () => {
+    const msg = formatRedundancyMessage(
+      judgeRedundantReservation({
+        slug: UNWRITTEN_SLUG,
+        candidates: [m998],
+        nowMs: RE_RESERVE_AT,
+      }),
+      { slug: UNWRITTEN_SLUG },
+    )!;
+    expect(msg).toContain('998-acceptance-rubric-subject-uniqueness.sql.DRAFT');
+    expect(msg).toMatch(/ALREADY HOLD 998/);
+  });
+
+  it('does NOT block once the earlier reservation has actually been written', () => {
+    // A `.DRAFT` counts as written — the author is mid-edit at the number they
+    // hold, which is precisely the behaviour this rule exists to produce.
+    const j = judgeRedundantReservation({
+      slug: UNWRITTEN_SLUG,
+      candidates: [{ ...m998, fileOnDisk: true }],
+      nowMs: RE_RESERVE_AT,
+    });
+    expect(j.verdict).toBe('warn');
+  });
+
+  it('does NOT block when the reserved NUMBER is occupied by a different migration', () => {
+    // The real 464/465 case: the reservation was for
+    // `hlc-node-id-strong-entropy` but `464-gym-qd-archive-federation.sql`
+    // occupies the number. "That number is still free, write there" would then
+    // be wrong advice, so the rule must decline to give it.
+    const j = judgeRedundantReservation({
+      slug: 'hlc-node-id-strong-entropy',
+      candidates: [
+        {
+          num: 464,
+          filename: '464-hlc-node-id-strong-entropy.sql',
+          reservedBy: 'su-27748',
+          reservedAtMs: ms('2026-09-02T10:00:00.000Z'),
+          appliedAtMs: null,
+          fileOnDisk: false,
+          numberOnDisk: true,
+        },
+      ],
+      nowMs: RE_RESERVE_AT,
+    });
+    expect(j.verdict).toBe('warn');
+  });
+
+  it('FAILS OPEN: a caller supplying no filesystem facts keeps the pre-existing behaviour', () => {
+    expect(
+      judgeRedundantReservation({
+        slug: UNWRITTEN_SLUG,
+        candidates: [
+          {
+            num: m998.num,
+            filename: m998.filename,
+            reservedBy: m998.reservedBy,
+            reservedAtMs: m998.reservedAtMs,
+            appliedAtMs: m998.appliedAtMs,
+          },
+        ],
+        nowMs: RE_RESERVE_AT,
+      }).verdict,
+    ).toBe('warn');
+    // Explicit null (the ledger shape for "unknown") must read the same way.
+    expect(
+      judgeRedundantReservation({
+        slug: UNWRITTEN_SLUG,
+        candidates: [{ ...m998, fileOnDisk: null, numberOnDisk: null }],
+        nowMs: RE_RESERVE_AT,
+      }).verdict,
+    ).toBe('warn');
+  });
+
+  it('never fires on the TODO-rename placeholder, which 40+ unrelated rows share', () => {
+    const j = judgeRedundantReservation({
+      slug: PLACEHOLDER_SLUG,
+      candidates: [
+        {
+          num: 518,
+          filename: `518-${PLACEHOLDER_SLUG}.sql`,
+          reservedAtMs: ms('2026-09-02T10:00:00.000Z'),
+          appliedAtMs: null,
+          fileOnDisk: false,
+          numberOnDisk: false,
+        },
+      ],
+      nowMs: RE_RESERVE_AT,
+    });
+    expect(j.verdict).toBe('warn');
+  });
+
+  /**
+   * CALIBRATION — why this rule is EXACT-match and not `similarity >= threshold`.
+   *
+   * The windowed rules can afford Dice ≥ 0.8 because a window bounds the damage:
+   * a false positive only costs you inside 30 minutes, or inside 7 days of an
+   * apply. An age-independent rule has no such bound, so it gets no fuzziness.
+   *
+   * These three pairs are REAL rows from `harness_shared.migration_reservations`
+   * that score at or above the threshold and are unambiguously distinct work.
+   * They are drawn from a full pass over the ledger (2026-09-05): of 32
+   * non-exact pairs scoring ≥ 0.8, 28 are legitimately distinct — they read
+   * alike because migration slugs share a subject, not because they share a
+   * purpose. Only the applied/race windows keep those from being refused today.
+   */
+  const NEAR_BUT_DISTINCT: Array<[string, string]> = [
+    // 960 → 975, Dice 0.80. OPPOSITE operations, one token apart.
+    ['remove-owned-trigger-legacy-arbiter', '960-restore-owned-trigger-legacy-arbiter.sql'],
+    // 914 → 918, Dice 0.86. A follow-up constraint on the column just added.
+    ['goal-budget-window-validate', '914-goal-budget-window.sql'],
+    // 554 → 557, Dice 0.80. Deliberately sequential phases of ONE planned rename.
+    ['cup-lexicon-db-rename-phase3', '554-cup-lexicon-db-rename-phase1.sql'],
+  ];
+
+  it('requires EXACT slug equality — an above-threshold near-match still only warns', () => {
+    for (const [slug, filename] of NEAR_BUT_DISTINCT) {
+      const j = judgeRedundantReservation({
+        slug,
+        candidates: [
+          {
+            num: 900,
+            filename,
+            reservedAtMs: ms('2026-09-02T10:00:00.000Z'),
+            appliedAtMs: null,
+            fileOnDisk: false,
+            numberOnDisk: false,
+          },
+        ],
+        nowMs: RE_RESERVE_AT,
+      });
+      expect(j.verdict, `${slug} vs ${filename}`).toBe('warn');
+    }
+  });
+
+  it('CONTROL: a threshold-based unwritten rule WOULD refuse every one of them', () => {
+    // The deliberately-wrong variant, kept permanently. It satisfies the
+    // incident property (an exact re-reserve scores 1.0, comfortably above
+    // threshold) and fails calibration here, so it cannot pass both — which is
+    // what makes the real rule's passing of both mean something.
+    const wouldBlock = ([slug, filename]: [string, string]) =>
+      slugSimilarity(slug, slugOfMigrationFilename(filename)) >= DEFAULT_SIMILARITY_THRESHOLD;
+    expect(wouldBlock([UNWRITTEN_SLUG, m998.filename])).toBe(true);
+    for (const pair of NEAR_BUT_DISTINCT) {
+      expect(wouldBlock(pair), `${pair[0]} vs ${pair[1]} must score at/above threshold`).toBe(true);
+    }
+  });
+});
+
+describe('annotateCandidatesWithDisk', () => {
+  const scan = {
+    filenames: new Set(['1004-acceptance-rubric-subject-uniqueness.sql']),
+    numbers: new Set([464, 1004]),
+  };
+
+  it('marks written and occupied independently', () => {
+    const [written, unwritten, numberTaken] = annotateCandidatesWithDisk(
+      [
+        { num: 1004, filename: '1004-acceptance-rubric-subject-uniqueness.sql' },
+        { num: 998, filename: '998-acceptance-rubric-subject-uniqueness.sql' },
+        { num: 464, filename: '464-hlc-node-id-strong-entropy.sql' },
+      ],
+      scan,
+    );
+    expect(written).toMatchObject({ fileOnDisk: true, numberOnDisk: true });
+    expect(unwritten).toMatchObject({ fileOnDisk: false, numberOnDisk: false });
+    // The distinction the rule turns on: nothing named 464-hlc-… exists, yet
+    // the NUMBER is taken by another migration.
+    expect(numberTaken).toMatchObject({ fileOnDisk: false, numberOnDisk: true });
+  });
+
+  it('leaves candidates UNANNOTATED when no scan is available, rather than claiming absence', () => {
+    // Annotating false here would convert a caller that cannot read the disk
+    // into one that blocks on every exact-slug match it sees.
+    const candidates = [{ num: 998, filename: '998-x.sql' }];
+    for (const noScan of [undefined, null, {}, { filenames: new Set(), numbers: undefined }]) {
+      const out = annotateCandidatesWithDisk(candidates, noScan as never);
+      expect(out[0]).not.toHaveProperty('fileOnDisk');
+      expect(out[0]).not.toHaveProperty('numberOnDisk');
+    }
   });
 });
 

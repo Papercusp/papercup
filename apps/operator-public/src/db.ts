@@ -130,10 +130,51 @@ export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
+/**
+ * Catalog visibility (migration 018 / shared-pot-dao-cupboard-v1-2026-09-04 P-008).
+ *
+ *   public   — listed in the global catalog. Every pre-018 row defaults here, so
+ *              the migration preserves existing browse behavior exactly.
+ *   unlisted — reachable by direct id/listing_ref, never returned by browse.
+ *   private  — visible only inside the owning tenant (`tenant_id`).
+ *
+ * Read paths are FAIL-CLOSED: the browse predicate admits only `public` unless a
+ * caller supplies a `tenant_scope`, so a new visibility value can never leak by
+ * being forgotten in a filter.
+ */
+export const LISTING_VISIBILITIES = ['public', 'unlisted', 'private'] as const;
+export type ListingVisibility = (typeof LISTING_VISIBILITIES)[number];
+
+export function isListingVisibility(v: unknown): v is ListingVisibility {
+  return typeof v === 'string' && (LISTING_VISIBILITIES as readonly string[]).includes(v);
+}
+
+/**
+ * Provider-neutral pricing model (migration 018 / P-008, D-025 + D-028).
+ *
+ * Deliberately NOT a payment-provider concept: the catalog stores what the unit
+ * COSTS and how it is charged, never which adapter collects it. A settlement
+ * adapter maps `sku_ref` onto its own product; nothing here may name Stripe, a
+ * gateway URL, or a blob provider.
+ */
+export const PRICING_MODELS = ['free', 'one-time', 'subscription', 'per-use'] as const;
+export type PricingModel = (typeof PRICING_MODELS)[number];
+
+export function isPricingModel(v: unknown): v is PricingModel {
+  return typeof v === 'string' && (PRICING_MODELS as readonly string[]).includes(v);
+}
+
 export type HarnessRow = Omit<
   HarnessesRow,
-  'listing_kind' | 'claim_status' | 'review_status' | 'delivery_type'
+  'listing_kind' | 'claim_status' | 'review_status' | 'delivery_type' | 'visibility' | 'pricing_model'
 > & {
+  // Catalog axes (migration 018 / P-008). `visibility` is NOT NULL with a
+  // 'public' default so every pre-018 row reads as public; the rest are null on
+  // a row that has not declared that axis.
+  visibility: ListingVisibility;
+  /** Owning shared pot. NULL = the global public catalog. */
+  tenant_id: string | null;
+  pricing_model: PricingModel | null;
   /** Storefront kind (migration 004). Default 'harness' for pre-004 rows. */
   listing_kind: ListingKind;
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
@@ -206,6 +247,31 @@ export interface NewHarnessInput {
   icon_url?: string | null;
   /** Denormalized JSON string[] of OS keys present in latest.json. */
   platforms?: string | null;
+
+  // ── Catalog axes (migration 018 / shared-pot-dao-cupboard-v1 P-008) ────────
+  /** public (default) | unlisted | private. Omit ⇒ 'public'. */
+  visibility?: ListingVisibility;
+  /** Owning shared pot; null/omitted ⇒ the global public catalog. */
+  tenant_id?: string | null;
+  /** Opaque provider-neutral SKU identifier a settlement adapter resolves. */
+  sku_ref?: string | null;
+  pricing_model?: PricingModel | null;
+  /** Minor units × 1e6, so per-use microcharges and stablecoin amounts stay exact. */
+  price_amount_micros?: number | null;
+  /** ISO-4217 code or stablecoin symbol ('USD', 'USDC'). */
+  price_currency?: string | null;
+  /** JSON { runtime?, platforms?: string[], architectures?: string[] } — mirrors
+   *  the P-006 release manifest's `compatibility`. */
+  compatibility_json?: string | null;
+  /** JSON string[] of permissions the unit requests at install time. */
+  required_permissions?: string | null;
+  // Immutable release identity. Content identity only — never a retrieval URL,
+  // so the later P2P storage migration (D-024) changes no column here.
+  release_version?: string | null;
+  release_content_hash?: string | null;
+  release_manifest_digest?: string | null;
+  release_signature?: string | null;
+  release_published_at?: number | null;
   created_at: number;
 }
 
@@ -222,9 +288,14 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
           delivery_type, latest_json_url, release_repo, icon_url, platforms,
+          visibility, tenant_id, sku_ref, pricing_model,
+          price_amount_micros, price_currency,
+          compatibility_json, required_permissions,
+          release_version, release_content_hash, release_manifest_digest,
+          release_signature, release_published_at,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -256,6 +327,19 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.release_repo ?? null,
       h.icon_url ?? null,
       h.platforms ?? null,
+      h.visibility ?? 'public',
+      h.tenant_id ?? null,
+      h.sku_ref ?? null,
+      h.pricing_model ?? null,
+      h.price_amount_micros ?? null,
+      h.price_currency ?? null,
+      h.compatibility_json ?? null,
+      h.required_permissions ?? null,
+      h.release_version ?? null,
+      h.release_content_hash ?? null,
+      h.release_manifest_digest ?? null,
+      h.release_signature ?? null,
+      h.release_published_at ?? null,
       h.created_at,
       h.created_at,
     )
@@ -361,7 +445,44 @@ export interface ListOpts {
   project_ref?: string;
 }
 
-export interface PublicListOpts extends Omit<ListOpts, 'cursor'> {
+/**
+ * Catalog-axis filters (migration 018 / P-008).
+ *
+ * Deliberately on the PUBLIC opts only, not on `ListOpts`. `listHarnesses` is the
+ * indexer's internal sweep and must see every row regardless of visibility — if
+ * these lived on the shared base, passing `visibility` to it would silently do
+ * nothing, which is the quietest kind of filter bug.
+ */
+export interface CatalogFilterOpts {
+  /** NARROW to one visibility WITHIN what the caller may already see. This can
+   *  only ever remove rows — it never widens the fail-closed scope below. */
+  visibility?: ListingVisibility;
+  /**
+   * WIDENING tenant scope: additionally admit rows owned by this tenant,
+   * whatever their visibility. This is the ONLY thing that exposes an
+   * `unlisted`/`private` row, so a caller must have authorized the tenant
+   * before passing it. The public HTTP route never sets it — see the
+   * `tenant_ref` narrowing filter for the untrusted query-param path.
+   */
+  tenant_scope?: string;
+  /** NARROWING filter to one tenant's rows, within the caller's existing scope.
+   *  Safe to drive from an untrusted query param: it cannot reveal a row the
+   *  scope did not already admit. */
+  tenant_ref?: string;
+  pricing_model?: PricingModel;
+  /** true ⇒ only priced rows; false ⇒ only free/unpriced rows. */
+  paid?: boolean;
+  /** Match one entry of `compatibility_json.platforms`. */
+  platform?: string;
+  /** Match `compatibility_json.runtime` exactly. */
+  runtime?: string;
+  /** Match one entry of `required_permissions`. */
+  permission?: string;
+  /** Include yanked/revoked releases (default: excluded from browse). */
+  include_withdrawn?: boolean;
+}
+
+export interface PublicListOpts extends Omit<ListOpts, 'cursor'>, CatalogFilterOpts {
   cursor?: number | ListingCursor | null;
 }
 
@@ -468,7 +589,80 @@ function compileHarnessListPredicate(
     where.push('h.claim_status = ?');
     binds.push(opts.claim_status);
   }
+  // ── Catalog filters (migration 018 / P-008) ────────────────────────────────
+  // Appended AFTER every pre-018 clause on purpose: the bind list is consumed
+  // positionally (by D1 and by the test fake), so adding here cannot renumber an
+  // existing filter's binds.
+  appendCatalogPredicate(where, binds, opts, 'h.');
   return { sql: where.join(' AND '), binds };
+}
+
+/**
+ * The catalog-axis half of the list predicate (migration 018 / P-008), shared by
+ * the public browse page and the companion summary CTE so the rows and the facet
+ * counts can never disagree about who may see what.
+ *
+ * TENANT ISOLATION is enforced here and is FAIL-CLOSED: the base rule admits only
+ * `visibility = 'public'`, and the ONLY widening is an explicit `tenant_scope`
+ * the caller had to authorize. Every other filter can only remove rows. That
+ * asymmetry is the property worth testing — a narrowing filter that accidentally
+ * widened would leak another tenant's private catalog.
+ */
+function appendCatalogPredicate(
+  where: string[],
+  binds: unknown[],
+  opts: PublicListOpts,
+  prefix: '' | 'h.',
+): void {
+  if (opts.visibility) {
+    where.push(`${prefix}visibility = ?`);
+    binds.push(opts.visibility);
+  }
+  if (opts.tenant_ref) {
+    where.push(`${prefix}tenant_id = ?`);
+    binds.push(opts.tenant_ref);
+  }
+  if (opts.pricing_model) {
+    where.push(`${prefix}pricing_model = ?`);
+    binds.push(opts.pricing_model);
+  }
+  if (opts.paid === true) {
+    where.push(`(${prefix}sku_ref IS NOT NULL AND ${prefix}pricing_model IS NOT NULL AND ${prefix}pricing_model != 'free')`);
+  } else if (opts.paid === false) {
+    where.push(`(${prefix}sku_ref IS NULL OR ${prefix}pricing_model IS NULL OR ${prefix}pricing_model = 'free')`);
+  }
+  if (opts.runtime) {
+    where.push(`json_extract(${prefix}compatibility_json, '$.runtime') = ?`);
+    binds.push(opts.runtime);
+  }
+  if (opts.platform) {
+    // json_valid guards a malformed or NULL column: json_each over one would
+    // raise, turning a bad row into a 500 for the whole page.
+    where.push(
+      `(${prefix}compatibility_json IS NOT NULL AND json_valid(${prefix}compatibility_json)` +
+        ` AND EXISTS (SELECT 1 FROM json_each(${prefix}compatibility_json, '$.platforms') WHERE json_each.value = ?))`,
+    );
+    binds.push(opts.platform);
+  }
+  if (opts.permission) {
+    where.push(
+      `(${prefix}required_permissions IS NOT NULL AND json_valid(${prefix}required_permissions)` +
+        ` AND EXISTS (SELECT 1 FROM json_each(${prefix}required_permissions) WHERE json_each.value = ?))`,
+    );
+    binds.push(opts.permission);
+  }
+  // The fail-closed visibility scope. Keep this LAST so the widening bind is the
+  // final catalog bind in every query shape.
+  if (opts.tenant_scope) {
+    where.push(`(${prefix}visibility = 'public' OR ${prefix}tenant_id = ?)`);
+    binds.push(opts.tenant_scope);
+  } else {
+    where.push(`${prefix}visibility = 'public'`);
+  }
+  if (!opts.include_withdrawn) {
+    where.push(`${prefix}yanked_at IS NULL`);
+    where.push(`${prefix}revoked_at IS NULL`);
+  }
 }
 
 export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<HarnessRow[]> {

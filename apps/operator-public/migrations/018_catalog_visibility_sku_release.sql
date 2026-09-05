@@ -108,6 +108,12 @@ CREATE INDEX IF NOT EXISTS harnesses_release_hash_idx
 -- Unlike the active-listing indexes this is NOT scoped to `unlisted_at IS NULL`
 -- — an unlisted or yanked release still occupies its version forever, which is
 -- exactly what makes the release immutable.
+--
+-- ⚠ listing_ref is COALESCEd to '' deliberately. SQLite treats NULLs as DISTINCT
+-- in a UNIQUE index (the caveat migration 004 relies on for its per-kind index),
+-- so a bare column list would let the canonical listing_ref IS NULL row publish
+-- the SAME release_version twice without violating the constraint — silently
+-- breaking the immutability this index exists to enforce.
 CREATE UNIQUE INDEX IF NOT EXISTS harnesses_release_identity_unique
-  ON harnesses (github_repository_id, listing_kind, listing_ref, release_version)
+  ON harnesses (github_repository_id, listing_kind, COALESCE(listing_ref, ''), release_version)
   WHERE release_version IS NOT NULL;

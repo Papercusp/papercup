@@ -38,6 +38,8 @@ import {
   getHarnessByGithubRepoId,
   insertHarness,
   isListingKind,
+  isListingVisibility,
+  isPricingModel,
   listBannedPubkeySet,
   listPublicHarnessesPage,
   markHarnessUnlisted,
@@ -47,6 +49,8 @@ import {
   setHarnessClaim,
   summarizePublicHarnesses,
   type ListingKind,
+  type ListingVisibility,
+  type PricingModel,
   type PublicListOpts,
 } from '../db.ts';
 import {
@@ -96,6 +100,21 @@ interface PublishBody {
   release_repo?: unknown;            // expected: '<owner>/<repo>'
   icon_url?: unknown;                // expected: https URL
   platforms?: unknown;               // expected: string[] of OS keys present in latest.json
+  // ── Catalog axes (migration 018 / shared-pot-dao-cupboard-v1 P-008) ────────
+  // Kind-agnostic, unlike the app_fields block above: any kind can be private,
+  // priced, compatibility-scoped, permission-declaring, or release-pinned.
+  visibility?: unknown;              // expected: 'public' | 'unlisted' | 'private'
+  tenant_id?: unknown;               // expected: string — owning shared pot
+  sku_ref?: unknown;                 // expected: string — provider-neutral SKU id
+  pricing_model?: unknown;           // expected: 'free'|'one-time'|'subscription'|'per-use'
+  price_amount_micros?: unknown;     // expected: non-negative integer, minor units × 1e6
+  price_currency?: unknown;          // expected: string — ISO-4217 or stablecoin symbol
+  compatibility?: unknown;           // expected: { runtime?, platforms?: string[], architectures?: string[] }
+  required_permissions?: unknown;    // expected: string[]
+  release_version?: unknown;         // expected: string
+  release_content_hash?: unknown;    // expected: 'sha256:<64 hex>'
+  release_manifest_digest?: unknown; // expected: string — listingManifestDigest()
+  release_signature?: unknown;       // expected: string
 }
 
 /** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
@@ -134,6 +153,10 @@ const PROJECT_REF_MAX = 300;
 const APP_URL_MAX = 500;
 const HTTPS_URL_RE = /^https:\/\/[^\s]{1,494}$/;
 const RELEASE_REPO_RE = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+/** Immutable-release content identity (migration 018 / P-008) — the SAME shape
+ *  `validateListingManifest` enforces on `contentHash`, so a listing row and the
+ *  signed manifest it points at cannot disagree about what a content hash is. */
+const CONTENT_HASH_RE = /^sha256:[0-9a-f]{64}$/i;
 const APP_PLATFORMS_MAX_ENTRIES = 20;
 const APP_PLATFORM_KEY_MAX_LEN = 64;
 
@@ -213,6 +236,37 @@ function registerListingEndpoints(
       }
     }
     const project_ref = url.searchParams.get('project') ?? undefined;
+
+    // ── Catalog filters (migration 018 / shared-pot-dao-cupboard-v1 P-008) ───
+    // Every one of these NARROWS. `tenant_scope` — the only widening option, the
+    // one that can surface an unlisted/private row — is deliberately NOT
+    // reachable from a query param: this endpoint is unauthenticated, so a
+    // `?tenant=` that widened would hand any caller another pot's private
+    // catalog. `?tenant=` maps to the narrowing `tenant_ref` instead.
+    const visibilityRaw = url.searchParams.get('visibility');
+    let visibility: ListingVisibility | undefined;
+    if (visibilityRaw != null && visibilityRaw !== '' && visibilityRaw !== 'all') {
+      if (!isListingVisibility(visibilityRaw)) {
+        return c.json({ error: 'invalid_field', field: 'visibility' }, 400);
+      }
+      visibility = visibilityRaw;
+    }
+    const pricingRaw = url.searchParams.get('pricing');
+    let pricing_model: PricingModel | undefined;
+    if (pricingRaw != null && pricingRaw !== '' && pricingRaw !== 'all') {
+      if (!isPricingModel(pricingRaw)) {
+        return c.json({ error: 'invalid_field', field: 'pricing' }, 400);
+      }
+      pricing_model = pricingRaw;
+    }
+    const paidRaw = url.searchParams.get('paid');
+    let paid: boolean | undefined;
+    if (paidRaw != null && paidRaw !== '') {
+      if (paidRaw !== '1' && paidRaw !== '0' && paidRaw !== 'true' && paidRaw !== 'false') {
+        return c.json({ error: 'invalid_field', field: 'paid' }, 400);
+      }
+      paid = paidRaw === '1' || paidRaw === 'true';
+    }
     const filters = {
       limit,
       cursor,
@@ -220,6 +274,13 @@ function registerListingEndpoints(
       claim_status,
       kind,
       project_ref,
+      visibility,
+      tenant_ref: url.searchParams.get('tenant') ?? undefined,
+      pricing_model,
+      paid,
+      platform: url.searchParams.get('platform') ?? undefined,
+      runtime: url.searchParams.get('runtime') ?? undefined,
+      permission: url.searchParams.get('permission') ?? undefined,
     };
     const [{ results, next_cursor }, { total, kind_facets }] = await Promise.all([
       listPublicHarnessesPage(c.env.DB, filters),
@@ -683,6 +744,125 @@ function registerListingEndpoints(
     // can say "pending approval" instead of "live".
     const review_status = REVIEW_POLICY_KINDS.includes(kind) ? ('pending' as const) : ('approved' as const);
 
+    // ── Catalog fields (migration 018 / shared-pot-dao-cupboard-v1 P-008) ────
+    // Kind-agnostic: every kind can be private, priced, compatibility-scoped,
+    // permission-declaring, and pinned to an immutable release.
+    const badCatalog = (field: string, reason: string) =>
+      c.json({ error: 'invalid_field', field, reason }, 400);
+    const CATALOG_STR_MAX = 200;
+    const optionalStr = (v: unknown, max = CATALOG_STR_MAX): string | null | false =>
+      v == null ? null : typeof v === 'string' && v.trim() !== '' && v.length <= max ? v : false;
+
+    let visibilityOut: ListingVisibility = 'public';
+    if (body.visibility != null) {
+      if (!isListingVisibility(body.visibility)) return badCatalog('visibility', 'public_unlisted_or_private');
+      visibilityOut = body.visibility;
+    }
+    const tenantId = optionalStr(body.tenant_id);
+    if (tenantId === false) return badCatalog('tenant_id', 'non_empty_string_max_200');
+    // Fail-closed: a private listing with no owning tenant would be invisible to
+    // everyone including its publisher, so refuse the row rather than store one
+    // that can never be read back.
+    if (visibilityOut === 'private' && tenantId == null) {
+      return badCatalog('tenant_id', 'required_for_private_visibility');
+    }
+
+    const skuRef = optionalStr(body.sku_ref);
+    if (skuRef === false) return badCatalog('sku_ref', 'non_empty_string_max_200');
+    let pricingModel: PricingModel | null = null;
+    if (body.pricing_model != null) {
+      if (!isPricingModel(body.pricing_model)) return badCatalog('pricing_model', 'free_one_time_subscription_or_per_use');
+      pricingModel = body.pricing_model;
+    }
+    let priceAmountMicros: number | null = null;
+    if (body.price_amount_micros != null) {
+      if (!Number.isSafeInteger(body.price_amount_micros) || (body.price_amount_micros as number) < 0) {
+        return badCatalog('price_amount_micros', 'non_negative_integer');
+      }
+      priceAmountMicros = body.price_amount_micros as number;
+    }
+    const priceCurrency = optionalStr(body.price_currency, 16);
+    if (priceCurrency === false) return badCatalog('price_currency', 'non_empty_string_max_16');
+    // A priced listing must be COMPLETE: a settlement adapter resolves sku_ref
+    // and charges amount+currency, so a half-declared price is an unchargeable
+    // listing that only fails at purchase time.
+    if (pricingModel != null && pricingModel !== 'free') {
+      if (skuRef == null) return badCatalog('sku_ref', 'required_for_priced_listing');
+      if (priceAmountMicros == null) return badCatalog('price_amount_micros', 'required_for_priced_listing');
+      if (priceCurrency == null) return badCatalog('price_currency', 'required_for_priced_listing');
+    }
+
+    let compatibilityJson: string | null = null;
+    if (body.compatibility != null) {
+      const compat = body.compatibility;
+      if (typeof compat !== 'object' || Array.isArray(compat)) return badCatalog('compatibility', 'must_be_object');
+      const { runtime, platforms, architectures } = compat as Record<string, unknown>;
+      if (runtime != null && (typeof runtime !== 'string' || runtime.trim() === '' || runtime.length > CATALOG_STR_MAX)) {
+        return badCatalog('compatibility.runtime', 'non_empty_string_max_200');
+      }
+      const strArray = (v: unknown): string[] | null =>
+        Array.isArray(v) && v.length <= 64 &&
+        v.every((e) => typeof e === 'string' && e.trim() !== '' && e.length <= CATALOG_STR_MAX)
+          ? (v as string[])
+          : null;
+      let platformList: string[] | undefined;
+      if (platforms != null) {
+        const parsed = strArray(platforms);
+        if (!parsed) return badCatalog('compatibility.platforms', 'string_array_max_64');
+        platformList = parsed;
+      }
+      let archList: string[] | undefined;
+      if (architectures != null) {
+        const parsed = strArray(architectures);
+        if (!parsed) return badCatalog('compatibility.architectures', 'string_array_max_64');
+        archList = parsed;
+      }
+      compatibilityJson = JSON.stringify({
+        ...(typeof runtime === 'string' ? { runtime } : {}),
+        ...(platformList ? { platforms: platformList } : {}),
+        ...(archList ? { architectures: archList } : {}),
+      });
+    }
+
+    let requiredPermissionsJson: string | null = null;
+    if (body.required_permissions != null) {
+      const perms = body.required_permissions;
+      if (
+        !Array.isArray(perms) || perms.length === 0 || perms.length > 200 ||
+        !perms.every((p) => typeof p === 'string' && p.trim() !== '' && p.length <= CATALOG_STR_MAX)
+      ) {
+        return badCatalog('required_permissions', 'non_empty_string_array_max_200');
+      }
+      if (new Set(perms as string[]).size !== perms.length) {
+        return badCatalog('required_permissions', 'duplicate_permission');
+      }
+      requiredPermissionsJson = JSON.stringify(perms);
+    }
+
+    // Immutable release identity. CONTENT identity only — no retrieval URL, so a
+    // later storage-provider migration (D-024) touches no field here.
+    const releaseVersion = optionalStr(body.release_version, 100);
+    if (releaseVersion === false) return badCatalog('release_version', 'non_empty_string_max_100');
+    const releaseSignature = optionalStr(body.release_signature, 1000);
+    if (releaseSignature === false) return badCatalog('release_signature', 'non_empty_string_max_1000');
+    const releaseManifestDigest = optionalStr(body.release_manifest_digest, 128);
+    if (releaseManifestDigest === false) return badCatalog('release_manifest_digest', 'non_empty_string_max_128');
+    let releaseContentHash: string | null = null;
+    if (body.release_content_hash != null) {
+      if (typeof body.release_content_hash !== 'string' || !CONTENT_HASH_RE.test(body.release_content_hash)) {
+        return badCatalog('release_content_hash', 'sha256_colon_64_hex');
+      }
+      releaseContentHash = body.release_content_hash.toLowerCase();
+    }
+    // A version names a release; a release without content identity cannot be
+    // verified on delivery, which is the whole point of pinning one.
+    if (releaseVersion != null && releaseContentHash == null) {
+      return badCatalog('release_content_hash', 'required_with_release_version');
+    }
+    if (releaseContentHash != null && releaseVersion == null) {
+      return badCatalog('release_version', 'required_with_release_content_hash');
+    }
+
     const id = uuidv4();
     await insertHarness(c.env.DB, {
       id,
@@ -722,6 +902,20 @@ function registerListingEndpoints(
       release_repo: releaseRepo,
       icon_url: iconUrl,
       platforms: platformsJson,
+      // Catalog axes (migration 018 / P-008). Kind-agnostic.
+      visibility: visibilityOut,
+      tenant_id: tenantId,
+      sku_ref: skuRef,
+      pricing_model: pricingModel,
+      price_amount_micros: priceAmountMicros,
+      price_currency: priceCurrency,
+      compatibility_json: compatibilityJson,
+      required_permissions: requiredPermissionsJson,
+      release_version: releaseVersion,
+      release_content_hash: releaseContentHash,
+      release_manifest_digest: releaseManifestDigest,
+      release_signature: releaseSignature,
+      release_published_at: releaseVersion != null ? now : null,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

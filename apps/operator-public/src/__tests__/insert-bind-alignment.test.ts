@@ -1,104 +1,230 @@
 /**
- * insert-bind-alignment.test.ts — the positional-coupling guard between
- * db.ts's `insertHarness()` and the fake-d1 test double.
+ * insert-bind-alignment.test.ts — the alignment guard between db.ts's
+ * `insertHarness()` and the fake-d1 test double.
  *
  * WHY THIS EXISTS
  * ---------------
- * `insertHarness()` in src/db.ts writes the `harnesses` row with a POSITIONAL
- * prepared statement: an explicit column list, a `VALUES (?, ?, …)` row, and a
- * `.bind(…)` argument list that must line up with both. The fake D1 used by the
- * route tests (`__tests__/fake-d1.ts`) re-implements that write by DESTRUCTURING
- * the same bind array positionally.
+ * `insertHarness()` writes the `harnesses` row with a POSITIONAL prepared
+ * statement: an explicit column list, a `VALUES (?, ?, …)` row, and a `.bind(…)`
+ * argument list that must line up with both. From migration 004 to 017 the fake
+ * D1 used by the route tests re-implemented that write by DESTRUCTURING the same
+ * bind array positionally — two separate source files with no compiler-visible
+ * link, so a column added mid-list in one and not the other shifted every later
+ * field by one.
  *
- * Those two lists are separate source files with no compiler-visible link, so
- * adding a column mid-list in one and not the other shifts every later field by
- * one. fake-d1.ts's own header has warned about this since migration 004 — and
- * on 2026-08-21 it happened anyway: migration 015 added `requires_rubrics` after
- * `requires_events` in db.ts, the fake was not updated, and every field from
- * position 20 on shifted. `hive_pubkey` took requires_rubrics' null,
+ * That is not hypothetical. On 2026-08-21 migration 015 added `requires_rubrics`
+ * after `requires_events` in db.ts, the fake was not updated, and every field
+ * from position 20 on shifted: `hive_pubkey` took requires_rubrics' null,
  * `blueprint_kind` took hive_title, and `review_status` took blueprint_kind and
  * fell back to its 'approved' default — silently disabling the publish REVIEW
- * GATE in every test that exercised it. Nine assertions in listings.test.ts and
- * three in review.test.ts went red, and because the shifted fields belong to
- * migrations 007/008/009 the failures pointed at blueprint/hive/review work that
- * was entirely innocent.
+ * GATE in every test that exercised it. Twelve assertions went red pointing at
+ * blueprint/hive/review work that was entirely innocent.
  *
- * A prose warning is not a guard. This test makes the coupling MECHANICAL: it
- * asserts the two lists still have the same arity, so the next mid-list column
- * fails HERE — naming the real cause — instead of surfacing as a scatter of
- * confusing assertion failures in unrelated feature tests.
+ * WHAT CHANGED (shared-pot-dao-cupboard-v1-2026-09-04 P-008)
+ * ----------------------------------------------------------
+ * The original guard here compared ARITY: it asserted the two lists were the
+ * same length, so a mid-list insertion failed HERE naming the real cause. That
+ * was a policing measure, and it had two holes it could not close — a same-arity
+ * RENAME or REORDER passed it, and it only ever fired after someone had already
+ * written the shifted code.
  *
- * WHY ARITY AND NOT NAMES. The fake deliberately uses short local names
- * (`gh_repo_id` for `github_repository_id`), so a name-equality check would be
- * noise. Arity is what actually breaks: a mid-list insertion always changes it.
- * A same-arity rename/reorder is not caught here — see the follow-up below.
+ * Migration 018 added thirteen more columns, which was the second time this trap
+ * was armed. Rather than re-arm it, fake-d1 now maps binds BY NAME: it reads the
+ * column list out of the statement it is handed (`mapInsertBindsByName`) and
+ * pairs each column with its own value, so db.ts can add, reorder, or rename a
+ * column and the fake follows automatically. The coupling is gone rather than
+ * guarded — the follow-up this file's own header filed in 2026-08-21.
  *
- * FOLLOW-UP (tracked): the durable fix is to remove the coupling entirely by
- * having fake-d1 parse the column list out of the SQL it is handed and map binds
- * BY NAME, at which point this guard becomes unnecessary. That is a rewrite of a
- * file other agents were mid-checkpoint in, so it is filed rather than done here.
+ * So this file no longer counts anything. It asserts the two properties that
+ * REPLACED the count, either of which failing would bring the shift class back:
+ *
+ *   1. fake-d1 does not positionally destructure the bind array (a regression to
+ *      `const [ … ] = binds` would silently reintroduce the whole class).
+ *   2. Every column insertHarness writes ARRIVES UNDER ITS OWN NAME carrying its
+ *      own value — checked end-to-end through the real statement, with distinct
+ *      sentinel values so a swapped pair cannot pass. This is strictly stronger
+ *      than arity: it catches the rename and the reorder that arity could not.
  */
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { insertHarness } from '../db.ts';
+import { mapInsertBindsByName } from './fake-d1.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_TS = join(__dirname, '../db.ts');
 // Subject path is overridable so falsifiability can be PROVEN against a copy
 // (repo mutation-probe tier 2) instead of by mutating this shared checkout:
 //   PROBE_FAKE_D1=/tmp/fake-d1-BROKEN.ts npm run test:file -- <this file>
 const FAKE_D1_TS = process.env.PROBE_FAKE_D1 || join(__dirname, './fake-d1.ts');
 
-/** The `VALUES (…)` row of insertHarness()'s INSERT: count `?` placeholders. */
-export function countInsertPlaceholders(dbSource: string): number {
-  const insertAt = dbSource.indexOf('INSERT INTO harnesses');
-  if (insertAt === -1) throw new Error('could not locate `INSERT INTO harnesses` in db.ts');
-  const valuesAt = dbSource.indexOf('VALUES', insertAt);
-  if (valuesAt === -1) throw new Error('could not locate the VALUES row of the harnesses INSERT');
-  const open = dbSource.indexOf('(', valuesAt);
-  const close = dbSource.indexOf(')', open);
-  if (open === -1 || close === -1) throw new Error('could not bound the VALUES (…) row');
-  const row = dbSource.slice(open + 1, close);
-  return (row.match(/\?/g) ?? []).length;
+/** Capture the exact SQL + binds insertHarness() emits, without a database. */
+function captureInsert(): Promise<{ sql: string; binds: unknown[] }> {
+  return new Promise((resolve) => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...binds: unknown[]) {
+            return {
+              async run() {
+                resolve({ sql, binds });
+                return { success: true as const };
+              },
+            };
+          },
+        };
+      },
+    };
+    void insertHarness(db as unknown as D1Database, {
+      id: 'v-id',
+      listing_kind: 'plugin',
+      project_ref: 'v-project_ref',
+      listing_ref: 'v-listing_ref',
+      github_repository_id: 101,
+      github_owner: 'v-github_owner',
+      github_name: 'v-github_name',
+      github_url: 'v-github_url',
+      title: 'v-title',
+      description: 'v-description',
+      topic_hex: 'v-topic_hex',
+      publisher_github_user_id: 102,
+      publisher_github_login: 'v-publisher_github_login',
+      publisher_permission: 'v-publisher_permission',
+      publisher_device_pubkey: 'v-publisher_device_pubkey',
+      publisher_attestation_gist_id: 'v-publisher_attestation_gist_id',
+      provides_tools: 'v-provides_tools',
+      provides_events: 'v-provides_events',
+      requires_events: 'v-requires_events',
+      requires_rubrics: 'v-requires_rubrics',
+      hive_pubkey: 'v-hive_pubkey',
+      hive_title: 'v-hive_title',
+      blueprint_kind: 'v-blueprint_kind',
+      review_status: 'pending',
+      delivery_type: 'bundle',
+      latest_json_url: 'v-latest_json_url',
+      release_repo: 'v-release_repo',
+      icon_url: 'v-icon_url',
+      platforms: 'v-platforms',
+      visibility: 'private',
+      tenant_id: 'v-tenant_id',
+      sku_ref: 'v-sku_ref',
+      pricing_model: 'per-use',
+      price_amount_micros: 103,
+      price_currency: 'v-price_currency',
+      compatibility_json: 'v-compatibility_json',
+      required_permissions: 'v-required_permissions',
+      release_version: 'v-release_version',
+      release_content_hash: 'v-release_content_hash',
+      release_manifest_digest: 'v-release_manifest_digest',
+      release_signature: 'v-release_signature',
+      release_published_at: 104,
+      created_at: 105,
+    });
+  });
 }
 
-/** The `const [ … ] = binds;` destructure in fake-d1's INSERT branch. */
-export function countFakeD1BindNames(fakeSource: string): number {
-  const branchAt = fakeSource.indexOf("startsWith('INSERT INTO HARNESSES')");
-  if (branchAt === -1) throw new Error('could not locate the INSERT branch in fake-d1.ts');
-  const open = fakeSource.indexOf('const [', branchAt);
-  const close = fakeSource.indexOf('] = binds', open);
-  if (open === -1 || close === -1) throw new Error('could not bound the `const [ … ] = binds` destructure');
-  return fakeSource
-    .slice(open + 'const ['.length, close)
-    .split(',')
-    .map((s) => s.replace(/\/\/.*$/gm, '').trim())
-    .filter((s) => s.length > 0).length;
-}
-
-describe('insertHarness ↔ fake-d1 positional bind alignment', () => {
-  const dbSource = readFileSync(DB_TS, 'utf8');
-  const fakeSource = readFileSync(FAKE_D1_TS, 'utf8');
-
-  // Guards a vacuous pass: if either extractor silently returned 0 because the
-  // source moved, the equality below would "pass" while measuring nothing.
-  it('found both bind lists (guards a broken extractor)', () => {
-    expect(countInsertPlaceholders(dbSource)).toBeGreaterThan(20);
-    expect(countFakeD1BindNames(fakeSource)).toBeGreaterThan(20);
+describe('insertHarness ↔ fake-d1 bind alignment', () => {
+  it('fake-d1 maps binds BY NAME, not by position', () => {
+    const fakeSource = readFileSync(FAKE_D1_TS, 'utf8');
+    const branchAt = fakeSource.indexOf("startsWith('INSERT INTO HARNESSES')");
+    expect(branchAt, 'could not locate the INSERT branch in fake-d1.ts').toBeGreaterThan(-1);
+    // Bound the slice at the branch's OWN `return 1;`. A fixed character window
+    // would run past it into the next branch — whose legitimate positional
+    // destructure would then trip this assertion and report a defect that is not
+    // there, in the file whose whole point is telling a real shift from a false
+    // alarm.
+    const branchEnd = fakeSource.indexOf('return 1;', branchAt);
+    expect(branchEnd, 'could not bound the INSERT branch').toBeGreaterThan(branchAt);
+    const branch = fakeSource.slice(branchAt, branchEnd);
+    expect(
+      /const\s*\[[\s\S]*?\]\s*=\s*binds/.test(branch),
+      'fake-d1.ts has gone back to destructuring the harnesses INSERT binds positionally. ' +
+        'That reintroduces the silent field-shift class migration 015 hit: a column added, ' +
+        'renamed, or reordered in db.ts then lands in the WRONG column while every test keeps ' +
+        'passing. Map binds by name via mapInsertBindsByName(sql, binds) instead.',
+    ).toBe(false);
+    expect(
+      branch.includes('mapInsertBindsByName'),
+      'fake-d1.ts no longer calls mapInsertBindsByName in its harnesses INSERT branch.',
+    ).toBe(true);
   });
 
-  it('fake-d1 destructures exactly as many binds as insertHarness supplies', () => {
-    const placeholders = countInsertPlaceholders(dbSource);
-    const destructured = countFakeD1BindNames(fakeSource);
-    expect(
-      destructured,
-      `insertHarness() binds ${placeholders} value(s) but fake-d1.ts destructures ${destructured}. ` +
-        'A column was added mid-list in one file and not the other, so every field after the ' +
-        'insertion point is shifted by one and lands in the WRONG column (this is how the ' +
-        'migration-015 requires_rubrics shift silently disabled the review gate). Update the ' +
-        '`const [ … ] = binds` destructure in fake-d1.ts to match db.ts, in the SAME ORDER.',
-    ).toBe(placeholders);
+  it('every column insertHarness writes arrives under its own name', async () => {
+    const { sql, binds } = await captureInsert();
+
+    // Guards a vacuous pass: a statement that lost its columns, or an extractor
+    // that silently returned {}, would let the per-column loop below assert
+    // nothing at all.
+    const columns = /INSERT\s+INTO\s+harnesses\s*\(([^)]*)\)/i.exec(sql)?.[1];
+    expect(columns, 'could not locate the harnesses INSERT column list').toBeTruthy();
+    const columnNames = (columns as string).split(',').map((c) => c.trim()).filter(Boolean);
+    expect(columnNames.length).toBeGreaterThan(30);
+    expect(binds.length).toBeGreaterThan(30);
+
+    const row = mapInsertBindsByName(sql, binds);
+    expect(Object.keys(row).sort()).toEqual([...columnNames].sort());
+
+    // Every sentinel is DISTINCT, so a swapped pair of same-typed columns fails
+    // here — the failure mode a length comparison is blind to by construction.
+    expect(row).toMatchObject({
+      id: 'v-id',
+      listing_kind: 'plugin',
+      project_ref: 'v-project_ref',
+      listing_ref: 'v-listing_ref',
+      github_repository_id: 101,
+      github_owner: 'v-github_owner',
+      github_name: 'v-github_name',
+      github_url: 'v-github_url',
+      title: 'v-title',
+      description: 'v-description',
+      topic_hex: 'v-topic_hex',
+      publisher_github_user_id: 102,
+      publisher_github_login: 'v-publisher_github_login',
+      publisher_permission: 'v-publisher_permission',
+      publisher_device_pubkey: 'v-publisher_device_pubkey',
+      publisher_attestation_gist_id: 'v-publisher_attestation_gist_id',
+      provides_tools: 'v-provides_tools',
+      provides_events: 'v-provides_events',
+      requires_events: 'v-requires_events',
+      requires_rubrics: 'v-requires_rubrics',
+      hive_pubkey: 'v-hive_pubkey',
+      hive_title: 'v-hive_title',
+      blueprint_kind: 'v-blueprint_kind',
+      review_status: 'pending',
+      delivery_type: 'bundle',
+      latest_json_url: 'v-latest_json_url',
+      release_repo: 'v-release_repo',
+      icon_url: 'v-icon_url',
+      platforms: 'v-platforms',
+      // migration 018 catalog axes
+      visibility: 'private',
+      tenant_id: 'v-tenant_id',
+      sku_ref: 'v-sku_ref',
+      pricing_model: 'per-use',
+      price_amount_micros: 103,
+      price_currency: 'v-price_currency',
+      compatibility_json: 'v-compatibility_json',
+      required_permissions: 'v-required_permissions',
+      release_version: 'v-release_version',
+      release_content_hash: 'v-release_content_hash',
+      release_manifest_digest: 'v-release_manifest_digest',
+      release_signature: 'v-release_signature',
+      release_published_at: 104,
+      // written as a SQL literal, not a bind — the reason a naive
+      // `columns[i] = binds[i]` zip would be off by one from here on.
+      claim_status: 'unclaimed',
+      created_at: 105,
+      updated_at: 105,
+    });
+  });
+
+  it('mapInsertBindsByName refuses a statement whose placeholders and binds disagree', () => {
+    // The extractor must FAIL LOUD rather than silently drop or invent a column
+    // — a quiet mismatch here would be the very defect this file exists to stop.
+    const sql = 'INSERT INTO harnesses (a, b, c) VALUES (?, ?, ?)';
+    expect(() => mapInsertBindsByName(sql, [1, 2])).toThrow(/more binds/);
+    expect(() => mapInsertBindsByName(sql, [1, 2, 3, 4])).toThrow(/consumed 3 of 4/);
+    expect(() => mapInsertBindsByName('SELECT 1', [])).toThrow(/unparseable/);
   });
 });

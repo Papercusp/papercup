@@ -84,8 +84,160 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     release_repo: null,
     icon_url: null,
     platforms: null,
+    // migration 018 (shared-pot-dao-cupboard-v1 P-008): catalog axes.
+    // `visibility` mirrors the column's NOT NULL DEFAULT 'public', so a row a
+    // test does not opt into stays browsable exactly as it did pre-018.
+    visibility: 'public',
+    tenant_id: null,
+    sku_ref: null,
+    pricing_model: null,
+    price_amount_micros: null,
+    price_currency: null,
+    compatibility_json: null,
+    required_permissions: null,
+    release_version: null,
+    release_content_hash: null,
+    release_manifest_digest: null,
+    release_signature: null,
+    release_published_at: null,
+    yanked_at: null,
+    yanked_reason: null,
+    revoked_at: null,
+    revoked_reason: null,
     ...over,
   };
+}
+
+/**
+ * Map an `INSERT INTO <table> (cols…) VALUES (…)` statement's binds onto their
+ * COLUMN NAMES, by reading the column list out of the SQL itself.
+ *
+ * This replaces the positional destructure this file used from migration 004 to
+ * 017 — the coupling `insert-bind-alignment.test.ts` was written to guard after
+ * migration 015 shifted every field past position 20 and silently disabled the
+ * publish review gate in every test that exercised it. An arity guard catches a
+ * mid-list INSERTION but not a same-arity reorder or rename, and it only fires
+ * once the damage is already written. Reading the names from the statement
+ * removes the coupling instead of policing it: db.ts can add, reorder, or rename
+ * a column and this fake follows automatically (P-008 / the follow-up filed in
+ * that test's own header).
+ *
+ * The VALUES tuple may contain literals as well as placeholders (insertHarness
+ * writes `'unclaimed'` inline for claim_status), so the walk consumes a bind
+ * only for a `?` and takes the literal otherwise — which is why a naive
+ * `columns[i] = binds[i]` zip would be wrong here.
+ */
+export function mapInsertBindsByName(sql: string, binds: unknown[]): Row {
+  const match = /INSERT\s+INTO\s+\w+\s*\(([^)]*)\)\s*VALUES\s*\(([\s\S]*?)\)\s*$/i.exec(sql.trim());
+  if (!match) throw new Error(`fake-d1: unparseable INSERT statement: ${sql.slice(0, 120)}`);
+  const columns = match[1].split(',').map((c) => c.trim()).filter(Boolean);
+  const values = match[2].split(',').map((v) => v.trim()).filter(Boolean);
+  if (columns.length !== values.length) {
+    throw new Error(
+      `fake-d1: INSERT column/value arity mismatch (${columns.length} columns, ${values.length} values)`,
+    );
+  }
+  const row: Row = {};
+  let bindIndex = 0;
+  for (let i = 0; i < columns.length; i += 1) {
+    const value = values[i];
+    if (value === '?') {
+      if (bindIndex >= binds.length) {
+        throw new Error(`fake-d1: INSERT needs more binds than supplied (${binds.length})`);
+      }
+      row[columns[i]] = binds[bindIndex++];
+    } else if (/^'.*'$/.test(value)) {
+      row[columns[i]] = value.slice(1, -1);
+    } else if (/^NULL$/i.test(value)) {
+      row[columns[i]] = null;
+    } else {
+      row[columns[i]] = Number.isNaN(Number(value)) ? value : Number(value);
+    }
+  }
+  if (bindIndex !== binds.length) {
+    throw new Error(
+      `fake-d1: INSERT consumed ${bindIndex} of ${binds.length} binds — placeholder/bind mismatch`,
+    );
+  }
+  return row;
+}
+
+/**
+ * Apply the migration-018 catalog half of the public list predicate
+ * (`appendCatalogPredicate` in db.ts), consuming its binds in the SAME order.
+ *
+ * Returns the filtered rows and the advanced bind index, because the summary CTE
+ * reads one more bind (the matched kind) after this block.
+ *
+ * ⚠ The narrowing `tenant_ref` and the widening `tenant_scope` both emit
+ * `h.tenant_id = ?`, so they are told apart by the OPERATOR that precedes them —
+ * `AND h.tenant_id = ?` for the filter, `OR h.tenant_id = ?` inside the
+ * visibility-scope disjunction. Confusing the two here would make the fake agree
+ * with a tenant leak instead of catching one.
+ */
+function applyCatalogPredicate(
+  upper: string,
+  binds: unknown[],
+  startIndex: number,
+  rows: Row[],
+): { rows: Row[]; index: number } {
+  let i = startIndex;
+  let out = rows;
+  if (upper.includes('H.VISIBILITY = ?')) {
+    const visibility = binds[i++];
+    out = out.filter((r) => r.visibility === visibility);
+  }
+  if (upper.includes('AND H.TENANT_ID = ?')) {
+    const tenant = binds[i++];
+    out = out.filter((r) => r.tenant_id === tenant);
+  }
+  if (upper.includes('H.PRICING_MODEL = ?')) {
+    const pricing = binds[i++];
+    out = out.filter((r) => r.pricing_model === pricing);
+  }
+  const priced = (r: Row) =>
+    r.sku_ref != null && r.pricing_model != null && r.pricing_model !== 'free';
+  if (upper.includes("H.PRICING_MODEL != 'FREE'")) out = out.filter(priced);
+  else if (upper.includes("H.PRICING_MODEL = 'FREE'")) out = out.filter((r) => !priced(r));
+  if (upper.includes('JSON_EXTRACT(H.COMPATIBILITY_JSON')) {
+    const runtime = binds[i++];
+    out = out.filter((r) => parseJsonField(r.compatibility_json)?.runtime === runtime);
+  }
+  if (upper.includes("JSON_EACH(H.COMPATIBILITY_JSON, '$.PLATFORMS')")) {
+    const platform = binds[i++];
+    out = out.filter((r) => {
+      const platforms = parseJsonField(r.compatibility_json)?.platforms;
+      return Array.isArray(platforms) && platforms.includes(platform);
+    });
+  }
+  if (upper.includes('JSON_EACH(H.REQUIRED_PERMISSIONS)')) {
+    const permission = binds[i++];
+    out = out.filter((r) => {
+      const perms = parseJsonField(r.required_permissions);
+      return Array.isArray(perms) && perms.includes(permission);
+    });
+  }
+  if (upper.includes('OR H.TENANT_ID = ?')) {
+    const scope = binds[i++];
+    out = out.filter((r) => r.visibility === 'public' || r.tenant_id === scope);
+  } else if (upper.includes("H.VISIBILITY = 'PUBLIC'")) {
+    out = out.filter((r) => r.visibility === 'public');
+  }
+  if (upper.includes('H.YANKED_AT IS NULL')) out = out.filter((r) => r.yanked_at == null);
+  if (upper.includes('H.REVOKED_AT IS NULL')) out = out.filter((r) => r.revoked_at == null);
+  return { rows: out, index: i };
+}
+
+/** Tolerant JSON column read: a malformed value filters like an absent one,
+ *  matching the `json_valid()` guard the real predicate carries. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseJsonField(raw: unknown): any {
+  if (typeof raw !== 'string' || raw === '') return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 export class FakeStore {
@@ -145,54 +297,18 @@ export class FakeStore {
       return 1;
     }
     if (upper.startsWith('INSERT INTO HARNESSES')) {
-      // ⚠ POSITIONAL: this destructure must track insertHarness()'s bind order in
-      // db.ts EXACTLY (migrations 004/006/007/008/012/013/014/015). Insert a column
-      // mid-list in one place and not the other and every later field silently
-      // shifts by one — the tests keep passing while writing wrong data into
-      // wrong columns.
-      const [
-        id, listing_kind, project_ref, listing_ref,
-        gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
-        pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
-        provides_tools, provides_events, requires_events, requires_rubrics,
-        hive_pubkey, hive_title, blueprint_kind,
-        review_status,
-        delivery_type, latest_json_url, release_repo, icon_url, platforms,
-        created_at, updated_at,
-      ] = binds;
+      // BY NAME, not by position: the column list is read out of the statement
+      // itself (see mapInsertBindsByName). db.ts may add, reorder, or rename a
+      // column in insertHarness() and this fake follows — the silent field-shift
+      // class that migration 015 hit is structurally gone, not merely guarded.
+      const written = mapInsertBindsByName(sql, binds);
       this.tables.harnesses.push(
         makeListingRow({
-          id,
-          listing_kind: listing_kind ?? 'harness',
-          project_ref: project_ref ?? null,
-          listing_ref: listing_ref ?? null,
-          github_repository_id: gh_repo_id,
-          github_owner: gh_owner,
-          github_name: gh_name,
-          github_url: gh_url,
-          title,
-          description,
-          topic_hex,
-          publisher_github_user_id: pub_user_id,
-          publisher_github_login: pub_login,
-          publisher_permission: pub_permission ?? null,
-          publisher_device_pubkey: device_pubkey ?? null,
-          publisher_attestation_gist_id: attestation_gist_id ?? null,
-          provides_tools: provides_tools ?? null,
-          provides_events: provides_events ?? null,
-          requires_events: requires_events ?? null,
-          requires_rubrics: requires_rubrics ?? null,
-          hive_pubkey: hive_pubkey ?? null,
-          hive_title: hive_title ?? null,
-          blueprint_kind: blueprint_kind ?? null,
-          review_status: review_status ?? 'approved',
-          delivery_type: (delivery_type as 'standalone' | 'bundle' | null) ?? null,
-          latest_json_url: (latest_json_url as string | null) ?? null,
-          release_repo: (release_repo as string | null) ?? null,
-          icon_url: (icon_url as string | null) ?? null,
-          platforms: (platforms as string | null) ?? null,
-          created_at,
-          updated_at,
+          ...written,
+          // Column defaults the INSERT leaves to the schema.
+          listing_kind: written.listing_kind ?? 'harness',
+          review_status: written.review_status ?? 'approved',
+          visibility: written.visibility ?? 'public',
         }),
       );
       return 1;
@@ -399,6 +515,8 @@ export class FakeStore {
             .some((value) => String(value ?? '').toLowerCase().includes(search)),
         );
       }
+      // Catalog filters bind AFTER claim and BEFORE the matched-kind bind.
+      ({ rows, index: i } = applyCatalogPredicate(upper, binds, i, rows));
       const hasMatchedKind = upper.includes('FROM POPULATION WHERE LISTING_KIND = ?');
       const matchedKind = hasMatchedKind ? binds[i] : undefined;
       const total = hasMatchedKind
@@ -461,6 +579,9 @@ export class FakeStore {
             .some((value) => String(value ?? '').toLowerCase().includes(search)),
         );
       }
+      // Catalog filters (migration 018) bind after claim; row-filter order is
+      // irrelevant, but the bind index must advance in the emitted order.
+      ({ rows, index: i } = applyCatalogPredicate(upper, binds, i, rows));
       if (cursorActivity !== undefined) {
         rows = rows.filter((r) => {
           const activity = r.last_activity_at as number | null;

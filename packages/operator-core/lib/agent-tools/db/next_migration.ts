@@ -28,11 +28,15 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveSqlDir } from '../../migration-drift';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { ALLOC_ADVISORY_KEY } from '../../../../../scripts/lib/migration-allocation.mjs';
+import {
+  ALLOC_ADVISORY_KEY,
+  scanMigrationDirs,
+} from '../../../../../scripts/lib/migration-allocation.mjs';
 // WI-38353 — shared with scripts/next-migration.mjs so the two doors cannot
 // diverge on what counts as duplicate work. Both are postgres.js callers, so
 // the ledger query itself is shared too, not just the judgement.
 import {
+  annotateCandidatesWithDisk,
   fetchRedundancyCandidates,
   formatRedundancyMessage,
   judgeRedundantReservation,
@@ -45,18 +49,6 @@ export { ALLOC_ADVISORY_KEY };
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
-
-/** Highest leading-number among `NNN-*.sql` files across the dirs (0 if none). */
-function maxNumberOnDisk(sqlDirs: string[]): number {
-  let max = 0;
-  for (const dir of sqlDirs) {
-    for (const f of fs.readdirSync(dir)) {
-      const m = /^(\d+)-/.exec(f);
-      if (m) max = Math.max(max, Number.parseInt(m[1]!, 10));
-    }
-  }
-  return max;
-}
 
 /**
  * Sql dirs to scan for the filesystem max. The serving checkout's dir alone is
@@ -171,7 +163,14 @@ export default defineTool({
       // it in and the tool handed out an already-used number. maxReserved /
       // maxApplied were already computed under the lock — this closes the last
       // (filesystem) leg so all three GREATEST inputs are read atomically.
-      const fsMax = maxNumberOnDisk(sqlDirs);
+      //
+      // ONE scan serves both readers: the allocation max, and the per-candidate
+      // written/occupied facts the unwritten-reservation rule needs
+      // (EI-20300821494280085). Both must be read under this lock for the same
+      // TOCTOU reason. Shared with the CLI door so neither can grow its own
+      // notion of what the filesystem says.
+      const scan = scanMigrationDirs(sqlDirs);
+      const fsMax = scan.maxNumber;
       const rows = await tx<{ next: number }[]>`
         SELECT GREATEST(
                  ${fsMax},
@@ -194,7 +193,7 @@ export default defineTool({
       // allocation; reading it outside would leave the very race this closes.
       const judgement = judgeRedundantReservation({
         slug,
-        candidates: await fetchRedundancyCandidates(tx),
+        candidates: annotateCandidatesWithDisk(await fetchRedundancyCandidates(tx), scan),
         nowMs: Date.now(),
       });
       if (judgement.verdict === 'block' && !args.force) {

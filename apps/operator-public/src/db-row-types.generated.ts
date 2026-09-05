@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 449c7b0f2773f96eb803509f8091c0fa9163415179c80056a422c2cf44a1b68f
+ * Migration digest: dcac248016b810a07f887879fa8e78e9f5da8f7e12ec27a0fdc54fadc9e8cd60
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "449c7b0f2773f96eb803509f8091c0fa9163415179c80056a422c2cf44a1b68f";
+  "dcac248016b810a07f887879fa8e78e9f5da8f7e12ec27a0fdc54fadc9e8cd60";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -106,6 +106,23 @@ export interface HarnessesRow {
   icon_url: string | null;
   platforms: string | null;
   requires_rubrics: string | null;
+  visibility: string;
+  tenant_id: string | null;
+  sku_ref: string | null;
+  pricing_model: string | null;
+  price_amount_micros: number | null;
+  price_currency: string | null;
+  compatibility_json: string | null;
+  required_permissions: string | null;
+  release_version: string | null;
+  release_content_hash: string | null;
+  release_manifest_digest: string | null;
+  release_signature: string | null;
+  release_published_at: number | null;
+  yanked_at: number | null;
+  yanked_reason: string | null;
+  revoked_at: number | null;
+  revoked_reason: string | null;
 }
 
 export interface IndexerRunsRow {

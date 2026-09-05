@@ -645,7 +645,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(queue).toBeNull();
   });
 
-  it("defers automatic first-red fixer dispatch until stale-tip re-triage", async () => {
+  it("P-024: a first red freezes at once — the queue row written this pass pins re-triage to the lineage head, so the moving tip is never re-run or refired on (deferred dispatch still settles)", async () => {
+    // Formerly WI-39944 "defers automatic first-red fixer dispatch until stale-tip re-triage":
+    // the deferral is kept (no fixer is dispatched before the re-triage window), but the window
+    // itself no longer judges the integration tip. frozen-candidate-stays-frozen-through-all-fixes
+    // D-003/D-011/D-014: a persisted row is a freeze from the moment it is written — peers already
+    // see it and admit onto it — so a tip re-run + refire here was the fourth un-freezing path
+    // (WI-2144110). A stale first red is repaired by ADMITTING the staging fix by path (the
+    // already-fixed note names it), never by re-cutting at tip.
     vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
     vi.stubEnv("PAPERCUSP_GATE_AUTO_REFIRE_CAP", "0");
     try {
@@ -659,8 +666,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       let dispatched = false;
       deps.runGreen = async () => {
         calls.push("runGreen");
-        // The automatic candidate is cut before this commit lands, so the red verdict has a
-        // newer tip available for the cheap stale-candidate check.
+        // The automatic candidate is cut before this commit lands, so a newer tip EXISTS for the
+        // old stale-candidate check — the point is that the frozen row keeps the gate off it.
         movingTip = await commit("c", "3", "tip landed during suite");
         return {
           green: false,
@@ -672,10 +679,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         };
       };
       deps.resolveTip = async () => movingTip;
-      deps.runTestsAtRef = async (tip) => {
+      deps.runTestsAtRef = async (ref) => {
         calls.push("runTestsAtRef");
-        expect(tip).toBe(movingTip);
-        return { pass: true, summary: "pass at tip" };
+        throw new Error(
+          `re-triage re-ran the failing files at ${ref} while a queue row was frozen at ${candidate} — the tip must never be judged (P-024)`,
+        );
       };
       deps.readFrozenRepairQueue = async () => queue;
       deps.writeFrozenRepairQueue = async (next) => {
@@ -685,7 +693,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       deps.dispatchFrozenRepairFixer = async () => {
         dispatched = true;
         throw new Error(
-          "automatic first-red path must re-triage before dispatching a fixer",
+          "automatic first-red path must not dispatch a fixer before the re-triage window",
         );
       };
 
@@ -697,17 +705,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         green: false,
         reason: "not-green",
         retriage: {
-          classification: "stale-candidate",
+          // The lineage head of a fresh row IS the candidate, so there is nothing to re-run at:
+          // the verdict records that the tip was never looked at, never a stale-candidate rescue.
+          classification: "unknown",
           autoRefire: false,
+          tip: candidate,
         },
       });
       expect(writes.map((entry) => entry?.phase ?? "clear")).toEqual([
         "ready-to-test",
         "awaiting-fixer",
       ]);
-      expect(calls.indexOf("runTestsAtRef")).toBeGreaterThan(
-        calls.indexOf("runGreen"),
-      );
+      expect(calls).not.toContain("runTestsAtRef");
       expect(dispatched).toBe(false);
       expect(queue).toMatchObject({
         phase: "awaiting-fixer",

@@ -110,6 +110,47 @@ export interface ImpactIdea {
   viaPatternRefs: string[];
 }
 
+/**
+ * The DENOMINATOR for `surfacedAsPattern` (EI-20305547503222578).
+ *
+ * A bare `surfacedAsPattern` count cannot be read on its own, because the ceiling
+ * it is counting against is tiny and SHARED BY EVERY FILER: the digest collapses
+ * each friction CLUSTER to one exemplar, and caps each citable lane
+ * (`corpus-digest.ts` — `opts.perCategory ?? 20`, and the real path passes no
+ * `perCategory`). So only a few dozen observations hive-wide are cited as exemplars
+ * at any instant, against a filing population orders of magnitude larger. The
+ * overwhelmingly common reading is therefore `surfacedAsPattern: 0` — the EXPECTED
+ * output of a fully healthy pipeline, previously indistinguishable from a dead one.
+ *
+ * These counts are DERIVED from the same digest read that produces the numerator
+ * (never hand-maintained), so they cannot drift from the mechanism they describe.
+ */
+export interface SurfacingBasis {
+  /** Citable-lane patterns the digest surfaced hive-wide on THIS read. */
+  citableSlotsHiveWide: number;
+  /**
+   * Of those, the slots whose ref actually names an observation (`wi:<id>`) — the
+   * real ceiling on `surfacedAsPattern`, competed for by every filer at once.
+   */
+  observationNamingSlots: number;
+  /**
+   * True when the digest was NOT read on this call (the no-filings short-circuit, or
+   * a failed digest/grounding leg), so the slot counts above are UNKNOWN rather than
+   * zero. Branch on this before comparing the numerator to them: reporting a
+   * not-measured ceiling as `0` would replace one misleading zero with another.
+   */
+  slotsUnknown?: boolean;
+  /** Why the bare count is uninterpretable. Deliberately carries no numbers, so it cannot drift. */
+  note: string;
+}
+
+/** The mechanism note carried on every {@link SurfacingBasis}. */
+export const SURFACING_BASIS_NOTE =
+  'The digest collapses each friction cluster to ONE exemplar and caps each citable lane, so only ' +
+  'the slots counted here are cited hive-wide at any instant — shared across every filer. A 0 is ' +
+  'therefore the expected reading for the large majority of filers and is NOT evidence that your ' +
+  'filings went unread or that the pipeline is dead.';
+
 /** The demand-pull observation→impact readback (P-021). */
 export interface ObservationsImpact {
   /** The agent's own `lane:observation` filings in the last {@link OBS_IMPACT_WINDOW_DAYS} days. */
@@ -120,11 +161,17 @@ export interface ObservationsImpact {
   ideas: ImpactIdea[];
   summary: {
     filings: number;
-    /** Distinct filings that surfaced as a cited pattern (the exemplar of one). */
+    /**
+     * Distinct filings that surfaced as a cited pattern (the exemplar of one).
+     * NEVER read this without {@link SurfacingBasis} beside it — on its own a `0`
+     * is the modal output of a HEALTHY pipeline, not a signal about your filings.
+     */
     surfacedAsPattern: number;
     ideasGrounded: number;
     /** Grounded ideas whose routed artifact shipped (`outcome === 'won'`). */
     shipped: number;
+    /** The denominator + base rate that make `surfacedAsPattern` readable. */
+    basis: SurfacingBasis;
   };
   /** Present only when the digest/grounding leg failed — filings still return (fail-open). */
   error?: string;
@@ -192,6 +239,14 @@ export function computeObservationsImpact(
   filings: readonly ObservationFiling[],
   patterns: readonly DigestPatternView[],
   ideas: readonly GroundedIdeaRow[],
+  opts: {
+    /**
+     * Did `patterns` actually come from a digest read? Default true — the supplied
+     * array IS the read. The impure resolver passes `false` when the digest leg threw,
+     * so an empty array is reported as an UNKNOWN ceiling rather than a measured zero.
+     */
+    patternsRead?: boolean;
+  } = {},
 ): ObservationsImpact {
   const myIds = new Set(filings.map((f) => f.id));
 
@@ -228,6 +283,19 @@ export function computeObservationsImpact(
 
   const surfaced = new Set(citing.map((p) => p.citesObservationId));
   const shipped = grounded.filter((i) => i.outcome === 'won').length;
+  // The ceiling `surfacedAsPattern` is counted against, derived from the SAME digest
+  // read that produced the numerator (EI-20305547503222578). `patterns` here is the
+  // hive-wide citable set — not just the citing subset — so this is every filer's
+  // shared denominator, not this agent's own tally.
+  const patternsRead = opts.patternsRead !== false;
+  const basis: SurfacingBasis = {
+    citableSlotsHiveWide: patternsRead ? patterns.length : 0,
+    observationNamingSlots: patternsRead
+      ? patterns.filter((p) => patternRefToIssueId(p.ref) != null).length
+      : 0,
+    ...(patternsRead ? {} : { slotsUnknown: true as const }),
+    note: SURFACING_BASIS_NOTE,
+  };
   return {
     filings: [...filings],
     patterns: citing,
@@ -237,6 +305,7 @@ export function computeObservationsImpact(
       surfacedAsPattern: surfaced.size,
       ideasGrounded: grounded.length,
       shipped,
+      basis,
     },
   };
 }
@@ -355,7 +424,21 @@ export async function resolveObservationsImpact(
         filings: [],
         patterns: [],
         ideas: [],
-        summary: { filings: 0, surfacedAsPattern: 0, ideasGrounded: 0, shipped: 0 },
+        summary: {
+          filings: 0,
+          surfacedAsPattern: 0,
+          ideasGrounded: 0,
+          shipped: 0,
+          // This path deliberately skips the heavy digest synthesis, so the ceiling was
+          // never measured — report it UNKNOWN. (Here the zero numerator is unambiguous
+          // anyway: you filed nothing. The marker keeps the basis honest regardless.)
+          basis: {
+            citableSlotsHiveWide: 0,
+            observationNamingSlots: 0,
+            slotsUnknown: true,
+            note: SURFACING_BASIS_NOTE,
+          },
+        },
       };
     }
 

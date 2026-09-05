@@ -62,6 +62,21 @@ export const DEFAULT_APPLIED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * The historical placeholder slug recorded when the allocator was called with no
+ * `--name` (`slugify(...) || "TODO-rename"`). Both doors now REFUSE a nameless
+ * call, so nothing new can mint one — but 40+ rows carry it, all with the
+ * identical slug, and they are not duplicate work: they are unrelated
+ * migrations that merely never got a name.
+ *
+ * The exact-slug rule below MUST skip it. Without this exclusion an
+ * exact-match self-join over the live ledger returns a truncated wall of
+ * `TODO-rename` pairs spanning months and the guard refuses essentially every
+ * one of them (measured 2026-09-05, EI-20300821494280085: 60-row cap saturated
+ * by this slug alone; excluding it left 25 real pairs).
+ */
+export const PLACEHOLDER_SLUG = "todo-rename";
+
+/**
  * The slug of a migration filename — `816-backfill-foo.sql` → `backfill-foo`.
  * Tolerates the `.DRAFT` / `.PENDING-CODE-DEPLOY` suffixes this repo uses to
  * hide an unfinished migration from the runner, so a draft still counts as
@@ -124,6 +139,14 @@ export function slugSimilarity(a, b) {
  * @property {number|null} [reservedAtMs] Epoch ms the number was reserved, null/undefined
  *   when unknown (an applied-but-never-reserved row has no reservation time).
  * @property {number|null} [appliedAtMs] Epoch ms it was applied, null/undefined if not.
+ * @property {boolean|null} [fileOnDisk] Whether THIS reservation's own filename exists in the
+ *   scanned sql dirs (a `.DRAFT` / `.PENDING-CODE-DEPLOY` file counts — it is written work).
+ *   Injected by the caller so this module stays pure; undefined/null means UNKNOWN and the
+ *   unwritten-reservation rule is skipped entirely.
+ * @property {boolean|null} [numberOnDisk] Whether ANY file occupies this reservation's NUMBER on
+ *   disk. Distinct from `fileOnDisk`: a reservation's number is routinely taken by a different
+ *   migration, and telling that caller to "write your file at NNN" would be wrong advice.
+ *   Same injection + unknown semantics as `fileOnDisk`.
  */
 
 /**
@@ -137,6 +160,9 @@ export function slugSimilarity(a, b) {
  * @property {boolean} applied
  * @property {number|null} ageMs      Age of the most recent relevant event.
  * @property {'block'|'warn'} severity
+ * @property {'applied'|'race'|'unwritten-reservation'|'lookback'} rule Which rule produced this
+ *   match. Machine-readable so a caller can render remedy text per rule instead of matching on
+ *   `reason` prose.
  * @property {string} reason
  */
 
@@ -185,19 +211,64 @@ export function judgeRedundantReservation({
     const eventMs = appliedAtMs ?? reservedAtMs;
     const ageMs = eventMs == null ? null : nowMs - eventMs;
 
+    // EI-20300821494280085: an UNWRITTEN reservation of this EXACT slug is
+    // duplicate work at any age. The two windowed rules below cannot see it —
+    // they are calibrated for a stampede (a burst) and for landed work, and
+    // this is neither: it is one author re-taking a slug they already hold and
+    // never wrote. Measured over the whole live ledger, 5 such incidents
+    // (203/205/209 · 464/465/466 · 998/1000/1004 · 1060/1061 · 344/352) sat
+    // 39–629 minutes apart, so every one of them fell through to a mere warn.
+    //
+    // Deliberately narrow, because an age-independent rule has no window to
+    // limit its blast radius:
+    //   - EXACT slug equality, not `similarity >= threshold`. The token-overlap
+    //     heuristic this item originally proposed was falsified on this very
+    //     ledger — it false-refused more legitimate migrations (~21 pairs, all
+    //     deliberate series differing only in the load-bearing table token) than
+    //     real collisions it caught (~11). Under exact match, zero of those
+    //     series collide.
+    //   - `numberOnDisk === false`, because the remedy sentence is "that number
+    //     is still free, write your file there" — and for 203/464/465 the number
+    //     is occupied by an unrelated migration, so that advice would be wrong.
+    //     Those stay a warn.
+    //   - fail-OPEN on unknown filesystem facts, matching this module's policy:
+    //     a caller that cannot supply them gets the pre-existing behaviour.
+    //
+    // "At any age" is bounded by what the caller FETCHES, not by this rule:
+    // `fetchRedundancyCandidates` reads a 30-day window, so a reservation
+    // abandoned longer ago than that is never offered here to judge. Every
+    // measured incident sat well inside it (the widest unwritten gap was ~10h).
+    const exactSlug = candSlug !== "" && candSlug === target.toLowerCase();
+    const unwrittenReservation =
+      !applied &&
+      exactSlug &&
+      candSlug !== PLACEHOLDER_SLUG &&
+      c?.fileOnDisk === false &&
+      c?.numberOnDisk === false;
+
     /** @type {'block'|'warn'|null} */
     let severity = null;
+    /** @type {'applied'|'race'|'unwritten-reservation'|'lookback'} */
+    let rule = "lookback";
     let reason = "";
     if (applied && ageMs != null && ageMs <= appliedWindowMs) {
       severity = "block";
+      rule = "applied";
       reason =
         "a near-identical migration is ALREADY APPLIED — this repair has landed";
     } else if (!applied && ageMs != null && ageMs <= raceWindowMs) {
       severity = "block";
+      rule = "race";
       reason =
         "a peer reserved a near-identical migration moments ago — you are racing them";
+    } else if (unwrittenReservation) {
+      severity = "block";
+      rule = "unwritten-reservation";
+      reason =
+        "this EXACT slug is already reserved and its file was never written — that number is still free, write your migration there instead of taking another";
     } else if (ageMs == null || ageMs <= lookbackMs) {
       severity = "warn";
+      rule = "lookback";
       reason = applied
         ? "a near-identical migration was applied earlier"
         : "a near-identical migration is reserved but unapplied";
@@ -214,6 +285,7 @@ export function judgeRedundantReservation({
       applied,
       ageMs,
       severity,
+      rule,
       reason,
     });
   }
@@ -288,6 +360,36 @@ export async function fetchRedundancyCandidates(
   }));
 }
 
+/**
+ * Attach the two filesystem facts `judgeRedundantReservation`'s
+ * unwritten-reservation rule needs, without teaching this module to read the
+ * disk (it stays pure, so both doors can unit-test it with fixtures).
+ *
+ * The caller supplies the sets from ONE `scanMigrationDirs` pass — the same
+ * scan both doors already make for the allocation max — so this costs no extra
+ * filesystem work. Pass the ARMED-name set: a `.DRAFT` file must match the
+ * `.sql` filename recorded in the ledger, or a migration that is actively being
+ * written reads as never written.
+ *
+ * @param {ReservationCandidate[]} candidates
+ * @param {{ filenames: Set<string>, numbers: Set<number> }} scan
+ * @returns {ReservationCandidate[]}
+ */
+export function annotateCandidatesWithDisk(candidates, scan) {
+  if (!Array.isArray(candidates)) return [];
+  const filenames = scan?.filenames;
+  const numbers = scan?.numbers;
+  // No scan is UNKNOWN, not "absent from disk" — annotating false here would
+  // turn a caller that cannot read the filesystem into one that blocks on every
+  // exact-slug match it sees.
+  if (!(filenames instanceof Set) || !(numbers instanceof Set)) return candidates;
+  return candidates.map((c) => ({
+    ...c,
+    fileOnDisk: filenames.has(String(c?.filename ?? "")),
+    numberOnDisk: numbers.has(Number(c?.num)),
+  }));
+}
+
 /** @param {number|null} ms */
 function humanAge(ms) {
   if (ms == null) return "unknown age";
@@ -339,6 +441,18 @@ export function formatRedundancyMessage(
     if (m.intent) lines.push(`       intent: ${m.intent}`);
   }
   if (blocking) {
+    // The unwritten-reservation rule is the one case where the remedy is exact
+    // rather than advisory: that number is verified free on disk, so "write it
+    // there" is an instruction, not a suggestion. Say so explicitly — the
+    // generic line below reads as boilerplate and gets skimmed past.
+    const unwritten = judgement.matches.find(
+      (m) => m.rule === "unwritten-reservation",
+    );
+    if (unwritten) {
+      lines.push(
+        `You ALREADY HOLD ${String(unwritten.num).padStart(3, "0")} for this exact slug and never wrote the file. Its number is still free on disk — write your migration at ${unwritten.filename}.DRAFT instead of taking a new number.`,
+      );
+    }
     lines.push(
       `If you already hold one of these numbers, WRITE YOUR FILE THERE rather than reserving another.`,
     );
