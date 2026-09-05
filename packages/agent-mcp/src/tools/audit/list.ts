@@ -26,7 +26,22 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
     actor: z.string().optional(),
     action: z.string().optional(),
-    sinceTs: z.number().int().optional(),
+    // EI-20216014898419956: the NAME half of this is already handled — `since`
+    // resolves to `sinceTs` through tooldef's edit-distance rung (distance 2,
+    // threshold 2), so a caller who guesses the neighbouring tools' spelling is
+    // told the right key. What no rung can supply is the SHAPE, and this arg is
+    // the bad case for it: epoch seconds is a valid integer, so the wrong unit
+    // is accepted and silently matches ~every row rather than erroring.
+    sinceTs: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        'Lower bound on `ts`, in epoch MILLISECONDS (rows are written with `Date.now()`). ' +
+          'Epoch SECONDS is the silent-failure shape: it is a valid integer, so it is accepted ' +
+          'and then matches essentially every row instead of filtering — a wrong unit returns a ' +
+          'full result set, not an error. Unlike `scheduler:pull_ledger.sinceTs`, this is not an ISO string.',
+      ),
     limit: z.number().int().positive().max(500).default(100),
     // EI-61: consumed by the dispatch layer BEFORE the handler runs
     // (effectiveDispatchWorkspace, EI-30 — tx synthesis + ALS pin); the

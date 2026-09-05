@@ -34,10 +34,28 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { ToolResult } from '@papercusp/tooldef';
 
-/** Stored/replayed result — the serialized MCP tools/call result shape. */
+/**
+ * Stored/replayed result — the serialized MCP tools/call result shape.
+ *
+ * `content` reuses `ToolResult['content']` rather than restating it as
+ * `Array<Record<string, unknown>>`. The wider shape looked safer and was not:
+ * `decodeStoredMcpResult` already reaches this type through a bare
+ * `decoded as StoredMcpResult` cast on parsed JSON, so the widening bought no
+ * validation — it only made a stored result UNASSIGNABLE to `ToolResult`.
+ *
+ * That is load-bearing because a tool handler may legitimately return a
+ * replayed result straight out of this store (`harness:generate-from-repo`
+ * does). With the wide shape such a handler infers
+ * `Promise<StoredMcpResult>`, fails both tool overloads of `defineTool`, and
+ * falls through to the ROUTE overload — surfacing as an opaque TS2769 that
+ * names `Request`/`RouteContext` and points at `args`, nowhere near the real
+ * cause. Keeping the two types structurally identical is what stops that
+ * whole class, and a stored MCP result genuinely IS an MCP result.
+ */
 export interface StoredMcpResult {
-  content: Array<Record<string, unknown>>;
+  content: ToolResult['content'];
   isError?: boolean;
   _meta?: Record<string, unknown>;
   structuredContent?: unknown;
