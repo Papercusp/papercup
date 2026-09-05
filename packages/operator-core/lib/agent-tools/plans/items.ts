@@ -114,12 +114,31 @@ export function isTerminalPlanHiddenFromCrossPlan(
  */
 export { isUnknownPlanScopeError };
 
-const argsSchema = z.object({
+/**
+ * EI-22387676408573400: a caller narrowing to one plan reached for `plan` and
+ * hit invalid_args. On a tool named plans:items there is no second thing `plan`
+ * could select, and the tool's own guidance/chaining prose says "one exact
+ * plan" — so the name is a reasonable guess, not a caller error. Renamed
+ * BEFORE parse (rather than added as a sibling optional field) because the
+ * cross-plan `.refine` below and eight handler sites all read `args.slug`; a
+ * sibling field would have to be resolved at every one of them, and the one
+ * that got missed would fail as a confusing "itemIds requires an exact plan
+ * slug" on a call that named the plan. `slug` wins if somehow both appear.
+ */
+const renamePlanToSlug = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  if (r.plan === undefined) return raw;
+  const { plan, ...rest } = r;
+  return r.slug === undefined ? { ...rest, slug: plan } : rest;
+};
+
+const argsSchema = z.preprocess(renamePlanToSlug, z.object({
   slug: z
     .string()
     .min(1)
     .optional()
-    .describe("Restrict to one plan. Required with itemIds; omit for cross-plan."),
+    .describe("Restrict to one plan. Required with itemIds; omit for cross-plan. `plan` is accepted as an alias."),
   itemIds: z
     .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
     .min(1)
@@ -208,7 +227,7 @@ const argsSchema = z.object({
       "Max items returned after importance ordering. Set this to keep a cross-plan read bounded; truncated:true reports when more matched.",
     ),
   harness: harnessArg,
-}).refine(
+})).refine(
   (args) =>
     !(
       args.itemIds ||
