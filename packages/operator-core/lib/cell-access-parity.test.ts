@@ -651,7 +651,11 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
     // `.retriage`, all under OPERATOR_PIPELINE_VISIBILITY like their gate siblings — the
     // gate is a per-harness fact, so leg E's harness arm now walks three more cells.
     // workspace 12 → 13: `agent.roleLaunch` (registered 2026-09-03) is workspace-visible.
-    ).toEqual({ workspace: 13, harness: 12 });
+    // workspace 13 → 14: `workspace.workScope` (WI-2145092, registered 2026-09-05) — the
+    // work-scope policy is a WORKSPACE fact by construction (it names which harnesses the
+    // whole workspace may work), so narrowing it to one harness would hide it from exactly
+    // the callers it exists to answer.
+    ).toEqual({ workspace: 14, harness: 12 });
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than
