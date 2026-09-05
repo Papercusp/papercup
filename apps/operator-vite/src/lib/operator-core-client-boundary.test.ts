@@ -108,45 +108,123 @@ describe('operator-core client boundary', () => {
   });
 });
 
-// WI-2145038 / WI-2145237: the SERVER lexicon wiring. Its configure.ts statically
-// imports ../flag-distinct-id, which does `os.hostname()` from `node:os` AT MODULE
-// SCOPE — a Node builtin that must never enter a client graph. Client pages use the
-// twin hook, apps/operator/lib/useLexicon.ts. The Portal's webpack client
-// compilation fails outright on the `node:` scheme (portal build #3c, 2026-09-05
-// 03:33Z, import trace support/page.tsx → lexicon → configure → flag-distinct-id →
-// node:os); Vite only survives it through its browser-external stub.
+// WI-2145038 / WI-2145237: the SERVER lexicon wiring. Its configure.ts imports
+// ../flag-distinct-id, which resolves `os.hostname()` — server-only code. Client
+// modules use the twin hook, apps/operator/lib/useLexicon.ts: `term()` is not
+// reactive to a live flag flip, and the wiring drags server state into a browser
+// graph. The Portal's webpack client compilation failed outright on it while the
+// wiring still had a static `node:os` import (portal build #3c, 2026-09-05 03:33Z,
+// import trace support/page.tsx → lexicon → configure → flag-distinct-id → node:os);
+// flag-distinct-id now resolves the builtin lazily, so a stray import degrades
+// instead of failing the build — this guard keeps it from happening at all.
 const SERVER_LEXICON_WIRING = /@papercusp\/operator-core\/lib\/lexicon(?:\/|$)/;
 const OPERATOR_APP_ROOT = join(__dirname, '..', '..', '..', 'operator', 'app');
-// SHRINK-ONLY. Pre-existing importers, tracked by WI-2145237: convert each page to
-// useLexicon() and DELETE its entry — a stale entry fails the test below, so the
-// list cannot outlive its reason.
-const SERVER_LEXICON_WIRING_ALLOWLIST = new Set([
-  'admin/dogfood-substrate/page.tsx',
-  'wiki/missing/page.tsx',
-  'project-docs/page.tsx',
-]);
+
+// apps/operator/app mixes Next-era SERVER components (async page functions that
+// read the filesystem or the database) with 'use client' modules that both the
+// desktop SPA and the Portal bundle. Only the latter can be in a browser graph.
+// A module that already value-imports a Node builtin (or a server-only package)
+// CANNOT be in a client graph — the bundler would refuse THAT import first — so
+// its lexicon import is server code using the server API, not a client-boundary
+// defect. The classifier is the rule; there is no hand-maintained allowlist.
+// 'use client' always wins: a client module importing a builtin is broken on its
+// own terms, and its lexicon import is still reported.
+const NODE_BUILTIN_IMPORT =
+  /^(?:node:|(?:assert|async_hooks|buffer|child_process|cluster|crypto|dgram|diagnostics_channel|dns|events|fs|http|https|inspector|module|net|os|path|perf_hooks|process|querystring|readline|stream|string_decoder|timers|tty|url|util|v8|vm|worker_threads|zlib)(?:\/|$))/;
+const SERVER_ONLY_PACKAGE_IMPORTS = [/^@papercusp\/db-org(?:\/|$)/, ...DIRECT_SERVER_IMPORTS];
+
+export function isUseClientModule(source: string): boolean {
+  return /^\s*(['"])use client\1\s*;?/.test(stripComments(source));
+}
+
+export function isServerOnlyModule(source: string): boolean {
+  if (isUseClientModule(source)) return false;
+  return valueImports(source).some(
+    (specifier) =>
+      NODE_BUILTIN_IMPORT.test(specifier) ||
+      SERVER_ONLY_PACKAGE_IMPORTS.some((pattern) => pattern.test(specifier)),
+  );
+}
+
+export function findServerLexiconViolations(
+  entries: ReadonlyArray<{ rel: string; source: string }>,
+): string[] {
+  const violations: string[] = [];
+  for (const { rel, source } of entries) {
+    if (!valueImports(source).some((specifier) => SERVER_LEXICON_WIRING.test(specifier))) continue;
+    if (isServerOnlyModule(source)) continue;
+    violations.push(`${rel}: import the client twin (@/lib/useLexicon) instead`);
+  }
+  return violations;
+}
+
+function operatorAppEntries(): Array<{ rel: string; source: string }> {
+  const entries: Array<{ rel: string; source: string }> = [];
+  for (const file of sourceFiles(OPERATOR_APP_ROOT)) {
+    if (/\.test\.tsx?$/.test(file) || file.includes('/__tests__/')) continue;
+    entries.push({ rel: relative(OPERATOR_APP_ROOT, file), source: readFileSync(file, 'utf8') });
+  }
+  return entries;
+}
 
 describe('operator app pages and the server lexicon wiring', () => {
-  it('keeps @papercusp/operator-core/lib/lexicon out of apps/operator/app value imports (outside the shrink-only allowlist)', () => {
-    const violations: string[] = [];
-    const allowlistHits = new Set<string>();
-    for (const file of sourceFiles(OPERATOR_APP_ROOT)) {
-      if (/\.test\.tsx?$/.test(file) || file.includes('/__tests__/')) continue;
-      const rel = relative(OPERATOR_APP_ROOT, file);
-      const hit = valueImports(readFileSync(file, 'utf8')).some((specifier) =>
-        SERVER_LEXICON_WIRING.test(specifier),
-      );
-      if (!hit) continue;
-      if (SERVER_LEXICON_WIRING_ALLOWLIST.has(rel)) {
-        allowlistHits.add(rel);
-        continue;
-      }
-      violations.push(`${rel}: import the client twin (@/lib/useLexicon) instead`);
-    }
-    expect(violations).toEqual([]);
-    // Shrink-only: a page that no longer imports the wiring must also drop its entry.
-    const stale = [...SERVER_LEXICON_WIRING_ALLOWLIST].filter((rel) => !allowlistHits.has(rel));
-    expect(stale, 'stale allowlist entries — delete them').toEqual([]);
+  it('keeps @papercusp/operator-core/lib/lexicon out of every client-graph apps/operator/app module', () => {
+    expect(findServerLexiconViolations(operatorAppEntries())).toEqual([]);
+  });
+
+  it('CALIBRATION: the scanned population really contains client modules', () => {
+    // Without this, a scan over an empty or mis-rooted directory would also pass.
+    const entries = operatorAppEntries();
+    expect(entries.length).toBeGreaterThan(50);
+    expect(entries.filter((entry) => isUseClientModule(entry.source)).length).toBeGreaterThan(10);
+  });
+
+  it('reports a client importer, exempts a server component, and treats an unmarked module as client', () => {
+    const wiring = "import { term } from '@papercusp/operator-core/lib/lexicon';";
+    const violation = (rel: string) => `${rel}: import the client twin (@/lib/useLexicon) instead`;
+    // 'use client' + the wiring: the defect this guard exists for.
+    expect(
+      findServerLexiconViolations([
+        { rel: 'a/page.tsx', source: `'use client';\n${wiring}\nexport default function P() { return null; }` },
+      ]),
+    ).toEqual([violation('a/page.tsx')]);
+    // An async server component reading the filesystem: legitimately server code.
+    expect(
+      findServerLexiconViolations([
+        {
+          rel: 'b/page.tsx',
+          source: `import { readdirSync } from 'node:fs';\n${wiring}\nexport default async function P() { return null; }`,
+        },
+      ]),
+    ).toEqual([]);
+    // A server-only package import counts as a server marker too (dogfood-substrate shape).
+    expect(
+      findServerLexiconViolations([
+        { rel: 'b2/page.tsx', source: `import { getOrgPg } from '@papercusp/db-org';\n${wiring}` },
+      ]),
+    ).toEqual([]);
+    // No directive and no server marker: ambiguous, so conservatively CLIENT.
+    expect(
+      findServerLexiconViolations([
+        { rel: 'c/page.tsx', source: `import { useState } from 'react';\n${wiring}\nexport default function P() { return null; }` },
+      ]),
+    ).toEqual([violation('c/page.tsx')]);
+    // 'use client' wins over a builtin import — broken on its own terms, still reported.
+    expect(
+      findServerLexiconViolations([
+        { rel: 'd/page.tsx', source: `'use client';\nimport { hostname } from 'node:os';\n${wiring}` },
+      ]),
+    ).toEqual([violation('d/page.tsx')]);
+    // A type-only import of the wiring is erased at compile time and is not a violation.
+    expect(
+      findServerLexiconViolations([
+        { rel: 'e/page.tsx', source: `'use client';\nimport type { Lexicon } from '@papercusp/operator-core/lib/lexicon';` },
+      ]),
+    ).toEqual([]);
+    // A server-only module that does not import the wiring is simply not reported.
+    expect(
+      findServerLexiconViolations([{ rel: 'f/page.tsx', source: `import { readFileSync } from 'node:fs';` }]),
+    ).toEqual([]);
   });
 });
 
