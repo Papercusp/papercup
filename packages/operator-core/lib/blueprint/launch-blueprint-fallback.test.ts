@@ -277,8 +277,8 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     warn.mockRestore();
   });
 
-  it('persists the harvested invoke exit code and stderr tail on the fallback spawn row', async () => {
-    const stderr = `${'diagnostic '.repeat(250)}release-fixer child failed before its first turn`;
+  it('persists the harvested invoke exit code and stderr tail on a non-release fallback spawn row', async () => {
+    const stderr = `${'diagnostic '.repeat(250)}cup child failed before its first turn`;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
       ok: false,
@@ -289,7 +289,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
       rawStdoutTail: 'raw stdout context',
     }), { status: 200 }));
 
-    await fireLaunchBlueprint('release-fix', opts);
+    await fireLaunchBlueprint('cup', opts);
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
 
     expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({
@@ -327,7 +327,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
       agentOutput: '',
       stderr: '',
     }), { status: 200 }));
-    await fireLaunchBlueprint('release-fix', opts);
+    await fireLaunchBlueprint('cup', opts);
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
     expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ outputTail: '' });
 
@@ -339,7 +339,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
       exitCode: 1,
       agentOutput: '',
     }), { status: 200 }));
-    await fireLaunchBlueprint('release-fix', opts);
+    await fireLaunchBlueprint('cup', opts);
     await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
     expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ outputTail: null });
     warn.mockRestore();
