@@ -210,12 +210,8 @@ export interface CheckoutSessionFailed {
   readonly detail: string | null;
 }
 
-export type CheckoutSessionSuccess =
-  | CheckoutSessionOk
-  | PerUseCheckoutPreflightOk;
-export type CheckoutSessionResult =
-  | CheckoutSessionSuccess
-  | CheckoutSessionFailed;
+export type CheckoutSessionSuccess = CheckoutSessionOk | PerUseCheckoutPreflightOk;
+export type CheckoutSessionResult = CheckoutSessionSuccess | CheckoutSessionFailed;
 
 export interface CheckoutTransportDeps {
   readonly fetchImpl?: typeof fetch;
