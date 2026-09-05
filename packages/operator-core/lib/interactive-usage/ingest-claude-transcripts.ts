@@ -341,6 +341,16 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             const modelClass = modelClassForModel(model);
             const provider = providerForModel(model);
             const est = costFromTokens(model, d);
+            // Both attribution stamps below take the CODEX_HOME-derived adv_sessions PK
+            // as their strongest key. harness_slug: migration 1120 (WI-2144763).
+            // goal_id: migration 1121 (WI-2145149) — the 3-arg overload, same defect,
+            // because both routes of the 2-arg form join adv_sessions on session_id,
+            // which a psu codex row (whose sample carries the rollout uuid there) can
+            // never match. The goal ceiling is small and deliberately honest: 0 -> 3 of
+            // 134 codex sessions, which is 100% of the achievable set. The other 131
+            // owners have no goal recorded at all — workspace-wide only 1.55% of
+            // adv_sessions resolve a goal by ANY route — so a NULL goal_id here is
+            // absent goal data, NOT a resolver failure (EI-22391659152296045).
             await tx`
               INSERT INTO harness_shared.agent_usage_samples
                 (workspace_id, ts, bucket_key, provider, model_class, source,
@@ -353,7 +363,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
                    ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
                 ${sessionId}, ${'interactive'}, ${sessionId},
-                (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sessionId}))
+                (SELECT harness_shared.goal_id_for_usage_session(
+                   ${ws}, ${sessionId}, ${adapter.advSessionId ?? null}))
               )
             `;
             result.samples += 1;
