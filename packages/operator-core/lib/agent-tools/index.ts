@@ -647,6 +647,7 @@ import './capability/terminal';
 // and fleet:launch-on-plan (agent-launch-core.ts), so there is no forked spawn path.
 import './capability/launch-agent';
 import './capability/read';
+import './capability/list';
 import './capability/write';
 import './capability/edit';
 import './capability/git';
