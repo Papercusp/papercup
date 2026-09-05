@@ -208,9 +208,7 @@ export class PostgresHostedWorkspaceConnectorStore implements HostedWorkspaceCon
       const rows = await sql<ConnectorRow[]>`
         INSERT INTO papercusp_auth.hosted_workspace_connectors
           (control_workspace_id, organization_id, customer_workspace_id, host_id, route_label, generation, credential_hash, state, transport)
-        SELECT ${input.controlPlaneWorkspaceId}, ${input.organizationId}, ${input.customerWorkspaceId}, ${input.hostId}, ${input.routeLabel}, 1, NULL, 'pending', ${input.transport}
-        WHERE EXISTS (SELECT 1 FROM harness_shared.customer_workspaces cw JOIN harness_shared.workspace_hosts wh ON wh.workspace_id=cw.workspace_id AND wh.id=cw.workspace_host_id
-          WHERE cw.workspace_id=${input.controlPlaneWorkspaceId} AND cw.id=${input.customerWorkspaceId} AND cw.organization_id=${input.organizationId} AND wh.id=${input.hostId})
+        VALUES (${input.controlPlaneWorkspaceId}, ${input.organizationId}, ${input.customerWorkspaceId}, ${input.hostId}, ${input.routeLabel}, 1, NULL, 'pending', ${input.transport})
         ON CONFLICT (control_workspace_id, organization_id, customer_workspace_id, host_id)
         DO UPDATE SET route_label=EXCLUDED.route_label, generation=papercusp_auth.hosted_workspace_connectors.generation+1,
           state='pending', transport=EXCLUDED.transport, credential_hash=NULL, registered_at=NULL,

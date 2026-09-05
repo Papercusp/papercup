@@ -1006,6 +1006,13 @@ export function hasAdvSessionTerminalEvidence(
  * agents (WI-38054) — and because node-pty hands a signal death an `exitCode` of 0, the
  * resulting row actively asserts a clean exit instead of merely failing to describe one.
  */
+export interface AdvSessionExpectedBinding {
+  coordOwnerId: string;
+  sessionId: string | null;
+  /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
+  startedAt: string;
+}
+
 export async function markAdvSessionEnded(
   id: number,
   exitCode: number | null,
@@ -1019,8 +1026,10 @@ export async function markAdvSessionEnded(
      * failure into a warning so the caller can keep its guard fail-closed.
      */
     throwOnError?: boolean;
+    /** Refuse to end a reactivated/re-anchored successor using an old observation. */
+    expectedBinding?: AdvSessionExpectedBinding;
   } = {},
-): Promise<void> {
+): Promise<boolean> {
   try {
     const { sql } = getOrgPg();
     // The CHECK (migration 800) allows a signal name ONLY on a 'signal' row; normalise
@@ -1033,6 +1042,11 @@ export async function markAdvSessionEnded(
              ended_signal = ${endedSignal}, resume_claim_key = NULL,
              resume_claimed_at = NULL
        WHERE id = ${id} AND ended_at IS NULL
+         AND (${opts.expectedBinding == null} OR (
+           coord_owner_id = ${opts.expectedBinding?.coordOwnerId ?? null}
+           AND session_id IS NOT DISTINCT FROM ${opts.expectedBinding?.sessionId ?? null}
+           AND started_at = ${opts.expectedBinding?.startedAt ?? null}::timestamptz
+         ))
        RETURNING id
     `;
     if (r.length) {
@@ -1054,9 +1068,11 @@ export async function markAdvSessionEnded(
         .then((m) => m.scheduleArchiveForAdvSession(id))
         .catch((e) => console.warn(`[adv-sessions] archive hook unavailable: ${(e as Error)?.message ?? e}`));
     }
+    return r.length > 0;
   } catch (e) {
     if (opts.throwOnError) throw e;
     warnUnlessMissingTable(e, 'markAdvSessionEnded');
+    return false;
   }
 }
 

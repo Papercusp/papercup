@@ -17,7 +17,7 @@
  */
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
-import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy } from './adv-sessions';
+import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import {
   composeLaunchModelSpec,
@@ -208,6 +208,8 @@ export interface ResumeTarget {
    *  collide (WI-3882/WI-3455); the caller must fork instead (D-007). */
   live: boolean;
   advSessionId: number;
+  /** The persisted incarnation, which may differ from an exact transcript pin. */
+  binding: AdvSessionExpectedBinding | null;
 }
 
 export type ResolveResumeError =
@@ -310,7 +312,7 @@ export async function resolveResumeTarget(ref: {
   // under the same owner. Taking the pin directly lets indexed_owner bridge it
   // back to the owner's CURRENT row; resolvedNativeSessionId below still returns
   // the requested uuid, so the pin is never replaced by that row's newer one.
-  const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+  const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0] & { binding_started_at: string }>>`
     WITH candidate AS (
       ${
         sessionId
@@ -332,7 +334,7 @@ export async function resolveResumeTarget(ref: {
     )
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
            window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
-           ended_by
+           ended_by, started_at::text AS binding_started_at
       FROM harness_shared.adv_sessions
      WHERE ${
        sessionId
@@ -383,6 +385,11 @@ export async function resolveResumeTarget(ref: {
     endedBy: row.endedBy,
     live: host != null,
     advSessionId: row.id,
+    binding: row.coordOwnerId && rows[0].binding_started_at ? {
+      coordOwnerId: row.coordOwnerId,
+      sessionId: row.sessionId,
+      startedAt: rows[0].binding_started_at,
+    } : null,
   };
 }
 

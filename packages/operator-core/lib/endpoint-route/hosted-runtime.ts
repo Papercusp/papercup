@@ -326,7 +326,10 @@ export async function createHostedRuntime(
   const delegationAdapters = dependencies.providerDelegationAdapters ?? productionProviderDelegationAdapters();
   const providerDelegationManager = (principal: HostedPrincipal) =>
     new HostedProviderDelegationManager(
-      new PostgresHostedProviderDelegationStore((fn) => runTenant(tenantServerContext(principal), fn)),
+      new PostgresHostedProviderDelegationStore(
+        (fn) => runTenant(tenantServerContext(principal), fn),
+        principal.workspaceId,
+      ),
       delegationAdapters,
     );
 

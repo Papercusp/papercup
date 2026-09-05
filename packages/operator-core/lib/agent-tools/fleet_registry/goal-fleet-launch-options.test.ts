@@ -16,9 +16,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyGoalLaunchOverlay,
+  goalFleetLeaderProfile,
   goalFleetLaunchOverlay,
   goalFleetWideFoldSlot,
   goalPairedTypeNote,
+  resolveGoalFleetLeadership,
 } from './goal-fleet-launch-options';
 import {
   expandPairedMembers,
@@ -30,6 +32,64 @@ import type { GoalLaunchSettings } from '../../goal-launch-settings';
 
 const FLEET = 'plan-fleet-alpha';
 const DRAIN = 'drain-fleet-alpha';
+
+describe('resolveGoalFleetLeadership — GOAL holders delegate by construction', () => {
+  it("defaults a GOAL launch to leader:'spawn' while preserving the generic caller default", () => {
+    expect(
+      resolveGoalFleetLeadership({ goalId: 'g-1', callerOwnerId: 'su-goal' }),
+    ).toEqual({ ok: true, leader: 'spawn', defaultedToSpawn: true });
+    expect(
+      resolveGoalFleetLeadership({ goalId: null, callerOwnerId: 'su-generic' }),
+    ).toEqual({ ok: true, leader: 'caller', defaultedToSpawn: false });
+  });
+
+  it('refuses an explicit caller-led GOAL launch', () => {
+    const r = resolveGoalFleetLeadership({
+      goalId: 'g-1',
+      requested: 'caller',
+      callerOwnerId: 'su-goal',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.message).toContain("leader:'spawn'");
+  });
+
+  it('refuses to top up a fleet the GOAL holder already leads', () => {
+    const r = resolveGoalFleetLeadership({
+      goalId: 'g-1',
+      requested: 'spawn',
+      callerOwnerId: 'su-goal',
+      existingLeaderOwnerId: 'su-goal',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.message).toContain('already leads');
+  });
+});
+
+describe('goalFleetLeaderProfile — leader and member slots stay distinct', () => {
+  const settings = {
+    defaults: { account: 'auto', model: 'sonnet' },
+    roles: {
+      'plan-fleet-leader': { model: 'opus', effort: 'max' },
+      'plan-fleet-member': { model: 'haiku', effort: 'high' },
+    },
+  } as GoalLaunchSettings;
+
+  it('binds the plan-fleet leader profile without leaking the member profile', () => {
+    expect(goalFleetLeaderProfile({ settings, family: 'plan' })).toEqual({
+      account: 'auto',
+      model: 'opus',
+      effort: 'max',
+    });
+  });
+
+  it('lets the GOAL holder make an explicit contextual model choice', () => {
+    expect(
+      goalFleetLeaderProfile({ settings, family: 'plan', requested: { model: 'gpt-5.6-sol' } }),
+    ).toMatchObject({ model: 'gpt-5.6-sol', effort: 'max', account: 'auto' });
+  });
+});
 
 /** The mapper's inputs, with only the bits a case cares about spelled out. */
 const overlayFor = (

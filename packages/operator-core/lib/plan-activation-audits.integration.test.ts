@@ -531,9 +531,19 @@ describe('migration 938 activation-audit ledger', () => {
     expect(unchanged!.template_data).toEqual(amended);
   });
 
-  it('keeps the cohort marker but rolls back audit/rubric/projections on an incomplete map', async () => {
-    const incomplete = postEpochContent.replace('| R-2 | P-001, P-002 | live |', '');
-    await seedPostEpochPlan(incomplete, 'post-epoch-incomplete');
+  it.each([
+    {
+      label: 'an incomplete map',
+      content: postEpochContent.replace('| R-2 | P-001, P-002 | live |', ''),
+      error: 'bar_mapping_missing',
+    },
+    {
+      label: 'unnumbered requirements',
+      content: postEpochContent.replace('**R-1 —', '**1.').replace('**R-2 —', '**2.'),
+      error: 'bar_requirement_parse_failed',
+    },
+  ])('keeps the cohort marker but rolls back audit/rubric/projections on $label', async ({ content, error }) => {
+    await seedPostEpochPlan(content, 'post-epoch-incomplete');
     const result = await recordCurrentActivationAudit({
       workspaceId: 'activation-audit-test',
       harnessSlug: 'papercusp',
@@ -544,7 +554,7 @@ describe('migration 938 activation-audit ledger', () => {
         mappings: [{ ...payload.mappings[0], planTargets: ['P-001', 'section:Requirements'] }],
       },
     });
-    expect(result).toMatchObject({ ok: false, error: 'bar_mapping_missing' });
+    expect(result).toMatchObject({ ok: false, error });
     await expect(db.sql`
       SELECT acceptance_bar_epoch, acceptance_bar_set_hash
         FROM harness_shared.harness_plans

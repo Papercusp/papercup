@@ -144,14 +144,21 @@ function connectionProviderConfig(record: HostedProviderDelegationRecord): Recor
 
 /** Tenant-context Postgres store over the existing workspace-host connection root. */
 export class PostgresHostedProviderDelegationStore implements HostedProviderDelegationStore {
-  constructor(private readonly run: HostedProviderDelegationSqlRunner) {}
+  private readonly controlPlaneWorkspaceId: string;
+
+  constructor(
+    private readonly run: HostedProviderDelegationSqlRunner,
+    controlPlaneWorkspaceId: string,
+  ) {
+    this.controlPlaneWorkspaceId = requireString(controlPlaneWorkspaceId, 'controlPlaneWorkspaceId');
+  }
 
   read(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null> {
     return this.run(async (sql) => {
       const rows = await sql<DelegationRow[]>`
         SELECT provider_config
         FROM harness_shared.workspace_host_connections
-        WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
+        WHERE workspace_id = ${this.controlPlaneWorkspaceId} AND id = ${connectionId}
         LIMIT 1
       `;
       const record = storedDelegation(rows[0]?.provider_config?.hostedDelegation);
@@ -173,7 +180,7 @@ export class PostgresHostedProviderDelegationStore implements HostedProviderDele
           (workspace_id, id, target, label, credential_ref, provider_config, status, status_detail,
            last_validated_at, updated_at)
         VALUES
-          (${record.workspaceId}, ${record.connectionId}, ${record.provider}, ${record.label},
+          (${this.controlPlaneWorkspaceId}, ${record.connectionId}, ${record.provider}, ${record.label},
            ${record.credentialRef}, ${sql.json(providerConfig as never)}, ${connectionStatus(record)},
            ${record.status}, ${record.verifiedAt ?? null}, now())
         ON CONFLICT (workspace_id, id) DO UPDATE SET

@@ -43,6 +43,7 @@ import launchOnPlan, {
   fleetRouteSwitchConflict,
   requiresExplicitUnprofiledVisibility,
   resolveSuperviseGrant,
+  applyGoalLaunchProfileToDefaults,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -55,6 +56,45 @@ const base: MemberLaunchOpts = {
   harness: 'papercup',
   plan: 'p-plan',
 };
+
+describe('applyGoalLaunchProfileToDefaults (WI-2146552)', () => {
+  const fallback = {
+    agent: 'claude' as const,
+    model: 'sonnet',
+    effort: 'high',
+    account: 'default',
+    carry: 'warm' as const,
+    headless: true,
+  };
+
+  it('delivers every command-shaping GOAL profile key, including model', () => {
+    expect(
+      applyGoalLaunchProfileToDefaults(fallback, {
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'max',
+        account: 'auto',
+        carry: 'cold',
+        contextSize: 'steward',
+        compactionLimit: 600_000,
+        headless: false,
+      }),
+    ).toMatchObject({
+      agent: 'codex',
+      model: 'gpt-5.6-sol',
+      effort: 'max',
+      account: 'auto',
+      carry: 'cold',
+      contextSize: 'steward',
+      compactionLimit: 600_000,
+      headless: false,
+    });
+  });
+
+  it('does not let an absent leader profile inherit a member-only model', () => {
+    expect(applyGoalLaunchProfileToDefaults(fallback, {})).toEqual(fallback);
+  });
+});
 
 // R5 (interrupted-member-recovery-hardening-2026-09-01): how an explicit `supervise`
 // arg reaches the fleet's durable headcount row. Pure so every branch is provable

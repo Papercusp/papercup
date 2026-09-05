@@ -22,9 +22,14 @@
  * provable without opening a terminal.
  */
 import type { FleetType } from '../../agent-fleets-store';
-import { foldLaunchProfile, type GoalLaunchSettings } from '../../goal-launch-settings';
+import {
+  foldLaunchProfile,
+  type GoalLaunchSettings,
+  type LaunchProfile,
+} from '../../goal-launch-settings';
 import {
   goalFleetFamily,
+  goalFleetLeaderSlot,
   goalFleetLaunchSlots,
   goalFleetMemberSlot,
   type GoalFleetFamily,
@@ -46,6 +51,56 @@ import {
  * "type:'paired' was declared" would be pointing at the wrong author.
  */
 export type FleetTypeSource = 'caller' | 'goal' | 'default';
+
+export type GoalFleetLeadershipResolution =
+  | { ok: true; leader: 'caller' | 'spawn'; defaultedToSpawn: boolean }
+  | { ok: false; message: string };
+
+/**
+ * GOAL holders are portfolio stewards, never plan-fleet leaders.
+ *
+ * The generic door keeps its historical caller-led default. Goal context
+ * narrows that default structurally: omission means `spawn`, while an explicit
+ * caller-led request is refused rather than silently violating the mode
+ * contract. An already-self-led fleet is also refused before a top-up can make
+ * the bad state look healthy; leadership must be delegated first.
+ */
+export function resolveGoalFleetLeadership(args: {
+  goalId: string | null;
+  requested?: 'caller' | 'spawn';
+  callerOwnerId: string;
+  existingLeaderOwnerId?: string | null;
+}): GoalFleetLeadershipResolution {
+  if (!args.goalId) {
+    return { ok: true, leader: args.requested ?? 'caller', defaultedToSpawn: false };
+  }
+  if (args.existingLeaderOwnerId === args.callerOwnerId) {
+    return {
+      ok: false,
+      message:
+        `goal_plan_fleet_self_leadership: GOAL holder ${args.callerOwnerId} already leads this fleet. ` +
+        'Delegate leadership to a separate agent before topping it up; a later handoff is remediation, not a valid GOAL launch.',
+    };
+  }
+  if (args.requested === 'caller') {
+    return {
+      ok: false,
+      message:
+        `goal_plan_fleet_self_leadership: GOAL holder ${args.callerOwnerId} cannot lead a plan fleet. ` +
+        "Omit `leader` or pass `leader:'spawn'` so a separate agent leads while the GOAL holder remains the portfolio steward.",
+    };
+  }
+  return { ok: true, leader: 'spawn', defaultedToSpawn: args.requested === undefined };
+}
+
+/** Bind the declared leader profile independently from member role profiles. */
+export function goalFleetLeaderProfile(args: {
+  settings: GoalLaunchSettings | null;
+  family: GoalFleetFamily;
+  requested?: LaunchProfile | null;
+}): LaunchProfile {
+  return foldLaunchProfile(args.settings, goalFleetLeaderSlot(args.family), args.requested);
+}
 
 /**
  * A goal knob that the goal accepted but this launch shape CANNOT bind.
