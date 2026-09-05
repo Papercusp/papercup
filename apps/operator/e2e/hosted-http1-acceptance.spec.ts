@@ -44,6 +44,11 @@ interface SyncSnapshot {
   byQuery: Record<string, { requests: number; failures: number; requestMsMax: number }>;
 }
 
+interface SyncQueryEvent {
+  name: string;
+  outcome: 'ok' | 'error' | 'timeout' | 'aborted';
+}
+
 interface Evidence {
   contract: string;
   origin: string;
@@ -62,7 +67,7 @@ interface Evidence {
 
 declare global {
   interface Window {
-    __sync_metrics__?: { snapshot(): SyncSnapshot };
+    __sync_metrics__?: { snapshot(): SyncSnapshot; queries(): SyncQueryEvent[] };
     __papercuspStreams?: () => Array<{ url: string }>;
     __p029ManualSse?: EventSource[];
     __p029Bulk?: {
@@ -84,18 +89,25 @@ async function syncSnapshot(page: Page): Promise<SyncSnapshot> {
   });
 }
 
-async function waitForHydration(page: Page): Promise<SyncSnapshot> {
+async function waitForHydration(
+  page: Page,
+  { allowRecordedFailures = false }: { allowRecordedFailures?: boolean } = {},
+): Promise<SyncSnapshot> {
   await page.waitForFunction(
-    (queryName) => {
-      const snapshot = window.__sync_metrics__?.snapshot();
+    ({ queryName, allowRecordedFailures }) => {
+      const metrics = window.__sync_metrics__;
+      const snapshot = metrics?.snapshot();
+      const latestControl = metrics?.queries().filter((event) => event.name === queryName).pop();
       return Boolean(
         snapshot &&
           snapshot.sse.connectedSinceMs !== null &&
           snapshot.byQuery[queryName]?.requests >= 1 &&
-          snapshot.byQuery[queryName]?.failures === 0,
+          (allowRecordedFailures
+            ? latestControl?.outcome === 'ok'
+            : snapshot.byQuery[queryName]?.failures === 0),
       );
     },
-    CONTROL_QUERY,
+    { queryName: CONTROL_QUERY, allowRecordedFailures },
     { timeout: acceptance.slo.coldHydrationMs },
   );
   return syncSnapshot(page);
@@ -363,7 +375,7 @@ test('forced six-connection HTTP/1.1 hosted matrix stays live and replays exactl
     };
     return Promise.all([
       timed('/api/hosted/auth/session'),
-      timed('/api/hosted/health'),
+      timed('/api/health'),
       timed('/api/hosted/browser/workspace-hosts/connection', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -441,7 +453,7 @@ test('forced six-connection HTTP/1.1 hosted matrix stays live and replays exactl
   for (const kind of ['429', '500', 'timeout'] as const) {
     fault = kind;
     await page.reload({ waitUntil: 'domcontentloaded' });
-    const recovered = await waitForHydration(page);
+    const recovered = await waitForHydration(page, { allowRecordedFailures: true });
     expect(fault, `${kind} injection was bypassed`).toBeNull();
     expect(recovered.transport.failures).toBeGreaterThanOrEqual(1);
     expect(recovered.byQuery[CONTROL_QUERY]?.requests ?? 0).toBeGreaterThanOrEqual(2);
