@@ -4397,6 +4397,80 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         expect(() => preconditions(raw)).not.toThrow();
       }
     });
+
+    // EI-21314040234920121 + duplicate EI-21562711070130195: both read a treeStamp PATTERN
+    // refusal and concluded the 40/64-hex rule should be loosened. It must not be — the stamp
+    // anchors content identity for the committed-vs-proposed gate — but the caller was never
+    // meant to send the field at all, and the refusal never said so.
+    const treeStampHint = expect.stringContaining('SERVER-STAMPED');
+
+    it('names the caller-omit rule when treeStamp is sent nested under verification', () => {
+      expect(
+        preconditions({
+          id: 'WI-1',
+          completion: { summary: 'x', verification: { treeStamp: { headSha: '6eb7137' } } },
+        }),
+      ).toEqual([treeStampHint]);
+    });
+
+    it('names it for a top-level completion.treeStamp and inside an items[] entry', () => {
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'x', treeStamp: { headSha: 'abc' } } })).toEqual([
+        treeStampHint,
+      ]);
+      expect(
+        preconditions({
+          items: [
+            { id: 'WI-1', completion: { summary: 'clean' } },
+            { id: 'WI-2', completion: { summary: 'x', verification: { treeStamp: { headSha: 'abc' } } } },
+          ],
+        }),
+      ).toEqual([treeStampHint]);
+    });
+
+    it('fires on PRESENCE, not on a malformed SHA — a well-formed stamp is overwritten just as silently', () => {
+      // The whole defect is that the caller is sending a field the server discards. A stamp
+      // that happens to parse is the case NO refusal would ever reach, so it must still warn.
+      expect(
+        preconditions({
+          id: 'WI-1',
+          completion: { summary: 'x', verification: { treeStamp: { headSha: 'a'.repeat(40) } } },
+        }),
+      ).toEqual([treeStampHint]);
+    });
+
+    it('emits BOTH lines when a terminal close also sends a stamp, assumptions first', () => {
+      expect(
+        preconditions({
+          id: 'WI-1',
+          state: 'resolved',
+          completion: { summary: 'x', verification: { treeStamp: { headSha: '6eb7137' } } },
+        }),
+      ).toEqual([expect.stringContaining('a terminal close requires `assumptions`'), treeStampHint]);
+    });
+
+    // CONTROLS — these must not be rewritten to accommodate a future change. They are what
+    // make the assertions above falsifiable: a detector that fired on any `completion` at all,
+    // or on any key merely containing "treeStamp", would pass every test above and fail these.
+    it('stays silent for completions that send no stamp at all', () => {
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'x', verification: { filesChanged: ['a.ts'] } } })).toEqual(
+        [],
+      );
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'x', verification: {} } })).toEqual([]);
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'mentions treeStamp in prose only' } })).toEqual([]);
+    });
+
+    it('is total against the malformed shapes this detector newly reaches into', () => {
+      for (const raw of [
+        { id: 'WI-1', completion: 'a bare string completion' },
+        { id: 'WI-1', completion: ['array'] },
+        { id: 'WI-1', completion: { verification: 'not-an-object' } },
+        { id: 'WI-1', completion: { verification: ['array'] } },
+        { id: 'WI-1', completion: null },
+      ]) {
+        expect(() => preconditions(raw)).not.toThrow();
+        expect(preconditions(raw)).toEqual([]);
+      }
+    });
   });
 
   describe('published JSON schema (tools/list projection) preserves conditional assumptions', () => {

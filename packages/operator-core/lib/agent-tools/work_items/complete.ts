@@ -350,6 +350,28 @@ const COMPLETE_CLOSE_SHAPE_MESSAGE =
   'supports the close (see work_items:set_state to change state alone, without a completion record).';
 
 /**
+ * EI-21314040234920121 and its duplicate EI-21562711070130195 both asked for the treeStamp
+ * SHA pattern to be LOOSENED to accept a 10-char abbreviation. Loosening it would have been
+ * actively harmful — the stamp anchors content identity for the committed-vs-proposed
+ * authority gate, and an abbreviated SHA is an ambiguous identity — but the filings were a
+ * fair reading of what the refusal SAYS. A caller who sends `treeStamp` is refused for its
+ * pattern, on a field the server derives from the observed checkout and overwrites anyway
+ * (`{ ...base, treeStamp }`, under "The stamp describes evidence; it is never evidence").
+ * So the refusal names a constraint on a value that would have been discarded, and reads as
+ * "send me a longer SHA" when the real rule is "do not send this field at all".
+ *
+ * Same remedy as ASSUMPTIONS_REQUIRED_MESSAGE below it: do not move the constraint, just let
+ * the FIRST refusal state the rule the caller actually needs.
+ */
+const SERVER_STAMPED_TREE_STAMP_MESSAGE =
+  '`completion.verification.treeStamp` is SERVER-STAMPED — omit it. The server derives the stamp ' +
+  'from the observed checkout and OVERWRITES whatever you send, so a caller-supplied stamp is ' +
+  'validated and then discarded. Its 40/64-hex requirement is deliberate (the stamp anchors ' +
+  'content identity for the committed-vs-proposed authority gate, and an abbreviated SHA is an ' +
+  'ambiguous identity), so the fix is to DROP the field — not to lengthen the SHA. Put what you ' +
+  'actually verified in `testsRun` / `testResult`, and the paths you changed in `filesChanged`.';
+
+/**
  * A union's default error collapses every branch into "Invalid input", hiding
  * the actionable contract that the previous shared object emitted. Preserve
  * strict unknown-key diagnostics, and otherwise retain the full close shape.
@@ -4254,7 +4276,23 @@ export default defineTool({
     const needsAssumptions = entries.some(
       (entry) => hasCloseIntent(entry, root.state) && (entry.assumptions ?? root.assumptions) === undefined,
     );
-    return needsAssumptions ? [ASSUMPTIONS_REQUIRED_MESSAGE] : [];
+    // See SERVER_STAMPED_TREE_STAMP_MESSAGE: fires on PRESENCE, never on shape. A caller who
+    // sends a well-formed 40-hex stamp is silently overwritten rather than refused, so the
+    // presence itself is the misunderstanding worth naming — waiting for a pattern failure
+    // would say nothing to the caller whose stamp happens to parse.
+    const sendsTreeStamp = entries.some((entry) => {
+      const completion = entry.completion ?? root.completion;
+      if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+      const fields = completion as Record<string, unknown>;
+      if (fields.treeStamp !== undefined) return true;
+      const verification = fields.verification;
+      if (!verification || typeof verification !== 'object' || Array.isArray(verification)) return false;
+      return (verification as Record<string, unknown>).treeStamp !== undefined;
+    });
+    return [
+      ...(needsAssumptions ? [ASSUMPTIONS_REQUIRED_MESSAGE] : []),
+      ...(sendsTreeStamp ? [SERVER_STAMPED_TREE_STAMP_MESSAGE] : []),
+    ];
   },
   args: z.preprocess(
     (raw, ctx) => {
