@@ -5893,6 +5893,8 @@ _SUBSTITUTION_HEADS = frozenset((
     'netstat',
     'nproc',
     'npx',
+    'pgrep',
+    'ps',
     'psql',
     'sed',
     'ss',
