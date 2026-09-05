@@ -2722,7 +2722,7 @@ impl OperatorClient {
             .collect())
     }
 
-    // ─── Create / share pot (D-010) ───
+    // ─── Create / hive-native share ───
 
     /// Register a new pot. `source` is either an existing local directory or a
     /// GitHub URL (`https://github.com/…` / `git@github.com:…`) to clone —
@@ -2743,11 +2743,28 @@ impl OperatorClient {
         serde_json::from_value::<models::CreateProjectResponse>(v).context("decode create project")
     }
 
-    // NOTE: the per-harness ShareWizard client calls (`binding/resolve`,
-    // `:slug/share/finalize`, `harness/cupboard/publish`) were REMOVED — their
-    // routes were retired server-side (comb-retire-per-harness-sharing-
-    // 2026-06-11; routes/index.ts names the retirement). See `share_pot` in
-    // main.rs for the fail-fast surface (P-003 own-tui-full-divorce-2026-08-24).
+    /// Read the owner-side hive share prefill. This is the current sharing
+    /// generation; it replaces the retired per-harness ShareWizard routes.
+    pub async fn hive_share_meta(&self, pot_id: &str) -> Result<models::HiveShareMeta> {
+        let path = hive_share_meta_path(pot_id);
+        let v = self.get_json(&path).await?;
+        serde_json::from_value(v).context("decode hive share metadata")
+    }
+
+    /// Create, edit, or withdraw one hive listing through the same composition
+    /// used by the desktop Share-Hive dialog and `discovery:set_pot`.
+    pub async fn set_hive_listing(
+        &self,
+        input: &models::SetHiveListingRequest,
+    ) -> Result<models::SetHiveListingResponse> {
+        let body = serde_json::to_value(input).context("encode hive listing request")?;
+        let v = self.post_json("/api/discovery/set-pot", body).await?;
+        serde_json::from_value(v).context("decode hive listing outcome")
+    }
+
+    // NOTE: the retired `binding/resolve`, `:slug/share/finalize`, and
+    // `harness/cupboard/publish` routes intentionally have no compatibility
+    // clients here (pui-tui-next-wave D-005).
 
     // ─── Cupboard tab (D-011) ───
 
@@ -3170,6 +3187,10 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+fn hive_share_meta_path(pot_id: &str) -> String {
+    format!("/api/discovery/pot-meta?potId={}", urlencode(pot_id))
 }
 
 /// Build the roster route, scoping to `workspace` when a non-empty id is given
@@ -3656,6 +3677,30 @@ mod tests {
         );
         assert_eq!(urlencode("a b.md"), "a%20b.md");
         assert_eq!(urlencode("x?y&z"), "x%3Fy%26z");
+    }
+
+    #[test]
+    fn hive_share_meta_path_targets_the_current_owner_projection() {
+        assert_eq!(
+            hive_share_meta_path("my hive?"),
+            "/api/discovery/pot-meta?potId=my%20hive%3F"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_hive_share_meta_decodes_the_current_route() {
+        let client = OperatorClient::from_discovery()
+            .await
+            .expect("connect via discovery");
+        let slug =
+            std::env::var("PAPERCUSP_HARNESS_SLUG").unwrap_or_else(|_| "papercusp".to_string());
+        let meta = client
+            .hive_share_meta(&slug)
+            .await
+            .expect("decode GET /api/discovery/pot-meta over the live wire");
+        assert_eq!(meta.pot_id, slug);
+        assert!(!meta.title.is_empty());
     }
 
     #[test]

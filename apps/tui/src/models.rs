@@ -1417,6 +1417,81 @@ pub struct DiscoveredHivesResponse {
     pub rows: Vec<DiscoveredHiveRow>,
 }
 
+/// Visibility accepted by the hive-native sharing writer
+/// (`discovery:set_pot` / `POST /api/discovery/set-pot`).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HiveVisibility {
+    Public,
+    Invite,
+    Private,
+}
+
+impl HiveVisibility {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Invite => "invite",
+            Self::Private => "private",
+        }
+    }
+}
+
+/// Owner-side prefill returned by `GET /api/discovery/pot-meta`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveShareMeta {
+    #[serde(default)]
+    pub pot_id: String,
+    #[serde(default)]
+    pub found: bool,
+    #[serde(default)]
+    pub visibility: Option<HiveVisibility>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub invite_secret: Option<String>,
+    #[serde(default)]
+    pub hive_pubkey: Option<String>,
+    #[serde(default)]
+    pub member_repos: Vec<String>,
+}
+
+/// Typed body for `POST /api/discovery/set-pot`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetHiveListingRequest {
+    pub pot_id: String,
+    pub title: String,
+    pub description: String,
+    pub visibility: HiveVisibility,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invite_secret: Option<String>,
+}
+
+/// Outcome returned by the shared hive listing composition. A successful save
+/// can still carry `announce_error`; callers must not call that "published".
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetHiveListingResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub saved: bool,
+    #[serde(default)]
+    pub announced: bool,
+    #[serde(default)]
+    pub reachable_peers: Option<u64>,
+    #[serde(default)]
+    pub withdrawn: bool,
+    #[serde(default)]
+    pub tombstone_sent: bool,
+    #[serde(default)]
+    pub announce_error: Option<String>,
+}
+
 /// One network-board row — the PINNED C-3 contract
 /// (hive-network-surface-2026-06-11, owner B-08): one hive-context over the
 /// capability ladder. An absent optional field means that TIER lacks the data
@@ -4387,6 +4462,44 @@ mod tests {
         assert!(legacy.next_cursor.is_none());
         assert!(legacy.total.is_none());
         assert!(legacy.kind_facets.is_empty());
+    }
+
+    #[test]
+    fn hive_share_models_follow_the_discovery_contract() {
+        let meta: HiveShareMeta = serde_json::from_str(
+            r#"{
+                "potId":"acme-hive",
+                "found":true,
+                "visibility":"invite",
+                "title":"Acme Hive",
+                "description":"Shared workspace",
+                "inviteSecret":"0123456789abcdef0123456789abcdef",
+                "hivePubkey":"cHVia2V5",
+                "memberRepos":["acme/api#7"]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(meta.pot_id, "acme-hive");
+        assert_eq!(meta.visibility, Some(HiveVisibility::Invite));
+        assert_eq!(meta.member_repos, vec!["acme/api#7".to_string()]);
+
+        let body = serde_json::to_value(SetHiveListingRequest {
+            pot_id: meta.pot_id,
+            title: meta.title,
+            description: meta.description,
+            visibility: HiveVisibility::Public,
+            invite_secret: None,
+        })
+        .unwrap();
+        assert_eq!(body["potId"], "acme-hive");
+        assert_eq!(body["visibility"], "public");
+        assert!(body.get("inviteSecret").is_none());
+
+        let outcome: SetHiveListingResponse =
+            serde_json::from_str(r#"{"ok":true,"saved":true,"announced":true,"reachablePeers":0}"#)
+                .unwrap();
+        assert!(outcome.announced);
+        assert_eq!(outcome.reachable_peers, Some(0));
     }
 
     #[test]

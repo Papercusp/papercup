@@ -9,8 +9,8 @@ use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConversationContextFrame,
     ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
-    HarnessRef, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptAvailability, SessionTranscriptTurn, TestingDomain, ToolOutcome,
+    HarnessRef, HiveVisibility, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary,
+    RosterEntry, SessionTranscriptAvailability, SessionTranscriptTurn, TestingDomain, ToolOutcome,
     TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
@@ -763,14 +763,13 @@ pub enum PaletteCommand {
         slug: String,
         source: String,
     },
-    /// `:share <slug> [github-remote] [public]` (D-010) — the share sequence:
-    /// resolve binding → finalize shared.json/swarm → (public only) Cupboard
-    /// publish. With no remote given the run loop reads the pot repo's
-    /// `origin` remote.
+    /// `:share <slug> [invite|public|private]` — hive-native sharing through
+    /// discovery pot-meta → set-pot (pui-tui-next-wave D-005). Bare `:share`
+    /// preserves the old shared-private intent as modern invite-only sharing;
+    /// `private` withdraws the listing.
     SharePot {
         slug: String,
-        remote: Option<String>,
-        public: bool,
+        visibility: HiveVisibility,
     },
     /// `:set <key.path> <value>` — edit the Config tab's settings file (D-013).
     /// Routed to `Action::ConfigEdit` in the reducer, not the workbench task.
@@ -913,31 +912,22 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             }
             Some(PaletteCommand::CreatePot { slug, source })
         }
-        // `:share <slug> [remote] [public]` — slug required; a bare `public`
-        // token flags Cupboard publish; any other extra token is the remote.
+        // `:share <slug> [invite|public|private]` — slug required. Bare share
+        // maps the retired shared-private intent to the modern invite surface;
+        // GitHub remotes are deliberately no longer accepted (D-005).
         "share" => {
-            let mut slug = String::new();
-            let mut remote: Option<String> = None;
-            let mut public = false;
-            for tok in arg.split_whitespace() {
-                if slug.is_empty() {
-                    slug = tok.to_string();
-                } else if tok.eq_ignore_ascii_case("public") {
-                    public = true;
-                } else if remote.is_none() {
-                    remote = Some(tok.to_string());
-                } else {
-                    return None; // too many args
-                }
-            }
-            if slug.is_empty() {
+            let mut parts = arg.split_whitespace();
+            let slug = parts.next().unwrap_or("").to_string();
+            if slug.is_empty() || parts.clone().nth(1).is_some() {
                 return None;
             }
-            Some(PaletteCommand::SharePot {
-                slug,
-                remote,
-                public,
-            })
+            let visibility = match parts.next().map(str::to_ascii_lowercase).as_deref() {
+                None | Some("invite") => HiveVisibility::Invite,
+                Some("public") => HiveVisibility::Public,
+                Some("private") => HiveVisibility::Private,
+                Some(_) => return None,
+            };
+            Some(PaletteCommand::SharePot { slug, visibility })
         }
         // Config-tab editor (D-013): `:set <key.path> <value>` / `:unset <key.path>`.
         "set" if !arg.is_empty() => {
@@ -15767,32 +15757,42 @@ mod tests {
         );
         assert_eq!(parse_palette_command("create only-slug"), None);
         assert_eq!(parse_palette_command("create"), None);
-        // `:share <slug> [remote] [public]` — slug required; `public` flags the
-        // Cupboard publish; an extra non-`public` token is the remote.
+        // `:share <slug> [invite|public|private]` — bare means invite-only,
+        // public publishes to the directory + Cupboard, private withdraws.
         assert_eq!(
             parse_palette_command("share my-pot"),
             Some(PaletteCommand::SharePot {
                 slug: "my-pot".into(),
-                remote: None,
-                public: false
+                visibility: HiveVisibility::Invite,
             })
         );
         assert_eq!(
             parse_palette_command("share my-pot public"),
             Some(PaletteCommand::SharePot {
                 slug: "my-pot".into(),
-                remote: None,
-                public: true
+                visibility: HiveVisibility::Public,
             })
         );
         assert_eq!(
-            parse_palette_command("share my-pot git@github.com:o/r.git public"),
+            parse_palette_command("share my-pot INVITE"),
             Some(PaletteCommand::SharePot {
                 slug: "my-pot".into(),
-                remote: Some("git@github.com:o/r.git".into()),
-                public: true
+                visibility: HiveVisibility::Invite,
             })
         );
+        assert_eq!(
+            parse_palette_command("share my-pot private"),
+            Some(PaletteCommand::SharePot {
+                slug: "my-pot".into(),
+                visibility: HiveVisibility::Private,
+            })
+        );
+        assert_eq!(
+            parse_palette_command("share my-pot git@github.com:o/r.git"),
+            None,
+            "the retired GitHub-remote argument must not survive as an alias"
+        );
+        assert_eq!(parse_palette_command("share my-pot public extra"), None);
         assert_eq!(parse_palette_command("share"), None);
     }
 

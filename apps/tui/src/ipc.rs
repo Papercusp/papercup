@@ -410,7 +410,10 @@ fn writer_alive(pid: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::OperatorClient;
+    use crate::models::{HiveVisibility, SetHiveListingRequest};
     use tokio::net::UnixListener;
+    use tokio::sync::oneshot;
 
     #[test]
     fn discover_socket_is_strictly_per_port_and_skips_dead_writers() {
@@ -473,7 +476,18 @@ mod tests {
     /// Fake operator: accept one connection, read a REQUEST, reply with the
     /// sys:http frame sequence (head EVENT_JSON + body EVENT_BIN + DONE).
     async fn spawn_fake(socket: PathBuf, status: i64, body: &'static [u8]) {
+        drop(spawn_fake_capture(socket, status, body).await);
+    }
+
+    /// The same fake, with the exact request returned to the test. This keeps
+    /// typed `OperatorClient` route tests at the IPC seam that owns them.
+    async fn spawn_fake_capture(
+        socket: PathBuf,
+        status: i64,
+        body: &'static [u8],
+    ) -> oneshot::Receiver<Value> {
         let listener = UnixListener::bind(&socket).unwrap();
+        let (request_tx, request_rx) = oneshot::channel();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut r, mut w) = stream.into_split();
@@ -487,6 +501,7 @@ mod tests {
             let _ = r.read_exact(&mut payload).await;
             let req: Value = serde_json::from_slice(&payload).unwrap();
             let id = req["id"].as_u64().unwrap();
+            let _ = request_tx.send(req);
 
             let head =
                 serde_json::json!({"id":id,"name":"head","data":{"status":status,"headers":{}}})
@@ -503,6 +518,7 @@ mod tests {
         });
         // Give bind a beat before the client connects.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        request_rx
     }
 
     /// Fake operator that streams several EVENT_JSON frames before DONE — the
@@ -583,6 +599,59 @@ mod tests {
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         assert_eq!(v["n"], serde_json::json!(7));
+    }
+
+    #[tokio::test]
+    async fn operator_client_uses_the_hive_native_share_routes_over_ipc() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let meta_sock = dir.path().join("meta.sock");
+        let meta_request = spawn_fake_capture(
+            meta_sock.clone(),
+            200,
+            br#"{"potId":"my hive","found":false,"visibility":null,"title":"my hive","description":"","inviteSecret":null,"hivePubkey":null,"memberRepos":[]}"#,
+        )
+        .await;
+        let meta_client =
+            OperatorClient::new(Arc::new(IpcClient::connect(&meta_sock).await.unwrap()));
+        let meta = meta_client.hive_share_meta("my hive").await.unwrap();
+        assert_eq!(meta.pot_id, "my hive");
+        let request = meta_request.await.unwrap();
+        assert_eq!(request["toolName"], "sys:http");
+        assert_eq!(request["input"]["method"], "GET");
+        assert_eq!(
+            request["input"]["path"],
+            "/api/discovery/pot-meta?potId=my%20hive"
+        );
+
+        let set_sock = dir.path().join("set.sock");
+        let set_request = spawn_fake_capture(
+            set_sock.clone(),
+            200,
+            br#"{"ok":true,"saved":true,"announced":true,"reachablePeers":2}"#,
+        )
+        .await;
+        let set_client =
+            OperatorClient::new(Arc::new(IpcClient::connect(&set_sock).await.unwrap()));
+        let outcome = set_client
+            .set_hive_listing(&SetHiveListingRequest {
+                pot_id: "my hive".to_string(),
+                title: "My Hive".to_string(),
+                description: "Shared workspace".to_string(),
+                visibility: HiveVisibility::Invite,
+                invite_secret: Some("0123456789abcdef0123456789abcdef".to_string()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome.reachable_peers, Some(2));
+        let request = set_request.await.unwrap();
+        assert_eq!(request["toolName"], "sys:http");
+        assert_eq!(request["input"]["method"], "POST");
+        assert_eq!(request["input"]["path"], "/api/discovery/set-pot");
+        let body: Value = serde_json::from_str(request["input"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["potId"], "my hive");
+        assert_eq!(body["visibility"], "invite");
+        assert_eq!(body["inviteSecret"], "0123456789abcdef0123456789abcdef");
     }
 
     #[tokio::test]
