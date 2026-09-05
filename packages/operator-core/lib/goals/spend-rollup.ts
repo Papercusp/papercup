@@ -43,7 +43,12 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { GOAL_MODE } from '../modes/goal-session';
 import { getGoalTransitionExecutor } from '@papercusp/agent-mcp';
-import { breachedTripwires, refreshTripwireCurrents, type GoalTripwireLike } from './tripwire-refresh';
+import {
+  breachedTripwires,
+  populationForMetric,
+  refreshTripwireCurrents,
+  type GoalTripwireLike,
+} from './tripwire-refresh';
 
 export const GOAL_SPEND_ROLLUP_INTERVAL_MS = 5 * 60_000;
 
@@ -72,6 +77,46 @@ export const GOAL_SPEND_ROLLUP_INTERVAL_MS = 5 * 60_000;
 export const GOAL_SPEND_POT_SCOPE = 'inside-goal-pots:authoritative' as const;
 export const GOAL_SPEND_SESSION_SCOPE = 'outside-goal-pots:diagnostic-only' as const;
 
+/**
+ * The THIRD scope (spend-attribution…-2026-09-04 P-004, D-006).
+ *
+ * The two labels above partition the ledger by WHERE a sample was billed. This
+ * one cuts the other way: it names the samples whose attribution was STAMPED AT
+ * WRITE TIME (`agent_usage_samples.goal_id`, fed by goal_id_for_usage_session at
+ * INSERT) rather than INFERRED afterwards by joining adv_sessions. Same cents,
+ * different epistemic standing — and that distinction is the one this plan
+ * proved we cannot read off a bare number.
+ *
+ * ⚠ IT IS NOT A THIRD DISJOINT PARTITION, and must never be rendered as one.
+ * P-004's wording ("a THIRD scope alongside") invites that reading; the code
+ * does not support it. `sessionSpendForGoal`'s predicate already begins
+ * `s.goal_id = <goal> OR (...)`, so every write-time-attributed sample that is
+ * not billed to a goal pot is ALREADY inside `sessionCents`. Measured
+ * 2026-09-05: all 865 lineage rows in this workspace are source='interactive'
+ * with harness_slug NULL, so today lineage ⊆ session and lineage ∩ pot = ∅.
+ *
+ * Both of those are CONTINGENT, which is why the overlap is measured every tick
+ * (`lineageInsidePotCents`) instead of asserted here. WI-2144763 proposes
+ * stamping harness_slug on that very writer; the day it lands, lineage rows
+ * start matching goal pots and the intersection stops being empty. A label
+ * claiming disjointness would become false exactly when a sibling lane succeeds
+ * — the drift the derived-truth ladder exists to prevent.
+ *
+ * So: diagnostic-only, like the session leg, and never added into any total.
+ */
+export const GOAL_SPEND_LINEAGE_SCOPE = 'attributed-by-lineage:diagnostic-only' as const;
+
+/**
+ * How the three scopes relate, as DATA rather than prose, so a consumer can
+ * reject an unsafe sum without reading this module. Shipped beside the cents in
+ * `spentCentsBreakdown`.
+ */
+export const GOAL_SPEND_SCOPE_RELATIONS = {
+  additive: [GOAL_SPEND_POT_SCOPE, GOAL_SPEND_SESSION_SCOPE],
+  overlapping: [GOAL_SPEND_LINEAGE_SCOPE],
+  note: 'pot+session partition the ledger and sum to diagnosticTotalCents; lineage cross-cuts them and must never be added to either.',
+} as const;
+
 /** The SESSION leg's contribution — samples the pot leg cannot see. */
 export interface GoalSessionSpend {
   costUsd: number;
@@ -80,6 +125,26 @@ export interface GoalSessionSpend {
   unpricedSamples: number;
   /** Distinct native session ids that contributed samples. */
   sessions: number;
+}
+
+/**
+ * The LINEAGE leg — samples carrying write-time goal provenance. Cross-cuts the
+ * other two legs (see {@link GOAL_SPEND_LINEAGE_SCOPE}); never summed with them.
+ */
+export interface GoalLineageSpend {
+  costUsd: number;
+  samples: number;
+  pricedSamples: number;
+  unpricedSamples: number;
+  /** Distinct native session ids that contributed samples. */
+  sessions: number;
+  /**
+   * The MEASURED intersection with the pot leg, in USD: lineage samples whose
+   * harness_slug is one of the goal's live pots. Currently 0 in this workspace
+   * (the writer that stamps goal_id never writes harness_slug), but measured
+   * rather than assumed — WI-2144763 would make it nonzero.
+   */
+  insidePotCostUsd: number;
 }
 
 export interface GoalSpendRollup {
@@ -98,6 +163,15 @@ export interface GoalSpendRollup {
   measured: boolean;
   pot: GoalSpend;
   session: GoalSessionSpend;
+  /**
+   * Diagnostic write-time-attributed spend. Deliberately NOT part of
+   * `totalCents`, `samples`, `unpricedSamples` or `measured`: it overlaps the
+   * legs those aggregate, so including it would double-count.
+   */
+  lineageCents: number;
+  /** Measured lineage ∩ pot, in cents. 0 today; see GOAL_SPEND_LINEAGE_SCOPE. */
+  lineageInsidePotCents: number;
+  lineage: GoalLineageSpend;
 }
 
 /**
@@ -178,6 +252,68 @@ export async function sessionSpendForGoal(
 }
 
 /**
+ * The LINEAGE leg: samples the ledger itself stamped with this goal at INSERT.
+ *
+ * Deliberately the SIMPLEST predicate in this module — `goal_id = <goal>` and
+ * nothing else. That is the whole point: it measures what was recorded, not
+ * what can be reconstructed, so it is the one leg that cannot be wrong about
+ * its own provenance. It shares the goal-lifetime lower bound and the
+ * workspace tenancy filter with the other legs so the three remain comparable.
+ *
+ * `insidePotCostUsd` measures the intersection with the pot leg in the same
+ * pass, because a consumer holding three cent figures needs to know they are
+ * not addable, and a comment cannot tell it that at read time.
+ */
+export async function lineageSpendForGoal(
+  sql: Sql,
+  opts: { workspaceId: string; goalId: string; sinceMs?: number },
+): Promise<GoalLineageSpend> {
+  const since = opts.sinceMs ?? 0;
+  const rows = await sql<
+    Array<{
+      cost: string | null;
+      samples: string;
+      priced_samples: string;
+      unpriced_samples: string;
+      sessions: string;
+      inside_pot_cost: string | null;
+    }>
+  >`
+    SELECT COALESCE(SUM(s.cost_usd), 0) AS cost,
+           COUNT(*)                     AS samples,
+           COUNT(*) FILTER (WHERE s.cost_usd IS NOT NULL) AS priced_samples,
+           COUNT(*) FILTER (WHERE s.cost_usd IS NULL) AS unpriced_samples,
+           COUNT(DISTINCT s.session_id) AS sessions,
+           COALESCE(SUM(s.cost_usd) FILTER (
+             WHERE s.harness_slug IN (
+               SELECT gp.harness_slug FROM harness_shared.goal_pots gp
+                WHERE gp.workspace_id = ${opts.workspaceId}
+                  AND gp.goal_id = ${opts.goalId}
+                  AND gp.removed_at IS NULL)
+           ), 0) AS inside_pot_cost
+      FROM harness_shared.agent_usage_samples s
+      JOIN harness_shared.goals g
+        ON g.id = ${opts.goalId}
+       AND g.workspace_id = ${opts.workspaceId}
+     WHERE s.workspace_id = ${opts.workspaceId}
+       AND s.goal_id = ${opts.goalId}
+       AND s.ts >= GREATEST(
+         ${since}::bigint,
+         (EXTRACT(EPOCH FROM g.created_at) * 1000)::bigint
+       )
+  `;
+  const r = rows[0];
+  return {
+    costUsd: Number(r?.cost ?? 0),
+    samples: Number(r?.samples ?? 0),
+    pricedSamples: Number(r?.priced_samples ?? 0),
+    unpricedSamples: Number(r?.unpriced_samples ?? 0),
+    sessions: Number(r?.sessions ?? 0),
+    insidePotCostUsd: Number(r?.inside_pot_cost ?? 0),
+  };
+}
+
+/**
  * Both legs, combined for diagnostics. The persisted/controlling number is
  * always `potCents`; `totalCents` is intentionally non-authoritative.
  *
@@ -190,9 +326,18 @@ export async function computeGoalSpendRollup(
   sql: Sql,
   opts: { workspaceId: string; goalId: string; sinceMs?: number },
 ): Promise<GoalSpendRollup> {
-  const [pot, session] = await Promise.all([goalSpend(sql, opts), sessionSpendForGoal(sql, opts)]);
+  const [pot, session, lineage] = await Promise.all([
+    goalSpend(sql, opts),
+    sessionSpendForGoal(sql, opts),
+    lineageSpendForGoal(sql, opts),
+  ]);
   const potCents = Math.round(pot.costUsd * 100);
   const sessionCents = Math.round(session.costUsd * 100);
+  // The pot/session partition is what aggregates. The lineage leg is EXCLUDED
+  // from every aggregate below on purpose: it overlaps both (see
+  // GOAL_SPEND_LINEAGE_SCOPE), so folding it in would double-count rather than
+  // widen coverage — and a too-large `samples` would flip `measured`, which
+  // gates tripwire advancement.
   const samples = pot.samples + session.samples;
   const unpricedSamples = pot.unpricedSamples + session.unpricedSamples;
   return {
@@ -205,6 +350,9 @@ export async function computeGoalSpendRollup(
     measured: samples > 0 && unpricedSamples === 0,
     pot,
     session,
+    lineageCents: Math.round(lineage.costUsd * 100),
+    lineageInsidePotCents: Math.round(lineage.insidePotCostUsd * 100),
+    lineage,
   };
 }
 
@@ -235,6 +383,10 @@ export async function writeGoalSpendSnapshot(
       // ledger, and only the pot leg may control anything.
       potScope: GOAL_SPEND_POT_SCOPE,
       sessionScope: GOAL_SPEND_SESSION_SCOPE,
+      lineageScope: GOAL_SPEND_LINEAGE_SCOPE,
+      // How the three relate, as data. A consumer can reject an unsafe sum
+      // without reading this module — which is the whole point of P-004.
+      scopeRelations: GOAL_SPEND_SCOPE_RELATIONS,
       // Everything below is diagnostic-only and must never be read as the
       // authoritative spend snapshot or a terminal-control input.
       sessionCents: rollup.sessionCents,
@@ -242,6 +394,15 @@ export async function writeGoalSpendSnapshot(
       sessionUnpricedSamples: rollup.session.unpricedSamples,
       sessionMeasured: rollup.session.samples > 0 && rollup.session.unpricedSamples === 0,
       sessionCount: rollup.session.sessions,
+      // LINEAGE leg — cross-cutting, never added to the totals below.
+      lineageCents: rollup.lineageCents,
+      lineageSamples: rollup.lineage.samples,
+      lineageUnpricedSamples: rollup.lineage.unpricedSamples,
+      lineageSessionCount: rollup.lineage.sessions,
+      // The measured intersection with the pot leg. Present even when 0 — a
+      // zero a reader can SEE is what makes the non-additivity checkable
+      // rather than a claim they have to trust.
+      lineageInsidePotCents: rollup.lineageInsidePotCents,
       diagnosticTotalCents: rollup.totalCents,
       diagnosticSamples: rollup.samples,
       diagnosticUnpricedSamples: rollup.unpricedSamples,
@@ -369,7 +530,12 @@ async function enforceGoalBreaches(
             : `goals:pots spend floor ${judged.potCents}c reached budget ${budgetCents}c${per} with ${judged.pot.unpricedSamples} unpriced sample(s)`,
         ]
       : []),
-    ...breached.map((b) => `${b.metric} ${b.current} reached threshold ${b.threshold}`),
+    ...breached.map((b) => {
+      // NAME THE POPULATION (P-004). `spend_usd 62 reached threshold 100` reads
+      // as a fact about the goal; it is a fact about the goal's pot subset.
+      const pop = populationForMetric(b.metric);
+      return `${b.metric} ${b.current} reached threshold ${b.threshold}${pop ? ` [measured over ${pop}]` : ''}`;
+    }),
   ];
   const evidence = {
     reason: budgetBreached && !judged.pot.measured ? 'spend-floor-goal-breach' : 'measured-goal-breach',
@@ -377,6 +543,28 @@ async function enforceGoalBreaches(
     reasons,
     spentCents: judged.potCents,
     measured: judged.pot.measured,
+    /*
+     * THE KILL'S OWN PROVENANCE (P-004).
+     *
+     * `spentCents` above is the POT leg — the only leg allowed to govern. Read
+     * cold on a killed goal it looks like "what this goal cost", and when the
+     * diagnostic session leg is larger (routinely ~2x) that reads as the kill
+     * having fired at the wrong number. It did not; the two measure disjoint
+     * populations. This plan is itself the case study for what happens when a
+     * number is read without its population, so the terminal readout carries
+     * its own scope rather than relying on a reader to know the rule.
+     */
+    spentCentsScope: GOAL_SPEND_POT_SCOPE,
+    /** Lifetime, or the rolling window the ceiling was actually judged over. */
+    judgedWindowSec: windowSec,
+    /** Diagnostic-only context, labelled, so it cannot be mistaken for the cause. */
+    notJudged: {
+      sessionCents: judged.sessionCents,
+      sessionScope: GOAL_SPEND_SESSION_SCOPE,
+      lineageCents: judged.lineageCents,
+      lineageScope: GOAL_SPEND_LINEAGE_SCOPE,
+      note: 'Present for context only. Neither figure advanced a tripwire or contributed to this kill.',
+    },
   };
   const changed = await sql`
     UPDATE harness_shared.goals

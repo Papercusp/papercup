@@ -18,7 +18,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { GOAL_SPEND_POT_SCOPE, GOAL_SPEND_SESSION_SCOPE } from './spend-rollup';
+import {
+  GOAL_SPEND_LINEAGE_SCOPE,
+  GOAL_SPEND_POT_SCOPE,
+  GOAL_SPEND_SCOPE_RELATIONS,
+  GOAL_SPEND_SESSION_SCOPE,
+} from './spend-rollup';
 
 const SOURCE = readFileSync(join(__dirname, 'spend-rollup.ts'), 'utf8');
 
@@ -58,5 +63,113 @@ describe('goal spend breakdown — scope labels are self-describing and pinned',
     expect(normalized).toContain('spentCents: rollup.potCents');
     expect(normalized).not.toContain('spentCents: rollup.totalCents');
     expect(normalized).not.toContain('spentCents: rollup.sessionCents');
+  });
+});
+
+/**
+ * The THIRD scope (P-004). Its whole risk is different from the other two: pot
+ * and session are DISJOINT and sum, so their danger was being read as rival
+ * meters. Lineage OVERLAPS both, so its danger is the opposite — being read as
+ * a third addend. These pin the non-additivity, because the moment someone sums
+ * three cent figures the number is wrong and nothing complains.
+ */
+describe('goal spend breakdown — the lineage scope is labelled and never summed', () => {
+  it('labels the lineage leg with its population AND its authority', () => {
+    expect(GOAL_SPEND_LINEAGE_SCOPE).toBe('attributed-by-lineage:diagnostic-only');
+  });
+
+  it('declares the scope RELATIONS as data, so a consumer can reject an unsafe sum', () => {
+    // The label alone cannot say "do not add me to the other two". This can.
+    expect(GOAL_SPEND_SCOPE_RELATIONS.additive).toEqual([
+      GOAL_SPEND_POT_SCOPE,
+      GOAL_SPEND_SESSION_SCOPE,
+    ]);
+    expect(GOAL_SPEND_SCOPE_RELATIONS.overlapping).toEqual([GOAL_SPEND_LINEAGE_SCOPE]);
+    // Lineage must never appear on the additive side — that is the whole rule.
+    expect(GOAL_SPEND_SCOPE_RELATIONS.additive).not.toContain(GOAL_SPEND_LINEAGE_SCOPE);
+  });
+
+  it('persists the lineage label and its measured pot-overlap into spentCentsBreakdown', () => {
+    const patch = SOURCE.slice(
+      SOURCE.indexOf('spentCentsBreakdown: {'),
+      SOURCE.indexOf('diagnosticUnpricedSamples'),
+    );
+    expect(patch).toContain('lineageScope: GOAL_SPEND_LINEAGE_SCOPE');
+    expect(patch).toContain('scopeRelations: GOAL_SPEND_SCOPE_RELATIONS');
+    // The overlap must be EMITTED, not merely asserted in a comment: it is 0
+    // today only because the writer that stamps goal_id never writes
+    // harness_slug, and WI-2144763 proposes changing exactly that.
+    expect(patch).toContain('lineageInsidePotCents: rollup.lineageInsidePotCents');
+  });
+
+  it('keeps the lineage leg OUT of every aggregate — the non-additivity rule', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    // totalCents stays the pot+session partition.
+    expect(normalized).toContain('totalCents: potCents + sessionCents');
+    expect(normalized).not.toContain('totalCents: potCents + sessionCents + lineageCents');
+    // `samples`/`unpricedSamples` feed `measured`, which gates tripwire
+    // advancement — inflating them with an overlapping leg would corrupt a
+    // control input, not just a display.
+    expect(normalized).toContain('const samples = pot.samples + session.samples;');
+    expect(normalized).toContain(
+      'const unpricedSamples = pot.unpricedSamples + session.unpricedSamples;',
+    );
+    expect(normalized).not.toContain('lineage.samples;');
+  });
+
+  it('CONTROL: the source-matching instrument works, so the not.toContain pins are not vacuous', () => {
+    // Every non-additivity pin above is a NEGATIVE assertion, and a negative
+    // assertion passes for free if the haystack is wrong (empty source, a
+    // normalization that mangles the text). A positive control that must match
+    // is what separates "the bad pattern is absent" from "nothing is present".
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(SOURCE.length).toBeGreaterThan(1000);
+    expect(normalized).toContain('export async function lineageSpendForGoal');
+    expect(normalized).toContain('lineageCents: Math.round(lineage.costUsd * 100)');
+    // And a string that must NOT be there, to show the matcher can say no.
+    expect(normalized).not.toContain('this_sentinel_should_never_appear_in_spend_rollup');
+  });
+
+  it('measures the pot overlap in SQL rather than assuming it stays zero', () => {
+    // A hard-coded 0 would be a claim about another writer's behaviour.
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(normalized).toContain('AS inside_pot_cost');
+    expect(normalized).toContain('insidePotCostUsd: Number(r?.inside_pot_cost ?? 0)');
+  });
+});
+
+/**
+ * The readout half of P-004: a number attached to a KILL must say what it
+ * measured. This plan is the case study — a display fallback read as a fact
+ * about the world framed an entire plan and nearly funded two wrong branches.
+ */
+describe('goal spend readouts — ceilings, tripwires and auto-kills name their population', () => {
+  it('stamps the auto-kill evidence with the scope of the number that caused it', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    // `spentCents: judged.potCents` is the pot subset. Unlabelled on a killed
+    // goal it reads as "what this goal cost".
+    expect(normalized).toContain('spentCentsScope: GOAL_SPEND_POT_SCOPE');
+  });
+
+  it('records WHICH denominator the ceiling was judged over', () => {
+    // Lifetime vs rolling window changes what the kill means; the reader of a
+    // killed goal cannot recover it from the cent figure alone.
+    expect(SOURCE.replace(/\s+/g, ' ')).toContain('judgedWindowSec: windowSec');
+  });
+
+  it('carries the un-judged legs as explicitly labelled context, not bare numbers', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    // The session leg is routinely ~2x the pot leg. Present but unlabelled, it
+    // makes a correct kill look like it fired on the wrong number; absent
+    // entirely, an operator cannot see why the figures differ at all.
+    expect(normalized).toContain('notJudged:');
+    expect(normalized).toContain('sessionScope: GOAL_SPEND_SESSION_SCOPE');
+    expect(normalized).toContain('lineageScope: GOAL_SPEND_LINEAGE_SCOPE');
+  });
+
+  it('appends the measured population to every generic tripwire breach reason', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(normalized).toContain('populationForMetric(b.metric)');
+    expect(normalized).toContain('[measured over ${pop}]');
   });
 });

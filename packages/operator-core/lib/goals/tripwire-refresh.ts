@@ -215,6 +215,38 @@ const RESOLVERS: Record<string, (m: TripwireMeasurement) => number | null> = {
 /** The metrics this module can advance without an executor. Exported for tests + docs. */
 export const GENERICALLY_MEASURABLE_METRICS: readonly string[] = Object.keys(RESOLVERS).sort();
 
+/**
+ * What POPULATION each metric's `current` actually measured
+ * (spend-attribution…-2026-09-04 P-004).
+ *
+ * A breach reason reading `spend_usd 62 reached threshold 100` invites the
+ * reader to hear "this goal has spent $62" — a fact about the goal. It is not:
+ * the spend resolvers are fed `measuredSpentCents`, which the rollup sets from
+ * the POT leg alone, so it is a fact about the goal's pot subset and excludes
+ * the diagnostic session leg entirely. At a breach that misreading is expensive,
+ * because the readout is attached to a kill.
+ *
+ * Kept HERE, next to RESOLVERS, rather than at the readout site: this is a
+ * description of what each resolver reads, and it goes stale the moment the two
+ * drift apart. `tripwire-metric-populations.test.ts` fails if a resolver is
+ * added without a population, so the pair cannot silently separate.
+ */
+export const METRIC_POPULATION: Record<string, string> = {
+  spend_usd: 'inside-goal-pots:authoritative',
+  spend_cents: 'inside-goal-pots:authoritative',
+  days_elapsed: 'goal-lifetime',
+  hours_elapsed: 'goal-lifetime',
+};
+
+/**
+ * The population label for a metric, or null when the metric is not one this
+ * module resolves (a declared evidence binding supplies its own meaning, and
+ * inventing a label for it here would be exactly the drift above).
+ */
+export function populationForMetric(metric: string): string | null {
+  return METRIC_POPULATION[metric] ?? null;
+}
+
 /** Normalise a stored `current` (absent | null | non-finite) to null. */
 function readCurrent(t: GoalTripwireLike): number | null {
   return typeof t.current === 'number' && Number.isFinite(t.current) ? t.current : null;
