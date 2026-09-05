@@ -1,0 +1,232 @@
+/**
+ * EI-19449316000499177: code:run pre-validates statically-known tool args BEFORE dispatch.
+ *
+ * The reported failure is ORDERING, not detection: code:run runs its calls in sequence, so an
+ * argument the tool does not accept is caught at EXECUTION time — call #1 is rejected and every
+ * later write is reported as `strandedWrites` and never runs, even though the offending key sat
+ * literally in the script the whole time. So the load-bearing assertion in this file is not that
+ * a message is produced; it is that `runToolOrchestration` is NEVER ENTERED. If it runs at all,
+ * writes can strand, and the fix has not happened regardless of what the payload says.
+ *
+ * Lives apart from run.test.ts because the orchestrator is MOCKED here (vi.mock is file-global and
+ * the sibling tests need the real one), and apart from recipe-schema-validation.test.ts because
+ * that file proves the CLASSIFICATION against real schemas while this one proves the WIRING: given
+ * a class, does code:run refuse or proceed. The split is deliberate — code:run fails closed on
+ * `unknown-key` ONLY, and a validator that mislabels a class would otherwise turn into a false
+ * refusal here with nothing to catch it.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
+
+const { captureRecipeMock } = vi.hoisted(() => ({
+  captureRecipeMock: vi.fn(async () => null),
+}));
+vi.mock('./capture-recipe', () => ({
+  captureRecipe: captureRecipeMock,
+}));
+const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfConcreteMock } = vi.hoisted(() => ({
+  withWorkspaceMock: vi.fn(async (workspaceId: string, fn: (tx: unknown) => unknown) => fn({ __tx: workspaceId })),
+  synthesizeDispatchPrincipalMock: vi.fn(async (tx: unknown, spawnCtx: { workspaceId: string; role: string }) => ({
+    slug: `system:${spawnCtx.role}`,
+    workspaceId: spawnCtx.workspaceId,
+    capabilities: new Set<string>(),
+    __tx: tx,
+  })),
+  runWithWorkspaceIfConcreteMock: vi.fn(async (_workspaceId: string | undefined, fn: () => unknown) => fn()),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: { __admin: true } }),
+  withWorkspace: withWorkspaceMock,
+}));
+vi.mock('../../workspace-als', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  runWithWorkspaceIfConcrete: runWithWorkspaceIfConcreteMock,
+}));
+vi.mock('../../endpoint-route/routes/transport/role-principal-caps', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  synthesizeDispatchPrincipal: synthesizeDispatchPrincipalMock,
+}));
+vi.mock('../search/embedder', () => ({
+  buildQueryEmbedder: async () => null,
+  interactiveEmbedAcquireBudgetMs: () => 4000,
+}));
+vi.mock('../../hive-federation', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  potHomeSlugForHarness: async () => 'alpha',
+}));
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
+}));
+
+const { runToolOrchestrationMock } = vi.hoisted(() => ({
+  runToolOrchestrationMock: vi.fn(),
+}));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  runToolOrchestration: runToolOrchestrationMock,
+}));
+
+// The validator itself is mocked so each ISSUE CLASS can be driven deterministically; its real
+// behaviour against real schemas is proven in recipes/recipe-schema-validation.test.ts.
+const { validateMock } = vi.hoisted(() => ({
+  validateMock: vi.fn(),
+}));
+vi.mock('../recipes/recipe-schema-validation', () => ({
+  validateRecipeScriptAgainstCatalog: validateMock,
+}));
+
+import './run'; // registers code:run (after the mocks are hoisted)
+
+const orchestration = (over: Record<string, unknown> = {}) => ({
+  ok: true,
+  summary: { done: true },
+  logs: [],
+  dryRun: false,
+  plannedMutations: [],
+  okFalseMutations: [],
+  childFailures: [],
+  partial: false,
+  dispatchCount: 0,
+  ...over,
+});
+
+const codeRun = () => {
+  const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+  if (!tool) throw new Error('code:run not registered');
+  return tool;
+};
+const mkCtx = (metadata = vi.fn()) =>
+  ({
+    log: () => {},
+    metadata,
+    workspaceId: 'ws-test',
+    harnessSlug: 'alpha',
+    role: 'su',
+    isSuperuser: true,
+    uiClientId: 'su-test',
+  }) as never;
+
+const payloadOf = (result: unknown): Record<string, unknown> =>
+  JSON.parse((result as { content: { text: string }[] }).content[0].text);
+
+/** The item's first measured case, 2026-08-03. */
+const UNKNOWN_KEY_ISSUE = {
+  tool: 'improvements:capture',
+  path: 'args',
+  message: 'args.harness is not accepted by the current tool schema',
+  kind: 'unknown-key' as const,
+};
+
+describe('code:run static arg preflight (EI-19449316000499177)', () => {
+  beforeEach(() => {
+    runToolOrchestrationMock.mockReset();
+    runToolOrchestrationMock.mockResolvedValue(orchestration());
+    validateMock.mockReset();
+    validateMock.mockResolvedValue({ ok: true, issues: [], staticToolNames: [] });
+  });
+
+  it('an undeclared arg refuses the script BEFORE the orchestrator is entered — nothing can strand', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [UNKNOWN_KEY_ISSUE],
+      staticToolNames: ['improvements:capture'],
+    });
+    const result = await codeRun().fn(
+      { script: 'await tools.improvements.capture({ harness: "papercusp" }); await tools.plans.setNow({ slug: "s", body: "b" });' },
+      mkCtx(),
+    );
+    // THE assertion this file exists for: the write path was never reached.
+    expect(runToolOrchestrationMock).not.toHaveBeenCalled();
+    const payload = payloadOf(result);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toBe('script_invalid');
+    expect(payload.executed).toBe(false);
+    expect(payload.dispatchCount).toBe(0);
+  });
+
+  it('the refusal names the rejected arg and the accepted keys, so it is fixable in one edit', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [UNKNOWN_KEY_ISSUE],
+      staticToolNames: ['improvements:capture'],
+    });
+    const payload = payloadOf(await codeRun().fn({ script: 'return 1;' }, mkCtx()));
+    const refusals = (payload.argPreflight as { refusals: Record<string, unknown>[] }).refusals;
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0].tool).toBe('improvements:capture');
+    expect(refusals[0].rejectedArg).toBe('harness');
+    // `accepts` is read off the live catalog; improvements:capture is a real registered tool, so
+    // this is a real key list, not a fixture.
+    expect(Array.isArray(refusals[0].accepts)).toBe(true);
+    expect(String(payload.note)).toContain('NOTHING RAN');
+  });
+
+  it('a refused run is stamped as an error for telemetry, not left looking successful', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [UNKNOWN_KEY_ISSUE],
+      staticToolNames: ['improvements:capture'],
+    });
+    const metadata = vi.fn();
+    await codeRun().fn({ script: 'return 1;' }, mkCtx(metadata));
+    expect(metadata).toHaveBeenCalledWith(
+      expect.objectContaining({ effectiveStatus: 'error', codeRunArgPreflight: 'refused' }),
+    );
+  });
+
+  // The three controls below are the false-positive guard. code:run is the fleet's
+  // highest-traffic script tool, so a refusal it should not have made is more expensive than a
+  // hint it failed to give.
+  it('a `type` issue does NOT block — z.coerce may accept the literal at dispatch', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [{ tool: 'plans:revision-diff', path: 'args', message: 'args.revisionId must be a number', kind: 'type' }],
+      staticToolNames: ['plans:revision-diff'],
+    });
+    await codeRun().fn({ script: 'return 1;' }, mkCtx());
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a `required` issue does NOT block — the dispatcher remains the authority on it', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [{ tool: 'release:deploy', path: 'args', message: 'args.op is required', kind: 'required' }],
+      staticToolNames: ['release:deploy'],
+    });
+    await codeRun().fn({ script: 'return 1;' }, mkCtx());
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('an UNCLASSIFIED issue (produced before the classification existed) does NOT block', async () => {
+    validateMock.mockResolvedValueOnce({
+      ok: false,
+      issues: [{ tool: 'x:y', path: 'args', message: 'args.z is not accepted by the current tool schema' }],
+      staticToolNames: ['x:y'],
+    });
+    await codeRun().fn({ script: 'return 1;' }, mkCtx());
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a clean script runs exactly as before', async () => {
+    await codeRun().fn({ script: 'return 1;' }, mkCtx());
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  // END-TO-END PREDICATE, against the LIVE registry rather than a fixture. Everything above
+  // drives the classes through a mocked validator, so none of it can tell whether the item's
+  // ACTUAL reported call is caught — that depends entirely on the real tool publishing
+  // `additionalProperties:false`, which is the single fact the fail-closed branch rests on. A tool
+  // that switched to .passthrough() would silently stop being covered with every test above still
+  // green, so assert the predicate itself here.
+  it('the reported case is really covered: improvements:capture publishes additionalProperties:false and has no `harness` key', () => {
+    const schema = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'improvements:capture')
+      ?.inputSchema as { additionalProperties?: unknown; properties?: Record<string, unknown> } | undefined;
+    expect(schema, 'improvements:capture is not registered — the reported case cannot be checked').toBeDefined();
+    expect(schema?.additionalProperties).toBe(false);
+    const keys = Object.keys(schema?.properties ?? {});
+    expect(keys).not.toContain('harness'); // the arg the item passed
+    expect(keys).toContain('scope'); // the arg the dispatcher suggested instead
+  });
+});
