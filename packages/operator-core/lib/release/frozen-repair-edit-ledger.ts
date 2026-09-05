@@ -76,7 +76,7 @@ export interface FrozenRepairEditLedgerRow {
 }
 
 export type FrozenRepairEditRecordOutcome =
-  | { ok: true; id: number | null; inserted: boolean; oversize: boolean }
+  | { ok: true; id: number | null; inserted: boolean; oversize: boolean; /** The normalized repo-relative path actually stored. */ path: string }
   | { ok: false; reason: 'invalid-path' | 'invalid-hunk' | 'invalid-agent' | 'invalid-candidate'; detail: string };
 
 function sha256Of(value: string): string {
@@ -245,6 +245,7 @@ export async function recordFrozenRepairEdit(
     id: first ? Number(first.id) : null,
     inserted: first !== null,
     oversize: bounded.kind === 'oversize',
+    path,
   };
 }
 

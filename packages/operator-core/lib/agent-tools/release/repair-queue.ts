@@ -24,11 +24,20 @@ import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
   markFrozenRepairAdmitted,
+  normalizeRepoPath,
   type FrozenCandidateRepairQueue,
+  type FrozenRepairAdmission,
 } from '../../release/frozen-candidate-repair-queue';
+import {
+  parseFrozenRepairEditHunk,
+  readFrozenRepairEditLedger,
+  recordFrozenRepairEdit,
+  type FrozenRepairEditLedgerRow,
+} from '../../release/frozen-repair-edit-ledger';
+import { buildHunkExactSource, summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
-import { claimRepairManifestLeg } from '../../release/repair-manifest';
+import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -51,6 +60,10 @@ const argsSchema = z.preprocess(
       paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
+      /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
+      includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+      /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
+      wholeBlob: z.boolean().optional(),
     }),
     z.object({
       /** Alias of admit, kept so a stale runbook lands on the same door. Identical semantics. */
@@ -58,6 +71,8 @@ const argsSchema = z.preprocess(
       paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
+      includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+      wholeBlob: z.boolean().optional(),
     }),
     z.object({
       /**
@@ -69,6 +84,24 @@ const argsSchema = z.preprocess(
       /** The manifest row's `legId` (from get → repairQueue.manifest.rows[].legId). */
       leg: z.string().min(1).max(300),
       release: z.boolean().optional(),
+    }),
+    z.object({
+      /**
+       * P-019 (D-008 layer 1) — HOOK PLUMBING, never called by hand. The PostToolUse
+       * edit hook records the exact hunk of one Edit/Write made while a candidate is frozen,
+       * attributed to the calling per-session owner. P-020's hunk-exact admission replays it.
+       */
+      op: z.literal('record-edit'),
+      /** Repo-relative path the edit touched (normalized server-side). */
+      path: z.string().min(1).max(1024),
+      hunk: z.unknown(),
+      /** The client's tool_use_id — with editIndex, the idempotency key for a retried hook call. */
+      toolUseId: z.string().max(200).optional(),
+      editIndex: z.number().int().nonnegative().optional(),
+      atMs: z.number().int().positive().optional(),
+      /** The candidate the hook's marker named; a mismatch with the live queue is reported, never trusted. */
+      candidate: z.string().regex(/^[0-9a-fA-F]{40,64}$/).optional(),
+      workItem: z.string().max(120).optional(),
     }),
     z.object({
       op: z.literal('retire'),
@@ -279,14 +312,15 @@ export default defineTool({
     chaining:
       'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
+      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current. record-edit (P-019 / D-008 layer 1 — hook plumbing, never called by hand): the PostToolUse edit hook's ledger write; recorded true|false (no-frozen-queue when nothing is frozen), inserted (false on an idempotent retry), oversize, ledgerId, path, agent, inRepairRadius, admitCommand, candidateMismatch {marker, queue} when the hook's marker named a different candidate than the live queue.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
   result: z
     .object({
       ok: z.boolean().optional(),
-      op: z.enum(['get', 'admit', 'claim-leg', 'retire']).optional(),
+      op: z.enum(['get', 'admit', 'claim-leg', 'record-edit', 'retire']).optional(),
+      recorded: z.boolean().optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
       repairQueueRead: z.unknown().optional(),
@@ -355,11 +389,18 @@ export default defineTool({
       });
     }
     if (inspected.read.status === 'unreadable') {
-      const op = args.op === 'retire' ? 'retire' : args.op === 'claim-leg' ? 'claim-leg' : 'admit';
+      const op =
+        args.op === 'retire' ? 'retire' : args.op === 'claim-leg' ? 'claim-leg' : args.op === 'record-edit' ? 'record-edit' : 'admit';
       return json({
         ok: false,
         op,
-        ...(op === 'retire' ? { retired: false } : op === 'claim-leg' ? { claimed: false } : { admitted: false }),
+        ...(op === 'retire'
+          ? { retired: false }
+          : op === 'claim-leg'
+            ? { claimed: false }
+            : op === 'record-edit'
+              ? { recorded: false }
+              : { admitted: false }),
         refused: true,
         verdict: 'refused',
         reason: 'repair-queue-unreadable',
@@ -370,6 +411,81 @@ export default defineTool({
         repairQueue: inspected.read,
         repairQueueRead: compactRead,
         callerAuthorization,
+      });
+    }
+    if (args.op === 'record-edit') {
+      // P-019 (D-008 layer 1). The hook only calls this while the marker file exists, so the
+      // common case never reaches here; when it does and nothing is frozen (a race with a
+      // retire/promotion), there is no lineage to attribute to and nothing is written.
+      const queue = inspected.queue;
+      const base = { op: 'record-edit' as const, target: inspected.target, repairQueueRead: compactRead };
+      if (!queue) {
+        return json({ ok: true, recorded: false, verdict: 'no-frozen-queue', judgedSha: null, ...base });
+      }
+      const hunk = parseFrozenRepairEditHunk(args.hunk);
+      if (!hunk) {
+        return json({
+          ok: false,
+          recorded: false,
+          refused: true,
+          verdict: 'refused',
+          reason: 'invalid-hunk',
+          detail: "hunk must be { kind:'edit', old, new, replaceAll? } | { kind:'write', body } | { kind:'oversize', of, bytes, sha256 }",
+          judgedSha: queue.repairHead,
+          ...base,
+        });
+      }
+      const identity = readIdentity(ctx);
+      let outcome: Awaited<ReturnType<typeof recordFrozenRepairEdit>> | { ok: false; reason: 'persist_failed'; detail: string };
+      try {
+        outcome = await recordFrozenRepairEdit(getOrgPg().sql, {
+          workspaceId: inspected.target.workspaceId,
+          installSlug: inspected.target.installSlug,
+          candidate: queue.candidate,
+          agent: identity.ownerId,
+          path: args.path,
+          hunk,
+          atMs: typeof args.atMs === 'number' && args.atMs > 0 ? args.atMs : Date.now(),
+          toolUseId: args.toolUseId ?? '',
+          editIndex: args.editIndex ?? 0,
+          workItem: args.workItem ?? null,
+        });
+      } catch (err) {
+        outcome = { ok: false, reason: 'persist_failed', detail: (err as Error).message };
+      }
+      if (!outcome.ok) {
+        return json({
+          ok: false,
+          recorded: false,
+          refused: true,
+          verdict: 'refused',
+          reason: outcome.reason,
+          detail: outcome.detail,
+          judgedSha: queue.repairHead,
+          candidate: queue.candidate,
+          ...base,
+        });
+      }
+      const failing = new Set(queue.failingTests.map(normalizeRepoPath));
+      const subject = new Set((queue.manifest?.rows ?? []).flatMap((row) => row.subjectPaths.map(normalizeRepoPath)));
+      const inRepairRadius = failing.has(outcome.path) || subject.has(outcome.path);
+      const suppliedCandidate = args.candidate?.toLowerCase();
+      return json({
+        ok: true,
+        recorded: true,
+        inserted: outcome.inserted,
+        oversize: outcome.oversize,
+        ledgerId: outcome.id,
+        path: outcome.path,
+        agent: identity.ownerId,
+        candidate: queue.candidate,
+        judgedSha: queue.repairHead,
+        inRepairRadius,
+        admitCommand: renderAdmitCommand([outcome.path]),
+        ...(suppliedCandidate && suppliedCandidate !== queue.candidate.toLowerCase()
+          ? { candidateMismatch: { marker: suppliedCandidate, queue: queue.candidate } }
+          : {}),
+        ...base,
       });
     }
     if (args.op === 'admit' || args.op === 'converge') {
@@ -436,17 +552,123 @@ export default defineTool({
       }
       const identity = readIdentity(ctx);
       const dryRun = args.confirm !== true;
+      // P-020 (D-008 layers 2–3): HUNK-EXACT by default. The source the primitive admits from
+      // is a synthesised commit = repairHead + ONLY the caller's ledgered hunks per path, so a
+      // peer's concurrent work in the same file never rides in. `wholeBlob:true` (with a
+      // reason) is the explicit, ledgered widening; `includeHunksFrom` replays named peers.
+      const wholeBlob = args.wholeBlob === true;
+      const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
+      const mode: 'hunk-exact' | 'whole-blob' = wholeBlob ? 'whole-blob' : 'hunk-exact';
+      let ledgerRows: FrozenRepairEditLedgerRow[] = [];
+      let ledgerReadError: string | null = null;
+      try {
+        ledgerRows = await readFrozenRepairEditLedger(getOrgPg().sql, {
+          workspaceId: inspected.target.workspaceId,
+          installSlug: inspected.target.installSlug,
+          candidate: queue.candidate,
+          paths,
+        });
+      } catch (err) {
+        ledgerReadError = (err as Error).message;
+      }
+      let sourceRef = branch;
+      let hunkExact: HunkExactSuccess | null = null;
+      let foreign: ReturnType<typeof summarizeForeignHunks> = { count: 0, agents: [], byPath: {} };
+      if (wholeBlob) {
+        if (!args.reason || args.reason.trim().length < 8) {
+          return json({
+            ok: false,
+            admitted: false,
+            refused: true,
+            dryRun,
+            verdict: 'refused',
+            reason: 'reason_required',
+            detail:
+              "wholeBlob:true admits staging's whole blob of each path, which may carry other agents' concurrent work (D-008) — say why that is safe in `reason` (≥ 8 chars). Prefer the default hunk-exact admission, or includeHunksFrom:[<agent>] for a shared fix.",
+            judgedSha: queue.repairHead,
+            containment: containmentAt(queue.repairHead),
+            mode,
+            ...base,
+          });
+        }
+        foreign = summarizeForeignHunks(ledgerRows, paths, identity.ownerId, includeHunksFrom);
+      } else {
+        if (ledgerReadError !== null) {
+          return json({
+            ok: false,
+            admitted: false,
+            refused: true,
+            dryRun,
+            verdict: 'refused',
+            reason: 'ledger-unavailable',
+            detail: `the edit ledger could not be read (${ledgerReadError}) — hunk-exact admission cannot tell your hunks from a peer's. Retry, or admit explicitly with wholeBlob:true and a reason.`,
+            judgedSha: queue.repairHead,
+            containment: containmentAt(queue.repairHead),
+            mode,
+            ...base,
+          });
+        }
+        const built = buildHunkExactSource({
+          root,
+          candidate: queue.candidate,
+          repairHead: queue.repairHead,
+          paths,
+          ledger: ledgerRows,
+          actor: identity.ownerId,
+          includeHunksFrom,
+          nowMs: Date.now(),
+        });
+        if (!built.ok) {
+          return json({
+            ok: false,
+            admitted: false,
+            refused: true,
+            dryRun,
+            verdict: 'refused',
+            reason: built.code,
+            detail: built.detail,
+            ...(built.path ? { path: built.path } : {}),
+            ...(built.foreignAgents ? { foreignAgents: built.foreignAgents } : {}),
+            ...(built.hunkIndex !== undefined ? { hunkIndex: built.hunkIndex } : {}),
+            ...(built.step ? { step: built.step } : {}),
+            exits: built.exits,
+            judgedSha: queue.repairHead,
+            containment: containmentAt(queue.repairHead),
+            mode,
+            ...base,
+          });
+        }
+        hunkExact = built;
+        sourceRef = built.sourceCommit;
+      }
       const outcome = admitPathsOntoRepairHead({
         root,
         candidate: queue.candidate,
         repairHead: queue.repairHead,
         paths,
-        source: { ref: branch },
+        source: { ref: sourceRef },
         actor: identity.ownerId,
         reason: args.reason,
         nowMs: Date.now(),
         dryRun,
       });
+      const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
+        ? Object.fromEntries(hunkExact.perPath.map((p) => [p.path, { applied: p.applied, agents: p.agents }]))
+        : null;
+      const provenance = hunkExact
+        ? {
+            mode,
+            hunks: hunksRecord,
+            hunkExact: hunkExact.perPath.map((p) => ({
+              path: p.path,
+              applied: p.applied,
+              agents: p.agents,
+              foreignHunksExcluded: p.foreignHunks,
+              foreignAgents: p.foreignAgents,
+              unchanged: p.unchanged,
+            })),
+          }
+        : { mode, foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents, foreignHunksByPath: foreign.byPath };
       if (!outcome.ok) {
         if (outcome.code === 'nothing-to-admit') {
           return json({
@@ -476,6 +698,13 @@ export default defineTool({
           ...base,
         });
       }
+      // The ledger entry carries HOW the source was built (D-008): hunk-exact with the replayed
+      // hunks per path, or whole-blob with the foreign hunks it accepted and why.
+      const entry: FrozenRepairAdmission = {
+        ...outcome.entry,
+        mode,
+        ...(hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
+      };
       const proof = { diff: outcome.diff, unchanged: outcome.unchanged, blobs: outcome.entry.blobs, tree: outcome.tree };
       if (dryRun) {
         return json({
@@ -499,7 +728,7 @@ export default defineTool({
       // store; if it cannot be written, retract the ref so the two never disagree.
       let next: FrozenCandidateRepairQueue;
       try {
-        next = markFrozenRepairAdmitted(queue, outcome.entry);
+        next = markFrozenRepairAdmitted(queue, entry);
       } catch (err) {
         const retracted = retractAdmission({
           root,
@@ -543,6 +772,8 @@ export default defineTool({
         source: outcome.entry.source,
         paths: outcome.entry.paths,
         unchanged: outcome.entry.unchanged,
+        mode,
+        ...(hunksRecord ? { hunks: hunksRecord } : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
         persisted,
         ...(retracted === null ? {} : { retracted }),
       });
@@ -556,7 +787,8 @@ export default defineTool({
         movedRepairHead: { from: queue.repairHead, to: outcome.commit },
         lineageRef: outcome.lineageRef,
         proof,
-        admission: outcome.entry,
+        admission: entry,
+        ...provenance,
         containment: containmentAt(judgedSha),
         persisted,
         auditRecorded,

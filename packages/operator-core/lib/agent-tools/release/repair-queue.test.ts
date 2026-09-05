@@ -26,6 +26,10 @@ const mocks = vi.hoisted(() => ({
   retract: vi.fn(),
   containment: vi.fn(),
   presence: vi.fn(),
+  // P-020: the hunk-exact source builder + the ledger read the admit op consults first.
+  hunkExact: vi.fn(),
+  foreign: vi.fn(),
+  ledger: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
@@ -43,6 +47,23 @@ vi.mock('../../release/repair-head-admission', () => ({
   admitPathsOntoRepairHead: mocks.admit,
   retractAdmission: mocks.retract,
 }));
+vi.mock('../../release/hunk-exact-admission', () => ({
+  buildHunkExactSource: mocks.hunkExact,
+  summarizeForeignHunks: mocks.foreign,
+}));
+vi.mock('../../release/frozen-repair-edit-ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/frozen-repair-edit-ledger')>()),
+  readFrozenRepairEditLedger: mocks.ledger,
+}));
+/** P-020: what the hunk-exact builder returns for a clean single-path replay. */
+const HX_SOURCE = 'h'.repeat(40);
+const hunkExactOf = (paths = ['lib/red.test.ts']) => ({
+  ok: true as const,
+  sourceCommit: HX_SOURCE,
+  tree: 'x'.repeat(40),
+  perPath: paths.map((path) => ({ path, applied: 1, agents: ['su-test'], foreignHunks: 0, foreignAgents: [] as string[], baseBlob: null, blob: 'f'.repeat(40), unchanged: false })),
+  allUnchanged: false,
+});
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
 vi.mock('../locks/identity', () => ({ readIdentity: () => ({ ownerId: 'su-test' }) }));
@@ -117,6 +138,9 @@ beforeEach(() => {
   mocks.write.mockResolvedValue(undefined);
   mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
+  mocks.ledger.mockResolvedValue([]);
+  mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
+  mocks.hunkExact.mockReturnValue(hunkExactOf());
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
   );
@@ -289,7 +313,8 @@ describe('release:repair-queue', () => {
       candidate: queue.candidate,
       repairHead: queue.repairHead,
       paths: ['lib/red.test.ts'],
-      source: { ref: 'staging' },
+      // P-020: the primitive admits from the synthesised hunk-exact source, never the tip.
+      source: { ref: HX_SOURCE },
       actor: 'su-test',
       dryRun: true,
     });
@@ -736,6 +761,179 @@ describe('release:repair-queue', () => {
       );
       expect(mocks.presence).not.toHaveBeenCalled();
       expect(result).toMatchObject({ ok: false, claimed: false, persisted: false, refused: true, reason: 'persist_failed' });
+    });
+  });
+
+  describe('record-edit (P-019 edit ledger, D-008 layer 1 — hook plumbing)', () => {
+    const hunk = { kind: 'edit', old: 'a', new: 'b' };
+    const ctx = { role: 'su' } as never;
+
+    it('records the hunk under the LIVE queue candidate, attributed to the caller identity, reports the radius + admit command, and never touches the queue row or git', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
+      mocks.audit.mockResolvedValueOnce([{ id: 42 }]);
+      const result = body(
+        await tool.handler(
+          { op: 'record-edit', path: './lib/red.test.ts', hunk, toolUseId: 'toolu_1', editIndex: 0, atMs: 777, candidate: 'f'.repeat(40) } as never,
+          ctx,
+        ),
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        op: 'record-edit',
+        recorded: true,
+        inserted: true,
+        oversize: false,
+        ledgerId: 42,
+        path: 'lib/red.test.ts',
+        agent: 'su-test',
+        candidate: queue.candidate,
+        judgedSha: queue.repairHead,
+        inRepairRadius: true,
+        // The hook's marker named a different candidate: reported, never trusted over the queue.
+        candidateMismatch: { marker: 'f'.repeat(40), queue: queue.candidate },
+      });
+      expect(result.admitCommand).toContain('admit');
+      expect(result.admitCommand).toContain('lib/red.test.ts');
+      const [sqlText, params] = mocks.audit.mock.calls[0]! as [string, unknown[]];
+      expect(sqlText).toContain('INSERT INTO harness_shared.frozen_repair_edit_ledger');
+      expect(params).toEqual(expect.arrayContaining(['ws-1', 'papercusp', queue.candidate, 'su-test', 'lib/red.test.ts', 'toolu_1', 777]));
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+    });
+
+    it('a path OUTSIDE the repair radius is still recorded — the source fix is as attributable as the failing test — and flagged inRepairRadius:false', async () => {
+      mocks.audit.mockResolvedValueOnce([{ id: 1 }]);
+      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/src.ts', hunk: { kind: 'write', body: 'x' } } as never, ctx));
+      expect(result).toMatchObject({ ok: true, recorded: true, inserted: true, inRepairRadius: false, path: 'lib/src.ts' });
+      expect(result.candidateMismatch).toBeUndefined();
+    });
+
+    it('an idempotent retry (same agent/path/toolUseId/editIndex) inserts nothing: recorded:true, inserted:false', async () => {
+      mocks.audit.mockResolvedValueOnce([]);
+      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk, toolUseId: 'toolu_1' } as never, ctx));
+      expect(result).toMatchObject({ ok: true, recorded: true, inserted: false });
+    });
+
+    it('nothing frozen ⇒ recorded:false with no-frozen-queue, and NO SQL — there is no lineage to attribute to', async () => {
+      mocks.readState.mockResolvedValue({ status: 'absent' });
+      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk } as never, ctx));
+      expect(result).toMatchObject({ ok: true, op: 'record-edit', recorded: false, verdict: 'no-frozen-queue' });
+      expect(mocks.audit).not.toHaveBeenCalled();
+    });
+
+    it('a malformed hunk or a path that escapes the repo is refused without SQL', async () => {
+      const bad = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk: { kind: 'patch', text: '...' } } as never, ctx));
+      expect(bad).toMatchObject({ ok: false, recorded: false, refused: true, reason: 'invalid-hunk' });
+      const escape = body(await tool.handler({ op: 'record-edit', path: '../../etc/passwd', hunk } as never, ctx));
+      expect(escape).toMatchObject({ ok: false, recorded: false, refused: true, reason: 'invalid-path' });
+      expect(mocks.audit).not.toHaveBeenCalled();
+    });
+
+    it('a database failure is persist_failed, ok:false — the hook then tells the agent its hunks were NOT recorded', async () => {
+      mocks.audit.mockRejectedValueOnce(new Error('pg down'));
+      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk } as never, ctx));
+      expect(result).toMatchObject({ ok: false, recorded: false, refused: true, reason: 'persist_failed' });
+    });
+
+    it('an unreadable queue row refuses with op:record-edit / recorded:false (P-025: unreadable is not absent)', async () => {
+      mocks.readState.mockResolvedValue({ status: 'unreadable', reason: 'schema-newer', schemaVersion: 99 });
+      const result = body(await tool.handler({ op: 'record-edit', path: 'lib/red.test.ts', hunk } as never, ctx));
+      expect(result).toMatchObject({ ok: false, op: 'record-edit', recorded: false, refused: true, reason: 'repair-queue-unreadable' });
+      expect(mocks.audit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('P-020 hunk-exact admission (D-008 layers 2–3)', () => {
+    const ctx = { role: 'su' } as never;
+    type Written = { admissions: Array<Record<string, unknown>> };
+
+    it('DEFAULT: reads the ledger for the named paths, builds the hunk-exact source for the CALLER, admits FROM that commit, and the ledger entry + audit carry mode + hunks', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
+      expect(mocks.ledger).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ workspaceId: 'ws-1', installSlug: 'papercusp', candidate: queue.candidate, paths: ['lib/red.test.ts'] }),
+      );
+      expect(mocks.hunkExact.mock.calls[0]![0]).toMatchObject({
+        root: '/repo',
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        paths: ['lib/red.test.ts'],
+        actor: 'su-test',
+        includeHunksFrom: [],
+      });
+      expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ source: { ref: HX_SOURCE } });
+      expect(result).toMatchObject({
+        ok: true,
+        admitted: true,
+        mode: 'hunk-exact',
+        hunkExact: [{ path: 'lib/red.test.ts', applied: 1, agents: ['su-test'], foreignHunksExcluded: 0 }],
+      });
+      const written = mocks.write.mock.calls[0]![1] as Written;
+      expect(written.admissions[0]).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1, agents: ['su-test'] } } });
+      const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
+      expect(auditDetails).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1 } } });
+    });
+
+    it('includeHunksFrom is forwarded to the builder verbatim (the explicit widening, D-008 3a)', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false));
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], includeHunksFrom: [' peer ', ''] } as never, ctx);
+      expect(mocks.hunkExact.mock.calls[0]![0]).toMatchObject({ includeHunksFrom: ['peer'] });
+    });
+
+    it('a builder refusal (no-ledgered-hunks / hunk-conflict) is surfaced with its exits and the primitive is NEVER called', async () => {
+      mocks.hunkExact.mockReturnValue({
+        ok: false,
+        code: 'no-ledgered-hunks',
+        path: 'lib/red.test.ts',
+        foreignAgents: ['peer'],
+        detail: 'nothing to replay',
+        exits: ['includeHunksFrom exit', 'wholeBlob exit'],
+      });
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, ctx));
+      expect(result).toMatchObject({
+        ok: false,
+        admitted: false,
+        refused: true,
+        verdict: 'refused',
+        reason: 'no-ledgered-hunks',
+        path: 'lib/red.test.ts',
+        foreignAgents: ['peer'],
+        exits: ['includeHunksFrom exit', 'wholeBlob exit'],
+        mode: 'hunk-exact',
+      });
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('a ledger read failure refuses ledger-unavailable rather than silently admitting the whole blob', async () => {
+      mocks.ledger.mockRejectedValueOnce(new Error('pg down'));
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, ctx));
+      expect(result).toMatchObject({ ok: false, refused: true, reason: 'ledger-unavailable', mode: 'hunk-exact' });
+      expect(mocks.hunkExact).not.toHaveBeenCalled();
+      expect(mocks.admit).not.toHaveBeenCalled();
+    });
+
+    it('wholeBlob:true REQUIRES a reason; with one it admits from the integration branch and RECORDS the foreign hunks it carries (D-008 3b)', async () => {
+      const noReason = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true } as never, ctx));
+      expect(noReason).toMatchObject({ ok: false, refused: true, reason: 'reason_required', mode: 'whole-blob' });
+      expect(mocks.admit).not.toHaveBeenCalled();
+
+      mocks.foreign.mockReturnValue({ count: 2, agents: ['peer'], byPath: { 'lib/red.test.ts': 2 } });
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const result = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], wholeBlob: true, reason: 'shared refactor: the peer hunks are part of this fix', confirm: true } as never,
+          ctx,
+        ),
+      );
+      expect(mocks.hunkExact).not.toHaveBeenCalled();
+      expect(mocks.admit.mock.calls[0]![0]).toMatchObject({ source: { ref: 'staging' } });
+      expect(result).toMatchObject({ ok: true, admitted: true, mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'], foreignHunksByPath: { 'lib/red.test.ts': 2 } });
+      const written = mocks.write.mock.calls[0]![1] as Written;
+      expect(written.admissions[0]).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
+      const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
+      expect(auditDetails).toMatchObject({ mode: 'whole-blob', foreignHunksAccepted: 2, foreignAgents: ['peer'] });
     });
   });
 });

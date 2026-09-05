@@ -19,7 +19,10 @@ import {
   normalizeRepoPath as hookNormalizeRepoPath,
   warningFor as hookWarningFor,
   editedPathsFrom,
+  hunksFrom as hookHunksFrom,
+  repairRadius as hookRepairRadius,
 } from '../../../../apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs';
+import { hunksFromToolCall } from './frozen-repair-edit-ledger';
 
 /**
  * The corpus is deliberately nastier than real input. The hook goes silent whenever its
@@ -176,6 +179,58 @@ describe('marker projection round-trip', () => {
 
   it('reads a corrupt marker as absent rather than crashing the hook', () => {
     expect(readFrozenRepairMarker('/definitely/not/a/marker.json')).toBeNull();
+  });
+});
+
+describe('P-019 hook/module HUNK parity — the ledger writer and the replay reader agree on what an edit IS', () => {
+  const HUNK_CORPUS: Array<[string, unknown]> = [
+    ['Edit', { file_path: '/r/lib/a.ts', old_string: 'o', new_string: 'n' }],
+    ['Edit', { file_path: '/r/lib/a.ts', old_string: 'o', new_string: 'n', replace_all: true }],
+    ['Write', { file_path: '/r/lib/a.ts', content: 'body\nbody' }],
+    ['MultiEdit', { file_path: '/r/lib/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, 7, { old_string: 'c', new_string: 'd', replace_all: true }] }],
+    ['mcp__papercusp-su__capability_edit', { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
+    ['mcp__papercusp-su__capability_write', { file_path: 'lib/a.ts', content: 'w' }],
+    ['mcp__papercusp-su__capability_multi_edit', { file_path: 'lib/a.ts', edits: [{ old_string: 'x', new_string: 'y' }] }],
+    ['write_file', { path: 'lib/a.ts', content: 'codex' }],
+    ['apply_patch', 'diff --git a/x b/x'],
+    ['apply_patch', { patch: '...' }],
+    ['Edit', { file_path: '/r/lib/a.ts' }],
+    ['Read', { file_path: '/r/lib/a.ts' }],
+    ['Edit', null],
+  ];
+  it('extracts byte-identical hunks for every payload shape the matcher admits', () => {
+    for (const [toolName, toolInput] of HUNK_CORPUS) {
+      expect(hookHunksFrom({ tool_name: toolName, tool_input: toolInput }), `${toolName} ${JSON.stringify(toolInput)}`).toEqual(
+        hunksFromToolCall(toolName, toolInput),
+      );
+    }
+  });
+  it('is a real check — a deliberately different extraction is caught', () => {
+    const wrong = hunksFromToolCall('Edit', { file_path: 'a', old_string: 'o', new_string: 'n' }).map((h) => ({
+      ...h,
+      hunk: { ...h.hunk, replaceAll: true },
+    }));
+    expect(hookHunksFrom({ tool_name: 'Edit', tool_input: { file_path: 'a', old_string: 'o', new_string: 'n' } })).not.toEqual(wrong);
+  });
+  it("the hook's repair radius is the failing set ∪ every manifest leg's subject paths, normalized (a pre-P-022 marker: failing set only)", () => {
+    const withLegs: FrozenRepairEditMarker = {
+      ...marker,
+      legs: [{ legId: 'lint:tsc', status: 'red', subjectPaths: ['./packages\\y\\src.ts', ''] }],
+    };
+    expect([...hookRepairRadius(withLegs)].sort()).toEqual(['packages/operator-core/lib/release/x.test.ts', 'packages/y/src.ts']);
+    expect([...hookRepairRadius({ ...marker, legs: undefined as never })]).toEqual(['packages/operator-core/lib/release/x.test.ts']);
+    // The nudge fires for a leg's subject path even though it is not a failing TEST path.
+    expect(hookWarningFor(withLegs, 'packages/y/src.ts')).not.toBeNull();
+    expect(hookWarningFor(withLegs, 'packages/y/other.ts')).toBeNull();
+  });
+  it('names the ledger outcome: recorded hunks, or an unrecorded edit that needs an explicit whole-blob exit', () => {
+    const recorded = hookWarningFor(marker, 'packages/operator-core/lib/release/x.test.ts', { recorded: true }) ?? '';
+    expect(recorded).toContain('RECORDED');
+    expect(recorded).toContain("op:'admit'");
+    const unrecorded = hookWarningFor(marker, 'packages/operator-core/lib/release/x.test.ts', { recorded: false, detail: 'HTTP 404' }) ?? '';
+    expect(unrecorded).toContain('NOT recorded');
+    expect(unrecorded).toContain('wholeBlob:true');
+    expect(unrecorded.toLowerCase()).not.toContain("op:'converge'");
   });
 });
 

@@ -550,6 +550,19 @@ export interface FrozenRepairAdmission {
   /** path -> blob/gitlink sha at the source, null for a deletion. */
   blobs: Record<string, string | null>;
   reason?: string;
+  /**
+   * P-020 (D-008 layers 2–3): HOW the source was built. `hunk-exact` (the default) replayed
+   * only the ledgered hunks of `actor` (∪ `includeHunksFrom`) onto repairHead's blobs;
+   * `whole-blob` admitted the integration branch's blob and may carry foreign work — then
+   * `foreignHunksAccepted` / `foreignAgents` say how much and whose, and `reason` says why.
+   * Absent on a pre-P-020 entry (which was whole-blob by construction).
+   */
+  mode?: 'hunk-exact' | 'whole-blob';
+  /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
+  hunks?: Record<string, { applied: number; agents: string[] }>;
+  /** whole-blob: the number of ledgered hunks by OTHER agents the admitted blobs may carry. */
+  foreignHunksAccepted?: number;
+  foreignAgents?: string[];
 }
 
 /** Ledger cap: a runaway admission loop cannot grow the persisted queue without bound. The
@@ -575,6 +588,22 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
         if (val === null || typeof val === 'string') blobs[k] = val;
       }
     }
+    // P-020 provenance fields: carried when well-formed, dropped (never guessed) otherwise.
+    const strings = (v: unknown): string[] | null =>
+      Array.isArray(v) && v.every((s) => typeof s === 'string') ? (v as string[]) : null;
+    const hunks: Record<string, { applied: number; agents: string[] }> = {};
+    let hunksValid = false;
+    if (e.hunks && typeof e.hunks === 'object' && !Array.isArray(e.hunks)) {
+      hunksValid = true;
+      for (const [k, val] of Object.entries(e.hunks as Record<string, unknown>)) {
+        const h = val as Record<string, unknown> | null;
+        const agents = h ? strings(h.agents) : null;
+        if (h && typeof h.applied === 'number' && Number.isFinite(h.applied) && agents) {
+          hunks[k] = { applied: h.applied, agents };
+        }
+      }
+    }
+    const foreignAgents = strings(e.foreignAgents);
     out.push({
       atMs: e.atMs as number,
       actor: e.actor as string,
@@ -585,6 +614,12 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       unchanged,
       blobs,
       ...(nonBlank(e.reason) ? { reason: e.reason as string } : {}),
+      ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' ? { mode: e.mode } : {}),
+      ...(hunksValid ? { hunks } : {}),
+      ...(typeof e.foreignHunksAccepted === 'number' && Number.isFinite(e.foreignHunksAccepted)
+        ? { foreignHunksAccepted: e.foreignHunksAccepted }
+        : {}),
+      ...(foreignAgents ? { foreignAgents } : {}),
     });
   }
   return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
