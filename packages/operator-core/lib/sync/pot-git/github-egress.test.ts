@@ -1,6 +1,7 @@
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 import { describe, expect, it } from 'vitest';
 
-import { egressCanonicalRefs } from './github-egress';
+import { egressCanonicalRefs as egressCanonicalRefsUnderTest } from './github-egress';
 import type { RunGit } from './storage';
 
 const SHA = 'a'.repeat(40);
@@ -109,3 +110,7 @@ describe('egressCanonicalRefs credential write preflight', () => {
     expect(calls.filter((args) => args[0] === 'ls-remote')).toHaveLength(2);
   });
 });
+
+function egressCanonicalRefs(input: Parameters<typeof egressCanonicalRefsUnderTest>[0]) {
+  return egressCanonicalRefsUnderTest({ ...hiveEffectFixture(), ...input });
+}

@@ -67,11 +67,13 @@ export function nextHivePublicationTerm(
   prior: { epoch: number; seq: number; authorityDevice?: string; storeGeneration?: string } | null,
   device: string,
   generation: string,
+  acceptedEpoch = 0,
 ): { epoch: number; priorSeq: number } {
   if (prior && (!Number.isSafeInteger(prior.epoch) || prior.epoch < 0 ||
       !Number.isSafeInteger(prior.seq) || prior.seq < 0)) throw new HiveEffectAuthorityError();
-  const same = prior?.authorityDevice === device && prior.storeGeneration === generation;
-  const epoch = same ? prior!.epoch : (prior?.epoch ?? 0) + 1;
+  if (!Number.isSafeInteger(acceptedEpoch) || acceptedEpoch < 0) throw new HiveEffectAuthorityError();
+  const same = prior?.authorityDevice === device && prior.storeGeneration === generation && prior.epoch >= acceptedEpoch;
+  const epoch = same ? prior!.epoch : Math.max(prior?.epoch ?? 0, acceptedEpoch) + 1;
   if (!Number.isSafeInteger(epoch) || (same && prior!.seq === Number.MAX_SAFE_INTEGER)) {
     throw new HiveEffectAuthorityError();
   }

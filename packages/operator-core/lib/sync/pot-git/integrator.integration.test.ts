@@ -1,3 +1,4 @@
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 /**
  * integrator.integration.test.ts — G-5 staging integration against a REAL temp
  * bare repo (git on PATH, no network). Builds member namespaces with distinct
@@ -14,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { defaultRunGit, ensurePotGitRepo, deviceNamespaceKey, writeNamespaceRef } from './storage';
-import { WORK_REF, integrateMemberHeads, readStaging, collectMemberHeads } from './integrator';
+import { WORK_REF, integrateMemberHeads as integrateMemberHeadsUnderTest, readStaging, collectMemberHeads } from './integrator';
 
 function dev(): string {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -141,3 +142,8 @@ describe('pot-git integrator (real bare repo)', () => {
     expect(heads.map((h) => h.deviceHex)).not.toContain(deviceNamespaceKey(noWork));
   });
 });
+
+function integrateMemberHeads(...args: Parameters<typeof integrateMemberHeadsUnderTest>) {
+  const [repo, device, heads, opts] = args;
+  return integrateMemberHeadsUnderTest(repo, device, heads, { ...hiveEffectFixture(), ...opts });
+}

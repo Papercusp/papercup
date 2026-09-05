@@ -49,6 +49,7 @@ import {
   type ProviderPoolVerdict,
 } from '../../deployment/account-pool-store';
 import { getAccount, recordAccountReset } from '../../deployment/account-pool';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 const loadM = vi.mocked(loadAccountPool);
 const saveM = vi.mocked(updateAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
@@ -278,17 +279,20 @@ describe('accounts:list', () => {
   });
 
   it('filters legacy Claude and explicit Codex rows when provider is supplied', async () => {
-    loadM.mockResolvedValue({
+    // Complete ClaudeAccount rows (typed against the real pool shape rather than cast
+    // through `never`); the assertion below is a subset match on the fields under test.
+    const rateIdle = { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 };
+    mockResolvedTyped(loadM, {
       accounts: [
-        { id: 'legacy', credentialRef: 'token:/legacy' },
-        { id: 'claude-1', provider: 'claude', credentialRef: 'token:/claude' },
-        { id: 'codex-1', provider: 'codex', credentialRef: 'env:CODEX_TOKEN' },
+        { id: 'legacy', credentialRef: 'token:/legacy', addedAt: 0, boundTo: [], rate: rateIdle },
+        { id: 'claude-1', provider: 'claude', credentialRef: 'token:/claude', addedAt: 0, boundTo: [], rate: rateIdle },
+        { id: 'codex-1', provider: 'codex', credentialRef: 'env:CODEX_TOKEN', addedAt: 0, boundTo: [], rate: rateIdle },
       ],
-    } as never);
+    });
 
     const b = body(await listTool.handler({ provider: 'codex' } as never, {} as never) as Out);
 
-    expect(b.accounts).toEqual([
+    expect(b.accounts).toMatchObject([
       { id: 'codex-1', provider: 'codex', credentialRef: 'env:CODEX_TOKEN' },
     ]);
   });

@@ -15,7 +15,9 @@ import { buildSigrefs, SIGREFS_REF } from './sigrefs';
 import { makeSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 import { WORK_REF, readStaging } from './integrator';
 import { verifyStagingAdvance } from './staging-advance';
-import { runIntegratorTick } from './integrator-tick';
+import { runIntegratorTick as runIntegratorTickUnderTest } from './integrator-tick';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
+const testDeviceSigners = new Map<string, (bytes: Buffer) => Promise<Buffer>>();
 
 interface KeyPair {
   pubBase64: string;
@@ -27,13 +29,15 @@ function makeDevice(): KeyPair {
   const spki = (publicKey as KeyObject).export({ format: 'der', type: 'spki' }) as Buffer;
   const pubBase64 = spki.subarray(spki.length - 32).toString('base64');
   const der = (privateKey as KeyObject).export({ format: 'der', type: 'pkcs8' }) as Buffer;
-  return {
+  const device = {
     pubBase64,
     sign: async (bytes: Buffer) => {
       const key = createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
       return nodeSign(null, bytes, key);
     },
   };
+  testDeviceSigners.set(pubBase64, device.sign);
+  return device;
 }
 
 async function commit(repo: string, files: Record<string, string>, parent?: string): Promise<string> {
@@ -107,7 +111,7 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
 
   it('P-513 integrates only a scoped snapshot matching the durable accepted floor and current heads', async () => {
     const scopedRepo = await ensurePotGitRepo('hive-i', 'scoped-admission');
-    const scope = { hive_id: 'hive-public-key', repo_key: 'scoped-admission' };
+    const scope = { hive_id: hiveEffectFixture().hiveId, repo_key: 'scoped-admission' };
     const own = makeSignedProtocolContext(scope.hive_id, scope.repo_key, `sg2-4-${'a'.repeat(40)}`);
     const peer = makeSignedProtocolContext(scope.hive_id, scope.repo_key, `sg2-3-${'b'.repeat(40)}`);
     const sha = await commit(scopedRepo, { 'accepted.txt': 'one' });
@@ -129,7 +133,7 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     const accepted = await invoke({ [devA.pubBase64]: floor });
     expect(accepted.errors).toEqual([]);
     expect(accepted.gated?.integrated).toBe(1);
-    expect(accepted.announcement).toMatchObject({ v: 2, ...own, staging_sha: sha });
+    expect(accepted.announcement).toMatchObject({ v: 3, ...own, staging_sha: sha });
     const unsigned = await commit(scopedRepo, { 'unsigned.txt': 'two' }, sha);
     await writeNamespaceRef(scopedRepo, devA.pubBase64, WORK_REF, unsigned);
     const tampered = await invoke({ [devA.pubBase64]: floor });
@@ -295,3 +299,22 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     });
   });
 });
+
+/** Legacy integration scenarios still prepare real signed member snapshots;
+ * the focused P513 case passes its own floors, including deliberately bad ones. */
+async function runIntegratorTick(input: Parameters<typeof runIntegratorTickUnderTest>[0]) {
+  const owner = hiveEffectFixture(input.repoKey);
+  const context = input.context ?? owner.context;
+  const acceptedSnapshots: Record<string, SignedSnapshotFloor> = input.acceptedSnapshots ? { ...input.acceptedSnapshots } : {};
+  if (input.acceptedSnapshots === undefined) {
+    const repo = input.deps?.repoPath ?? await ensurePotGitRepo(input.potHomeSlug, input.repoKey);
+    for (const device of input.memberDevicePubkeysBase64) {
+      const sign = testDeviceSigners.get(device);
+      if (!sign) throw new Error('test signer missing');
+      const signed = await buildSigrefs(repo, device, sign, { nowMs: 1, context });
+      const oid = (await readNamespaceRef(repo, device, SIGREFS_REF))!;
+      acceptedSnapshots[device] = { ...context, version: signed.version, sigrefs_oid: oid };
+    }
+  }
+  return runIntegratorTickUnderTest({ ...input, context, acceptedSnapshots, authority: owner.authority });
+}

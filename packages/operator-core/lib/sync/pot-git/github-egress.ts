@@ -17,8 +17,8 @@
  *     divergence policy (ingress-merge via the integrator; escalation) owns what
  *     happens next. This module never overwrites GitHub-side history, full stop.
  *   - SINGLE WRITER (S-1/D-002): the CALLER gates on the integrator
- *     lock-authority lease — only the lease holder egresses. This module is pure
- *     mechanism and does not consult the lease (it has no PG/authority dep), by
+ *     owning-hive key — every push requires fresh owner authorization (F6/D-022).
+ *     FF/CAS protects ref ancestry; it does not grant cross-machine authority, by
  *     the same layering as integrator.ts.
  *   - SECRETS GATE: the DELTA being published (changed files between the remote's
  *     current head and the egress target) runs through secrets-guard

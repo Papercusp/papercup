@@ -1,3 +1,4 @@
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 /**
  * github-fork-egress.integration.test.ts — P-004 fork egress
  * (github-bridge-hive-egress-2026-07-02; S-5c): a ratified integration-request
@@ -15,7 +16,7 @@ import { tmpdir } from 'node:os';
 import type { OpenPrArgs } from '../../pr-host/types';
 import { defaultRunGit, ensurePotGitRepo, namespaceRefPath } from './storage';
 import { WORK_REF } from './integrator';
-import { egressRatifiedRequestAsForkPr, forkEgressBranch } from './github-fork-egress';
+import { egressRatifiedRequestAsForkPr as egressRatifiedRequestAsForkPrUnderTest, forkEgressBranch } from './github-fork-egress';
 
 function devicePubkey(): string {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -157,3 +158,7 @@ describe('github-fork-egress (P-004: ratified request → fork branch → PR)', 
     expect(onFork.code).not.toBe(0); // branch never reached the fork
   });
 });
+
+function egressRatifiedRequestAsForkPr(input: Parameters<typeof egressRatifiedRequestAsForkPrUnderTest>[0]) {
+  return egressRatifiedRequestAsForkPrUnderTest({ ...hiveEffectFixture(), ...input });
+}

@@ -285,7 +285,7 @@ describe('body/comment alias (EI-10897) + schema representability (EI-10996)', (
   const safeParse = (x: unknown) => (tool.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse(x);
 
   beforeEach(() => {
-    cmtM.mockResolvedValue({ id: 'p1' } as never);
+    mockResolvedTyped(cmtM, { id: 1, thread_id: 'wi:WI-1', author_id: 'me', body: 'b', created_ts: '2026-01-01T00:00:00.000Z' });
     mockResolvedTyped(getM, wi({ id: 'WI-1', state: 'wip' }));
   });
 

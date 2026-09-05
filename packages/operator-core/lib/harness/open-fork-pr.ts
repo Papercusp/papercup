@@ -48,6 +48,8 @@ export interface OpenForkPrOpts {
     token: string;
   }) => Promise<void>;
   openPrFn?: (args: OpenPrArgs) => Promise<PrHostResult<Pr>>;
+  /** Revalidate an enclosing authority contract at each outward mutation. */
+  beforeEffect?: (effect: 'ensure-fork' | 'push' | 'open-pr') => Promise<void>;
 }
 
 export type OpenForkPrResult =
@@ -74,6 +76,7 @@ export async function openForkPr(opts: OpenForkPrOpts): Promise<OpenForkPrResult
   // 1. Ensure the contributor's fork exists (or short-circuit to upstream).
   let fork: EnsureForkResult;
   try {
+    await opts.beforeEffect?.('ensure-fork');
     fork = await ensureForkFn({ upstreamOwner: opts.upstreamOwner, upstreamRepo: opts.upstreamRepo });
   } catch (e) {
     return { ok: false, error: redactToken(`ensureFork failed: ${errMsg(e)}`) };
@@ -82,6 +85,7 @@ export async function openForkPr(opts: OpenForkPrOpts): Promise<OpenForkPrResult
   // 2. Push the feature branch to the fork over an authed remote. Errors are
   //    redacted so a token embedded in the push URL never leaks.
   try {
+    await opts.beforeEffect?.('push');
     await pushFn({
       repoPath: opts.localRepoPath,
       forkFullName: fork.forkFullName,
@@ -95,6 +99,11 @@ export async function openForkPr(opts: OpenForkPrOpts): Promise<OpenForkPrResult
   // 3. Open the PR on the upstream. Namespace the head with the fork owner only
   //    when it differs from the upstream owner (a genuine cross-fork PR).
   const crossFork = fork.forkOwner !== opts.upstreamOwner;
+  try {
+    await opts.beforeEffect?.('open-pr');
+  } catch (e) {
+    return { ok: false, error: redactToken(`open PR authorization failed: ${errMsg(e)}`) };
+  }
   const prRes = await openPrFn({
     remote: opts.upstreamRemote,
     title: opts.title,

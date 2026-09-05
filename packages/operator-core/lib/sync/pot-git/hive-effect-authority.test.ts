@@ -16,7 +16,7 @@ describe('single owning hive authority (F6)', () => {
     const context = { ...scope, store_generation: 'sg2-1-' + 'a'.repeat(40) };
     const authority: HiveEffectAuthority = { ...scope, sign: owner.sign };
     for (const device of [a, b]) {
-      expect(electFleetLeader({ scope: { ownerGithubUserId: 1, slug: 'fleet' }, rosterMemberUids: new Set([1]),
+      expect(electFleetLeader({ scope: { kind: 'fleet', ownerGithubUserId: 1, slug: 'fleet' }, rosterMemberUids: new Set([1]),
         rosterEpoch: 7, presence: [], self: { devicePubkey: device.pubkey, githubUserId: 1 },
         incumbent: null, nowMs: 1000, staleMs: 90_000, leaseMs: 30_000 }).isSelf).toBe(true);
     }
@@ -49,6 +49,7 @@ describe('single owning hive authority (F6)', () => {
     expect(nextHivePublicationTerm(prior, 'a', 'g1')).toEqual({ epoch: 4, priorSeq: 8 });
     expect(nextHivePublicationTerm(prior, 'b', 'g1')).toEqual({ epoch: 5, priorSeq: 0 });
     expect(nextHivePublicationTerm(prior, 'a', 'g2')).toEqual({ epoch: 5, priorSeq: 0 });
+    expect(nextHivePublicationTerm(prior, 'a', 'g1', 20)).toEqual({ epoch: 21, priorSeq: 0 });
     expect(() => nextHivePublicationTerm({ ...prior, epoch: Number.MAX_SAFE_INTEGER }, 'b', 'g1')).toThrow();
   });
 });

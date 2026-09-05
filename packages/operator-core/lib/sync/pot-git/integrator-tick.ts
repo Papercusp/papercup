@@ -11,10 +11,10 @@
  * existing `system:git-sync` tick, mode-gated to `hiveGit.mode != legacy`).
  *
  * ONE TICK:
- *   1. isIntegrator gate (default: `lockAuthorityForHive(potHomeSlug).isSelf`,
- *      D-002) — only the lock-authority lease holder computes + publishes
- *      staging; every other member's tick no-ops here (their worktree-bridge
- *      driver, P-204, follows the announcement instead — never both writing).
+ *   1. Owning-hive key gate (F6/D-022) — only the single owner computes and
+ *      publishes canonical staging. Other members publish their own heads and
+ *      follow owner-countersigned staging. Presence elections cannot authorize
+ *      takeover when that owner is unavailable.
  *   2. Read every verified member's current namespace work head.
  *   3. `gateMemberHeadsForIntegration` (G-5c): steer-tier / owner-ratified
  *      heads integrate now; below-steer heads QUEUE for ratification — never
@@ -34,7 +34,8 @@
  * `ran: false` rather than wedging the enclosing git-sync tick.
  */
 import type { CommsTier } from '../../trust/comms-trust';
-import { lockAuthorityForHive, type LockAuthorityDeps } from '../../authority/lock-authority';
+import type { LockAuthorityDeps } from '../../authority/lock-authority';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
 import {
   defaultRunGit,
   hiveGitRepoPath,
@@ -89,11 +90,13 @@ export interface IntegratorTickInput {
   nowMs?: number;
   /** Context bound into v2 staging-advance signatures when supplied. */
   context?: SignedProtocolContext;
+  /** D-022: only the owning hive may integrate; an advisory election is insufficient. */
+  authority?: HiveEffectAuthority | null;
   acceptedSnapshots?: Readonly<Record<string, SignedSnapshotFloor>>;
   deps?: {
     runGit?: RunGit;
     repoPath?: string;
-    /** Am I the integrator lease holder? Default: `lockAuthorityForHive(...).isSelf`. */
+    /** Optional additional local gate; cannot replace owning-hive authorization. */
     isIntegrator?: () => Promise<boolean>;
     lockAuthorityDeps?: LockAuthorityDeps;
     /** Threaded to `gateMemberHeadsForIntegration` (its own `sql` override). */
@@ -161,12 +164,12 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
   const nowMs = input.nowMs ?? Date.now();
   const empty: IntegratorTickOutcome = { ran: false, integration: null, gated: null, announcement: null, errors };
 
-  // 1. Lease gate — only the current authority integrates + publishes.
-  const isIntegrator =
-    input.deps?.isIntegrator ??
-    (async () => (await lockAuthorityForHive(input.potHomeSlug, input.deps?.lockAuthorityDeps)).isSelf);
+  // 1. Owner-key gate, before any mutation (including integration queue writes).
+  const isIntegrator = input.deps?.isIntegrator ?? (async () => true);
   let iAmIntegrator: boolean;
   try {
+    await requireHiveEffectAuthority(input.authority, input.context ?? { hive_id: '', repo_key: input.repoKey },
+      ['integrator-tick', repoPath, input.integratorDevicePubkeyBase64]);
     iAmIntegrator = await isIntegrator();
   } catch (e) {
     errors.push(
@@ -226,7 +229,7 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
       repoPath,
       input.integratorDevicePubkeyBase64,
       gated.integrate as MemberHead[],
-      { runGit },
+      { runGit, scope: input.context, authority: input.authority },
     );
   } catch (e) {
     errors.push(`integrateMemberHeads failed: ${e instanceof Error ? e.message : e}`);
@@ -259,6 +262,7 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
           stagingSha: integration.staging,
           nowMs,
           context: input.context,
+          authority: input.authority ?? undefined,
         },
         input.sign,
       );

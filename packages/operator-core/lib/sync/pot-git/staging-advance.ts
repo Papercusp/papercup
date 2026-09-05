@@ -2,25 +2,17 @@
  * pot-git/staging-advance.ts — signed, epoch-fenced staging advances (Phase 7
  * G-5d, cross-machine-coord-parity-and-trust-2026-07-01 / P-038; D-011 hole 2).
  *
- * THE HOLE THIS CLOSES (integrator fencing): the lock-authority lease is a
- * deterministic argmin over live presence (authority/lock-authority.ts) — a
- * presence flap can briefly give TWO machines the integrator role without a
- * network partition. If both publish staging, receivers need a total order to
- * fence the stale ex-authority's late advance. The fix is the classic fencing
- * token: the lease carries a monotonic `epoch` (bumped on every authority
- * change, carried by the G-0 handoff token), the integrator stamps each staging
- * advance with `(epoch, seq)` and SIGNS it with its device key, and a receiver
- * accepts an advance ONLY when:
+ * F6/D-022: canonical authority is the single owning hive, not the locally
+ * selected integrator or a membership epoch. V3 carries both the device's
+ * scoped signature and the hive owner's countersignature. Receivers pin the
+ * hive/repository identity, require that owner proof, then enforce accepted
+ * store generation, publication term/sequence and fast-forward ancestry.
  *
- *   1. the signature verifies for the embedded integrator device (and that
- *      device passes the caller's membership/authority gate),
- *   2. `(epoch, seq)` is STRICTLY greater than the last accepted pair, and
- *   3. the new staging sha is a FAST-FORWARD of the last accepted staging
- *      (staging never rewinds — same invariant as G-7c on worktrees).
- *
- * A stale ex-authority still holds an older epoch, so its late advance fails
- * (2); a replayed or duplicated announcement fails (2); a forged one fails (1);
- * an equivocating authority that tries to move staging sideways fails (3).
+ * The owner persists publication term/sequence in existing routine metadata.
+ * Peers cannot authorize an advance by electing themselves at the same roster
+ * epoch, inventing a higher term or replaying a device-only legacy envelope.
+ * Legacy decoding remains explicit for migration tests; production disables it.
+ * No partition-safe automatic ownership failover is claimed.
  *
  * This module is the PAYLOAD + ACCEPTANCE layer: `integrateMemberHeads` (G-5)
  * computes the sha, the announcement rail (G-3, leader-held) carries the signed
@@ -63,9 +55,9 @@ export const STAGING_ADVANCE_SIG_DOMAIN = 'papercusp-pot-git-staging-advance-v1'
  *  (worktree-bridge.ts, P-204) holds an events:await on the same key. */
 export const STAGING_ADVANCE_EVENT_KEY = 'pot-git:staging-advance';
 
-/** A fencing pair: the authority lease epoch + the per-epoch advance sequence. */
+/** A publication fence: owner term + per-term advance sequence (not roster epoch). */
 export interface EpochSeq {
-  /** Monotonic lease epoch — bumps on every authority change (G-0 handoff). */
+  /** Monotonic owner publication term; persisted separately from membership. */
   epoch: number;
   /** Monotonic per-epoch advance counter — bumps on every staging publish. */
   seq: number;

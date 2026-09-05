@@ -15,6 +15,27 @@ export interface PlanAdmissionMateriality {
   maxChangedItems: number;
 }
 
+/**
+ * Whether an admission verdict is APPLIED or merely OBSERVED (P-013).
+ *
+ * `shadow` exists because the plan's activation model — "activate enforcement only
+ * after evidence" — was otherwise unsatisfiable: the gate had exactly two states,
+ * absent-policy (evaluates nothing, records nothing) and present-policy (refuses
+ * for real across all seven doors), so the only way to learn what a policy WOULD
+ * refuse was to switch it on and let it refuse the fleet. In `shadow` the verdict
+ * is computed identically and reported, and the door proceeds regardless.
+ *
+ * `enforce` is the default everywhere it is absent, so a policy that exists but
+ * predates this field still refuses. That direction is deliberate: an unreadable
+ * or unstated mode must never be the one that disables the gate.
+ */
+export type PlanAdmissionMode = 'shadow' | 'enforce';
+
+export const PLAN_ADMISSION_MODES: readonly PlanAdmissionMode[] = Object.freeze(['shadow', 'enforce'] as const);
+
+/** Applied when a policy states no mode. See `PlanAdmissionMode` for why it is `enforce`. */
+export const DEFAULT_PLAN_ADMISSION_MODE: PlanAdmissionMode = 'enforce';
+
 export interface PlanAdmissionPolicy {
   /** Monotone owner-policy epoch, independent of a plan revision. */
   policyVersion: number;
@@ -25,6 +46,19 @@ export interface PlanAdmissionPolicy {
   /** Ratification validity window in seconds. */
   ratificationWindowSec: number;
   materiality: PlanAdmissionMateriality;
+  /**
+   * Observe-only or apply. OPTIONAL, defaulting to `enforce`.
+   *
+   * Optional rather than required so that adding it strands no existing
+   * construction site; `resolvePlanAdmissionMode` is the ONE place the default is
+   * applied, so no caller re-implements the fallback and drifts from it.
+   */
+  mode?: PlanAdmissionMode;
+}
+
+/** The effective mode of a policy — the one place the `enforce` default is applied. */
+export function resolvePlanAdmissionMode(policy: Pick<PlanAdmissionPolicy, 'mode'>): PlanAdmissionMode {
+  return policy.mode ?? DEFAULT_PLAN_ADMISSION_MODE;
 }
 
 export const DEFAULT_PLAN_ADMISSION_POLICY: PlanAdmissionPolicy = Object.freeze({

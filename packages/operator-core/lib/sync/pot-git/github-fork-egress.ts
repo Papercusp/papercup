@@ -131,6 +131,8 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
         `- hive: \`${input.potSlug}\`\n- device: \`${devHex8}\`\n- head: \`${req.headSha}\`\n` +
         (req.authorGithubUserId ? `- author github id: ${req.authorGithubUserId}\n` : ''),
     token: input.token,
+    beforeEffect: effect => requireHiveEffectAuthority(input.authority, input.scope ?? { hive_id: '', repo_key: '' },
+      [effect, input.upstreamOwner, input.upstreamRepo, branch, req.headSha]),
     ensureForkFn: input.ensureForkFn,
     openPrFn: input.openPrFn,
     pushFn: async (args) => {

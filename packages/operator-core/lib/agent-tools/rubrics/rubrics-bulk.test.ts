@@ -294,7 +294,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
 
 describe('rubrics:ratify handler (bulk keyed-array)', () => {
   it('ratifies one inline and returns the activated rubric', async () => {
-    ratifyM.mockResolvedValue({ id: 'r-1', status: 'active' } as never);
+    mockResolvedTyped(ratifyM, { ...RUBRIC_R1, status: 'active' });
     const b = await body(ratifyTool, { rubricRef: 'r-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, rubricRef: 'r-1', rubric: { status: 'active' } });

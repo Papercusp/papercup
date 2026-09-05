@@ -1,3 +1,4 @@
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 /**
  * github-egress.integration.test.ts — P-001 egress core
  * (github-bridge-hive-egress-2026-07-02; S-1/S-2/S-4): canonical refs publish
@@ -13,7 +14,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { defaultRunGit, ensurePotGitRepo, namespaceRefPath } from './storage';
 import { STAGING_REF } from './integrator';
-import { egressCanonicalRefs } from './github-egress';
+import { egressCanonicalRefs as egressCanonicalRefsUnderTest } from './github-egress';
 
 function devicePubkey(): string {
   const { publicKey } = generateKeyPairSync('ed25519');
@@ -473,3 +474,7 @@ describe('github-egress WI-5738 — incremental scan, partial progress, exemptio
     expect(stdinSpawns).toBeLessThanOrEqual(2);
   });
 });
+
+function egressCanonicalRefs(input: Parameters<typeof egressCanonicalRefsUnderTest>[0]) {
+  return egressCanonicalRefsUnderTest({ ...hiveEffectFixture(), ...input });
+}

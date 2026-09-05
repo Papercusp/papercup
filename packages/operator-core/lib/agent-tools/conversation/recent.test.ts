@@ -12,6 +12,7 @@ vi.mock('../../operator-conversations', () => ({
 
 import recentTool from './recent';
 import { getOrCreateActiveConversation, listTurnsRecent } from '../../operator-conversations';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const getConv = vi.mocked(getOrCreateActiveConversation);
 const listRecent = vi.mocked(listTurnsRecent);
@@ -21,7 +22,19 @@ const call = (args: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getConv.mockResolvedValue({ id: 'conv-1' } as never);
+  mockResolvedTyped(getConv, {
+    id: 'conv-1',
+    workspaceId: 'default',
+    harnessSlug: null,
+    subjectKind: 'global',
+    subjectRef: null,
+    title: null,
+    status: 'active',
+    startedAt: 0,
+    endedAt: null,
+    elConversationIds: [],
+    hasAudio: false,
+  });
   listRecent.mockResolvedValue({ turns: [], hasMoreEarlier: false });
 });
 

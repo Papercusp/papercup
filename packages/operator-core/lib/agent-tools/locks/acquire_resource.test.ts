@@ -38,6 +38,7 @@ vi.mock('./cross-domain-conflict', () => ({
 
 import { tryAcquireResource, type ResourceAcquireResult } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { endedSessionOwners } from './ended-session-owners';
 import { findCrossDomainResourceConflicts } from './cross-domain-conflict';
 import { inWorkspaceTxn } from './in-workspace-txn';
@@ -188,7 +189,7 @@ describe('locks:acquire_resource exclusive', () => {
   });
 
   it('wires the ended-session oracle into the exclusive wait protocol', async () => {
-    exclM.mockResolvedValue({ ok: false, reason: 'held_exclusive', holders: [] } as never);
+    mockResolvedTyped(exclM, { ok: false, reason: 'held_exclusive', holders: [] });
 
     await callExcl();
 

@@ -1,3 +1,4 @@
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 /**
  * release-promotion.integration.test.ts — G-5b two-speed gate against a REAL
  * temp bare repo (P-034). Acceptance pinned: release advances ONLY with a
@@ -15,7 +16,7 @@ import { defaultRunGit, ensurePotGitRepo } from './storage';
 import {
   type GreenAttestation,
   type ReleaseRule,
-  promoteRelease,
+  promoteRelease as promoteReleaseUnderTest,
   readRelease,
   satisfiesCrefsRule,
   signGreenAttestation,
@@ -179,3 +180,8 @@ describe('pot-git release promotion (G-5b, real bare repo)', () => {
     });
   });
 });
+
+function promoteRelease(...args: Parameters<typeof promoteReleaseUnderTest>) {
+  const [repo, device, repoKey, sha, proof, rule, opts] = args;
+  return promoteReleaseUnderTest(repo, device, repoKey, sha, proof, rule, { ...hiveEffectFixture(repoKey), ...opts });
+}

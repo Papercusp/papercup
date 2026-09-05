@@ -1,6 +1,6 @@
 /**
  * lib/p2p/fleet-leader-election.ts — P-302 (p2p-work-distribution-2026-07-02):
- * CROSS-MACHINE fleet leader election.
+ * ADVISORY cross-machine fleet placement; never exclusive-effect authority.
  *
  * A fleet spans machines (P-301 federates `agent_fleets` + membership). Exactly
  * one DEVICE must lead each fleet — the cross-machine analog of the single-machine
@@ -27,12 +27,10 @@
  *     fleet immediately (the revoked device is already filtered out of the
  *     candidate set, and the epoch bump additionally breaks any stale stickiness
  *     that would otherwise have kept it).
- *   - Fencing ({@link acceptLeadershipAnnouncement}, locks-core `fenceValid`,
- *     Kleppmann): a leadership announcement carrying a LOWER roster epoch than a
- *     peer has seen is rejected — a stale ex-leader's late announce is fenced out,
- *     which is what makes a brief split-brain harmless. Symmetrically, when THIS
- *     peer's roster read is BEHIND a lease already minted under a higher epoch,
- *     the election DEFERS to that lease rather than overriding it with a stale pick.
+ *   - Roster freshness ({@link acceptLeadershipAnnouncement}): lower membership
+ *     epochs are rejected. This is NOT a leadership term or a sink fence. Two
+ *     partitioned same-epoch views can both elect self. Exclusive effects need
+ *     their own recipient contract (Git uses the single owning hive, F6/D-022).
  *
  * ANNOUNCE (P-302 "changes announce on the coord plane"): {@link leadershipAnnouncement}
  * computes the announcement to emit ONLY when the leader DEVICE changes — announce
