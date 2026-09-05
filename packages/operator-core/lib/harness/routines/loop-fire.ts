@@ -191,6 +191,8 @@ export interface BlockingAwaitLike {
   expiresTs: string | null;
   /** ISO creation time — the suppression-quiet clock's origin (no new state needed). */
   createdAt: string;
+  /** Platform-authored lifecycle binding; manual events:await leaves it null. */
+  boundTo?: { kind: string; ref: string } | null;
 }
 
 /** Inputs for the parked-loop re-arm that accompanies await suppression. */
@@ -245,6 +247,10 @@ export function decideLoopAwaitSuppression(input: {
   let earliestResumeAtMs = Infinity;
   let drivingEventKey: string | undefined;
   for (const a of input.awaits) {
+    // EI-22433430601034541: holding a blocked aggregate auto-arms these watches
+    // even while another owned item is actionable. Only a caller-owned park
+    // may pause the work loop. Keep the watch itself for its eventual wake.
+    if (a.boundTo?.kind === 'work-item-blocked') continue;
     const createdAtMs = Date.parse(a.createdAt);
     if (!Number.isFinite(createdAtMs)) continue; // malformed row — never suppress on it
     const quietCeilingMs = createdAtMs + maxQuietMs;
@@ -263,7 +269,7 @@ export function decideLoopAwaitSuppression(input: {
  *  inbox-wake self-await + `announce` rows — see `listParkedAwaitsForSubscribers`). */
 async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
   const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
-  return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt }));
+  return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt, boundTo: r.boundTo }));
 }
 
 /**

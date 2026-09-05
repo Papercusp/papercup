@@ -500,6 +500,17 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(res).toMatchObject({ fired: true, woken: 1 });
     });
 
+    it('automatic blocked-item interest does not pause an active work loop', async () => {
+      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => [{
+        eventKey: 'work-item:unblocked:WI-aggregate', expiresTs: new Date(Date.now() + 30 * 60_000).toISOString(),
+        createdAt: new Date().toISOString(), boundTo: { kind: 'work-item-blocked', ref: 'WI-aggregate' },
+      }]) as never });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+    });
+
     it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => [
@@ -1182,6 +1193,16 @@ describe('renderLoopCheckpointBlock — the write-age staleness stamp (P-002)', 
 
 describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901)', () => {
   const now = Date.parse('2026-07-18T12:00:00.000Z');
+
+  it('uses lifecycle provenance rather than guessing from a work-item event name', () => {
+    const awaitRow = { eventKey: 'work-item:done:WI-dependency', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 60_000).toISOString() };
+    const automatic = { ...awaitRow, boundTo: { kind: 'work-item-blocked', ref: 'WI-aggregate' } };
+    expect(decideLoopAwaitSuppression({ awaits: [automatic], nowMs: now }).suppress).toBe(false);
+    expect(decideLoopAwaitSuppression({ awaits: [awaitRow], nowMs: now }).suppress).toBe(true);
+    expect(decideLoopAwaitSuppression({ awaits: [automatic, awaitRow], nowMs: now }).suppress).toBe(true);
+    expect(decideLoopAwaitSuppression({ awaits: [{ ...awaitRow, boundTo: { kind: 'consultation', ref: 'c' } }], nowMs: now }).suppress).toBe(true);
+  });
 
   it('no awaits ⇒ never suppress', () => {
     expect(decideLoopAwaitSuppression({ awaits: [], nowMs: now })).toEqual({ suppress: false, resumeAtMs: null });
