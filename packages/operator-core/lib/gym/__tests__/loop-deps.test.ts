@@ -145,6 +145,39 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
     expect(worstTraces.map((w) => w.taskId)).toEqual(['t-train-lo', 't-train-hi']);
   });
 
+  /**
+   * P-002 — the real-anchor pool was RUN and SCORED here long before this test existed;
+   * what it was not, was aggregated. Its composites were computed per task and then
+   * dropped, so `decideAccept` never saw them and a candidate could be crowned champion
+   * while getting worse at real work. These two lock the aggregate and its coverage.
+   */
+  it('rolls the real-anchor pool into realAnchorAgg with measured coverage', async () => {
+    const withReal: LoopTask[] = [
+      ...TASKS,
+      { taskId: 't-real', pool: 'real-anchor', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:7', projectContext: 'p' },
+    ];
+    const { deps } = makeDeps({ tasks: withReal }, { ...ALL_MEASURED, 't-real': { regressions: false } });
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+
+    expect(evalResult.realAnchorAgg).toBeCloseTo(expComposite(7), 6);
+    expect(evalResult.realAnchorEvidence.status).toBe('pass');
+    expect(evalResult.realAnchorEvidence.coverage).toEqual({ measured: 1, required: 1, unmeasuredTaskIds: [] });
+    // The real-anchor is scored but NEVER optimized (D-014): it must not leak into the
+    // reward or the frontier vector.
+    expect(evalResult.trainVector).toEqual([expComposite(2), expComposite(8)]);
+  });
+
+  it('reports a cycle that ran NO real-anchor task as not-measured, never a vacuous 0-vs-0 pass', async () => {
+    const { deps } = makeDeps({}, ALL_MEASURED); // TASKS carries train/dev-anchor/probe only
+    const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });
+
+    // mean([]) is 0, which on its own would compare as a catastrophic regression against
+    // any scored champion — the coverage is what stops that being read as a verdict.
+    expect(evalResult.realAnchorAgg).toBe(0);
+    expect(evalResult.realAnchorEvidence.status).toBe('not-measured');
+    expect(evalResult.realAnchorEvidence.coverage.required).toBe(0);
+  });
+
   it('attaches all known pipeline and judge spend to a partial evaluation error', async () => {
     let judgeCalls = 0;
     const judgeCall: JudgeLlmCall = async (opts) => {

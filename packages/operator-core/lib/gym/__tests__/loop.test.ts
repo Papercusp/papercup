@@ -75,6 +75,34 @@ describe('runOptimizationLoop', () => {
     expect(calls).toContain('eval:baseline');
   });
 
+  /**
+   * P-002 / D-004(3) — the end-to-end statement of the item: a challenger may only be
+   * crowned champion if it does not regress the real-anchor pool. Both consequences live
+   * behind loop.ts's `if (verdict.accept)`: the EXTERNAL harness write (`deps.promote`)
+   * and the INTERNAL champion advance that drives parent selection and what gets
+   * federated. A candidate that improves on every optimized signal and only gets worse
+   * at real work must move neither.
+   */
+  it('never crowns a champion that regresses the real-anchor, however much it improves on train', async () => {
+    let agg = 7.0;
+    const { d, calls } = baseDeps({
+      async evaluate(variantId) {
+        if (variantId === 'baseline') return { evalResult: evalOf('baseline', 7.0), worstTraces: [], costUsd: 1.0 };
+        agg += 0.5; // strictly better train AND dev-anchor each cycle — every other gate holds
+        return {
+          evalResult: { ...evalOf(variantId, agg), realAnchorAgg: 5.0 }, // vs champion 7.0, δ 0.2
+          worstTraces: [],
+          costUsd: 1.0,
+        };
+      },
+    });
+    const res = await runOptimizationLoop(config, d);
+
+    expect(res.accepts).toBe(0);
+    expect(res.championId).toBe('baseline'); // the internal champion never advances
+    expect(calls).not.toContain('promote'); // and nothing is written to the harness
+  });
+
   it('stops when the budget is exhausted', async () => {
     const { d } = baseDeps();
     const res = await runOptimizationLoop({ ...config, budgetUsd: 2.0, maxCycles: 99 }, d);
@@ -143,7 +171,19 @@ describe('runOptimizationLoop', () => {
     expect(recorded[0].parentOverlay).toBeDefined();
     expect(recorded[0].verdict).toBe('accept'); // improving candidates accept
     expect(recorded[0].candidateVersion.verdict).toBe('accept');
-    expect(recorded[0].candidateVersion.gateResults).toHaveLength(5);
+    // Name them rather than count them: `autoDecideRunProposals` promotes only when EVERY
+    // gate in this persisted list passed, so which gates are present IS the promotion
+    // contract — a silently-absent real-anchor gate (P-002) would re-open the hole.
+    expect(recorded[0].candidateVersion.gateResults.map((g) => g.gate).sort()).toEqual(
+      [
+        'cost',
+        'dev-anchor-no-regress',
+        'improvement',
+        'no-new-regressions',
+        'probe-caught',
+        'real-anchor-no-regress',
+      ].sort(),
+    );
     expect(recorded[0].candidateVersion.hashes.variantHash).toMatch(/^[0-9a-f]{64}$/);
     expect(typeof recorded[0].devAnchorDelta).toBe('number');
     expect(calls).not.toContain('promote'); // human-gated: no external harness write
