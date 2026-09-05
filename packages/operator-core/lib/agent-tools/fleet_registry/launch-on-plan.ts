@@ -88,7 +88,7 @@ import {
 import { getPresence, heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
-import { checkPlanStartable } from '../plans/plan-start-gate';
+import { checkPlanStartable, startVerdictForRow } from '../plans/plan-start-gate';
 import {
   buildExactPlanClaimSpec,
   claimableStatesForKinds as exactPlanClaimableStatesForKinds,
