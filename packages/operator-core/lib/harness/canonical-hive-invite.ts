@@ -85,8 +85,10 @@ export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
  *
  * It cannot live here. This module is client-reachable: papercusp-hive-join.ts imports
  * CANONICAL_PAPERCUSP_HIVE_INVITE above, and a bundler pulls in the module WHOLE — so the
- * team's real GitHub logins were being emitted into the client chunk
- * (papercusp-hive-join-*.js, literally `W=["aviynw","papercupai"]`) and shipped in the
+ * team's real GitHub logins were being emitted into the client chunk (as a minified
+ * `W=[<owner-login>,"papercupai"]` array — the real login is deliberately NOT quoted
+ * here, because this comment ships in source and quoting it would re-leak the very
+ * handle the move exists to remove) and shipped in the
  * sidecar SPA to everyone who downloaded the app. The allowlist authorises nothing on the
  * client; admission is decided server-side in goSharedHive. Keeping the two constants in
  * one file made a server-only secret-ish value ride along with a deliberately-public one.
