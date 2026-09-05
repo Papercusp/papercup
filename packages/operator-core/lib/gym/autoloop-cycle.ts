@@ -465,11 +465,13 @@ export async function runOneAutoloopCycle(
     const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
     const judge: JudgeLlmCall = FAKE
       ? fakeJudge
-      : withNetRetry((opts: Parameters<JudgeLlmCall>[0]) => rawGymLlm!.llmCall({ ...opts, priority: 'gym' }));
+      : withNetRetry((opts: Parameters<JudgeLlmCall>[0]) =>
+          rawGymLlm!.llmCall({ ...opts, priority: 'gym', harnessSlug: slug }),
+        );
     const proposer: GymLlmCall = FAKE
       ? fakeProposer
       : (withNetRetry((opts: Parameters<GymLlmCall>[0]) =>
-          rawGymLlm!.llmCall({ ...(opts as object), priority: 'gym' } as never),
+          rawGymLlm!.llmCall({ ...(opts as object), priority: 'gym', harnessSlug: slug } as never),
         ) as unknown as GymLlmCall);
 
     // 5. Ports + loop deps.

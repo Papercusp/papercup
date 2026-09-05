@@ -55,7 +55,7 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
     batchSize: positiveInteger(payload.batchSize, DEFAULT_PROMOTER_BATCH_SIZE),
     recentTerminalDays: positiveInteger(payload.recentTerminalDays, 30),
     model: optionalModelSpec(payload.model, 'admission promoter'),
-    llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
   });
 }
 

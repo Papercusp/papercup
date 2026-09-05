@@ -100,7 +100,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> 
       chunkCount: optionalPositiveInteger(payload.chunkCount),
       fullCorpusPairThreshold: optionalNonNegativeInteger(payload.fullCorpusPairThreshold),
     },
-    llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
   });
 }
 

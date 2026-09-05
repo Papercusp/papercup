@@ -102,7 +102,8 @@ export async function productionDreamCycle(
   ]);
   const { sql } = getOrgPg();
   const cycleId = stableCycleId(ctx);
-  const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout' });
+  const llmCall: ScoutLlmCall = (input) =>
+    llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
 
   return runDreamCycle(
     {

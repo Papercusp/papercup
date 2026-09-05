@@ -103,7 +103,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<DeltaSweepRunResult>
     titleWindowHours: positiveInteger(payload.titleWindowHours, DEFAULT_DELTA_TITLE_WINDOW_HOURS),
     clusterExemplarsPerShard: positiveInteger(payload.clusterExemplarsPerShard, DEFAULT_DELTA_CLUSTER_EXEMPLARS),
     model: optionalModelSpec(payload.model, 'delta sweep'),
-    llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
     fileUmbrella: productionFileUmbrella,
     linkUmbrella: productionLinkUmbrella,
   });

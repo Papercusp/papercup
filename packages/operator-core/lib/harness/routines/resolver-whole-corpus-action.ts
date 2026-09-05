@@ -325,7 +325,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<RunResolverWholeCorp
     harnessSlug: ctx.installSlug,
     model: optionalModelSpec(payload.model, 'resolver whole corpus'),
     targetTokens: typeof payload.targetTokens === 'number' ? payload.targetTokens : undefined,
-    llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
   });
 }
 

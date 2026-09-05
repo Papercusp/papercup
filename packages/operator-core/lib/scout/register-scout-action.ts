@@ -302,7 +302,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
   // capacityFallbacks as discriminator evidence — see withCodexCapacityFallback above.
   const capacityFallbacks: CapacityFallbackEvent[] = [];
   const governedCall = (o: Parameters<typeof rawLlmCall>[0]) =>
-    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout' });
+    rawLlmCall({ ...o, signal: combineAbortSignals(signal, o.signal), priority: 'scout', harnessSlug });
   const callWithFallback = withCodexCapacityFallback(governedCall, {
     capacity: providerCapacity,
     backendForModel: backendForLlmCall,

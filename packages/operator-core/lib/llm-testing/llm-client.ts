@@ -326,7 +326,11 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     ownerId: opts.ownerId,
     // Usage attribution: the priority label already names the caller ('gym',
     // 'scout'); reuse it so this client's header samples stop being anonymous.
-    usageAttribution: { role: opts.priority ?? 'llm-testing' },
+    // WI-2144763: forward the caller's harness too. Every `source:'headers'` row left
+    // harness_slug NULL (18,228 rows / ~$755, 0.00%) — not because the column or the
+    // writer was missing it, but because the attribution TYPE had no field for it. Undefined
+    // when the caller did not say, which the host binds as an honest NULL.
+    usageAttribution: { role: opts.priority ?? 'llm-testing', harnessSlug: opts.harnessSlug },
     // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
     // the host ~/.claude. No-op for the default `anthropic-direct` backend (HTTP, no
     // subprocess). Without this, each sim-user/judge `claude` spawn does a

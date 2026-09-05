@@ -104,7 +104,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<DailyDigestRunResult
     runId: explicit || runId(),
     maxTokens,
     model: optionalModelSpec(payload.model, 'daily digest'),
-    llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
+    llmCall: (input) => llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug }),
     fileUmbrella: productionFileUmbrella,
     linkUmbrella: productionLinkUmbrella,
   });
