@@ -1487,24 +1487,57 @@ export default function SessionChatModal({
   // P-008: this owner's pending coord-escalation(s) — the same `plans.attention`
   // feed InboxPane/the Queue read, SCOPED to this agent.
   //
-  // WI-2144754: the scoping is server-side (`ownerAgentId`) and that is
-  // load-bearing, not an optimization. This used to read the shared unscoped
-  // feed and filter the result in `pendingEscalations` below. But that feed is
-  // PAGED — 100 items, offset 0, and this component never calls `loadMore` —
-  // so the client filter ran over page one of a fleet-wide list rather than
-  // over this agent's items. Measured 2026-09-05: 145 open agent-filed
-  // decision-tier escalations against that 100-item page, so at minimum ~45
-  // owner-owed asks could not appear in the popup the owner opens to ANSWER
-  // them, and 13 of 13 live sessions driven showed an empty shelf — including
-  // one holding two genuinely open `question` escalations that sat 97 places
-  // past the page boundary. An empty shelf and "nothing needs you" render
-  // identically, which is why this failed silently for so long.
+  // WI-2144754: the scoping is server-side (`ownerAgentId`). This used to read
+  // the shared unscoped feed and filter the result in `pendingEscalations`
+  // below, but that feed is PAGED — 100 items, offset 0, and this component
+  // never calls `loadMore` — so the client filter ran over page one of a
+  // fleet-wide list rather than over this agent's items. Page one of a
+  // fleet-wide feed is not a superset of any one agent's rows, so that filter
+  // returned whatever happened to fit. Measured 2026-09-05: 145 open
+  // agent-filed decision-tier escalations against that 100-item page, so some
+  // owners' asks provably fall past the boundary and cannot appear in the
+  // popup the owner opens to ANSWER them. An empty shelf and "nothing needs
+  // you" render identically, which is why that would fail silently.
+  //
+  // ⚠ SCOPE OF THE ABOVE — do not read it as the cause of an empty shelf.
+  // This scoping is a correctness fix for the filter, and it is NOT known to
+  // fix the empty Decisions shelf. An earlier revision of this comment claimed
+  // it did, citing an owner whose two open `question` escalations sat "97
+  // places past the page boundary"; that inference was WRONG and is retracted.
+  // Replaying the popup's own `plans:attention { limit:100, offset:0 }` read
+  // puts that owner's two rows at flat index 53 and 55 — INSIDE page one — so
+  // the pre-fix client filter would have found them. The feed is importance-
+  // sorted, not recency-sorted; the 97 came from a SQL recency ordering that
+  // does not describe feed position. Driven live with this fix provably in the
+  // bundle, the shelf still rendered empty (modal=true, shelf=false, cards=0),
+  // and no reading of this shelf has ever shown cards > 0 in the live app, so
+  // there is no positive control and every `shelf=false` is uninformative
+  // about which hypothesis is right. The real cause is still unknown.
   //
   // Scoped here rather than by paging to the item: paging pulls the whole ~1MB
   // feed to find a handful of rows, and still has no bound that guarantees
   // reaching them. Disabled while closed so a hidden modal never holds an
   // extra live query open.
-  const { items: attentionItems, refresh: refreshAttention } = useInboxAttention(open, sessionOwnerId);
+  // `error` is READ, not discarded — the shelf renders nothing when there are
+  // no pending asks, so a FAILED feed read and a genuinely empty queue produce
+  // the identical pixels: "nothing needs you". That is the one reading never
+  // safe to guess, and this file's own badge already refuses to guess it (see
+  // AttentionCountsRow.degraded in use-inbox-pending.ts: "Read it before
+  // believing a zero").
+  //
+  // Not hypothetical. Measured 2026-09-05: the scoped read above sends
+  // `ownerAgentId`, and a server built before that arg existed REJECTS the
+  // whole call (`invalid_args: Unrecognized key` — undeclared args are
+  // rejected, not ignored, EI-10883). Every running operator did exactly that,
+  // so `q.data` was undefined, `items` was [], and this shelf rendered empty
+  // for EVERY owner — including one with 81 matching rows. The empty shelf was
+  // a failing query wearing an empty queue's clothes, and it cost a full
+  // session of investigation precisely because the error had nowhere to show.
+  const {
+    items: attentionItems,
+    refresh: refreshAttention,
+    error: attentionError,
+  } = useInboxAttention(open, sessionOwnerId);
   // EI-19403137552594870 (2026-08-03): this USED to require
   // `kind === 'coord-escalation' && isEscalationWithOptions(i)` — so an
   // agent's own `kind:'conversation'` question to the owner (no named
@@ -2571,7 +2604,7 @@ export default function SessionChatModal({
             defines the zone vars ON the zone roots, so a container that holds
             a `.pc-zone-title` without it resolves the cap's fill to `unset`:
             an invisible cap rather than a loud failure. ── */}
-        {pendingEscalations.length > 0 ? (
+        {pendingEscalations.length > 0 || attentionError ? (
           <section
             className="pc-zone pc-chat-decisions"
             data-testid="session-chat-pending-escalations"
@@ -2584,7 +2617,11 @@ export default function SessionChatModal({
               {/* "you", not "they": the other zones describe the AGENT, this
                   one is the only zone addressed to the reader. */}
               <span className="pc-zone-title__sub">— what needs you</span>
-              <span className="pc-chat-decisions__count">{pendingEscalations.length}</span>
+              {/* No count while the read is failing: a "0" here would assert
+                  the very fact we could not establish. */}
+              {attentionError ? null : (
+                <span className="pc-chat-decisions__count">{pendingEscalations.length}</span>
+              )}
             </header>
             {/* [owner 2026-08-09] "What do those buttons actually do its
                 unclear." The two rows of buttons below do CATEGORICALLY
@@ -2601,22 +2638,43 @@ export default function SessionChatModal({
                 LABEL to `item.ownerAgentId`, waking them; `discuss` is in
                 NAVIGATE_ACTION_IDS, so it returns before any of that and only
                 opens DiscussPanel. Change either and change this line. */}
-            <p className="pc-chat-decisions__legend">
-              Picking an answer replies to the agent, wakes it, and closes the decision.
-              {' '}
-              <b>Discuss</b> just opens a thread — it answers nothing.
-            </p>
-            <div className="pc-chat-decisions__list">
-              {pendingEscalations.map((i) => (
-                <DecisionCard
-                  key={i.id}
-                  item={i}
-                  onResolved={refreshAttention}
-                  askedAtIndex={askedAtJumpIndex.get(i.id) ?? null}
-                  onJump={onRailJump}
-                />
-              ))}
-            </div>
+            {attentionError ? (
+              /* The read FAILED. Say so, and say it in the shelf's own body
+                 rather than as a toast: the question the reader came here to
+                 answer is "what needs me", and the honest answer is "we could
+                 not find out", never a silent absence. Retry is offered
+                 because the common causes (a stale server, a transient sync
+                 failure) are cleared by re-asking, not by reloading the app. */
+              <div className="pc-chat-decisions__error" data-testid="session-chat-pending-escalations-error">
+                <p className="pc-chat-decisions__legend">
+                  <b>Couldn’t load decisions.</b> This is <em>not</em> the same as having none —
+                  this agent may still be waiting on you.
+                </p>
+                <p className="pc-chat-decisions__legend">{attentionError}</p>
+                <button type="button" className="pc-btn pc-btn--sm" onClick={refreshAttention}>
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <>
+                <p className="pc-chat-decisions__legend">
+                  Picking an answer replies to the agent, wakes it, and closes the decision.
+                  {' '}
+                  <b>Discuss</b> just opens a thread — it answers nothing.
+                </p>
+                <div className="pc-chat-decisions__list">
+                  {pendingEscalations.map((i) => (
+                    <DecisionCard
+                      key={i.id}
+                      item={i}
+                      onResolved={refreshAttention}
+                      askedAtIndex={askedAtJumpIndex.get(i.id) ?? null}
+                      onJump={onRailJump}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
           </section>
         ) : null}
         </div>
