@@ -1,7 +1,7 @@
 # Codex functions.exec is a V8 isolate: use session-preserving recovery paths
 URL: /internal/docs/agent-insights/codex-functions-exec-runtime-boundary
 
-Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, and use tracked-session ptool for authenticated local agent-tools verification.
+Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, quote heredoc delimiters, send at most one apply_patch operation per target path, and use tracked-session ptool for authenticated local agent-tools verification.
 
 # The boundary
 
@@ -33,6 +33,88 @@ const cmd = `ptool tools:find --json - \"\${PAPERCUSP_WORKSPACE}\"`;
 ```
 
 The first form avoids JavaScript interpolation entirely; the second produces a literal `${PAPERCUSP_WORKSPACE}` for the shell to expand. This is separate from `ptool`'s own workspace resolution and does not change the authenticated recovery paths below.
+
+# The heredoc boundary: quote the delimiter, terminate at column 0
+
+`ptool` payloads reach the shell through a heredoc, and the same "one layer resolves before the next" logic applies one level down.
+
+Always quote the opening delimiter — `<<'JSON'`, never `<<JSON`. Unquoted, the shell expands `$`, backticks and backslashes *inside the body*, so a JSON payload containing a `$`, a shell-looking token, or a Windows path is silently corrupted before `ptool` parses it. Quoted, the body passes through byte-for-byte.
+
+The closing delimiter must sit at column 0, alone on its line. Leading whitespace — an editor auto-indent, or a heredoc nested inside an indented `if`/`for` — means the shell never recognises the terminator and swallows the rest of the script as payload.
+
+Do not put arbitrary JSON in shell single quotes: one apostrophe in prose, completion evidence, or a work-item body ends the quote and breaks the command before `ptool` runs. Use the quoted heredoc, or `--json-file` for anything large or awkward.
+
+These compose with the JavaScript boundary above. A heredoc assembled inside a `functions.exec` template literal is subject to **both** V8 interpolation and shell expansion, so prefer an ordinary JavaScript string there.
+
+# apply\_patch: at most one operation per target path
+
+An `apply_patch` envelope may carry at most one operation per target path. Two `*** Update File:` blocks naming the same file reject the entire patch before anything is written:
+
+```
+apply_patch verification failed: invalid patch: multiple operations target <path>
+```
+
+This is deterministic validation, not a flake: re-sending the same patch reproduces it exactly. The rejection is atomic, so nothing needs cleaning up — only the envelope shape is wrong.
+
+The shape that triggers it is a reasonable one, which is why it recurs. An author keeps an unrelated edit visually separate by giving it its own block, frequently with a *different* file's block in between, so the collision is not adjacent in the source and does not look wrong on review. The class was filed independently five times (EI-21353344120350526, EI-21354846297369687, EI-21565696681975825, EI-21573638140720842, EI-22346861820470210); the last states the gap precisely — the behaviour is deterministic "but was not surfaced before submission".
+
+The fix is mechanical: one block per FILE, one `@@` hunk per REGION. The hunks remain exactly as separate and as readable as the blocks were, so the change itself needs no restructuring.
+
+```
+*** Begin Patch
+*** Update File: packages/operator-core/lib/queue.ts
+@@ class RepairQueue
+-  const a = 1;
++  const a = 2;
+@@ function retire
+-  return null;
++  return queue;
+*** End Patch
+```
+
+Editing several *different* files in one patch is correct and unaffected, as is a rename (`*** Update File:` followed by `*** Move to:`) — that pair is one operation, not two.
+
+A managed Codex home installs `pretooluse-apply-patch-duplicate-target-guard.mjs`, which detects this before dispatch and names the colliding paths plus the merge fix. It fails open by design, and it only inspects column-0 `*** ` operation headers, so a patch whose *content* documents apply\_patch (this page, for instance) is never falsely denied.
+
+# apply\_patch: a stale context line aborts the WHOLE patch, and that is correct
+
+A second, distinct rejection class — not the duplicate-target one above. When any
+hunk's context lines no longer match the file on disk, `apply_patch` fails
+verification and **no hunk from any file in the envelope is written**. The
+reporter of EI-20184984831993999 hit it on a combined declaration shape (the
+patch's context assumed a different statement split than the file actually had)
+and had to reconstruct and resend the entire multi-file patch.
+
+The atomicity is a feature, not the bug: a partially-applied multi-file patch
+would leave the tree in a state neither the author nor the next reader can reason
+about, and on this shared checkout git-sync would sweep that half-state into a
+commit within minutes.
+
+**There is no papercusp guard for this class, and one should not be written.**
+The duplicate-target guard above is safe precisely because it is a pure syntactic
+check on the envelope — column-0 `*** ` operation headers only, no file reads and
+no fuzz rules — so it cannot disagree with the applier. Pre-checking context
+staleness would instead mean reading every target file and re-implementing Codex's
+own context-matching and fuzz behaviour inside a `PreToolUse` hook that gates every
+Codex agent's edits. Any divergence between that copy and the real applier denies a
+VALID patch fleet-wide, which is a far worse failure than the error message it
+would improve. `apply_patch` is Codex-native — this repository contains no applier,
+and the only papercusp code touching patches is the `pretooluse-*` guard family,
+which inspects and never applies — so the diagnostics ask belongs upstream.
+
+What to do instead, in order:
+
+1. **Re-read the target file before regenerating the patch.** Do not rebuild it
+   from the version you read earlier in the turn. The fleet commits to this tree
+   continuously, so a file you read minutes ago may genuinely have moved under
+   you — and the rejection looks identical whether the drift was a peer's edit or
+   your own mis-transcription, so re-reading is the cheaper first move either way.
+2. **Narrow the context.** Fewer context lines per hunk means fewer lines that can
+   go stale; anchor on a line you have just re-read rather than on surrounding
+   code you are inferring from memory.
+3. **Split a wide envelope.** The abort is all-or-nothing per envelope, so one
+   stale hunk in the seventh file discards the six valid files' work too. Smaller
+   envelopes bound what a single stale line costs.
 
 # Supported recovery paths
 

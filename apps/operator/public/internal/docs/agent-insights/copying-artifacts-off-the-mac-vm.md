@@ -43,6 +43,33 @@ rsync -avs ""$VM_MAC_USER"@127.0.0.1:~/build/Papercusp GUI.app.tar.gz" ./
 folds `-s` into the option string it sends to the remote, and the ancient remote
 rejects the whole blob. Note the tell in the error: `[server=2.6.9]`.
 
+## Before reaching for `-s` at all — a PUSH usually never needed it
+
+The trap above is worth avoiding one step earlier, because `-s` is reached for far more
+often than it is required, and on a mac target the reflex is what breaks you.
+
+`--protect-args` protects arguments that reach the **remote shell's argv**. A
+space-bearing *filename* being copied does not: it travels inside the rsync protocol
+stream, not on the remote command line. So `-s` only matters when a space-bearing path
+appears as a remote *argument* — a remote SOURCE path, or a destination directory whose
+own name contains a space.
+
+```bash
+# FINE without -s: only the LOCAL side has spaces, dest dir does not
+rsync -av "local/Papercusp GUI_0.0.13_x64.dmg" "$VM:~/build/"
+```
+
+That is the asymmetry that makes this bite: it is the *pull* (remote source, spaces in
+the remote path) that tempts you toward `-s`, and the fix for that case is not `-s` at
+all — it is the per-file ssh stream below. Note the direction of the hazard too: the
+more carefully you write the command, the more likely you reach for the safety flag,
+and the flag is what fails.
+
+If a helper genuinely must pass `-s` to a host that might be a mac, feature-detect
+(`ssh "$VM" rsync --version`) rather than assuming — or use `scp` / `tar | ssh`, which
+is what `papercusp-desktop/bin/mac-vm-verify-build.sh` does (it rsyncs the snapshot
+**without** `-s` and pulls the DMGs back over `scp`).
+
 ## The fix — stream per file over ssh, then verify by content
 
 Skip rsync entirely. Quote the remote path *once*, for the remote shell:

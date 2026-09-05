@@ -61,11 +61,44 @@ load is more likely to trigger when the host is already busy.
    directory (os error 2)"), with a command/workdir that is otherwise VALID
    and fired concurrently with sibling calls — close it by citing this doc
    and the prior investigations rather than re-running probes from scratch.
-   Distinguish this from the separate, **already-fixed**, unrelated class of
-   `exec_command` failures caused by a genuinely **mistyped `workdir`** (e.g.
+   Distinguish this from the separate, unrelated class of `exec_command`
+   failures caused by a genuinely **mistyped `workdir`** (e.g.
    EI-21159177533103669, EI-21275405769790467, EI-21596868384138643,
-   EI-20197135763978086) — those are real path typos, not this race, and the
-   fix there is "use the correct path", not "retry sequentially".
+   EI-20197135763978086, EI-20184728271260411) — those are real path typos,
+   not this race, and the fix there is "use the correct path", not "retry
+   sequentially".
+
+# The mistyped-workdir class is NOT "already fixed"
+
+An earlier revision of this doc labelled that second class **already-fixed**.
+It is not, and no cited item supports the label — verified 2026-09-05 by
+reading all four:
+
+* **EI-21275405769790467** (`done`) closed it as *operator input error, not a
+  repository defect*: a whole-repository search found nothing to change.
+* **EI-21596868384138643** (`done`) closed as a **non-reproduction** in a
+  successor context — not a fix.
+* **EI-21159177533103669** (`resolved`) was closed by `watchdog-auto-close`
+  with **no completion evidence** and no completion authority.
+* **EI-20197135763978086** is still **`needs-human`**, and holds the
+  definitive **reproduction**: a deliberate read-only `exec_command` against
+  a nonexistent workdir fails opaquely at HEAD, and its checkpoint records
+  that there is no `exec_command` implementation or wrapper path in this
+  repository to add workdir validation to.
+
+The distinction is load-bearing for triage. "Already fixed" invites the next
+agent to treat a fresh report as a regression and hunt for a fix that was
+never written. The accurate disposition for a new report of this class is:
+**a real path typo — use the correct path — and papercusp has no fix
+surface**, for the same reason the concurrency race above has none.
+
+Both complaints in these reports are genuine: the error is **opaque** (it
+names neither the offending workdir nor which command in the batch failed),
+and one bad path **discards the whole batch's unrelated output**. Neither is
+fixable here, because the batching and the spawn both belong to Codex CLI.
+EI-20197135763978086 is where that escalation is parked; add new instances
+there rather than opening another item.
+
 4. If the failure becomes reliably reproducible (not merely intermittent) or
    starts to block real work at a meaningful rate, that would be new evidence
    worth escalating upstream to the Codex CLI project — it remains outside

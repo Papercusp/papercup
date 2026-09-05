@@ -1,7 +1,7 @@
 # The cross-platform env switcher (dev/prod/staging/local + release) and its enabled-state
 URL: /internal/docs/agent-insights/env-switcher-and-local-env-provisioning
 
-How the in-webview EnvSwitcherBar works on every platform — the GET /api/desktop/dev-operators discovery feed (server-side reachability, CORS-safe), the "release" escape env (the immutable bundled package code), and how an agent reads + toggles which envs are enabled (POST /api/desktop/dev-operators/set-enabled). Read this before touching the env bar or the planned install-time local-operator provisioning.
+How the in-webview EnvSwitcherBar works on every platform — the GET /api/desktop/dev-operators discovery feed (server-side reachability, CORS-safe, plus the sourceTree/omitted readback that says WHY dev/local are absent), the \"release\" escape env (the immutable bundled package code), and how an agent reads + toggles which envs are enabled (POST /api/desktop/dev-operators/set-enabled). Read this before touching the env bar or the planned install-time local-operator provisioning.
 
 ## What this is
 
@@ -35,9 +35,17 @@ greyed-button wall on the mac build). `prod`/`staging` always stay: a packaged i
 never-hide floor; unreachable ones render greyed), on a packaged (release) build it lists
 only the REACHABLE/self envs (`env_visible(dev_build, reachable, is_self)`).
 
+The omission is deliberate and stays. What it long LACKED was a **readback**: the response
+recorded nothing about the drop, so an absent `dev` was indistinguishable between "no source
+shipped (expected)", "a shipped archive failed to extract (a real bug)", "half-extracted, so
+the marker check rejected the tree", and "the endpoint itself is broken" — diagnosable only by
+SSHing to the machine and grepping the operator log for `[dev-source]`, which CI, a remote
+acceptance check and the UI cannot do (EI-19421499550693822). `sourceTree` + `omitted` now
+report that axis explicitly; see the contract below.
+
 ## The contract — `GET /api/desktop/dev-operators`
 
-Returns `{ ok, operators, selfPort }`. Each operator:
+Returns `{ ok, operators, selfPort, sourceTree, omitted }`. Each operator:
 
 ```ts
 { id, label, port, tooltip, origin, reachable, sha, isSelf, kind, enabled }
@@ -60,6 +68,30 @@ Returns `{ ok, operators, selfPort }`. Each operator:
   the green release really is `:3070` there). There is **no** remote-main git-reset button (the
   `POST /api/desktop/git/reset-to-remote-main` endpoint still exists as a backend-only recovery
   API).
+* **`sourceTree` + `omitted` — the source-tree READBACK (EI-19421499550693822).** Diagnostic
+  only; the bar renders neither. They exist so a machine reader can tell an EXPECTED omission
+  from a BROKEN one without a log grep on the target host:
+
+  ```ts
+  sourceTree: { status: 'measured'; present: boolean }
+            | { status: 'not_measured'; reason: 'vm-release-distribution' }
+  omitted:    { id: string; reason: 'no-source-tree' | 'source-tree-pending' | 'vm-release-distribution' }[]
+  ```
+
+  * **Branch on `reason`, never on absence.** `no-source-tree` is TERMINAL for this boot;
+    `source-tree-pending` means a shipped `source.tar.zst` has not finished extracting YET
+    (first boot runs for MINUTES) and the env is expected to appear on a later pass. The two
+    values are `Extract`ed from the launcher's own `SkipReason` union, so the endpoint and
+    `planEnvOperatorLaunch` cannot drift into disagreeing about the same condition, and
+    `isTransientSkip(reason)` from `env-operator-launcher.ts` is the predicate that separates
+    them — reading the transient one as terminal already produced a false FAIL in the WI-3307
+    acceptance gate (EI-19442842364710969).
+  * **`status:'not_measured'` is not `present:false`.** The vm-release single-operator path
+    returns before any filesystem detection runs, so a bare boolean there would report a
+    measurement that was never taken (D-052 — the same corrective `StagingBuildIdentity` in
+    this module already uses). That path still NAMES every canonical env in `omitted`, so an
+    empty list never has to stand for "and also these".
+  * **An empty `omitted` is an assertion, not a silence** — it means nothing was dropped.
 
 ## Enabling / disabling envs — and how an AGENT does it
 
@@ -73,6 +105,9 @@ An agent can therefore **see and change** which envs are on:
 * **Read:** `GET /api/desktop/dev-operators` → each op's `enabled` flag.
 * **Toggle:** `POST /api/desktop/dev-operators/set-enabled` with `{ id, enabled }` (loopback +
   a cross-site CSRF guard). e.g. re-enable staging: `{ "id": "staging", "enabled": true }`.
+* **Why an env is MISSING rather than disabled:** a disabled env is still present with
+  `enabled:false`; an env that cannot exist is absent from `operators` and named in `omitted`
+  with its reason. Check `omitted` before concluding the endpoint or the extraction is broken.
 
 The **`release`** env is the immutable escape hatch and can **never** be disabled (the toggle
 and the prefs reader both refuse it).

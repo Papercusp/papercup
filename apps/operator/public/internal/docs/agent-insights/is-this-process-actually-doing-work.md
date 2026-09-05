@@ -1,7 +1,7 @@
 # Is this process actually doing work? The cgroup CPU delta, and two false-idle traps
 URL: /internal/docs/agent-insights/is-this-process-actually-doing-work
 
-How to measure whether a long-running process is burning CPU right now — a two-sample delta over its cgroup — and the two hand-rolled /proc methods that report a confident FALSE IDLE on a process burning a full core.
+How to measure whether a long-running process is burning CPU right now — a two-sample delta over its cgroup — the two hand-rolled /proc methods that report a confident FALSE IDLE, and how to attribute that CPU to code when ptrace and perf are both closed.
 
 ## The question this answers
 
@@ -66,6 +66,67 @@ saturation. `await` yields to the microtask queue, not the event loop, so a satu
 thread stops every `setInterval`/`setTimeout` while still looking perfectly asynchronous. The
 beat goes missing exactly when it is the thing you need. Observe from OUTSIDE (`/proc`), where
 a saturated process cannot suppress its own signal.
+
+## It IS burning CPU — now what is it burning it ON?
+
+The instrument above ends at a **rate**. Attributing that rate to **code** is a different
+measurement, and on this box every unprivileged path to it is closed in a way that reads as a
+policy ceiling when it is not.
+
+The refusal that starts the wrong investigation:
+
+```
+$ strace -f -c -p <pid>
+strace: attach: ptrace(PTRACE_SEIZE, ...): Operation not permitted
+```
+
+`kernel.yama.ptrace_scope` is **1** here — a tracer may attach only to its own descendants, and
+a systemd-managed service is nobody's descendant. `perf` is closed too:
+`kernel.perf_event_paranoid` is **4**, past the `3` at which unprivileged `perf_event_open` is
+already denied outright, so time spent hunting perf flags is time wasted.
+
+**Neither is a policy ceiling.** `sudo -n` is `NOPASSWD: ALL` on this box, so the privileged
+form of the same command just works:
+
+```bash
+sudo -n timeout 5 strace -f -c -p <pid>   # summarized syscall categories, read-only
+```
+
+Measured 2026-09-05 against the live staging Hono (`papercup-staging-api`), seconds after the
+unprivileged attach was refused: **1,309 calls summarized in \~3s**, no restart, no config
+change. This is the repo guide's general rule — a permission blocker is owner-gated only once
+`sudo -n` has ALSO failed — arriving in the one disguise that defeats it: `ptrace: Operation
+not permitted` reads as a *kernel security policy* rather than as a privilege you already hold.
+
+`strace` does slow its target, so bound it with `timeout` and prefer staging (`:3170`) over the
+green operator (`:3070`) whenever the question can be asked of either.
+
+## ⛔ Do NOT reach for the in-process V8 profiler on a saturated loop
+
+The instinct after a syscall summary is to want **JS frames**, and this repo HAS that machinery:
+`captureCpuProfile()` in `packages/operator-core/lib/event-loop-lag-monitor.ts` drives a
+`node:inspector` Profiler session and writes a `.cpuprofile`. Pointing it at a CPU-pinned
+service re-arms a known outage.
+
+That session's own async `post()`/response must complete **over the same event loop it is
+diagnosing**. Under a deeply blocked loop the native binding aborts with `Napi::Error` — a
+native abort, NOT a catchable JS exception, so the `try/catch` inside `captureCpuProfile()`
+cannot save the process. It crash-looped the green-release operator **8× on 2026-07-10**
+(WI-3797, SIGABRT, 60–90s downtime per crash).
+
+So the feature is deliberately **default-OFF** — gated on `opts.profileOnSaturation`, with
+`PAPERCUSP_LOOP_PROFILER` kept for tests/dev and never as the production gate — and hard-capped
+at `profileMaxP95Ms` (default **3000ms**): a window saturated past that is *skipped*, not
+attempted. **It is disabled in precisely the regime you would want it.** A service pinned at
+100% CPU is the one case it will never answer, and trying anyway converts a diagnosis into an
+incident.
+
+**The out-of-process sampler is correct BECAUSE the loop is blocked.** `sudo -n strace`
+observes from the kernel side and cannot be starved by the thing it is measuring — the same
+property the heartbeat section above states from the other direction: a signal emitted by the
+saturated process goes missing exactly when you need it. Prefer the outside observer for
+anything you suspect of saturation, and keep the in-process profiler for chronic, sub-cap lag
+on a host you can afford to lose.
 
 ## Do not wait on a process-table pattern you typed yourself
 

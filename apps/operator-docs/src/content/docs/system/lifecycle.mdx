@@ -164,7 +164,7 @@ explore it before committing to a SPEC.md:
 
 | Surface | URL | What it does | Persists to |
 |---|---|---|---|
-| **Brainstorm chat** | `/harness/<slug>?panel=brainstorm` | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit `\`\`\`promote:spec\`\`\`` / `\`\`\`promote:feature\`\`\`` / `\`\`\`promote:issue\`\`\`` action blocks. | Brainstorm scratchpad **PG-canonical** in `harness_shared.harness_brainstorm` (Migration 033), with `.papercusp/brainstorm.{md,canvas.json,mindmap.json}` as a dual-written file mirror so the orchestrator subprocess can read it. |
+| **Brainstorm chat** | `/harness/<slug>?panel=brainstorm` | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit `promote:spec` / `promote:feature` / `promote:issue` action blocks. | Brainstorm scratchpad **PG-canonical** in `harness_shared.harness_brainstorm` (Migration 033), with `.papercusp/brainstorm.{md,canvas.json,mindmap.json}` as a dual-written file mirror so the orchestrator subprocess can read it. |
 | **Architect chat** | `/harness/<slug>` — embedded inside the **Inbox panel** of the dashboard via `<ArchitectInbox><ArchitectChat>` | More structured — Socratic clarifying questions, proposes concrete `proposal:SPEC.md` or `proposal:contract` diff blocks the user can accept. | On accept: writes `harness_shared.harness_project_files` (Migration 034) for SPEC.md / validation-contract.md / config.json (PG-canonical, file-mirror) via `POST /:slug/architect/apply`. |
 
 Both are backed by `runClaudeChat`, which spawns the configured agent CLI per the

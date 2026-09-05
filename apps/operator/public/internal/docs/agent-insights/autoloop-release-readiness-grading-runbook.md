@@ -1,16 +1,46 @@
 # autoloop-release-readiness — grading runbook
 URL: /internal/docs/agent-insights/autoloop-release-readiness-grading-runbook
 
-How to grade the composite Full auto-loop (Mug→Cup→Kettle→Blender) public-release rubric: per-criterion instruments, evidence queries, and the typed emission path.
+How to grade the composite auto-loop public-release rubric after the 2026-08-09 Mug/Cup/Kettle retirement: the four live criteria, their instruments, why four others were removed, and the watchdog guard that pins the removal.
 
-The `autoloop-release-readiness` rubric (releaseGating, 8 criteria, ratingScale
-`pass / at-risk / fail / unknown`) is the **composite** public-release gate for the
-full autonomous loop product. It COMPOSES the leg rubrics instead of duplicating
-them: `blender-release-readiness` grades the blender/scout self-learning leg
-(separate grader lane), `pot-coordination-health` is the Kettle's own per-wake
-scorecard. Origin: EI-12461 / EI-12455; owner directive
-`[owner turn f362a778@2026-07-16T20:31:59Z]` (name elided — release-bundle
-identity rule, WI-4419: owner-name tags must use the nameless `[owner …]` form).
+The `autoloop-release-readiness` rubric (releaseGating, **4 criteria** as of revision 18,
+ratingScale `pass / at-risk / fail / unknown`) is the **composite** public-release gate for
+the auto-loop product. It COMPOSES the leg rubrics instead of duplicating them:
+`blender-release-readiness` grades the blender/scout self-learning leg (separate grader
+lane). Origin: EI-12461 / EI-12455; owner directive
+`[owner turn f362a778@2026-07-16T20:31:59Z]` (name elided — release-bundle identity rule,
+WI-4419: owner-name tags must use the nameless `[owner …]` form).
+
+## ⚠ Read this first — four criteria were removed 2026-09-05 (WI-2145252)
+
+This runbook was written 2026-07-16, BEFORE the Mug/Cup/Kettle tier was retired on
+2026-08-09 (plan `retire-mug-kettle-su-only-2026-08-09` D-001; the
+`papercusp-mug-kettle-system` flag is DELETED, not default-OFF, and `cup:spawn` /
+`kettle:*` / `curation:state-of-pot` REFUSE — see
+`packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts`). Until revision 17 it still
+told you to gather instruments for a subsystem that no longer runs. Rubric revision 17
+dropped those criteria and revision 18 ratified it:
+
+| removed criterion           | instrument                  | why                                                                              |
+| --------------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `placement-throughput`      | `pot-throughput-ticks`      | `harness_shared.pot_placements` has 0 rows since 2026-07-19                      |
+| `cup-execution-health`      | `mug-dispatched-cup-spawns` | `spawned_agents child_role='cup'` stopped 2026-08-17                             |
+| `kettle-supervision-health` | `kettle-autoloop-state`     | the Kettle no longer supervises                                                  |
+| `e2e-loop-closure`          | `e2e-traversal-trace`       | its traversal is placement → cup → kettle → blender; three of four hops are gone |
+
+**Why removal and not an `unknown` rating.** The roll-up below makes `unknown` a NO-GO,
+so a criterion that can never be rated above `unknown` does not merely add noise — it pins
+the gate at NO-GO forever. That is the standard already set one level up in
+`apps/operator/lib/release/release-profile.ts` (`AUTOLOOP_COMPONENT_RUBRIC_REFS`, WI-5379,
+7 → 4 component rubrics): *a mandatory component that CANNOT be graded is not a strict
+gate, it is a permanently-red one.*
+
+**The guard.** A rubric is a DB row, so no build-time lint can see one. The pin lives in
+`packages/operator-core/lib/rubric-staleness-watchdog.ts`
+(`RETIRED_TIER_INSTRUMENT_KEYS` / `retiredTierCriteria`), the one surface that already
+reads every ACTIVE releaseGating rubric on a cadence: if a retired-tier criterion is ever
+re-added, the staleness alert now says UNGRADEABLE BY CONSTRUCTION and names it, instead
+of blaming a dead grader loop (which is what it did every \~3h for \~27 days).
 
 ## The one main procedure
 
@@ -33,7 +63,7 @@ identity rule, WI-4419: owner-name tags must use the nameless `[owner …]` form
 
 ## Composite verdict (roll-up)
 
-The rubric is a GATE, so the 8 criterion ratings collapse to ONE decision. Take
+The rubric is a GATE, so the 4 criterion ratings collapse to ONE decision. Take
 the worst rating that applies, in this order:
 
 * **NO-GO** if ANY criterion is `fail`. A composite gate is only as green as its
@@ -48,84 +78,11 @@ the worst rating that applies, in this order:
   when the window clears.
 * **GO** only when EVERY criterion is `pass`.
 
-Leg deference is transitive: `kettle-supervision-health` (c3) and
-`blender-leg-health` (c4) inherit their leg rubric's verdict — a NO-GO on
-`pot-coordination-health` or `blender-release-readiness` is a composite NO-GO,
-never overridden by a fresh-but-incomplete leg scorecard.
+Leg deference is transitive: `blender-leg-health` inherits its leg rubric's verdict — a
+NO-GO on `blender-release-readiness` is a composite NO-GO, never overridden by a
+fresh-but-incomplete leg scorecard.
 
 ## Per-criterion instruments
-
-### placement-throughput · `pot-throughput-ticks`
-
-Rolling 24h. The Mug must place when frontier is nonempty and cup capacity free.
-
-```sql
-SELECT tick_at, frontier_depth, placements, cups_busy, cups_cap
-FROM harness_shared.pot_throughput_ticks
-WHERE workspace_id='papercusp-workspace' AND tick_at > now()-interval '24 hours'
-ORDER BY tick_at;
-```
-
-`pass` = no run of ≥3 consecutive stuck ticks (`frontier_depth>0 AND cups_busy<cups_cap AND placements=0`),
-excluding ticks where the pool is genuinely walled (see capacity-admission).
-`fail` = sustained stuck runs, or zero placements all window with a nonempty frontier.
-
-Three measurement caveats:
-
-* **Instrument history starts 2026-07-16 \~22:42Z.** Every tick before that recorded
-  placements/completed/mttc/stuck as 0/null unconditionally — the feeding query threw on
-  every tick and was silently caught (EI-13076: drizzle mutated the shared client's date
-  serializers). Do NOT read pre-fix ticks as evidence of anything; the first honest window
-  opens at the fix's bg-host activation.
-* **Ticks fire \~every 30s but placements are sparse by design** — the Mug paces placement
-  by ranking/backpressure, so consecutive `placements=0` ticks with free capacity are
-  normal cadence, not automatically starvation. Judge the stuck-run predicate over
-  30-60min windows (does the frontier DRAIN? do placements appear at all?), and check
-  bg-host journal `pool-shed` lines first: a tick GAP is the load-shed guardrail pausing
-  the ticker (EI-13108), not a dead Mug.
-* **`frontier_depth` is READY depth only from 2026-07-17 \~06:00Z** (EI-12461). Before
-  that it was the placeable-SHAPED count — `todo`+unassigned+admissible but *including*
-  rows whose `blocked_by` / plan-item chain was unsatisfied. A dependency-chained wave
-  therefore ticked `frontier_depth≈14` through \~2.5h of CORRECT zero placement
-  (2026-07-17 02:44–05:19Z) and scorecard EI-13660 failed placement-throughput on a
-  phantom stall; the Mug's own survey saw ready=2 (both cup-forbidden) the whole time.
-  Post-fix, `detail.frontierBlocked` + `detail.frontierPlaceableShaped` record what
-  readiness withheld. Grading a window that spans pre-fix ticks: cross-check any
-  "stuck run" against the Mug wake transcripts (`adv_sessions` label
-  `pot · <slug>/mug`) before calling it starvation — `frontier_depth>0` alone did not
-  mean placeable-now.
-
-### cup-execution-health · `cup-keeper-runs`
-
-Rolling 24h run success + restart durability.
-
-```sql
--- NB (corrected 2026-07-16, EI-13024): cup_keeper_runs has terminal_state (NOT exit_code)
--- and NO workspace_id — scope via the instances join.
-SELECT count(*) FILTER (WHERE r.terminal_state='completed')::float/greatest(count(*),1) AS success_rate,
-       count(*) AS runs
-FROM harness_shared.cup_keeper_runs r
-JOIN harness_shared.cup_keeper_instances i ON i.instance_id = r.instance_id
-WHERE i.workspace_id='papercusp-workspace' AND r.started_at > now()-interval '24 hours';
-```
-
-The table is fed by the gen-0 IQ battery (`beekeeper-gen0-runner.ts`), scheduled monthly via
-`bp-singleton-iq-battery-0` (owner budget in `payload_template.budgetUsd`). If the window is
-empty, check the singleton's `last_fired_at` and whether the last fire left an instance with
-ZERO runs (the EI-13049 silent-failure/dedupe-trap class); a manual fill is
-`npx tsx packages/operator-core/lib/iq-battery/beekeeper-gen0-runner.ts --harness=papercusp --cap=25`.
-
-`pass` ≥ 0.80 · `at-risk` 0.60–0.80 · `fail` \< 0.60 or systematic identical failures.
-Restart durability: keeper respawn after a death (`cup_keeper_instances` churn) with
-the claim resumed, or a passing restart drill.
-
-### kettle-supervision-health · `kettle-autoloop-state`
-
-A frozen `last_fired_at` watermark weeks old = a dead supervisor (`fail`), whatever
-else looks healthy. Evidence: `harness_shared.autoloop_state` kettle rows +
-`scorecards:list { rubricRef: 'pot-coordination-health', limit: 3 }` (newest complete
-scorecard ≤6h). The journal symptom is the `autoloop-chronic skipped-stale … frozen
-watermark` line (see EI-12968).
 
 ### blender-leg-health · `blender-leg-scorecard`
 
@@ -147,19 +104,8 @@ SELECT status, gate, count(*) FROM harness_shared.scout_ticks
 WHERE tick_at > now()-interval '48 hours' GROUP BY 1,2;
 ```
 
-### e2e-loop-closure · `e2e-traversal-trace`
-
-Trace ≥1 full traversal in 48h: `pot_placements` row → matching **execution evidence**
-→ subsequent Kettle scorecard covering the window → blender routed-ledger
-(`harness_shared.scout_routed_ideas`; `routed_at` is epoch ms) / outcome update.
-
-Execution evidence (amended 2026-07-16): `cup_keeper_runs` rows exist ONLY for IQ-battery
-executions — ORGANIC cup executions live in `harness_shared.spawned_agents`
-(`child_role='cup'`; a completed run = `status='done'` with `duration_ms`). Accept either
-for the execution hop; requiring a matching `cup_keeper_runs` row for an organic placement
-makes the criterion unpassable by construction.
-
-Drill traversals count only when marked `origin='drill'` and run on the current generation.
+Scout survives the retirement (D-001), so this instrument is live: 639 ticks in the 30
+days to 2026-09-05.
 
 ### owner-controls · `owner-controls-probe`
 
@@ -172,6 +118,12 @@ the last set (watch the stale-override class: a pot-level steering override sile
 shadowing workspace config — the 2026-07-14 incident) + a watchdog page demonstrably
 delivered (`notifications:recent`).
 
+All three reads survive the retirement — `pot:get-steering`, `pot:status` and
+`autoloop:status` are read-only and ungated. **`pot:set-steering` is RETIRED (D-048)**
+and REFUSES, so `pot:get-steering` now echoes a frozen last-set value; that is expected,
+not a stale-override finding. The criterion already forbids invoking pause/resume to
+test the control plane, so nothing in it depends on a retired actuator.
+
 ### release-parity · `release-generation-parity`
 
 The graded generation must be the shipped one: newest scorecard `gradedGeneration`
@@ -179,34 +131,24 @@ matches bg-host `ActiveEnterTimestamp` + release sha; green gate. Note bg-host r
 loop-critical routines **from the staging tree** — a staging fix can be live on the
 loop while `:3070` is still behind; state which host serves each graded path.
 
-## Known standing reds — status as of 2026-07-16 late
+## Known standing reds
 
-* **kettle-supervision-health**: ~~frozen since 2026-06-25~~ RESOLVED as a grading
-  concern — the frozen rows belong to RETIRED pot slugs (`papercup`, `*`,
-  `papercusp-workspace` residue); the live `papercusp` kettle chain cycles \~10min and
-  survived two bg-host restarts unaided on 2026-07-16. Scope kettle reads to the live
-  pot slug; the stale retired-slug rows are cleanup, not signal (flagged in EI-13081
-  evidence). **UPDATE 2026-08-01 (WI-6722, live `papercusp` row only — the resolution
-  above still stands for the retired-slug rows):** the LIVE `papercusp` kettle row is
-  frozen again — `last_fired_at` 2026-07-25T18:47:52Z, `overwatch_started:…:papercusp`
-  flipped to `false` at 2026-07-25T19:13:38Z. Root cause traced to plan
-  `left-sidebar-order-compaction-kettle-scope-2026-07-25` (P-007): a live-UI
-  verification pass drove the real Kettle Start/Pause control, found it ALREADY
-  paused, and correctly "restored the original state" (paused) after testing the
-  toggle — it never re-armed it, and nothing has called `kettle:start` since. This is
-  a deliberate/explicit pause (`overwatch_started` is owner/agent-tool-set-only — see
-  `overwatch/control-state.ts`), not a code defect; WI-1766 (2026-07-03) resolved an
-  identical shape NOT-A-DEFECT for the same reason. **Grading implication:** a future
-  pass MUST re-probe `harness_shared.autoloop_state` live rather than trust this
-  runbook's cached "cycles \~10min" claim — it was true on 2026-07-16 and has been
-  false since 2026-07-25. Resuming is an owner-authority action
-  (`kettle:start`/the Kettle pane toggle); do not autonomously invoke it while grading.
+Both entries below are **as of 2026-07-16** and must be re-probed live every pass — the
+2026-08-09 retirement invalidated this section's other entries wholesale (they covered
+`placement-throughput` and `kettle-supervision-health`, criteria that no longer exist).
+
 * **capacity-admission**: the 2026-07-13 hard wall has partially cleared (aviynw3
   0.06 on 7d-util, was 1.0); passed on 2026-07-16 with 2 healthy accounts + clean
   gated classification. Still re-probe live every pass.
-* **placement-throughput**: instrument DEAD until 2026-07-16 22:42Z (EI-13076, fixed);
-  honest measurement window starts there. First-ever non-zero reading landed 22:44:47Z
-  (completed=1, mttc≈40.6min).
 * **blender-leg-health**: EI-12940 (OAuth SPOF → gateway-pool) + WI-5041 (lens
   rotation) fixes live since the 2026-07-16 18:40:43Z watermark; leg rubric's rolling
   windows clear \~07-18. Owned by the blender-lane grader (su-f8714d25).
+
+## Open question this runbook does NOT answer
+
+After the removal, the four surviving criteria overlap heavily with the four rubrics the
+release PROFILE already composes (`blender-release-readiness`, `autonomy-owner-controls`,
+`release-integrity-health`, `production-soak-health`). Whether this composite still earns
+its own existence, or should be retired in favour of the profile, was deliberately NOT
+decided under WI-2145252 — that is a governance call on a release gate, not a drain-pass
+side effect.
