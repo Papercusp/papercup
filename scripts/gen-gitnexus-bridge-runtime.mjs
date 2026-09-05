@@ -79,8 +79,13 @@ const FOOTER = `
 }`;
 
 async function generate() {
-  const result = await build({
+const result = await build({
     entryPoints: [ENTRY],
+    // Keep esbuild's source-label comments stable when this check runs through
+    // `npm --workspace @papercusp/operator-core` (cwd=packages/operator-core)
+    // versus the root generator (cwd=REPO_ROOT). Without an explicit working
+    // directory those equivalent invocations emit different artifact bytes.
+    absWorkingDir: REPO_ROOT,
     bundle: true,
     write: false,
     format: 'cjs',
