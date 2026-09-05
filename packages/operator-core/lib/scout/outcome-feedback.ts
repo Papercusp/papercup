@@ -623,3 +623,29 @@ export async function gatherLensOutcomes<L extends string = CreativeLens>(
   ]);
   return computeLensOutcomes(provenance, completions, opts);
 }
+
+// P-007's redesigned reward seam lives in a separate pure module so the
+// historical lens-outcome API remains byte-compatible while callers migrate.
+// Re-export it here because this is the existing Scout feedback entrypoint.
+export {
+  SCOUT_REWARD_DIMENSIONS,
+  computeRoutedIdeaRewards,
+  computeScoutRewardReport,
+  computeScoutRewards,
+  normalizeReviewerPreference,
+} from './reward';
+export type {
+  ScoutArtifactDelivery,
+  ScoutArtifactReward,
+  ScoutEffectiveness,
+  ScoutEffectivenessStatus,
+  ScoutLensRewardStat,
+  ScoutRegressionEvidence,
+  ScoutRegressionStatus,
+  ScoutRewardDimension,
+  ScoutRewardInput,
+  ScoutRewardObservation,
+  ScoutRewardReport,
+  ScoutUncertainty,
+  ScoutUncertaintyStatus,
+} from './reward';

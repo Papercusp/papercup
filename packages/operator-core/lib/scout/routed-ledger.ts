@@ -24,6 +24,7 @@ import { buildChangeFeedReaders, CHANGE_FEED_COMPLETION_STATUSES } from '../cura
 import {
   classifyIdeaOutcome,
   computeLensOutcomes,
+  computeScoutRewardReport,
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
   type LensOutcomeReport,
@@ -32,6 +33,8 @@ import {
   type RoutedIdeaProvenance,
   type RoutedRail,
   type ScoutOutcomeReaders,
+  type ScoutRewardReport,
+  type ScoutRewardInput,
   WORK_ITEM_LOSS_STATUSES,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
@@ -1190,6 +1193,30 @@ export async function getScoutLensOutcomes(
   ]);
   const report = computeLensOutcomes(provenance, completions, opts.weights);
   return { ...report, generatedAt: new Date().toISOString() };
+}
+
+/**
+ * Read the separated P-007 reward dimensions from the live routed-idea ledger.
+ * The existing lens-outcome report remains available for compatibility; this
+ * surface is the migration target for consumers that need reviewer preference,
+ * delivery, matured effectiveness, regressions, cost, and uncertainty kept as
+ * distinct signals. One feed outcome is attached to each routed artifact, then
+ * {@link computeScoutRewardReport} collapses fused source rows before attribution.
+ */
+export async function getScoutRewardReport(opts: ScoutLedgerOpts = {}): Promise<ScoutRewardReport> {
+  const [provenance, completions] = await Promise.all([
+    readRoutedIdeas(opts),
+    gatherCompletionsForOrigin(opts.origin, opts),
+  ]);
+  const byRef = new Map(completions.map((entry) => [entry.ref, entry]));
+  const rewardInput: ScoutRewardInput[] = provenance.map((idea) => {
+    const outcome = classifyIdeaOutcome(idea, byRef);
+    return {
+      ...idea,
+      outcome: outcome === 'won' || outcome === 'lost' ? outcome : 'pending',
+    };
+  });
+  return computeScoutRewardReport(rewardInput);
 }
 
 /**
