@@ -116,17 +116,11 @@ class ReplaceWouldDropError extends Error {
   }
 }
 
-/** A merge whose union exceeds the durable row cap must not commit a partial set.
- * The caller can retire rows explicitly with a confirmed replace, then retry the
- * merge; silently choosing which carried commitment to forget is never safe. */
-class MergeWouldEvictError extends Error {
-  constructor(
-    readonly droppedWalls: string[],
-    readonly droppedChecks: string[],
-  ) {
-    super('checkpoint_merge_would_evict_rows');
-  }
-}
+/* A merge whose union exceeds the durable row cap still must not commit a partial ROW
+ * set — but it is no longer signalled by throwing. EI-22377179869127416 showed that
+ * aborting the transaction to protect the rows also discarded the narrative, so the
+ * refusal is now recorded in `captured.mergeRefused` and the narrative commits with the
+ * carried rows untouched. See the refusal site inside the transform for the reasoning. */
 
 /**
  * Count check rows that were already beyond today's durable cap before this
@@ -1272,7 +1266,10 @@ export default defineTool({
     // survives control-flow narrowing) rather than re-merged out here: the advisory
     // lint and the reported counts then describe EXACTLY what was stored, instead of
     // a second merge against a staler prior that could disagree with it.
-    const captured: { merged?: ReturnType<typeof mergeCarryRows> } = {};
+    const captured: {
+      merged?: ReturnType<typeof mergeCarryRows>;
+      mergeRefused?: { droppedWalls: string[]; droppedChecks: string[] };
+    } = {};
     // A legacy note may already carry more checks than today's cap. The
     // transform records that fact from its authoritative locked prior so the
     // response can explain why the normalization was allowed, rather than
@@ -1344,7 +1341,34 @@ export default defineTool({
               // merge overflow still refuses and names every row it would have
               // evicted, so an ordinary additive write is exactly as safe as before.
               if (args.confirmRetire !== true && (merged.droppedWalls.length > 0 || !normalizingLegacyChecks)) {
-                throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
+                // EI-22377179869127416: the ROW CAP and the NARRATIVE are two separate
+                // commitments, and only the rows are in conflict here. Refusing the whole
+                // write took the did/left/insight/next prose down with it — the note this
+                // file elsewhere calls "the cold successor's only durable anchor" — so an
+                // ordinary additive checkpoint at a full cap left that successor waking on
+                // a STALE note. Losing the narrative is strictly worse than not adding a
+                // row: the caller still HOLDS the rows it just tried to write and can retry
+                // them, while the narrative is exactly what a dying session cannot re-send.
+                //
+                // So persist the narrative with the carried rows UNTOUCHED, and still refuse
+                // the ROW write loudly below (same error code, same retryable contract, same
+                // named rows) — nothing about the row conflict becomes silent, and the two
+                // prior escapes (confirmRetire here, or a confirmed replace) are unchanged.
+                captured.mergeRefused = {
+                  droppedWalls: merged.droppedWalls,
+                  droppedChecks: merged.droppedChecks,
+                };
+                // Reverse the composition order mergeCarryRows uses on the way out
+                // (withCarryNoteWalls(withCarryNoteChecks(body, checks), walls)) so the
+                // carried rows are recovered exactly as stored. Deliberately NOT re-derived
+                // from `enforcedBaseNote`: that string already carries this write's supplied
+                // rows, so re-merging it would re-trigger the very overflow being refused.
+                const priorWallParts = splitCarryNoteWalls(priorNote ?? '');
+                const priorCheckParts = splitCarryNoteChecks(priorWallParts.body);
+                return withCarryNoteWalls(
+                  withCarryNoteChecks(merged.narrativeBody, priorCheckParts.checks),
+                  priorWallParts.walls,
+                );
               }
             }
             return merged.note;
@@ -1402,6 +1426,39 @@ export default defineTool({
           isError: true,
         };
       }
+      // EI-22377179869127416: the row write was refused but the NARRATIVE committed
+      // above, so a cold successor now reads this turn's note instead of a stale one.
+      // Reported only after conflict/staleWrite are ruled out — those two mean nothing
+      // was written at all, and claiming narrativePersisted there would be a lie.
+      if (captured.mergeRefused) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_merge_would_evict_rows',
+                retryable: true,
+                harness,
+                ownerId,
+                narrativePersisted: true,
+                currentHash: stored === null ? null : shortCarryHash(stored),
+                wallsDropped: captured.mergeRefused.droppedWalls,
+                checksDropped: captured.mergeRefused.droppedChecks,
+                message:
+                  'YOUR NARRATIVE WAS SAVED; only the ROW write was refused. ' +
+                  "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above, so the " +
+                  'carried rows were left exactly as they were and your supplied rows were NOT added. The ' +
+                  'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
+                  'To land the rows too: retry with confirmRetire:true to let the cap\'s own PREDICTED-before-VERIFIED ' +
+                  'eviction proceed (the rows above are exactly what would go, and carried rows yield evidence-last), ' +
+                  "or retire rows you no longer need with a separate rowsMode:'replace' + confirmRetire:true write.",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     } catch (error) {
       // EI-21503907176334936: the confirmed-retirement refusal — thrown by the
       // transform BEFORE any store write, so nothing was committed. Surface the
@@ -1424,31 +1481,6 @@ export default defineTool({
                   "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
                   'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
                   'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (error instanceof MergeWouldEvictError) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                error: 'checkpoint_merge_would_evict_rows',
-                retryable: true,
-                harness,
-                ownerId,
-                wallsDropped: error.droppedWalls,
-                checksDropped: error.droppedChecks,
-                message:
-                  "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above — " +
-                  'NOTHING was written. Either retry this SAME call with confirmRetire:true to let the cap\'s own ' +
-                  'PREDICTED-before-VERIFIED eviction proceed (the rows above are exactly what would go), or ' +
-                  "retire rows you no longer need with a separate rowsMode:'replace' + confirmRetire:true write, " +
-                  'then retry the merge.',
               }),
             },
           ],

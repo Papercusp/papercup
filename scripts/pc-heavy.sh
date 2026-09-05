@@ -140,6 +140,19 @@
 #                         re-run keeps host headroom (EI-19315056231449472; see
 #                         the block by _gate_reserve_active). off/false/no also
 #                         disable. Applies to a FIXED PC_HEAVY_SLOTS too.
+#                         ⚠ NOT A GENERAL "don't queue" SWITCH, and repeatedly
+#                         misread as one (EI-20204197087661235): =0 removes the
+#                         CLAMP, so you compete for the FULL slot count instead
+#                         of a quarter of it — you still WAIT for a free slot
+#                         behind unrelated heavy runs. Nothing here admits a
+#                         command ahead of the semaphore. For a FOCUSED TEST,
+#                         do not reach for this at all: `testing:run { files }`
+#                         spawns the test router directly and takes no admission
+#                         ticket. The blanket admission bypass is
+#                         PC_HEAVY_BYPASS=1, which is set for you by the wrappers
+#                         that already hold a slot — setting it by hand puts an
+#                         uncounted heavy job on the shared box, so prefer
+#                         testing:run.
 #   PC_HEAVY_ALLOW_DURING_GATE  unset(default)/"1" — escape hatch for the REFUSAL
 #                         (EI-19385714326170346, _gate_refuse_broad_sweep): a
 #                         broad `test:affected` sweep is refused, not merely
@@ -1712,7 +1725,9 @@ _calc_slots() {
 # `kill` → behave exactly as if no gate were running. A positive stale/identity
 # mismatch is the only new reason to ignore an otherwise-live PID. Worst case
 # degrades to today's behavior.
-# Escape hatch: PC_HEAVY_GATE_RESERVE=0.
+# Escape hatch: PC_HEAVY_GATE_RESERVE=0 — scoped to THIS clamp. It does not
+# bypass slot admission (that is PC_HEAVY_BYPASS=1), so a focused command set
+# with it still waits behind unrelated heavy runs. See the header entry.
 _CHECKPOINT_RUN_LOCK_STALE_SEC=$((190 * 60))
 _CHECKPOINT_PROCESS_START_TOLERANCE_SEC=5
 
@@ -2061,7 +2076,10 @@ if [ "$_gate_active" = 1 ]; then
   [ -n "$_gate_phase" ] || _gate_phase="unknown"
   echo "[pc-heavy] release gate is JUDGING (phase=$_gate_phase) — heavy slots clamped to" \
        "$_slots to keep headroom for its isolation re-run (EI-19315056231449472)." \
-       "Override with PC_HEAVY_GATE_RESERVE=0." >&2
+       "PC_HEAVY_GATE_RESERVE=0 lifts THIS CLAMP ONLY — you still queue for a slot" \
+       "behind unrelated heavy runs. To run FOCUSED TESTS without queueing at all," \
+       "use testing:run { files: [...] }, which spawns the router directly and takes" \
+       "no admission ticket (EI-20204197087661235)." >&2
   # Refuses + exits for the broad sweep in the classifier phases only; returns
   # (and we continue, merely clamped) in every other case. See the function.
   _gate_refuse_broad_sweep "$@"

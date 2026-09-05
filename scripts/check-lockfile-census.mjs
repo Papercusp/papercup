@@ -152,6 +152,10 @@ export const NOT_SHIPPED_LOCKFILES = new Map([
     'libs/papercusp/apps/desktop/src-tauri/Cargo.lock',
     'the superseded in-submodule desktop shell; papercusp-desktop/ is the shipped Tauri app (CLAUDE.md, "Running / testing this app")',
   ],
+  [
+    'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
+    'a local Starlight dev server (bin/docs-viewer.sh, port 4325) for reading docs the harness documenter role writes; it ships in NO artifact. Three independent reasons, each sufficient: (1) the Tauri bundle declares resources ["sidecar/spa/**/*"] and externalBin null, so the viewer is not a bundled resource; (2) apps/operator/bin/bundle-host.sh copies ONLY packages/harness/blueprints into the host graph, never the packages/harness tree, so the viewer is not swept in; (3) its 509 deps are npm-installed LAZILY on first run into docs-viewer/node_modules by bin/docs-viewer.sh, are not vendored (15 tracked files, all config plus the lockfile), and are absent from a fresh checkout — there is no build step that could embed them. Reclassified 2026-09-05 (WI-2144851) from UNCOVERED_BASELINE, whose entry asked for exactly this determination. NOTE: the doc agent-insights/what-ships-in-a-knowledge-pack states the harness copy is done by build-desktop-sidecar.sh "excluding only docs-viewer"; NO such script exists in this tree, so that prose is stale — the conclusion holds via bundle-host.sh above, not via that script.',
+  ],
 ]);
 
 /**
@@ -161,16 +165,8 @@ export const NOT_SHIPPED_LOCKFILES = new Map([
  * failure rather than a quiet append. `deps` is the measured graph size at the time of
  * baselining, so the cost of the gap is legible without re-measuring.
  */
-export const UNCOVERED_BASELINE = new Map([
-  [
-    'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
-    {
-      deps: 509,
-      reason:
-        'harness docs viewer; 509 entries, ALL of them runtime (zero dev-only) — the largest genuinely uncovered graph. Not a root workspace member, so the root audit cannot reach it. Whether it ships is unsettled — resolve that first, then either gate it or move it to NOT_SHIPPED_LOCKFILES with the reason.',
-    },
-  ],
-]);
+/** @type {Map<string, { deps: number; reason: string }>} */
+export const UNCOVERED_BASELINE = new Map([]);
 
 /**
  * Count the entries in an npm lockfile that describe SHIPPED code, and the entries that

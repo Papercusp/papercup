@@ -16052,7 +16052,7 @@
           "POST"
         ]
       },
-      "description": "List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable.",
+      "description": "List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable. Browse a large registry with `q` (name substring) and/or `limit`: both narrow resources[] only, never holders[]; registryCount reports the narrowing.",
       "capabilities": [
         "locks:read"
       ],
@@ -16113,9 +16113,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource.",
-        "notWhen": "File-lock contention — that is locks:queue.",
-        "chaining": "Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? } → locks:acquire_resource { resource, mode }."
+        "when": "Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource. The fileLocks block measures the FILE plane on this same call — holders[] alone never answers \"is a peer on this file\".",
+        "notWhen": "Full file-lock rows or a release handle — that is locks:queue; this carries a bounded fileLocks summary only.",
+        "chaining": "Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? | q?, limit? } → locks:acquire_resource { resource, mode }."
       }
     },
     {

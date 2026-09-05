@@ -7,8 +7,15 @@
  */
 
 export const LOCKS_LIST_TIER_CAPS = {
-  trimmed: { resources: 60, holders: 40, rule: 100, description: 0, reason: 0 },
-  standard: { resources: 120, holders: 80, rule: 240, description: 160, reason: 120 },
+  trimmed: { resources: 60, holders: 40, rule: 100, description: 0, reason: 0, fileLockHolders: 8 },
+  standard: {
+    resources: 120,
+    holders: 80,
+    rule: 240,
+    description: 160,
+    reason: 120,
+    fileLockHolders: 20,
+  },
 } as const;
 
 type LocksTier = keyof typeof LOCKS_LIST_TIER_CAPS;
@@ -77,5 +84,37 @@ export function shapeLocksList(data: unknown, tier: LocksTier): unknown {
       status: `showing ${c.holders} of ${d.holders.length}`,
     });
   }
-  return { ...d, resources, holders };
+  return { ...d, resources, holders, ...shapeFileLocksPatch(d.fileLocks, c.fileLockHolders) };
+}
+
+/**
+ * EI-20192110087737961: bound the `fileLocks` rollup per tier.
+ *
+ * ⚠ Deliberately NOT an allowlist projection. This file has twice had to be
+ * repaired for exactly that (see projectHolder/projectResource above:
+ * `coordination_domain` and then `holders`/`held` were each silently dropped by
+ * an allowlist added upstream of them), and `fileLocks` is the block whose
+ * whole purpose is that its COUNTS reach the reader — an allowlist that lost
+ * `activeCount` would restore the false "nothing is locked" the block exists to
+ * kill, at the trimmed tier, which is the default for the su sessions that read
+ * this tool most. So: spread every key, slice only the holder rows, and stamp
+ * the cut.
+ *
+ * `activeCount`/`waitingCount`/`distinctHolders`/`unreadable` are never clipped
+ * at any tier. They are single scalars; there is no payload argument for
+ * dropping them and every reason to keep them.
+ */
+function shapeFileLocksPatch(fileLocks: unknown, cap: number): { fileLocks?: unknown } {
+  if (!fileLocks || typeof fileLocks !== "object") return {};
+  const fl = fileLocks as Record<string, unknown>;
+  if (!Array.isArray(fl.holders)) return { fileLocks };
+  const all = fl.holders;
+  if (all.length <= cap) return { fileLocks };
+  return {
+    fileLocks: {
+      ...fl,
+      holders: all.slice(0, cap),
+      truncated: { showingHolders: cap, ofHolders: all.length },
+    },
+  };
 }

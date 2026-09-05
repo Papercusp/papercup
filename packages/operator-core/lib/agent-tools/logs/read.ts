@@ -39,6 +39,7 @@ import {
   JOURNAL_SCOPES,
   readJournal,
 } from '../../journal-read';
+import { shapeLogsRead } from './read-shape';
 
 export default defineTool({
   name: 'logs:read',
@@ -101,6 +102,15 @@ export default defineTool({
       command: z.unknown().optional(),
     })
     .passthrough(),
+  // EI-20203342112661815: `limit` bounds ROWS, not BYTES, so a 120-row read of a
+  // chatty unit built a 34KB payload that the generic door then cut to 12 of 120
+  // entries — keeping the array HEAD, which inverts this tool's documented
+  // newest-kept guarantee into oldest-kept. These shapers spend a measured char
+  // budget from the newest end instead, and stamp the cut. See read-shape.ts.
+  shape: {
+    standard: (data) => shapeLogsRead(data, 'standard'),
+    trimmed: (data) => shapeLogsRead(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     void ctx;
     const units = args.unit === undefined

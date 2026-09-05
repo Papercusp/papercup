@@ -1071,6 +1071,13 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     if (
       recipe.schemaVersion === 1 &&
       recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
+      // A recipe that does not record classRef is NOT re-runnable: the evaluator
+      // requires it, and a re-runner guessing among four values silently moves
+      // plan-class-risk-floor. Legacy rows that predate this field therefore fail
+      // this predicate and surface no rerunRecipe at all, rather than a submittable-
+      // looking one that its own evaluator rejects.
+      typeof recipe.classRef === 'string' &&
+      (recipe.classRef as string).trim() &&
       selection &&
       typeof selection.planSlug === 'string' &&
       selection.planSlug.trim() &&
@@ -1093,6 +1100,15 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       out.rerunRecipe = {
         schemaVersion: 1,
         evaluator: 'plans:evaluate-spec-test-adequacy',
+        classRef: recipe.classRef as string,
+        // Derived from `selection`, never read back from storage, so the submittable
+        // payload cannot drift from the identity it claims to reproduce.
+        args: {
+          slug: selection.planSlug,
+          classRef: recipe.classRef as string,
+          specIds: [selection.specId],
+          includeDraft: true,
+        },
         selection: {
           planSlug: selection.planSlug,
           specId: selection.specId,

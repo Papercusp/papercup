@@ -44,6 +44,8 @@ import {
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
+import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
 import {
   collapseCriticsToSoleParty,
   resolveAcceptanceGraderEligibility,
@@ -121,6 +123,18 @@ const specTestAdequacyRerunRecipeSchema = z
   .object({
     schemaVersion: z.literal(1),
     evaluator: z.literal('plans:evaluate-spec-test-adequacy'),
+    // The plan class the recorded verdicts were produced under. REQUIRED by the
+    // evaluator and it materially moves `plan-class-risk-floor`, so a card that did
+    // not record it forced a re-runner to GUESS one of four values — a wrong guess
+    // silently changes the verdict it is supposed to reproduce.
+    classRef: z.enum(PLAN_CLASS_RUBRIC_REFS),
+    // The exact argument object to submit to the evaluator. Validated against the
+    // evaluator's OWN exported schema rather than a hand-copied list of field names:
+    // a restated copy here would pass through exactly the drift it exists to catch.
+    // `selection` below is the human-readable identity of what was graded and is NOT
+    // submittable (it spells planSlug/specId/specRevision/specFingerprint, which the
+    // evaluator refuses); this field is what makes a card independently re-runnable.
+    args: evaluatorArgsSchema,
     selection: z
       .object({
         planSlug: z.string().trim().min(1).max(120),

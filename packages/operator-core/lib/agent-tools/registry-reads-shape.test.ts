@@ -61,6 +61,92 @@ describe("shapeLocksList (P-023)", () => {
     expect(std.holders[0].resource).toBe("dev-server");
   });
 
+  // EI-20192110087737961: `fileLocks` is the block whose whole purpose is that
+  // its COUNTS reach the reader. This file's projections are ALLOWLISTS and have
+  // twice silently dropped a field added upstream of them (`coordination_domain`,
+  // then `holders`/`held`) — so the counts get their own guard rather than
+  // relying on the spread staying put.
+  // ⚠ MEASURED, not assumed: only ONE of the four assertions below fails
+  // against the pre-fix shaper ("caps holder rows…": holders=14 where 8 was
+  // expected, with the cap constant held fixed so the failure is about missing
+  // SHAPING, not a missing constant). The other three pass against BOTH,
+  // because the pre-fix `shapeLocksList` already ended in `{ ...d, resources,
+  // holders }` and so carried `fileLocks` through untouched. That is not a
+  // defect in them — they exist to catch the NEXT allowlist added upstream,
+  // which is the exact regression this file has already suffered twice — but
+  // do not read them as evidence for the fix itself. Probe:
+  // .papercusp/scratch/eip-filelocks/discriminate.mts
+  describe("fileLocks survives shaping (EI-20192110087737961)", () => {
+    const withFileLocks = (holderCount: number) => ({
+      ...data,
+      fileLocks: {
+        plane: "file",
+        activeCount: 137,
+        waitingCount: 4,
+        distinctHolders: holderCount,
+        holders: Array.from({ length: holderCount }, (_, i) => ({
+          owner: `peer-${i}`,
+          intent: "editing",
+          pathCount: 1,
+          paths: [`f${i}.ts`],
+        })),
+        readVia: "locks:queue { paths: [...] }",
+      },
+    });
+
+    it("never clips the counts at any tier", () => {
+      for (const tier of ["trimmed", "standard"] as const) {
+        const out = shapeLocksList(withFileLocks(1), tier) as {
+          fileLocks: Record<string, unknown>;
+        };
+        expect(out.fileLocks).toBeDefined();
+        // The number is the entire remedy; losing it restores the false
+        // "nothing is locked" the block exists to kill.
+        expect(out.fileLocks.activeCount).toBe(137);
+        expect(out.fileLocks.waitingCount).toBe(4);
+        expect(out.fileLocks.readVia).toContain("locks:queue");
+      }
+    });
+
+    it("caps holder rows per tier and stamps the cut, keeping the true total", () => {
+      const cap = LOCKS_LIST_TIER_CAPS.trimmed.fileLockHolders;
+      const out = shapeLocksList(withFileLocks(cap + 6), "trimmed") as {
+        fileLocks: { holders: unknown[]; distinctHolders: number; truncated?: unknown };
+      };
+      expect(out.fileLocks.holders).toHaveLength(cap);
+      // distinctHolders is the TRUE total, not the capped length — the same
+      // contract the resources[] notice row keeps above.
+      expect(out.fileLocks.distinctHolders).toBe(cap + 6);
+      expect(out.fileLocks.truncated).toEqual({ showingHolders: cap, ofHolders: cap + 6 });
+    });
+
+    it("preserves an unreadable marker rather than shaping it into a zero", () => {
+      const out = shapeLocksList(
+        {
+          ...data,
+          fileLocks: {
+            plane: "file",
+            activeCount: null,
+            waitingCount: null,
+            distinctHolders: null,
+            holders: [],
+            unreadable: "read failed — NOT zero locks",
+            readVia: "locks:queue { paths: [...] }",
+          },
+        },
+        "trimmed",
+      ) as { fileLocks: Record<string, unknown> };
+      expect(out.fileLocks.activeCount).toBeNull();
+      expect(out.fileLocks.activeCount).not.toBe(0);
+      expect(out.fileLocks.unreadable).toContain("NOT zero");
+    });
+
+    it("leaves a result without fileLocks untouched", () => {
+      const out = shapeLocksList(data, "trimmed") as Record<string, unknown>;
+      expect(out).not.toHaveProperty("fileLocks");
+    });
+  });
+
   it("caps resources with a uniform-key notice row", () => {
     const cap = LOCKS_LIST_TIER_CAPS.trimmed.resources;
     const big = {

@@ -2478,7 +2478,12 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
-    expect(b.message).toContain('NOTHING was written');
+    // EI-22377179869127416: the ROW write is still refused, but the narrative is no
+    // longer taken hostage with it — the message must say so, or a caller reading
+    // "NOTHING was written" would re-send a note that already committed.
+    expect(b.narrativePersisted).toBe(true);
+    expect(b.message).toContain('NARRATIVE WAS SAVED');
+    expect(b.message).not.toContain('NOTHING was written');
   });
 
   it('refuses a merge that would evict a carried wall at the cap', async () => {
@@ -2556,7 +2561,14 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
 
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    // EI-22377179869127416: the ROW write is still refused — the supplied row must NOT
+    // land and every carried row must survive byte-identical. What changed is that the
+    // narrative now commits alongside them instead of being rolled back with the rows.
+    const written = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(written).toContain('progress');
+    const writtenChecks = splitCarryNoteChecks(written).checks.map((c) => c.claim);
+    expect(writtenChecks).toEqual(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => `carried ${i + 1}`));
+    expect(writtenChecks).not.toContain('one row past the cap');
   });
 
   it('normalizes a legacy over-cap carried check set once instead of refusing every additive write', async () => {
@@ -2627,7 +2639,15 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     );
 
     expect(second).toMatchObject({ ok: false, error: 'checkpoint_merge_would_evict_rows' });
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    // EI-22377179869127416: the self-healed note is at the cap, so the ROW write is
+    // refused exactly as before — the escape must not become reusable. The narrative
+    // still commits, and the normalized carried set is preserved untouched.
+    const secondWrite = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(secondWrite).toContain('second touch');
+    const secondChecks = splitCarryNoteChecks(secondWrite).checks.map((c) => c.claim);
+    expect(secondChecks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(secondChecks).not.toContain('SECOND holds');
+    expect(secondChecks).toContain('FIRST holds');
   });
 
   it('says nothing about overflow on an ordinary write', async () => {

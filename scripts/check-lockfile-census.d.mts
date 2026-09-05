@@ -293,6 +293,7 @@ export const NOT_SHIPPED_LOCKFILES: Map<string, string>;
  * failure rather than a quiet append. `deps` is the measured graph size at the time of
  * baselining, so the cost of the gap is legible without re-measuring.
  */
+/** @type {Map<string, { deps: number; reason: string }>} */
 export const UNCOVERED_BASELINE: Map<string, {
     deps: number;
     reason: string;

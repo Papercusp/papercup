@@ -151,6 +151,13 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     const recipe = {
       schemaVersion: 1 as const,
       evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      classRef: 'plan-class-feature-ship',
+      args: {
+        slug: 'p',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['s'],
+        includeDraft: true as const,
+      },
       selection: {
         planSlug: 'p',
         specId: 's',
