@@ -60,6 +60,12 @@ const deps = (
     embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
   }),
   querySimilarities: async () => sims,
+  // WI-2145556: the cut is taken from the corpus's own distribution, so a
+  // background sample is what makes a real verdict possible at all. These
+  // fixtures are ABOUT coverage reporting, not about calibration — a plain
+  // spread background keeps them measuring what they were written to measure.
+  queryBackgroundSimilarities: async () =>
+    Array.from({ length: 200 }, (_, i) => 0.65 + (i / 199) * 0.25),
   ...(loadCoverage ? { loadCoverage } : {}),
 });
 
