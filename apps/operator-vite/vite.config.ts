@@ -15,7 +15,7 @@ import {
 } from './build-preload-policy';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so the dev server, the SPA host and the desktop cannot drift apart.
-import { cspReportOnlyHeaders, crossOriginIsolationHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
+import { cspHeaders, crossOriginIsolationHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -370,7 +370,7 @@ export default defineConfig({
     // response for the same "harmless off-document" reason — COOP/COEP are
     // ignored by the browser on anything but the document response, and this
     // dev server serves every asset same-origin (see crossOriginIsolationHeaders()).
-    headers: { ...cspReportOnlyHeaders(), ...crossOriginIsolationHeaders() },
+    headers: { ...cspHeaders(), ...crossOriginIsolationHeaders() },
     // CORS policy for /api belongs to the Hono host (:3070) — its middleware
     // allows `last-event-id` etc. and echoes the origin. Vite's own default
     // CORS middleware answers OPTIONS preflights BEFORE the proxy with a
