@@ -60,6 +60,7 @@ import {
   type RefAnnounceHandleResult,
   type SignedRefAnnouncement,
 } from './ref-announce';
+import type { SignedProtocolContext } from './signed-context';
 import {
   checkPublishGuard,
   describePublishRefusal,
@@ -100,6 +101,8 @@ export interface RefAnnouncePublishTickInput {
   /** WI-5738: workspace whose runtime secrets-guard path exemptions apply (see
    *  PublishGuardInput.workspaceId). Omitted ⇒ static FIXTURE_FILES only. */
   workspaceId?: string;
+  /** Context bound into v2 sigrefs/announcements when supplied. */
+  context?: SignedProtocolContext;
 }
 
 export interface RefAnnouncePublishTickOutcome {
@@ -243,10 +246,12 @@ export async function runRefAnnouncePublishTick(
       nowMs,
       versionFloor: input.versionFloor,
       runGit,
+      context: input.context,
     });
     const announcement = await buildRefAnnouncement(input.repoPath, input.devicePubkeyBase64, input.sign, {
       nowMs,
       runGit,
+      context: input.context,
     });
     return { ran: true, changed: true, announcement, refused: null, errors };
   } catch (e) {
@@ -280,6 +285,9 @@ export interface RefAnnounceReceiveTickInput {
   openStream: (peerDevicePubkeyBase64: string) => Promise<Duplex> | Duplex;
   timeoutMs?: number;
   runGit?: RunGit;
+  /** Expected v2 context; legacy v1 remains accepted unless allowLegacy=false. */
+  expectedContext?: SignedProtocolContext;
+  allowLegacy?: boolean;
 }
 
 export interface RefAnnounceReceiveResult {
@@ -371,6 +379,8 @@ export async function runRefAnnounceReceiveTick(
       openStream: () => openStream(device),
       timeoutMs: input.timeoutMs,
       runGit: input.runGit,
+      expectedContext: input.expectedContext,
+      allowLegacy: input.allowLegacy,
     };
     try {
       const result = await handleRefAnnouncement(input.repoPath, incoming, opts);

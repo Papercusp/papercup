@@ -89,7 +89,7 @@ describe('recordGateFire — the anchor write', () => {
     const { sql, calls } = makeCaptureSql();
     await recordGateFire(
       { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
-      { route: 'scheduled', root: '/repo', note: 'tick' },
+      { route: 'scheduled', root: '/repo', gateFireId: 'fire-123', note: 'tick' },
       sql,
     );
     const inserts = calls.filter((c) => c.text.includes('INSERT INTO harness_shared.pipeline_events'));
@@ -98,7 +98,12 @@ describe('recordGateFire — the anchor write', () => {
     expect(inserts[0].values).toContain(GATE_FIRE_STATUS);
     expect(inserts[0].values).not.toContain('green_checkpoint'); // the load-bearing separation
     const detailJson = inserts[0].values.find((v) => typeof v === 'string' && v.includes('"route"')) as string;
-    expect(JSON.parse(detailJson)).toMatchObject({ route: 'scheduled', root: '/repo', note: 'tick' });
+    expect(JSON.parse(detailJson)).toMatchObject({
+      route: 'scheduled',
+      root: '/repo',
+      gateFireId: 'fire-123',
+      note: 'tick',
+    });
   });
 
   it('is best-effort: a failing insert warns-and-noops, never throws into the fire it records', async () => {
@@ -166,6 +171,29 @@ describe('reconstructGateFireDays — the P-001 acceptance table', () => {
     const days = await reconstructGateFireDays(sql, target, { sinceDays: 5 });
     expect(days[0].unknown).toBe(2);
     expect(days[0].unknownStatuses).toEqual(['brand-new-status']);
+  });
+
+  it('matches identified fires to distinct terminal outcomes, excluding pending and duplicate rows', async () => {
+    const { sql } = makeCaptureSql([
+      { day: '2026-09-02', kind: GATE_FIRE_KIND, status: 'fired', gate_fire_id: 'fire-a', n: '1' },
+      { day: '2026-09-02', kind: GATE_FIRE_KIND, status: 'fired', gate_fire_id: 'fire-b', n: '1' },
+      { day: '2026-09-02', kind: 'green_checkpoint', status: 'decision-pending', gate_fire_id: 'fire-a', n: '1' },
+      { day: '2026-09-02', kind: 'green_checkpoint', status: 'not-green', gate_fire_id: 'fire-a', n: '1' },
+      // A second terminal row for fire-a must not satisfy fire-b.
+      { day: '2026-09-02', kind: 'green_checkpoint', status: 'advanced', gate_fire_id: 'fire-a', n: '1' },
+      { day: '2026-09-02', kind: 'green_checkpoint', status: 'decision-pending', gate_fire_id: 'fire-b', n: '1' },
+      { day: '2026-09-02', kind: 'green_checkpoint', status: 'release-fixer-skipped-stale', gate_fire_id: 'fire-b', n: '1' },
+    ]);
+
+    const [day] = await reconstructGateFireDays(sql, target, { sinceDays: 5 });
+
+    expect(day).toMatchObject({
+      fires: 2,
+      outcomes: 5,
+      terminalOutcomes: 2,
+      pending: 2,
+      unaccounted: 1,
+    });
   });
 
   it('sorts days ascending across a multi-day window', async () => {

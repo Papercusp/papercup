@@ -221,12 +221,28 @@ function evidenceDigest(
   return createHash('sha256').update(canonicalJson(material), 'utf8').digest('hex');
 }
 
-function freshness(component: ComponentEvaluation | undefined, nowMs: number, windowMs: number | null): ReadinessFreshness {
+function freshness(
+  component: ComponentEvaluation | undefined,
+  nowMs: number,
+  windowMs: number | null,
+  verdict: ComponentVerdict | undefined = component?.verdict,
+): ReadinessFreshness {
   const measuredAt = component?.measuredAt ?? new Date(nowMs).toISOString();
   const measuredMs = Date.parse(measuredAt);
   const ageMs = Number.isFinite(measuredMs) ? Math.max(0, nowMs - measuredMs) : null;
-  const fresh = component !== undefined && component.verdict !== 'stale' && ageMs !== null && (windowMs === null || ageMs <= windowMs);
+  const fresh = component !== undefined && verdict !== 'stale' && verdict !== 'lineage-mismatch' && ageMs !== null && (windowMs === null || ageMs <= windowMs);
   return { measuredAt, ageMs, windowMs, fresh };
+}
+
+function artifactLineageMismatches(
+  artifact: ReadinessArtifactIdentity,
+  component: ComponentEvaluation | undefined,
+): string[] {
+  if (!component?.lineage) return [];
+  const mismatches: string[] = [];
+  if (artifact.sha256 && component.lineage.sha && artifact.sha256 !== component.lineage.sha) mismatches.push('sha256');
+  if (artifact.generation && component.lineage.generation && artifact.generation !== component.lineage.generation) mismatches.push('generation');
+  return mismatches;
 }
 
 function stateFor(
@@ -245,7 +261,6 @@ function stateFor(
 
 function rowFor(
   artifact: ReadinessArtifactIdentity,
-  profile: ReleaseProfileVerdict,
   capability: ReadinessCapabilityInput,
   component: ComponentEvaluation | undefined,
   nowMs: number,
@@ -255,22 +270,29 @@ function rowFor(
   const observedPeers = uniqueSorted(capability.observedPeers);
   const approvedExclusions = uniqueSorted(capability.approvedExclusions);
   const missingPeers = expectedPeers.filter((peer) => !observedPeers.includes(peer) && !approvedExclusions.includes(peer));
-  const result = component?.verdict ?? 'unknown';
+  const lineageMismatches = artifactLineageMismatches(artifact, component);
+  const result: ComponentVerdict = lineageMismatches.length > 0 ? 'lineage-mismatch' : component?.verdict ?? 'unknown';
   const baseReason = component?.reason ?? `no release-profile component '${capability.componentKey ?? capability.key}' was evaluated`;
-  const reason = missingPeers.length > 0 ? `${baseReason}; missing expected peer(s): ${missingPeers.join(', ')}` : baseReason;
+  const reasonParts = [
+    baseReason,
+    ...(lineageMismatches.length > 0 ? [`artifact lineage mismatch on: ${lineageMismatches.join(', ')}`] : []),
+    ...(missingPeers.length > 0 ? [`missing expected peer(s): ${missingPeers.join(', ')}`] : []),
+  ];
+  const reason = reasonParts.join('; ');
+  const stateComponent = lineageMismatches.length > 0 ? undefined : component;
   return {
     capability: capability.key,
     componentKey: capability.componentKey ?? capability.key,
     artifactId: artifact.id,
     scenario: capability.scenario,
-    state: stateFor(component, capability, missingPeers),
+    state: stateFor(stateComponent, capability, missingPeers),
     result,
     reason,
     expectedPeers,
     observedPeers,
     missingPeers,
     evidence: { digest: evidenceDigest(artifact, capability, component), refs: component?.evidence ?? [] },
-    freshness: freshness(component, nowMs, windowMs),
+    freshness: freshness(component, nowMs, windowMs, result),
     approvedExclusions,
     owner: capability.owner,
     dependencies: uniqueSorted(capability.dependencies),
@@ -292,12 +314,14 @@ export function buildCurrentReadinessManifest(options: BuildCurrentReadinessMani
   const windowMs = options.freshnessWindowMs ?? null;
   if (windowMs !== null && (!Number.isFinite(windowMs) || windowMs < 0)) throw new Error('freshnessWindowMs must be a non-negative number');
   const rows = capabilities.map((capability) =>
-    rowFor(artifact, options.profile, capability, profileComponents.get(capability.componentKey ?? capability.key), nowMs, windowMs),
+    rowFor(artifact, capability, profileComponents.get(capability.componentKey ?? capability.key), nowMs, windowMs),
   );
+  const mandatoryKeys = new Set(options.profile.components.filter((component) => component.mandatory).map((component) => component.key));
+  const coveredMandatory = [...mandatoryKeys].every((key) => rows.some((row) => row.componentKey === key));
   const generatedAt = new Date(nowMs).toISOString();
   const current = {
-    go: options.profile.go && rows.every((row) => row.state === 'passed-on-this-artifact'),
-    reason: options.profile.go && rows.every((row) => row.state === 'passed-on-this-artifact')
+    go: options.profile.go && rows.length > 0 && coveredMandatory && rows.every((row) => row.state === 'passed-on-this-artifact'),
+    reason: options.profile.go && rows.length > 0 && coveredMandatory && rows.every((row) => row.state === 'passed-on-this-artifact')
       ? 'all current capability rows passed on this artifact'
       : `current capability evidence is incomplete or not passing: ${rows.filter((row) => row.state !== 'passed-on-this-artifact').map((row) => `${row.capability} (${row.state})`).join('; ') || 'no rows'}`,
     rows,
@@ -370,4 +394,3 @@ export function serializeCurrentReadinessManifest(manifest: CurrentReadinessMani
 export const deriveCurrentReadinessManifest = buildCurrentReadinessManifest;
 export const currentReadinessDependencyGraph = deriveReadinessDependencyGraph;
 export const readinessTable = renderReadinessTable;
-

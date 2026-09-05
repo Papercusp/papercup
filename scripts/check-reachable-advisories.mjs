@@ -152,19 +152,36 @@ export function collectInstalledVersions(lsTree, advisoryNames) {
   const versions = new Map();
   const seen = new Set();
 
+  // Cycle guard keyed on NODE IDENTITY, never on name@version.
+  //
+  // This guard used to key on `${name}@${version}`, on the stated assumption that "the
+  // same name+version subtree cannot contribute a version we have not already taken".
+  // MEASURED FALSE 2026-09-05: `npm ls --omit=dev --all --json` emits a workspace in two
+  // forms — a bare dedupe STUB ({ version } only, no `resolved`, no `dependencies`) under
+  // every workspace depending on it, and ONCE in full. Meeting a stub first marked the
+  // name@version seen, and the POPULATED occurrence was then skipped, dropping that
+  // workspace's entire production subtree. `@papercusp/testing-shell@0.0.1` appeared as 4
+  // stubs and 1 real node with 8 direct deps; langsmith 0.3.87 (vulnerable, nested under
+  // stagehand) lived in the dropped subtree, so the gate saw only the hoisted 0.8.7 and
+  // reported "no installed copy satisfies the vulnerable range" — a fail-OPEN under-report
+  // that reads as reassurance. That is the ordinary shape of a monorepo whose workspaces
+  // depend on each other, not a pathological graph.
+  //
+  // Identity is the right key because it guards the only thing that can actually loop: a
+  // genuinely shared object reference. Two distinct subtrees are two distinct objects, so
+  // they are both walked; a true cycle revisits the SAME object and terminates. Post-
+  // JSON.parse input has no shared references at all, so this degrades to a full walk,
+  // which is what correctness requires here; `depth > 64` remains the backstop.
   const walk = (node, depth) => {
     if (!node || depth > 64) return;
+    if (seen.has(node)) return;
+    seen.add(node);
     for (const [name, child] of Object.entries(node.dependencies || {})) {
       if (!child || typeof child !== 'object') continue;
       if (advisory.has(name) && typeof child.version === 'string' && child.version) {
         if (!versions.has(name)) versions.set(name, new Set());
         versions.get(name).add(child.version);
       }
-      // Same cycle guard as attributeAdvisories, keyed by identity rather than owner: the
-      // same name+version subtree cannot contribute a version we have not already taken.
-      const key = `${name}@${child.version ?? '?'}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
       walk(child, depth + 1);
     }
   };

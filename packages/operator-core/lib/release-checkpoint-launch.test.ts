@@ -80,6 +80,7 @@ import {
 // the submodule fixture is exercising the blind spot rather than a broken fake.
 import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
+import { GATE_FIRE_ID_ENV } from './release/gate-fire-ledger';
 
 describe('currentCheckpointCandidate default executor (EI-21367123002341200)', () => {
   it('supports the exported read helper without an explicit execFn', () => {
@@ -377,6 +378,41 @@ describe('buildCheckpointSystemdArgv', () => {
     );
     expect(rejected.some((arg) => arg.includes(CHECKPOINT_QUALIFICATION_ATTEMPT_ENV))).toBe(false);
     expect(rejected.join(' ')).not.toContain('touch /tmp/pwned');
+  });
+
+  it('P-001: transports the stable gate-fire identity into the detached producer', () => {
+    const argv = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin',
+      false,
+      undefined,
+      { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+      'shared',
+      undefined,
+      undefined,
+      'fire-123',
+    );
+
+    expect(argv).toContain(`--setenv=${GATE_FIRE_ID_ENV}=fire-123`);
+  });
+
+  it('P-001: drops an invalid gate-fire identity rather than shell-forwarding it', () => {
+    const argv = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin',
+      false,
+      undefined,
+      { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+      'shared',
+      undefined,
+      undefined,
+      "bad'; touch /tmp/pwned; '",
+    );
+
+    expect(argv.some((arg) => arg.includes(GATE_FIRE_ID_ENV))).toBe(false);
+    expect(argv.join(' ')).not.toContain('touch /tmp/pwned');
   });
 });
 

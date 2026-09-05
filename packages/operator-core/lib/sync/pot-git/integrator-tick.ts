@@ -44,6 +44,7 @@ import {
 import { WORK_REF, integrateMemberHeads, type IntegrationResult, type MemberHead } from './integrator';
 import { gateMemberHeadsForIntegration, type GateableHead } from './integration-requests';
 import { signStagingAdvance, type SignedStagingAdvance } from './staging-advance';
+import type { SignedProtocolContext } from './signed-context';
 
 export interface IntegratorTickInput {
   potHomeSlug: string;
@@ -84,6 +85,8 @@ export interface IntegratorTickInput {
   resolveTier: (devicePubkeyBase64: string) => CommsTier | null | Promise<CommsTier | null>;
   resolveAuthorGithubUserId?: (devicePubkeyBase64: string) => number | null | Promise<number | null>;
   nowMs?: number;
+  /** Context bound into v2 staging-advance signatures when supplied. */
+  context?: SignedProtocolContext;
   deps?: {
     runGit?: RunGit;
     repoPath?: string;
@@ -233,6 +236,7 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
           seq: input.priorSeq + 1,
           stagingSha: integration.staging,
           nowMs,
+          context: input.context,
         },
         input.sign,
       );

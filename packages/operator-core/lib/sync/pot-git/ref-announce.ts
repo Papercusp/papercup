@@ -368,7 +368,18 @@ export type RefAnnounceHandleResult =
        *  refs are present but unverified. */
       sigrefs:
         | { accepted: true; snapshot: SignedSigrefs }
-        | { accepted: false; reason: 'bad-signature' | 'wrong-device' | 'rollback' | 'malformed' | 'missing' | 'origin-claim-outside-scope' };
+        | {
+            accepted: false;
+            reason:
+              | 'bad-signature'
+              | 'wrong-device'
+              | 'rollback'
+              | 'malformed'
+              | 'missing'
+              | 'origin-claim-outside-scope'
+              | 'legacy-version'
+              | 'context-mismatch';
+          };
       /** Heads whose fetched sha diverges from the signed snapshot (empty ⇒
        *  every head is exactly what the device signed). */
       mismatches: { ref: string; expected: string; actual: string | null }[];

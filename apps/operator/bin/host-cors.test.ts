@@ -18,8 +18,8 @@ describe('allowedLocalApiOrigin', () => {
     expect(allowedLocalApiOrigin(null)).toBeNull();
   });
 
-  it('passes through the literal "null" origin (sandboxed/file contexts)', () => {
-    expect(allowedLocalApiOrigin('null')).toBe('null');
+  it('rejects the literal "null" origin (sandboxed/file contexts)', () => {
+    expect(allowedLocalApiOrigin('null')).toBeNull();
   });
 
   it('allows any-port loopback over http/https, reflecting the exact origin', () => {
@@ -58,6 +58,12 @@ describe('allowedLocalApiOrigin', () => {
     expect(allowedLocalApiOrigin('not a url')).toBeNull();
     expect(allowedLocalApiOrigin('http://')).toBeNull();
   });
+
+  it('rejects URL-shaped values that are not serialized origins', () => {
+    expect(allowedLocalApiOrigin('http://localhost:3070/private')).toBeNull();
+    expect(allowedLocalApiOrigin('http://user@localhost:3070')).toBeNull();
+    expect(allowedLocalApiOrigin('http://localhost:3070?x=1')).toBeNull();
+  });
 });
 
 type FakeCtx = {
@@ -90,6 +96,15 @@ describe('apiCors middleware', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await apiCors(ctx as any, next as any);
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes through a null origin without reflecting credentials', async () => {
+    const ctx = makeCtx('null');
+    const next = vi.fn(async () => {});
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await apiCors(ctx as any, next as any);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(ctx.res.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
 
   it('answers an allowed OPTIONS preflight with 204 + reflected origin, without calling next', async () => {

@@ -260,7 +260,7 @@ function isBulkRequest(url: URL, input: RequestInfo | URL, init?: RequestInit): 
  */
 export function classifyOriginSchedulerFetch(
   input: RequestInfo | URL,
-  init?: RequestInit,
+  init?: OriginSchedulerFetchInit,
 ): OriginSchedulerFetchDecision {
   if (typeof window === 'undefined') return { schedule: false, reason: 'not-browser' };
 
@@ -288,10 +288,21 @@ export function classifyOriginSchedulerFetch(
   // Writes are interactive-control work so a background/read wave cannot
   // consume the reserved lane. OPTIONS is a browser preflight and remains a
   // foreground read; all other safe methods are foreground reads as well.
-  const requestClass: OriginSchedulerClass = NON_MUTATING_METHODS.has(method)
+  const derivedClass: OriginSchedulerClass = NON_MUTATING_METHODS.has(method)
     ? 'foreground-read'
     : 'interactive-control';
-  return { schedule: true, origin: url.origin, requestClass, method };
+  // The method tells us what the request DOES; only the caller knows whether
+  // anything visible is waiting on it. The hint may lower the class it lands
+  // in, never raise it.
+  const requestClassHint = hintedClassOf(input, init);
+  const requestClass = applyClassHint(derivedClass, requestClassHint);
+  return {
+    schedule: true,
+    origin: url.origin,
+    requestClass,
+    ...(requestClassHint ? { requestClassHint } : {}),
+    method,
+  };
 }
 
 /** Whether the method is safe for a transparent retry. Kept private to this

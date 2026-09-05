@@ -37,12 +37,13 @@
  *
  * `reconstructGateFireDays` answers, from SQL alone for any past day: how many fires,
  * how many of each outcome class, and how many fires are UNACCOUNTED (fired with no
- * outcome row after it that day — the killed/vanished class). Correlation is by per-day
- * COUNT, deliberately not by a threaded run id: the deployed routine drives the
- * INTEGRATION tree's CLI (WI-4494 version-skew note in release-actions.ts), so an id
- * handed through the env is exactly as reliable as the skewed CLI honoring it — counts
- * are skew-proof and satisfy the acceptance table.
+ * outcome row after it that day — the killed/vanished class). Correlation uses the
+ * stable gateFireId when both launcher and producer carry it: distinct anchor ids are
+ * matched to at most one terminal outcome, while pending/diagnostic rows remain
+ * non-terminal. Legacy rows without a valid id retain the historical per-day count
+ * fallback because their historical rows cannot be correlated after the fact.
  */
+import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 
@@ -50,6 +51,24 @@ import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 export const GATE_FIRE_KIND = 'green_checkpoint_fire' as const;
 /** The one status anchors carry. */
 export const GATE_FIRE_STATUS = 'fired' as const;
+/** Environment transport from a launcher into the checkpoint producer. */
+export const GATE_FIRE_ID_ENV = 'PAPERCUSP_GATE_FIRE_ID' as const;
+
+/** Gate-fire identities are launcher-minted opaque values, bounded for env/detail transport. */
+export function isGateFireId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value);
+}
+
+/** Mint one stable identity for one accepted scheduled or detached fire. */
+export function mintGateFireId(): string {
+  return randomUUID();
+}
+
+/** Read a valid transported identity; malformed env is treated as absent, never trusted. */
+export function gateFireIdFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env[GATE_FIRE_ID_ENV]?.trim();
+  return isGateFireId(value) ? value : undefined;
+}
 
 export interface GateFireTarget {
   workspaceId: string;
@@ -63,6 +82,8 @@ export interface GateFireContext {
   root?: string;
   /** The transient unit for a detached launch, when known. */
   unit?: string;
+  /** Stable identity shared by this fire's anchor and terminal/pending rows. */
+  gateFireId?: string;
   /** Free evidence (e.g. the routine tick id); bounded by the caller. */
   note?: string;
 }
@@ -83,6 +104,7 @@ export async function recordGateFire(target: GateFireTarget, ctx: GateFireContex
         route: ctx.route,
         ...(ctx.root ? { root: ctx.root } : {}),
         ...(ctx.unit ? { unit: ctx.unit } : {}),
+        ...(isGateFireId(ctx.gateFireId) ? { gateFireId: ctx.gateFireId } : {}),
         ...(ctx.note ? { note: ctx.note } : {}),
       },
     },
@@ -160,6 +182,22 @@ export const VERDICT_BEARING_STATUSES: readonly string[] = Object.entries(GATE_O
   .map(([status]) => status);
 
 /**
+ * Rows written under `green_checkpoint` that are not terminal outcomes for a fire.
+ * `decision-pending` is an in-run bridge and the release-fixer statuses are dispatch
+ * diagnostics; none may satisfy a fire in the liveness ledger.
+ */
+export const NON_TERMINAL_GATE_OUTCOME_STATUSES = [
+  'decision-pending',
+  'release-fixer-skipped-scope',
+  'release-fixer-skipped-stale',
+  'release-fixer-skipped-no-measured-failures',
+] as const;
+
+export function isTerminalGateOutcomeStatus(status: string): boolean {
+  return !(NON_TERMINAL_GATE_OUTCOME_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * Classify one `kind='green_checkpoint'` status string. Single-homed here on purpose —
  * P-002's taxonomy work and P-003's rate alarm both need this exact map, and two copies
  * of it is how `failed`-vs-`fail` style never-match bugs happen.
@@ -180,8 +218,10 @@ export interface GateFireDay {
   day: string;
   /** Anchor rows (kind='green_checkpoint_fire'). 0 for days before the anchor landed. */
   fires: number;
-  /** Outcome rows (kind='green_checkpoint'), total. */
+  /** Outcome rows (kind='green_checkpoint'), total, including pending/diagnostic rows. */
   outcomes: number;
+  /** Terminal outcome rows only; pending/diagnostic rows are excluded. */
+  terminalOutcomes: number;
   verdictsGreen: number;
   verdictsRed: number;
   noVerdicts: number;
@@ -210,26 +250,40 @@ export async function reconstructGateFireDays(
   opts: { sinceDays?: number } = {},
 ): Promise<GateFireDay[]> {
   const sinceDays = Math.max(1, Math.min(365, Math.floor(opts.sinceDays ?? 14)));
-  const rows = await sql<{ day: string; kind: string; status: string; n: string | number }[]>`
+  const rows = await sql<{
+    day: string;
+    kind: string;
+    status: string;
+    gate_fire_id: string | null;
+    n: string | number;
+  }[]>`
     SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
            kind,
            status,
+           NULLIF(detail->>'gateFireId', '') AS gate_fire_id,
            count(*) AS n
       FROM harness_shared.pipeline_events
      WHERE workspace_id = ${target.workspaceId}
        AND install_slug = ${target.installSlug}
        AND kind IN ('green_checkpoint', ${GATE_FIRE_KIND})
        AND created_at >= now() - make_interval(days => ${sinceDays})
-     GROUP BY 1, 2, 3
+     GROUP BY 1, 2, 3, 4
      ORDER BY 1`;
-  const byDay = new Map<string, GateFireDay>();
-  const dayOf = (day: string): GateFireDay => {
+  type DayAccumulator = GateFireDay & {
+    anchorIds: Set<string>;
+    terminalIds: Set<string>;
+    legacyFires: number;
+    legacyOutcomes: number;
+  };
+  const byDay = new Map<string, DayAccumulator>();
+  const dayOf = (day: string): DayAccumulator => {
     let d = byDay.get(day);
     if (!d) {
       d = {
         day,
         fires: 0,
         outcomes: 0,
+        terminalOutcomes: 0,
         verdictsGreen: 0,
         verdictsRed: 0,
         noVerdicts: 0,
@@ -239,6 +293,10 @@ export async function reconstructGateFireDays(
         unknown: 0,
         unaccounted: 0,
         unknownStatuses: [],
+        anchorIds: new Set<string>(),
+        terminalIds: new Set<string>(),
+        legacyFires: 0,
+        legacyOutcomes: 0,
       };
       byDay.set(day, d);
     }
@@ -249,10 +307,20 @@ export async function reconstructGateFireDays(
     const n = Number(row.n);
     if (!Number.isFinite(n) || n <= 0) continue;
     if (row.kind === GATE_FIRE_KIND) {
-      if (row.status === GATE_FIRE_STATUS) d.fires += n;
+      if (row.status === GATE_FIRE_STATUS) {
+        d.fires += n;
+        if (isGateFireId(row.gate_fire_id)) d.anchorIds.add(row.gate_fire_id);
+        else d.legacyFires += n;
+      }
       continue;
     }
     d.outcomes += n;
+    if (!isGateFireId(row.gate_fire_id)) d.legacyOutcomes += n;
+    const terminal = isTerminalGateOutcomeStatus(row.status);
+    if (terminal) {
+      d.terminalOutcomes += n;
+      if (isGateFireId(row.gate_fire_id)) d.terminalIds.add(row.gate_fire_id);
+    }
     switch (classifyGateOutcomeStatus(row.status)) {
       case 'verdict-green':
         d.verdictsGreen += n;
@@ -279,8 +347,23 @@ export async function reconstructGateFireDays(
     }
   }
   for (const d of byDay.values()) {
-    d.unaccounted = d.fires > 0 ? Math.max(0, d.fires - d.outcomes) : 0;
+    // Stable identities reconcile one terminal outcome to one fire, so a pending bridge,
+    // duplicate terminal row, or a different fire's healthy outcome cannot mask a death.
+    // Legacy rows have no correlation identity; preserve the historical count fallback
+    // (including pending/diagnostic rows) rather than inventing terminal ownership.
+    const identifiedFires = d.anchorIds.size;
+    const identifiedTerminalFires = [...d.anchorIds].filter((id) => d.terminalIds.has(id)).length;
+    const legacyFires = Math.max(0, d.fires - identifiedFires);
+    d.unaccounted =
+      d.fires > 0
+        ? Math.max(0, identifiedFires - identifiedTerminalFires) +
+          Math.max(0, legacyFires - d.legacyOutcomes)
+        : 0;
     d.unknownStatuses.sort();
+    delete (d as Partial<DayAccumulator>).anchorIds;
+    delete (d as Partial<DayAccumulator>).terminalIds;
+    delete (d as Partial<DayAccumulator>).legacyFires;
+    delete (d as Partial<DayAccumulator>).legacyOutcomes;
   }
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }

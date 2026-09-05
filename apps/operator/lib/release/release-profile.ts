@@ -491,3 +491,30 @@ export async function evaluateAutoloopReleaseProfile(
   const spec = await buildAutoloopReleaseProfile(opts);
   return evaluateReleaseProfile(spec, opts.evaluateOpts);
 }
+
+// P-519/F8: expose the current capability interpretation alongside the profile
+// evaluator so release consumers share one evidence model and one import seam.
+export {
+  appendReadinessHistory,
+  buildCurrentReadinessManifest,
+  currentReadinessDependencyGraph,
+  deriveCurrentReadinessManifest,
+  deriveReadinessDependencyGraph,
+  readinessTable,
+  renderReadinessTable,
+  serializeCurrentReadinessManifest,
+} from './current-readiness-manifest';
+export type {
+  BuildCurrentReadinessManifestOptions,
+  CurrentReadinessManifest,
+  CurrentReadinessRow,
+  ReadinessArtifactIdentity,
+  ReadinessCapabilityInput,
+  ReadinessDependencyEdge,
+  ReadinessDependencyGraph,
+  ReadinessDependencyNode,
+  ReadinessEvidence,
+  ReadinessFreshness,
+  ReadinessHistoryEntry,
+  ReadinessState,
+} from './current-readiness-manifest';

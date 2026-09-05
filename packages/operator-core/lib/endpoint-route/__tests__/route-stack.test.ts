@@ -336,6 +336,99 @@ describe('auth step — local browser mutation policy (WI-2144494)', () => {
   });
 });
 
+describe('auth step — loopback browser read policy (P-001/F05)', () => {
+  const readRoute = (options: { cors?: boolean | { origins: readonly string[] } } = {}, onInvoke?: () => void) =>
+    defineTool({
+      method: 'GET',
+      path: '/read',
+      auth: 'loopback',
+      ...options,
+      handler: () => {
+        onInvoke?.();
+        return Response.json({ ok: true });
+      },
+    });
+
+  const envKeys = [
+    'PAPERCUSP_OPERATOR_BASE',
+    'PAPERCUSP_RELEASE_ORIGIN',
+    'OPERATOR_E2E_BASE_URL',
+    'OPERATOR_BASE_URL',
+  ] as const;
+  const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]])) as Record<(typeof envKeys)[number], string | undefined>;
+
+  beforeEach(() => {
+    for (const key of envKeys) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      const value = savedEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('rejects an opaque null Origin before a sensitive GET handler runs', async () => {
+    const app = freshApp();
+    const invoke = vi.fn();
+    registerRoute(app, readRoute({}, invoke));
+
+    const res = await app.request('http://localhost:3070/read', { headers: { origin: 'null' } });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('cross_origin_blocked');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrelated localhost port while allowing the configured dev origin', async () => {
+    const app = freshApp();
+    const invoke = vi.fn();
+    registerRoute(app, readRoute({}, invoke));
+
+    const unrelated = await app.request('http://localhost:3070/read', {
+      headers: { origin: 'http://localhost:9999' },
+    });
+    expect(unrelated.status).toBe(403);
+    expect(invoke).not.toHaveBeenCalled();
+
+    const dev = await app.request('http://localhost:3070/read', {
+      headers: { origin: 'http://localhost:3055' },
+    });
+    expect(dev.status).toBe(200);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows no-Origin native calls and same-instance sibling loopback origins', async () => {
+    const app = freshApp();
+    const invoke = vi.fn();
+    registerRoute(app, readRoute({}, invoke));
+
+    const native = await app.request('http://localhost:3070/read');
+    expect(native.status).toBe(200);
+    const sibling = await app.request('http://127.0.0.1:3070/read', {
+      headers: { origin: 'http://localhost:3070' },
+    });
+    expect(sibling.status).toBe(200);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors an explicit route origin without reopening arbitrary local ports', async () => {
+    const app = freshApp();
+    const invoke = vi.fn();
+    registerRoute(app, readRoute({ cors: { origins: ['https://trusted.example.test'] } }, invoke));
+
+    const allowed = await app.request('http://localhost:3070/read', {
+      headers: { origin: 'https://trusted.example.test' },
+    });
+    expect(allowed.status).toBe(200);
+    const arbitrary = await app.request('http://localhost:3070/read', {
+      headers: { origin: 'http://localhost:9999' },
+    });
+    expect(arbitrary.status).toBe(403);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
 /**
  * Gap 5 — the `?token=` → `Authorization: Bearer` lift (route-stack.ts
  * `authHeaders`). SECURITY-sensitive: a query token may only become a
