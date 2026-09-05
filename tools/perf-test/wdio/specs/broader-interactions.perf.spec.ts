@@ -849,8 +849,11 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
       async () =>
         await browser.execute(
           () => {
+            // The count badge is intentionally absent while the companion
+            // summary query is fetching. The semantic filter control is part
+            // of the panel shell and remains mounted while rows hydrate.
             const workItemsPanel = document
-              .querySelector('[data-testid="wi-count"]')
+              .querySelector('input[aria-label="Filter work items"]')
               ?.closest('.pc-advpanel');
             return (
               (workItemsPanel?.querySelectorAll('[role="row"]').length ?? 0) > 1
@@ -880,7 +883,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
           ).map((tab) => (tab.textContent ?? "").trim()).filter(Boolean),
           rowCount:
             document
-              .querySelector('[data-testid="wi-count"]')
+              .querySelector('input[aria-label="Filter work items"]')
               ?.closest('.pc-advpanel')
               ?.querySelectorAll('[role="row"]').length ?? 0,
           workItemCount:
@@ -901,7 +904,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // setSelectedId → the `?sel` nuqs param the Detail pane follows.
     await browser.execute(() => {
       const rows = document
-        .querySelector('[data-testid="wi-count"]')
+        .querySelector('input[aria-label="Filter work items"]')
         ?.closest('.pc-advpanel')
         ?.querySelectorAll<HTMLElement>('[role="row"]');
       rows[1]?.click();
