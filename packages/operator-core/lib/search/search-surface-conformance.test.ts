@@ -239,10 +239,20 @@ function embedderWrapSitesIn(raw: string, label = 'fixture.ts'): string[] {
  */
 function embedderWrapSites(entry: string): string[] {
   const g = importGraph(entry);
-  return [entry, ...g.modules].flatMap((f) =>
-    embedderWrapSitesIn(readFileSync(f, 'utf8'), rel(f)),
-  );
+  return [entry, ...g.modules].flatMap((f) => {
+    // Memoized per FILE, not per surface: the graphs overlap heavily (2912
+    // visits collapse to 497 distinct files across the hybrid set), and this
+    // walk runs once per surface plus twice more for the tracked-defect
+    // checks. Measured 8.3s → 3.2s. Sound because nothing writes to the tree
+    // during a run.
+    const hit = wrapSiteCache.get(f);
+    if (hit) return hit;
+    const sites = embedderWrapSitesIn(readFileSync(f, 'utf8'), rel(f));
+    wrapSiteCache.set(f, sites);
+    return sites;
+  });
 }
+const wrapSiteCache = new Map<string, string[]>();
 
 /** The engine entrypoint a surface's code actually reaches. */
 function deriveEngine(
@@ -560,6 +570,50 @@ describe('search surface conformance (P-021)', () => {
       expect(consumesEngineResultIn('// const x = await runHybridSearch(a, {});')).toBe(false);
     });
 
+
+    it('the wrap detector SEES a wrapper, in both bodies a wrapper can have', () => {
+      // Without this the detector could return [] unconditionally and every
+      // "unwrapped" assertion above would be verifying itself against an
+      // instrument that cannot say no.
+      const block =
+        'const x = { embedder: async (t: string) => { const v = await resolved.embed(t); return v; } };';
+      const expr = 'const x = { embedder: (t: string) => resolved.embed(t) };';
+      const assigned = 'embedder = async (t: string) => { return await resolved.embed(t); };';
+      for (const src of [block, expr, assigned]) {
+        expect(embedderWrapSitesIn(src), src).toHaveLength(1);
+      }
+    });
+
+    it('the wrap detector ACCEPTS every shape that is legitimately not a wrapper', () => {
+      // The expensive direction. A false positive here forces a real surface
+      // into the tracked-defect set, or worse, teaches the next reader that
+      // the guard is noise. Each of these is a shape live in the tree today.
+      const fine = [
+        // the correct hand-off: the stamped instance, straight through
+        'const x = { embedder: resolved.embed, embeddingMode: resolved.mode };',
+        'const x = { embedder, embeddingMode };',
+        'const x = { embedder: null };',
+        // D-023's rejecting embedder, as a factory call and as a literal
+        "const x = { embedder: unavailable('no query embedder resolved') };",
+        "embedder = async (): Promise<number[]> => { throw new Error('warming up'); };",
+        // TYPE positions — a fat arrow that is a type, not a value. These are
+        // why this is an AST walk: a regex reads both as arrow functions.
+        'let embedder: ((t: string) => Promise<number[]>) | null = null;',
+        'interface D { embedder: (t: string) => Promise<number[]>; }',
+      ];
+      for (const src of fine) expect(embedderWrapSitesIn(src), src).toEqual([]);
+    });
+
+    it('the wrap scan reaches BEYOND the entry module', () => {
+      // The shape this guard exists to catch was born one hop from the entry
+      // (`docs/semantic-leg.ts`, not `docs/search.ts`). If the walk collapsed
+      // to the entry file, every assertion above would still pass while the
+      // original bug walked straight through it.
+      const entry = join(LIB, 'agent-tools/docs/search.ts');
+      const scanned = new Set([entry, ...importGraph(entry).modules]);
+      expect(scanned.has(join(LIB, 'agent-tools/docs/semantic-leg.ts'))).toBe(true);
+      expect(scanned.size).toBeGreaterThan(1);
+    });
 
     it('discovery finds a substantial set, including a known surface', () => {
       const ids = discoverSearchTools().map((t) => t.id);

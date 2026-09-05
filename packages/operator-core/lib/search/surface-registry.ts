@@ -104,6 +104,28 @@ export interface SearchSurface {
    */
   floorGap?: { reason: string; trackedBy: string };
   /**
+   * An engine-backed surface that REACHES the policy seam but hands the engine
+   * a WRAPPED embedder, so the floor silently resolves to nothing (D-024).
+   *
+   * A TRACKED DEFECT like `floorGap`, and deliberately NOT the same field. The
+   * two are different failures with different detections and different fixes:
+   *
+   *   · `floorGap`      — the policy was never installed. `hasFloor` is FALSE.
+   *                       Fix: import the seam (after measuring the corpus).
+   *   · `embedderWrap`  — the policy IS installed and RAN, and returned
+   *                       `undefined` because `embedderModeOf` is a WeakMap
+   *                       lookup on the exact function OBJECT and an
+   *                       intermediary handed over a different one. `hasFloor`
+   *                       is TRUE, which is precisely why the `floorGap` checks
+   *                       cannot see this and why it needs its own entry.
+   *
+   * Filing this as a `floorGap` would fail that set's own "still REAL" check
+   * (it asserts `hasFloor === false`) — the type system's way of saying these
+   * are not the same defect. Filing it as `resultsDiscarded` would be the
+   * category-corruption D-027 names.
+   */
+  embedderWrap?: { reason: string; trackedBy: string };
+  /**
    * An engine-backed surface that runs UNFLOORED and is CORRECT to — because
    * it has no result set for a floor to protect. It discards what the engine
    * returns; the call exists for its side effects (warming a pool, an
@@ -259,6 +281,20 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     id: 'GET /adv/sessions/search-transcripts',
     entry: 'endpoint-route/routes/adv/sessions.ts',
     engine: 'hybrid',
+    embedderWrap: {
+      reason:
+        'adv/sessions.ts:1030 hands the engine a LAZY wrapper (`async text => (await embedderReadyP)(text)`) ' +
+        'rather than the resolved instance, so `embedderModeOf` misses and the policy resolves NO floor. The ' +
+        'wrapper is deliberate (WI-4734): it moves acquire+embed inside the engine concurrent embed window so ' +
+        'the BM25 leg is not stalled behind acquisition. It cannot simply be unwrapped — the stamped instance ' +
+        'does not exist until acquisition resolves, and the floor is read before the legs run ' +
+        '(hybrid.ts:452). Pre-stamping would mean guessing a space the resolver can still fall back OUT of, ' +
+        'which is the foreign-floor hazard D-021 refuses. Worse here than most: session_turn is sparsely ' +
+        'embedded, exactly the corpus where an unfloored vector leg returns its k nearest rows whether or not ' +
+        'any is a match. The fix is the shape work-items.ts:2266 already uses — stamped instance when warm, ' +
+        'throw-only rejecting embedder when cold (D-023) — which needs that ~80-line pattern extracted first.',
+      trackedBy: 'WI-2144957',
+    },
   },
   {
     id: 'GET /user/search',
@@ -326,6 +362,20 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
  * same bug class recurs stops being a ceiling.
  */
 export const FLOOR_GAP_CEILING = 1;
+
+/**
+ * The number of engine-backed surfaces allowed to hand the engine a WRAPPED
+ * embedder, and so run unfloored despite having the policy installed (D-024).
+ *
+ * SHRINK-ONLY, on the `FLOOR_GAP_CEILING` terms. The pressure to keep it at
+ * zero is sharper than for a plain floor gap, because this defect is INVISIBLE
+ * at runtime — both legs report `status:'ran'`, `legs.degraded` stays false,
+ * and every fixture-driven test passes identically with and without it (a
+ * MOCKED embedder is never stamped either, so only reference identity
+ * discriminates). The conformance test re-derives each entry from the AST, so
+ * an entry whose wrapper is gone fails instead of lingering.
+ */
+export const EMBEDDER_WRAP_CEILING = 1;
 
 /**
  * The number of engine-backed surfaces allowed to be exempt from the floor
