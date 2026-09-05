@@ -26,12 +26,20 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
 import { lazyFlagRefresh } from './lazy-flag-refresh';
+import type { WorkScopePolicy } from './work-scope-policy';
 
 export interface PotControlPolicy {
   breakerThreshold?: number;
   recoveryDebounceMs?: number;
   dormancyGraceMs?: number;
   infraBreakerThreshold?: number;
+  /**
+   * Workspace WORK-SCOPE policy (workspace-work-scope-policy-2026-09-04): which
+   * harnesses agents may be launched into / pull work from. Read sync via
+   * `workScopePolicy()` in ./work-scope-policy; absent ⇒ every harness allowed.
+   * Rides this same JSONB row so it needs no migration and shares the cache/refresh.
+   */
+  workScope?: WorkScopePolicy;
 }
 
 /** The consumers' baked defaults — for diff/display + the tool's "default" reporting. */
@@ -112,8 +120,16 @@ registerOverrideConcern({
   diff: async () => {
     const c = await readPotControlPolicy();
     const entries: OverrideEntry[] = [];
-    for (const k of Object.keys(POT_CONTROL_DEFAULTS) as (keyof PotControlPolicy)[]) {
+    for (const k of Object.keys(POT_CONTROL_DEFAULTS) as (keyof typeof POT_CONTROL_DEFAULTS)[]) {
       if (c[k] !== undefined) entries.push({ key: k, effective: c[k], default: POT_CONTROL_DEFAULTS[k], layer: 'pg-settings' });
+    }
+    if (c.workScope) {
+      entries.push({
+        key: 'workScope',
+        effective: { mode: c.workScope.mode, allowHarnesses: c.workScope.allowHarnesses, exceptions: c.workScope.exceptions?.length ?? 0, setBy: c.workScope.setBy ?? null },
+        default: null,
+        layer: 'pg-settings',
+      });
     }
     return entries;
   },
