@@ -872,25 +872,29 @@ describe('the cap VALUE is defensible against what was measured (P-004)', () => 
   });
 });
 
-describe('GITNEXUS_ANALYZE_TIMEOUT_MS is sized from the measured STEADY-STATE tick (D-002)', () => {
-  // Measured 2026-09-05 (/tmp/wi39394/run4-embed-run.log): a `--force --embeddings 0` pass over
-  // 247,540 nodes that restored 217k cached embeddings and re-embedded the changed nodes took
-  // 2,343s (39:02 wall) at load/core 1.06. The cold one-shot bootstrap (3,139s, run #1) runs
-  // OUTSIDE the routine by design (D-002) and is deliberately NOT what the timeout covers —
-  // the third pin below is what stops a future "just raise it until the bootstrap fits".
-  const MEASURED_STEADY_STATE_SEC = 2343;
-  const BOOTSTRAP_COLD_SEC = 3139;
+describe('GITNEXUS_ANALYZE_TIMEOUT_MS is sized from the measured LIVE tick (D-002 → D-004)', () => {
+  // Measured 2026-09-05 (D-004): the first routine tick after the seeded resume — `--force
+  // --embeddings 0` over 248,736 nodes, restoring the 216k-embedding cache and re-embedding the
+  // changed nodes — ran under pc-heavy (nice 10 / ionice idle) on a box with ~75 live agents and
+  // took 6,446s (spawned 18:32:12Z → indexedAt 20:19:38Z; 107:26 wall). The SAME pass in
+  // isolation took 2,343s (run #4, D-002). D-002 sized the timeout from the isolated number and
+  // the very first live tick blew through it, so the live measurement is the only one this
+  // constant may be sized from; the ratio pin below is what stops a future "re-measure in
+  // isolation and shrink it back".
+  const MEASURED_LIVE_TICK_SEC = 6446;
+  const MEASURED_ISOLATED_TICK_SEC = 2343;
 
-  it('clears the measured steady-state tick with real headroom (>= 1.5x)', () => {
-    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeGreaterThanOrEqual(MEASURED_STEADY_STATE_SEC * 1.5);
+  it('clears the measured live tick with real headroom (>= 1.5x)', () => {
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeGreaterThanOrEqual(MEASURED_LIVE_TICK_SEC * 1.5);
   });
 
-  it('is still a CAP — under 2x the measurement, so a wedged indexer is bounded within a tick or two', () => {
-    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeLessThan(MEASURED_STEADY_STATE_SEC * 2);
+  it('is still a CAP — under 2x the live measurement, so a wedged indexer is bounded within a tick or two', () => {
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeLessThan(MEASURED_LIVE_TICK_SEC * 2);
   });
 
-  it('is NOT sized to swallow the cold bootstrap — that pass runs outside the routine', () => {
-    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeLessThan(BOOTSTRAP_COLD_SEC * 1.5);
+  it('is sized from the LIVE tick, which the isolated measurement under-predicts by more than 2x', () => {
+    expect(MEASURED_LIVE_TICK_SEC / MEASURED_ISOLATED_TICK_SEC).toBeGreaterThan(2);
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeGreaterThan(MEASURED_ISOLATED_TICK_SEC * 2);
   });
 
   it('exceeds the hourly cron on purpose, which the routine row must absorb via concurrency:skip', () => {

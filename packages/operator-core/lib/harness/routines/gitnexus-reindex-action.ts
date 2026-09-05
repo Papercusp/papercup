@@ -93,22 +93,28 @@ import {
 export const GITNEXUS_REPO_NAME = 'papercusp';
 
 /**
- * Sized from the STEADY-STATE tick, not the 2026-08 cold build (309.2s — the figure the old
- * 20-minute value was cut from, on a graph a third this size and before embeddings).
+ * Sized from the measured LIVE tick (D-004), not from an isolated measurement and not from the
+ * 2026-08 cold build (309.2s — the figure the old 20-minute value was cut from, on a graph a
+ * third this size and before embeddings).
  *
- * Measured 2026-09-05 (D-002, /tmp/wi39394/run4-embed-run.log): a `--force --embeddings 0`
- * pass over 247,540 nodes that RESTORED 217k cached embeddings and re-embedded the changed
- * nodes took 2,343s (39:02 wall) under a 1.06 load/core box; the same pass with no embedding
- * work took 1,660s (run #3). 70 min is ~1.8x the measured steady-state tick and comfortably
- * above the cold-phase-free full rebuild, while still bounding a genuinely wedged indexer.
+ * Measured 2026-09-05 (D-004): the first routine tick after the seeded resume — `analyze
+ * --force --embeddings 0` over 248,736 nodes, restoring the 216k-embedding cache and
+ * re-embedding the changed nodes — ran the way the routine actually runs it, under pc-heavy
+ * (nice 10 / ionice idle) on a box carrying ~75 live agents, and took 6,446s (spawned
+ * 18:32:12Z, indexedAt 20:19:38Z; 107:26 wall). The SAME pass in isolation took 2,343s
+ * (run #4, D-002) — 2.75x faster — which is why D-002's 70-minute value, cut from the isolated
+ * number, was exceeded by the very first live tick (rescued by hand from its scope deadline,
+ * WI-39394 / WI-2146606). 165 min is ~1.54x the live tick: real headroom for load variance,
+ * while still bounding a genuinely wedged indexer inside three cron intervals.
  *
  * It deliberately EXCEEDS the hourly cron: the routine row is `concurrency: 'skip'`
  * (seed-gitnexus-reindex-routine.ts), so a fire that lands while the previous tick is still
  * awaiting its analyze is skipped rather than double-spawned — IN-PROCESS only: an analyze
  * that outlives a bg-host restart is caught by `detectLiveAnalyzeWriter` instead (WI-2146606).
- * The cold one-shot bootstrap (3,139s) is NOT run under this timeout — see the module header.
+ * The cold one-shot bootstrap (3,139s isolated; >6,270s on the live root) is NOT run under this
+ * timeout — see the module header.
  */
-export const GITNEXUS_ANALYZE_TIMEOUT_MS = 70 * 60_000;
+export const GITNEXUS_ANALYZE_TIMEOUT_MS = 165 * 60_000;
 
 /**
  * The analyze child's OWN cgroup ceiling (managedSpawn `memoryMaxBytes`), so a regression
