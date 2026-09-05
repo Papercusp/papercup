@@ -706,6 +706,52 @@ export async function defaultReadGoalItemStates(
 }
 
 /**
+ * EI-21526226279199560: the liveness of the AGENT this loop declared itself blocked on.
+ *
+ * Only kind:'agent' has a subject to resolve. A work-item or event blocker already has a
+ * clearance mechanism (`blocked-on-status.ts`); a process, owner or 'other' blocker has
+ * no oracle at all, and inventing one is the fabrication D-003 banned. Those kinds still
+ * reach the elapsed-clock branch, which needs no oracle — which is why this read is
+ * skipped rather than faked for them.
+ *
+ * Routed through `resolveSessionStates` — THE shared oracle behind coord:presence,
+ * fleet:status and the send-miss report — and NOT through the heartbeat columns beside
+ * it, because raw keepalive freshness is not liveness: a warm-dead session reads
+ * heartbeatFresh:true with sessionState:'ended'. That corpse is precisely what this
+ * detector exists to catch, so reading the cheaper column would blind it to its own case.
+ *
+ * Fail-soft to an unmeasured verdict — a wake must never be delayed, nor decorated with
+ * a claim this read could not support. `sessionState: null` yields NO line at all.
+ */
+export async function defaultReadBlockerLiveness(
+  ref: string,
+  opts: { sql?: Sql; workspaceId?: string | null } = {},
+): Promise<BlockerLiveness> {
+  const unmeasured: BlockerLiveness = { sessionState: null, lastActiveMsAgo: null };
+  if (!ref) return unmeasured;
+  try {
+    const sql = opts.sql ?? getOrgPg().sql;
+    const verdicts = await resolveSessionStates([{ ownerId: ref }], {
+      hydratePerId: true,
+      psuHostAuthority: true,
+    });
+    const rows = await sql<{ last_active_at: string | null }[]>`
+      SELECT last_active_at
+        FROM harness_shared.coord_presence
+       WHERE owner_id = ${ref}
+       LIMIT 1`;
+    const lastActiveRaw = rows[0]?.last_active_at ?? null;
+    const lastActiveMs = lastActiveRaw ? Date.parse(lastActiveRaw) : Number.NaN;
+    return {
+      sessionState: verdicts.get(ref)?.sessionState ?? null,
+      lastActiveMsAgo: Number.isFinite(lastActiveMs) ? Date.now() - lastActiveMs : null,
+    };
+  } catch {
+    return unmeasured;
+  }
+}
+
+/**
  * EI-21459285533379701: this loop's arm time + the owner's CORRECTED standing facts.
  *
  * ONE round-trip, and the corrected-fact population is the ~6.5% tail of live facts

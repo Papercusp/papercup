@@ -37,6 +37,11 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { srtBinOnPath, buildFleetSrtSettings, wrapSpawnWithSrt } from '@papercusp/orchestrator';
 import { authSandboxMaskAdditions, authSandboxDenyAllEgressOverride } from '../../auth-config-overrides';
+import {
+  resolveOperationBoundaryProfile,
+  type BoundaryContext,
+  type OperationBoundaryProfile,
+} from './boundary-profile';
 
 /**
  * Credential dirs masked (tmpfs mounted over them, so they read empty) inside the
@@ -72,16 +77,15 @@ export const CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES: readonly string[] = ['/usr/
 const CAPABILITY_SANDBOX_MASK_FILES: ReadonlySet<string> = new Set(['.npmrc']);
 
 export interface CapabilitySandboxDecision {
-  /** Binary to spawn (srt / bwrap, or the original `cmd[0]` when not wrapped). */
+  /** Binary to spawn (srt / bwrap, the raw command, or empty when refused). */
   binary: string;
   /** argv for the binary (the wrapper's args + the command, or `cmd.slice(1)`). */
   argv: string[];
   /** true ⇒ wrapped (srt or bwrap). */
   sandboxed: boolean;
-  /** Which wrapper ran: 'srt' (fs+credential+egress-allowlist) · 'bwrap'
-   *  (fs+credential) · 'raw' (unwrapped). */
-  mode: 'srt' | 'bwrap' | 'raw';
-  /** Why not sandboxed (for telemetry / log), or null when sandboxed. */
+  /** Which wrapper ran, or whether the operation was refused before spawn. */
+  mode: 'srt' | 'bwrap' | 'raw' | 'unavailable';
+  /** Why no wrapper ran (for telemetry / refusal), or null when sandboxed. */
   reason: 'flag-off' | 'bwrap-unavailable' | null;
 }
 
@@ -129,6 +133,8 @@ export interface BuildSandboxInput {
 export interface BuildSandboxOpts {
   /** The resolved `papercusp-capability-exec-sandbox` flag. */
   enabled: boolean;
+  /** A confined operation may never downgrade to raw execution. */
+  required?: boolean;
   /** EI-16635: true when this spawn is a `run_in_background:true` job — one that
    *  is CONTRACTUALLY meant to outlive the launching `capability:bash` call (the
    *  caller returns immediately and polls `capability:bash_output` later). The
@@ -410,11 +416,18 @@ export function buildCapabilitySandboxCommand(
     mode: 'raw',
     reason,
   });
-  if (!opts.enabled) return raw('flag-off');
+  const unavailable = (reason: Exclude<CapabilitySandboxDecision['reason'], null>): CapabilitySandboxDecision => ({
+    binary: '',
+    argv: [],
+    sandboxed: false,
+    mode: 'unavailable',
+    reason,
+  });
+  if (!opts.enabled) return opts.required ? unavailable('flag-off') : raw('flag-off');
   // srt and our bwrap both rest on bubblewrap; if bwrap can't sandbox here, srt
   // can't either, so fail OPEN to raw (never a wrapper that errors at runtime).
   const works = opts.bwrapWorks ?? capabilityBwrapWorks();
-  if (!works) return raw('bwrap-unavailable');
+  if (!works) return opts.required ? unavailable('bwrap-unavailable') : raw('bwrap-unavailable');
 
   // PREFER srt (P-033): it adds DOMAIN-ALLOWLIST egress (its socat proxy) on top of
   // the fs + credential containment — full parity with native Bash's fleet sandbox,
@@ -436,7 +449,10 @@ export function buildCapabilitySandboxCommand(
   }
 
   const home = opts.homeDir ?? homedir();
-  const denyAllEgress = opts.denyAllEgress ?? capabilitySandboxDenyAllEgress();
+  // SRT is the allowlisted-network route.  When it is absent, a REQUIRED
+  // sandbox may still run offline through bwrap, but it must not silently regain
+  // the host network.  Trusted/flag-only calls retain the historic bwrap policy.
+  const denyAllEgress = opts.denyAllEgress ?? (opts.required || capabilitySandboxDenyAllEgress());
   const bwrap = opts.bwrapBinary ?? 'bwrap';
   const maskExists = opts.maskExists ?? existsSync;
   const argv: string[] = [
@@ -522,5 +538,57 @@ export async function capabilityExecSandboxEnabled(): Promise<boolean> {
     return await getFlag(FLAGS.CAPABILITY_EXEC_SANDBOX, 'system');
   } catch {
     return false;
+  }
+}
+
+export interface CapabilityExecSandboxPolicy {
+  /** Whether the existing wrapper selection should engage. */
+  enabled: boolean;
+  /** Whether failure to obtain a real wrapper must refuse before spawn. */
+  required: boolean;
+  /** Server-resolved profile retained for result metadata and tests. */
+  profile: OperationBoundaryProfile;
+}
+
+/**
+ * Resolve the actual exec-boundary policy from server-owned caller context.
+ * Confined callers force the wrapper on and fail closed independently of the
+ * dark rollout flag; trusted owner/operator automation keeps the flag's
+ * backwards-compatible raw fallback.
+ */
+export async function capabilityExecSandboxPolicy(
+  ctx: BoundaryContext,
+): Promise<CapabilityExecSandboxPolicy> {
+  const profile = await resolveOperationBoundaryProfile(ctx);
+  if (profile.kind === 'confined') {
+    return { enabled: true, required: true, profile };
+  }
+  return {
+    enabled: await capabilityExecSandboxEnabled(),
+    required: false,
+    profile,
+  };
+}
+
+export class CapabilityExecConfinementUnavailableError extends Error {
+  readonly code = 'capability_exec_confinement_unavailable';
+
+  constructor(reason: Exclude<CapabilitySandboxDecision['reason'], null>, cwd: string) {
+    super(
+      `${reason}: this caller is confined, but no working capability execution sandbox is available ` +
+        `for ${cwd}. Raw host execution was not attempted. Install/repair bwrap (and srt for ` +
+        `allowlisted network access), or route the work to a configured container/VM host.`,
+    );
+    this.name = 'CapabilityExecConfinementUnavailableError';
+  }
+}
+
+/** Refuse an unavailable confined decision before any child-process effect. */
+export function assertCapabilitySandboxAvailable(
+  decision: CapabilitySandboxDecision,
+  cwd: string,
+): void {
+  if (decision.mode === 'unavailable') {
+    throw new CapabilityExecConfinementUnavailableError(decision.reason!, cwd);
   }
 }

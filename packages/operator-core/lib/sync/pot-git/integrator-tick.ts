@@ -39,12 +39,14 @@ import {
   defaultRunGit,
   hiveGitRepoPath,
   readNamespaceRefForDevices,
+  readNamespaceRef,
   type RunGit,
 } from './storage';
 import { WORK_REF, integrateMemberHeads, type IntegrationResult, type MemberHead } from './integrator';
 import { gateMemberHeadsForIntegration, type GateableHead } from './integration-requests';
 import { signStagingAdvance, type SignedStagingAdvance } from './staging-advance';
-import type { SignedProtocolContext } from './signed-context';
+import type { SignedProtocolContext, SignedSnapshotFloor } from './signed-context';
+import { readSigrefs, acceptFetchedSigrefs, reconcileFetchedHeads, SIGREFS_REF } from './sigrefs';
 
 export interface IntegratorTickInput {
   potHomeSlug: string;
@@ -87,6 +89,7 @@ export interface IntegratorTickInput {
   nowMs?: number;
   /** Context bound into v2 staging-advance signatures when supplied. */
   context?: SignedProtocolContext;
+  acceptedSnapshots?: Readonly<Record<string, SignedSnapshotFloor>>;
   deps?: {
     runGit?: RunGit;
     repoPath?: string;
@@ -179,6 +182,25 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
   let heads: GateableHead[];
   try {
     heads = await collectGateableHeads(repoPath, input.memberDevicePubkeysBase64, runGit);
+    if (input.context) {
+      const scope = { hive_id: input.context.hive_id, repo_key: input.context.repo_key };
+      const verified = await Promise.all(heads.map(async (head) => {
+        const device = head.devicePubkeyBase64;
+        const floor = input.acceptedSnapshots?.[device];
+        const [signed, oid] = await Promise.all([
+          readSigrefs(repoPath, device, runGit), readNamespaceRef(repoPath, device, SIGREFS_REF, runGit),
+        ]);
+        if (!floor || !signed || oid !== floor.sigrefs_oid || signed.store_generation !== floor.store_generation ||
+            signed.version !== floor.version ||
+            !acceptFetchedSigrefs(signed, device, null, { expectedContext: scope }).ok ||
+            (await reconcileFetchedHeads(repoPath, device, signed, runGit)).length !== 0) {
+          errors.push(`unaccepted signed snapshot for ${device.slice(0, 12)} — waiting for verified ref announcement`);
+          return null;
+        }
+        return head;
+      }));
+      heads = verified.filter((head): head is GateableHead => head !== null);
+    }
   } catch (e) {
     errors.push(`collecting member work heads failed: ${e instanceof Error ? e.message : e}`);
     return empty;

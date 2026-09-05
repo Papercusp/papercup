@@ -36,7 +36,7 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
-import { capabilityExecSandboxEnabled } from './exec-sandbox';
+import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { TSC_HEAP_MB, tscHeapEnv } from '../tsc-heap';
 import { TSC_DECOY_BANNER } from '../../tsc-diagnostics';
@@ -704,8 +704,10 @@ export default defineTool({
     const runInBackground = args.run_in_background ?? args.runInBackground;
     const requestedTimeoutMs =
       args.timeout ?? (runInBackground ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
-    // Reuse the capability:bash OS sandbox (P-022/D-008) on the operator-side exec.
-    const sandboxEnabled = await capabilityExecSandboxEnabled();
+    // Reuse the actual capability:bash boundary profile. A fixed verification
+    // command is still real code execution and must not raw-downgrade for a
+    // confined session.
+    const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
 
     // EI-20019651513530828: pin the tsc child's heap. operator-core overflows node's
     // DEFAULT ~4GB old-space and is killed BEFORE emitting any diagnostics, which reads
@@ -716,7 +718,14 @@ export default defineTool({
     if (runInBackground) {
       // Background is uncapped by the MCP transport (returns a bash_id immediately), so it
       // honors the full requested timeout.
-      const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled, env: execEnv }, requestedTimeoutMs);
+      const job = startBackground({
+        command,
+        cwd,
+        stateDir: ctx.stateDir,
+        sandboxEnabled: sandboxPolicy.enabled,
+        sandboxRequired: sandboxPolicy.required,
+        env: execEnv,
+      }, requestedTimeoutMs);
       return {
         content: [
           {
@@ -748,7 +757,15 @@ export default defineTool({
     // request_timeout (the friction on large packages like operator-core).
     const timeoutMs = clampForegroundTimeoutMs(requestedTimeoutMs);
     const r = await runForeground(
-      { command, cwd, stateDir: ctx.stateDir, onChunk: (chunk) => ctx.emit('output', chunk), sandboxEnabled, env: execEnv },
+      {
+        command,
+        cwd,
+        stateDir: ctx.stateDir,
+        onChunk: (chunk) => ctx.emit('output', chunk),
+        sandboxEnabled: sandboxPolicy.enabled,
+        sandboxRequired: sandboxPolicy.required,
+        env: execEnv,
+      },
       ctx.signal,
       timeoutMs,
     );

@@ -47,7 +47,7 @@ import {
 } from './foreground-transport-cap';
 import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { similarity } from '../../operator-fuzzy-dedup';
-import { capabilityExecSandboxEnabled } from './exec-sandbox';
+import { capabilityExecSandboxPolicy } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { realpathSoft, resolveCapabilityBaseDir } from './base-dir';
@@ -506,9 +506,10 @@ export default defineTool({
     // `status: 'timed_out'` plus the log path and a re-run-detached hint.
     // A BACKGROUND job returns a handle immediately, so the cap does not apply to it.
     const timeoutMs = args.run_in_background ? requestedTimeoutMs : clampForegroundTimeoutMs(requestedTimeoutMs);
-    // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
-    // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
-    const sandboxEnabled = await capabilityExecSandboxEnabled();
+    // Resolve from server-owned caller identity. Trusted owner automation keeps
+    // the rollout flag's compatibility behavior; confined work forces a real
+    // wrapper and refuses before spawn when none is available.
+    const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
     // computer-tool-plan Gap C: if the calling bee's hive holds a leased sandbox desktop,
     // run its shell with DISPLAY bound to that desktop so GUI apps it launches (`firefox &`,
     // `soffice --calc &`) appear ON the leased Xvfb — capability:computer then drives them.
@@ -584,7 +585,8 @@ export default defineTool({
           command: command,
           cwd,
           stateDir: ctx.stateDir,
-          sandboxEnabled,
+          sandboxEnabled: sandboxPolicy.enabled,
+          sandboxRequired: sandboxPolicy.required,
           ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
           ...(redactValues.length > 0 ? { redactValues } : {}),
           ...provenance,
@@ -655,7 +657,8 @@ export default defineTool({
         cwd,
         stateDir: ctx.stateDir,
         onChunk: (chunk) => ctx.emit('output', chunk),
-        sandboxEnabled,
+        sandboxEnabled: sandboxPolicy.enabled,
+        sandboxRequired: sandboxPolicy.required,
         ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
         ...(redactValues.length > 0 ? { redactValues } : {}),
       },

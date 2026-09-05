@@ -135,7 +135,7 @@ export interface WorktreeBridgeTickResultEntry {
  * (stale/forged/wrong-device/non-ff/malformed) is a terminal verdict on the
  * envelope itself — retrying can never change it — so those skip-and-continue.
  */
-export const RETRYABLE_REJECT_REASONS: ReadonlySet<string> = new Set(['unknown-sha', 'ungranted-epoch']);
+export const RETRYABLE_REJECT_REASONS: ReadonlySet<string> = new Set(['unknown-sha', 'ungranted-epoch', 'unknown-generation']);
 
 /** P-505: how long a transient staging-advance rejection may pin the
  * fed-event cursor before the stopped row is consumed as genuinely lost. */

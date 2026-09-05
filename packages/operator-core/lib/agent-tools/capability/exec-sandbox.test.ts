@@ -22,6 +22,8 @@ import {
   __resetCapabilitySrtSettings,
   CAPABILITY_SANDBOX_MASK_DIRS,
   CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES,
+  assertCapabilitySandboxAvailable,
+  CapabilityExecConfinementUnavailableError,
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
@@ -145,6 +147,59 @@ describe('buildCapabilitySandboxCommand — fail-open', () => {
     expect(d.mode).toBe('raw');
     expect(d.reason).toBe('bwrap-unavailable');
     expect(d.binary).toBe('/usr/bin/bash');
+  });
+});
+
+describe('buildCapabilitySandboxCommand — confined callers fail closed', () => {
+  it('does not return a raw command when bwrap is unavailable', () => {
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: true, required: true, bwrapWorks: false },
+    );
+    expect(d).toMatchObject({
+      binary: '',
+      argv: [],
+      sandboxed: false,
+      mode: 'unavailable',
+      reason: 'bwrap-unavailable',
+    });
+    expect(() => assertCapabilitySandboxAvailable(d, CWD)).toThrow(
+      CapabilityExecConfinementUnavailableError,
+    );
+    expect(() => assertCapabilitySandboxAvailable(d, CWD)).toThrow(/Raw host execution was not attempted/);
+  });
+
+  it('does not let a disabled rollout flag weaken an explicitly required boundary', () => {
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: false, required: true },
+    );
+    expect(d.mode).toBe('unavailable');
+    expect(d.reason).toBe('flag-off');
+  });
+
+  it('uses the bwrap fallback offline when srt is absent instead of sharing the host network', () => {
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      { ...base, enabled: true, required: true, srtBin: null },
+    );
+    expect(d.mode).toBe('bwrap');
+    expect(d.argv).toContain('--unshare-net');
+  });
+
+  it('keeps approved-network behavior through the existing SRT allowlist path', () => {
+    const d = buildCapabilitySandboxCommand(
+      { cmd: CMD, cwd: CWD },
+      {
+        ...base,
+        enabled: true,
+        required: true,
+        srtBin: '/opt/srt',
+        srtSettingsPath: '/tmp/srt-settings.json',
+      },
+    );
+    expect(d.mode).toBe('srt');
+    expect(d.binary).toBe('/opt/srt');
   });
 });
 

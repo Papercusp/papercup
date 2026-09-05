@@ -58,6 +58,7 @@ import {
   agentToolInvocationPredicate,
 } from '../../agent-tools/sessions/automatic-tool-names';
 import type { PersistedMonitorConfig } from './monitor-policy';
+import type { LoopBlockedOnRecord } from './loop-blocker-liveness';
 import {
   readMonitorStanddownRecord,
   readPersistedMonitorConfig,
@@ -378,6 +379,12 @@ export interface MaterializeLoopInput {
    * payload_template. Work loops omit it and remain byte-identical.
    */
   monitor?: PersistedMonitorConfig;
+  /**
+   * EI-21526226279199560: the blocker this loop declared at arm time, persisted so the
+   * FIRE can re-resolve it. Rides payload_template (no new column); an unblocked loop
+   * omits it and stays byte-identical.
+   */
+  blockedOn?: LoopBlockedOnRecord | null;
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -452,6 +459,14 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   // what lets every reader answer that question without parsing prose.
   const goalText = typeof input.goal === 'string' ? input.goal.trim() : '';
   if (goalText) payloadTemplate.goal = goalText;
+  // EI-21526226279199560: persist the DECLARED BLOCKER structurally, for the same reason
+  // the goal above is persisted — until now `blockedOn` reached the next wake only as
+  // frozen prose prepended to `kickoff`, so the fire could re-DELIVER the premise but
+  // never re-EVALUATE it. A stamped record is what lets `assessBlockerLiveness` answer
+  // "is the agent you are waiting on still alive?" at fire time. Same convention as
+  // every field above: only stamped when present, so a loop with no declared blocker
+  // leaves payload_template byte-identical to today.
+  if (input.blockedOn) payloadTemplate.blockedOn = input.blockedOn;
 
   const name = loopRoutineName(input.ownerId);
   const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
@@ -2283,6 +2298,11 @@ export interface PriorLoopFacts {
   mode: 'work' | 'monitor';
   /** Typed monitor policy on P-003+ rows; absent on legacy/work loops. */
   monitor?: PersistedMonitorConfig | null;
+  /**
+   * EI-21526226279199560: the blocker persisted on the row this arm is about to replace.
+   * Read so a RE-ARM can carry its `since` forward — see `resolveBlockedSince`.
+   */
+  blockedOn?: LoopBlockedOnRecord | null;
   armedAt: string | null;
 }
 
@@ -2327,6 +2347,10 @@ export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } =
     customWakePrompt: pt.customWakePrompt === true,
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     carry: pt.carry === 'cold' ? 'cold' : 'warm',
+    blockedOn:
+      pt.blockedOn && typeof pt.blockedOn === 'object'
+        ? (pt.blockedOn as LoopBlockedOnRecord)
+        : null,
     continuation: pt.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt.mode === 'monitor' ? 'monitor' : 'work',
     monitor:

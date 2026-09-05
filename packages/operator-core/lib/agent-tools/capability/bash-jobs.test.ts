@@ -74,6 +74,25 @@ async function waitForStatus(id: string, ms = 5000): Promise<void> {
 }
 
 describe('runForeground', () => {
+  it('rejects a confined command before its host effect when no sandbox works', async () => {
+    const marker = join(STATE, `confined-effect-${crypto.randomUUID()}.txt`);
+    await expect(
+      runForeground(
+        {
+          command: `printf ran > ${JSON.stringify(marker)}`,
+          cwd: STATE,
+          stateDir: STATE,
+          sandboxEnabled: true,
+          sandboxRequired: true,
+          sandboxBuildOpts: { bwrapWorks: false, srtBin: null },
+        },
+        never,
+        10_000,
+      ),
+    ).rejects.toThrow(/Raw host execution was not attempted/);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it('captures stdout + exit code and streams chunks', async () => {
     const chunks: string[] = [];
     const r = await runForeground(

@@ -103,6 +103,12 @@ const CSS_SOURCES = [
   'app/globals.css',
   'app/_semantic.css',
   'app/_brand-primitives.css',
+  // Stylesheets carried by the mounted operator surfaces (portal-parity P-005/P-003):
+  // rules that used to live in globals.css, moved with their local mini-palettes
+  // (`--vault-*`) so hosts that never load globals.css still style those surfaces.
+  'app/_primitives.css',
+  'app/settings/settings.css',
+  'app/support/support.css',
   '../operator-vite/src/components/left-sidebar/left-sidebar.styles.ts',
   '../operator-vite/src/components/dev-admin-rail/dev-admin-rail.styles.ts',
   '../operator-vite/src/components/adv/scheduled-calendar.css',

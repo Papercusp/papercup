@@ -19,7 +19,12 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
-import { buildCapabilitySandboxCommand, capabilityExecSandboxEnabled, scrubExecEnv } from './exec-sandbox';
+import {
+  assertCapabilitySandboxAvailable,
+  buildCapabilitySandboxCommand,
+  capabilityExecSandboxPolicy,
+  scrubExecEnv,
+} from './exec-sandbox';
 
 /**
  * Exported so the bash-substitution audit can PIN its model to it
@@ -88,12 +93,14 @@ export interface ScratchCloneOptions {
   stateDir?: string;
   signal?: AbortSignal;
   sandboxEnabled?: boolean;
+  sandboxRequired?: boolean;
 }
 
 interface ScratchCloneContext {
   stateDir: string | undefined;
   signal: AbortSignal;
   sandboxEnabled: boolean;
+  sandboxRequired: boolean;
   submodules: number;
 }
 
@@ -137,7 +144,14 @@ async function gitStep(
   ctx: ScratchCloneContext,
   label: string,
 ): Promise<string> {
-  const result = await runGit(argv, cwd, ctx.stateDir, ctx.signal, ctx.sandboxEnabled);
+  const result = await runGit(
+    argv,
+    cwd,
+    ctx.stateDir,
+    ctx.signal,
+    ctx.sandboxEnabled,
+    ctx.sandboxRequired,
+  );
   if (result.code !== 0) throw scratchError(label, result.output);
   return result.output.trim();
 }
@@ -273,6 +287,7 @@ export async function createScratchClone(options: ScratchCloneOptions): Promise<
     stateDir: options.stateDir,
     signal: options.signal ?? new AbortController().signal,
     sandboxEnabled: options.sandboxEnabled ?? false,
+    sandboxRequired: options.sandboxRequired ?? false,
     submodules: 0,
   };
   const source = await localRepositoryRoot(options.source, ctx, 'scratchClone.source');
@@ -349,9 +364,9 @@ export default defineTool({
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
-    // P-022/D-008: re-apply the OS sandbox to this operator-side git subprocess
-    // when the papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
-    const sandboxEnabled = await capabilityExecSandboxEnabled();
+    // Resolve the same server-owned profile as capability:bash. A confined git
+    // subprocess cannot silently downgrade to raw host execution.
+    const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
 
     if ('scratchClone' in args && args.scratchClone) {
       const requestedSource = args.scratchClone.source ?? cwd;
@@ -364,7 +379,8 @@ export default defineTool({
           includeSubmodules: args.scratchClone.submodules,
           stateDir: ctx.stateDir,
           signal: ctx.signal,
-          sandboxEnabled,
+          sandboxEnabled: sandboxPolicy.enabled,
+          sandboxRequired: sandboxPolicy.required,
         });
         return {
           content: [{
@@ -413,7 +429,14 @@ export default defineTool({
     // repo-relative pathspec after `--` resolved to `apps/operator/<path>`, matched
     // nothing, and printed nothing at exit 0 — a confident FALSE ABSENCE for every
     // agent using `git log -- <path>` for landing/containment triage.
-    const r = await runGit(argv, cwd, ctx.stateDir, ctx.signal, sandboxEnabled);
+    const r = await runGit(
+      argv,
+      cwd,
+      ctx.stateDir,
+      ctx.signal,
+      sandboxPolicy.enabled,
+      sandboxPolicy.required,
+    );
     const truncated = r.output.length > INLINE_OUTPUT_CAP;
     let logPath: string | undefined;
     let output = r.output;
@@ -474,13 +497,15 @@ export function runGit(
   _stateDir: string | undefined,
   signal: AbortSignal,
   sandboxEnabled = false,
+  sandboxRequired = false,
 ): Promise<{ code: number | null; output: string }> {
   return new Promise((resolvePromise) => {
     const spawnPath = augmentedSpawnPath();
     const decision = buildCapabilitySandboxCommand(
       { cmd: [resolveBin('git', spawnPath), ...argv], cwd },
-      { enabled: sandboxEnabled },
+      { enabled: sandboxEnabled, required: sandboxRequired },
     );
+    assertCapabilitySandboxAvailable(decision, cwd);
     if (sandboxEnabled && !decision.sandboxed) {
       console.warn(
         `[capability:git] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,

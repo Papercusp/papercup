@@ -19,6 +19,21 @@
  * then decides to spawn. `decideReindex`
  * is the whole policy, kept pure so it is testable without a 4-minute subprocess.
  *
+ * EMBEDDINGS ARE ON (plan gitnexus-embeddings-enablement-2026-09-05 / WI-39394). Every
+ * spawn passes `--embeddings 0` (GITNEXUS_EMBEDDINGS_NODE_CAP) so the vector leg of
+ * `gitnexus.query` is populated instead of the permanent 0-of-246k it sat at since
+ * WI-35557. Cost, MEASURED 2026-09-05 on the full 246,622-node graph (device=cuda,
+ * /tmp/wi39394/run1-embed-run.log): the COLD pass is ~52 min — embedding phase ≈2,265s for
+ * 217,120 embeddings at ≈96/s — and is therefore NOT something this routine runs; it is a
+ * ONE-SHOT SUPERVISED BOOTSTRAP outside the routine (D-002). The hourly tick is
+ * INCREMENTAL: gitnexus loads its embedding cache and generates only for new/changed nodes
+ * (`core/embedding-mode.js`: `--embeddings` → "load cache, restore, then generate"). ⚠ An
+ * analyze WITHOUT the flag merely PRESERVES the embeddings already present and never embeds
+ * a new node, so dropping the flag does not "turn embeddings off" — it silently freezes the
+ * vector leg at bootstrap time while every count still reads healthy. That is why the flag
+ * lives in `buildAnalyzeArgs` beside `--skip-agents-md` and is asserted by a test, and why
+ * the canary treats `embeddings == 0` after an embeddings-enabled run as a DEGRADATION.
+ *
  * ⚠ `--skip-agents-md` IS MANDATORY AND IS HARDCODED HERE ON PURPOSE. Without it,
  * `analyze` REWRITES a gitnexus section into `CLAUDE.md` and `AGENTS.md`. In this repo
  * those are prompt SOURCES spliced into every agent's context, and CLAUDE.md
@@ -68,11 +83,20 @@ export const GITNEXUS_REPO_NAME = 'papercusp';
 export const GITNEXUS_ANALYZE_TIMEOUT_MS = 20 * 60_000;
 
 /**
- * The measured analyze peak is 10.59 GiB RSS, while the explicit V8 heap is 16 GiB.
- * Keep ~4 GiB for native tree-sitter/LadybugDB overhead, but put the whole run in its
- * own cgroup so a future regression cannot consume the background host's 40 GiB quota.
+ * The analyze child's OWN cgroup ceiling (managedSpawn `memoryMaxBytes`), so a regression
+ * can never consume the background host's 40 GiB quota.
+ *
+ * Sized from measurement, twice: 10.59 GiB peak RSS on the 2026-08-21 graph (19,479 files,
+ * no embeddings, 2 GiB LadybugDB pool) → 20 GiB; then 14.9 GiB (15,633,516 kB, /usr/bin/time
+ * "Maximum resident set size") on 2026-09-05 over 246,622 nodes WITH embeddings and the 8 GiB
+ * buffer-pool pin (GITNEXUS_LBUG_BUFFER_POOL_BYTES). That peak lands in the LadybugDB bulk-
+ * load phase, BEFORE embedding starts — the embedding phase itself ran at 2.3–3.2 GiB with the
+ * model on the GPU — so it is the pool + heap, not the embedder, that sets the envelope.
+ * 24 GiB = the 16 GiB heap cap + the 8 GiB pool worst case; against the measured 14.9 GiB it is
+ * ~1.6x headroom, and 24 + the ~11.6 GiB of observed co-tenants stays under the 40 GiB
+ * bg-host cgroup. A cgroup OOM kill here is not a cheap failure: it leaves the D-016 residue.
  */
-export const GITNEXUS_ANALYZE_MEMORY_MAX_BYTES = 20 * 1024 ** 3;
+export const GITNEXUS_ANALYZE_MEMORY_MAX_BYTES = 24 * 1024 ** 3;
 
 // ---------------------------------------------------------------------------
 // P-004 — ANALYZE RESOURCE CAP (heap / semi-space / stack).
@@ -168,6 +192,38 @@ export const GITNEXUS_LBUG_DB_ALERT_RATIO = 0.6;
  * and the agent fleet. The failure mode it trades into is worse than the one it fixes.
  */
 export const GITNEXUS_LBUG_BUFFER_POOL_BYTES = 8 * 1024 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// EMBEDDINGS — plan gitnexus-embeddings-enablement-2026-09-05 (WI-39394), D-002.
+//
+// gitnexus 1.6.9 semantics that these three constants pin (core/embedding-mode.js,
+// core/embeddings/config.js, cli/analyze.js):
+//   * `--embeddings [limit]` ENABLES generation; without it an analyze only PRESERVES
+//     embeddings already in the index and never embeds a new node. `limit` overrides the
+//     50,000-node safety cap (DEFAULT_EMBEDDING_NODE_LIMIT); `0` disables the cap. This
+//     graph is 246,622 nodes, so the default cap would SKIP embedding wholesale with a
+//     notice — measured 2026-09-04 ("--embeddings 50000" run → 0 embeddings).
+//   * `GITNEXUS_EMBEDDING_DEVICE` is read by resolveEmbeddingConfig ahead of any CLI
+//     override; `cuda` falls back to cpu INSIDE gitnexus when the CUDA provider cannot load
+//     (embedder devicesToTry), so pinning cuda is never a hard dependency on the GPU.
+//   * `GITNEXUS_EMBEDDING_THREADS` is the onnxruntime intra-op thread count (default 4).
+// ---------------------------------------------------------------------------
+
+/**
+ * `--embeddings <cap>` — 0 = UNCAPPED. Anything else silently re-arms the node-count skip
+ * on this graph (246,622 nodes vs the 50,000 default), which is exactly the failure that kept
+ * the vector leg at 0 embeddings for a month. Measured 2026-09-05: the uncapped cold pass over
+ * the full graph completes (217,120 embeddings, exit 0) — see the module header for cost.
+ */
+export const GITNEXUS_EMBEDDINGS_NODE_CAP = 0;
+
+/** Embedding device pin. `cuda` on this box (RTX, ~1.3 GiB used at 47–79% util for the
+ *  whole pass); gitnexus falls back to cpu internally if the CUDA provider is unavailable. */
+export const GITNEXUS_EMBEDDING_DEVICE = 'cuda';
+
+/** onnxruntime intra-op threads for the embedder. gitnexus's own default is 4; pinned so a
+ *  future upstream default change cannot silently move the CPU envelope of the hourly tick. */
+export const GITNEXUS_EMBEDDING_THREADS = 4;
 
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
@@ -313,10 +369,29 @@ export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
 
 /**
  * The ONE place the analyze argv is built. `--skip-agents-md` is not optional and is not
- * a caller's choice — see this module's header for what happens without it.
+ * a caller's choice — see this module's header for what happens without it. `--embeddings`
+ * is likewise not a caller's choice: dropping it does not disable embeddings, it FREEZES
+ * them (existing ones are preserved, new nodes are never embedded), see the header.
+ *
+ * `--embeddings` takes an OPTIONAL value in gitnexus's commander definition, so it is placed
+ * LAST — a positional after it would be swallowed as the cap.
  */
-export function buildAnalyzeArgs(root: string, repoName: string): string[] {
-  return ['analyze', root, '--skip-agents-md', '--name', repoName];
+export function buildAnalyzeArgs(
+  root: string,
+  repoName: string,
+  embeddingsNodeCap: number = GITNEXUS_EMBEDDINGS_NODE_CAP,
+): string[] {
+  return ['analyze', root, '--skip-agents-md', '--name', repoName, '--embeddings', String(embeddingsNodeCap)];
+}
+
+/**
+ * PURE — does this argv ask gitnexus to GENERATE embeddings? Derived from the argv rather
+ * than restated as a second boolean so the canary's expectation cannot drift from what the
+ * spawn actually passed (`cli/analyze.js`: `embeddingsEnabled = !!options.embeddings`, and
+ * `--embeddings 0` is the truthy string "0", i.e. enabled + uncapped).
+ */
+export function analyzeEmbeddingsExpected(args: readonly string[] = buildAnalyzeArgs('.', GITNEXUS_REPO_NAME)): boolean {
+  return args.includes('--embeddings');
 }
 
 /**
@@ -352,11 +427,17 @@ export function analyzeEnv(
   // the 2026-09-02 rebuild. It rides in the same branch-independent object because the
   // heap and the pool are separate resources, so an operator tuning NODE_OPTIONS must not
   // silently drop the one that node flags cannot influence at all.
+  //
+  // The embedding device/threads ride here too (D-002): gitnexus reads them from env in
+  // resolveEmbeddingConfig, an explicit caller value still wins, and — like the pool — no
+  // node flag can influence them, so they must not depend on the heap branch either.
   const withDbCap: NodeJS.ProcessEnv = {
     ...base,
     GITNEXUS_LBUG_MAX_DB_SIZE: base.GITNEXUS_LBUG_MAX_DB_SIZE ?? String(GITNEXUS_LBUG_MAX_DB_BYTES),
     GITNEXUS_LBUG_BUFFER_POOL_SIZE:
       base.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? String(GITNEXUS_LBUG_BUFFER_POOL_BYTES),
+    GITNEXUS_EMBEDDING_DEVICE: base.GITNEXUS_EMBEDDING_DEVICE ?? GITNEXUS_EMBEDDING_DEVICE,
+    GITNEXUS_EMBEDDING_THREADS: base.GITNEXUS_EMBEDDING_THREADS ?? String(GITNEXUS_EMBEDDING_THREADS),
   };
   const existing = (withDbCap.NODE_OPTIONS ?? '').trim();
   if (/--max-old-space-size/.test(existing)) return withDbCap;
@@ -977,6 +1058,23 @@ export interface GitnexusHealth {
   indexDiskStatus?: string;
   /** Suppresses repeated over-ceiling alerts until the footprint comes back under. */
   indexDiskAlerted?: boolean;
+  /** Vector-leg status from the last canary that ran (plan gitnexus-embeddings-enablement). */
+  vectorSearch?: GitnexusVectorSearchHealth;
+}
+
+/**
+ * The vector leg's health, persisted beside the failure streak so a DEGRADED graph (answers
+ * definitions/callers, cannot answer a paraphrase) is visible in `/admin/schedules` and to
+ * `routines:list` instead of only in a journald line nobody reads.
+ */
+export interface GitnexusVectorSearchHealth {
+  /** `stats.embeddings` after the analyze; null ⇒ the registry did not report it. */
+  embeddings: number | null;
+  /** Did the analyze argv ask for embeddings? (analyzeEmbeddingsExpected) */
+  expected: boolean;
+  /** True when expected and absent — the canary's `degraded` verdict for this probe. */
+  degraded: boolean;
+  checkedAt: number;
 }
 
 export const GITNEXUS_HEALTH_DEFAULT: GitnexusHealth = {
@@ -1278,11 +1376,20 @@ export interface CanaryProbe {
   name: string;
   ok: boolean;
   detail: string;
+  /**
+   * A failing probe that DEGRADES the graph rather than making it unusable: reported in the
+   * summary and persisted in health metadata, but it never flips `healthy`. Only the
+   * vector-search probe uses it (a graph with no embeddings still answers every
+   * definition/caller question — it just cannot answer a paraphrase).
+   */
+  degraded?: boolean;
 }
 
 export interface CanaryVerdict {
   /** False when any probe that indicates a genuinely unusable graph failed. */
   healthy: boolean;
+  /** True when a `degraded` probe failed — the graph answers, but a capability is missing. */
+  degraded: boolean;
   probes: CanaryProbe[];
   summary: string;
 }
@@ -1301,17 +1408,27 @@ export interface CanaryInputs {
    * null ⇒ could not be attempted (no symbol to sample, or the read failed).
    */
   roundTripOk: boolean | null;
-  /** Embeddings present, from registry stats. 0 is EXPECTED here (WI-35557) — reported, not failed. */
+  /** Embeddings present, from registry stats (`stats.embeddings`); null ⇒ not reported. */
   embeddings: number | null;
+  /**
+   * Did the analyze that produced this index ask for embeddings (`--embeddings` in the
+   * argv — see analyzeEmbeddingsExpected)? When true, `embeddings == 0` is a DEGRADATION
+   * (the vector leg silently died: cap re-armed, model failed to load, cache wiped) rather
+   * than the accepted WI-35557 state it was before plan gitnexus-embeddings-enablement.
+   */
+  embeddingsExpected: boolean;
 }
 
 /**
  * PURE — the whole canary policy, testable without a graph, a subprocess, or a clock.
  *
- * Only the probes that mean "the graph cannot answer" set healthy=false. Vector/FTS
- * status is REPORTED but never fails the canary: embeddings have been legitimately 0 on
- * this install since WI-35557, and a canary that fails on a known, accepted condition is
- * a canary that gets muted — taking the real signal with it.
+ * Only the probes that mean "the graph cannot answer" set healthy=false. Vector status is
+ * a DEGRADATION, never a failure: a graph with 0 embeddings still answers every definition
+ * and caller question, and a canary that fails on a condition the graph survives is a canary
+ * that gets muted — taking the real signal with it. It is still not silent: `degraded` is
+ * set, the summary names it, and the routine persists it in `gitnexus_health.vectorSearch`.
+ * Before embeddings were enabled (WI-35557) 0 was the accepted state, which is what the
+ * `embeddingsExpected:false` branch still describes.
  */
 export function judgeCanary(i: CanaryInputs): CanaryVerdict {
   const probes: CanaryProbe[] = [
@@ -1348,26 +1465,46 @@ export function judgeCanary(i: CanaryInputs): CanaryVerdict {
             ? 'a symbol sampled from the graph resolved back through the lookup path'
             : 'a symbol PRESENT in the graph did NOT resolve through the lookup path — the read path is broken, not the data',
     },
-    {
-      // Status only. See the doc comment: 0 is the expected, accepted state here.
-      name: 'vector-search',
-      ok: true,
-      detail:
-        i.embeddings == null
-          ? 'embeddings unknown'
-          : i.embeddings > 0
-            ? `${i.embeddings} embeddings`
-            : '0 embeddings — EXPECTED (WI-35557: gitnexus.query is non-functional on this install; use context/cypher or grep)',
-    },
+    vectorSearchProbe(i.embeddings, i.embeddingsExpected),
   ];
-  const failed = probes.filter((p) => !p.ok);
+  const failed = probes.filter((p) => !p.ok && !p.degraded);
+  const degradedProbes = probes.filter((p) => !p.ok && p.degraded);
+  const degradedNote =
+    degradedProbes.length === 0 ? '' : ` (DEGRADED: ${degradedProbes.map((p) => `${p.name}: ${p.detail}`).join(' | ')})`;
   return {
     healthy: failed.length === 0,
+    degraded: degradedProbes.length > 0,
     probes,
     summary:
       failed.length === 0
-        ? `canary OK — ${probes.map((p) => p.detail).join('; ')}`
-        : `canary FAILED (${failed.length}/${probes.length}): ${failed.map((p) => `${p.name}: ${p.detail}`).join(' | ')}`,
+        ? `canary OK${degradedNote} — ${probes.map((p) => p.detail).join('; ')}`
+        : `canary FAILED (${failed.length}/${probes.length}): ${failed.map((p) => `${p.name}: ${p.detail}`).join(' | ')}${degradedNote}`,
+  };
+}
+
+/** PURE — the vector-search probe. Degrades (never fails) when embeddings were asked for
+ *  and are absent; pure status when they were not. */
+export function vectorSearchProbe(embeddings: number | null, embeddingsExpected: boolean): CanaryProbe {
+  const name = 'vector-search';
+  if (embeddings != null && embeddings > 0) return { name, ok: true, detail: `${embeddings} embeddings` };
+  if (!embeddingsExpected) {
+    return {
+      name,
+      ok: true,
+      detail:
+        embeddings == null
+          ? 'embeddings unknown (not requested by this analyze)'
+          : '0 embeddings — not requested by this analyze (WI-35557 state); gitnexus.query has no vector leg, use context/cypher or grep',
+    };
+  }
+  return {
+    name,
+    ok: false,
+    degraded: true,
+    detail:
+      embeddings == null
+        ? 'embeddings UNKNOWN after an embeddings-enabled analyze — registry stats carry no `embeddings`; the vector leg cannot be confirmed'
+        : '0 embeddings after an embeddings-enabled analyze — the vector leg is DEAD (node cap re-armed, embedder failed to load, or cache wiped); definitions/callers still answer, paraphrase queries do not',
   };
 }
 
@@ -1492,10 +1629,25 @@ export const CANARY_PROBE_TIMEOUT_MS = 90_000;
  * this action: every probe collapses to null on any error, and `judgeCanary` decides
  * what that means — the policy stays in the pure function.
  */
-export async function runCanary(root: string, registryFiles: number | null, embeddings: number | null): Promise<CanaryVerdict> {
+export async function runCanary(
+  root: string,
+  registryFiles: number | null,
+  embeddings: number | null,
+  // Derived from the SAME argv builder the spawn uses, so the expectation cannot drift
+  // from what was actually asked of gitnexus.
+  embeddingsExpected: boolean = analyzeEmbeddingsExpected(buildAnalyzeArgs(root, GITNEXUS_REPO_NAME)),
+): Promise<CanaryVerdict> {
   const bin = canaryBin();
   if (!existsSync(bin)) {
-    return judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, defEdgeCount: null, roundTripOk: null, embeddings });
+    return judgeCanary({
+      fileCount: null,
+      symbolCount: null,
+      callEdgeCount: null,
+      defEdgeCount: null,
+      roundTripOk: null,
+      embeddings,
+      embeddingsExpected,
+    });
   }
   const t = CANARY_PROBE_TIMEOUT_MS;
   const fileCount = await cypherScalar(bin, root, 'MATCH (f:File) RETURN count(f) AS n', t);
@@ -1520,7 +1672,15 @@ export async function runCanary(root: string, registryFiles: number | null, embe
     const found = await cypherScalar(bin, root, `MATCH (f:Function) WHERE f.name = '${safe}' RETURN count(f) AS n`, t);
     roundTripOk = found != null && found > 0;
   }
-  return judgeCanary({ fileCount: fileCount ?? registryFiles, symbolCount, callEdgeCount, defEdgeCount, roundTripOk, embeddings });
+  return judgeCanary({
+    fileCount: fileCount ?? registryFiles,
+    symbolCount,
+    callEdgeCount,
+    defEdgeCount,
+    roundTripOk,
+    embeddings,
+    embeddingsExpected,
+  });
 }
 
 /** The graph indexes the operator-home repo; a per-hive coding repo has no business
@@ -1626,13 +1786,22 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   // treat a canary failure as a failure of this tick — otherwise the existing alarm rail
   // keeps reporting success over an index nobody can query.
   let canary: CanaryVerdict | null = null;
+  let vectorSearch: GitnexusVectorSearchHealth | null = null;
   if (ranClean) {
     try {
       const after = readRegistryEntry(registryPath(), repoName) as
         | (GitnexusRegistryEntry & { stats?: { files?: number; embeddings?: number } })
         | null;
-      canary = await runCanary(root, after?.stats?.files ?? null, after?.stats?.embeddings ?? null);
+      const embeddingsAfter = after?.stats?.embeddings ?? null;
+      const embeddingsExpected = analyzeEmbeddingsExpected(buildAnalyzeArgs(root, repoName));
+      canary = await runCanary(root, after?.stats?.files ?? null, embeddingsAfter, embeddingsExpected);
+      vectorSearch = { embeddings: embeddingsAfter, expected: embeddingsExpected, degraded: canary.degraded, checkedAt: Date.now() };
       console.log(`[gitnexus-reindex] ${canary.healthy ? 'canary OK' : 'CANARY FAILED'} — ${canary.summary}`);
+      if (canary.degraded) {
+        // Not a tick failure (the graph answers), but not silence either: the vector leg
+        // regressing to 0 after bootstrap is exactly the state this plan exists to end.
+        console.warn(`[gitnexus-reindex] canary DEGRADED — ${canary.summary}`);
+      }
     } catch (e) {
       // Never let canary plumbing fail a tick that genuinely succeeded.
       console.warn(`[gitnexus-reindex] canary could not run: ${e instanceof Error ? e.message : e}`);
@@ -1709,11 +1878,14 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     )) as Array<{ gh: Partial<GitnexusHealth> | null }>;
     const prevHealth: GitnexusHealth = { ...GITNEXUS_HEALTH_DEFAULT, ...(rows[0]?.gh ?? {}) };
     const update = decideGitnexusHealthUpdate(prevHealth, success, GITNEXUS_FAILURE_ALERT_THRESHOLD, Date.now());
+    // The vector leg's status rides in the same record; a tick whose canary did not run
+    // keeps the previous reading rather than erasing it.
+    const nextHealth: GitnexusHealth = vectorSearch ? { ...update.next, vectorSearch } : update.next;
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
-      [ctx.installSlug, JSON.stringify({ gitnexus_health: update.next })],
+      [ctx.installSlug, JSON.stringify({ gitnexus_health: nextHealth })],
     );
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');

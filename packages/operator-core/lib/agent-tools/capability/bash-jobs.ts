@@ -26,7 +26,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
-import { buildCapabilitySandboxCommand, scrubExecEnv } from './exec-sandbox';
+import {
+  assertCapabilitySandboxAvailable,
+  buildCapabilitySandboxCommand,
+  scrubExecEnv,
+  type BuildSandboxOpts,
+} from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
 import {
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
@@ -571,6 +576,7 @@ function spawnShell(
   cwd: string,
   env: Record<string, string> | undefined,
   sandboxEnabled = false,
+  sandboxRequired = false,
   background = false,
   /** task-manager P-008: wrap the resolved argv into this job's cgroup scope.
    *  Applied AFTER the sandbox decision so bwrap still wraps the payload and the
@@ -585,6 +591,8 @@ function spawnShell(
    *  `command not found` text is ordinary child output (test fixtures emit it),
    *  so it cannot safely determine this wrapper's exit status. */
   missingCommandToken?: string,
+  /** Deterministic unit-test seam for wrapper availability; never caller input. */
+  sandboxBuildOpts?: Omit<BuildSandboxOpts, 'enabled' | 'required' | 'background'>,
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath(cwd);
   const instrumentedCommand = missingCommandToken
@@ -603,8 +611,9 @@ function spawnShell(
     // EI-16635: `background` (true for startBackground's run_in_background jobs)
     // tells the sandbox builder to omit bwrap's `--die-with-parent` — that flag
     // is incompatible with a job contractually meant to outlive this spawn call.
-    { enabled: sandboxEnabled, background },
+    { ...sandboxBuildOpts, enabled: sandboxEnabled, required: sandboxRequired, background },
   );
+  assertCapabilitySandboxAvailable(decision, cwd);
   if (sandboxEnabled && !decision.sandboxed) {
     console.warn(
       `[capability:bash] exec-sandbox enabled but ${decision.reason} — running unsandboxed in the operator process (cwd ${cwd})`,
@@ -1341,6 +1350,10 @@ export interface RunOptions {
   /** Resolved papercusp-capability-exec-sandbox flag (P-022/D-008). When true the
    *  command runs inside a bwrap OS sandbox where bwrap works; fail-open otherwise. */
   sandboxEnabled?: boolean;
+  /** Confined profile: wrapper unavailability refuses before the command starts. */
+  sandboxRequired?: boolean;
+  /** Internal deterministic test seam; never exposed as a tool argument. */
+  sandboxBuildOpts?: Omit<BuildSandboxOpts, 'enabled' | 'required' | 'background'>;
   /** task-manager P-008 provenance — the agent id this job is FOR, and the
    *  work-item it is attributable to. Optional because a caller that does not know
    *  should say so (the row records `capability:bash`) rather than guess: a wrong
@@ -1612,7 +1625,17 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
     const logStream = safeWriteStream(logPath);
     const startedAt = Date.now();
-    const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, false, undefined, id);
+    const child = spawnShell(
+      opts.command,
+      opts.cwd,
+      opts.env,
+      opts.sandboxEnabled,
+      opts.sandboxRequired,
+      false,
+      undefined,
+      id,
+      opts.sandboxBuildOpts,
+    );
 
     let buffer = '';
     let totalBytes = 0;
@@ -1811,7 +1834,17 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
-  const child = spawnShell(opts.command, opts.cwd, childEnv, opts.sandboxEnabled, true, enrolment.wrap, id);
+  const child = spawnShell(
+    opts.command,
+    opts.cwd,
+    childEnv,
+    opts.sandboxEnabled,
+    opts.sandboxRequired,
+    true,
+    enrolment.wrap,
+    id,
+    opts.sandboxBuildOpts,
+  );
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
