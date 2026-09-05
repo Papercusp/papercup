@@ -132,6 +132,29 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
   });
 
+  it('emits a submittable get-spec-evidence probe when the required layer is missing', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [
+        evidence({
+          details: {
+            adequacy: {
+              testLayer: 'unit',
+              pathReachable: true,
+            },
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+    const correctLayerEvidence = result.ratings['correct-layer'].evidence;
+
+    expect(correctLayerEvidence).toContain(
+      'Probe plans:get-spec-evidence with args={"slug":"reconnect-plan","specIds":["SPEC-003-01"]}.',
+    );
+    expect(correctLayerEvidence).not.toMatch(/\b(planSlug|specId|specRevision|specFingerprint)=/);
+  });
+
   it('requires targeted L4 for high-risk, bugfix, migration, and mutation-required clauses', () => {
     expect(requiredProofFloor(clause({ behaviorClass: 'authorization' }), 'plan-class-feature-ship')).toBe('l4');
     expect(requiredProofFloor(clause(), 'plan-class-bugfix')).toBe('l4');
