@@ -24,6 +24,7 @@ import {
   isLoopSaturated,
   loopPressure,
   setLagPublishTarget,
+  shouldTriggerLoopProfile,
   shouldTriggerFullHeapSnapshot,
   shouldTriggerHeapSamplingDump,
   startEventLoopLagMonitor,
@@ -137,6 +138,16 @@ describe('loop-pressure signal (P5-1)', () => {
     expect(classifyLoopPressure(50, 40, 100)).toBe('elevated');
     expect(classifyLoopPressure(200, 40, 100)).toBe('critical');
     expect(classifyLoopPressure(NaN)).toBe('ok'); // no signal ⇒ never shed
+  });
+
+  it('profiles an isolated catastrophic max even when the window p95 stays below its trigger (WI-2146561)', () => {
+    // Exact shape measured live: six cross-harness stage stalls landed together,
+    // but the p95-only profiler gate stayed closed because one 20.4s delay was a
+    // small fraction of the otherwise-responsive window.
+    expect(shouldTriggerLoopProfile({ p95Ms: 171.3, maxMs: 20_401.1 })).toBe(true);
+    expect(shouldTriggerLoopProfile({ p95Ms: 599.9, maxMs: 2_999.9 })).toBe(false);
+    expect(shouldTriggerLoopProfile({ p95Ms: 600, maxMs: 1 })).toBe(true);
+    expect(shouldTriggerLoopProfile({ p95Ms: Number.NaN, maxMs: Number.NaN })).toBe(false);
   });
 
   it('loopPressure() is "ok" / isLoopSaturated() / isLoopElevated() false when NO monitor is running', () => {
@@ -264,6 +275,27 @@ describe('F1 lag-triggered CPU profiler (infra round-3)', () => {
       /* dir never created = inert, which is the point */
     }
     expect(files.filter((f) => f.endsWith('.cpuprofile'))).toHaveLength(0);
+  });
+
+  it('consults the profiler gate for a high max even when p95 cannot cross the sustained trigger', async () => {
+    const gate = vi.fn(() => false);
+    handle = startEventLoopLagMonitor({
+      intervalMs: 60,
+      warnP95Ms: 1000,
+      profileOnSaturation: gate,
+      profileTriggerP95Ms: 1000,
+      profileTriggerMaxMs: 20,
+      minProfileGapMs: 0,
+      heapSamplingOnHighRss: false,
+      heapSnapshotOnHighRss: false,
+      log: vi.fn(),
+    });
+    for (let i = 0; i < 3; i++) {
+      blockFor(40);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await new Promise((r) => setTimeout(r, 180));
+    expect(gate).toHaveBeenCalled();
   });
 
   it('ON path: a saturated window triggers a capture (best-effort), bounded by maxProfiles', async () => {

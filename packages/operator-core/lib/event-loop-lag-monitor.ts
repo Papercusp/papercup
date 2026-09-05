@@ -30,14 +30,13 @@ export interface LagMonitorOpts {
    *  numbers for the lag gauge; the profiler also passes the profile `file` path.) */
   log?: (line: string, detail: Record<string, number | string>) => void;
   /**
-   * infra round-3 F1: when a window crosses `profileTriggerP95Ms`, capture a short
-   * V8 CPU profile (`.cpuprofile`) so the SYNCHRONOUS culprit eating the loop is
-   * identifiable — the histogram says "the loop is blocked", the profile says "by
-   * what". Default OFF (the p2p-perf SLO instrument + tests must not be perturbed
-   * by a profiler); the production host turns it on. Saturation is sustained
-   * (350-630 windows/hr observed), so a profile started just AFTER a critical
-   * window reliably catches the ongoing block. All inspector use is best-effort:
-   * any failure degrades silently to today's symptom-only logging.
+   * infra round-3 F1: when a window crosses `profileTriggerP95Ms` OR
+   * `profileTriggerMaxMs`, capture a short V8 CPU profile (`.cpuprofile`) so the
+   * SYNCHRONOUS culprit eating the loop is identifiable — the histogram says "the
+   * loop is blocked", the profile says "by what". Default OFF (the p2p-perf SLO
+   * instrument + tests must not be perturbed by a profiler); the production host
+   * turns it on. All inspector use is best-effort: any failure degrades silently
+   * to today's symptom-only logging.
    *
    * WI-5820: accepts a PREDICATE as well as a boolean. Pass a function (e.g.
    * `() => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host')`) and the gate is
@@ -54,6 +53,17 @@ export interface LagMonitorOpts {
   profileDir?: string;
   /** p95 loop-delay (ms) that triggers a capture. Default = the critical band (600ms). */
   profileTriggerP95Ms?: number;
+  /**
+   * Single-window maximum loop delay (ms) that triggers a capture even when p95
+   * stays below the sustained-pressure threshold. Default 3000ms.
+   *
+   * WI-2146561: a single 20.4s main-thread block produced six cross-harness stage
+   * stalls while p95 was only 171.3ms, so the p95-only trigger recorded the
+   * symptom but never attempted attribution. The safety cap below intentionally
+   * remains p95-based: once an isolated block has ended and p95 is below the cap,
+   * the loop is no longer in the native-abort regime that makes inspector unsafe.
+   */
+  profileTriggerMaxMs?: number;
   /**
    * WI-5820 SAFETY CAP — the upper edge of the profiling band. A window whose p95
    * is at or above this is TOO SATURATED to profile safely: capture is skipped
@@ -258,6 +268,25 @@ export const CRITICAL_P95_MS = Math.max(
 );
 
 /**
+ * A single delay this large is operationally catastrophic even when the rest of
+ * the 10s window keeps p95 low. It shares the existing profiler's five-minute
+ * rate limit, so adding this trigger cannot create a profile storm.
+ */
+export const DEFAULT_PROFILE_TRIGGER_MAX_MS = 3_000;
+
+/** Pure trigger shared by the CPU and heap-sampling attribution paths. */
+export function shouldTriggerLoopProfile(
+  sample: Pick<LoopLagSample, 'p95Ms' | 'maxMs'>,
+  profileTriggerP95Ms: number = CRITICAL_P95_MS,
+  profileTriggerMaxMs: number = DEFAULT_PROFILE_TRIGGER_MAX_MS,
+): boolean {
+  return (
+    (Number.isFinite(sample.p95Ms) && sample.p95Ms >= profileTriggerP95Ms) ||
+    (Number.isFinite(sample.maxMs) && sample.maxMs >= profileTriggerMaxMs)
+  );
+}
+
+/**
  * PURE gate: should THIS tick trigger a full heap-snapshot capture? Extracted from the
  * monitor's tick closure (autonomous-loop-prod-audit-2026-07-02 P-006, SPOF 1h) so the
  * self-disarm invariant — at most once per process lifetime when `heapSnapshotSingleShot`
@@ -438,8 +467,9 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           return () => fixed;
         })();
   const profileTriggerP95Ms = opts.profileTriggerP95Ms ?? CRITICAL_P95_MS;
+  const profileTriggerMaxMs = opts.profileTriggerMaxMs ?? DEFAULT_PROFILE_TRIGGER_MAX_MS;
   // WI-5820: upper edge of the safe profiling band (see profileMaxP95Ms doc).
-  const profileMaxP95Ms = opts.profileMaxP95Ms ?? 3000;
+  const profileMaxP95Ms = opts.profileMaxP95Ms ?? DEFAULT_PROFILE_TRIGGER_MAX_MS;
   const profileDurationMs = opts.profileDurationMs ?? 3000;
   const minProfileGapMs = opts.minProfileGapMs ?? 300_000;
   const maxProfiles = opts.maxProfiles ?? 20;
@@ -504,9 +534,10 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         windowMs: intervalMs,
       });
     }
-    // F1: when saturated, capture a short CPU profile so the synchronous culprit
-    // is identifiable. Rate-limited + single-flight; fully best-effort.
-    if (!profiling && s.p95Ms >= profileTriggerP95Ms && Date.now() - lastProfileAt >= minProfileGapMs) {
+    const profileTriggered = shouldTriggerLoopProfile(s, profileTriggerP95Ms, profileTriggerMaxMs);
+    // F1 + WI-2146561: capture after either sustained p95 pressure or one
+    // catastrophic maximum delay. Rate-limited + single-flight; fully best-effort.
+    if (!profiling && profileTriggered && Date.now() - lastProfileAt >= minProfileGapMs) {
       // Claim the single-flight slot and consume the rate-limit window BEFORE
       // resolving the (possibly async) gate — so a second tick cannot race in
       // behind us, and a gate that reads false costs at most one evaluation per
@@ -528,8 +559,11 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         // was never going to do. A window this saturated is the regime where the
         // inspector session natively aborts (WI-3797, 8x crash-loop of :3070), so
         // decline — and SAY so, so the missing attribution is visible rather than
-        // silent. Shares the capture rate-limit, so an extreme burst cannot
-        // log-storm.
+        // silent. This remains a P95 cap on purpose: a historical max spike may be
+        // arbitrarily large, but once the timer runs again with a sub-cap p95 the
+        // isolated block has ended and inspector is no longer entering an already-
+        // wedged loop. Shares the capture rate-limit, so an extreme burst cannot
+        // profile-storm or log-storm.
         if (s.p95Ms >= profileMaxP95Ms) {
           log('[event-loop-lag] CPU profile SKIPPED — loop too saturated to profile safely', {
             p95Ms: s.p95Ms,
@@ -569,7 +603,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       heapSamplingOnHighRss &&
       samplingArmed &&
       !samplingDumping &&
-      s.p95Ms >= profileTriggerP95Ms &&
+      profileTriggered &&
       Date.now() - lastSamplingDumpAt >= minHeapSamplingDumpGapMs
     ) {
       samplingDumping = true;
