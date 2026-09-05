@@ -43,7 +43,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
-import type { GitSyncOutcome } from './run-git-sync';
+import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import {
   configureScheduledRegistry,
   resetScheduledRegistry,
@@ -2519,7 +2519,10 @@ describe('clean sync outcome', () => {
           reconcileSuperprojectOrigin: false,
           bridgeContainedReleaseMainOnCommitOnly: mode === 'bridged',
         }),
+        beforePush: expect.any(Function),
       }));
+      const pushGate = (runGitSyncMock.mock.calls[0][1] as RunGitSyncOpts).beforePush!;
+      await expect(pushGate(['push', 'origin', 'HEAD:main'], repoDir)).rejects.toThrow('owning hive key');
       expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual([
         'local-sync',
         'post-legs',
@@ -2550,6 +2553,7 @@ describe('clean sync outcome', () => {
         pushSubmoduleOrigins: true,
         reconcileSuperprojectOrigin: false,
       }),
+      beforePush: expect.any(Function),
     }));
   });
 
