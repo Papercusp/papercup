@@ -43,10 +43,26 @@ const LOCAL_API_ORIGIN_PROTOCOLS = new Set([
 /** True iff the request's Origin header is in the allowed local-API set. */
 export function allowedLocalApiOrigin(origin: string | null): string | null {
   if (!origin) return null;
-  if (origin === 'null') return 'null';
+  // `null` is the serialized origin of sandboxed/file/data documents. It is
+  // deliberately never a trusted browser origin: reflecting it together with
+  // credentials turns an opaque page into a readable local-API client.
+  if (origin === 'null') return null;
   try {
     const url = new URL(origin);
     if (!LOCAL_API_ORIGIN_PROTOCOLS.has(url.protocol)) return null;
+    // An Origin header is an origin, not an arbitrary URL. Reject credentials,
+    // paths, queries, and fragments instead of reflecting a caller-controlled
+    // string that merely happens to parse as a URL.
+    if (
+      url.username ||
+      url.password ||
+      (url.pathname !== '/' && url.pathname !== '') ||
+      url.search ||
+      url.hash ||
+      ((url.protocol === 'http:' || url.protocol === 'https:') && origin !== url.origin)
+    ) {
+      return null;
+    }
     if (LOCAL_API_ORIGIN_HOSTS.has(url.hostname)) return origin;
   } catch {
     return null;
