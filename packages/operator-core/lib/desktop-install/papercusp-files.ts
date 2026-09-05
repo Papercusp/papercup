@@ -975,6 +975,22 @@ export const CC_HOOK_FILES = [
   // Measured: 54 of 21,267 tracked files carry such a banner, every one a real generated
   // artifact. Generators are untouched — they write via node:fs, not tool calls.
   'pretooluse-generated-file-edit-guard.mjs',
+  // P-010 (fleet-friction-remediation-2026-08-21): PreToolUse BLOCKING guard on an
+  // apply_patch envelope carrying more than one operation for the same target path.
+  // apply_patch rejects that whole envelope deterministically, before writing
+  // anything; the class was filed independently five times (EI-21353344120350526,
+  // EI-21354846297369687, EI-21565696681975825, EI-21573638140720842,
+  // EI-22346861820470210 — "deterministic validation behavior but was not surfaced
+  // before submission"), so the guard moves detection to authoring time and carries
+  // the mechanical fix (merge into ONE Update File block with multiple @@ hunks).
+  //   ⚠ COPIED BUT NOT REGISTERED IN mergeClaudeHookSettings, on purpose — the
+  //   second such case after posttooluse-objective-title.sh, and for a different
+  //   reason: this trap is CODEX-ONLY BY CONSTRUCTION. `apply_patch` is Codex's
+  //   file-edit tool; Claude's Edit/Write carry a single file_path and cannot
+  //   express a duplicate target at all, so a Claude registration would be a
+  //   matcher that can never fire. It is registered where it can: the managed
+  //   Codex home's PreToolUse chain in role-codex-home.ts (matcher ^apply_patch$).
+  'pretooluse-apply-patch-duplicate-target-guard.mjs',
   // WI-38352: PreToolUse (matcher "Edit|Write|MultiEdit") BLOCKING guard on a write to
   // libs/papercusp/libs/db/sql/<NNN>-*.sql whose NNN was hand-picked rather than allocated
   // via `node scripts/next-migration.mjs` (no row in harness_shared.migration_reservations).
