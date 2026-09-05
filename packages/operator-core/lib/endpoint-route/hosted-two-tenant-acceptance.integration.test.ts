@@ -404,12 +404,28 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     ]);
     expect(responseA.status).toBe(200);
     expect(responseB.status).toBe(200);
-    const textA = JSON.stringify(await responseA.json());
-    const textB = JSON.stringify(await responseB.json());
-    expect(textA).toContain(HOST_A);
-    expect(textA).not.toContain(HOST_B);
-    expect(textB).toContain(HOST_B);
-    expect(textB).not.toContain(HOST_A);
+    const identities = (body: unknown) => {
+      const rows = body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as { rows?: unknown }).rows
+        : null;
+      if (!Array.isArray(rows)) return [];
+      return rows.flatMap((row) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) return [];
+        const { kind, id } = row as { kind?: unknown; id?: unknown };
+        return typeof kind === 'string' && typeof id === 'string' ? [{ kind, id }] : [];
+      });
+    };
+    // Compare authoritative row identities, never serialized substrings. The
+    // public acceptance deliberately reuses display names across tenants, and
+    // a display name is allowed to equal another row's opaque id.
+    expect(identities(await responseA.json())).toEqual([
+      { kind: 'connection', id: CONNECTION_A },
+      { kind: 'workspace', id: HOST_A },
+    ]);
+    expect(identities(await responseB.json())).toEqual([
+      { kind: 'connection', id: CONNECTION_B },
+      { kind: 'workspace', id: HOST_B },
+    ]);
 
     const headerAttack = await request(plane, queryPath, sessionA, {
       headers: { 'x-papercusp-workspace': WORKSPACE_B },
