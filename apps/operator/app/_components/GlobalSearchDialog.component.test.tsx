@@ -56,7 +56,11 @@ describe('GlobalSearchDialog', () => {
             source_id: 'universal-voice-interface-2026-06-05',
             harness_slug: 'all',
             excerpt: 'the voice bus',
-            highlight: 'the <b>voice</b> bus',
+            // `<mark>`, because that is what `HEADLINE_OPTS` makes the endpoint
+            // emit. This fixture said `<b>` until 2026-09-04 and so simulated a
+            // server that does not exist — which is why every assertion below
+            // could be correct while the real dialog highlighted nothing.
+            highlight: 'the <mark>voice</mark> bus',
           },
         ]),
       ),

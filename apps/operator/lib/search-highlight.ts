@@ -33,13 +33,20 @@
  *     transcript results),
  *   - `apps/operator/app/settings/user/search/page.tsx` (workspace search prose).
  *
- * ⚠ NOT for `<b>`-delimited headlines. Postgres' `ts_headline` DEFAULTS to
- * `<b>…</b>`, and the route behind `GlobalSearchDialog` leaves that default in
- * place. That surface must keep using its own `renderHighlight`, which builds
- * React text nodes and `<mark>` elements and touches no innerHTML at all — a
- * strictly stronger position than this function. Do not "unify" the two by
- * teaching this one to restore `<b>`: that would widen the restored set for
- * every caller, which is the direction that loses the property above.
+ * ⚠ NOT for `GlobalSearchDialog`, even though it searches the same corpora with
+ * the same `<mark>` marker. That surface builds React text nodes and `<mark>`
+ * ELEMENTS via its own `renderHighlight` and touches no innerHTML at all — a
+ * strictly stronger position than this function, which only makes a string safe
+ * to hand to innerHTML. Moving it onto this helper would be a downgrade.
+ *
+ * (Corrected 2026-09-04: an earlier version of this note claimed that surface
+ * was `<b>`-delimited because `ts_headline` DEFAULTS to `<b>…</b>`. The default
+ * is real; the claim about the route was not — `HEADLINE_OPTS` in
+ * `packages/operator-core/lib/agent-tools/search/sources.ts` overrides it to
+ * `<mark>` for all four sources, and `search:fulltext` passes that through. The
+ * renderer had made the same wrong assumption, so its highlighting was dead.
+ * Whatever the delimiter, do not widen THIS function's restored set beyond the
+ * bare `<mark>` pair — that is the direction that loses the property above.)
  *
  * WHY IT LIVES HERE. `apps/operator/app/**` cannot import up-layer from
  * `apps/operator-vite/src/**`, but BOTH trees resolve `@` to `apps/operator`
