@@ -22,6 +22,7 @@ import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { harnessScopeMismatch } from '../../work-items-harness-scope';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent } from '../_bulk';
+import { toolReachabilityHint } from '../_tool-reachability';
 import {
   assumptionsArg,
   hasAssumptionDeclaration,
@@ -299,7 +300,12 @@ export default defineTool({
                   'work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } — it records the ' +
                   'machine-readable reason and parks the lifecycle. For another work-item dependency, use ' +
                   'work_items:link { source: "<blocker-id>", target: "' + it.id + '", rel: "blocks" } instead; ' +
-                  'do not write blocked state separately for a linked work dependency.',
+                  'do not write blocked state separately for a linked work dependency. ' +
+                  // EI-21655300007082004: naming the verb is not the same as delivering it. On a
+                  // trimmed client surface work_items:set_blocker does not resolve through a
+                  // client-side tool lookup, so a caller reads this refusal as directing them to a
+                  // tool that does not exist and has nowhere to go. Name the route too.
+                  toolReachabilityHint('work_items:set_blocker'),
               );
             }
           }
