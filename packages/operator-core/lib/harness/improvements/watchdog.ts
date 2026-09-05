@@ -815,6 +815,25 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   structuralMinCallsForRate?: number;
   /** Transient tool-error (timeout/load) volume bar. Default 15 (raised — timeouts are noisy). */
   transientMinCount?: number;
+  /**
+   * Shared-resource timeout correlation window. A burst of transient failures from
+   * several tools and coordination owners in this window is filed once as a
+   * shared-resource incident instead of once per tool. Default 5 minutes.
+   */
+  sharedStallWindowMinutes?: number;
+  /** Minimum distinct tools in a shared-resource timeout burst. Default 3. */
+  sharedStallMinTools?: number;
+  /** Minimum distinct coordination owners in a shared-resource timeout burst. Default 2. */
+  sharedStallMinSessions?: number;
+  /** Minimum timeout rows in a shared-resource burst. Default 3. */
+  sharedStallMinFailures?: number;
+  /**
+   * Calls at or above this duration are candidates even when a transport records
+   * them as a generic error rather than status='timeout'. Default 25 seconds.
+   */
+  sharedStallDurationMs?: number;
+  /** Bound the raw candidate read used by shared-stall correlation. Default 2000. */
+  sharedStallMaxRows?: number;
   /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
   callerMinCount?: number;
   /** Soft-failure outcome current consecutive-run bar. Default 10. */
@@ -1697,6 +1716,159 @@ interface ClassifiedToolErrorRow {
   latest_at?: string | Date | null;
 }
 
+/**
+ * One timeout-class telemetry row used by the shared-resource correlation leg.
+ *
+ * `coord_owner_id` is the session boundary: `spawn_id` is deliberately not used
+ * here because it is a per-request label in some transports and can collapse or
+ * split a real session. Rows returned by the collector carry `class='transient'`;
+ * the status/duration fallback keeps this pure seam useful for fixtures and for
+ * older telemetry rows that predate the classifier stamp.
+ */
+export interface SharedToolStallTelemetryRow {
+  tool_name: string;
+  coord_owner_id?: string | null;
+  invoked_at?: string | Date | null;
+  status?: string | null;
+  duration_ms?: number | string | null;
+  class?: ToolErrorClass | null;
+}
+
+export interface SharedToolStallAnalysis {
+  signals: WatchdogSignal[];
+  /** Tool names whose transient per-tool signal is subsumed by a shared incident. */
+  correlatedToolNames: ReadonlySet<string>;
+}
+
+function sharedStallTimestamp(row: SharedToolStallTelemetryRow): number | null {
+  if (!row.invoked_at) return null;
+  const ms = new Date(row.invoked_at).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function sharedStallOwner(row: SharedToolStallTelemetryRow): string | null {
+  const owner = typeof row.coord_owner_id === 'string' ? row.coord_owner_id.trim() : '';
+  return owner || null;
+}
+
+function isSharedStallCandidate(row: SharedToolStallTelemetryRow, durationMs: number): boolean {
+  if (row.class != null) return row.class === 'transient';
+  if (row.status === 'timeout') return true;
+  const duration = typeof row.duration_ms === 'string' ? Number(row.duration_ms) : row.duration_ms;
+  return Number.isFinite(duration) && Number(duration) >= durationMs;
+}
+
+/**
+ * Pure shared-resource discriminator (EI-22404438789516379).
+ *
+ * A timeout is treated as shared only when a bounded temporal window contains
+ * enough failures from distinct tools AND distinct coordination owners. This
+ * avoids turning a single slow tool into an infra incident while collapsing the
+ * characteristic "many innocent tools fail together" shape into one stable
+ * watchdog signal. Multiple qualifying windows in one sweep intentionally merge
+ * into one signal/key; the capture core already owns cross-tick deduplication.
+ */
+export function analyzeSharedToolStallsFromRows(
+  rows: SharedToolStallTelemetryRow[],
+  opts: CollectOptions = {},
+): SharedToolStallAnalysis {
+  const windowMs = Math.max(1, opts.sharedStallWindowMinutes ?? 5) * 60_000;
+  const minTools = Math.max(2, opts.sharedStallMinTools ?? 3);
+  const minSessions = Math.max(2, opts.sharedStallMinSessions ?? 2);
+  const minFailures = Math.max(minTools, opts.sharedStallMinFailures ?? 3);
+  const durationMs = Math.max(1, opts.sharedStallDurationMs ?? 25_000);
+  const candidates = rows
+    .map((row, index) => ({ row, index, at: sharedStallTimestamp(row) }))
+    .filter(({ row, at }) =>
+      at != null &&
+      !isImprovementLoopTool(row.tool_name) &&
+      isSharedStallCandidate(row, durationMs),
+    )
+    .sort((a, b) => (a.at! - b.at!) || (a.index - b.index));
+
+  if (candidates.length < minFailures) {
+    return { signals: [], correlatedToolNames: new Set() };
+  }
+
+  const correlatedIndexes = new Set<number>();
+  for (let start = 0; start < candidates.length; start += 1) {
+    const firstAt = candidates[start]!.at!;
+    const window = [];
+    for (let end = start; end < candidates.length; end += 1) {
+      if (candidates[end]!.at! - firstAt > windowMs) break;
+      window.push(candidates[end]!);
+    }
+    if (window.length < minFailures) continue;
+    const tools = new Set(window.map(({ row }) => row.tool_name.trim()).filter(Boolean));
+    const sessions = new Set(
+      window
+        .map(({ row }) => sharedStallOwner(row))
+        .filter((owner): owner is string => owner != null),
+    );
+    if (tools.size < minTools || sessions.size < minSessions) continue;
+    for (const entry of window) correlatedIndexes.add(entry.index);
+  }
+
+  if (correlatedIndexes.size === 0) {
+    return { signals: [], correlatedToolNames: new Set() };
+  }
+
+  const correlatedRows = candidates
+    .filter(({ index }) => correlatedIndexes.has(index))
+    .map(({ row }) => row);
+  const tools = [...new Set(correlatedRows.map((row) => row.tool_name.trim()).filter(Boolean))].sort();
+  const sessions = [...new Set(
+    correlatedRows
+      .map((row) => sharedStallOwner(row))
+      .filter((owner): owner is string => owner != null),
+  )].sort();
+  const timestamps = correlatedRows
+    .map(sharedStallTimestamp)
+    .filter((at): at is number => at != null)
+    .sort((a, b) => a - b);
+  const latestAt = timestamps.length > 0 ? new Date(timestamps[timestamps.length - 1]!).toISOString() : undefined;
+  const earliestAt = timestamps.length > 0 ? new Date(timestamps[0]!).toISOString() : undefined;
+  const samples = correlatedRows
+    .slice()
+    .sort((a, b) => (sharedStallTimestamp(b) ?? 0) - (sharedStallTimestamp(a) ?? 0))
+    .map((row) => `${row.tool_name}${row.status ? ` [${row.status}]` : ''}`)
+    .filter((sample, index, all) => all.indexOf(sample) === index)
+    .slice(0, 8);
+  const spanSeconds = timestamps.length > 1
+    ? Math.round((timestamps[timestamps.length - 1]! - timestamps[0]!) / 1000)
+    : 0;
+
+  return {
+    correlatedToolNames: new Set(tools),
+    signals: [{
+      source: 'repeated-tool-error',
+      key: 'shared-resource-stall',
+      title: 'Multiple tools timing out together (shared-resource stall)',
+      body:
+        `Watchdog signal (shared-resource stall): ${correlatedRows.length} transient timeout-class ` +
+        `failures from ${tools.length} distinct tools and ${sessions.length} distinct sessions ` +
+        `within a ${Math.max(1, opts.sharedStallWindowMinutes ?? 5)}-minute window ` +
+        `(observed span ${spanSeconds}s). This shape points to a shared dependency/resource ` +
+        `rather than ${tools.length} independent tool defects; per-tool transient captures ` +
+        `for these tools were suppressed.\n\nTools: ${tools.join(', ') || '(unknown)'}` +
+        `\nSamples: ${samples.join(', ') || '(none)'}`,
+      severity: 'major',
+      kind: 'bug',
+      latestAt,
+      earliestAt,
+      findingClass: 'shared-resource-stall',
+    }],
+  };
+}
+
+/** Pure signal-only façade for callers that do not need the suppression set. */
+export function sharedToolStallSignalsFromRows(
+  rows: SharedToolStallTelemetryRow[],
+  opts: CollectOptions = {},
+): WatchdogSignal[] {
+  return analyzeSharedToolStallsFromRows(rows, opts).signals;
+}
+
 /** One complete call row used to detect a CURRENT consecutive soft-failure run. */
 export interface SoftFailureTelemetryRow {
   tool_name: string;
@@ -1845,7 +2017,11 @@ export function isImprovementLoopTool(toolName: string): boolean {
  *   - transient:  n ≥ transientMinCount (15) → minor (major at ≥50), kind=bug.
  *   - caller:     n ≥ callerMinCount (10) → minor, kind=change.
  */
-export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: CollectOptions = {}): WatchdogSignal[] {
+export function toolErrorSignalsFromRows(
+  rows: ClassifiedToolErrorRow[],
+  opts: CollectOptions = {},
+  correlatedTransientTools: ReadonlySet<string> = new Set(),
+): WatchdogSignal[] {
   const structuralMin = opts.structuralMinCount ?? 2;
   const structuralRate = opts.structuralMinRate ?? 0.5;
   const structuralRateCalls = opts.structuralMinCallsForRate ?? 3;
@@ -1886,6 +2062,7 @@ export function toolErrorSignalsFromRows(rows: ClassifiedToolErrorRow[], opts: C
         latestAt,
       });
     } else if (r.class === 'transient') {
+      if (correlatedTransientTools.has(r.tool_name)) continue;
       if (r.n < transientMin) continue;
       out.push({
         source: 'repeated-tool-error',
@@ -1998,7 +2175,37 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
       FROM tagged LEFT JOIN tot ON tot.tool_name = tagged.tool_name
      GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
      ORDER BY count(*) DESC
-     LIMIT 30`;
+      LIMIT 30`;
+  let sharedStall: SharedToolStallAnalysis = { signals: [], correlatedToolNames: new Set() };
+  try {
+    const sharedStallRows = await sql<SharedToolStallTelemetryRow[]>`
+      WITH candidates AS (
+        SELECT tool_name, coord_owner_id, invoked_at, status, duration_ms,
+          ${toolErrorClassSqlCase(sql)} AS class
+          FROM harness_shared.tool_invocations
+         WHERE status IN ('error', 'timeout')
+           AND invoked_at > now() - make_interval(hours => ${windowHours})
+           AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
+           AND tool_name NOT LIKE 'improvements:%'
+           AND tool_name NOT LIKE 'system:improvement-%'
+           -- The covering index carries status + duration_ms. Keep this candidate
+           -- read narrow: generic errors only enter when they actually ran long,
+           -- while status='timeout' remains eligible regardless of duration.
+           AND (status = 'timeout' OR duration_ms >= ${opts.sharedStallDurationMs ?? 25_000})
+      )
+      SELECT tool_name, coord_owner_id, invoked_at, status, duration_ms, class
+        FROM candidates
+       WHERE class = 'transient'
+       ORDER BY invoked_at DESC
+       LIMIT ${opts.sharedStallMaxRows ?? 2000}`;
+    sharedStall = analyzeSharedToolStallsFromRows(sharedStallRows, opts);
+  } catch (error) {
+    // Correlation is a guard against false filing, not a reason to make the whole
+    // watchdog blind when an older/partial telemetry schema cannot supply it.
+    console.warn(
+      `[improvement-watchdog] shared timeout correlation unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const softMinRun = opts.softFailureMinRun ?? 10;
   const softRows = await sql<SoftFailureRunRow[]>`
     WITH ordered AS (
@@ -2045,7 +2252,11 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
     HAVING count(*) >= ${softMinRun}
      ORDER BY count(*) DESC
      LIMIT 100`;
-  return [...toolErrorSignalsFromRows(rows, opts), ...softFailureSignalsFromRunRows(softRows, opts)];
+  return [
+    ...toolErrorSignalsFromRows(rows, opts, sharedStall.correlatedToolNames),
+    ...sharedStall.signals,
+    ...softFailureSignalsFromRunRows(softRows, opts),
+  ];
 }
 
 /** service-down: a watched dev endpoint currently DOWN per the service-health monitor. */
