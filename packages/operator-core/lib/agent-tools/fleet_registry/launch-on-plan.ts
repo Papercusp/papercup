@@ -126,7 +126,7 @@ import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import { listFacts } from '../../agent-facts/store';
-import { getModes } from '../../modes/store';
+import { getModes, getModeSubject } from '../../modes/store';
 import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
@@ -2081,8 +2081,19 @@ export default defineTool({
       drainFleetSlug: goalSettings.drainFleetSlug,
       callerType: args.type,
     });
+    // Goal provenance is inherited by execution agents. Only the caller's OWN
+    // GOAL mode marks the portfolio steward; using goalSettings.goalId here
+    // prevents delegated leaders from launching or topping up their own fleet.
+    let goalHolderSubject: string | null = null;
+    if (goalSettings.goalId) {
+      try {
+        goalHolderSubject = await getModeSubject(workspaceId, ownerId, 'goal');
+      } catch (error) {
+        return err(`goal_holder_role_unreadable: could not resolve launcher role before fleet mutation: ${String(error)}`);
+      }
+    }
     const goalLeadership = resolveGoalFleetLeadership({
-      goalId: goalSettings.goalId,
+      goalHolderSubject,
       requested: args.leader,
       callerOwnerId: ownerId,
       existingLeaderOwnerId: existingFleet?.leaderOwnerId ?? null,
@@ -4556,8 +4567,11 @@ export default defineTool({
           `You are the LEADER of fleet \`${fleetSlug}\`${planSlug ? ` on plan \`${planSlug}\`` : ''}.`,
           '',
           'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
-          'you and is deliberately NOT in this fleet — it is a portfolio manager, not your supervisor,',
-          'so do not wait on it for permission or direction.',
+          'you and retains responsibility for portfolio priorities and resource allocation.',
+          `Your assigned target is ${count} member seats. Execute the plan within the supplied fleet size and model configuration.`,
+          'The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.',
+          'Request allocation changes from that steward; do not unilaterally widen the fleet or replace its model choices.',
+          'Proceed with execution and member supervision under this assignment.',
           ...leaderRegistryNote,
           ...(delegatedSpawnReplacement
             ? []
