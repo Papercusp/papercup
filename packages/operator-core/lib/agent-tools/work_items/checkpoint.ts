@@ -162,6 +162,7 @@ import {
   hasCurrentTurnSentinel,
   markUnverifiedOwnerAttribution,
   ownerAttributionEnforcement,
+  retainedDirectiveMatches,
   retainedProvenanceText,
   stampCarrySurfaceProvenance,
 } from '../../carry-surface-provenance-stamp';
@@ -2326,13 +2327,50 @@ export default defineTool({
           // then the safe locked retry preserved the prior as an append. Surface the
           // mode so callers do not mistake the returned history for a replacement.
           ...(autoAppendedRefresh
-            ? {
-                autoAppended: true as const,
-                autoAppendedNote:
+            ? (() => {
+                const base =
                   'the concise replacement would have shrunk a substantial checkpoint, so the prior history was preserved ' +
                   'BENEATH your note (newest-first): your text is the storedHead that cold-wake excerpts surface, and the ' +
-                  'superseded detail sits after the --- separator. Pass confirmShrink:true only when discarding that history is intentional.',
-              }
+                  'superseded detail sits after the --- separator. Pass confirmShrink:true only when discarding that history is intentional.';
+                /**
+                 * EI-20745229385305334: this preserve-by-default is INVERTED for the one case
+                 * where the shrink was deliberate — a checkpoint that RETRACTS its own prior
+                 * conclusion. A correction is systematically SHORTER than the investigation
+                 * that produced it, so the guard fires hardest exactly when appending is most
+                 * harmful, and the stored note ends up asserting both the new finding and the
+                 * directive it was withdrawing.
+                 *
+                 * Both halves of that reading were already computed on this same call —
+                 * `autoAppended` here and the lint over the preserved bytes below — but they
+                 * were emitted as separate keys, so the joined reading was never the default
+                 * one. The measured miss (WI-39655) is that the preserved directive surfaced
+                 * only as a generic `provenanceLint` tagging nit, which reads as a style
+                 * nudge rather than "you just resurrected an instruction you were retracting".
+                 * Joining them changes no behaviour and adds no durable surface; it just
+                 * reports the two facts in the same breath, where they mean something.
+                 */
+                const resurrected = retainedDirectiveMatches(stored, currentProvenanceText);
+                if (resurrected.length === 0) {
+                  return { autoAppended: true as const, autoAppendedNote: base };
+                }
+                // Name at most two lines inline to keep the note readable; the structured
+                // field below carries every match for a caller that wants them all.
+                const quoted = resurrected
+                  .slice(0, 2)
+                  .map((m) => `"${m.line}"`)
+                  .join('; ');
+                return {
+                  autoAppended: true as const,
+                  autoAppendedNote:
+                    `${base} ⚠ THE PRESERVED TEXT CARRIES ${resurrected.length} STANDING DIRECTIVE(S) — ${quoted}` +
+                    `${resurrected.length > 2 ? ` (+${resurrected.length - 2} more)` : ''}. If THIS write RETRACTS ` +
+                    'or supersedes that instruction, the stored checkpoint now asserts BOTH your note and the ' +
+                    'directive you meant to withdraw — and a successor cannot tell which is live, because the stale ' +
+                    'one is phrased as an order while your retraction is phrased as a report. Re-send with ' +
+                    'confirmShrink:true to replace it outright.',
+                  autoAppendedRetainedDirectives: resurrected,
+                };
+              })()
             : {}),
           by: ident.ownerId,
           // P-007/D-013: what the freshness axis recorded for this write. Absent
