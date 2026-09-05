@@ -15,6 +15,7 @@ import {
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildUnusedCteAdvisory,
   buildClaimabilityAdvisory,
   buildBacklogFlowAdvisory,
   buildCorpusNamespaceAdvisory,
@@ -1292,6 +1293,126 @@ describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdi
         'relation "harness_shared.coord_presence" does not exist',
       ),
     ).toBeNull();
+  });
+});
+
+describe('buildUnusedCteAdvisory (EI-20261038811991822 — the CTE that is defined but never joined)', () => {
+  // The measured case: a fleet-scheduler payload audit defined a 29-member
+  // `targets` CTE and then forgot to join it. PostgreSQL returned valid,
+  // well-formed rows from the FULL relation — no error, no empty result — and
+  // the scope loss was only caught because someone checked the owner ids by
+  // hand. These two queries differ by one clause, which is the whole point:
+  // the FIRES/SILENT pair is what shows the detector discriminates rather than
+  // just always answering one way.
+  const UNJOINED =
+    "WITH targets AS (SELECT unnest(ARRAY['su-a','su-b']) AS owner_id) " +
+    'SELECT owner_id, payload FROM harness_shared.coord_presence ORDER BY updated_at DESC LIMIT 5';
+  const JOINED =
+    "WITH targets AS (SELECT unnest(ARRAY['su-a','su-b']) AS owner_id) " +
+    'SELECT p.owner_id, p.payload FROM harness_shared.coord_presence p ' +
+    'JOIN targets t ON t.owner_id = p.owner_id ORDER BY p.updated_at DESC LIMIT 5';
+
+  it('FIRES on the reported shape — CTE defined, main query never references it', () => {
+    const advisory = buildUnusedCteAdvisory(UNJOINED);
+    expect(advisory).toContain('unused CTE');
+    expect(advisory).toContain('`targets`');
+  });
+
+  it('stays SILENT once that same CTE is joined', () => {
+    expect(buildUnusedCteAdvisory(JOINED)).toBeNull();
+  });
+
+  it('stays SILENT when the CTE is consumed by a LATER CTE rather than the main query', () => {
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH targets AS (SELECT 1 AS owner_id), latest AS (SELECT owner_id FROM targets) ' +
+          'SELECT count(*) FROM latest',
+      ),
+    ).toBeNull();
+  });
+
+  it('names EVERY unused CTE, not just the first', () => {
+    const advisory = buildUnusedCteAdvisory(
+      'WITH targets AS (SELECT 1 AS owner_id), windows AS (SELECT 2 AS n) ' +
+        'SELECT count(*) FROM harness_shared.work_items',
+    );
+    expect(advisory).toContain('`targets`');
+    expect(advisory).toContain('`windows`');
+  });
+
+  it('parses a column alias list and [NOT] MATERIALIZED', () => {
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH targets(owner_id) AS MATERIALIZED (SELECT 1) SELECT count(*) FROM harness_shared.work_items',
+      ),
+    ).toContain('`targets`');
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH targets(owner_id) AS NOT MATERIALIZED (SELECT 1) SELECT owner_id FROM targets',
+      ),
+    ).toBeNull();
+    // `AS(` with no space is legal and must still parse.
+    expect(
+      buildUnusedCteAdvisory('WITH targets AS(SELECT 1) SELECT count(*) FROM harness_shared.work_items'),
+    ).toContain('`targets`');
+  });
+
+  it('does not count a RECURSIVE self-reference as a use — the result still does not depend on it', () => {
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH RECURSIVE walk AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM walk WHERE n < 5) ' +
+          'SELECT count(*) FROM harness_shared.work_items',
+      ),
+    ).toContain('`walk`');
+    // …but the ordinary recursive query, whose final SELECT does read it, is silent.
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH RECURSIVE walk AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM walk WHERE n < 5) ' +
+          'SELECT count(*) FROM walk',
+      ),
+    ).toBeNull();
+  });
+
+  it('does not accept a SCHEMA-QUALIFIED name as a reference to the CTE', () => {
+    // `public.targets` resolves to a real TABLE, never to the CTE — so this
+    // query is genuinely unscoped despite the name appearing twice.
+    expect(
+      buildUnusedCteAdvisory('WITH targets AS (SELECT 1 AS owner_id) SELECT count(*) FROM public.targets'),
+    ).toContain('`targets`');
+  });
+
+  it('stays SILENT on a query with no CTE at all', () => {
+    expect(
+      buildUnusedCteAdvisory(
+        "SELECT count(*) FROM harness_shared.work_items WHERE harness_slug = 'papercusp'",
+      ),
+    ).toBeNull();
+  });
+
+  it('is not started by a `WITH` inside a comment or a string literal', () => {
+    expect(
+      buildUnusedCteAdvisory(
+        '-- WITH targets AS (SELECT 1)\nSELECT count(*) FROM harness_shared.work_items',
+      ),
+    ).toBeNull();
+    expect(
+      buildUnusedCteAdvisory(
+        "SELECT 'WITH targets AS (SELECT 1)' AS note FROM harness_shared.work_items",
+      ),
+    ).toBeNull();
+  });
+
+  it('BAILS conservatively rather than guessing on a shape it cannot parse', () => {
+    // A quoted CTE name: the stripper erases quoted-identifier CONTENT, so the
+    // name is unrecoverable here. Staying silent is the documented limit —
+    // guessing would be the confidently-wrong answer this file exists to avoid.
+    expect(
+      buildUnusedCteAdvisory(
+        'WITH "Targets" AS (SELECT 1 AS owner_id) SELECT count(*) FROM harness_shared.work_items',
+      ),
+    ).toBeNull();
+    // An unbalanced body cannot be delimited; same rule.
+    expect(buildUnusedCteAdvisory('WITH targets AS (SELECT 1 SELECT 2')).toBeNull();
   });
 });
 

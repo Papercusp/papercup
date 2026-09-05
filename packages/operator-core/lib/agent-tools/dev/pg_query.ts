@@ -32,6 +32,7 @@ import {
   buildJsonTextSearchAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildUnusedCteAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -402,6 +403,11 @@ export default defineTool({
     // the answer is wrong for EVERY row and looks like a clean "none".
     const nullPathAdvisory = advisoryOf(() => buildSilentNullPathAdvisory(sql));
     const jsonbTypeofAdvisory = advisoryOf(() => buildJsonbTypeofNegationAdvisory(sql));
+    // EI-20261038811991822: a CTE defined but never joined. The sibling of the
+    // advisories above in kind — the query SUCCEEDS and returns well-formed
+    // rows from the WRONG population, so nothing in the result distinguishes it
+    // from a correctly-scoped answer.
+    const unusedCteAdvisory = advisoryOf(() => buildUnusedCteAdvisory(sql));
     // A read that answers the WRONG QUESTION correctly: status='open' (or the
     // candidate view) treated as "what can be claimed". Distinct again from
     // both above — the row set is right for the question asked, and wrong for
@@ -484,6 +490,7 @@ export default defineTool({
       eventFireWindowAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
+      unusedCteAdvisory,
       splitEvidenceAdvisory,
       nativeToolAdvisory,
       agentActivityAdvisory,

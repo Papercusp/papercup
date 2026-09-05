@@ -1440,6 +1440,155 @@ export function buildSilentNullPathAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Parse the top-level CTE list of a `WITH …` statement.
+ *
+ * Best-effort and deliberately CONSERVATIVE: anything it cannot parse with
+ * certainty (a quoted CTE name, an unbalanced paren, a missing `AS`) returns
+ * null so the caller stays silent rather than guessing. Operates on stripped
+ * SQL, so a `WITH` inside a string literal or comment cannot start a parse.
+ *
+ * Returns each CTE's name plus the character range of its own body, which is
+ * what lets the caller distinguish a real reference from the definition itself
+ * and from a recursive self-reference.
+ */
+function parseTopLevelCtes(
+  stripped: string,
+): Array<{ name: string; nameStart: number; bodyStart: number; bodyEnd: number }> | null {
+  const head = /^\s*WITH\s+(?:RECURSIVE\s+)?/i.exec(stripped);
+  if (!head) return null;
+
+  const len = stripped.length;
+  const out: Array<{ name: string; nameStart: number; bodyStart: number; bodyEnd: number }> = [];
+  let i = head[0].length;
+
+  // Consume a balanced `(`…`)` starting at i; returns the index just past the
+  // closing paren, or -1 when unbalanced.
+  const skipBalanced = (from: number): number => {
+    let depth = 0;
+    for (let k = from; k < len; k++) {
+      if (stripped[k] === '(') depth++;
+      else if (stripped[k] === ')') {
+        depth--;
+        if (depth === 0) return k + 1;
+      }
+    }
+    return -1;
+  };
+  const skipWs = (from: number): number => {
+    let k = from;
+    while (k < len && /\s/.test(stripped[k]!)) k++;
+    return k;
+  };
+
+  for (;;) {
+    i = skipWs(i);
+    const nameStart = i;
+    const ident = /^[A-Za-z_][A-Za-z0-9_$]*/.exec(stripped.slice(i));
+    if (!ident) return null;
+    const name = ident[0];
+    i = skipWs(i + name.length);
+
+    // Optional column alias list — `WITH t(a, b) AS (…)`.
+    if (stripped[i] === '(') {
+      const past = skipBalanced(i);
+      if (past === -1) return null;
+      i = skipWs(past);
+    }
+
+    // `AS`, optionally followed by `[NOT] MATERIALIZED`. `\b` (not `\s`) so
+    // the legal `AS(SELECT …)` parses.
+    const as = /^AS\b\s*/i.exec(stripped.slice(i));
+    if (!as) return null;
+    i += as[0].length;
+    const materialized = /^(?:NOT\s+)?MATERIALIZED\b\s*/i.exec(stripped.slice(i));
+    if (materialized) i += materialized[0].length;
+    i = skipWs(i);
+
+    if (stripped[i] !== '(') return null;
+    const bodyStart = i;
+    const bodyEnd = skipBalanced(i);
+    if (bodyEnd === -1) return null;
+    out.push({ name, nameStart, bodyStart, bodyEnd });
+
+    i = skipWs(bodyEnd);
+    if (stripped[i] === ',') {
+      i++;
+      continue;
+    }
+    return out;
+  }
+}
+
+/**
+ * Flag a CTE that is DEFINED but never REFERENCED.
+ *
+ * The failure this catches is silent by construction (EI-20261038811991822): a
+ * forensic query defines `WITH targets AS (…29 owner ids…)` and then forgets to
+ * join it, so PostgreSQL runs the main statement against the FULL relation.
+ * There is no error and no empty result — it returns valid, well-formed,
+ * unrelated rows that read exactly like a correctly-scoped answer, and the
+ * reader only discovers the scope was lost if they happen to check the ids
+ * against the set they meant to ask about. The measured instance was caught
+ * that way and discarded; nothing structural would have caught it.
+ *
+ * It fires unconditionally because the one legitimate reason to leave a CTE
+ * unreferenced — a data-modifying CTE (`WITH x AS (INSERT … RETURNING …)`),
+ * which executes for its side effect — cannot run on this surface at all: the
+ * query executes inside a `SET TRANSACTION READ ONLY` transaction, so PG
+ * rejects it (25006) before it could ever be a false positive here.
+ *
+ * A reference from a LATER CTE counts as a use (`WITH a AS (…), b AS (SELECT *
+ * FROM a) SELECT * FROM b` is fully wired); a RECURSIVE self-reference inside
+ * the CTE's own body does not, since that alone never makes the result depend
+ * on it.
+ */
+export function buildUnusedCteAdvisory(rawSql: string): string | null {
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  const ctes = parseTopLevelCtes(stripped);
+  if (!ctes || !ctes.length) return null;
+
+  // One tokenizer pass over the whole statement; a hit is a real reference
+  // unless it is the definition's own name, sits inside that CTE's own body,
+  // or is qualified (`public.targets` is a TABLE, not this CTE).
+  const tokens: Array<{ text: string; index: number }> = [];
+  const tokenRe = /[A-Za-z_][A-Za-z0-9_$]*/g;
+  for (let m = tokenRe.exec(stripped); m; m = tokenRe.exec(stripped)) {
+    tokens.push({ text: m[0], index: m.index });
+  }
+  const qualified = (index: number): boolean => {
+    let k = index - 1;
+    while (k >= 0 && /\s/.test(stripped[k]!)) k--;
+    return k >= 0 && stripped[k] === '.';
+  };
+
+  const unused = ctes
+    .filter((cte) => {
+      const lowered = cte.name.toLowerCase();
+      return !tokens.some(
+        (t) =>
+          t.text.toLowerCase() === lowered &&
+          t.index !== cte.nameStart &&
+          !(t.index >= cte.bodyStart && t.index < cte.bodyEnd) &&
+          !qualified(t.index),
+      );
+    })
+    .map((cte) => cte.name);
+
+  if (!unused.length) return null;
+
+  const names = unused.map((n) => `\`${n}\``).join(', ');
+  const subject = unused.length === 1 ? 'is' : 'are';
+  return (
+    `⚠ unused CTE: ${names} ${subject} defined but never referenced, so this query is NOT scoped by it — ` +
+    'PostgreSQL runs the main statement against the full relation and returns valid, unrelated rows that ' +
+    'read exactly like a correctly-scoped result (EI-20261038811991822). Join or filter by the CTE ' +
+    '(`JOIN <cte> USING (…)`, `WHERE <col> IN (SELECT … FROM <cte>)`), or drop it if the scope is not ' +
+    'wanted. Before treating this result as evidence, check that every returned row belongs to the set ' +
+    'you meant to ask about.'
+  );
+}
+
+/**
  * Flag a negated comparison on `jsonb_typeof(...)`.
  *
  * PostgreSQL's `jsonb_typeof` returns SQL NULL when its input is absent/NULL.
