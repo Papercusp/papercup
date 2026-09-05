@@ -1546,28 +1546,71 @@ describe('probeOpenHandles / classifyWriterLiveness — the open-handle discrimi
 // P-004 — the semantic canary. Pure policy, no graph and no subprocess.
 // ---------------------------------------------------------------------------
 describe('judgeCanary', () => {
-  // Real measured values from the live graph, 2026-08-21.
+  // Real measured values from the live graph, 2026-08-21 (counts) and 2026-09-05
+  // (embeddings: 217,120 after the uncapped full pass, plan gitnexus-embeddings-enablement).
   const HEALTHY: Parameters<typeof judgeCanary>[0] = {
     fileCount: 19479,
     symbolCount: 66982,
     callEdgeCount: 99020,
     defEdgeCount: 132452,
     roundTripOk: true,
-    embeddings: 0,
+    embeddings: 217_120,
+    embeddingsExpected: true,
   };
 
   it('passes a healthy graph', () => {
     const v = judgeCanary(HEALTHY);
     expect(v.healthy).toBe(true);
+    expect(v.degraded).toBe(false);
     expect(v.summary).toContain('canary OK');
+    expect(v.summary).not.toContain('DEGRADED');
   });
 
-  it('does NOT fail on 0 embeddings — a known, accepted condition (WI-35557)', () => {
-    // A canary that fires on an accepted state gets muted, and the mute takes the real
-    // signal with it. Vector status is reported, never fatal.
+  it('DEGRADES — never fails — on 0 embeddings after an embeddings-enabled analyze', () => {
+    // The graph still answers definitions/callers, so failing the tick would mute the
+    // canary on a condition the graph survives. But it is not silence either: this is the
+    // exact regression (vector leg back to 0) the enablement plan exists to end.
     const v = judgeCanary({ ...HEALTHY, embeddings: 0 });
     expect(v.healthy).toBe(true);
-    expect(v.probes.find((p) => p.name === 'vector-search')!.detail).toContain('EXPECTED');
+    expect(v.degraded).toBe(true);
+    expect(v.summary).toContain('canary OK');
+    expect(v.summary).toContain('DEGRADED');
+    const probe = v.probes.find((p) => p.name === 'vector-search')!;
+    expect(probe.ok).toBe(false);
+    expect(probe.degraded).toBe(true);
+    expect(probe.detail).toContain('DEAD');
+  });
+
+  it('DEGRADES on UNKNOWN embeddings after an embeddings-enabled analyze (unknown is not OK)', () => {
+    const v = judgeCanary({ ...HEALTHY, embeddings: null });
+    expect(v.healthy).toBe(true);
+    expect(v.degraded).toBe(true);
+    expect(v.probes.find((p) => p.name === 'vector-search')!.detail).toContain('UNKNOWN');
+  });
+
+  it('reports 0 embeddings as plain status when embeddings were NOT requested (the WI-35557 state)', () => {
+    const v = judgeCanary({ ...HEALTHY, embeddings: 0, embeddingsExpected: false });
+    expect(v.healthy).toBe(true);
+    expect(v.degraded).toBe(false);
+    const probe = v.probes.find((p) => p.name === 'vector-search')!;
+    expect(probe.ok).toBe(true);
+    expect(probe.detail).toContain('not requested');
+  });
+
+  it('CALIBRATION: a degradation never masks a real failure, and a failure never hides the degradation', () => {
+    const v = judgeCanary({ ...HEALTHY, fileCount: null, embeddings: 0 });
+    expect(v.healthy).toBe(false);
+    expect(v.degraded).toBe(true);
+    expect(v.summary).toContain('canary FAILED');
+    expect(v.summary).toContain('DEGRADED');
+  });
+
+  it('vectorSearchProbe is the pure policy behind the vector-search probe', () => {
+    expect(vectorSearchProbe(217_120, true)).toMatchObject({ name: 'vector-search', ok: true });
+    expect(vectorSearchProbe(0, true)).toMatchObject({ ok: false, degraded: true });
+    expect(vectorSearchProbe(null, true)).toMatchObject({ ok: false, degraded: true });
+    expect(vectorSearchProbe(0, false)).toMatchObject({ ok: true });
+    expect(vectorSearchProbe(null, false)).toMatchObject({ ok: true });
   });
 
   it('CALIBRATION: fails when the graph is unreadable, and says so as UNREADABLE not EMPTY', () => {
@@ -1613,9 +1656,18 @@ describe('judgeCanary', () => {
     expect(v.summary).toContain('definition-edges');
   });
 
-  it('reports every failing probe, not just the first', () => {
-    const v = judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, defEdgeCount: null, roundTripOk: null, embeddings: null });
+  it('reports every failing probe, not just the first — and does not count the degraded one as a failure', () => {
+    const v = judgeCanary({
+      fileCount: null,
+      symbolCount: null,
+      callEdgeCount: null,
+      defEdgeCount: null,
+      roundTripOk: null,
+      embeddings: null,
+      embeddingsExpected: true,
+    });
     expect(v.healthy).toBe(false);
+    expect(v.degraded).toBe(true);
     expect(v.summary).toContain('5/6');
   });
 });
