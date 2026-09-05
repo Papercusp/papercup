@@ -44,6 +44,12 @@ const launchTransaction = vi.hoisted(() => ({
 }));
 const goalLaunchReadMock = vi.hoisted(() => vi.fn());
 const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
+const goalModeSubjectMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../../modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../modes/store')>()),
+  getModeSubject: (...args: unknown[]) => goalModeSubjectMock(...args),
+}));
 
 vi.mock('../../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({ cwd: '/tmp/fleet', env: {} })),
@@ -549,6 +555,8 @@ beforeEach(() => {
     mode: { healthy: true, changed: true },
   });
   goalLaunchReadMock.mockReset();
+  goalModeSubjectMock.mockReset();
+  goalModeSubjectMock.mockResolvedValue(null);
   goalLaunchReadMock.mockResolvedValue({
     goalId: null,
     settings: null,
@@ -728,6 +736,57 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     }));
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('lets a delegated leader with inherited goal provenance launch its assigned fleet', async () => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue(null);
+    const res = await invokeLaunchHandler({
+      name: 'Delegated Child Fleet', plan: 'my-plan', harness: 'papercusp',
+      count: 1, leader: 'caller', headless: true,
+    } as never, {} as never, null);
+    const payload = parseHandlerPayload(res);
+    expect(payload.ok).toBe(true);
+    expect(createFleetIfAbsentMock).toHaveBeenCalledWith(expect.objectContaining({ leaderOwnerId: 'owner-1' }));
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('spawns a separate leader when the actual GOAL holder omits leader', async () => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { leaderOwnerId: null, colorScheme: { name: 'Ocean' } }, created: true,
+    });
+    const res = await invokeLaunchHandler({
+      name: 'Steward Delegates', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true,
+    } as never, {} as never, null);
+    const payload = parseHandlerPayload(res);
+    expect(payload.ok).toBe(true);
+    expect(payload.spawnedLeader).toMatchObject({ registered: true });
+    expect(payload.spawnedLeader.ownerId).not.toBe('owner-1');
+    expect(setPresenceFleetMock).not.toHaveBeenCalledWith('ws-1', 'owner-1', expect.anything(), 'leader');
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses actual GOAL self-leadership before fleet writes or spawning', async () => {
+    goalLaunchReadMock.mockResolvedValue({
+      goalId: 'parent-goal', settings: null, drainFleetSlug: null,
+      degraded: false, degradedReasons: [],
+    });
+    goalModeSubjectMock.mockResolvedValue('parent-goal');
+    const res = await invokeLaunchHandler({
+      name: 'Steward Self Lead', plan: 'my-plan', harness: 'papercusp',
+      count: 1, leader: 'caller', headless: true,
+    } as never, {} as never, null);
+    expect(res.isError).toBe(true);
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('refuses an unprofiled local launch when visibility is omitted', async () => {
