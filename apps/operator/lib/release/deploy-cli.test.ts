@@ -98,7 +98,18 @@ const alwaysAcquires = async <T>(fn: () => Promise<T>): Promise<{ acquired: true
 // no test ever writes live facts or severe-event broadcasts from a stubbed
 // deploy (same rule as recordRefused/recordCoalesced). Tests that assert on it
 // override with their own vi.fn.
-const silent = { out: () => {}, err: () => {}, runUnderDeployLock: alwaysAcquires, recordParity: async () => {} };
+// EI-20459175302238839: censusStranded defaults to the REAL census, which shells out to
+// `git submodule status --recursive` against cfg.integrationRoot. Stubbed to a measured
+// all-clear here for the same reason as recordRefused/recordParity — a unit test of the
+// exit-code chokepoint must spawn no git and touch no tree. The strand-gate tests below
+// override it explicitly; `[]` (measured, clean) is the neutral value, NOT null.
+const silent = {
+  out: () => {},
+  err: () => {},
+  runUnderDeployLock: alwaysAcquires,
+  recordParity: async () => {},
+  censusStranded: async () => [],
+};
 
 describe('deploy-cli main() — the gate chokepoint', () => {
   it('REFUSES a non-green target without --force → exit 2, executeDeploy NEVER called', async () => {

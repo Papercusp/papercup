@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 310
+  corpus-parts: 311
   corpus-blocks: 268
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -925,7 +925,36 @@ outage (EI-18797292094433710): two wakes re-fired the gate while *every* candida
 carried the fix.
 
 ⚠⚠ **THE PREMISE UNDER EVERY RECIPE BELOW: the candidate is cut from your LOCAL `staging`,
-NOT from `origin/staging`. The gate never fetches — so PUSHING IS NOT A GATE PRECONDITION.**
+NOT from `origin/staging`. The gate never fetches — so pushing is not a precondition for the
+gate to SELECT A CANDIDATE, or to RUN.**
+
+⚠ **That is scoped to the gate's INPUT on purpose — do NOT read it as "the push doesn't matter
+to the gate".** PROMOTION, the gate's OUTPUT, publishes the tested candidate to origin and is
+load-bearing BY DESIGN: `pushGreenCandidateOrThrow` runs BEFORE `deps.advance(...)` on every
+promotion path and RETHROWS on failure (swallowing it would let local `main` advance and emit a
+false deployable verdict). So while the push credential is broken, the run throws before any
+promotion decision — no advance, no `GATE_PROMOTION` trailer, and **no green is recordable at
+all**. Both halves hold at once, and you need both: an unpushed commit IS already in the
+candidate (every containment recipe below stands), AND a failing push hard-freezes promotion.
+Grep those symbols rather than a line number — the numbers this claim used to carry had already
+rotted. The ordering is pinned by
+`packages/operator-core/lib/doc-claims/gate-promotion-push-precedes-advance.test.ts`, so this
+text and `green-checkpoint.ts` cannot drift apart silently.
+Measured 2026-08-16 (EI-20626763969105622, found during WI-39450 gate-red triage). GitHub was
+403ing every push ("You must verify your email address"). An agent read the then-unscoped
+sentence — *"PUSHING IS NOT A GATE PRECONDITION"* — and told both a peer and the owner that the
+403 did not block the gate and that firing `release:checkpoint-run` was therefore safe. Both
+wrong. The 11:22Z run had already shown the signature: `green=true` logged, then not-green 4ms
+after the push 403, and no `GATE_PROMOTION` trailer written. A peer held the line and was right;
+firing would have bought a 4th consecutive red plus a ~55min suite on a memory-thrashing host.
+
+The instructive part is that the sentence was doing its job perfectly for the recipes beneath
+it, which really are about candidate selection, while mis-arming anyone reasoning about the gate
+as a whole. An emphatic claim scoped to one leg of a system reads as a claim about the system,
+and the more load-bearing the framing ("the premise under every recipe"), the more confidently
+it is generalised. The repair is to name the leg inside the sentence, not to soften it — the
+input claim is still exactly as strong as it was.
+
 
 green-checkpoint resolves it as `opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch`, and `integrationBranch` defaults to the literal `'staging'` (`overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging'`, in `release-config.ts`). Grep those expressions rather than a line number — the numbers this box used to carry had rotted to unrelated code by 2026-08-31 while the claim itself stayed true, which is the whole failure mode the derived-truth ladder warns about. There is no `git fetch` invocation anywhere in `green-checkpoint.ts`, and every `origin/` mention is either the post-green promotion push or prose about GitHub Actions' `origin/main` base-ref default — none resolves a candidate. Its submodule resync is `submodule update --init --recursive`, never `--remote`, so it materialises the gitlink the candidate already PINS instead of advancing it to a remote tip. The CLI path cuts the same way. So the hop that matters for containment is **COMMIT** (git-sync's local commit); the push to origin is a separate, later concern that no containment test below depends on.
 

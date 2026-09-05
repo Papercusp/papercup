@@ -16818,7 +16818,7 @@
           "POST"
         ]
       },
-      "description": "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, cost-cap, latest lifecycle transition, and the current carry-note read-back. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
+      "description": "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped, so a `harness` arg is accepted and ignored. It reports active?, interval, parked (turn in flight), next/last fire, cost-cap, latest lifecycle transition, and the current carry-note read-back. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
       "capabilities": [
         "routines:write"
       ],
@@ -16843,7 +16843,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; do not pass `harness` because this read is keyed by owner.",
+        "when": "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; this owner-scoped read ignores `harness` if passed.",
         "notWhen": "See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.",
         "chaining": "loop:arm to start; loop:end to stop."
       }

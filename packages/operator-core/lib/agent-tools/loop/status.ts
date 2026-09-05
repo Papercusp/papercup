@@ -32,9 +32,9 @@ export default defineTool({
   // documentation of the RESPONSE, so `returns` is also where it belongs — and it
   // is demand-loaded via tools:find rather than baked into every system prompt.
   description:
-    'Inspect the loop on your own session (or another owner\'s, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, cost-cap, latest lifecycle transition, and the current carry-note read-back. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than "no loop": see `returns`.',
+    'Inspect the loop on your own session (or another owner\'s, with `ownerId`); this read is owner-scoped, so a `harness` arg is accepted and ignored. It reports active?, interval, parked (turn in flight), next/last fire, cost-cap, latest lifecycle transition, and the current carry-note read-back. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than "no loop": see `returns`.',
   guidance: {
-    when: "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; do not pass `harness` because this read is keyed by owner.",
+    when: "Check whether your loop is still armed + when it next fires, or inspect another agent's loop. Pass `ownerId` for another session; this owner-scoped read ignores `harness` if passed.",
     returns:
       '`cadenceDrift` (EI-21276782387845111) is true only when sustained slow-cadence evidence is corroborated by a scheduled fire several intervals overdue. It stays false for a parked turn (the configured interval begins after turn settlement), missing cadence history, or a fire that is not demonstrably late; combine it with the raw cadence fields rather than treating false as proof of normal cadence.\n\n' +
       "ROOT ENVELOPE: `{ ok, ownerId, loop, lastTransition, carryNote, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. `lastTransition` is null when no loop exists; otherwise it is a tri-state diagnostic read (`found`/`none`/`unknown`). A found transition preserves the scheduling cause — for example `actor:'await-suppression'` plus `detail.drivingEventKey` explains why a 60s loop was deliberately re-armed to an await deadline instead of firing each minute. `carryNote` is the routine-scoped read-back `{ note, contentHash, updatedAtMs }`, or null when no loop exists; use its hash to reconcile an uncertain `loop:checkpoint` transport result. jq / code:run reducers must descend through `.loop`; assuming root-level active/interval fields iterates null (EI-21197839138727609).\n\n" +
@@ -61,13 +61,26 @@ export default defineTool({
   skipResultDoor: 'oversize-by-design',
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    ownerId: z
+    // EI-21137205137669557 (repeatCount 9, plus 4 duplicate filings): this arg
+    // used to be REJECTED, and the rejection was the single most-repeated
+    // caller error on this tool. `loop:end` had already settled the same
+    // question the other way — accept and ignore — so `loop:status` was the
+    // lone sibling in its own family that hard-errored on a harmless arg.
+    // Ignoring it is safe by code truth, not by convention: getLoopStatuses
+    // selects `WHERE r.target_owner_id = ANY(...)` with no harness/install
+    // predicate at all, so a `harness` value could not change the answer.
+    harness: z
       .string()
       .max(120)
       .optional()
       .describe(
-        'Inspect the loop for this owner id (default: yourself). The status read is owner-scoped; `harness` is intentionally not an argument.',
+        'Accepted for compatibility and IGNORED — loops are keyed by owner, not by harness, so this has no effect. Present only because nearly every other tool in this catalog takes a `harness` arg and callers reasonably reach for it out of habit; omit it, or pass anything.',
       ),
+    ownerId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Inspect the loop for this owner id (default: yourself). Mirrors loop:arm/end/checkpoint.'),
   }),
   result: z
     .object({
