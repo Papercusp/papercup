@@ -172,9 +172,9 @@ describe('the LIVE tool catalog honours every declared trimmed contract', () => 
     // is green because it checked nothing.
     //
     // EI-21353488282456582: this used to read `toBeGreaterThanOrEqual(1)`, a
-    // floor set at the then-current population of one. It passed for three
-    // weeks while adoption stayed at that single tool, because a floor of one
-    // is satisfied forever by the tool that motivated the guard. The real
+    // floor set at the then-current population of one. It passed for 18 days
+    // while adoption stayed at that single tool, because a floor of one is
+    // satisfied forever by the tool that motivated the guard. The real
     // coverage property is the classification assertion below; this stays as
     // the vacuous-green tripwire it was always meant to be.
     const optedIn = subjects.filter((s) => s.shape?.contract && typeof s.shape.trimmed === 'function');

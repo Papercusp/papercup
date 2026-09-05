@@ -179,8 +179,9 @@ export function trimmedContractViolations(
  * That reasoning still holds and is not what this section changes.
  *
  * What it changes is that opt-in with nothing forcing the choice is opt-in
- * nobody takes. Measured 2026-09-05, three weeks after this file landed:
- * exactly ONE tool declaring a payload shaper had opted in — `routines:list`,
+ * nobody takes. Measured 2026-09-05, 18 days after this file landed (commit
+ * 0e42cc6295, 2026-08-18): exactly ONE of the 22 tools declaring a payload
+ * shaper had opted in — `routines:list`,
  * the tool whose three repeated defects motivated building the mechanism. The
  * guard covered its own motivating instance and nothing else, which is
  * indistinguishable from a guard that works until a second instance appears.
