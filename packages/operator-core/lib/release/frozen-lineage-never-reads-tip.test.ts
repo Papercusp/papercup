@@ -435,3 +435,57 @@ describe('a green repair head promotes; it is never joined into the tip (P-007, 
     expect(GATE_ANCESTOR_SOURCE).toContain('resolveRunnableCandidate');
   });
 });
+
+/**
+ * P-024 (D-003 / D-011, WI-2144110): the FOURTH un-freezing path. The stale-red RE-TRIAGE in the
+ * gate's not-green branch re-runs the failing legs at a second sha and, on a pass, REFIRES the whole
+ * gate on it (`return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip })`). Until P-024 that
+ * sha was `deps.resolveTip()` — the integration branch — even while a queue row was frozen. Measured
+ * 2026-09-04 12:23:16Z: queue frozen at 97c0b102 @ repairHead a93a1cab, re-triage refired at
+ * 88b78003, a sha that does NOT descend from the lineage and IS an ancestor of staging.
+ *
+ * Written as a falsifier against that source: the pre-P-024 block reads
+ * `const tip = (await deps.resolveTip?.().catch(() => null)) ?? null;` and re-reads the tip the same
+ * way after the re-run — both shapes are refused below. The behavioural half (a row in ANY phase
+ * pins the target to repairHead and never consults the tip) lives in retriage-target.test.ts.
+ */
+describe('re-triage never re-runs at, or refires on, the integration tip while a queue row exists (P-024)', () => {
+  const start = GATE_SOURCE.indexOf('// Stale-candidate re-triage:');
+  const end = GATE_SOURCE.indexOf('"superseded-by-refire"');
+  const block = start > -1 && end > start ? GATE_SOURCE.slice(start, end) : '';
+
+  it('the re-triage block exists and ends in the refire recursion', () => {
+    expect(start, 'the re-triage block marker must exist').toBeGreaterThan(-1);
+    expect(end, 'the refire promotion stamp must follow the block').toBeGreaterThan(start);
+  });
+
+  it('resolves its target through the lineage-aware resolver, never by a bare tip read', () => {
+    expect(block).toContain('resolveRetriageTarget(');
+    expect(block).toMatch(/isLineageDescendant:/);
+    expect(block).toMatch(/const tip = retriageTarget\.ref;/);
+    expect(block).not.toMatch(/const tip\s*=\s*\(await deps\.resolveTip/);
+    expect(block).not.toMatch(/const currentTipAfterRetriage\s*=\s*\(await deps\.resolveTip/);
+  });
+
+  it('every remaining mention of the tip resolver in the block is the resolver INPUT, not a read the block performs', () => {
+    const mentions = [...block.matchAll(/deps\.resolveTip/g)];
+    expect(mentions.length, 'the resolver must be handed the tip reader as its no-row input').toBeGreaterThan(0);
+    for (const m of mentions) {
+      const before = block.slice(Math.max(0, m.index! - 160), m.index!);
+      expect(before, `bare deps.resolveTip read at block offset ${m.index}`).toMatch(/resolveIntegrationTip|deps\.resolveTip\s*$/);
+    }
+  });
+
+  it('the refire recurses on the resolved target and on nothing else', () => {
+    const tail = GATE_SOURCE.slice(end, end + 400);
+    expect(tail).toMatch(/candidate:\s*tip,/);
+    expect(tail).not.toMatch(/integrationBranch|resolveTip/);
+  });
+
+  it('POSITIVE CONTROL: the forbidden bare-read shapes match what they are meant to catch', () => {
+    expect('const tip = (await deps.resolveTip?.().catch(() => null)) ?? null;').toMatch(/const tip\s*=\s*\(await deps\.resolveTip/);
+    expect('const currentTipAfterRetriage =\n          (await deps.resolveTip?.().catch(() => null)) ?? null;').toMatch(
+      /const currentTipAfterRetriage\s*=\s*\(await deps\.resolveTip/,
+    );
+  });
+});
