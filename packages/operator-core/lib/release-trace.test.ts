@@ -250,6 +250,33 @@ function input(over: Partial<ReleaseTraceInput> = {}): ReleaseTraceInput {
   };
 }
 
+/**
+ * A wall-clock instant for fixtures whose assertion depends on the trace's clock.
+ *
+ * `input()` defaults `snapshotGeneration` to `10`, which is fine for every assertion that never
+ * reads it — but production passes `snapshot.generatedAtMs`, a real epoch-ms value, and P-002's
+ * progress certificate measures heartbeat AGE against it. A fixture that leaves the default in
+ * place is therefore certifying a heartbeat against the instant `10ms after the epoch`, where
+ * every plausible timestamp is far in the future and the verdict is decided by clock skew rather
+ * than by the branch under test. Any fixture that sets `progressAtMs` must set this too.
+ */
+const NOW_MS = 1_700_000_000_000;
+
+/**
+ * The heartbeat shape of a HEALTHY in-flight run: advanced strictly past its start, and seen
+ * recently against `NOW_MS`.
+ *
+ * It exists as a named helper because the wrong shape is the easy one to write by hand and does
+ * not announce itself — overriding one field in isolation (a "stale" heartbeat left BEFORE the
+ * run's start, say) silently selects the clock-skew branch instead of the one you meant to test,
+ * and the assertion still reads as if it exercised the intended path.
+ */
+function advancingHeartbeat(over: { startedAgoMs?: number; lastSeenAgoMs?: number } = {}) {
+  const startedAgoMs = over.startedAgoMs ?? 120_000;
+  const lastSeenAgoMs = over.lastSeenAgoMs ?? 5_000;
+  return { startedAtMs: NOW_MS - startedAgoMs, progressAtMs: NOW_MS - lastSeenAgoMs };
+}
+
 describe('release trace wake lineage', () => {
   it('calls an exact deploy-key wake current even without a payload SHA', () => {
     expect(
@@ -545,12 +572,13 @@ describe('buildReleaseTrace', () => {
       active: true,
       activeSource: 'run-lock' as const,
       candidate: sha,
-      startedAtMs: 123,
+      ...advancingHeartbeat(),
       elapsedSec: 42,
       asOfAgeMs: 0,
     };
     const out = buildReleaseTrace(
       input({
+        snapshotGeneration: NOW_MS,
         position: position({
           positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
           gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
@@ -815,12 +843,13 @@ describe('buildReleaseTrace', () => {
         known: true,
         invocationId: 'invocation-123',
       },
-      startedAtMs: 123,
+      ...advancingHeartbeat(),
       elapsedSec: 42,
       asOfAgeMs: 0,
     };
     const out = buildReleaseTrace(
       input({
+        snapshotGeneration: NOW_MS,
         position: position({
           positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
           gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
@@ -1235,6 +1264,7 @@ describe('buildReleaseTrace', () => {
     const candidate = 'b'.repeat(40);
     const out = buildReleaseTrace(
       input({
+        snapshotGeneration: NOW_MS,
         position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
         gate: {
           state: 'gate-verdict-stale',
@@ -1249,7 +1279,7 @@ describe('buildReleaseTrace', () => {
             active: true,
             candidate,
             activeSource: 'run-lock',
-            startedAtMs: 123,
+            ...advancingHeartbeat(),
             elapsedSec: 42,
             asOfAgeMs: null,
           },
@@ -1621,5 +1651,151 @@ describe('EI-21456558908416090: withheld manual checkpoint-run authority', () =>
     );
     expect(out.constraints.map((c) => c.code)).not.toContain('manual-checkpoint-authority-withheld');
     expect(out.nextVerb).toBeNull();
+  });
+});
+
+/**
+ * P-002 — `nextVerb` may recommend awaiting an in-flight run's verdict ONLY when that run is
+ * certified as advancing.
+ *
+ * The pre-P-002 behaviour recommended `checkpoint:await` from `active === true` alone, which says
+ * a run EXISTS, not that it is still deciding. These cases pin the routing: what each verdict
+ * recommends, that the several `unknown` bases do not collapse into one sentence, and — the
+ * expensive one — that no non-advancing route can reach `release:checkpoint-run`.
+ */
+describe('P-002: progress-certified checkpoint:await', () => {
+  const candidate = 'b'.repeat(40);
+
+  const staleVerdictGate = {
+    state: 'gate-verdict-stale' as const,
+    authoritative: false,
+    consecutiveReds: 3,
+    failingTests: [] as string[],
+    fireStale: false,
+    fireStaleReason: null,
+    verdictStale: true,
+    verdictStaleReason: 'superseded pin',
+  };
+
+  /**
+   * Site B: target not green-pinned, a run in flight, and a stale verdict UNDER it.
+   *
+   * The stale verdict is load-bearing, not scenery — without an in-flight run this same fixture
+   * recommends `release:checkpoint-run`, which is what makes "did the progress gate fall through
+   * to the forbidden verb?" observable at all. The control case below proves it still does.
+   */
+  const traceWithRun = (run: Record<string, unknown>) =>
+    buildReleaseTrace(
+      input({
+        snapshotGeneration: NOW_MS,
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: {
+          ...staleVerdictGate,
+          checkpointRunInFlight: { active: true, candidate, elapsedSec: 42, ...run },
+        } as never,
+      }),
+    );
+
+  it('control: with no run in flight this fixture DOES recommend firing the gate by hand', () => {
+    // Calibration. If this stops recommending release:checkpoint-run, every "did NOT recommend
+    // release:checkpoint-run" assertion below starts passing for a reason unrelated to P-002.
+    const out = buildReleaseTrace(
+      input({
+        snapshotGeneration: NOW_MS,
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: staleVerdictGate as never,
+      }),
+    );
+    expect(out.nextVerb?.name).toBe('release:checkpoint-run');
+  });
+
+  it('progressing (live heartbeat): awaits, and carries the certificate reason', () => {
+    const out = traceWithRun({ activeSource: 'run-lock', ...advancingHeartbeat(), asOfAgeMs: null });
+    expect(out.nextVerb?.name).toBe('checkpoint:await');
+    expect(out.nextVerb?.reason).toContain("heartbeat advanced past its start");
+  });
+
+  it('verdict-published: reads the verdict that already exists rather than awaiting one', () => {
+    // `progressing` is a NECESSARY condition for the await, not a sufficient one: this run is
+    // healthy, but the thing the await would wait for has already arrived.
+    const out = traceWithRun({
+      activeSource: 'run-lock',
+      ...advancingHeartbeat(),
+      verdictWrittenAtMs: NOW_MS - 30_000,
+      asOfAgeMs: null,
+    });
+    expect(out.nextVerb?.name).toBe('state:read');
+    expect(out.nextVerb?.args).toMatchObject({ cell: 'gate.greenCheckpoint.verdict' });
+    expect(out.nextVerb?.reason).toContain('already exists');
+  });
+
+  it('stalled: measures the producer instead of awaiting it', () => {
+    const out = traceWithRun({
+      activeSource: 'run-lock',
+      ...advancingHeartbeat({ startedAgoMs: 3_600_000, lastSeenAgoMs: 1_800_000 }),
+      asOfAgeMs: null,
+    });
+    expect(out.nextVerb?.name).toBe('processes:list');
+    expect(out.nextVerb?.reason).toContain('NOT certified as advancing');
+  });
+
+  it('D-004: a stalled run inside its re-triage window names the discarded-rescue cost', () => {
+    const out = traceWithRun({
+      activeSource: 'run-lock',
+      inRetriageWindow: true,
+      ...advancingHeartbeat({ startedAgoMs: 3_600_000, lastSeenAgoMs: 1_800_000 }),
+      asOfAgeMs: null,
+    });
+    expect(out.nextVerb?.name).toBe('processes:list');
+    expect(out.nextVerb?.reason).toContain('re-triage window');
+    expect(out.nextVerb?.reason).toContain('discards');
+  });
+
+  it('unknown with a LIVE authority: measures the producer, never a re-read it cannot improve', () => {
+    // A live authority already produced the best reading this interface can give, so recommending
+    // `dev:pipeline_position` would be a loop: a re-read cannot supply a heartbeat never emitted.
+    const out = traceWithRun({ activeSource: 'run-lock', startedAtMs: NOW_MS - 120_000, asOfAgeMs: null });
+    expect(out.nextVerb?.name).toBe('processes:list');
+    expect(out.nextVerb?.reason).toContain('no heartbeat at all');
+  });
+
+  it('D-003 ambiguous-fallback: does not read as a stall', () => {
+    const started = NOW_MS - 3_600_000;
+    const out = traceWithRun({ activeSource: 'run-lock', startedAtMs: started, progressAtMs: started, asOfAgeMs: null });
+    expect(out.nextVerb?.name).toBe('processes:list');
+    // The fallback collision is an hour old, so a naive age rule would call it a long stall.
+    expect(out.nextVerb?.reason).toContain('not evidence of a stall');
+    expect(out.nextVerb?.reason).not.toContain('NOT certified as advancing');
+  });
+
+  it('unknown with NO live authority: re-reads from a live authority instead', () => {
+    const out = traceWithRun({ startedAtMs: NOW_MS - 120_000, progressAtMs: NOW_MS - 5_000, asOfAgeMs: 7_200_000 });
+    expect(out.nextVerb?.name).toBe('dev:pipeline_position');
+    expect(out.nextVerb?.reason).toContain('No live authority answered');
+  });
+
+  it('no non-advancing route awaits the run or fires the gate by hand', () => {
+    // The class invariant over every basis reachable from an active run. Each entry also asserts
+    // the forbidden verb is NAMED in the reason — a bare redirect teaches the reader nothing and
+    // invites them to reach for `release:checkpoint-run` from memory, which is how the
+    // discarded-rescue incident actually happened.
+    const nonAdvancing = [
+      { activeSource: 'run-lock', startedAtMs: NOW_MS - 120_000, asOfAgeMs: null },
+      { activeSource: 'run-lock', startedAtMs: NOW_MS - 600_000, progressAtMs: NOW_MS - 600_000, asOfAgeMs: null },
+      {
+        activeSource: 'run-lock',
+        ...advancingHeartbeat({ startedAgoMs: 3_600_000, lastSeenAgoMs: 1_800_000 }),
+        asOfAgeMs: null,
+      },
+      { activeSource: 'run-lock', startedAtMs: NOW_MS - 120_000, progressAtMs: NOW_MS + 600_000, asOfAgeMs: null },
+      { startedAtMs: NOW_MS - 120_000, progressAtMs: NOW_MS - 5_000, asOfAgeMs: 7_200_000 },
+      { startedAtMs: NOW_MS - 120_000, progressAtMs: NOW_MS - 5_000, asOfAgeMs: null },
+    ];
+    for (const run of nonAdvancing) {
+      const verb = traceWithRun(run).nextVerb;
+      expect(verb?.name).not.toBe('release:checkpoint-run');
+      expect(verb?.name).not.toBe('checkpoint:await');
+      expect(verb?.reason).toContain('release:checkpoint-run');
+    }
   });
 });

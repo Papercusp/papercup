@@ -13,6 +13,12 @@ import {
   type GateRedOwnership,
 } from './release/gate-red-ownership';
 import { classifyReleaseParity } from './release-parity';
+import {
+  certifyCheckpointProgress,
+  type ProgressBasis,
+  type ProgressCertificate,
+  type ProgressCertificateInput,
+} from './release-trace-progress';
 
 export interface ReleaseTraceGate {
   state: DeployStatus['state'];
@@ -744,6 +750,120 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
 }
 
 /**
+ * P-002 — why an `active === true` reading is not enough to recommend awaiting a verdict.
+ *
+ * Two branches below tell the reader to await an in-flight run's terminal verdict. Both rested
+ * on `active`, which says a run EXISTS, not that it is still deciding. When the run is wedged
+ * those recommendations strand the reader on a producer that will never wake them, and the
+ * natural escape from an apparently-overdue await is a manual `release:checkpoint-run` — which
+ * inside a re-triage window discards the in-flight rescue and spends a full suite. So the proof
+ * the recommendation needs is PROGRESS, and it already rides on the object those branches read.
+ *
+ * `progressing` keeps the await and appends the certificate's own line. `stalled` and `unknown`
+ * route ELSEWHERE, and they route to DIFFERENT places on purpose: a stall is a claim about the
+ * producer (go measure it), while an `unknown` is a claim about the READING (go get a better
+ * one). Collapsing the two — or collapsing the several `unknown` bases into one sentence — is
+ * exactly how "we could not tell" is read as "nothing is happening", which is the reader error
+ * this plan exists to prevent.
+ */
+const PROGRESS_UNKNOWN_CLAUSE: Record<ProgressBasis, string> = {
+  'no-run': 'This reading carries no in-flight run at all, so there is no verdict in flight to await.',
+  'evidence-too-old':
+    'This reading came from a cache older than its trust window, so it cannot say the run is healthy OR wedged (D-005) — ' +
+    'a stale snapshot of an advancing run and a live snapshot of a stopped one are the same bytes.',
+  'verdict-published':
+    'The active run has ALREADY published its verdict and is now salvaging, so its elapsed time measures the process, ' +
+    'not the decision; read the published outcome instead of awaiting one that already arrived.',
+  'ambiguous-fallback':
+    'The heartbeat equals the run start instant, which is the documented fallback collision and NOT a stall (D-003); ' +
+    'no advancing proof exists yet, so obtain one rather than inferring either health or a wedge from it.',
+  'progress-unmeasured':
+    'This reading carries no heartbeat at all, so nothing establishes advancement in either direction.',
+  'clock-skew':
+    'The heartbeat is meaningfully ahead of the observing clock; the two clocks disagree, so no age computed from it — ' +
+    'including a stall age — can be trusted.',
+  // Neither basis below can reach an `unknown` verdict; both are decided readings. Present so a
+  // later basis→verdict change surfaces as a wrong SENTENCE rather than an absent one.
+  'live-heartbeat': 'The reading is live but could not be resolved to a verdict.',
+  'heartbeat-stale': 'The reading is stale but could not be resolved to a verdict.',
+};
+
+function progressGatedAwait(
+  awaitVerb: ReleaseTraceNextVerb,
+  run: ProgressCertificateInput | null | undefined,
+  nowMs: number,
+  position: PipelinePosition,
+): ReleaseTraceNextVerb {
+  const cert: ProgressCertificate = certifyCheckpointProgress(run, nowMs);
+
+  if (cert.verdict === 'progressing') {
+    // `verdict-published` is `progressing` because the run is healthy — but the thing the await
+    // would wait for HAS ALREADY ARRIVED, so awaiting it is waiting on the past. "Only on
+    // progressing" is a necessary condition for the await, never a sufficient one.
+    if (cert.basis === 'verdict-published') {
+      return {
+        name: 'state:read',
+        args: { cell: 'gate.greenCheckpoint.verdict' },
+        reason:
+          `${cert.detail} The verdict you would await already exists, so read it instead of waiting for it; ` +
+          'an overdue-looking runtime here is the salvage phase, not a wedge.',
+      };
+    }
+    return { ...awaitVerb, reason: `${awaitVerb.reason} ${cert.detail}` };
+  }
+
+  // D-004 interlock. The certificate surfaces this flag on EVERY non-advancing verdict, precisely
+  // because a run that looks stuck is when the forbidden verb is most tempting. No branch below
+  // recommends it; the wording says so out loud rather than leaving the reader to reach for it
+  // from memory, which is how the discarded-rescue incident actually happened.
+  const retriage = cert.inRetriageWindow
+    ? ' D-004: this run is inside its auto-refire re-triage window — a manual release:checkpoint-run there discards ' +
+      'the in-flight rescue and spends a full suite, so do not fire the gate by hand.'
+    : ' Do not fire release:checkpoint-run to "try again": it cuts a fresh candidate at tip and restarts the treadmill ' +
+      'that freeze-and-converge exists to stop.';
+
+  if (cert.verdict === 'stalled') {
+    return {
+      // A stall is a claim about the PRODUCER, so the next move measures the producer. A second
+      // await cannot tell a slow run from a dead one — that is what stranded the reader here.
+      name: 'processes:list',
+      args: {},
+      reason:
+        `The in-flight run is NOT certified as advancing. ${cert.detail} ` +
+        'Awaiting its verdict risks stranding on a producer that has stopped, so measure whether it is still doing ' +
+        `work before waiting on it.${retriage}`,
+    };
+  }
+
+  // `unknown` splits on WHO answered, because that decides which move can add information.
+  //
+  // A live authority (run-lock / process-authority) has already given the best reading this
+  // interface can produce. Re-reading cannot supply a heartbeat that was never emitted, so
+  // recommending a re-read there is a loop dressed as an action — measure the producer instead.
+  // Without a live authority the READING is the limitation, and a live re-read genuinely fixes it.
+  if (cert.liveAuthority) {
+    return {
+      name: 'processes:list',
+      args: {},
+      reason:
+        `A live authority answered, but the run's progress still could not be certified. ` +
+        `${PROGRESS_UNKNOWN_CLAUSE[cert.basis]} ${cert.detail} ` +
+        'This establishes neither health nor a wedge, and re-reading cannot add a heartbeat that was never emitted, ' +
+        `so measure the producer directly before awaiting or intervening.${retriage}`,
+    };
+  }
+
+  return {
+    name: 'dev:pipeline_position',
+    args: position.input.path ? { path: position.input.path } : { sha: position.input.sha },
+    reason:
+      `No live authority answered, so the run's progress could not be certified. ` +
+      `${PROGRESS_UNKNOWN_CLAUSE[cert.basis]} ${cert.detail} ` +
+      `Re-read from a live authority before awaiting or intervening.${retriage}`,
+  };
+}
+
+/**
  * The unguarded recommendation. Four separate branches below can return
  * `release:checkpoint-run`; `safeNextVerb` applies the withheld-authority guard once, at the
  * boundary, rather than repeating a condition at each of them.
@@ -823,13 +943,18 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
     if (targetIsUnderActiveVerification) {
-      return {
-        name: 'checkpoint:await',
-        args: { pipeline },
-        reason:
-          `A green-checkpoint run is already actively judging this exact detached candidate ${targetSha}; ` +
-          'await its terminal verdict, then re-read release:trace instead of waiting on publication or launching a duplicate.',
-      };
+      return progressGatedAwait(
+        {
+          name: 'checkpoint:await',
+          args: { pipeline },
+          reason:
+            `A green-checkpoint run is already actively judging this exact detached candidate ${targetSha}; ` +
+            'await its terminal verdict, then re-read release:trace instead of waiting on publication or launching a duplicate.',
+        },
+        checkpointRun,
+        input.snapshotGeneration,
+        position,
+      );
     }
     if (position.positions.committedLocal) {
       return {
@@ -849,13 +974,18 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
   }
   if (targetIsNotGreenPinned(position)) {
     if (checkpointRun?.active) {
-      return {
-        name: 'checkpoint:await',
-        args: { pipeline },
-        reason:
-          `A green-checkpoint run is already active${checkpointRun.candidate ? ` on candidate ${checkpointRun.candidate}` : ''}; ` +
-          'await its terminal verdict, then re-read release:trace instead of launching a duplicate.',
-      };
+      return progressGatedAwait(
+        {
+          name: 'checkpoint:await',
+          args: { pipeline },
+          reason:
+            `A green-checkpoint run is already active${checkpointRun.candidate ? ` on candidate ${checkpointRun.candidate}` : ''}; ` +
+            'await its terminal verdict, then re-read release:trace instead of launching a duplicate.',
+        },
+        checkpointRun,
+        input.snapshotGeneration,
+        position,
+      );
     }
     if (gate.verdictStale || gate.fireStale) {
       return {
