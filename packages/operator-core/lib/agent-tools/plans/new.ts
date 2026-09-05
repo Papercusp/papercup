@@ -424,6 +424,11 @@ export default defineTool({
     // the success payload so the creator sees what was cleared (and can still
     // continue one of them if the semantic verdict was wrong).
     let semanticallyCleared: Array<{ slug: string; similarity: number }> = [];
+    // WI-2145556: how the cosine confirmation was cut, or that it could not run.
+    // Reported on the refusal so an agent staring at `similar_exists` can tell a
+    // CONFIRMED overlap from one the classifier never got to judge — the state
+    // the inert 0.6 constant left every refusal in, indistinguishably.
+    let cosineConfirm: Record<string, unknown> = { basis: 'not-run' };
     if (args.force !== true) {
       try {
         const rows = await listPlanIndexRows({
@@ -458,6 +463,20 @@ export default defineTool({
               if (res.dropped.length > 0) {
                 semanticallyCleared = res.dropped.map((d) => ({ slug: d.slug, similarity: d.similarity }));
               }
+              cosineConfirm = res.calibration
+                ? { ...res.calibration, clearedCount: res.dropped.length }
+                : { basis: 'unknown' };
+            } else {
+              // No cosine verdict: the token refusal below is UNCONFIRMED. Say so —
+              // the corpus could not be calibrated against (too few or degenerate
+              // background vectors), the embedder was down, or the candidates have
+              // no stored vector. Fails safe (over-blocking), but the agent needs to
+              // know the semantic check did not actually clear anything.
+              cosineConfirm = {
+                basis: 'unavailable',
+                note: 'the cosine confirmation could not run, so these candidates are token-matches that were never semantically judged',
+                ...(res.coverage?.verdict ? { corpusCoverage: res.coverage.verdict } : {}),
+              };
             }
           } catch {
             /* fail-open: the token verdict stands */
@@ -473,6 +492,7 @@ export default defineTool({
                   slug,
                   similar,
                   ...(semanticallyCleared.length > 0 ? { semanticallyCleared } : {}),
+                  cosineConfirm,
                   hint:
                     'Existing plans overlap this topic. Continue one of them (plans:get → set-now/add-item). ' +
                     'Before reaching for force: true, note search:semantic does NOT cover plans (only escalations/brainstorm/turns/decisions) — ' +
