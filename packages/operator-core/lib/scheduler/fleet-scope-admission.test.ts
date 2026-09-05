@@ -293,6 +293,7 @@ const base: ClaimSpecSubject = {
   plan: 'bug-drain',
   planItem: ['P-016'],
   fleet: null,
+  triageGate: null,
   age: 1_000,
   riskTier: 'moderate',
   redundancy: 1,

@@ -161,6 +161,7 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     plan: spec.targetPlanItem?.slug ?? null,
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
     fleet: null,
+    triageGate: null,
     age: Date.now(),
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     redundancy: numberOrNull(payload.redundancy),

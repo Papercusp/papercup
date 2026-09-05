@@ -142,6 +142,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     plan: null,
     planItem: [],
     fleet: null,
+    triageGate: null,
     age: 0,
     riskTier: null,
     redundancy: null,
