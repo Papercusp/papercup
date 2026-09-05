@@ -1905,6 +1905,42 @@ describe('work_items:complete (keyed-array)', () => {
       expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
     });
 
+    it('surfaces failed grading-audit targets with repair guidance instead of pending boilerplate', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      const failedTargets = ['EI-failed-scorecard-1', 'EI-failed-scorecard-2'];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-003-01@1: no current terminal complete scorecard matches the exact evaluator verdicts',
+        checked: [],
+        failedGradingAuditTargetIds: failedTargets,
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: {
+          applicable: true,
+          retryable: true,
+          checked: [],
+          failedGradingAuditTargetIds: failedTargets,
+        },
+      });
+      expect(r.error).toContain('repairing the failed grading-integrity findings');
+      expect(r.error).toContain(failedTargets.join(', '));
+      expect(r.error).not.toContain('pending grading audits');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    });
+
     it('fails closed and retryably when the gate read itself throws', async () => {
       getWorkItem.mockResolvedValue(linkedIssue);
       specTestAdequacyCompletionGate.mockRejectedValue(new Error('scorecard store unavailable'));

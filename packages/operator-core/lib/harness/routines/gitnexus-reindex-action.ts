@@ -77,6 +77,7 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  statfsSync,
 } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
@@ -130,6 +131,56 @@ export const GITNEXUS_ANALYZE_TIMEOUT_MS = 165 * 60_000;
  * around the child (capacity telemetry, residue scan, canary, health write) with room.
  */
 export const GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS = GITNEXUS_ANALYZE_TIMEOUT_MS + 15 * 60_000;
+
+/**
+ * FREE-DISK admission floor for a full rebuild (2026-09-05 ENOSPC incident).
+ *
+ * A `--force` rebuild writes a fresh `lbug.shadow` + `lbug.wal` BESIDE the live `lbug`
+ * (5.28 GB on the 2026-09-05 graph) and only promotes at the end, so a tick needs roughly one
+ * more database's worth of space than it holds, plus the WAL the embedding insert streams
+ * through. Measured 2026-09-05: the 20:32:59Z routine tick ran its whole ~1h50 pass and then
+ * died at 22:25:52Z inside `batchInsertEmbeddings` — `Cannot write to file … lbug.wal … No
+ * space left on device` (exit 1 at run-analyze.js:1035) — because an unrelated build had
+ * filled `/` to 100% at ~22:24Z. Postgres shares that filesystem and PANICked on `pg_wal` in
+ * the same minute (WAL writer SIGABRT, recovery until 22:30:40Z). Two hours of GPU/CPU were
+ * spent to produce nothing, and the incomplete marker then forced ANOTHER full rebuild.
+ *
+ * So the gate is a floor on what a rebuild can be admitted into, not a size ceiling: the
+ * larger of this constant and 2x the current `lbug` size must be free on the index's
+ * filesystem, or the tick defers with a `low disk` skip line and leaves the (complete) old
+ * index serving. A measurement that cannot be taken is fail-soft (unknown ≠ low), matching
+ * the memory-pressure gate.
+ */
+export const GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES = 16 * 1024 ** 3;
+
+/** Free bytes available to this user on the filesystem holding `dir`; `null` when unmeasurable. */
+export function measureFreeDiskBytes(dir: string): number | null {
+  try {
+    const s = statfsSync(dir);
+    const free = Number(s.bavail) * Number(s.bsize);
+    return Number.isFinite(free) && free >= 0 ? free : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PURE — the free space a full rebuild needs: the floor, or twice the live database when
+ * that is larger (the shadow is a second copy; the WAL and parse caches ride in the margin).
+ * An unknown database size falls back to the floor alone.
+ */
+export function requiredFreeDiskBytes(
+  dbBytes: number | null,
+  minFreeBytes: number = GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES,
+): number {
+  const floor = Number.isFinite(minFreeBytes) && minFreeBytes > 0 ? minFreeBytes : GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES;
+  if (dbBytes == null || !Number.isFinite(dbBytes) || dbBytes <= 0) return floor;
+  return Math.max(floor, 2 * dbBytes);
+}
+
+function gib(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
 
 /**
  * The analyze child's OWN cgroup ceiling (managedSpawn `memoryMaxBytes`), so a regression
@@ -438,6 +489,13 @@ export interface ReindexDecisionInput {
   memoryPressure?: 'ok' | 'warn' | 'crit' | null;
   /** The writer's first reason, retained for an actionable skip log. */
   memoryPressureReason?: string | null;
+  /**
+   * Free bytes on the index's filesystem (measureFreeDiskBytes). `null`/omitted = could not
+   * be measured; like memory pressure, that uncertainty never becomes a block.
+   */
+  freeDiskBytes?: number | null;
+  /** What a full rebuild needs free (requiredFreeDiskBytes); ignored when freeDiskBytes is null. */
+  requiredFreeDiskBytes?: number;
   minCommitsBehind: number;
   maxLoadPerCore: number;
   minIntervalSec: number;
@@ -460,11 +518,18 @@ export interface ReindexDecision {
  *     recreates the host-pressure incident this routine is meant to avoid. A null band
  *     means the capture is absent, stale, or missing a leg; it is intentionally fail-soft
  *     and does not invent pressure from missing data.
- *  3. NO INDEX ⇒ build. A missing graph is the WI-6445 failure mode (every lookup)
+ *  3. LOW DISK ⇒ defer. A full rebuild writes a second database beside the live one and
+ *     streams its embedding insert through a WAL; admitted into a nearly-full filesystem it
+ *     runs its whole ~2h pass and then dies on ENOSPC — and, because Postgres shares `/`
+ *     here, takes the operator database into PANIC/recovery with it (measured 2026-09-05,
+ *     see GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES). This outranks a missing index for the same
+ *     reason load does: the build cannot succeed, and attempting it hurts the box. An
+ *     unmeasurable free-space reading is fail-soft, like a null memory band.
+ *  4. NO INDEX ⇒ build. A missing graph is the WI-6445 failure mode (every lookup)
  *     returns "Symbol not found" while every call still looks well-formed), so it
  *     bypasses both the interval floor and the staleness check.
- *  4. INTERVAL FLOOR — bounds steady-state cost regardless of how fast commits land.
- *  5. STALENESS — the ordinary skip: nothing changed, nothing to do.
+ *  5. INTERVAL FLOOR — bounds steady-state cost regardless of how fast commits land.
+ *  6. STALENESS — the ordinary skip: nothing changed, nothing to do.
  */
 export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
   if (i.loadPerCore > i.maxLoadPerCore) {
@@ -480,6 +545,17 @@ export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
         `memory pressure ${i.memoryPressure} — deferring GitNexus analyze to the next tick` +
         (i.memoryPressureReason ? ` (${i.memoryPressureReason})` : ''),
     };
+  }
+  if (i.freeDiskBytes != null && Number.isFinite(i.freeDiskBytes)) {
+    const need = i.requiredFreeDiskBytes ?? requiredFreeDiskBytes(null);
+    if (i.freeDiskBytes < need) {
+      return {
+        run: false,
+        reason:
+          `low disk (${gib(i.freeDiskBytes)} free on the index filesystem < ${gib(need)} a full rebuild needs) — ` +
+          'deferring to the next tick; a rebuild admitted here dies on ENOSPC after its whole pass and can PANIC Postgres',
+      };
+    }
   }
   if (!i.registered) {
     return { run: true, reason: 'no gitnexus index registered for this repo — cold build' };
@@ -2138,6 +2214,15 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     console.warn(`[gitnexus-reindex] memory-pressure admission unavailable: ${e instanceof Error ? e.message : e}`);
   }
 
+  // Free-disk admission (2026-09-05 ENOSPC): measured on the index directory's filesystem
+  // against the live database size, so the requirement tracks the graph as it grows.
+  const indexDir = path.join(root, '.gitnexus');
+  const freeDiskBytes = measureFreeDiskBytes(existsSync(indexDir) ? indexDir : root);
+  const requiredFree = requiredFreeDiskBytes(
+    measureGitnexusDbUsage(root).dbBytes,
+    num(cfg, 'min_free_disk_bytes', GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES),
+  );
+
   const decision = decideReindex({
     registered: entry != null,
     commitsBehind,
@@ -2145,6 +2230,8 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     secondsSinceIndexed,
     memoryPressure,
     memoryPressureReason,
+    freeDiskBytes,
+    requiredFreeDiskBytes: requiredFree,
     minCommitsBehind: num(cfg, 'min_commits_behind', DEFAULT_MIN_COMMITS_BEHIND),
     maxLoadPerCore: num(cfg, 'max_load_per_core', DEFAULT_MAX_LOAD_PER_CORE),
     minIntervalSec: num(cfg, 'min_interval_sec', DEFAULT_MIN_INTERVAL_SEC),

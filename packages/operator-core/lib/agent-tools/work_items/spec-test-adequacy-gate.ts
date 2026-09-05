@@ -49,6 +49,7 @@ export type SpecAdequacyCompletionGateResult =
       checked: string[];
       impactReport?: string;
       pendingGradingAuditTargetIds?: string[];
+      failedGradingAuditTargetIds?: string[];
     };
 
 /**
@@ -331,6 +332,7 @@ export async function specTestAdequacyCompletionGate(
   const checked: string[] = [];
   const failures: string[] = [];
   const pendingGradingAuditTargetIds = new Set<string>();
+  const failedGradingAuditTargetIds = new Set<string>();
   for (const clause of relevant) {
     const result = evaluateSpecTestAdequacy({
       clause,
@@ -351,12 +353,13 @@ export async function specTestAdequacyCompletionGate(
     if (!cards.some((card) => scorecardMatches(card, result))) {
       for (const card of cards) {
         if (
-          card.gradingAudit?.state === 'pending' &&
+          (card.gradingAudit?.state === 'pending' || card.gradingAudit?.state === 'failed') &&
           !card.supersededBy &&
           !card.retracted &&
           card.issueId
         ) {
-          pendingGradingAuditTargetIds.add(card.issueId);
+          if (card.gradingAudit.state === 'pending') pendingGradingAuditTargetIds.add(card.issueId);
+          else failedGradingAuditTargetIds.add(card.issueId);
         }
       }
       failures.push(`${label}: no current terminal complete scorecard matches the exact evaluator verdicts`);
@@ -373,6 +376,9 @@ export async function specTestAdequacyCompletionGate(
       reason: failures.join('; '),
       ...(pendingGradingAuditTargetIds.size
         ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] }
+        : {}),
+      ...(failedGradingAuditTargetIds.size
+        ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] }
         : {}),
     });
   }

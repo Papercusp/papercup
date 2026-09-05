@@ -768,6 +768,18 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.specFilterOmitted).toMatchObject({ reason: 'bounded for monitor transport' });
   });
 
+  it('keeps the custom-invariant alert in the summary when emergency shaping drops rows', () => {
+    const input = largeBrief();
+    (input.summary as Record<string, unknown>).customInvariantAlert = true;
+
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, unknown>;
+
+    expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed', emergency: true });
+    expect(out.summary).toMatchObject({ customInvariantAlert: true });
+    expect(out.customInvariants).toEqual([]);
+    expect(out.customInvariantsTruncated).toMatchObject({ total: 53, shown: 0 });
+  });
+
   it('keeps every bench target in a complete exceptional index when member rows are truncated', () => {
     const members = [
       ...Array.from({ length: 20 }, (_, index) => ({ agentId: `ordinary-${index}`, verdict: 'monitoring' })),

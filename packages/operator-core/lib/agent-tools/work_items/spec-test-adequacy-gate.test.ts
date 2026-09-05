@@ -402,6 +402,51 @@ describe('specTestAdequacyCompletionGate', () => {
     });
   });
 
+  it('returns only current failed scorecard issue ids for state-specific repair guidance', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([
+      matchingCard({
+        issueId: 'EI-failed-current',
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+          auditIssueId: 'EI-audit-failed-current',
+        },
+      }),
+      matchingCard({
+        issueId: 'EI-failed-superseded',
+        supersededBy: 'EI-replacement',
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+      matchingCard({
+        issueId: 'EI-failed-retracted',
+        retracted: {} as ScorecardRow['retracted'],
+        gradingAudit: {
+          state: 'failed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      applicable: true,
+      retryable: true,
+      failedGradingAuditTargetIds: ['EI-failed-current'],
+    });
+  });
+
   it('returns evaluator would-block reasons for stale or otherwise inadequate evidence', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
