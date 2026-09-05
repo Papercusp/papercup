@@ -212,6 +212,23 @@ function str(payload: Readonly<Record<string, unknown>>, key: string): string | 
   return typeof v === 'string' && v.trim() ? v : null;
 }
 
+/**
+ * Minor units already RESERVED against an order by refunds that are requested but
+ * not yet settled. Capacity for a NEW request is settled + reserved, not settled
+ * alone — checking against settlement only is the classic reservation bug, and it
+ * moves the refusal from request time (actionable: "that order already has a full
+ * refund in flight") to settlement time (a refund an operator already promised a
+ * customer, now permanently unsettleable). `refund.failed` releases the
+ * reservation for free by moving the refund out of `pending`.
+ */
+function pendingRefundMinorFor(state: LedgerState, orderId: string): number {
+  let pending = 0;
+  for (const refund of state.refunds.values()) {
+    if (refund.orderId === orderId && refund.state === 'pending') pending += refund.amount.amountMinor;
+  }
+  return pending;
+}
+
 function emptyState(): LedgerState {
   return { products: new Map(), offers: new Map(), orders: new Map(), entitlements: new Map(), refunds: new Map(), payouts: new Map(), applied: [], duplicates: [], rejected: [] };
 }
@@ -308,7 +325,8 @@ function applyEvent(state: LedgerState, event: LedgerEvent): ApplyResult {
       if (event.kind === 'refund.requested') {
         if (prior) return { ok: false, code: 'invalid-transition', detail: `refund ${refundId} already exists in state ${prior.state}` };
         if (order.state !== 'paid' && order.state !== 'partially-refunded') return { ok: false, code: 'invalid-transition', detail: `order ${orderId} in state ${order.state} cannot be refunded` };
-        if (order.refundedMinor + amount.amountMinor > order.amount.amountMinor) return { ok: false, code: 'refund-exceeds-order', detail: `refund ${amount.amountMinor} + already refunded ${order.refundedMinor} exceeds paid ${order.amount.amountMinor}` };
+        const reserved = pendingRefundMinorFor(state, orderId);
+        if (order.refundedMinor + reserved + amount.amountMinor > order.amount.amountMinor) return { ok: false, code: 'refund-exceeds-order', detail: `refund ${amount.amountMinor} + already refunded ${order.refundedMinor} + ${reserved} pending exceeds paid ${order.amount.amountMinor}` };
         state.refunds.set(refundId, { refundId, orderId, amount, state: 'pending', provider, providerRef: str(p, 'providerRef'), createdAtMs: at, updatedAtMs: at });
         return { ok: true };
       }
