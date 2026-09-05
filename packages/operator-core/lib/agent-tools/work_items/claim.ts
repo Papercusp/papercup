@@ -339,6 +339,15 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       return null;
     }
   })();
+  // workspace-work-scope-policy-2026-09-04 P-006: an item homed outside the workspace
+  // work-scope policy is refused for EVERY claimant (solo or fleet) before fleet admission
+  // runs. The item is untouched — held, never deleted; the denial lands on the policy
+  // ledger. No policy ⇒ one cached read, byte-identical behaviour.
+  {
+    const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
+    const scope = await gateWorkScope('work_items:claim', { harness: it.harness, workItem: it.id, actor: claimer });
+    if (!scope.allowed) return workScopeRefusal(scope, { id: it.id });
+  }
   const admission = await admitWorkItemForFleetTarget({
     target: claimer,
     workItemId: it.id,
