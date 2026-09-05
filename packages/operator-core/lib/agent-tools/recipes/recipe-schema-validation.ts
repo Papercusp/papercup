@@ -5,10 +5,34 @@ import {
   type ProjectedTool,
 } from '@papercusp/tooldef';
 
+/**
+ * Which schema rule an issue broke. Callers gate on this because the classes are NOT
+ * equally trustworthy as a refusal reason:
+ *
+ *  - `unknown-key` is decided by `additionalProperties:false`, which is exactly what a strict
+ *    zod object does at dispatch — so a flagged key is one the real dispatcher WILL reject.
+ *    Safe to fail closed on.
+ *  - every other class compares a literal against the PUBLISHED schema, which a tool may
+ *    legitimately widen at dispatch: ~22 arg schemas here use `z.coerce`, deliberately so the
+ *    same field accepts a numeric MCP arg AND a string (see plans/resume.ts, plans/revision-diff.ts).
+ *    A `type` complaint against such a field is a FALSE positive, so a caller that cannot afford
+ *    one (code:run, the highest-traffic script path) must treat these as advisory.
+ *
+ * EI-19449316000499177.
+ */
+export type RecipeSchemaIssueKind = 'unknown-key' | 'required' | 'enum' | 'type' | 'shape';
+
 export interface RecipeSchemaIssue {
   tool: string;
   path: string;
   message: string;
+  /** Optional: absent on issues produced before the classification existed. */
+  kind?: RecipeSchemaIssueKind;
+}
+
+interface SchemaIssueDetail {
+  message: string;
+  kind: RecipeSchemaIssueKind;
 }
 
 export interface RecipeSchemaValidation {
@@ -42,27 +66,35 @@ const equalJson = (left: unknown, right: unknown): boolean => {
   );
 };
 
-function validateValue(value: unknown, schema: JsonSchema, path: string): string[] {
+function validateValue(value: unknown, schema: JsonSchema, path: string): SchemaIssueDetail[] {
   const alternatives = schema.anyOf ?? schema.oneOf;
   if (alternatives?.length) {
     if (alternatives.some((candidate) => validateValue(value, candidate, path).length === 0)) return [];
-    return [`${path} does not match any current schema alternative`];
+    return [{ message: `${path} does not match any current schema alternative`, kind: 'shape' }];
   }
 
   if (schema.enum && !schema.enum.some((candidate) => equalJson(value, candidate))) {
-    return [`${path} must be one of ${schema.enum.map((candidate) => JSON.stringify(candidate)).join(', ')}`];
+    return [{
+      message: `${path} must be one of ${schema.enum.map((candidate) => JSON.stringify(candidate)).join(', ')}`,
+      kind: 'enum',
+    }];
   }
 
   if (schema.type === 'object') {
-    if (!isRecord(value)) return [`${path} must be an object`];
-    const issues: string[] = [];
+    if (!isRecord(value)) return [{ message: `${path} must be an object`, kind: 'type' }];
+    const issues: SchemaIssueDetail[] = [];
     for (const key of schema.required ?? []) {
-      if (!(key in value)) issues.push(`${path}.${key} is required`);
+      if (!(key in value)) issues.push({ message: `${path}.${key} is required`, kind: 'required' });
     }
     const properties = schema.properties ?? {};
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(value)) {
-        if (!(key in properties)) issues.push(`${path}.${key} is not accepted by the current tool schema`);
+        if (!(key in properties)) {
+          issues.push({
+            message: `${path}.${key} is not accepted by the current tool schema`,
+            kind: 'unknown-key',
+          });
+        }
       }
     }
     for (const [key, child] of Object.entries(properties)) {
@@ -72,14 +104,17 @@ function validateValue(value: unknown, schema: JsonSchema, path: string): string
   }
 
   if (schema.type === 'array') {
-    if (!Array.isArray(value)) return [`${path} must be an array`];
+    if (!Array.isArray(value)) return [{ message: `${path} must be an array`, kind: 'type' }];
     return schema.items ? value.flatMap((item, index) => validateValue(item, schema.items!, `${path}[${index}]`)) : [];
   }
 
-  if (schema.type === 'string' && typeof value !== 'string') return [`${path} must be a string`];
-  if (schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return [`${path} must be a number`];
-  if (schema.type === 'integer' && (!Number.isInteger(value))) return [`${path} must be an integer`];
-  if (schema.type === 'boolean' && typeof value !== 'boolean') return [`${path} must be a boolean`];
+  const typeIssue = (expected: string): SchemaIssueDetail[] => [
+    { message: `${path} must be ${expected}`, kind: 'type' },
+  ];
+  if (schema.type === 'string' && typeof value !== 'string') return typeIssue('a string');
+  if (schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return typeIssue('a number');
+  if (schema.type === 'integer' && (!Number.isInteger(value))) return typeIssue('an integer');
+  if (schema.type === 'boolean' && typeof value !== 'boolean') return typeIssue('a boolean');
   return [];
 }
 
@@ -114,8 +149,8 @@ export async function validateRecipeScriptAgainstCatalog(
     // dispatcher extracts it before validating the tool's published schema, so
     // recipe preflight must validate the same schema-visible argument shape.
     const { input: schemaArgs } = extractPayloadTier(call.args);
-    for (const message of validateValue(schemaArgs, tool.inputSchema as JsonSchema, 'args')) {
-      issues.push({ tool: name, path: 'args', message });
+    for (const detail of validateValue(schemaArgs, tool.inputSchema as JsonSchema, 'args')) {
+      issues.push({ tool: name, path: 'args', message: detail.message, kind: detail.kind });
     }
   }
   return {

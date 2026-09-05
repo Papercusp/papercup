@@ -153,11 +153,14 @@ import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   carryProvenanceFields,
+  expandCurrentTurnSentinel,
+  hasCurrentTurnSentinel,
   markUnverifiedOwnerAttribution,
   ownerAttributionEnforcement,
   retainedProvenanceText,
   stampCarrySurfaceProvenance,
 } from '../../carry-surface-provenance-stamp';
+import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
 import {
   CARRY_CAP_HARD_MULTIPLE,
@@ -1254,6 +1257,23 @@ export default defineTool({
           c.spawnId && hasPotentialActionClaim(currentProvenanceText)
             ? await readSuccessfulActionInvocations({ workspaceId, spawnId: c.spawnId })
             : undefined;
+        // EI-19425644478222007: expand `[turn:self]` / `[turn:current]` into this write's
+        // REAL anchor (see carry-surface-provenance-stamp for why a sentinel beats making
+        // the agent guess a timestamp it is never told). Ordered BEFORE the stamp so the
+        // lint sees a verifiable ref and the checkpoint is STORED with an anchor that
+        // resolves. Both texts are expanded: `currentProvenanceText` is what the lint
+        // reads, `checkpointToStore` is what persists. Cheap pre-check keeps the extra
+        // transcript read off every write that does not use a sentinel; an unresolvable
+        // turn leaves the sentinel verbatim and still lint-flagged.
+        const sentinelTurn =
+          hasCurrentTurnSentinel(currentProvenanceText) || hasCurrentTurnSentinel(checkpointToStore)
+            ? await resolveCurrentTurnStamp(ident.ownerId).catch(() => null)
+            : null;
+        if (sentinelTurn) {
+          checkpointToStore = expandCurrentTurnSentinel(checkpointToStore, sentinelTurn);
+          currentProvenanceText =
+            expandCurrentTurnSentinel(currentProvenanceText, sentinelTurn) ?? currentProvenanceText;
+        }
         const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ident.ownerId, {
           successfulActions,
         });

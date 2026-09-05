@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 303
-  corpus-blocks: 263
+  corpus-parts: 305
+  corpus-blocks: 264
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -707,7 +707,8 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > hands back YOUR OWN edit, so the "pre-fix" content you test against IS your fix. Measured
 > 2026-08-03: a guard checked that way returned 0 offenders and read exactly like "this guard is
 > vacuous" — and a SOUND guard produces that identical reading, so the error is not
-> self-announcing in either direction. Same sweep, other face as the `git status` trap above.
+> self-announcing in either direction. It is the clean-`git status` trap from the other side:
+> there a clean tree means the sweep RAN, here an ordinary-looking `HEAD` means the same thing.
 > Need pre-edit content? PIN the sha BEFORE you edit (`B=$(git rev-parse HEAD)`), or select the
 > last commit that does NOT contain your change by CONTENT (`git log --oneline -n 10 -- <path>`,
 > then `git show <sha>:<path>`) — never by position. `scripts/mutation-probe.sh
@@ -2323,6 +2324,18 @@ beside a stale clean one that is not, and they read as agreement. The resulting 
 is type-only, invisible to `test:affected` by construction, and first surfaces at the fleet
 green-checkpoint hours later. Re-run `lint:tsc --files=` over the FULL changed set — source
 and test files — as the last thing you do.
+
+
+⚠ **The dual runs the other way too: a TYPECHECK cannot see a collapsed test fixture.** A multi-site identifier rename (`replace_all` across ~20 files) trips both halves at once, and each check is structurally blind to the other's defect — so "the tests were green" and "the typecheck was clean" are each individually insufficient after one, and each feels sufficient. A fixture that needs N *distinct* entities still typechecks perfectly once a rename collapses two of them onto one id; only RUNNING it surfaces the `Encountered two children with the same key` / `Found multiple elements with the text` failure. So after a multi-site rename run BOTH, for every workspace touched. And before collapsing a token inside a fixture, ask whether the test asserts N distinct entities — when a retired id needs replacing there, substitute a different REAL sibling rather than reusing the surviving id twice.
+The case (EI-19448610782500230, found during EI-1539 — retiring the `papercusp-default` knowledge pack, a ~20-file identifier rename): one `replace_all` pass produced TWO distinct defects, and in both cases the check that had most recently passed was structurally incapable of seeing it.
+
+**Defect 1 — types, invisible to tests.** The same fallback-literal edit was applied to two React forms. In `NewLocalForm` the local is a genuine `'coding'|'work'` union (driven by a `domain` prop), so a `=== 'work'` ternary is correct. In `ExistingLocalForm` it is `const defaultPack = 'coding'`, which TS narrows to the LITERAL type, making the same branch provably dead: `TS2367: This comparison appears to be unintentional because the types '"coding"' and '"work"' have no overlap`. **135/135 tests passed with this bug in the tree** (42/42 + 65/65 + 28/28) — it is a dead-branch type error in a fallback literal that only renders when a sync query returns empty, so no test can reach it. A bare `lint:tsc` covers `packages/operator-core` only, so the routine loop would have missed it too; it would have surfaced at green-checkpoint hours later as someone else's red.
+
+**Defect 2 — fixture, invisible to types.** `apps/operator/app/cupboard/InstalledPacksSection.test.tsx` carries two listing rows and two pack rows so that its multi-row test can assert two rendered rows, resolve a title per row, and put the muted badge on one and the update badge on the other. Renaming the retired id to `coding` collapsed both onto the same id ⇒ `Encountered two children with the same key, 'coding'` + `Found multiple elements with the text: …`. Typecheck is blind to this; only running the test sees it. The repaired fixture uses `coding` and `work` — the two shipped builtin packs — which is the "substitute a real sibling" rule in situ.
+
+The two defects are duals: tests cannot see the type error, and types cannot see the fixture collapse. That is why the invariant asks for BOTH after a multi-site rename rather than either alone.
+
+A mechanical guard was considered and deliberately not built: a lint flagging a literal that appears 2+ times as a `key`/id within one fixture array, or a post-edit nudge (like `check-migration-fixture-drift.mjs`) when an `Edit` with `replace_all` touches a `*.test.*` file and reduces the number of distinct values in an array literal. Both are narrower than the discipline they would encode and would fire on legitimate shapes; the documented rule is the durable version.
 
 
 ⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —

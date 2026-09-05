@@ -284,7 +284,8 @@ export interface AcceptanceBarWriteGuardResult {
   changes: Array<{ barKey: string; kind: 'added' | 'removed' | 'meaning' | 'provenance'; fields: string[] }>;
 }
 
-const BAR_MEANING_FIELDS = [
+/** Fields that participate in the canonical acceptance BAR meaning/hash. */
+export const ACCEPTANCE_BAR_MEANING_FIELDS = [
   'model',
   'barKey',
   'barHash',
@@ -296,6 +297,12 @@ const BAR_MEANING_FIELDS = [
   'passRatings',
   'coversBarKeys',
 ] as const;
+
+export type AcceptanceBarMeaningField = (typeof ACCEPTANCE_BAR_MEANING_FIELDS)[number];
+
+export function acceptanceBarMeaningField(field: string): field is AcceptanceBarMeaningField {
+  return (ACCEPTANCE_BAR_MEANING_FIELDS as readonly string[]).includes(field);
+}
 
 function canonicalValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -413,7 +420,7 @@ export function guardAcceptanceBarTemplateDataWrite(
       changes.push({ barKey: key, kind: 'removed', fields: ['bar'] });
       continue;
     }
-    const fields = BAR_MEANING_FIELDS.filter((field) => !equalValue(prior[field], candidate[field]));
+    const fields = ACCEPTANCE_BAR_MEANING_FIELDS.filter((field) => !equalValue(prior[field], candidate[field]));
     if (fields.length > 0) changes.push({ barKey: key, kind: 'meaning', fields: [...fields] });
     if (!equalValue(prior.barProvenance, candidate.barProvenance)) {
       changes.push({ barKey: key, kind: 'provenance', fields: ['barProvenance'] });

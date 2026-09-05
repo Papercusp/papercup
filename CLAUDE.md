@@ -414,7 +414,8 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > hands back YOUR OWN edit, so the "pre-fix" content you test against IS your fix. Measured
 > 2026-08-03: a guard checked that way returned 0 offenders and read exactly like "this guard is
 > vacuous" — and a SOUND guard produces that identical reading, so the error is not
-> self-announcing in either direction. Same sweep, other face as the `git status` trap above.
+> self-announcing in either direction. It is the clean-`git status` trap from the other side:
+> there a clean tree means the sweep RAN, here an ordinary-looking `HEAD` means the same thing.
 > Need pre-edit content? PIN the sha BEFORE you edit (`B=$(git rev-parse HEAD)`), or select the
 > last commit that does NOT contain your change by CONTENT (`git log --oneline -n 10 -- <path>`,
 > then `git show <sha>:<path>`) — never by position. `scripts/mutation-probe.sh
@@ -1004,6 +1005,9 @@ beside a stale clean one that is not, and they read as agreement. The resulting 
 is type-only, invisible to `test:affected` by construction, and first surfaces at the fleet
 green-checkpoint hours later. Re-run `lint:tsc --files=` over the FULL changed set — source
 and test files — as the last thing you do.
+
+
+⚠ **The dual runs the other way too: a TYPECHECK cannot see a collapsed test fixture.** A multi-site identifier rename (`replace_all` across ~20 files) trips both halves at once, and each check is structurally blind to the other's defect — so "the tests were green" and "the typecheck was clean" are each individually insufficient after one, and each feels sufficient. A fixture that needs N *distinct* entities still typechecks perfectly once a rename collapses two of them onto one id; only RUNNING it surfaces the `Encountered two children with the same key` / `Found multiple elements with the text` failure. So after a multi-site rename run BOTH, for every workspace touched. And before collapsing a token inside a fixture, ask whether the test asserts N distinct entities — when a retired id needs replacing there, substitute a different REAL sibling rather than reusing the surviving id twice.
 
 
 ⚠ **`test:affected` runs the suites of the WORKSPACES your changed paths map into —

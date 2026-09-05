@@ -50,6 +50,65 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['rubrics:get'] });
   });
 
+  // EI-19449316000499177: code:run fails closed on `unknown-key` alone, so the CLASSIFICATION is
+  // load-bearing, not decoration — a class mislabelled `unknown-key` becomes a false refusal on
+  // the fleet's highest-traffic script tool.
+  it('classifies an undeclared key as unknown-key (the class code:run refuses on)', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.improvements.capture({ harness: "papercusp", kind: "bug" });',
+      [tool('improvements:capture', {
+        type: 'object',
+        properties: { scope: { type: 'string' }, kind: { type: 'string' } },
+        additionalProperties: false,
+      })],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        tool: 'improvements:capture',
+        kind: 'unknown-key',
+        message: expect.stringContaining('harness'),
+      }),
+    ]);
+  });
+
+  it('classifies a literal/schema type mismatch as `type`, NOT unknown-key — z.coerce may accept it at dispatch', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.plans.revisionDiff({ revisionId: "12" });',
+      [tool('plans:revision-diff', {
+        type: 'object',
+        // The published schema says number; the real tool uses z.coerce so the STRING is accepted
+        // at dispatch. Refusing this would be a false positive, which is why code:run does not.
+        properties: { revisionId: { type: 'number' } },
+        additionalProperties: false,
+      })],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.kind).toBe('type');
+    expect(result.issues.some((issue) => issue.kind === 'unknown-key')).toBe(false);
+  });
+
+  it('classifies a missing required field as `required`, not unknown-key', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.release.deploy({});',
+      [tool('release:deploy', {
+        type: 'object',
+        properties: { op: { type: 'string' } },
+        required: ['op'],
+        additionalProperties: false,
+      })],
+    );
+    expect(result.issues[0]?.kind).toBe('required');
+  });
+
+  it('a schema WITHOUT additionalProperties:false yields no unknown-key issue (passthrough tools)', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.some.tool({ anythingGoes: 1 });',
+      [tool('some:tool', { type: 'object', properties: {} })],
+    );
+    expect(result.ok).toBe(true);
+  });
+
   it('does not reject dynamic arguments that cannot be proven statically', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const op = getOp(); return await tools.release.deploy({ op });',

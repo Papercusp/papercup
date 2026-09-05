@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 import {
   applyOwnerTurnAutoVerify,
   carryProvenanceFields,
+  expandCurrentTurnSentinel,
   FALSIFIED_OWNER_ANCHOR_NOTE,
   falsifiedOwnerAnchors,
+  hasCurrentTurnSentinel,
   mergeQuoteMismatchesIntoLint,
   OWNER_TURN_VERDICTS,
   UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
@@ -366,4 +368,60 @@ describe('owner-attribution persistence enforcement (P-016 / EI-212678)', () => 
   function textForRef(ref: string): string {
     return `Owner-directed ordering is approved at ${ref}.`;
   }
+});
+
+/** EI-19425644478222007: the agent is asked to cite a value it is never given, so the
+ *  ref gets guessed and stores an anchor that resolves to nothing. `[turn:self]` is the
+ *  claim it CAN make honestly; the platform expands it at write time. */
+describe('expandCurrentTurnSentinel', () => {
+  const REAL_REF = '[turn:claude:9f3c1a2b@2026-09-05T00:31:12.402Z]';
+  const turn = (): CurrentTurnStamp => ({ ref: REAL_REF, verdict: 'agent-injected', origin: 'loop-fire' });
+
+  it('expands [turn:self] and [turn:current], every occurrence', () => {
+    const text = 'Posted evidence [turn:self]; messaged the leader [turn:current]; and again [turn:self].';
+    const out = expandCurrentTurnSentinel(text, turn())!;
+    expect(out).not.toMatch(/\[turn:(?:self|current)\]/i);
+    expect([...out.matchAll(/\[turn:claude:9f3c1a2b@/g)]).toHaveLength(3);
+  });
+
+  it('is case-insensitive on the sentinel', () => {
+    expect(expandCurrentTurnSentinel('done [TURN:SELF]', turn())).toBe(`done ${REAL_REF}`);
+  });
+
+  // The safety property: an unresolvable current turn must NOT invent an anchor.
+  it('leaves the sentinel verbatim when the turn cannot be resolved', () => {
+    const text = 'Posted evidence [turn:self].';
+    expect(expandCurrentTurnSentinel(text, null)).toBe(text);
+    expect(expandCurrentTurnSentinel(null, turn())).toBeNull();
+  });
+
+  it('passes through text carrying no sentinel', () => {
+    const text = `Approved at ${REAL_REF}.`;
+    expect(expandCurrentTurnSentinel(text, turn())).toBe(text);
+  });
+
+  // Guards the classic /g `.test()` lastIndex bug: CURRENT_TURN_SENTINEL_RE is global,
+  // so a checker reusing it would alternate true/false on identical input.
+  it('hasCurrentTurnSentinel is stateless across repeated calls', () => {
+    const text = 'Posted evidence [turn:self].';
+    expect([
+      hasCurrentTurnSentinel(text),
+      hasCurrentTurnSentinel(text),
+      hasCurrentTurnSentinel(text),
+    ]).toEqual([true, true, true]);
+    expect(hasCurrentTurnSentinel('no sentinel here')).toBe(false);
+    expect(hasCurrentTurnSentinel(null)).toBe(false);
+  });
+
+  // Cross-module contract. These two assertions are the whole point of the fix: the
+  // sentinel must NOT itself satisfy the lint (else it becomes a way to silence the
+  // lint without an anchor), and expanding it MUST produce a ref the lint accepts.
+  it('is lint-flagged BEFORE expansion and lint-clean AFTER', () => {
+    const claim = 'Posted the completion evidence to WI-2144600';
+    const before = lintCarrySurfaceProvenance(`${claim} [turn:self]`);
+    expect(before.flagged).toBe(true);
+
+    const after = lintCarrySurfaceProvenance(expandCurrentTurnSentinel(`${claim} [turn:self]`, turn())!);
+    expect(after.flagged).toBe(false);
+  });
 });

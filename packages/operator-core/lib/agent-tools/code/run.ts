@@ -38,6 +38,7 @@ import type {
   RecipeBindingSchemaV1,
 } from '../../recipe-contract';
 import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-preflight';
+import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
 
@@ -229,6 +230,89 @@ export default defineTool({
     // exclude code:run itself so a script cannot recursively nest code-mode.
     const allowed = roleScopedToolNames(all, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
     const contract = codeRunContract(ctx);
+
+    // EI-19449316000499177: PRE-VALIDATE statically-known tool args BEFORE anything dispatches.
+    //
+    // code:run runs its calls in order, so an argument the tool does not accept is caught at
+    // EXECUTION time — call #1 is rejected and every later write is reported as `strandedWrites`
+    // and never runs, even though the offending key sat literally in the script the whole time and
+    // nothing had to execute to know it was wrong. Measured twice on 2026-08-03:
+    // `improvements.capture({ harness })` (→ "Did you mean `scope`") stranded plans:set-status +
+    // plans:set-now, then `plans.setStatus({ itemId })` (→ "Did you mean `item`") stranded
+    // plans:set-now again.
+    //
+    // REUSE, not a parallel validator: `validateRecipeScriptAgainstCatalog` already does exactly
+    // this (static AST → statically-resolved calls with literal args → checked against the live
+    // `inputSchema`) and already gates orchestrate:run and recipes:run via inspectScriptContract.
+    // It was simply never wired to code:run.
+    //
+    // FAIL CLOSED ONLY ON `unknown-key`, deliberately. That class is decided by
+    // `additionalProperties:false`, which is precisely what a strict zod object rejects at
+    // dispatch — so a flagged key is one the real dispatcher WILL refuse, and refusing here is
+    // strictly better than refusing three calls later with writes stranded behind it. The other
+    // classes compare a literal against the PUBLISHED schema, which a tool may legitimately widen:
+    // ~22 arg schemas use `z.coerce` so the same field accepts a numeric MCP arg AND a string, so
+    // a `type` complaint against one of those is a false positive. On the fleet's
+    // highest-traffic script tool a false refusal is far more expensive than a missed hint, so
+    // those stay non-blocking and are left to the dispatcher exactly as before. Both of the item's
+    // measured cases are `unknown-key`, so the narrow class covers the reported failure in full.
+    //
+    // Dynamic arguments are never inspected (the validator skips `dynamicArgs`), so a computed
+    // argument object behaves exactly as it did before this check existed.
+    const argPreflight = await validateRecipeScriptAgainstCatalog(script, all, allowed);
+    const blockingArgIssues = argPreflight.issues.filter((issue) => issue.kind === 'unknown-key');
+    if (blockingArgIssues.length > 0) {
+      const acceptedKeysFor = (toolName: string): string[] => {
+        const schema = all.find((t) => t.expose?.mcp?.name === toolName)?.inputSchema as
+          | { properties?: Record<string, unknown> }
+          | undefined;
+        return Object.keys(schema?.properties ?? {}).sort();
+      };
+      const refusals = blockingArgIssues.map((issue) => {
+        // `message` is `args.<key> is not accepted by the current tool schema`.
+        const rejectedKey = issue.message.split(' ')[0]?.split('.').slice(1).join('.') ?? '';
+        const accepted = acceptedKeysFor(issue.tool);
+        const didYouMean = rejectedKey ? nearestByLevenshtein(rejectedKey, accepted, { k: 2 }) : [];
+        return {
+          tool: issue.tool,
+          rejectedArg: rejectedKey || undefined,
+          message: issue.message,
+          didYouMean: didYouMean.length ? didYouMean : undefined,
+          accepts: accepted,
+        };
+      });
+      const headline = refusals
+        .map((r) => {
+          const suggestion = r.didYouMean?.length ? ` — did you mean \`${r.didYouMean[0]}\`?` : '';
+          return `${r.tool} does not accept \`${r.rejectedArg ?? '?'}\`${suggestion}`;
+        })
+        .join('; ');
+      ctx.metadata?.({
+        effectiveStatus: 'error',
+        codeRunArgPreflight: 'refused',
+        codeRunArgPreflightIssueCount: blockingArgIssues.length,
+      });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'script_invalid',
+              executed: false,
+              dispatchCount: 0,
+              argPreflight: { refused: true, refusals },
+              note:
+                `NOTHING RAN — this script was refused BEFORE dispatch because ${refusals.length} ` +
+                `call(s) pass an argument the tool's own schema does not accept: ${headline}. ` +
+                `No write executed and nothing is stranded, so fix the argument name(s) and re-run ` +
+                `the whole script as-is. Each entry's \`accepts\` lists that tool's real argument ` +
+                `keys. Only statically-literal arguments are checked; computed ones are untouched.`,
+            }),
+          },
+        ],
+      } as unknown as ToolResult;
+    }
 
     const result = await runToolOrchestration(script, {
       ctx,

@@ -26089,7 +26089,7 @@
           "POST"
         ]
       },
-      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title) and/or set the rubric-level methodRef — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title) and/or set the rubric-level methodRef — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
       "capabilities": [
         "coord:write"
       ],

@@ -1593,13 +1593,25 @@ export function usePlanAttention(params?: {
    * complete snapshot (for example a detail resolver).
    */
   pageSize?: number | null;
+  /**
+   * WI-2144754: fetch only the items owed by ONE agent, filtered server-side
+   * before the page is cut. A consumer that wants one agent's asks must say so
+   * here rather than filtering the rendered page — page one of a fleet-wide
+   * feed is not a superset of any one agent's items, so a client-side filter
+   * silently returns whatever happened to fit.
+   */
+  ownerAgentId?: string | null;
 }): PlanAttentionResult {
   const enabled = params?.enabled ?? true;
   const pageSize = normalizeAttentionPageSize(params?.pageSize);
+  const ownerAgentId = params?.ownerAgentId ?? null;
   const scopeKey = JSON.stringify([
     params?.harnessSlug ?? null,
     params?.includeArchived ?? null,
     pageSize,
+    // Part of the scope: changing it changes which rows this hook may hold, so
+    // the accumulated pages below must be discarded, exactly as for harness.
+    ownerAgentId,
     enabled,
   ]);
   const [offset, setOffset] = useState(0);
