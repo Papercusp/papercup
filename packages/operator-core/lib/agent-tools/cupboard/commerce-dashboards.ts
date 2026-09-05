@@ -18,7 +18,7 @@ export default defineTool({
   name: 'cupboard:commerce-dashboards',
   capability: 'harness:read',
   description:
-    "Read a buying organization's Cupboard commerce state: `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
+    "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
   guidance: {
     when: 'You need what an organization bought, what is refundable, or a reproducible audit/export of its commerce state.',
     notWhen:
@@ -31,7 +31,7 @@ export default defineTool({
     buyerOrgId: z.string().max(200).describe('The organization whose commerce state to read.'),
     actingUserId: z.string().max(200).describe('The user reading; must be a member of buyerOrgId.'),
     dashboards: z
-      .array(z.enum(['checkout', 'refunds', 'audit']))
+      .array(z.enum(['catalog', 'checkout', 'refunds', 'audit']))
       .optional()
       .describe('Which projections to return; omit for all three.'),
     currency: z.string().max(3).optional().describe('Denomination for checkout totals (default USD).'),

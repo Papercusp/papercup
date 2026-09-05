@@ -13,7 +13,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHECKOUT_SESSIONS_PATH,
+  COMMERCE_OFFERS_PATH,
   isCanonicalUserId,
+  postCommerceOffer,
   postCheckoutSession,
   USER_ID_FORM,
   type CheckoutSessionResult,
@@ -82,6 +84,8 @@ describe('postCheckoutSession', () => {
     const result = await post(201, OK_BODY);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
+    expect(result.kind).toBe('hosted-checkout');
+    if (result.kind !== 'hosted-checkout') throw new Error('unreachable');
     expect(result.orderId).toBe('order-1');
     expect(result.idempotentReplay).toBe(false);
   });
@@ -92,6 +96,7 @@ describe('postCheckoutSession', () => {
     const result = await post(200, OK_BODY);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
+    if (result.kind !== 'hosted-checkout') throw new Error('unreachable');
     expect(result.orderId).toBe('order-1');
     expect(result.idempotentReplay).toBe(true);
   });
@@ -130,6 +135,35 @@ describe('postCheckoutSession', () => {
     expect(result.error).toBe('malformed_response');
   });
 
+  it('reads the per-use microcharge preflight instead of requiring Stripe fields', async () => {
+    const result = await post(200, {
+      checkoutKind: 'microcharge-preflight',
+      rail: 'p2p-microcharge',
+      preflightId: 'pre_1',
+      channel: {
+        channelId: 'ch_1',
+        payer: 'org-acme',
+        seller: 'creator-1',
+        releaseRef: 'sku-1',
+        escrowMicros: '1000',
+        committedMicros: '0',
+      },
+      terms: {
+        unitPriceMicros: 25,
+        meterUnit: 'tool-call',
+        priceVersion: 'price-v1',
+        splitManifestHash: `sha256:${'a'.repeat(64)}`,
+        currency: 'USDC',
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.kind).toBe('microcharge-preflight');
+    if (result.kind !== 'microcharge-preflight') throw new Error('unreachable');
+    expect(result.channel.escrowMicros).toBe('1000');
+    expect(result.terms.priceVersion).toBe('price-v1');
+  });
+
   it('pins the shared userId form — a mismatch here MISSES silently', () => {
     // Org membership is matched by string equality, so a desktop door writing
     // `mia` against a Worker authenticating `gh:1234` does not error: it finds
@@ -151,5 +185,54 @@ describe('postCheckoutSession', () => {
     if (result.ok) throw new Error('unreachable');
     expect(result.error).toBe('transport_error');
     expect(result.detail).toContain('offline');
+  });
+});
+
+describe('postCommerceOffer', () => {
+  const REQUEST = {
+    productId: 'prod-use',
+    offerId: 'offer-use',
+    skuRef: 'sku-use',
+    title: 'Metered tool',
+    pricingModel: 'per-use' as const,
+    price: { amountMinor: 0, currency: 'USDC' },
+    perUse: {
+      unitPriceMicros: 25,
+      meterUnit: 'tool-call',
+      priceVersion: 'price-v1',
+      splitManifestHash: `sha256:${'a'.repeat(64)}`,
+    },
+  };
+
+  it('posts the complete terms to the authenticated hosted offer door', async () => {
+    const t = transport(201, {
+      replayed: false,
+      product: { productId: 'prod-use' },
+      offer: { offerId: 'offer-use', pricingModel: 'per-use', perUse: REQUEST.perUse },
+    });
+    const result = await postCommerceOffer(REQUEST, {
+      fetchImpl: t.fetchImpl,
+      baseUrl: BASE,
+      authToken: 'gh-token',
+    });
+    expect(result.ok).toBe(true);
+    expect(t.calls[0].url).toBe(`${BASE}${COMMERCE_OFFERS_PATH}`);
+    expect((t.calls[0].init.headers as Record<string, string>).Authorization).toBe('Bearer gh-token');
+    expect(JSON.parse(String(t.calls[0].init.body))).toEqual(REQUEST);
+  });
+
+  it('surfaces a hosted ledger validation refusal', async () => {
+    const t = transport(422, { error: 'invalid_offer', detail: 'missing per-use terms' });
+    const result = await postCommerceOffer(REQUEST, {
+      fetchImpl: t.fetchImpl,
+      baseUrl: BASE,
+      authToken: 'gh-token',
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      status: 422,
+      error: 'invalid_offer',
+      detail: 'missing per-use terms',
+    });
   });
 });

@@ -19,7 +19,7 @@ export default defineTool({
   name: 'cupboard:checkout',
   capability: 'harness:write',
   description:
-    'Start a Cupboard checkout session for a buying organization: authorizes the acting user against that org, then creates a hosted payment session and returns its orderId, providerSessionId and url for the buyer to open. Repeating the same idempotencyKey returns the SAME order rather than charging twice (reported as idempotentReplay). Refuses before any provider call when the org is unknown, the acting user is not a member, or quantity is not 1.',
+    'Start a Cupboard checkout for a buying organization. One-time/subscription offers return a hosted provider session. Per-use offers bypass Stripe and return a deterministic P2P microcharge preflight with the signed price terms and an escrow-capped channel descriptor. Refuses before transport when the org is unknown, the acting user is not a member, quantity is not 1, or maxSpendMicros is invalid.',
   guidance: {
     when: 'A member of a buying organization wants to purchase a Cupboard offer and needs a payment link.',
     notWhen:
@@ -39,6 +39,12 @@ export default defineTool({
       .max(200)
       .describe('Stable key for this purchase attempt — reuse it on retry to avoid a second order.'),
     quantity: z.number().int().optional().describe('Seats; only 1 is supported today.'),
+    maxSpendMicros: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('Required for a per-use offer: maximum micro-units this channel may commit.'),
   }),
   async handler(args) {
     const { checkoutDoor } = await import('../../cupboard/commerce-door-gate-io');
@@ -50,6 +56,9 @@ export default defineTool({
       cancelUrl: args.cancelUrl,
       idempotencyKey: args.idempotencyKey,
       ...(args.quantity !== undefined ? { quantity: args.quantity } : {}),
+      ...(args.maxSpendMicros !== undefined
+        ? { maxSpendMicros: args.maxSpendMicros }
+        : {}),
     });
 
     if (!outcome.ok) {
@@ -62,9 +71,13 @@ export default defineTool({
       });
     }
 
+    if (outcome.session.kind === 'microcharge-preflight') {
+      return text({ ok: true, ...outcome.session });
+    }
+
     return text({
       ok: true,
-      orderId: outcome.orderId,
+      orderId: outcome.session.orderId,
       providerSessionId: outcome.session.providerSessionId,
       url: outcome.session.url,
       idempotentReplay: outcome.session.idempotentReplay,

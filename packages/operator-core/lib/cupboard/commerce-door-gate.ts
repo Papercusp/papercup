@@ -54,10 +54,12 @@ import {
 } from './commerce-accounts';
 import {
   checkoutDashboard,
+  commerceCatalogDashboard,
   refundDashboard,
   supportDashboard,
   auditExport,
   type AuditExport,
+  type CommerceCatalogLine,
   type CheckoutDashboard,
   type RefundPosition,
   type SupportDashboard,
@@ -90,6 +92,8 @@ export type CommerceDoorRefusalCode =
   | 'actor-not-in-org'
   /** The hosted checkout builder accepts quantity 1 only (P-010 contract). */
   | 'unsupported-quantity'
+  /** The per-use channel cap must be a positive safe integer. */
+  | 'invalid-max-spend'
   | 'unknown-order'
   /** The order exists but belongs to a different buyer. */
   | 'order-not-owned'
@@ -152,6 +156,8 @@ export interface CheckoutDoorInput {
   readonly cancelUrl: string;
   readonly idempotencyKey: string;
   readonly quantity?: number;
+  /** Required by a per-use offer; ignored only until the hosted offer lookup. */
+  readonly maxSpendMicros?: number;
 }
 
 /** The request body the hosted `POST /commerce/checkout-sessions` route takes. */
@@ -162,6 +168,7 @@ export interface CheckoutSessionRequest {
   readonly cancelUrl: string;
   readonly idempotencyKey: string;
   readonly quantity: number;
+  readonly maxSpendMicros?: number;
 }
 
 export type CheckoutDoorDecision =
@@ -190,6 +197,15 @@ export function gateCheckout(
       `quantity ${quantity} is not supported — the hosted checkout builder issues one seat per order`,
     );
   }
+  if (
+    input.maxSpendMicros !== undefined &&
+    (!Number.isSafeInteger(input.maxSpendMicros) || input.maxSpendMicros <= 0)
+  ) {
+    return refuse(
+      'invalid-max-spend',
+      'maxSpendMicros must be a positive safe integer',
+    );
+  }
 
   return {
     ok: true,
@@ -201,6 +217,9 @@ export function gateCheckout(
       cancelUrl: input.cancelUrl,
       idempotencyKey: input.idempotencyKey,
       quantity,
+      ...(input.maxSpendMicros !== undefined
+        ? { maxSpendMicros: input.maxSpendMicros }
+        : {}),
     },
   };
 }
@@ -349,7 +368,7 @@ export function gateSupportRequest(
 // §4 — dashboards read
 // ---------------------------------------------------------------------------
 
-export const COMMERCE_DASHBOARDS = ['checkout', 'refunds', 'audit'] as const;
+export const COMMERCE_DASHBOARDS = ['catalog', 'checkout', 'refunds', 'audit'] as const;
 export type CommerceDashboardName = (typeof COMMERCE_DASHBOARDS)[number];
 
 export interface DashboardsDoorInput {
@@ -362,6 +381,7 @@ export interface DashboardsDoorInput {
 }
 
 export interface DashboardsDoorResult {
+  readonly catalog?: readonly CommerceCatalogLine[];
   readonly checkout?: CheckoutDashboard;
   readonly refunds?: readonly RefundPosition[];
   readonly audit?: AuditExport;
@@ -390,11 +410,15 @@ export function gateCommerceDashboards(
 
   const wanted = new Set<CommerceDashboardName>(input.dashboards ?? COMMERCE_DASHBOARDS);
   const result: {
+    catalog?: readonly CommerceCatalogLine[];
     checkout?: CheckoutDashboard;
     refunds?: readonly RefundPosition[];
     audit?: AuditExport;
   } = {};
 
+  if (wanted.has('catalog')) {
+    result.catalog = commerceCatalogDashboard(snapshot.ledger);
+  }
   if (wanted.has('checkout')) {
     result.checkout = checkoutDashboard({
       buyerId: input.buyerOrgId,
