@@ -53,6 +53,13 @@ const CARRY_NOTES_DDL = `
     journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
     deps jsonb,
+    -- migration 1118 (P-007/R-06) unchanged-attestation state. body_ts = when the note
+    -- TEXT last actually changed (NULL on pre-1118 rows; readers coalesce to
+    -- updated_ts); attested_count = the consecutive-attestation chain since the last
+    -- real body write. Kept in step with the real schema deliberately: this fixture
+    -- tracks harness_shared.carry_notes rather than stubbing a minimal subset.
+    body_ts bigint,
+    attested_count integer NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, scope))`;
 const WORK_ITEMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_items (
