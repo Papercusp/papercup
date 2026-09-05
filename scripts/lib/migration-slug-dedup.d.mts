@@ -41,6 +41,14 @@ export function slugSimilarity(a: string, b: string): number;
  * @property {number|null} [reservedAtMs] Epoch ms the number was reserved, null/undefined
  *   when unknown (an applied-but-never-reserved row has no reservation time).
  * @property {number|null} [appliedAtMs] Epoch ms it was applied, null/undefined if not.
+ * @property {boolean|null} [fileOnDisk] Whether THIS reservation's own filename exists in the
+ *   scanned sql dirs (a `.DRAFT` / `.PENDING-CODE-DEPLOY` file counts — it is written work).
+ *   Injected by the caller so this module stays pure; undefined/null means UNKNOWN and the
+ *   unwritten-reservation rule is skipped entirely.
+ * @property {boolean|null} [numberOnDisk] Whether ANY file occupies this reservation's NUMBER on
+ *   disk. Distinct from `fileOnDisk`: a reservation's number is routinely taken by a different
+ *   migration, and telling that caller to "write your file at NNN" would be wrong advice.
+ *   Same injection + unknown semantics as `fileOnDisk`.
  */
 /**
  * @typedef {object} RedundancyMatch
@@ -53,6 +61,9 @@ export function slugSimilarity(a: string, b: string): number;
  * @property {boolean} applied
  * @property {number|null} ageMs      Age of the most recent relevant event.
  * @property {'block'|'warn'} severity
+ * @property {'applied'|'race'|'unwritten-reservation'|'lookback'} rule Which rule produced this
+ *   match. Machine-readable so a caller can render remedy text per rule instead of matching on
+ *   `reason` prose.
  * @property {string} reason
  */
 /**
@@ -108,6 +119,25 @@ export function fetchRedundancyCandidates(tx: any, { lookbackMs, limit }?: {
     lookbackMs?: number;
     limit?: number;
 }): Promise<ReservationCandidate[]>;
+/**
+ * Attach the two filesystem facts `judgeRedundantReservation`'s
+ * unwritten-reservation rule needs, without teaching this module to read the
+ * disk (it stays pure, so both doors can unit-test it with fixtures).
+ *
+ * The caller supplies the sets from ONE `scanMigrationDirs` pass — the same
+ * scan both doors already make for the allocation max — so this costs no extra
+ * filesystem work. Pass the ARMED-name set: a `.DRAFT` file must match the
+ * `.sql` filename recorded in the ledger, or a migration that is actively being
+ * written reads as never written.
+ *
+ * @param {ReservationCandidate[]} candidates
+ * @param {{ filenames: Set<string>, numbers: Set<number> }} scan
+ * @returns {ReservationCandidate[]}
+ */
+export function annotateCandidatesWithDisk(candidates: ReservationCandidate[], scan: {
+    filenames: Set<string>;
+    numbers: Set<number>;
+}): ReservationCandidate[];
 /**
  * Render a judgement for a human/agent reader.
  *
@@ -184,6 +214,20 @@ export const DEFAULT_RACE_WINDOW_MS: number;
 export const DEFAULT_APPLIED_WINDOW_MS: number;
 /** Beyond the blocking windows, a similar slug is still worth SAYING. */
 export const DEFAULT_LOOKBACK_MS: number;
+/**
+ * The historical placeholder slug recorded when the allocator was called with no
+ * `--name` (`slugify(...) || "TODO-rename"`). Both doors now REFUSE a nameless
+ * call, so nothing new can mint one — but 40+ rows carry it, all with the
+ * identical slug, and they are not duplicate work: they are unrelated
+ * migrations that merely never got a name.
+ *
+ * The exact-slug rule below MUST skip it. Without this exclusion an
+ * exact-match self-join over the live ledger returns a truncated wall of
+ * `TODO-rename` pairs spanning months and the guard refuses essentially every
+ * one of them (measured 2026-09-05, EI-20300821494280085: 60-row cap saturated
+ * by this slug alone; excluding it left 25 real pairs).
+ */
+export const PLACEHOLDER_SLUG: "todo-rename";
 export type ReservationCandidate = {
     /**
      * The reserved migration number.
@@ -210,6 +254,20 @@ export type ReservationCandidate = {
      * Epoch ms it was applied, null/undefined if not.
      */
     appliedAtMs?: number | null | undefined;
+    /**
+     * Whether THIS reservation's own filename exists in the
+     * scanned sql dirs (a `.DRAFT` / `.PENDING-CODE-DEPLOY` file counts — it is written work).
+     * Injected by the caller so this module stays pure; undefined/null means UNKNOWN and the
+     * unwritten-reservation rule is skipped entirely.
+     */
+    fileOnDisk?: boolean | null | undefined;
+    /**
+     * Whether ANY file occupies this reservation's NUMBER on
+     * disk. Distinct from `fileOnDisk`: a reservation's number is routinely taken by a different
+     * migration, and telling that caller to "write your file at NNN" would be wrong advice.
+     * Same injection + unknown semantics as `fileOnDisk`.
+     */
+    numberOnDisk?: boolean | null | undefined;
 };
 export type RedundancyMatch = {
     num: number;
@@ -224,5 +282,11 @@ export type RedundancyMatch = {
      */
     ageMs: number | null;
     severity: "block" | "warn";
+    /**
+     * Which rule produced this
+     * match. Machine-readable so a caller can render remedy text per rule instead of matching on
+     * `reason` prose.
+     */
+    rule: "applied" | "race" | "unwritten-reservation" | "lookback";
     reason: string;
 };

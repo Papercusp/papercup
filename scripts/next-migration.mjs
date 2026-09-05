@@ -41,13 +41,20 @@
  * scripts/lib/migration-slug-dedup.mjs) and the reservation is REFUSED when one
  * was applied recently or reserved moments ago — the signature of several agents
  * racing the same repair after one gate red. `--force` overrides.
+ *
+ * EI-20300821494280085: a third refusal covers the case neither window can see —
+ * the EXACT slug is already reserved, its file was never written, and its number
+ * is still free on disk. That is not a stampede (it happens hours or days later),
+ * it is one author re-taking a number they already hold; the remedy is to write
+ * the file at the number they have. The filesystem facts come from the same
+ * single dir scan that computes the allocation max.
  */
-import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
-import { ALLOC_ADVISORY_KEY } from './lib/migration-allocation.mjs';
+import { ALLOC_ADVISORY_KEY, scanMigrationDirs } from './lib/migration-allocation.mjs';
 import {
+  annotateCandidatesWithDisk,
   fetchRedundancyCandidates,
   formatRedundancyMessage,
   judgeRedundantReservation,
@@ -85,23 +92,6 @@ function slugify(name) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
   return slug || null;
-}
-
-function maxNumberOnDisk(dirs) {
-  let max = 0;
-  for (const dir of dirs) {
-    let entries;
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      continue; // a missing dir (e.g. an uninitialized submodule) is fine.
-    }
-    for (const f of entries) {
-      const m = /^(\d+)-/.exec(f);
-      if (m) max = Math.max(max, Number.parseInt(m[1], 10));
-    }
-  }
-  return max;
 }
 
 /**
@@ -201,7 +191,13 @@ async function main() {
       // agent could write a higher-numbered NNN-*.sql to disk; the stale fsMax
       // then failed to fold it in and the CLI handed out an already-used
       // number. Mirrors the fix in next_migration.ts (the shared contract).
-      const fsMax = maxNumberOnDisk(SCAN_DIRS);
+      //
+      // ONE scan serves both readers: the allocation max, and the per-candidate
+      // written/occupied facts the unwritten-reservation rule needs
+      // (EI-20300821494280085). Both must be read under this lock for the same
+      // TOCTOU reason.
+      const scan = scanMigrationDirs(SCAN_DIRS);
+      const fsMax = scan.maxNumber;
       const rows = await tx`
         SELECT GREATEST(
                  ${fsMax},
@@ -221,7 +217,7 @@ async function main() {
       // reading it outside would leave the exact race window this closes.
       const judgement = judgeRedundantReservation({
         slug,
-        candidates: await fetchRedundancyCandidates(tx),
+        candidates: annotateCandidatesWithDisk(await fetchRedundancyCandidates(tx), scan),
         nowMs: Date.now(),
       });
       if (judgement.verdict === 'block' && !args.force) {
