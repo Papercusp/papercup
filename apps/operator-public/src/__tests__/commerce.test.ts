@@ -390,17 +390,17 @@ describe('migration 019 schema', () => {
     ).toThrow(/CHECK/i);
   });
 
-  it('projects complete per-use terms into commerce_offers', () => {
+  it("projects complete per-use terms into commerce_offers", () => {
     const { raw } = makeSqliteDb();
     const columns = raw
       .prepare("PRAGMA table_info('commerce_offers')")
       .all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(
       expect.arrayContaining([
-        'unit_price_micros',
-        'meter_unit',
-        'price_version',
-        'split_manifest_hash',
+        "unit_price_micros",
+        "meter_unit",
+        "price_version",
+        "split_manifest_hash",
       ]),
     );
   });
@@ -503,7 +503,10 @@ describe('POST /commerce/checkout-sessions — refusals', () => {
 
   it('fails CLOSED with 503 when the deployment has no Stripe secret key', async () => {
     const stripe = stripeStub();
-    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: undefined }, { fetchImpl: stripe.impl });
+    const { api, env, raw } = harness(
+      { STRIPE_SECRET_KEY: undefined },
+      { fetchImpl: stripe.impl },
+    );
     seedCatalog(raw);
     const res = await checkout(api, env);
     expect(res.status).toBe(503);
@@ -512,29 +515,29 @@ describe('POST /commerce/checkout-sessions — refusals', () => {
     expect(stripe.calls).toHaveLength(0);
   });
 
-  it('authors, catalogs, persists, and preflights a per-use offer through production doors', async () => {
+  it("authors, catalogs, persists, and preflights a per-use offer through production doors", async () => {
     const stripe = stripeStub();
     const { api, env, raw } = harness(
       { STRIPE_SECRET_KEY: undefined },
       { fetchImpl: stripe.impl },
     );
-    const splitManifestHash = `sha256:${'a'.repeat(64)}`;
+    const splitManifestHash = `sha256:${"a".repeat(64)}`;
     const publish = await api.request(
-      '/commerce/offers',
+      "/commerce/offers",
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          productId: 'prod-use',
-          offerId: 'offer-use',
-          skuRef: 'sku-use',
-          title: 'Metered tool',
-          pricingModel: 'per-use',
-          price: { amountMinor: 0, currency: 'USD' },
+          productId: "prod-use",
+          offerId: "offer-use",
+          skuRef: "sku-use",
+          title: "Metered tool",
+          pricingModel: "per-use",
+          price: { amountMinor: 0, currency: "USD" },
           perUse: {
             unitPriceMicros: 25,
-            meterUnit: 'tool-call',
-            priceVersion: 'price-v1',
+            meterUnit: "tool-call",
+            priceVersion: "price-v1",
             splitManifestHash,
           },
         }),
@@ -544,14 +547,14 @@ describe('POST /commerce/checkout-sessions — refusals', () => {
     expect(publish.status).toBe(201);
     expect(await publish.json()).toMatchObject({
       replayed: false,
-      product: { productId: 'prod-use', creatorId: 'gh:42' },
+      product: { productId: "prod-use", creatorId: "gh:42" },
       offer: {
-        offerId: 'offer-use',
-        pricingModel: 'per-use',
+        offerId: "offer-use",
+        pricingModel: "per-use",
         perUse: {
           unitPriceMicros: 25,
-          meterUnit: 'tool-call',
-          priceVersion: 'price-v1',
+          meterUnit: "tool-call",
+          priceVersion: "price-v1",
           splitManifestHash,
         },
       },
@@ -560,27 +563,31 @@ describe('POST /commerce/checkout-sessions — refusals', () => {
     expect(
       raw
         .prepare(
-          'SELECT unit_price_micros, meter_unit, price_version, split_manifest_hash FROM commerce_offers WHERE offer_id = ?',
+          "SELECT unit_price_micros, meter_unit, price_version, split_manifest_hash FROM commerce_offers WHERE offer_id = ?",
         )
-        .get('offer-use'),
+        .get("offer-use"),
     ).toMatchObject({
       unit_price_micros: 25,
-      meter_unit: 'tool-call',
-      price_version: 'price-v1',
+      meter_unit: "tool-call",
+      price_version: "price-v1",
       split_manifest_hash: splitManifestHash,
     });
 
-    const catalog = await api.request('/commerce/offers?pricing=per-use', {}, env);
+    const catalog = await api.request(
+      "/commerce/offers?pricing=per-use",
+      {},
+      env,
+    );
     expect(catalog.status).toBe(200);
     expect(await catalog.json()).toMatchObject({
       offers: [
         {
-          offerId: 'offer-use',
-          pricingModel: 'per-use',
+          offerId: "offer-use",
+          pricingModel: "per-use",
           perUse: {
             unitPriceMicros: 25,
-            meterUnit: 'tool-call',
-            priceVersion: 'price-v1',
+            meterUnit: "tool-call",
+            priceVersion: "price-v1",
             splitManifestHash,
           },
         },
@@ -589,63 +596,65 @@ describe('POST /commerce/checkout-sessions — refusals', () => {
 
     const preflight = await checkout(api, env, {
       ...CHECKOUT_BODY,
-      offerId: 'offer-use',
+      offerId: "offer-use",
       maxSpendMicros: 1_000,
     });
     expect(preflight.status).toBe(200);
     expect(await preflight.json()).toMatchObject({
-      checkoutKind: 'microcharge-preflight',
-      rail: 'p2p-microcharge',
+      checkoutKind: "microcharge-preflight",
+      rail: "p2p-microcharge",
       channel: {
-        payer: 'gh:42',
-        seller: 'gh:42',
-        releaseRef: 'sku-use',
-        escrowMicros: '1000',
-        committedMicros: '0',
+        payer: "gh:42",
+        seller: "gh:42",
+        releaseRef: "sku-use",
+        escrowMicros: "1000",
+        committedMicros: "0",
       },
       terms: {
         unitPriceMicros: 25,
-        meterUnit: 'tool-call',
-        priceVersion: 'price-v1',
+        meterUnit: "tool-call",
+        priceVersion: "price-v1",
         splitManifestHash,
-        currency: 'USD',
+        currency: "USD",
       },
     });
     expect(stripe.calls).toHaveLength(0);
     expect(
       raw
-        .prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'")
+        .prepare(
+          "SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'",
+        )
         .get(),
     ).toMatchObject({ n: 0 });
   });
 
-  it('requires an escrow cap for a per-use preflight', async () => {
+  it("requires an escrow cap for a per-use preflight", async () => {
     const { api, env, raw } = harness({ STRIPE_SECRET_KEY: undefined });
     seedCatalog(raw, [
       [
-        'cat-use',
-        'offer.defined',
+        "cat-use",
+        "offer.defined",
         2_500,
         JSON.stringify({
-          offerId: 'offer-use',
-          productId: 'prod-1',
-          pricingModel: 'per-use',
-          price: { amountMinor: 0, currency: 'USD' },
+          offerId: "offer-use",
+          productId: "prod-1",
+          pricingModel: "per-use",
+          price: { amountMinor: 0, currency: "USD" },
           perUse: {
             unitPriceMicros: 25,
-            meterUnit: 'tool-call',
-            priceVersion: 'price-v1',
-            splitManifestHash: `sha256:${'b'.repeat(64)}`,
+            meterUnit: "tool-call",
+            priceVersion: "price-v1",
+            splitManifestHash: `sha256:${"b".repeat(64)}`,
           },
         }),
       ],
     ]);
     const res = await checkout(api, env, {
       ...CHECKOUT_BODY,
-      offerId: 'offer-use',
+      offerId: "offer-use",
     });
     expect(res.status).toBe(422);
-    expect(await res.json()).toMatchObject({ error: 'max_spend_required' });
+    expect(await res.json()).toMatchObject({ error: "max_spend_required" });
   });
 
   it('404s an offer the ledger has never defined', async () => {

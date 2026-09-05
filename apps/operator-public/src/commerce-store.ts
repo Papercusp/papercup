@@ -151,7 +151,7 @@ export async function projectLedger(db: D1Database): Promise<void> {
     stmts.push(
       db
         .prepare(
-          'INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, unit_price_micros, meter_unit, price_version, split_manifest_hash, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, unit_price_micros = excluded.unit_price_micros, meter_unit = excluded.meter_unit, price_version = excluded.price_version, split_manifest_hash = excluded.split_manifest_hash, active = excluded.active',
+          "INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, unit_price_micros, meter_unit, price_version, split_manifest_hash, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, unit_price_micros = excluded.unit_price_micros, meter_unit = excluded.meter_unit, price_version = excluded.price_version, split_manifest_hash = excluded.split_manifest_hash, active = excluded.active",
         )
         .bind(
           o.offerId,
@@ -241,11 +241,11 @@ export interface CommerceOfferView {
 function offerView(row: Record<string, unknown>): CommerceOfferView {
   const pricingModel = String(row.pricing_model);
   const hasPerUse =
-    pricingModel === 'per-use' &&
+    pricingModel === "per-use" &&
     Number.isSafeInteger(row.unit_price_micros) &&
-    typeof row.meter_unit === 'string' &&
-    typeof row.price_version === 'string' &&
-    typeof row.split_manifest_hash === 'string';
+    typeof row.meter_unit === "string" &&
+    typeof row.price_version === "string" &&
+    typeof row.split_manifest_hash === "string";
   return {
     offerId: String(row.offer_id),
     productId: String(row.product_id),
@@ -271,7 +271,7 @@ function offerView(row: Record<string, unknown>): CommerceOfferView {
 }
 
 const OFFER_VIEW_SQL =
-  'SELECT o.offer_id, o.product_id, o.pricing_model, o.amount_minor, o.currency, o.unit_price_micros, o.meter_unit, o.price_version, o.split_manifest_hash, o.active, p.sku_ref, p.creator_id, p.title, p.active AS product_active FROM commerce_offers o JOIN commerce_products p ON p.product_id = o.product_id';
+  "SELECT o.offer_id, o.product_id, o.pricing_model, o.amount_minor, o.currency, o.unit_price_micros, o.meter_unit, o.price_version, o.split_manifest_hash, o.active, p.sku_ref, p.creator_id, p.title, p.active AS product_active FROM commerce_offers o JOIN commerce_products p ON p.product_id = o.product_id";
 
 /** The hosted commerce catalog reads the D1 projection, not an in-memory fold. */
 export async function listCommerceOffers(
@@ -279,7 +279,11 @@ export async function listCommerceOffers(
   pricingModel?: string,
 ): Promise<CommerceOfferView[]> {
   const statement = pricingModel
-    ? db.prepare(`${OFFER_VIEW_SQL} WHERE o.pricing_model = ? ORDER BY o.offer_id ASC`).bind(pricingModel)
+    ? db
+        .prepare(
+          `${OFFER_VIEW_SQL} WHERE o.pricing_model = ? ORDER BY o.offer_id ASC`,
+        )
+        .bind(pricingModel)
     : db.prepare(`${OFFER_VIEW_SQL} ORDER BY o.offer_id ASC`);
   const { results } = await statement.all<Record<string, unknown>>();
   return (results ?? []).map(offerView);

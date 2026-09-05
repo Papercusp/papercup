@@ -32,8 +32,8 @@ import {
   type Order,
   type PerUseOfferTerms,
   type PricingModel,
-} from '@papercusp/operator-core/lib/cupboard/commerce-ledger';
-import { createMicrochargeChannel } from '@papercusp/operator-core/lib/p2p/microcharge';
+} from "@papercusp/operator-core/lib/cupboard/commerce-ledger";
+import { createMicrochargeChannel } from "@papercusp/operator-core/lib/p2p/microcharge";
 import { authorizeOrgActor } from '@papercusp/operator-core/lib/cupboard/commerce-door-gate';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 import {
@@ -45,7 +45,7 @@ import {
   loadLedgerEvents,
   loadOrganizations,
   projectLedger,
-} from '../commerce-store.ts';
+} from "../commerce-store.ts";
 
 /** Signature refusals — the request never proved who it was. */
 const SIGNATURE_REFUSALS = new Set([
@@ -83,19 +83,40 @@ interface CheckoutRequest {
 type CheckoutParse = { ok: true; value: CheckoutRequest } | { ok: false; code: string; detail: string };
 
 function parseCheckoutRequest(raw: unknown): CheckoutParse {
-  if (typeof raw !== 'object' || raw === null) return { ok: false, code: 'invalid_request', detail: 'body must be a JSON object' };
+  if (typeof raw !== "object" || raw === null)
+    return {
+      ok: false,
+      code: "invalid_request",
+      detail: "body must be a JSON object",
+    };
   const body = raw as Record<string, unknown>;
-  const required = ['buyerOrgId', 'offerId', 'successUrl', 'cancelUrl', 'idempotencyKey'] as const;
+  const required = [
+    "buyerOrgId",
+    "offerId",
+    "successUrl",
+    "cancelUrl",
+    "idempotencyKey",
+  ] as const;
   for (const field of required) {
     const value = body[field];
-    if (typeof value !== 'string' || !value.trim()) return { ok: false, code: 'invalid_request', detail: `${field} must be a non-empty string` };
+    if (typeof value !== "string" || !value.trim())
+      return {
+        ok: false,
+        code: "invalid_request",
+        detail: `${field} must be a non-empty string`,
+      };
   }
   // Only quantity 1 is expressible: `buildStripeCheckoutSessionParams` hard-codes
   // `line_items[0].quantity = 1` and refuses unless the order amount equals the
   // offer price exactly, so a quantity>1 order cannot be built without changing
   // that shared builder. Refusing loudly beats silently charging for one seat.
   const quantity = body.quantity === undefined ? 1 : body.quantity;
-  if (quantity !== 1) return { ok: false, code: 'unsupported_quantity', detail: 'only quantity 1 is supported by the current Checkout builder' };
+  if (quantity !== 1)
+    return {
+      ok: false,
+      code: "unsupported_quantity",
+      detail: "only quantity 1 is supported by the current Checkout builder",
+    };
   const maxSpendMicros = body.maxSpendMicros;
   if (
     maxSpendMicros !== undefined &&
@@ -103,8 +124,8 @@ function parseCheckoutRequest(raw: unknown): CheckoutParse {
   ) {
     return {
       ok: false,
-      code: 'invalid_max_spend',
-      detail: 'maxSpendMicros must be a positive safe integer',
+      code: "invalid_max_spend",
+      detail: "maxSpendMicros must be a positive safe integer",
     };
   }
   return {
@@ -134,24 +155,30 @@ interface PublishOfferRequest {
   active?: boolean;
 }
 
-function parsePublishOfferRequest(raw: unknown): { ok: true; value: PublishOfferRequest } | { ok: false; detail: string } {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, detail: 'body must be a JSON object' };
+function parsePublishOfferRequest(
+  raw: unknown,
+): { ok: true; value: PublishOfferRequest } | { ok: false; detail: string } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, detail: "body must be a JSON object" };
   }
   const body = raw as Record<string, unknown>;
-  for (const field of ['productId', 'offerId', 'skuRef', 'title'] as const) {
-    if (typeof body[field] !== 'string' || !(body[field] as string).trim()) {
+  for (const field of ["productId", "offerId", "skuRef", "title"] as const) {
+    if (typeof body[field] !== "string" || !(body[field] as string).trim()) {
       return { ok: false, detail: `${field} must be a non-empty string` };
     }
   }
   if (!PRICING_MODELS.includes(body.pricingModel as PricingModel)) {
-    return { ok: false, detail: 'pricingModel is not supported' };
+    return { ok: false, detail: "pricingModel is not supported" };
   }
-  if (!body.price || typeof body.price !== 'object' || Array.isArray(body.price)) {
-    return { ok: false, detail: 'price must be an object' };
+  if (
+    !body.price ||
+    typeof body.price !== "object" ||
+    Array.isArray(body.price)
+  ) {
+    return { ok: false, detail: "price must be an object" };
   }
-  if (body.active !== undefined && typeof body.active !== 'boolean') {
-    return { ok: false, detail: 'active must be a boolean' };
+  if (body.active !== undefined && typeof body.active !== "boolean") {
+    return { ok: false, detail: "active must be a boolean" };
   }
   return {
     ok: true,
@@ -162,7 +189,9 @@ function parsePublishOfferRequest(raw: unknown): { ok: true; value: PublishOffer
       title: String(body.title),
       pricingModel: body.pricingModel as PricingModel,
       price: body.price as Money,
-      ...(body.perUse !== undefined ? { perUse: body.perUse as PerUseOfferTerms } : {}),
+      ...(body.perUse !== undefined
+        ? { perUse: body.perUse as PerUseOfferTerms }
+        : {}),
       ...(body.active !== undefined ? { active: body.active } : {}),
     },
   };
@@ -188,12 +217,12 @@ async function deriveOrderId(input: CheckoutRequest): Promise<string> {
 
 async function contentId(prefix: string, payload: unknown): Promise<string> {
   const digest = await crypto.subtle.digest(
-    'SHA-256',
+    "SHA-256",
     new TextEncoder().encode(JSON.stringify(payload)),
   );
   const hex = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
   return `${prefix}:${hex.slice(0, 32)}`;
 }
 
@@ -289,30 +318,31 @@ export function commerceRoute(
   // unexercised authorization branch is the one that rots.
   const loadOrgs = options.loadOrgs ?? loadOrganizations;
 
-  route.get('/commerce/offers', async (c) => {
-    const pricing = c.req.query('pricing');
-    if (pricing !== undefined && !PRICING_MODELS.includes(pricing as PricingModel)) {
-      return c.json({ error: 'invalid_pricing_model' }, 400);
+  route.get("/commerce/offers", async (c) => {
+    const pricing = c.req.query("pricing");
+    if (
+      pricing !== undefined &&
+      !PRICING_MODELS.includes(pricing as PricingModel)
+    ) {
+      return c.json({ error: "invalid_pricing_model" }, 400);
     }
     return c.json({
       offers: await listCommerceOffers(c.env.DB, pricing),
     });
   });
 
-  route.get('/commerce/offers/:offerId', async (c) => {
-    const offer = await getCommerceOffer(c.env.DB, c.req.param('offerId'));
-    return offer
-      ? c.json({ offer })
-      : c.json({ error: 'unknown_offer' }, 404);
+  route.get("/commerce/offers/:offerId", async (c) => {
+    const offer = await getCommerceOffer(c.env.DB, c.req.param("offerId"));
+    return offer ? c.json({ offer }) : c.json({ error: "unknown_offer" }, 404);
   });
 
-  route.post('/commerce/offers', async (c) => {
+  route.post("/commerce/offers", async (c) => {
     let actingUserId: string;
     try {
       actingUserId = principalId(await resolveGithubBearer(c.req.raw));
     } catch (err) {
       if (err instanceof AuthError) {
-        return c.json({ error: 'unauthorized', reason: err.reason }, 401);
+        return c.json({ error: "unauthorized", reason: err.reason }, 401);
       }
       throw err;
     }
@@ -321,11 +351,14 @@ export function commerceRoute(
     try {
       rawBody = await c.req.json();
     } catch {
-      return c.json({ error: 'invalid_request', detail: 'body was not valid JSON' }, 400);
+      return c.json(
+        { error: "invalid_request", detail: "body was not valid JSON" },
+        400,
+      );
     }
     const parsed = parsePublishOfferRequest(rawBody);
     if (!parsed.ok) {
-      return c.json({ error: 'invalid_request', detail: parsed.detail }, 400);
+      return c.json({ error: "invalid_request", detail: parsed.detail }, 400);
     }
     const request = parsed.value;
     const events = await loadLedgerEvents(c.env.DB);
@@ -334,7 +367,7 @@ export function commerceRoute(
     if (existingProduct && existingProduct.creatorId !== actingUserId) {
       return c.json(
         {
-          error: 'product_not_owned',
+          error: "product_not_owned",
           detail: `product ${request.productId} belongs to ${existingProduct.creatorId}`,
         },
         403,
@@ -346,8 +379,8 @@ export function commerceRoute(
       if (owner !== actingUserId) {
         return c.json(
           {
-            error: 'offer_not_owned',
-            detail: `offer ${request.offerId} belongs to ${owner ?? 'an unknown creator'}`,
+            error: "offer_not_owned",
+            detail: `offer ${request.offerId} belongs to ${owner ?? "an unknown creator"}`,
           },
           403,
         );
@@ -372,17 +405,17 @@ export function commerceRoute(
     };
     const candidate: LedgerEvent[] = [
       {
-        ledgerEventId: await contentId('evt:product-defined', productPayload),
-        kind: 'product.defined',
+        ledgerEventId: await contentId("evt:product-defined", productPayload),
+        kind: "product.defined",
         occurredAtMs: now,
-        source: { provider: 'operator', providerEventId: null },
+        source: { provider: "operator", providerEventId: null },
         payload: productPayload,
       },
       {
-        ledgerEventId: await contentId('evt:offer-defined', offerPayload),
-        kind: 'offer.defined',
+        ledgerEventId: await contentId("evt:offer-defined", offerPayload),
+        kind: "offer.defined",
         occurredAtMs: now + 1,
-        source: { provider: 'operator', providerEventId: null },
+        source: { provider: "operator", providerEventId: null },
         payload: offerPayload,
       },
     ];
@@ -394,7 +427,7 @@ export function commerceRoute(
     if (rejection) {
       return c.json(
         {
-          error: 'invalid_offer',
+          error: "invalid_offer",
           code: rejection.code,
           detail: rejection.detail,
         },
@@ -402,14 +435,19 @@ export function commerceRoute(
       );
     }
     const existingIds = new Set(events.map((event) => event.ledgerEventId));
-    const replayed = candidate.every((event) => existingIds.has(event.ledgerEventId));
+    const replayed = candidate.every((event) =>
+      existingIds.has(event.ledgerEventId),
+    );
     await appendLedgerEvents(c.env.DB, candidate);
     await projectLedger(c.env.DB);
     const offer = await getCommerceOffer(c.env.DB, request.offerId);
     const product = projected.products.get(request.productId);
     if (!offer || !product) {
       return c.json(
-        { error: 'projection_failed', detail: 'offer did not appear in the D1 projection' },
+        {
+          error: "projection_failed",
+          detail: "offer did not appear in the D1 projection",
+        },
         500,
       );
     }
@@ -442,7 +480,8 @@ export function commerceRoute(
     if (!parsed.ok) {
       return c.json(
         { error: parsed.code, detail: parsed.detail },
-        parsed.code === 'unsupported_quantity' || parsed.code === 'invalid_max_spend'
+        parsed.code === "unsupported_quantity" ||
+          parsed.code === "invalid_max_spend"
           ? 422
           : 400,
       );
@@ -466,39 +505,72 @@ export function commerceRoute(
     const orderId = await deriveOrderId(request);
 
     const offer = state.offers.get(request.offerId);
-    if (!offer) return c.json({ error: 'unknown_offer', detail: `offer ${request.offerId} is not defined in the ledger` }, 404);
-    if (!offer.active) return c.json({ error: 'inactive_offer', detail: `offer ${request.offerId} is inactive` }, 422);
+    if (!offer)
+      return c.json(
+        {
+          error: "unknown_offer",
+          detail: `offer ${request.offerId} is not defined in the ledger`,
+        },
+        404,
+      );
+    if (!offer.active)
+      return c.json(
+        {
+          error: "inactive_offer",
+          detail: `offer ${request.offerId} is inactive`,
+        },
+        422,
+      );
     const product = state.products.get(offer.productId);
-    if (!product) return c.json({ error: 'unknown_product', detail: `product ${offer.productId} is not defined in the ledger` }, 404);
+    if (!product)
+      return c.json(
+        {
+          error: "unknown_product",
+          detail: `product ${offer.productId} is not defined in the ledger`,
+        },
+        404,
+      );
 
-    if (offer.pricingModel === 'per-use') {
+    if (offer.pricingModel === "per-use") {
       if (!offer.perUse) {
-        return c.json({ error: 'invalid_offer', detail: 'per-use terms are missing from the ledger offer' }, 500);
+        return c.json(
+          {
+            error: "invalid_offer",
+            detail: "per-use terms are missing from the ledger offer",
+          },
+          500,
+        );
       }
       const maxSpendMicros = request.maxSpendMicros;
-      if (!Number.isSafeInteger(maxSpendMicros) || (maxSpendMicros as number) <= 0) {
+      if (
+        !Number.isSafeInteger(maxSpendMicros) ||
+        (maxSpendMicros as number) <= 0
+      ) {
         return c.json(
-          { error: 'max_spend_required', detail: 'per-use checkout requires maxSpendMicros' },
+          {
+            error: "max_spend_required",
+            detail: "per-use checkout requires maxSpendMicros",
+          },
           422,
         );
       }
       if ((maxSpendMicros as number) < offer.perUse.unitPriceMicros) {
         return c.json(
           {
-            error: 'max_spend_below_unit_price',
+            error: "max_spend_below_unit_price",
             detail: `maxSpendMicros must cover at least one ${offer.perUse.meterUnit}`,
           },
           422,
         );
       }
       const channel = createMicrochargeChannel(
-        `ch_${orderId.slice('ord_'.length)}`,
+        `ch_${orderId.slice("ord_".length)}`,
         BigInt(maxSpendMicros as number),
       );
       return c.json({
-        checkoutKind: 'microcharge-preflight',
-        rail: 'p2p-microcharge',
-        preflightId: `pre_${orderId.slice('ord_'.length)}`,
+        checkoutKind: "microcharge-preflight",
+        rail: "p2p-microcharge",
+        preflightId: `pre_${orderId.slice("ord_".length)}`,
         channel: {
           channelId: channel.channelId,
           payer: request.buyerOrgId,
@@ -514,9 +586,12 @@ export function commerceRoute(
       });
     }
 
-    if (offer.pricingModel === 'free') {
+    if (offer.pricingModel === "free") {
       return c.json(
-        { error: 'unsupported_pricing_model', detail: 'free offers do not go through Checkout' },
+        {
+          error: "unsupported_pricing_model",
+          detail: "free offers do not go through Checkout",
+        },
         422,
       );
     }
@@ -524,8 +599,14 @@ export function commerceRoute(
     // Fail CLOSED for provider-backed pricing only. A per-use offer never
     // touches Stripe and therefore must not be held hostage by its secret.
     const secretKey = c.env.STRIPE_SECRET_KEY;
-    if (typeof secretKey !== 'string' || !secretKey) {
-      return c.json({ error: 'provider_not_configured', detail: 'STRIPE_SECRET_KEY is not configured in this deployment' }, 503);
+    if (typeof secretKey !== "string" || !secretKey) {
+      return c.json(
+        {
+          error: "provider_not_configured",
+          detail: "STRIPE_SECRET_KEY is not configured in this deployment",
+        },
+        503,
+      );
     }
 
     // Idempotent replay: the order already exists, so return the ORIGINAL
