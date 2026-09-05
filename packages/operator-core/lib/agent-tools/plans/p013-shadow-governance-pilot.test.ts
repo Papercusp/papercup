@@ -7,13 +7,20 @@
  * users, so the cohort is synthetic actors driving the REAL modules, and "measure"
  * means a reproducible per-leg count — this file — not a human trial.
  *
- * WHAT THIS PILOT FOUND, and why it is the answer to "activate enforcement only
- * after evidence":
+ * HISTORICAL BASELINE. This file preserves what P-013 measured before P-037 wired
+ * the production certificate source. Current production coverage lives in
+ * `plan-admission-certificate-source.test.ts`; the no-producer legs below install
+ * an explicit null-returning source so this artifact remains reproducible instead
+ * of accidentally changing meaning as production wiring evolves.
  *
- *   ENFORCEMENT CANNOT BE ACTIVATED TODAY. The two halves of the gate are wired
+ * WHAT THIS PILOT FOUND AT THE TIME, and why it answered "activate enforcement
+ * only after evidence":
+ *
+ *   ENFORCEMENT COULD NOT BE ACTIVATED WHEN P-013 RAN. The two halves of the gate
+ *   were wired
  *   asymmetrically. The POLICY half is real: `defaultPolicySource` reads a pot's
  *   owner-signed `governance.planAdmission` out of the live hive policy, so any pot
- *   can switch the section on. The CERTIFICATE half has no producer at all —
+ *   could switch the section on. The CERTIFICATE half had no producer at all —
  *   `configurePlanAdmissionCertificateSource` has zero non-test call sites in the
  *   repository, so `state.certificateSource` is permanently null in production and
  *   the gate resolves `{ certificate: null }` for every door.
@@ -30,9 +37,9 @@
  *   one adapter between them opens every door. The gap is exactly one conversion
  *   from `FinalizationCertificate` to `AdmissionCertificate`.
  *
- * So the pilot's verdict is: leave enforcement OFF (it would brick every door), and
- * run `mode: 'shadow'` meanwhile — LEG 7 measures precisely what enforcement WOULD
- * have refused, on the real code path, while admitting everything.
+ * So the pilot's historical verdict was: leave enforcement OFF (it would brick
+ * every door), and run `mode: 'shadow'` meanwhile. P-037 supersedes that operational
+ * verdict by providing the durable source while retaining this baseline as evidence.
  *
  * NOT MEASURED HERE, ON PURPOSE. The cupboard legs P-013 also names — submission,
  * publish, purchase, install, refund — are already exercised by committed suites
@@ -155,13 +162,12 @@ function runRound(choices: readonly GovernanceVoteEvent['choice'][]): {
 }
 
 /**
- * THE MISSING BRIDGE, written here and ONLY here.
+ * The bridge as it existed in the P-013 pilot.
  *
- * This is the conversion production does not have. It is deliberately NOT exported
- * and NOT added to the gate: wiring it is P-004/P-005 scope, and P-013's own charter
- * is to leave enforcement off and record the evidence for turning it on. Its
- * presence in the test is what lets LEG 4 prove the gap is one adapter wide rather
- * than merely asserting it.
+ * Production now owns the equivalent conversion in
+ * `plan-admission-certificate-source.ts`. This local copy remains deliberately
+ * unexported so the historical pilot can prove its original gap without depending
+ * on the later implementation that closed it.
  */
 const bridgeToAdmissionCertificate = (cert: FinalizationCertificate, policy: PlanAdmissionPolicy): AdmissionCertificate => ({
   planRevisionHash: cert.planRevisionHash,
@@ -318,13 +324,15 @@ describe('P-013 LEG 2 — federation projects the round, and quarantines a confl
   });
 });
 
-describe('P-013 LEG 3 — THE WALL: production has no certificate producer', () => {
-  it('with the policy set and production wiring, EVERY door refuses missing-certificate', async () => {
-    // Reproduces production exactly: a policy source (standing in for the hive
-    // policy read, which needs a database) and NO certificate source — because
-    // `configurePlanAdmissionCertificateSource` has no non-test caller anywhere in
-    // the repository, so `state.certificateSource` is null in every real process.
+describe('P-013 LEG 3 — HISTORICAL WALL: the pre-P-037 build had no certificate producer', () => {
+  it('with the policy set and the historical null source, EVERY door refuses missing-certificate', async () => {
+    // Reproduces the pre-P-037 build explicitly. `null` now restores the production
+    // source, so the historical no-producer state must be installed as a real
+    // override rather than inferred from current module defaults.
     configurePlanAdmissionPolicySource(async () => POLICY);
+    configurePlanAdmissionCertificateSource({
+      resolve: async () => ({ certificate: null, governance: null }),
+    });
 
     const outcomes = await Promise.all(PLAN_ADMISSION_DOORS.map((door) => driveDoor('enforce-production-wiring', door)));
 
@@ -435,14 +443,17 @@ describe('P-013 LEG 5 — owner controls refuse through the gate', () => {
   });
 });
 
-describe('P-013 LEG 6 — SHADOW MODE over the real production wiring', () => {
+describe('P-013 LEG 6 — SHADOW MODE over the historical null-source wiring', () => {
   it('every door ADMITS, and every would-be refusal is recorded with its code', async () => {
-    // This is the pilot's recommendation, executed. Identical to LEG 3 in every
-    // respect except the mode: same missing certificate source, same doors, same
+    // This is the historical pilot's recommendation, executed. Identical to LEG 3
+    // in every respect except the mode: same explicit null source, same doors, same
     // instant — but the fleet keeps running while the evidence accumulates.
     const observations: PlanAdmissionShadowObservation[] = [];
     configurePlanAdmissionShadowSink({ record: (o) => void observations.push(o) });
     configurePlanAdmissionPolicySource(async () => SHADOW_POLICY);
+    configurePlanAdmissionCertificateSource({
+      resolve: async () => ({ certificate: null, governance: null }),
+    });
 
     const outcomes = await Promise.all(PLAN_ADMISSION_DOORS.map((door) => driveDoor('shadow-production-wiring', door)));
 
@@ -487,7 +498,7 @@ describe('P-013 — the pilot metrics artifact', () => {
       expect(METRICS[leg].attempted).toBeGreaterThan(0);
     }
 
-    // The pilot's headline, stated as an assertion rather than only in prose:
+    // The pilot's historical headline, stated as an assertion rather than only in prose:
     // enforcement refuses every door, shadow refuses none, and shadow's recorded
     // would-be refusals equal the enforcing run's real ones.
     expect(METRICS['enforce-production-wiring'].refused).toBe(PLAN_ADMISSION_DOORS.length);
@@ -503,9 +514,13 @@ describe('P-013 — the pilot metrics artifact', () => {
       doors: [...PLAN_ADMISSION_DOORS],
       verdict: {
         enforcementActivatable: false,
+        historical: true,
+        asOf: 'P-013 before P-037/WI-2146857',
         reason:
-          'configurePlanAdmissionCertificateSource has no non-test call site, so state.certificateSource is null in production and every door refuses missing-certificate the moment governance.planAdmission is set',
-        recommendation: "run mode:'shadow' until a FinalizationCertificate→AdmissionCertificate producer is wired",
+          'the pre-P-037 build had no production certificate producer, so every door refused missing-certificate when governance.planAdmission was set',
+        recommendation: "historical: run mode:'shadow' until a FinalizationCertificate→AdmissionCertificate producer is wired",
+        supersededBy:
+          'P-037/WI-2146857 wires the production governance-event source; current seven-door coverage is plan-admission-certificate-source.test.ts',
       },
       legs: METRICS,
       cupboardLegsMeasuredElsewhere: CUPBOARD_LEG_COVERAGE,
