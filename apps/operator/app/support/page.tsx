@@ -1,10 +1,19 @@
+'use client';
+
 import RouteLink from '../_components/RouteLink';
 import * as Collapsible from '@radix-ui/react-collapsible';
 
 import { SupportChatButton } from '../_components/SupportChatButton';
 import { SupportAgentPanel } from '../_components/SupportAgentPanel';
 import { Button } from '../harness/Button';
-import { term } from '@papercusp/operator-core/lib/lexicon';
+// The CLIENT lexicon twin. `@papercusp/operator-core/lib/lexicon` is the SERVER
+// wiring (its configure.ts reaches flag-distinct-id → `node:os` at module scope),
+// so importing it from a page drags a Node builtin into every client bundle —
+// operator-vite only survives that through Vite's browser-external stub, and the
+// Portal's webpack client compilation fails outright on the `node:` scheme
+// (portal build #3c, 2026-09-05 03:33Z, WI-2145038).
+import { useLexicon } from '@/lib/useLexicon';
+import type { BoundLexicon } from '@papercusp/lexicon';
 import { GITHUB_ISSUES_URL, GITHUB_NEW_ISSUE_URL } from '@papercusp/operator-core/lib/canonical-github-identity';
 
 export const metadata = {
@@ -16,10 +25,10 @@ interface FaqItem {
   a: React.ReactNode;
 }
 
-// FAQ copy is built at render so the project term ("Pot"/"Hive") resolves
-// through the active brand pack (the-hive-lexicon) rather than freezing at
-// module-eval time.
-function buildFaqs(): FaqItem[] {
+// FAQ copy is built at render from the hook-bound resolver so the project term
+// ("Pot"/"Hive") tracks the active brand pack (the-hive-lexicon) reactively,
+// rather than freezing at module-eval time.
+function buildFaqs(t: BoundLexicon): FaqItem[] {
   return [
   {
     q: "First-run says 'agent CLI not found'. What do I install?",
@@ -40,7 +49,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: `I added my API key but the ${term('pot', { lower: true })} still says it can't reach the LLM.`,
+    q: `I added my API key but the ${t('pot', { lower: true })} still says it can't reach the LLM.`,
     a: (
       <>
         <p>
@@ -62,22 +71,22 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
     ),
   },
   {
-    q: `My ${term('pot', { lower: true })} exited unexpectedly. How do I see what happened?`,
+    q: `My ${t('pot', { lower: true })} exited unexpectedly. How do I see what happened?`,
     a: (
       <>
         <p>
-          The <em>brain</em> tab on the {term('pot')} dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
+          The <em>brain</em> tab on the {t('pot')} dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
         </p>
         <ul>
           <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.papercusp/config.json</code> and re-run.</li>
           <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either refine the owning plan (its items / acceptance) or accept the proposal manually.</li>
         </ul>
-        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the {term('pot', { lower: true })} questions directly.</p>
+        <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the {t('pot', { lower: true })} questions directly.</p>
       </>
     ),
   },
   {
-    q: `Where do I publish my own ${term('pot', { lower: true })} template / plugin?`,
+    q: `Where do I publish my own ${t('pot', { lower: true })} template / plugin?`,
     a: (
       <>
         <p>
@@ -127,7 +136,8 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
 }
 
 export default function SupportPage() {
-  const FAQS = buildFaqs();
+  const t = useLexicon();
+  const FAQS = buildFaqs(t);
   return (
     <div className="pc-shell pc-support-shell" style={{ maxWidth: 820, margin: '0 auto', padding: '32px 28px' }}>
       <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>Support</h1>
