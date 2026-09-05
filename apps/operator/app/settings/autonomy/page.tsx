@@ -27,8 +27,10 @@
  * render something honest and nothing clickable.
  *
  * Agent autonomy is now per-session (AUTO mode), not central policy.
- * The sliders' components (./CeilingSlider, ./RecentAutoDecisions) are left in the
- * tree, unimported, for the D-098 mechanical-cleanup follow-up.
+ * The sliders' components (./CeilingSlider, ./RecentAutoDecisions) have been DELETED
+ * by WI-38240, the D-098 mechanical-cleanup follow-up this notice handed off to.
+ * The shared feed RecentAutoDecisions wrapped — ../../_components/DecisionLog — is NOT
+ * dead and must stay: /admin/plans (PlansClient) and the Queue view still render it.
  */
 import { useLexicon } from '@/lib/useLexicon';
 

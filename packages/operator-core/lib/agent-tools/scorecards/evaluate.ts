@@ -44,6 +44,16 @@ export const scorecardInstrumentSnapshotSchema = z
     window: z.record(z.string(), z.unknown()).optional(),
     value: z.unknown().optional(),
     evidenceRef: z.string().min(1).max(500).optional(),
+    provenance: z
+      .enum(['self-reported', 'platform-computed'])
+      .optional()
+      .describe(
+        "WHO measured this. Omitted means 'self-reported' — you derived and typed the number " +
+          'yourself, which is what every snapshot on this path is today. Only a deterministic ' +
+          "platform instrument may claim 'platform-computed'. The contract's verdict-mismatch " +
+          'check compares your rating to THIS snapshot, so on a self-reported one it is testing ' +
+          'you against yourself, not measuring anything.',
+      ),
   })
   .strict();
 

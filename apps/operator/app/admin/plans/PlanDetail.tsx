@@ -374,7 +374,6 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
           planStatus={planStatus}
           startStatus={startStatus}
           onStartStatusChange={onStartStatusChange}
-          onStartRefused={() => setInputsRefresh((n) => n + 1)}
           onPlanStatusChange={onPlanStatusChange}
           onOptimisticStatus={onOptimisticStatus}
           onChanged={onChanged}

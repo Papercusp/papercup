@@ -579,7 +579,12 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
         describe: 'the service name, e.g. inference-gateway / substrate-sidecar / git-sync',
       },
     ],
-    describe: 'A monitored service transitioned to HEALTHY (block-until-recovered instead of re-polling).',
+    describe:
+      'A monitored service transitioned to HEALTHY — an unhealthy→healthy EDGE, not a level. ' +
+      'A restart that completes between health ticks never registers as unhealthy and so emits NOTHING: ' +
+      'this CANNOT confirm a restart (verify the unit identity — MainPID / ExecMainStartTimestamp — instead), ' +
+      'and for a flap-damped service a short restart structurally cannot fire it. ' +
+      'Prefer service:await-up, which short-circuits when the service is already healthy.',
     emitter: 'service-health tick (packages/operator-core/lib/service-health-events.ts)',
     exists: true, // P-104: runServiceHealthTick fires `service:up:<name>` on a diffHealth up-transition
     replacesPoll: 'dev:service_health re-polling for recovery',

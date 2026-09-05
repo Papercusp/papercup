@@ -1060,8 +1060,37 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     });
   });
 
-  it('does not attach bug-freshness routing to a non-bug claim', async () => {
+  // EI-20264587083609474: this pair used to be ONE test asserting that a `change`
+  // claim gets no freshness at all. That was a bare pin of the bug-only gate, not a
+  // stated decision — and it was wrong in the expensive direction: an absent
+  // `freshness` key is indistinguishable from "this item is fresh", so a `change`
+  // claimant was told nothing about work that may already be committed. `change` is
+  // this repo's default kind for a code edit, and half the already-built evidence
+  // that motivated the freshness lane was a `change`.
+  //
+  // The negative case is KEPT rather than deleted, moved to the kind that should
+  // genuinely stay out: `task` is non-code work, so the scorer's only item-specific
+  // axis (source movement over the item's own paths) can never measure anything for
+  // it. Without this second test, widening the gate to every kind would pass.
+  it('routes a pre-envelope change through the validation lane like a bug', async () => {
     getNextM.mockResolvedValue({ workItem: { id: 'WI-4243', title: 'Improve the flow', kind: 'change' } });
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      data?: unknown;
+      content?: Array<{ text: string }>;
+    };
+    expect(handlerPayload(out)).toMatchObject({
+      ok: true,
+      workItem: { id: 'WI-4243' },
+      freshness: {
+        lane: 'validation',
+        likelyStale: true,
+        reasons: ['no freshness envelope (pre-envelope or unknown-generation report)'],
+      },
+    });
+  });
+
+  it('does not attach freshness routing to a non-code kind', async () => {
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-4244', title: 'Write the runbook', kind: 'task' } });
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
       data?: unknown;
       content?: Array<{ text: string }>;

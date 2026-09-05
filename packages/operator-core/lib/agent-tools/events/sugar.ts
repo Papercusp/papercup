@@ -51,7 +51,7 @@ import {
   harnessRequiredResult,
   resolveConcreteHarnessSlug,
 } from "../_harness-scope";
-import { probeNamedService, type ProbeResult } from "../../service-health";
+import { probeServiceUpLatch } from "./service-up-edge";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -177,21 +177,12 @@ async function armAwaits(
 
 /**
  * A service-up key is an EDGE, so it cannot satisfy a waiter when the service
- * is already healthy. Probe only the named service at arm time, with a short
- * fail-open budget: an unreadable/slow probe must preserve the normal wait
- * rather than manufacture an all-clear.
+ * is already healthy. That rule used to live here as a private helper, which
+ * is why the RAW `events:await` path never got it (EI-20268841604319803): it
+ * armed a dead edge wait in silence while this sugar handled the same key
+ * correctly. Both surfaces now share `probeServiceUpLatch` from
+ * ./service-up-edge so they cannot drift apart again.
  */
-const SERVICE_AWAIT_UP_PROBE_TIMEOUT_MS = 1_500;
-
-async function probeServiceUp(name: string): Promise<ProbeResult | null> {
-  const probe = await withBoundedTimeout(() => probeNamedService(name), {
-    fallback: null,
-    timeoutMs: SERVICE_AWAIT_UP_PROBE_TIMEOUT_MS,
-    label: "service-await-up:healthLatch",
-  });
-  const result = probe.value;
-  return result && result.up && result.present !== false ? result : null;
-}
 
 /**
  * A global git-sync key is emitted by every harness in the workspace. Keep the
@@ -825,7 +816,7 @@ defineTool({
   }),
   async handler(args, ctx) {
     const event = buildKey("service-up", { name: args.name });
-    const alreadyUp = await probeServiceUp(args.name);
+    const alreadyUp = await probeServiceUpLatch(args.name);
     if (alreadyUp) {
       return reply({
         ok: true,
@@ -853,7 +844,7 @@ defineTool({
     // pre-arm probe but before the row is registered (or while registration is
     // in flight). Cancel only this caller's row, and only while it is still
     // pending; if the transition already won the race, its durable wake wins.
-    const recoveredDuringRegistration = await probeServiceUp(args.name);
+    const recoveredDuringRegistration = await probeServiceUpLatch(args.name);
     const awaitId = armed.await_ids[0];
     if (recoveredDuringRegistration && awaitId != null) {
       let retired = false;

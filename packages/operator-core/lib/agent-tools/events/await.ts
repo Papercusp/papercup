@@ -72,6 +72,12 @@ import {
   resolveProgressLeaseCertificate,
 } from './producer-health';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
+import {
+  buildServiceUpEdgeAdvice,
+  isFlapDamped,
+  parseServiceUpKey,
+  probeServiceUpLatch,
+} from './service-up-edge';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   hasActiveMonitorForOwnerPredicate,
@@ -736,6 +742,41 @@ export default defineTool({
             announcedGateOwnership.liveSuccessorIds.length > 0);
         if (evidence.value?.fires === 0 && declarationHistory.value && !priorGenerationFired && !hasLiveEmitterDuty) {
           noKnownEmitterForAnnouncedGate = { catalogNearMiss: findCatalogNearMiss(eventKey, probe.value) };
+        }
+      }
+    }
+
+    // ── EI-20268841604319803: the SERVICE-UP EDGE advisory. `service:up:<name>`
+    // is emitted from a diffHealth unhealthy→healthy TRANSITION, so arming it
+    // while <name> is ALREADY healthy parks on an edge nothing is heading
+    // toward. Measured cost: a real inference-gateway restart slept through a
+    // 6h await and surfaced ~56 minutes later as a TIMEOUT — the restart having
+    // completed between health ticks, so no unhealthy sample, so no transition,
+    // so no event. For a flap-damped name that is not merely likely but
+    // STRUCTURAL: damping exists to swallow exactly these short restart blips.
+    //
+    // The knowledge already existed one file away — `service:await-up`
+    // (sugar.ts) probes at arm time and short-circuits when the service is
+    // healthy — but the RAW path shared none of it. One key, two surfaces,
+    // opposite safety, and the unprotected surface's SILENCE was
+    // indistinguishable from a clean bill of health. Both now call the same
+    // predicate (./service-up-edge) so they cannot drift apart again.
+    //
+    // ADVISORY, never a short-circuit — deliberately unlike the work-item /
+    // plan-item latches below. Those keys fire once and provably cannot fire
+    // again, so returning "already satisfied" is the whole truth. A service CAN
+    // go down and recover later, so "wake me if this ever breaks and comes
+    // back" is a legitimate standing wait, and short-circuiting it would break
+    // the arm-before-I-cause-an-outage pattern. Warn, register, let the caller
+    // decide. Fail-open + bounded like every probe here: an unreadable health
+    // read says nothing rather than manufacturing an all-clear.
+    let serviceUpEdge: { name: string; damped: boolean } | null = null;
+    if (!patternAwait && !announcedGate) {
+      const serviceUpName = parseServiceUpKey(eventKey);
+      if (serviceUpName) {
+        const healthyNow = await probeServiceUpLatch(serviceUpName);
+        if (healthyNow) {
+          serviceUpEdge = { name: serviceUpName, damped: isFlapDamped(serviceUpName) };
         }
       }
     }
@@ -1439,6 +1480,17 @@ export default defineTool({
               ? {
                   declared_announced_gate: true,
                   declared_announced_gate_advice: `"${eventKey}" matches no family in events:catalog — an ANNOUNCED gate never does, because its key is minted at runtime from the announcer's scope — but it HAS been declared (${declaredAnnouncement.generations} declaration generation(s)${declaredAnnouncement.everFired ? ', and a previous generation has already fired' : ''}). This await is sound: do NOT cancel it, and do not file a catalog gap for it. To discover gates like this one, read the ANNOUNCED section of events:catalog rather than its family list — the family list deliberately describes only statically-emitted keys.`,
+                }
+              : {}),
+            // EI-20268841604319803: armed on a service that is healthy RIGHT
+            // NOW, so the unhealthy→healthy edge this key needs is not coming
+            // unless the service first goes down AND the tick samples it.
+            ...(serviceUpEdge
+              ? {
+                  service_up_edge_already_healthy: true,
+                  service_up_edge_advice: buildServiceUpEdgeAdvice(serviceUpEdge.name, {
+                    damped: serviceUpEdge.damped,
+                  }),
                 }
               : {}),
             ...(requiredParamPrefixMismatch

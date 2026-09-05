@@ -42,11 +42,8 @@ import {
   rejectDraftPlan,
   setPlanNow,
   promoteToHarness,
-  startPlan,
   pausePlan,
-  isPlanStartRefusal,
   writeError,
-  type PlanStartRefusal,
   type PlanDecision,
   type PlanItem,
   type PlanStatus,
@@ -75,10 +72,6 @@ interface Props {
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the caller can refresh the list. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;
-  /** Fired when the start gate REFUSED (P-013) — the plan did not start. Lets the
-   *  caller open the inputs panel on the very fields the refusal names, instead of
-   *  leaving the human with a toast and no way to act on it. */
-  onStartRefused?: (refusal: PlanStartRefusal) => void;
   /** Fired after approve/demote (a plan-level status flip) so the caller can
    *  refresh the rail + bucket-tab counts — the plan changes bucket. */
   onPlanStatusChange?: () => void;
@@ -107,7 +100,6 @@ export default function PlanActions({
   planStatus,
   startStatus,
   onStartStatusChange,
-  onStartRefused,
   onPlanStatusChange,
   onOptimisticStatus,
   onChanged,
@@ -179,34 +171,17 @@ export default function PlanActions({
     }
   };
 
+  // WI-38240: the START half is DELETED (it is really a PAUSE handler now). The button
+  // below renders only when `isStarted` — P-047/D-010 kept PAUSE for an already-started
+  // plan and dropped START — and `onClick` is its only caller, so the start branch, its
+  // `isPlanStartRefusal` handling and the `onStartRefused` callback were all unreachable.
   const handleStartPause = async () => {
     if (startPending) return;
     setStartPending(true);
     try {
-      if (isStarted) {
-        await pausePlan(slug, harnessSlug);
-        toast.success(`Plan paused — orchestrator will finish in-flight work then stop.`);
-        onStartStatusChange?.('paused');
-      } else {
-        const r = await startPlan(slug, harnessSlug);
-        // The start gate refuses with a 200 body, not an HTTP error (see
-        // isPlanStartRefusal) — so without this branch a plan that never started
-        // reported "Plan started" and the button flipped to Pause. The refusal's
-        // `hint` is written to be surfaced verbatim; `missing` is the actionable part,
-        // so it leads.
-        if (isPlanStartRefusal(r)) {
-          const what = r.missing.length
-            ? `Missing required input${r.missing.length > 1 ? 's' : ''}: ${r.missing.join(', ')}`
-            : r.issues.length
-              ? r.issues.join('; ')
-              : r.hint;
-          toast.error(`Can't start — ${what}`, { duration: 12000 });
-          onStartRefused?.(r);
-          return;
-        }
-        toast.success(`Plan started — orchestrator will pick up features from this plan.`);
-        onStartStatusChange?.('started');
-      }
+      await pausePlan(slug, harnessSlug);
+      toast.success(`Plan paused — orchestrator will finish in-flight work then stop.`);
+      onStartStatusChange?.('paused');
     } catch (e) {
       toast.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -277,14 +252,14 @@ export default function PlanActions({
           DBOS frontier still reads op_status='started' and is not gated, so pause is
           the only remaining way to take a pre-P-047 plan out of its dispatch. */}
       {(bucket === 'ready' || bucket === 'running') && isStarted ? (
-        <Tooltip label={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}><button
+        <Tooltip label="Pause plan — orchestrator stops picking new features"><button
           type="button"
-          className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
+          className="pc-plan-actions__btn pc-plan-actions__btn--start pc-plan-actions__btn--started"
           onClick={handleStartPause}
           disabled={startPending}
 
         >
-          {startPending ? (isStarted ? 'Pausing…' : 'Starting…') : isStarted ? '⏸ Pause Plan' : '▶ Start Plan'}
+          {startPending ? 'Pausing…' : '⏸ Pause Plan'}
         </button></Tooltip>
       ) : null}
       {bucket !== 'shipped' && bucket !== 'rejected' ? (

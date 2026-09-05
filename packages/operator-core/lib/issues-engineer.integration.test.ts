@@ -245,7 +245,7 @@ describe('engineer issues surface (real PG)', () => {
     expect((await issues.getIssue(child.id))?.parent).toBeNull();
   });
 
-  it('stamps generation freshness on new bugs while leaving non-bug payloads alone (P-014)', async () => {
+  it('stamps generation freshness on new bugs and changes, leaving non-code payloads alone (P-014, EI-20264587083609474)', async () => {
     const bug = await issues.createIssue({
       title: 'freshly observed defect',
       kind: 'bug',
@@ -262,13 +262,33 @@ describe('engineer issues surface (real PG)', () => {
     expect((bug.payload as { freshnessEnvelope?: { observedAt?: unknown } }).freshnessEnvelope?.observedAt)
       .toEqual(expect.any(String));
 
+    // EI-20264587083609474: a `change` USED to be asserted envelope-free here. P-014
+    // delivered freshness for bugs and never revisited `change`, which is this repo's
+    // DEFAULT kind for a code edit — so the kind most likely to have been built by
+    // someone else was the one kind carrying no generation baseline, and its claimant
+    // got no staleness signal at all. No plan Decision scoped freshness to bugs; the
+    // bug-only shape was delivery scope, so it is widened here rather than worked around.
     const change = await issues.createIssue({
       title: 'desired behavior change',
       kind: 'change',
       createdBy: 'agA',
       payload: { reporterNote: 'preserved' },
     });
-    expect(change.payload).toEqual({ reporterNote: 'preserved' });
+    expect(change.payload).toMatchObject({
+      reporterNote: 'preserved',
+      freshnessEnvelope: { reporterSession: 'agA', linkedFixRefs: [] },
+    });
+
+    // The boundary is KEPT, not dropped: non-code work has no source paths, so the
+    // scorer's only item-specific axis can never measure anything for a task. Without
+    // this case, stamping every kind would pass the assertion above.
+    const task = await issues.createIssue({
+      title: 'write the runbook',
+      kind: 'task',
+      createdBy: 'agA',
+      payload: { reporterNote: 'preserved' },
+    });
+    expect(task.payload).toEqual({ reporterNote: 'preserved' });
   });
 
   it('issue-family writes refresh updated_at — no stale updated_ts (WI-339 regression)', async () => {

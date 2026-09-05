@@ -16,8 +16,17 @@
  *       core (never stale ledger rows), REFUSES a path that no longer resolves rather
  *       than silently passing, and REFUSES a rating the run contradicts (a 'healthy'
  *       rating over a failing must-pass suite is a wrong scorecard, not a note).
- *   - kind:'instrument' — the generalized instrument binding; nothing to enforce
- *     against the tree (the scorecard instrument contract already governs it).
+ *   - kind:'instrument' — the generalized instrument binding. THIS MODULE EXECUTES
+ *     NOTHING FOR IT, and — unlike every arm above — nothing else does either. It is
+ *     the one arm where the platform does not measure (EI-20270994401737114).
+ *     The scorecard instrument contract does constrain it, but read what that
+ *     constraint IS before relying on it: `instrumentSnapshots` is caller-supplied on
+ *     both scorecard verbs, so the contract compares the grader's rating against the
+ *     grader's OWN snapshot. That is internal consistency, not measurement — a grader
+ *     who derives the wrong number rates 'fail' beside a 'fail' snapshot and passes
+ *     cleanly (the retracted grade in EI-20266169712430445). `evaluateScorecardInstrumentContract`
+ *     reports these keys as `selfReportedInstruments` so the gap is visible rather
+ *     than inferred; closing it needs a computed instrument, which does not exist yet.
  *   - absent — a fuzzy judgment criterion; this module ignores it entirely.
  *
  * Fuzzy + deterministic criteria coexist in one rubric.
