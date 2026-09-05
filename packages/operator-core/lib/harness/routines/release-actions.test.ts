@@ -202,6 +202,7 @@ import {
   decideReleaseFixerDispatch,
   classifyFrozenRepairFixerSuccession,
   FIXER_SUCCESSION_STALL_MS,
+  isProvenStaleCandidate,
   shouldDispatchReleaseFixer,
   frozenRepairHasNoMeasuredFailures,
   isStaleReleaseFixerCandidate,
@@ -1461,23 +1462,25 @@ describe('annotateFailingTestsWithFlakeStats (EI-7443)', () => {
 
 describe('shouldDispatchReleaseFixer (EI-8740: no fixer for a held gate with nothing to fix)', () => {
   it('dispatches on not-green with real failing tests', () => {
-    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', ['a.test.ts'])).toBe(true);
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', ['a.test.ts'], undefined)).toBe(true);
   });
 
   it('dispatches on advanced-prefix with real failing tests (P-016 red-tip case)', () => {
-    expect(shouldDispatchReleaseFixer('advanced-prefix', 'cafe1234', ['@papercusp/operator-vite'])).toBe(true);
+    expect(shouldDispatchReleaseFixer('advanced-prefix', 'cafe1234', ['@papercusp/operator-vite'], undefined)).toBe(
+      true,
+    );
   });
 
   it('does NOT dispatch on not-green with EMPTY failingTests (the EI-8740 no-op-churn case)', () => {
-    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', [])).toBe(false);
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', [], undefined)).toBe(false);
   });
 
   it('does NOT dispatch when failingTests is undefined', () => {
-    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', undefined)).toBe(false);
+    expect(shouldDispatchReleaseFixer('not-green', 'cafe1234', undefined, undefined)).toBe(false);
   });
 
   it('does NOT dispatch without a candidate', () => {
-    expect(shouldDispatchReleaseFixer('not-green', undefined, ['a.test.ts'])).toBe(false);
+    expect(shouldDispatchReleaseFixer('not-green', undefined, ['a.test.ts'], undefined)).toBe(false);
   });
 
   it('does NOT dispatch on other statuses (advanced, up-to-date, error, ...) even with failing tests', () => {
@@ -1490,7 +1493,79 @@ describe('shouldDispatchReleaseFixer (EI-8740: no fixer for a held gate with not
       'skipped-locked',
       'infra-inconclusive',
     ]) {
-      expect(shouldDispatchReleaseFixer(status, 'cafe1234', ['a.test.ts'])).toBe(false);
+      expect(shouldDispatchReleaseFixer(status, 'cafe1234', ['a.test.ts'], undefined)).toBe(false);
+    }
+  });
+});
+
+describe('shouldDispatchReleaseFixer — proven-stale reds do not spend a fixer (EI-20029143927692821)', () => {
+  const RED = ['packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts'];
+
+  // The reported case: the verdict carried its OWN re-triage proving these exact files pass at
+  // tip (the reader-side `verdictStaleReasonCode: 'retriage-proven'`), and a fixer was dispatched
+  // anyway — one full agent spent re-deriving a conclusion the verdict already held.
+  it.each(['deadline', 'absolute-ceiling', 'cap-disabled'] as const)(
+    'does NOT dispatch when the run re-ran the named files at tip and they PASSED (refireBlockedBy=%s)',
+    (refireBlockedBy) => {
+      expect(
+        shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, {
+          classification: 'stale-candidate',
+          autoRefire: false,
+          refireBlockedBy,
+        }),
+      ).toBe(false);
+    },
+  );
+
+  // THE CARVE-OUT. A blanket "suppress on proven staleness" would swallow this case, and it is
+  // exactly the one where the operator text says "the tip is genuinely broken: a human is needed".
+  // If this ever flips to false, the guard has become the outage it was meant to prevent.
+  it('DOES dispatch when refireBlockedBy is charged-budget (same breakage survived every rescue)', () => {
+    expect(
+      shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, {
+        classification: 'stale-candidate',
+        autoRefire: false,
+        refireBlockedBy: 'charged-budget',
+      }),
+    ).toBe(true);
+  });
+
+  it('DOES dispatch for a real-red re-triage (failures reproduce at tip)', () => {
+    expect(
+      shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, {
+        classification: 'real-red',
+        autoRefire: false,
+        refireBlockedBy: null,
+      }),
+    ).toBe(true);
+  });
+
+  // Fail-open: absent evidence must never suppress. An old CLI payload carries no re-triage, and
+  // an unproven red still deserves its fixer — the failure this guard must not introduce.
+  it.each([
+    ['undefined retriage (old CLI payload)', undefined],
+    ['null retriage', null],
+    ['unknown classification (could not localize)', { classification: 'unknown' as const }],
+    ['stale-candidate with no refire fields at all', { classification: 'unknown' as const, autoRefire: false }],
+  ])('DOES dispatch with %s', (_label, retriage) => {
+    expect(shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, retriage)).toBe(true);
+  });
+
+  // The suppression must not resurrect a dispatch the OTHER guards already refused.
+  it('still refuses an empty failing set even when the re-triage says real-red', () => {
+    expect(
+      shouldDispatchReleaseFixer('not-green', 'ee4e3c80', [], { classification: 'real-red' }),
+    ).toBe(false);
+  });
+
+  // ONE definition of "proven stale" governs both the streak decision and the spend decision.
+  // Pinned so the two cannot drift into disagreeing about the same evidence.
+  it('agrees with isProvenStaleCandidate, the same predicate the streak classifier uses', () => {
+    for (const refireBlockedBy of ['deadline', 'absolute-ceiling', 'cap-disabled', 'charged-budget'] as const) {
+      const retriage = { classification: 'stale-candidate' as const, autoRefire: false, refireBlockedBy };
+      expect(shouldDispatchReleaseFixer('not-green', 'ee4e3c80', RED, retriage)).toBe(
+        !isProvenStaleCandidate(retriage),
+      );
     }
   });
 });
