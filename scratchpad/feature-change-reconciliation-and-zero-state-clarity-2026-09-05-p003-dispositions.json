@@ -5,23 +5,27 @@
     "watermark": "2026-09-05T17:09:11.920530Z",
     "orderedIdSha256": "62b68aa60cc8e1a93b758b793709878779e0df896b542be518cab1f0977af1de",
     "rows": 2261,
-    "initiallyReviewed": 36,
-    "unreviewed": 2225,
+    "initiallyReviewed": 48,
+    "unreviewed": 2213,
     "candidates": 661,
-    "candidatesUnreviewed": 625,
+    "candidatesUnreviewed": 613,
     "noSignalUnreviewed": 1600,
     "initialOutcomeCounts": {
       "candidate-exact-duplicate": 4,
-      "candidate-already-implemented": 3,
+      "candidate-already-implemented": 7,
       "preserve-distinct-subcase": 6,
       "preserve-proposed-root-canonical": 1,
       "preserve-ambiguous-evidence": 1,
       "candidate-shared-root-consolidation": 4,
       "preserve-proposed-canonical": 4,
       "preserve-terminal-in-lineage-snapshot": 5,
-      "preserve-hold-or-dependency": 4,
-      "preserve-independent-residual-followup": 1,
-      "candidate-superseded-by-completed-plan-run": 3
+      "preserve-hold-or-dependency": 5,
+      "preserve-independent-residual-followup": 4,
+      "candidate-superseded-by-completed-plan-run": 3,
+      "preserve-remote-origin-followup": 1,
+      "preserve-distinct-same-plan-item": 1,
+      "candidate-completed-by-plan-item": 1,
+      "candidate-covered-by-terminal-plan-acceptance": 1
     },
     "manualCleanupMutations": 0
   },
@@ -14180,8 +14184,18 @@
       "id": "WI-1813289",
       "candidate": true,
       "sourceSha256": "dda7eb618d908ac738dffc0f81dab51efb2b4e81e79109877bc82a72c1a169e6",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-independent-residual-followup",
+      "reason": "P-008 was dropped for live transcript data availability, not because its nine WebKitGTK assertions passed. The full row corrects the scope to all nine, records zero executed assertions, and names the precise session-data precondition; the shipped parent plan does not discharge this residual live proof.",
+      "evidence": {
+        "reviewed": "Full frozen record, plan item status/text, D-007 lineage carried in the row, and the explicit 0-of-9 verifier accounting.",
+        "parentPlanItem": "chat-popup-turn-rail-2026-08-31#P-008 (dropped)",
+        "distinctScope": "Seed or find a popup transcript containing a user turn, then run all nine scripts/verify-turn-rail.sh assertions in the real WebKitGTK webview."
+      },
+      "requiredBeforeMutation": [
+        "Preserve until current completion evidence proves all nine live assertions, not merely component/unit coverage or an assistant-only empty state.",
+        "Do not translate the parent item's dropped status into completion."
+      ]
     },
     {
       "id": "WI-1818047",
@@ -14495,8 +14509,18 @@
       "id": "WI-2141017",
       "candidate": true,
       "sourceSha256": "4c27a3b0dc21ecb6a6ee4d234e80b3457eec7db4eb06b93969f2eed108b58028",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-independent-residual-followup",
+      "reason": "The completed P-005 sibling WI-37933 proves the context-limit leg, while this later independent-grader blocker requires downstream served-account and model evidence. Its full body explicitly rejects write/read-back and routed-decision evidence, and the parent plan is still awaiting acceptance.",
+      "evidence": {
+        "reviewed": "Full frozen record, plan item text/status, sibling identity, and the row's exact independent-consumer acceptance contract.",
+        "parentPlanItem": "hud-chat-owner-controls-2026-08-11#P-005 (done)",
+        "distinctFromSibling": "WI-37933 covers the context-limit leg; this row covers served account and model behavior, including an unpinned positive control."
+      },
+      "requiredBeforeMutation": [
+        "Preserve until completion evidence shows gateway lastAccount after a real model call plus the model leg or an explicit governing ship-or-cut decision.",
+        "Do not treat routed= or the control writer's own read-back as downstream proof, and do not edit the active acceptance rubric."
+      ]
     },
     {
       "id": "WI-2141073",
@@ -14621,8 +14645,18 @@
       "id": "WI-2143001",
       "candidate": true,
       "sourceSha256": "b79284927477ab4bb08e79ac493e85813f813ae54a83da574b85686b59e92e5d",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-remote-origin-followup",
+      "reason": "This remote-origin row is the unresolved cadence-backed coverage-attribution prerequisite, while P-013's text is the downstream rubric requirement and merely carries a completion note pointing back to this ID. The full row explicitly says P-013 deferred the mandate behind this work; that inconsistent plan link is not completion evidence and cannot authorize local mutation.",
+      "evidence": {
+        "reviewed": "Full frozen record and payload, remote-origin floor, lineage overlay, and current indexed P-013 text/status.",
+        "parentPlanItem": "design-to-code-coverage-seam-2026-09-02#P-013 (done, text links WI-2143001)",
+        "distinctScope": "Populate harness_shared.coverage_evidence on a cadence, prove non-zero live L1 coverage, and grade one real coverage criterion successfully."
+      },
+      "requiredBeforeMutation": [
+        "No local terminal mutation: reconcile through the remote authority after current full-body, completion, code, and reference checks.",
+        "Require recurring live coverage evidence; a one-shot backfill or the downstream P-013 rubric rule does not complete this row."
+      ]
     },
     {
       "id": "WI-2143257",
@@ -15193,8 +15227,17 @@
       "id": "WI-3496",
       "candidate": true,
       "sourceSha256": "eded263edf9950f595246754ca85b447a8d7eee5217139bd6b44af387165bb15",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-distinct-same-plan-item",
+      "reason": "WI-3496 is the broad two-machine Leg A storage/cold-join acceptance drill. Same-item sibling WI-39953 is a narrower held ref-pruning defect discovered during that drill, with different title, body, parent, acceptance and claim-hold semantics. Shared P-302 lineage expresses dependency, not duplication.",
+      "evidence": {
+        "reviewed": "Full frozen records and payloads for WI-3496 and WI-39953 plus P-302 lineage.",
+        "targetScope": "End-to-end two-machine bare-store namespace layout, VM cold join, shared ODB and single-writer namespace proof.",
+        "siblingScope": "Add prune semantics so receiver-only stale refs disappear when fetching an authoritative peer namespace."
+      },
+      "requiredBeforeMutation": [
+        "Preserve both rows and WI-39953's claim hold; resolve the specific bug as a dependency of the broader physical drill rather than merging their identities."
+      ]
     },
     {
       "id": "WI-3500",
@@ -15270,15 +15313,44 @@
       "id": "WI-36618",
       "candidate": true,
       "sourceSha256": "9385e422cc0cbf111b813080df7f8cfd893b5da3433faf76c538e20d6c95c42b",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-already-implemented",
+      "reason": "The exact P-010 implementation now exists: state-plane-stamp.ts derives door stamps from registry declarations, preserves present-null via an own-key walker, threads caller-relative parameters, and dev:pipeline_position wires the plane on its exits. Current tests cover both the pure stamping contract and door wiring.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload, current P-010 status, implementation and regression source.",
+        "code": [
+          "packages/operator-core/lib/state-plane-stamp.ts",
+          "packages/operator-core/lib/agent-tools/state-plane-door.ts",
+          "packages/operator-core/lib/agent-tools/dev/pipeline_position.ts:605",
+          "packages/operator-core/lib/state-plane-stamp.test.ts",
+          "packages/operator-core/lib/agent-tools/dev/pipeline_position.test.ts:572"
+        ],
+        "testsInspectedNotRun": true
+      },
+      "requiredBeforeMutation": [
+        "P-004 must re-read the current row and references and run focused current-tree tests before terminalizing it."
+      ]
     },
     {
       "id": "WI-36683",
       "candidate": true,
       "sourceSha256": "5adc80be362980400b1afe91a63653115e27a9dbca33b65b6240517a51eef40a",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-already-implemented",
+      "reason": "The ambient-push lossless registry reason was corrected and the requested real-constant bound/control tests exist. A later WI-36688 improvement made losslessness stronger by fitting before recordDelivered; current prose and tests explicitly preserve that ordering while retaining the bound as a throughput guard.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload, current P-007 status, registry entry, delivery implementation commentary and regression source.",
+        "code": [
+          "packages/operator-core/lib/truncation-honesty-guard.test.ts:121",
+          "packages/operator-core/lib/ambient-push-delivery.test.ts:87",
+          "packages/operator-core/lib/ambient-push-delivery.test.ts:136"
+        ],
+        "testsInspectedNotRun": true,
+        "laterStrengthening": "WI-36688 fits the whole teaser block before recording delivery; overflow remains queued."
+      },
+      "requiredBeforeMutation": [
+        "P-004 must re-read the current row and references and run the focused current-tree tests before terminalizing it."
+      ]
     },
     {
       "id": "WI-36794",
@@ -15347,22 +15419,59 @@
       "id": "WI-37944",
       "candidate": true,
       "sourceSha256": "f01f5773df71aef0f8f46fa690995279b4faecbd1c772e57ef244901a339f9a1",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-completed-by-plan-item",
+      "reason": "The indexed P-005 item is done and its text explicitly annotates WI-37944 as completed. The frozen row's only blocker is cleared. This is strong completion-lineage evidence, but the independent 88-page structural check and ten-constellation source audit must still be recovered and verified before closure.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload and current indexed plan-item text/status.",
+        "planItem": "constellations-88-reference-site-2026-08-11#P-005",
+        "completionAnnotation": "← WI-37944 completed (done)"
+      },
+      "requiredBeforeMutation": [
+        "P-004 must recover the committed check artifact and constellation-by-constellation accuracy evidence, then verify current references and row state.",
+        "Do not close solely from the plan annotation if the promised independent evidence cannot be found."
+      ]
     },
     {
       "id": "WI-38027",
       "candidate": true,
       "sourceSha256": "9033f97ccc827232f788d41920192c9a013d12a29f6bf218ea06d857917b4105",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-already-implemented",
+      "reason": "Current nudge-recipient code implements the P-007 ladder: a Blender goal-bound GRADE steward outranks any other GRADE-mode su, which outranks the unchanged recency fallback. The unresolved-versus-escalate behavior remains separate, and focused tests cover GRADE preference and fail-soft lookup.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload, current P-007 text/status, implementation and regression source.",
+        "code": [
+          "packages/operator-core/lib/scout/nudge-recipient.ts:191",
+          "packages/operator-core/lib/scout/nudge-recipient.ts:332",
+          "packages/operator-core/lib/scout/nudge-recipient.test.ts:136",
+          "packages/operator-core/lib/scout/nudge-recipient.test.ts:157",
+          "packages/operator-core/lib/scout/nudge-recipient.test.ts:210"
+        ],
+        "testsInspectedNotRun": true
+      },
+      "requiredBeforeMutation": [
+        "P-004 must re-read the current row/references and run the focused current-tree tests before terminalizing it."
+      ]
     },
     {
       "id": "WI-38220",
       "candidate": true,
       "sourceSha256": "95dd8773cdd8e17e69de51cf81728e8059e37bef59daf7b02df9c232baa5afde",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-already-implemented",
+      "reason": "Current left-sidebar.styles.ts contains none of the five dead tier prefixes named by the row (pc-overwatch, pc-throttle, pc-autonomy, pc-tiers, pc-heartbeat) while retaining the shared pc-queen__ rules. That matches the requested per-class-safe cleanup rather than the prohibited range deletion.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload, WI-38213 completion residue partition, current stylesheet selector scan, and surviving pc-queen__ rules.",
+        "code": [
+          "apps/operator-vite/src/components/left-sidebar/left-sidebar.styles.ts"
+        ],
+        "currentSelectorResult": "Zero matches for all five named dead prefixes; shared pc-queen__ selectors remain.",
+        "testsInspectedNotRun": true
+      },
+      "requiredBeforeMutation": [
+        "P-004 must run a whole-selector live-reference census and the required real-shell sidebar check before closure; prefix absence alone is not the visual acceptance proof."
+      ]
     },
     {
       "id": "WI-38238",
@@ -15375,8 +15484,23 @@
       "id": "WI-38244",
       "candidate": true,
       "sourceSha256": "8bd5c174a103a4b2a24c2c9df00becd7b8954309718fd8cf45e8c1403e62e1dd",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-independent-residual-followup",
+      "reason": "A later gate.greenCheckpoint.retriage cell now exposes the stand-down state, but the exact discovery gap in this row remains: gate.greenCheckpoint.verdict still points only to ownership and neither carries retriage nor points to the retriage cell. The completed P-005 main scope therefore does not discharge this split residual.",
+      "evidence": {
+        "reviewed": "Full frozen record/payload, current P-005 disposition, current verdict and retriage CellSpec declarations, and git-pipeline projection.",
+        "code": [
+          "packages/operator-core/lib/cell-registrations.ts:266",
+          "packages/operator-core/lib/cell-registrations.ts:377",
+          "packages/operator-core/lib/cell-registrations.ts:2537",
+          "packages/operator-core/lib/git-pipeline-position.ts:5739"
+        ],
+        "partialCoverage": "The dedicated retriage cell is live and richer than the original suggested shape; the verdict-to-retriage discovery edge is absent."
+      },
+      "requiredBeforeMutation": [
+        "Preserve until the verdict read itself carries or points to the stand-down/retriage state, with governed registry tests and a live exercise.",
+        "Extend the existing cell/pointer system; do not create another parallel gate read surface."
+      ]
     },
     {
       "id": "WI-38302",
@@ -15396,15 +15520,38 @@
       "id": "WI-38575",
       "candidate": true,
       "sourceSha256": "d44aa3a2cea5dba53e7a42fb93e64adb2dee9ac7f7eb25bb27da144c91246c94",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "candidate-covered-by-terminal-plan-acceptance",
+      "reason": "The broad code-only audit row maps to P-008, whose terminal plan note records the completed adversarial campaign, green deployed handler, local gate repairs, evidence fact, and WI-38744 completion. That is plausible supersession of this audit obligation, but it does not name WI-38575 directly.",
+      "proposedCanonical": "WI-38744",
+      "evidence": {
+        "reviewed": "Full frozen record/payload and complete current P-008 text/status.",
+        "planItem": "drain-control-plane-resilience-2026-08-13#P-008",
+        "acceptanceRefs": [
+          "p008-live-accepted-2026-08-14",
+          "WI-38744"
+        ]
+      },
+      "requiredBeforeMutation": [
+        "P-004 must read the cited evidence fact, WI-38744 full completion and both reference directions, and verify they cover every P-001–P-010 audit obligation before closure."
+      ]
     },
     {
       "id": "WI-38602",
       "candidate": true,
       "sourceSha256": "a4fc81f55697fa2e7a5cf908c4096867e6d37ad3c5231584346d0e6f4524d0c4",
-      "reviewStatus": "unreviewed",
-      "outcome": "pending-evidence-review"
+      "reviewStatus": "reviewed-initial-disposition",
+      "outcome": "preserve-hold-or-dependency",
+      "reason": "The blocked canonical-dev parity run carries an explicit claim hold and active plan-lane blocker. Same-item sibling WI-39369 completed only the missing DAG edge and its terminal evidence explicitly avoided auto-closing WI-38602 because the functional matrix remained open. The terminal sibling is dependency repair, not task completion.",
+      "evidence": {
+        "reviewed": "Full frozen target and sibling records/payloads, WI-39369 terminal reference, and current P-006 status/text.",
+        "planItem": "release-build-vm-dev-parity-audit-2026-08-13#P-006 (blocked)",
+        "siblingScope": "WI-39369 materialized blockedBy=[P-002,P-001] and deliberately preserved WI-38602."
+      },
+      "requiredBeforeMutation": [
+        "Do not clear the hold, active plan-lane blocker, or row until the canonical dev launch and full P-002 parity matrix have independent completion evidence.",
+        "Do not treat WI-39369's dependency-graph repair as execution of the parity matrix."
+      ]
     },
     {
       "id": "WI-38604",

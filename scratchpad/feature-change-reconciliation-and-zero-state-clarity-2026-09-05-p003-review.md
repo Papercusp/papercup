@@ -1,7 +1,7 @@
 # P-003 — candidate union and initial dispositions
 
 This is an **incomplete audit**, recorded on 2026-09-05 for WI-2146347.
-The candidate union is complete and validated; 36 rows have initial reviewed
+The candidate union is complete and validated; 48 rows have initial reviewed
 dispositions. No manual cleanup has been applied. P-003 remains open.
 
 The frozen population is the P-002 export at `2026-09-05T17:09:11.920530Z`.
@@ -17,9 +17,9 @@ restarted, and the bulk run was not read in this continuation.
 | Additional IDs from root/title/lineage overlays | 482 |
 | Combined candidate union | 661 |
 | No generated signal; still unreviewed | 1,600 |
-| Initially reviewed candidates | 36 |
-| Candidates still unreviewed | 625 |
-| All rows still unreviewed | 2,225 |
+| Initially reviewed candidates | 48 |
+| Candidates still unreviewed | 613 |
+| All rows still unreviewed | 2,213 |
 
 The union includes 288 overlapping evidence groups and 32 lineage-signal rows.
 Group membership is a review cue; groups cannot be added together to count rows.
@@ -71,6 +71,34 @@ Other initial dispositions:
   terminal sibling for each belongs to a different test trigger and is not a
   canonical match. P-004 must still resolve the active run-lane blockers and
   preserve each per-run condition/reference history before any mutation.
+- WI-1813289 and WI-2141017 remain independent residual obligations. The
+  former has 0/9 real-WebKitGTK assertions complete after its parent item was
+  dropped for missing transcript data; the latter is a post-grade account and
+  model behavior blocker distinct from WI-37933's completed context-limit leg.
+- Remote-origin WI-2143001 is preserved. Its P-013 link says completed while
+  the full row says P-013 deferred the recurring coverage-attribution work;
+  that inconsistency is a P-004 remote-authority reconciliation requirement,
+  not local cleanup authority.
+- WI-3496 and WI-39953 share P-302 but are distinct: the former is the broad
+  two-machine storage/cold-join drill, while the latter is the held stale-ref
+  pruning defect found within that drill.
+- WI-36618 and WI-36683 are implementation candidates. Current source contains
+  the state-plane stamp/wiring and the corrected ambient-push lossless
+  explanation plus regression guards, respectively. Their focused tests were
+  inspected, not run in this P-003 audit; P-004 must run them before closure.
+- WI-37944 has an exact plan-item completion annotation; its promised committed
+  checker and ten-constellation accuracy report still need recovery in P-004.
+- WI-38027 and WI-38220 are implementation candidates. The GRADE-mode steward
+  ladder is present with focused tests; the five dead tier CSS prefixes are
+  absent while shared `pc-queen__*` rules remain. The latter still needs the
+  full selector census and real-shell visual acceptance before closure.
+- WI-38244 remains open in substance. A dedicated retriage cell now exists, but
+  `gate.greenCheckpoint.verdict` neither carries nor points to it; its only
+  current pointer is ownership, so the row's exact discovery gap survives.
+- WI-38575 is a terminal-plan-acceptance candidate through P-008's cited fact
+  and WI-38744, subject to complete evidence-coverage verification in P-004.
+- WI-38602 is preserved with its claim hold and active blocker. WI-39369 fixed
+  only the P-006 DAG edge and explicitly avoided auto-closing the parity run.
 - Three events:catalog complaints are candidates for already-implemented
   closure: current code accepts `q`, `pattern` and `limit`, and bounded live
   read calls accepted both query spellings. Existing regression assertions
