@@ -51,9 +51,10 @@ describe('ChatFacesHost keeps the rail stylesheet out of the first-paint graph',
   });
 
   it('calibration: the matcher detects the static import it is asserting the absence of', () => {
-    // Positive control — LeftSidebar itself DOES import the stylesheet statically
-    // (that edge is fine: LeftSidebar is already `lazy()` in __root). Without
-    // this, a broken matcher would make the assertion above pass vacuously.
+    // Positive control — LeftSidebar itself DOES import the stylesheet
+    // statically. That edge is intentional: the rail shell is eager first-paint
+    // chrome, while its heavy tab bodies remain lazy. Without this, a broken
+    // matcher would make the assertion above pass vacuously.
     expect(staticallyImports(readFileSync(LEFT_SIDEBAR, 'utf8'), 'left-sidebar\\.styles')).toBe(true);
     // And it must not mistake a dynamic import for a static one.
     expect(staticallyImports(`const X = lazy(() => import('./left-sidebar.styles'));`, 'left-sidebar\\.styles')).toBe(
