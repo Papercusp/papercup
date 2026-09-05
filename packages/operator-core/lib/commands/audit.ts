@@ -69,10 +69,34 @@ export function auditQuery(row: QueryRow): void {
 }
 
 const burstWindow = new Map<string, number[]>();
+const BURST_WINDOW_MS = 1000;
+/**
+ * Prune only once the map grows past this, so the sweep is amortized to
+ * roughly O(1) per call rather than a scan on every sampled query.
+ */
+export const BURST_PRUNE_AT = 1024;
+
+/**
+ * Drop keys whose most recent hit has fallen outside the burst window.
+ *
+ * WI-2145588: `burstAllow` used to `set()` every key and never `delete()` any,
+ * so the map retained one entry per distinct `${agent}:${id}` pair for the
+ * whole process lifetime. The inner `shift()` below drains stale timestamps
+ * out of the ARRAY, which kept each value small and made the real leak — the
+ * unbounded KEY set — easy to miss. Agent ids churn continuously (sessions die
+ * and respawn with fresh ids), so cardinality only ever grew.
+ */
+function pruneBurstWindow(now: number): void {
+  for (const [key, hits] of burstWindow) {
+    if (!hits.length || now - hits[hits.length - 1] > BURST_WINDOW_MS) burstWindow.delete(key);
+  }
+}
+
 function burstAllow(key: string): boolean {
   const now = Date.now();
+  if (burstWindow.size >= BURST_PRUNE_AT) pruneBurstWindow(now);
   const window = burstWindow.get(key) ?? [];
-  while (window.length && now - window[0] > 1000) window.shift();
+  while (window.length && now - window[0] > BURST_WINDOW_MS) window.shift();
   if (window.length >= 2) return false;
   window.push(now);
   burstWindow.set(key, window);
@@ -97,6 +121,11 @@ async function flush(): Promise<void> {
   } catch (e: unknown) {
     console.warn('[agent-audit] flush failed:', e);
   }
+}
+
+/** Test-only: how many keys the burst-rate window currently retains (WI-2145588). */
+export function __burstWindowSizeForTests(): number {
+  return burstWindow.size;
 }
 
 /** Test-only: drain the buffers synchronously. */
