@@ -296,15 +296,41 @@ export default defineTool({
         .describe('Only valid for SQL calls; omit it when passing `describe`.'),
     }),
   ]),
+  /**
+   * P-011: the registered shape for ALL THREE envelopes, not just the SQL one.
+   * `guidance.returns` may INTERPRET a result, but its structural claims have to
+   * be backed here — guidance-output-schema-live-guard enforces exactly that, so
+   * the published union is derived from this declaration rather than hand-kept in
+   * prose (CLAUDE.md, derived-truth ladder). The describe fields were never
+   * declared before, which is why the contract could only describe them as
+   * "relation metadata". Fields stay optional because they are per-mode; `mode` is
+   * the discriminator that says which set to expect.
+   */
   result: z
     .object({
+      mode: z.unknown().optional(),
+      // mode:"query"
       rowCount: z.unknown().optional(),
       truncated: z.unknown().optional(),
       fields: z.unknown().optional(),
       elapsedMs: z.unknown().optional(),
       rows: z.unknown().optional(),
+      advisory: z.unknown().optional(),
       positiveControl: z.unknown().optional(),
       absence: z.unknown().optional(),
+      // mode:"describe"
+      relation: z.unknown().optional(),
+      kind: z.unknown().optional(),
+      columns: z.unknown().optional(),
+      indexes: z.unknown().optional(),
+      constraints: z.unknown().optional(),
+      // mode:"describe-list"
+      pattern: z.unknown().optional(),
+      relationCount: z.unknown().optional(),
+      relations: z.unknown().optional(),
+      // error envelope (carries no mode)
+      error: z.unknown().optional(),
+      reason: z.unknown().optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
