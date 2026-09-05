@@ -54,12 +54,28 @@ export function hitHref(hit: Pick<FulltextHit, 'source' | 'harness_slug'>): stri
 }
 
 /**
- * ts_headline marks matches with `<b>…</b>`. Render ONLY that marker as
- * <mark>; everything else is emitted as text nodes (XSS-safe — no
- * dangerouslySetInnerHTML).
+ * Render ONLY the engine's own match marker as a <mark> ELEMENT; everything
+ * else is emitted as text nodes. This is XSS-safe by construction — it never
+ * touches `dangerouslySetInnerHTML` — which is why this surface deliberately
+ * does NOT use `@/lib/search-highlight` (that helper escapes a string for
+ * innerHTML; this builds React nodes, a strictly stronger position).
+ *
+ * ⚠ THE MARKER IS `<mark>`, NOT ts_headline's `<b>` DEFAULT. `HEADLINE_OPTS` in
+ * `packages/operator-core/lib/agent-tools/search/sources.ts` sets
+ * `StartSel=<mark>`, and `search:fulltext` — the tool behind the
+ * `/api/agent-tools/search/fulltext` endpoint this dialog POSTs — passes that
+ * headline through untouched. This split read `<b>` until 2026-09-04, which
+ * matched nothing: the dialog showed every headline as plain text with literal
+ * `<mark>` tags visible, and highlighting was silently dead. Both the code AND
+ * its test had copied the ASSUMED default, so they agreed with each other and
+ * neither measured the engine — which is why the fix is not just this literal
+ * but the divergence check beside it: `GlobalSearchDialog.component.test.tsx`
+ * asserts this marker against the real `HEADLINE_OPTS`, so changing the engine's
+ * `StartSel` without changing this split now fails a test instead of quietly
+ * turning highlighting off again.
  */
 export function renderHighlight(s: string): ReactNode[] {
-  const parts = s.split(/<b>(.*?)<\/b>/g);
+  const parts = s.split(/<mark>(.*?)<\/mark>/g);
   return parts
     .map((part, i) =>
       part ? (

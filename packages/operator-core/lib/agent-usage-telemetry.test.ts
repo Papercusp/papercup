@@ -226,6 +226,34 @@ describe('recordUsageHeaders (rate-limit header parsing)', () => {
     expect(row.tool_name).toBe('memory:remember');
     expect(row.model).toBe('claude-haiku-4-5');
   });
+
+  // WI-2144763. Every `source:'headers'` row carried harness_slug NULL — 18,228 rows /
+  // ~$755, a flat 0.00% — rendering as '(unattributed)'. The column, this INSERT and the
+  // orchestrator sink ALL already carried it; the only missing link was that
+  // `StatelessUsageAttribution` had no harnessSlug field for a caller to populate. These
+  // two cases pin the seam from BOTH sides, because a fix that only ever writes a slug is
+  // as wrong as one that never does: a caller that genuinely does not know the harness
+  // (workspace-global work) must still record an honest NULL rather than a guess.
+  it('WI-2144763: persists harnessSlug on a header sample when the caller knows it', async () => {
+    await recordUsageHeaders(
+      'b',
+      'anthropic',
+      'haiku',
+      {},
+      { inputTokens: 12, role: 'scout', harnessSlug: 'papercusp-public-site-pot' },
+    );
+    const row = lastInsert();
+    expect(row.source).toBe('headers');
+    expect(row.role).toBe('scout');
+    expect(row.harness_slug).toBe('papercusp-public-site-pot');
+  });
+
+  it('WI-2144763: writes harness_slug NULL (never undefined) when the caller does not know the harness', async () => {
+    await recordUsageHeaders('b', 'anthropic', 'haiku', {}, { inputTokens: 12, role: 'llm-testing' });
+    const row = lastInsert();
+    expect(row.source).toBe('headers');
+    expect(row.harness_slug).toBeNull();
+  });
 });
 
 describe('recordUsageSample (best-effort persistence + cost honesty)', () => {

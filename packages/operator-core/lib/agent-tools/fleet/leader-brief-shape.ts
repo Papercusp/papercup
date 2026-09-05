@@ -493,6 +493,14 @@ function compactMember(value: unknown): unknown {
   if (source.unanswered && typeof source.unanswered === 'object') {
     out.unanswered = pick(source.unanswered, ['count', 'oldestAgeMs'], 100) ?? source.unanswered;
   }
+  // P-009: the recovery block must be shaped explicitly or it is silently dropped here —
+  // the flat allowlist above carries scalars only, so a nested object added upstream reaches
+  // this shaper and disappears without any error. `reason` gets a longer budget than the
+  // 120-char default because it is the containment cause a leader triages on; truncating it
+  // to a prefix is the difference between an actionable row and a suggestive one.
+  if (source.recovery && typeof source.recovery === 'object') {
+    out.recovery = pick(source.recovery, ['disposition', 'reason', 'taskId', 'strandedAt'], 240) ?? source.recovery;
+  }
   if (Array.isArray(source.parkedOn) && source.parkedOn.length > 0) {
     out.parkedOn = source.parkedOn.slice(0, 3).map((entry) => clip(entry, 140) ?? entry);
   }

@@ -35,8 +35,10 @@ import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposit
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
+  composeGateRedOwnership,
   describeGateRedOwnership,
   gateFailureSignature,
+  projectGateRepairOwner,
   type GateRedOwnership,
 } from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
@@ -1777,8 +1779,22 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         budgetG: memoryAdmission.budgetG,
         scopes: memoryAdmission.scopes,
         unbounded: memoryAdmission.unbounded,
+        retryAfterMinutes: TRANSIENT_ABORT_REQUEUE_MINS,
       },
     });
+    // A capacity refusal is safe but not terminal: the competing scopes are expected to
+    // drain before the next hourly cron. Reuse the same forward-only/pause-aware requeue
+    // contract as transient aborts so a frozen candidate gets another ordinary attempt within
+    // minutes, while the admission guard still protects the host. If the metadata write fails,
+    // the cron remains the fail-safe fallback and the refusal is already recorded above.
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      await requeueGreenCheckpointAfterCapacity(getOrgPg().sql, ctx.installSlug);
+    } catch (e) {
+      console.warn(
+        `${orchestratorStdoutTag()} memory-budget prompt requeue failed: ${e instanceof Error ? e.message : e}`,
+      );
+    }
     return;
   }
   // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
@@ -2905,6 +2921,39 @@ export function gateStallNoopLogMessage(status: string, detail?: string | null):
 export const TRANSIENT_ABORT_REQUEUE_MINS = 10;
 
 /**
+ * Pull a scheduled green-checkpoint fire forward after a capacity-shaped skip.
+ *
+ * The routine claim has already advanced `next_fire_at` to the next cron occurrence by the
+ * time the system action runs.  Capacity can clear well before that hour, so leaving the row
+ * there turns a safe admission refusal into a silent release stall.  Keep this write shared by
+ * transient aborts and memory-budget refusals: the three guards are load-bearing in both paths.
+ *
+ * - `active = true` keeps a deleted/deactivated routine from being resurrected.
+ * - `metadata->'pause' IS NULL` leaves an intentional operator pause to its TTL/resume owner.
+ * - the forward-only comparison never delays a fire that another writer already scheduled
+ *   sooner (including an explicit near-term retune).
+ *
+ * Failures are handled by each caller as best-effort; the ordinary cron remains the safe
+ * fallback if this prompt requeue cannot be written.
+ */
+export async function requeueGreenCheckpointAfterCapacity(
+  sql: postgres.Sql,
+  installSlug: string,
+  delayMins: number = TRANSIENT_ABORT_REQUEUE_MINS,
+): Promise<void> {
+  await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET next_fire_at = now() + make_interval(mins => $2),
+            updated_at = now()
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+        AND active = true
+        AND metadata->'pause' IS NULL
+        AND (next_fire_at IS NULL OR next_fire_at > now() + make_interval(mins => $2))`,
+    [installSlug, delayMins],
+  );
+}
+
+/**
  * P-004: track green-checkpoint gate health in the routine metadata (`gate_health`)
  * and fire ONE urgent stall alert when the red streak / age crosses the threshold
  * (transition-only via `stallAlerted`). The data also surfaces on the Git tab via
@@ -3270,16 +3319,7 @@ export async function trackGateStall(
       // discovering the same crash an hour later.
       if (classifyGateAbort(status) === 'transient') {
         try {
-          await sql.unsafe(
-            `UPDATE harness_shared.routines
-                SET next_fire_at = now() + make_interval(mins => $2),
-                    updated_at = now()
-              WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
-                AND active = true
-                AND metadata->'pause' IS NULL
-                AND (next_fire_at IS NULL OR next_fire_at > now() + make_interval(mins => $2))`,
-            [ctx.installSlug, TRANSIENT_ABORT_REQUEUE_MINS],
-          );
+          await requeueGreenCheckpointAfterCapacity(sql, ctx.installSlug);
         } catch (e) {
           // Same fail-safe contract: a missed requeue degrades to the hourly cron, never worse.
           console.warn(
@@ -3799,20 +3839,39 @@ export async function trackGateStall(
         ? null
         : await readStreakCauseDigest(sql, ctx.installSlug, ctx.workspaceId, firstRedAt ?? lastGreenAt);
       const currentSignature = gateFailureSignature(failingTests, candidate);
+      // P-008: the alert and `release:trace` must not render contradictory truth about ONE
+      // red. This rung used to read the automated fixer ALONE, so it could tell a whole
+      // fleet "UNOWNED — claim it before investigating" at the exact moment a live agent
+      // held the gate's condition singleton and was repairing it — the false invitation
+      // that produced 37 agents / 97 stints on one gate item on 2026-08-26. Composing the
+      // singleton in here uses the SAME pure composer `release:trace` calls, so the two
+      // surfaces cannot disagree. One indexed SELECT, fail-soft, and only on an alerting
+      // tick — the same cost profile as the causeDigest read immediately above.
+      // Dynamically imported, matching this file's existing `coord/gate-ownership` call
+      // sites (lines above) rather than adding a static edge to a module this one is
+      // otherwise only reached FROM.
+      const gateSingleton = fixerOnlyAlert
+        ? null
+        : await import('../../coord/gate-ownership')
+            .then((m) => m.readGateOwnership({ harness: ctx.installSlug }))
+            .catch(() => null);
       const ownership = fixerOnlyAlert
         ? null
-        : describeGateRedOwnership({
-            ownerSignature: lastFixer?.signature ?? null,
-            currentSignature,
-            dispatchedAtMs: lastFixer?.at ?? null,
-            spawnId: lastFixer?.spawnId ?? null,
-            // Only meaningful for the fixer holding THIS signature; a mismatch short-circuits
-            // to 'stale-signature' anyway, so skip the liveness query in that case.
-            fixerAlive:
-              lastFixer?.signature && lastFixer.signature === currentSignature
-                ? await releaseFixerSpawnAlive(sql, lastFixer.spawnId).catch(() => null)
-                : null,
-            nowMs: Date.now(),
+        : composeGateRedOwnership({
+            fixer: describeGateRedOwnership({
+              ownerSignature: lastFixer?.signature ?? null,
+              currentSignature,
+              dispatchedAtMs: lastFixer?.at ?? null,
+              spawnId: lastFixer?.spawnId ?? null,
+              // Only meaningful for the fixer holding THIS signature; a mismatch short-circuits
+              // to 'stale-signature' anyway, so skip the liveness query in that case.
+              fixerAlive:
+                lastFixer?.signature && lastFixer.signature === currentSignature
+                  ? await releaseFixerSpawnAlive(sql, lastFixer.spawnId).catch(() => null)
+                  : null,
+              nowMs: Date.now(),
+            }),
+            repairOwner: projectGateRepairOwner(gateSingleton, Date.now()),
           });
       try {
         // WI-42116: `notifyAttentionOnce`, not `notifyAttention` — the replay-safe variant is

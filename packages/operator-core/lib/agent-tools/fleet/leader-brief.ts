@@ -76,6 +76,7 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
 import { buildFleetPopulationLifecycle, selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { fleetEverMembers } from '../../fleet-membership-store';
+import { listLatestStrandedByCoordOwners } from '../../task-manager/store';
 import { COORD_ROLES } from '../coordination/roles';
 import { listFleetRosterDiagnosed, liveFleetMemberIds, type ListFleetRosterResult } from '../../fleet/fleet-roster';
 import {
@@ -656,6 +657,26 @@ export interface LeaderBriefMember {
    *  process-local (see in-flight-calls.ts), so read absent as "nothing observed",
    *  never as "this member is idle". */
   longCallInFlight?: { tool: string; ageSec: number };
+  /** P-009: this member was CONTAINED by a recovery attempt — `fleet:respawn-member` could
+   *  not verify the kill or the cooperative drain, so it froze the member's tasks and
+   *  recorded WHY on the task ledger.
+   *
+   *  Surfaced here because a stranded member is the one case where every other signal on
+   *  this row reads as benign: the processes are frozen, so it makes no tool calls and
+   *  emits no heartbeat — indistinguishable from a member that finished cleanly and went
+   *  quiet. Before this, the reason existed only on the transition edge and the ledger row,
+   *  neither of which a leader reads while triaging a roster.
+   *
+   *  Exception-only: absent for every member that was never stranded. Absence is NOT a
+   *  verdict that recovery succeeded — the read is bounded and may simply not have run. */
+  recovery?: {
+    disposition: 'stranded';
+    /** The cause recorded at containment (the same string carried on the transition edge). */
+    reason: string | null;
+    /** The frozen task, so a leader can go straight to processes:list / logs:read. */
+    taskId: string;
+    strandedAt: string | null;
+  };
   isSelf?: true;
 }
 
@@ -3035,6 +3056,10 @@ export function projectMember(
    *  operator's in-flight registry. Absent = nothing observed (which is NOT proof of
    *  idleness — the registry is process-local; see in-flight-calls.ts). */
   longCallInFlight?: { tool: string; ageSec: number } | null,
+  /** P-009: this member's latest STRANDED containment from the task ledger. Absent = not
+   *  read on this call (or never stranded) — which, like every other optional leg here,
+   *  suppresses nothing and must not be read as "recovery succeeded". */
+  recovery?: LeaderBriefMember['recovery'] | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
@@ -3122,6 +3147,7 @@ export function projectMember(
     ...(computeSpinningAlert({ ...a, lastToolCallAgeMs, productiveToolCallAgeMs }, fleetPaused)
       ? { spinning: true }
       : {}),
+    ...(recovery ? { recovery } : {}),
   };
 }
 
@@ -3927,6 +3953,28 @@ export async function buildLeaderBrief(
     }
     return byOwner;
   })();
+  // P-009: the latest stranded containment per member, in ONE query for the whole roster.
+  // Bounded like every other optional leg: a slow or failing ledger read degrades the
+  // recovery annotation, never the brief that carries it. An empty map is therefore
+  // "nothing surfaced", NOT "no member is stranded" — which is why the field's own doc
+  // says absence is not a verdict.
+  const recoveryByOwner = await boundedLeaderBriefRead(
+    'member-recovery',
+    async () => {
+      const rows = await listLatestStrandedByCoordOwners(
+        grouped.map((a) => a.agentId),
+        { workspaceId },
+      );
+      return new Map(
+        rows.map((r) => [
+          r.coordOwnerId,
+          { disposition: 'stranded' as const, reason: r.reason, taskId: r.taskId, strandedAt: r.endedAt },
+        ]),
+      );
+    },
+    new Map<string, NonNullable<LeaderBriefMember['recovery']>>(),
+    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+  );
   const members = grouped.map((a) =>
     projectMember(
       a,
@@ -3937,6 +3985,7 @@ export async function buildLeaderBrief(
       concurrencyByOwner.get(a.agentId) ?? null,
       poolCapacity,
       longCallByOwner.get(a.agentId) ?? null,
+      recoveryByOwner.get(a.agentId) ?? null,
     ),
   );
   // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has

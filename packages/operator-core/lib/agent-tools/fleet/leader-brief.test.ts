@@ -1404,6 +1404,36 @@ describe('intent attention actionability (WI-41174 / P-012)', () => {
   });
 });
 
+describe('projectMember recovery annotation (P-009)', () => {
+  // A stranded member is the case where every OTHER signal on the row reads as benign: its
+  // processes are frozen, so it makes no tool calls and emits no heartbeat, which is
+  // observationally identical to a member that finished cleanly and went quiet. These
+  // assertions are what keep the containment reason attached to the row a leader triages.
+  const recovery = {
+    disposition: 'stranded' as const,
+    reason: 'kill_failed: scope release unverified',
+    taskId: 'task-abc',
+    strandedAt: '2026-09-05T01:00:00.000Z',
+  };
+
+  it('carries the containment disposition and reason onto the member row', () => {
+    const m = projectMember(baseAgent({}), NOW, null, null, null, null, null, null, recovery);
+    expect(m.recovery).toEqual(recovery);
+  });
+
+  it('omits the block entirely when the member was never stranded', () => {
+    // Absent must mean "nothing surfaced", never a fabricated all-clear.
+    const m = projectMember(baseAgent({}), NOW, null, null, null, null, null, null, null);
+    expect(m.recovery).toBeUndefined();
+    expect('recovery' in m).toBe(false);
+  });
+
+  it('does not synthesize a recovery block when the leg was simply not read', () => {
+    const m = projectMember(baseAgent({}), NOW);
+    expect(m.recovery).toBeUndefined();
+  });
+});
+
 describe('projectMember (pure)', () => {
   it('projects canonical intent signals with their resolving attention block', () => {
     const m = projectMember(

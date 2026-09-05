@@ -107,28 +107,69 @@ export function attributeAdvisories(lsTree, advisoryNames) {
   return reach;
 }
 
-/** Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population. */
-export function analyze(auditJson, lsJson, baseline) {
+/** Severity ordering, for fail-closed reconciliation between the two audit lenses. */
+const SEVERITY_RANK = { unknown: 0, info: 1, low: 2, moderate: 3, high: 4, critical: 5 };
+const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 0) ? b : a);
+
+/**
+ * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
+ *
+ * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
+ * actually installed (dev deps included). It exists because the two lenses disagree, and
+ * the prod-only one is OPTIMISTIC about fixes:
+ *
+ *   style-dictionary, measured 2026-09-05 — installed 4.4.0, root declares "^4.4.0":
+ *     npm audit --omit=dev  ->  fixAvailable: true          ("patch-compatible")
+ *     npm audit             ->  fixAvailable: 5.5.2, isSemVerMajor: true
+ *
+ *   4.4.0 -> 5.5.2 is unambiguously major and "^4.4.0" cannot reach it, so the prod-only
+ *   lens is simply WRONG here. It answers "what would fix this if the tree had no dev
+ *   deps" — a tree we never install. (Note --omit=dev is not even a subset: it reported
+ *   99 advisories against the full tree's 91.)
+ *
+ * So reachability/shipping is judged on the prod graph (the correct lens for what ships),
+ * while FIX FEASIBILITY is judged against the tree we really install, and any disagreement
+ * resolves to the PESSIMISTIC reading — the same fail-closed doctrine as unattributed
+ * advisories above. A guard that under-reports a major upgrade as "patch-compatible" sends
+ * you to attempt a fix that cannot work.
+ */
+export function analyze(auditJson, lsJson, baseline, fullAuditJson) {
   const vulns = auditJson?.vulnerabilities || {};
   const names = Object.keys(vulns);
   const reach = attributeAdvisories(lsJson || {}, names);
+  const fullVulns = fullAuditJson?.vulnerabilities || null;
 
   const findings = [];
   for (const name of names) {
     const v = vulns[name] || {};
-    const severity = String(v.severity || 'unknown');
     const owners = [...(reach.get(name) || [])].sort();
     const attributed = owners.length > 0;
     // Fail closed: an unattributed advisory counts as shipping.
     const shippingOwners = owners.filter((w) => !isNonShipping(w));
     const shipping = !attributed || shippingOwners.length > 0;
+
+    // Reconcile the two lenses pessimistically. `full` is absent when the second audit
+    // was not supplied, or when that lens does not see this package at all.
+    const full = fullVulns ? fullVulns[name] : undefined;
+    const severity = full
+      ? worseSeverity(String(v.severity || 'unknown'), String(full.severity || 'unknown'))
+      : String(v.severity || 'unknown');
+
     const fa = v.fixAvailable;
+    const faFull = full ? full.fixAvailable : undefined;
+    // A fix is only "patch-compatible" if EVERY lens that can see it agrees.
+    const majorOf = (x) => x && typeof x === 'object' && x.isSemVerMajor === true;
+    const authoritative = majorOf(faFull) ? faFull : majorOf(fa) ? fa : (faFull ?? fa);
     const fix =
-      fa === true
+      authoritative === true
         ? 'patch-compatible'
-        : fa && typeof fa === 'object'
-          ? `${fa.name}@${fa.version}${fa.isSemVerMajor ? ' [SEMVER-MAJOR]' : ''}`
+        : authoritative && typeof authoritative === 'object'
+          ? `${authoritative.name}@${authoritative.version}${authoritative.isSemVerMajor ? ' [SEMVER-MAJOR]' : ''}`
           : 'none';
+    const patchCompatible = authoritative === true;
+    // Visible when the prod-only lens claimed a compatible fix the real tree contradicts.
+    const fixDisagreement = fa === true && majorOf(faFull) ? `--omit=dev said patch-compatible; installed tree requires ${faFull.name}@${faFull.version} (MAJOR)` : null;
+
     findings.push({
       name,
       severity,
@@ -138,7 +179,8 @@ export function analyze(auditJson, lsJson, baseline) {
       shippingOwners,
       gating: shipping && GATING_SEVERITIES.has(severity),
       fix,
-      patchCompatible: fa === true,
+      patchCompatible,
+      ...(fixDisagreement ? { fixDisagreement } : {}),
     });
   }
 
@@ -238,6 +280,34 @@ function selfTest() {
   check('baseline suppresses an accepted offender', !r2.offenders.some((o) => o.name === 'evil-shipped'));
   check('reports a stale baseline entry', r2.stale.includes('already-fixed'));
 
+  // TWO-LENS controls — regression guard for the style-dictionary miss (2026-09-05).
+  // The prod-only lens called it patch-compatible; the installed tree required a MAJOR
+  // bump. Reporting the optimistic reading sends an agent to attempt an impossible fix.
+  const fullAudit = {
+    vulnerabilities: {
+      // Same package, the two lenses disagreeing exactly as npm really did.
+      'evil-shipped': {
+        severity: 'high',
+        fixAvailable: { name: 'evil-shipped', version: '5.5.2', isSemVerMajor: true },
+      },
+      // Severity understated by the prod-only lens.
+      'noisy-moderate': { severity: 'critical', fixAvailable: true },
+    },
+  };
+  const r3 = analyze(audit, ls, { accepted: [] }, fullAudit);
+  const by3 = Object.fromEntries(r3.findings.map((f) => [f.name, f]));
+
+  check('a major fix in the installed tree overrides a compatible prod-only fix', by3['evil-shipped'].patchCompatible === false);
+  check('reports the overriding fix version', by3['evil-shipped'].fix.includes('5.5.2') && by3['evil-shipped'].fix.includes('SEMVER-MAJOR'));
+  check('surfaces the lens disagreement', typeof by3['evil-shipped'].fixDisagreement === 'string');
+  check('takes the worse severity of the two lenses', by3['noisy-moderate'].severity === 'critical');
+  check('worse severity can promote a finding into the gate', r3.offenders.some((o) => o.name === 'noisy-moderate'));
+  // A package only the prod-only lens sees keeps its own reading rather than vanishing.
+  check('keeps a finding absent from the full-tree lens', by3['evil-orphan'].fix === 'none');
+  // CALIBRATION for the two-lens controls — without the second lens these MUST differ,
+  // or the controls above would pass no matter what analyze() did.
+  check('single-lens reading really is the optimistic one', byName['evil-shipped'].patchCompatible === true && byName['noisy-moderate'].severity === 'moderate');
+
   // CALIBRATION — the controls above must not all pass vacuously.
   check('analyzer actually produced findings', r.total === 4);
 
@@ -262,15 +332,30 @@ function main() {
 
   const auditPath = valueOf('--audit-json');
   const lsPath = valueOf('--ls-json');
+  const fullAuditPath = valueOf('--full-audit-json');
   const audit = auditPath
     ? JSON.parse(readFileSync(auditPath, 'utf8'))
     : runJson(['audit', '--omit=dev', '--json'], 'npm audit');
   const ls = lsPath
     ? JSON.parse(readFileSync(lsPath, 'utf8'))
     : runJson(['ls', '--omit=dev', '--all', '--json'], 'npm ls');
+  // Second lens: the tree as actually installed. Fix feasibility is judged here (see
+  // analyze()). Never fatal — if it cannot be read we fall back to the single-lens
+  // reading, which is optimistic about fixes but still gates on the same population.
+  let fullAudit = null;
+  try {
+    fullAudit = fullAuditPath
+      ? JSON.parse(readFileSync(fullAuditPath, 'utf8'))
+      : runJson(['audit', '--json'], 'npm audit (full tree)');
+  } catch {
+    fullAudit = null;
+  }
 
   const baseline = loadBaseline();
-  const r = analyze(audit, ls, baseline);
+  const r = analyze(audit, ls, baseline, fullAudit);
+  if (!fullAudit) {
+    console.warn('warn: full-tree audit unavailable — fix feasibility is the optimistic --omit=dev reading');
+  }
 
   if (has('--json')) {
     console.log(JSON.stringify(r, null, 2));

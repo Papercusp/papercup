@@ -63,6 +63,21 @@ vi.mock('../../release-checkpoint-config', async (orig) => ({
   readQualificationAdmission: () => qualificationAdmission(),
 }));
 
+// The production action's memory admission is mocked open for the historical tests below.
+// Keep an explicit override so the recurrence test can exercise the real over-budget branch
+// without depending on whatever checkpoint scopes happen to be live on the test host.
+type MemoryAdmissionStub = {
+  admit: boolean;
+  reason: string;
+  requestG: number;
+  committedG: number;
+  budgetG: number;
+  scopes: number;
+  unbounded: number;
+  detail: string;
+};
+const memoryAdmissionOverride = vi.hoisted(() => ({ value: null as MemoryAdmissionStub | null }));
+
 // EI-10158: the green-checkpoint action's fail-safe stall-tracking + flake-history
 // (trackGateStall / trackFlakeHistory) and release-trigger's back-off read reach
 // @papercusp/db-org DIRECTLY (getOrgPg().sql.unsafe) — not through appendPipelineEvent.
@@ -130,16 +145,17 @@ vi.mock('../../attention-notify', () => ({
 // release/checkpoint-memory-admission.test.ts. No test here asserts the memory-budget path.
 vi.mock('../../release/checkpoint-memory-admission', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-memory-admission')>()),
-  admitCheckpointMemory: (opts: { requestG: number }) => ({
-    admit: true,
-    reason: 'admitted-sole-run' as const,
-    requestG: opts.requestG,
-    committedG: 0,
-    budgetG: 125,
-    scopes: 0,
-    unbounded: 0,
-    detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
-  }),
+  admitCheckpointMemory: (opts: { requestG: number }) =>
+    memoryAdmissionOverride.value ?? {
+      admit: true,
+      reason: 'admitted-sole-run' as const,
+      requestG: opts.requestG,
+      committedG: 0,
+      budgetG: 125,
+      scopes: 0,
+      unbounded: 0,
+      detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
+    },
 }));
 
 // per-hive-git-and-release-gate P-010: the handlers now resolve the operator-home slug to
@@ -1094,6 +1110,7 @@ beforeEach(() => {
   // a dozen unrelated "expected spawn to be called" failures rather than as a mock-hygiene bug.
   qualificationAdmission.mockReset();
   qualificationAdmission.mockResolvedValue({ status: 'clear' });
+  memoryAdmissionOverride.value = null;
   readLiveReleaseCertification.mockReset();
   readLiveReleaseCertification.mockImplementation(async (targetSha: string) => ({
     status: 'certified',
@@ -2122,6 +2139,56 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = '-2';
     expect(resolveGreenCheckpointDbPoolMax()).toBe(DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX);
     delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
+  });
+
+  it('P-002: an over-budget memory skip requeues the same routine promptly with the guard intact', async () => {
+    memoryAdmissionOverride.value = {
+      admit: false,
+      reason: 'over-budget',
+      requestG: 40,
+      committedG: 120,
+      budgetG: 125,
+      scopes: 3,
+      unbounded: 0,
+      detail: 'checkpoint-memory: DEFERRING 40 GiB — 120.0 GiB already committed by 3 live scope(s); 160.0 GiB would exceed the 125 GiB budget',
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await getSystemAction('green-checkpoint')!(ctx);
+
+      // The admission still refuses the unsafe launch; this is not a kill-switch or a
+      // smaller-scope workaround.
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(appendPipelineEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'green_checkpoint',
+          status: 'skipped-memory-budget',
+          detail: expect.objectContaining({
+            reason: 'over-budget',
+            committedG: 120,
+            requestG: 40,
+            budgetG: 125,
+            scopes: 3,
+          }),
+        }),
+      );
+
+      // Reuse the same forward-only, active-row, pause-aware retry contract as transient
+      // aborts. Once a scope drains, the frozen candidate gets a fresh ordinary attempt
+      // within minutes instead of waiting for the next hourly cron tick.
+      const update = fakeSql.unsafe.mock.calls.find(([query]) =>
+        String(query).includes('next_fire_at = now() + make_interval'),
+      );
+      expect(update).toBeDefined();
+      expect(update![1]).toEqual(['my-harness', TRANSIENT_ABORT_REQUEUE_MINS]);
+      const query = String(update![0]);
+      expect(query).toContain('active = true');
+      expect(query).toContain("metadata->'pause' IS NULL");
+      expect(query).toContain('next_fire_at IS NULL OR next_fire_at > now() + make_interval');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('falls back to a DIRECT spawn when the scope cannot launch (no user bus) — the gate never red-pins on infra', async () => {

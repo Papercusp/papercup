@@ -13,10 +13,15 @@
     "from `node scripts/check-reachable-advisories.mjs --list`, never from a hand grep.",
     "",
     "Seeded 2026-09-05 from a measured run: 99 total advisories, 9 gating, 22 non-shipping",
-    "only, 12 unattributed (failed closed as shipping)."
+    "only, 12 unattributed (failed closed as shipping).",
+    "",
+    "Dispositions are 3 patch-eligible / 6 deferred-semver-major. The split was corrected",
+    "on 2026-09-05: `npm audit --omit=dev` is OPTIMISTIC about fixes and called",
+    "style-dictionary patch-compatible when the installed tree requires a major bump, so the",
+    "analyzer now reads fix feasibility from both lenses and takes the pessimistic one."
   ],
   "seededAt": "2026-09-05",
-  "seededFrom": "npm audit --omit=dev --json + npm ls --omit=dev --all --json, attributed by workspace",
+  "seededFrom": "npm audit --omit=dev --json (reachability/severity) + npm audit --json (fix feasibility, tree as installed) + npm ls --omit=dev --all --json, attributed by workspace",
   "accepted": [
     "@browserbasehq/stagehand",
     "d3",
@@ -49,8 +54,8 @@
     },
     "style-dictionary": {
       "severity": "high",
-      "disposition": "patch-eligible",
-      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "disposition": "deferred-semver-major",
+      "reason": "Only fix is style-dictionary@5.5.2, semver-major. CORRECTED 2026-09-05: `npm audit --omit=dev` reported this as fixAvailable:true (patch-compatible) and it was first filed here as patch-eligible on that reading. The tree as actually installed reports isSemVerMajor:true — installed is 4.4.0 and the root declares \"^4.4.0\", which cannot reach 5.5.2, so the prod-only lens was wrong. The analyzer now reconciles both lenses pessimistically (see analyze()'s fullAuditJson).",
       "owners": ["@papercusp/token-kit"]
     },
     "d3": {

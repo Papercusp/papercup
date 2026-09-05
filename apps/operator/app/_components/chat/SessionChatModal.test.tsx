@@ -1816,6 +1816,89 @@ describe('SessionChatModal', () => {
       render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
+
+    /**
+     * WI-2144754: a FAILED attention read must not render as an empty shelf.
+     *
+     * The two states are pixel-identical without this: the shelf renders
+     * nothing when there is nothing pending, so a rejected query silently
+     * tells the owner "nothing needs you" — the one reading never safe to
+     * guess (the same principle AttentionCountsRow.degraded already encodes
+     * for the badge).
+     *
+     * Measured cause, 2026-09-05: the scoped read sends `ownerAgentId`, and a
+     * server predating that arg rejects the WHOLE call (`invalid_args:
+     * Unrecognized key` — undeclared args are rejected, not ignored,
+     * EI-10883). Every running operator did that, so the shelf was empty for
+     * every owner, including one with 81 matching rows. The empty shelf was a
+     * failing query wearing an empty queue's clothes.
+     */
+    function seedAttentionError(message: string) {
+      H.results['plans.attention'] = {
+        data: [],
+        loading: false,
+        fetching: false,
+        error: new Error(message),
+        invalidate: attentionInvalidate,
+      };
+    }
+
+    // FALSIFIABLE BY CONSTRUCTION: this seeds `data: []`, so `pendingEscalations`
+    // is provably empty and the OLD gate (`pendingEscalations.length > 0`) could
+    // not render the section at all. The shelf is therefore reachable here only
+    // through the `|| attentionError` clause — revert that clause and this test
+    // fails on the first getByTestId. The calibration test below pins the other
+    // direction, so the error branch cannot be made unconditional either.
+    it('WI-2144754: surfaces a FAILED attention read instead of rendering an empty shelf', async () => {
+      seedAttentionError('invalid_args: Unrecognized key: "ownerAgentId"');
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      const err = screen.getByTestId('session-chat-pending-escalations-error');
+      // The distinction itself is the assertion: "couldn't load" must never be
+      // presentable as "you have none".
+      expect(err.textContent).toContain('Couldn’t load decisions');
+      expect(err.textContent).toContain('not the same as having none');
+      // The underlying reason is shown, not swallowed — this is what turns a
+      // silent empty region into a diagnosable one.
+      expect(err.textContent).toContain('Unrecognized key');
+      // No cards, and crucially no count badge asserting a total we could not
+      // measure. Scoped to the shelf's own count element rather than a bare
+      // text query for "0" — the popup renders other counters (the turns
+      // count), so a global text match would assert something else entirely.
+      expect(screen.queryAllByTestId('other-detail')).toHaveLength(0);
+      expect(
+        screen.getByTestId('session-chat-pending-escalations').querySelector('.pc-chat-decisions__count'),
+      ).toBeNull();
+    });
+
+    it('WI-2144754: the error shelf offers a retry that re-asks the feed', async () => {
+      seedAttentionError('boom');
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations-error')).toBeTruthy());
+      attentionInvalidate.mockClear();
+      fireEvent.click(screen.getByText('Retry'));
+      expect(attentionInvalidate).toHaveBeenCalled();
+    });
+
+    /**
+     * CALIBRATION for the two tests above. They assert the presence of an
+     * error node; that alone would still pass if the shelf rendered the error
+     * branch unconditionally and never showed a decision again. This pins the
+     * other side: a HEALTHY read shows cards and no error node.
+     */
+    it('WI-2144754 calibration: a healthy read renders cards and NO error node', async () => {
+      seedAttention([mkEscalation('esc-1')]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      expect(screen.getAllByTestId('other-detail')).toHaveLength(1);
+      expect(screen.queryByTestId('session-chat-pending-escalations-error')).toBeNull();
+    });
   });
 
   describe('P-008 ref-pill popup routing (chat-ref-pills-2026-07-26, D-002 seam)', () => {

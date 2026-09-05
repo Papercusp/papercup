@@ -32,8 +32,20 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 import { withIterativeScan } from './hnsw-iterative-scan';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 
-/** Standard ts_headline options for all four surfaces. */
-const HEADLINE_OPTS =
+/**
+ * Standard ts_headline options for all four surfaces.
+ *
+ * EXPORTED so the RENDERERS can pin themselves to it instead of re-asserting
+ * the delimiter from memory. `StartSel` overrides ts_headline's `<b>` default,
+ * and a renderer that assumes the default silently stops highlighting: it looks
+ * for a marker the engine never sends, finds none, and emits the whole headline
+ * as plain text with the literal `<mark>` tags showing. Nothing throws, and a
+ * renderer test written against the ASSUMED delimiter passes just as happily as
+ * one written against the real one — which is exactly how
+ * `GlobalSearchDialog.renderHighlight` sat splitting on `<b>` while every test
+ * stayed green. Derive the marker from here; do not copy it.
+ */
+export const HEADLINE_OPTS =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');

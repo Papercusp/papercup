@@ -2645,13 +2645,16 @@ export default function SessionChatModal({
                  not find out", never a silent absence. Retry is offered
                  because the common causes (a stale server, a transient sync
                  failure) are cleared by re-asking, not by reloading the app. */
-              <div className="pc-chat-decisions__error" data-testid="session-chat-pending-escalations-error">
+              <div data-testid="session-chat-pending-escalations-error">
                 <p className="pc-chat-decisions__legend">
                   <b>Couldn’t load decisions.</b> This is <em>not</em> the same as having none —
                   this agent may still be waiting on you.
                 </p>
                 <p className="pc-chat-decisions__legend">{attentionError}</p>
-                <button type="button" className="pc-btn pc-btn--sm" onClick={refreshAttention}>
+                {/* Reuses the shelf's own button style rather than inventing a
+                    class: `__more` is already the shelf's full-width, quiet,
+                    accent-strong affordance, and it is styled. */}
+                <button type="button" className="pc-chat-decisions__more" onClick={refreshAttention}>
                   Retry
                 </button>
               </div>

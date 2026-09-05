@@ -176,6 +176,50 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     );
   });
 
+  it('P-009: keeps the member recovery block through shaping instead of silently dropping it', () => {
+    // The shaper is an ALLOWLIST, and its flat leg carries scalars only. A nested object
+    // added upstream reaches this point and disappears with no error anywhere — the field
+    // is present on the projected row, absent from what the leader reads, and nothing
+    // fails. That silent gap is what this asserts against, so it is a drop-detector, not a
+    // formatting check.
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'f' },
+        members: [
+          {
+            agentId: 'su-stranded',
+            verdict: 'monitoring',
+            recovery: {
+              disposition: 'stranded',
+              reason: 'kill_failed: scope release unverified',
+              taskId: 'task-abc',
+              strandedAt: '2026-09-05T01:00:00.000Z',
+            },
+            // CALIBRATION: an unshaped nested field, shaped exactly like `recovery` was
+            // before its shaper leg existed. If this survived, the shaper would not be an
+            // allowlist at all and the assertion below would prove nothing about `recovery`.
+            unshapedNested: { disposition: 'stranded', reason: 'should not survive' },
+          },
+        ],
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    const members = out.members as Array<Record<string, unknown>>;
+    // The calibration must hold FIRST: an unshaped nested field is dropped. That is what
+    // makes the surviving `recovery` below evidence of the shaper leg rather than evidence
+    // that the shaper passes everything through.
+    expect(members[0].unshapedNested).toBeUndefined();
+    expect(members[0].recovery).toMatchObject({
+      disposition: 'stranded',
+      taskId: 'task-abc',
+      strandedAt: '2026-09-05T01:00:00.000Z',
+    });
+    // The reason is the triage payload; a prefix-truncated cause is not actionable.
+    expect(members[0].recovery).toMatchObject({ reason: 'kill_failed: scope release unverified' });
+  });
+
   it('keeps the decision core and returns complete parseable JSON under the budget', () => {
     const out = shapeLeaderBrief(largeBrief(), 'trimmed') as Record<string, unknown>;
     const encoded = JSON.stringify(out);

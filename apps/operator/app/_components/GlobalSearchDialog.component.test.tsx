@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 /**
  * GlobalSearchDialog (Mod+Shift+F global content search) — renders hits from
- * the public fulltext endpoint; the ts_headline <b> markers become <mark>
- * (and ONLY them — no raw-HTML injection).
+ * the public fulltext endpoint; the engine's own ts_headline markers become
+ * <mark> ELEMENTS (and ONLY them — no raw-HTML injection).
+ *
+ * The marker is `<mark>`, not ts_headline's `<b>` default: the endpoint's
+ * `HEADLINE_OPTS` sets `StartSel=<mark>`. This file used to assert `<b>`, which
+ * is how the renderer sat splitting on a marker the engine never sends.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -16,6 +20,10 @@ vi.mock('../../lib/router-compat/navigation', () => ({
 }));
 
 import GlobalSearchDialog, { hitHref, renderHighlight } from './GlobalSearchDialog';
+// The engine's REAL headline options — imported, never re-typed, so the
+// renderer's marker is checked against the source of truth rather than against
+// another copy of the same assumption.
+import { HEADLINE_OPTS } from '@papercusp/operator-core/lib/agent-tools/search/sources';
 
 afterEach(() => {
   cleanup();
@@ -94,10 +102,52 @@ describe('GlobalSearchDialog', () => {
 });
 
 describe('renderHighlight', () => {
-  it('turns <b> markers into <mark> and leaves other markup as inert text', () => {
-    const nodes = renderHighlight('a <b>hit</b> & <script>alert(1)</script>');
-    // Three segments: text, mark, text — the script tag stays a literal string.
-    expect(nodes.length).toBe(3);
+  /**
+   * DRIFT CHECK, and the whole reason this block was rewritten on 2026-09-04.
+   *
+   * `renderHighlight` split on `<b>` — ts_headline's DEFAULT marker — while the
+   * engine has been configured with `StartSel=<mark>`. The split matched
+   * nothing, so the dialog rendered every headline as plain text with literal
+   * `<mark>` tags showing, and highlighting was dead. It survived because the
+   * old test fed it `<b>hit</b>`: the test had copied the same assumption as the
+   * code, so the two agreed with each other and neither one measured the engine.
+   *
+   * Asserting against the real `HEADLINE_OPTS` is what makes that class of
+   * failure impossible rather than merely fixed — change `StartSel` without
+   * changing the renderer and this fails, instead of highlighting going quiet.
+   */
+  it('splits on the marker the engine actually emits', () => {
+    expect(HEADLINE_OPTS).toContain('StartSel=<mark>');
+    expect(HEADLINE_OPTS).toContain('StopSel=</mark>');
+  });
+
+  it('renders the engine marker as a real <mark> element', () => {
+    const nodes = renderHighlight('a <mark>hit</mark> here');
+    const { container } = render(<>{nodes}</>);
+    const marks = container.querySelectorAll('mark');
+    expect(marks).toHaveLength(1);
+    expect(marks[0].textContent).toBe('hit');
+    // …and the surrounding text is still there — a highlighter that eats the
+    // rest of the headline is as broken as one that highlights nothing.
+    expect(container.textContent).toBe('a hit here');
+  });
+
+  it('leaves every other markup inert, as TEXT rather than elements', () => {
+    // No dangerouslySetInnerHTML anywhere on this path, so a corpus that quotes
+    // markup cannot produce an element — it must come back as visible text.
+    const nodes = renderHighlight('a <mark>hit</mark> & <script>alert(1)</script>');
+    const { container } = render(<>{nodes}</>);
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.textContent).toContain('<script>alert(1)</script>');
+    expect(container.querySelectorAll('mark')).toHaveLength(1);
+  });
+
+  it('highlights every marked term in a multi-fragment headline', () => {
+    // HEADLINE_OPTS sets MaxFragments=2, so two marked terms in one headline is
+    // the ordinary case, not an edge one.
+    const nodes = renderHighlight('<mark>a</mark> … <mark>b</mark>');
+    const { container } = render(<>{nodes}</>);
+    expect([...container.querySelectorAll('mark')].map((m) => m.textContent)).toEqual(['a', 'b']);
   });
 });
 

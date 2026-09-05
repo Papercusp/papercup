@@ -680,6 +680,23 @@ export function writeCodexLockHooks(
     });
   }
 
+  // P-010 (fleet-friction-remediation-2026-08-21): an apply_patch envelope may
+  // carry at most ONE operation per target path, and violating that rejects the
+  // WHOLE patch — deterministically, before anything is written. The class was
+  // filed independently five times (EI-21353344120350526, EI-21354846297369687,
+  // EI-21565696681975825, EI-21573638140720842, EI-22346861820470210), the last
+  // naming the gap exactly: deterministic validation "not surfaced before
+  // submission". This is Codex-only by construction — Edit/Write carry a single
+  // file_path and cannot express the collision — so it gets its own narrow
+  // matcher rather than riding the shared content-guard one.
+  const duplicateTarget = join(dir, 'pretooluse-apply-patch-duplicate-target-guard.mjs');
+  if (existsSync(duplicateTarget)) {
+    preToolUse.push({
+      matcher: '^apply_patch$',
+      hooks: [{ type: 'command', command: duplicateTarget }],
+    });
+  }
+
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
   // AGENT homes (role sessions — never the human su home, D-003) get the
   // bash-resource-gate with the agent marker BAKED (codex hands hooks a

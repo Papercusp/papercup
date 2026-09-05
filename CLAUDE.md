@@ -878,14 +878,6 @@ failed `cd` then kills the script instead of falling through. And when in
 doubt whether a PRIOR call's `cd` actually landed you where you think, `pwd` as
 the first line of the next call is free insurance — never assume.
 
-## Long jobs: background them at the LAUNCH, don't poll for them afterwards
-
-**"Is my job done?" is 12% of every bash call on this box** — ~2,950 calls in 7
-days across 63 of 86 sessions: `ps`/`pgrep` (2,315), polling a task-output file
-with `cat`/`tail`/`wc -c` (1,120), and bare `sleep` (1,082, and what follows a
-sleep is overwhelmingly another poll). None of that is recoverable by swapping
-the poll command, because the fix is one step earlier:
-
 ## Scratch probes: name the file `.mts`, not `.ts`
 
 A one-off probe that imports repo modules belongs in the in-tree, gitignored
@@ -913,6 +905,12 @@ of silently rotting into a lie.
 
 
 ## Long jobs: background them at the LAUNCH, don't poll for them afterwards
+
+**"Is my job done?" is 12% of every bash call on this box** — ~2,950 calls in 7
+days across 63 of 86 sessions: `ps`/`pgrep` (2,315), polling a task-output file
+with `cat`/`tail`/`wc -c` (1,120), and bare `sleep` (1,082, and what follows a
+sleep is overwhelmingly another poll). None of that is recoverable by swapping
+the poll command, because the fix is one step earlier:
 
 > For anything that runs longer than ~1–2 min, start it with
 > **`capability:bash { run_in_background: true }`** and read it with

@@ -551,6 +551,46 @@ export interface ListTasksFilter {
   limit?: number;
 }
 
+/**
+ * P-009: the most recent STRANDED close per coord owner, for a set of owners in ONE query.
+ *
+ * `listTasks` can already answer this for a SINGLE owner, and calling it per member is the
+ * obvious composition — but a leader-brief renders a whole fleet, so that shape is N queries
+ * inside one bounded read leg, where the Nth is the one that blows the budget. Pushing the
+ * owner set down keeps it at one round-trip regardless of headcount.
+ *
+ * DISTINCT ON takes the newest close per owner: a member recovered more than once should
+ * report its CURRENT disposition, not its first. Rows carry `ended_at IS NOT NULL` by
+ * construction (`markStranded` closes the row), so `includeEnded` has no analogue here.
+ */
+export async function listLatestStrandedByCoordOwners(
+  coordOwnerIds: readonly string[],
+  opts: { workspaceId?: string } = {},
+  inject?: Sql,
+): Promise<Array<{ coordOwnerId: string; taskId: string; reason: string | null; endedAt: string | null }>> {
+  if (coordOwnerIds.length === 0) return [];
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<Array<{ coord_owner_id: string; task_id: string; exit_reason: string | null; ended_at: string | null }>>`
+    SELECT DISTINCT ON (detail ->> 'coordOwnerId')
+           detail ->> 'coordOwnerId' AS coord_owner_id,
+           task_id,
+           exit_reason,
+           ended_at
+      FROM harness_shared.task_ledger
+     WHERE workspace_id = ${ws}
+       AND state = 'stranded'
+       AND detail ->> 'coordOwnerId' = ANY(${sql.array(coordOwnerIds as string[])})
+     ORDER BY detail ->> 'coordOwnerId', ended_at DESC NULLS LAST
+  `;
+  return rows.map((r) => ({
+    coordOwnerId: r.coord_owner_id,
+    taskId: r.task_id,
+    reason: r.exit_reason ?? null,
+    endedAt: r.ended_at ?? null,
+  }));
+}
+
 export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
   const sql = sqlOf(inject);
   const ws = filter.workspaceId ?? activeWorkspaceId();

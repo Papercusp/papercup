@@ -180,3 +180,74 @@ describe('reachable-advisory gate: non-shipping classification', () => {
     expect(isNonShipping('@papercusp/operator-core')).toBe(false);
   });
 });
+
+/**
+ * REGRESSION: the two audit lenses disagree, and the prod-only one is OPTIMISTIC.
+ *
+ * Measured 2026-09-05 against the real tree — style-dictionary installed 4.4.0, root
+ * declaring "^4.4.0":
+ *   npm audit --omit=dev  ->  fixAvailable: true                      ("patch-compatible")
+ *   npm audit             ->  fixAvailable: 5.5.2, isSemVerMajor: true
+ * 4.4.0 -> 5.5.2 is major and "^4.4.0" cannot reach it, so the prod-only lens is wrong.
+ * Reporting it as patch-compatible sends an agent to attempt a fix that cannot work — the
+ * gate's advice, not just its verdict, has to be trustworthy.
+ *
+ * `--omit=dev` is not even a subset of the full tree: it reported 99 advisories to the
+ * full tree's 91, which is why this is reconciled rather than simply preferring one.
+ */
+describe('reachable-advisory gate: two-lens fix feasibility', () => {
+  const FULL_AUDIT_FIXTURE = {
+    vulnerabilities: {
+      'evil-shipped': {
+        severity: 'high',
+        fixAvailable: { name: 'evil-shipped', version: '5.5.2', isSemVerMajor: true },
+      },
+      'noisy-moderate': { severity: 'critical', fixAvailable: true },
+    },
+  };
+
+  it('a MAJOR fix in the installed tree overrides a compatible prod-only fix', () => {
+    const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
+    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    expect(f.patchCompatible).toBe(false);
+    expect(f.fix).toContain('5.5.2');
+    expect(f.fix).toContain('SEMVER-MAJOR');
+  });
+
+  it('is not vacuous: WITHOUT the second lens the same fixture reads patch-compatible', () => {
+    // The calibration that makes the assertion above meaningful — if analyze() ignored the
+    // second lens entirely, this control and the one above could not both hold.
+    const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] });
+    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    expect(f.patchCompatible).toBe(true);
+    expect(f.fix).toBe('patch-compatible');
+  });
+
+  it('surfaces the disagreement rather than silently taking the pessimistic side', () => {
+    const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
+    const f = r.findings.find((x: { name: string }) => x.name === 'evil-shipped');
+    expect(f.fixDisagreement).toEqual(expect.stringContaining('MAJOR'));
+  });
+
+  it('takes the WORSE severity of the two lenses, promoting into the gate', () => {
+    // moderate (prod-only) vs critical (installed tree): the gate must not under-report.
+    const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
+    const f = r.findings.find((x: { name: string }) => x.name === 'noisy-moderate');
+    expect(f.severity).toBe('critical');
+    expect(r.offenders.some((o: { name: string }) => o.name === 'noisy-moderate')).toBe(true);
+  });
+
+  it('keeps a finding the full-tree lens cannot see, instead of dropping it', () => {
+    // evil-orphan is absent from FULL_AUDIT_FIXTURE. Absence from one lens must never
+    // delete a finding — that would be the fail-OPEN direction.
+    const r = analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, FULL_AUDIT_FIXTURE);
+    const f = r.findings.find((x: { name: string }) => x.name === 'evil-orphan');
+    expect(f).toBeTruthy();
+    expect(r.offenders.some((o: { name: string }) => o.name === 'evil-orphan')).toBe(true);
+  });
+
+  it('a missing second lens degrades to the single-lens reading without throwing', () => {
+    expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, null)).not.toThrow();
+    expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, {})).not.toThrow();
+  });
+});
