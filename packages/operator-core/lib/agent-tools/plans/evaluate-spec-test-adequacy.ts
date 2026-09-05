@@ -18,7 +18,13 @@ const currentSchema = z.object({
   environmentFingerprint: fingerprint.nullable().optional(),
 });
 
-const argsSchema = z.object({
+/**
+ * Exported so a scorecard's `rerunRecipe.args` can be validated against the REAL
+ * schema rather than a hand-copied list of field names. A recipe that its own
+ * evaluator rejects is not a rerun recipe, and a guard that restates the field
+ * names here would pass through exactly the drift it is meant to catch.
+ */
+export const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
   classRef: z

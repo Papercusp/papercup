@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import { evaluateSpecTestAdequacy, requiredProofFloor } from './spec-test-adequacy';
+import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -354,5 +355,54 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['execution-integrity'].rating).toBe('unknown');
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
     expect(result.verdict).not.toBe('pass');
+  });
+});
+
+describe('rerunRecipe is submittable to its own evaluator', () => {
+  function recipeFor(classRef: 'plan-class-feature-ship' | 'plan-class-bugfix' = 'plan-class-feature-ship') {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      classRef,
+    });
+    const recipe = result.scorecardDraft?.rerunRecipe;
+    if (!recipe) throw new Error('expected a scorecardDraft with a rerunRecipe');
+    return recipe;
+  }
+
+  it('records args that PARSE against the evaluator\'s own schema, classRef included', () => {
+    const recipe = recipeFor();
+    expect(recipe.evaluator).toBe('plans:evaluate-spec-test-adequacy');
+
+    // Validated against the evaluator's REAL exported schema, not a copy of its field
+    // names — a guard that restated the names would pass through the exact drift it
+    // exists to catch.
+    const parsed = evaluatorArgsSchema.safeParse(recipe.args);
+    expect(parsed.success).toBe(true);
+
+    expect(recipe.args.slug).toBe('reconnect-plan');
+    expect(recipe.args.specIds).toEqual(['SPEC-003-01']);
+    expect(recipe.args.includeDraft).toBe(true);
+  });
+
+  it('carries the classRef the verdicts were produced under, so no re-runner has to guess', () => {
+    // classRef is a four-value enum that moves plan-class-risk-floor, so a recipe that
+    // omitted it let a wrong guess silently change the verdict being reproduced.
+    expect(recipeFor('plan-class-feature-ship').classRef).toBe('plan-class-feature-ship');
+    expect(recipeFor('plan-class-bugfix').classRef).toBe('plan-class-bugfix');
+    expect(recipeFor('plan-class-bugfix').args.classRef).toBe('plan-class-bugfix');
+  });
+
+  it('CALIBRATION: the legacy selection shape is REJECTED by that same schema', () => {
+    // Without this control the test above could pass against a schema that accepts
+    // anything. `selection` is the shape the recipe used to publish as its only
+    // payload; submitting it is what produced `invalid_args` in the field.
+    const recipe = recipeFor();
+    const legacy = evaluatorArgsSchema.safeParse(recipe.selection);
+    expect(legacy.success).toBe(false);
+
+    // And specifically because classRef is missing — the field a re-runner had to guess.
+    const withoutClassRef = { slug: 'reconnect-plan', specIds: ['SPEC-003-01'] };
+    expect(evaluatorArgsSchema.safeParse(withoutClassRef).success).toBe(false);
   });
 });
