@@ -18,6 +18,7 @@ import { resolveAgentIdentity, deriveAgentRole, resolveSelfLiteral } from '../co
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
+import { unresolvedRefsInBody, unresolvedRefsWarning } from '../work_items/unresolved-refs';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
@@ -1394,6 +1395,21 @@ export default defineTool({
           : []),
         ...(scopeResolution.warning ? [scopeResolution.warning] : []),
       ];
+      // ── EI-19908952124502298: dangling-ref advisory, same helper `comment`/`complete`/
+      // `update`/`checkpoint` carry. Scoped to a capture that actually CREATED a row:
+      // on a dedup-decline or checkDuplicatesOnly probe no body is stored under an id,
+      // so there is no durable text for a later reader to be misled by. `known` carries
+      // the freshly-minted id so a self-citation is never reported as phantom.
+      const capturedRefSubject = captured.created ? captured.issue?.id : undefined;
+      const capturedUnresolvedRefs = capturedRefSubject
+        ? await unresolvedRefsInBody([captureText.title, bodyWithStaleness].filter(Boolean).join('\n'), {
+            known: [capturedRefSubject],
+          })
+        : undefined;
+      const capturedUnresolvedRefsWarning =
+        capturedRefSubject && capturedUnresolvedRefs
+          ? unresolvedRefsWarning(capturedRefSubject, capturedUnresolvedRefs.missing)
+          : undefined;
       const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : result;
       return {
         content: [
@@ -1406,6 +1422,9 @@ export default defineTool({
               ...(!silenceUnkeyedObservationDisposition && lensAttribution ? { lensAttribution } : {}),
               ...(!silenceUnkeyedObservationDisposition && groundingGap ? { groundingGap } : {}),
               ...(!silenceUnkeyedObservationDisposition && shippedCodeSearch ? { shippedCodeSearch } : {}),
+              ...(!silenceUnkeyedObservationDisposition && capturedUnresolvedRefsWarning
+                ? { unresolvedRefsWarning: capturedUnresolvedRefsWarning }
+                : {}),
               ...(!silenceUnkeyedObservationDisposition && agentReview ? { agentReview } : {}),
               ...(!silenceUnkeyedObservationDisposition && agentReviewFailure ? { agentReviewFailure } : {}),
               ...(!silenceUnkeyedObservationDisposition && notified ? { notified: notified.notified } : {}),

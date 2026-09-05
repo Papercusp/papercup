@@ -2089,6 +2089,22 @@ export default defineTool({
         // — which is the D-004 failure this is trying to avoid, not repeat.
         const captureAdvisory =
           stored !== null && stored.length >= CAPTURE_ADVISORY_MIN_CHARS ? describeCaptureGaps(stored) : null;
+        // ── EI-19908952124502298: the same dangling-ref advisory `comment`/`complete`/
+        // `update` already carry, extended to the checkpoint writer. A checkpoint is the
+        // single surface a cold successor trusts WITHOUT re-checking, so a phantom
+        // EI-/WI- id here is the most expensive place for one to land — and the writer
+        // is exactly who cannot see it, because the id was minted in the same step that
+        // cited it.
+        //
+        // ADVISORY, never a gate: `unresolvedRefsInBody` returns undefined when it
+        // cannot judge, and the checkpoint is the thing a successor cannot do without,
+        // so a ref probe that fails must never fail the write that carried it. The
+        // proposal's blocking PreToolUse hook was deliberately NOT built — it would sit
+        // on one client's edit path while ptool/MCP/API write straight past it, and
+        // ref resolution here is workspace-scoped and fail-soft, so a false "does not
+        // exist" would block a legitimate federated ref.
+        const unresolvedRefs = stored !== null ? await unresolvedRefsInBody(stored, { known: [it.id] }) : undefined;
+        const unresolvedRefsWarningText = unresolvedRefs ? unresolvedRefsWarning(it.id, unresolvedRefs.missing) : undefined;
         return {
           ok: true as const,
           id: it.id,
@@ -2112,6 +2128,7 @@ export default defineTool({
               }
             : {}),
           ...(captureAdvisory?.note ? { captureAdvisory: captureAdvisory.note } : {}),
+          ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
           /** P-003: verified = the stored text READ BACK byte-identically via the reader
            *  path (null on a clear — nothing to verify). */
           verified: stored !== null ? (true as const) : null,
