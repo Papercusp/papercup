@@ -9,15 +9,17 @@ import {
   assertAdmissionCensusRatchet,
   buildBulkDedupPrompt,
   bulkJudgeMaxTokens,
+  type BulkDedupItem,
   BulkAdmissionBlockedError,
   classifyBulkModelFailure,
   defaultBulkDedupPreflight,
+  guardBulkRecurrenceIdentity,
   isRetryableModelCallError,
   maxPairsForOutputBudget,
   BULK_JUDGE_MAX_OUTPUT_TOKENS,
   BULK_JUDGE_TOKENS_PER_PAIR,
 } from './work-items-admission-bulk-dedup';
-import { parsePromoterJudgements } from './work-items-admission-promoter';
+import { admissionPairKey, parsePromoterJudgements, planPromoterDispositions } from './work-items-admission-promoter';
 import type { PromoterItem, PromoterPair } from './work-items-admission-promoter';
 
 function item(id: string, title = id): PromoterItem {
@@ -54,6 +56,73 @@ describe('buildBulkDedupPrompt', () => {
     expect(prompt.user).toContain('a::b | signals=cosine | cosine=0.9700');
     expect(prompt.user).toContain('READ-ONLY GHOST CONTEXT');
     expect(prompt.user).toContain('g | <title>Nearby context</title>');
+  });
+});
+
+describe('guardBulkRecurrenceIdentity', () => {
+  const duplicatePlan = (a: PromoterItem, b: PromoterItem) => {
+    const pair: PromoterPair = {
+      pairKey: admissionPairKey(a.id, b.id),
+      a: a.id < b.id ? a : b,
+      b: a.id < b.id ? b : a,
+      pendingIds: [a.id, b.id],
+      signals: ['title-key'],
+      cosine: null,
+    };
+    return planPromoterDispositions(
+      [a, b],
+      [pair],
+      [{ pairKey: pair.pairKey, verdict: 'r-finding-merge', reason: 'same producer finding' }],
+    );
+  };
+
+  it('reselects a newer keyed successor over the older unkeyed canonical', () => {
+    const historical = { ...item('EI-20630508400046931', 'Gym champion promoted'), createdAtMs: 1, watchdogKey: null };
+    const keyed = {
+      ...item('EI-22377526107135174', 'Gym champion promoted'),
+      createdAtMs: 2,
+      watchdogKey: 'gym-champion:h1:validator@beta',
+    };
+    const unguarded = duplicatePlan(historical, keyed);
+    expect(unguarded.dispositions).toContainEqual({
+      itemId: keyed.id,
+      action: 'merge',
+      canonicalId: historical.id,
+    });
+
+    const guarded = guardBulkRecurrenceIdentity(
+      unguarded,
+      new Map<string, BulkDedupItem>([
+        [historical.id, historical],
+        [keyed.id, keyed],
+      ]),
+    );
+    expect(guarded.dispositions).toEqual([
+      { itemId: historical.id, action: 'merge', canonicalId: keyed.id },
+      { itemId: keyed.id, action: 'promote' },
+    ]);
+    expect(guarded.adjudications[0]?.canonical).toBe(keyed.id);
+  });
+
+  it('fails closed when one duplicate component carries conflicting producer identities', () => {
+    const validator = {
+      ...item('EI-validator', 'Gym champion promoted'),
+      watchdogKey: 'gym-champion:h1:validator@beta',
+    };
+    const reviewer = {
+      ...item('EI-reviewer', 'Gym champion promoted'),
+      watchdogKey: 'gym-champion:h1:reviewer@tx',
+    };
+    const plan = duplicatePlan(validator, reviewer);
+    expect(() =>
+      guardBulkRecurrenceIdentity(
+        plan,
+        new Map<string, BulkDedupItem>([
+          [validator.id, validator],
+          [reviewer.id, reviewer],
+        ]),
+      ),
+    ).toThrow('conflicting stable producer identities');
   });
 });
 

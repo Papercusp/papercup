@@ -34,6 +34,7 @@ import {
   type PromoterJudgement,
   type PromoterLlmCall,
   type PromoterPair,
+  type PromoterPlan,
 } from './work-items-admission-promoter';
 import {
   failedAdmissionMergeQualityReport,
@@ -118,6 +119,7 @@ interface BulkMapRow {
   item_kind: string | null;
   admission: string | null;
   condition_key: string | null;
+  watchdog_key: string | null;
   title_key: string | null;
   created_ts: string | number | null;
 }
@@ -130,8 +132,10 @@ interface BulkEdgeRow {
   b_shard: number;
 }
 
+export type BulkDedupItem = PromoterItem & { watchdogKey: string | null };
+
 interface BulkInput {
-  items: Map<string, PromoterItem>;
+  items: Map<string, BulkDedupItem>;
   pairs: PromoterPair[];
   pairShard: Map<string, number>;
   ghostIdsByShard: Map<number, string[]>;
@@ -356,7 +360,7 @@ function finiteMs(value: string | number | null): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-function itemFromRow(row: BulkMapRow): PromoterItem {
+function itemFromRow(row: BulkMapRow): BulkDedupItem {
   return {
     id: row.item_id,
     title: row.title ?? '',
@@ -365,8 +369,79 @@ function itemFromRow(row: BulkMapRow): PromoterItem {
     kind: row.item_kind ?? 'task',
     admission: row.admission,
     conditionKey: row.condition_key,
+    watchdogKey: row.watchdog_key,
     createdAtMs: finiteMs(row.created_ts),
   };
+}
+
+function stableProducerKey(item: BulkDedupItem | undefined): string | null {
+  const key = item?.watchdogKey?.trim();
+  return key ? key : null;
+}
+
+/**
+ * A bulk merge must leave one live home for every stable producer identity.
+ *
+ * The ordinary promoter intentionally prefers established/older history. That
+ * is unsafe for the bulk corpus when the older twin predates `watchdogKey`:
+ * dropping the newer keyed row leaves the producer with no open exact-key home,
+ * so its next forced emission creates the same duplicate again. Reselect the
+ * keyed endpoint before persistence. If one duplicate component carries more
+ * than one distinct producer key, no lossless single canonical exists yet; fail
+ * the transaction closed instead of terminalizing either identity.
+ */
+export function guardBulkRecurrenceIdentity(
+  plan: PromoterPlan,
+  items: ReadonlyMap<string, BulkDedupItem>,
+): PromoterPlan {
+  const membersByCanonical = new Map<string, Set<string>>();
+  for (const adjudication of plan.adjudications) {
+    if (adjudication.verdict !== 'r-finding-merge' || !adjudication.canonical) continue;
+    const members = membersByCanonical.get(adjudication.canonical) ?? new Set<string>();
+    members.add(adjudication.canonical);
+    members.add(adjudication.a);
+    members.add(adjudication.b);
+    membersByCanonical.set(adjudication.canonical, members);
+  }
+
+  const replacementByCanonical = new Map<string, string>();
+  const componentByItem = new Map<string, string>();
+  for (const [plannedCanonical, memberIds] of membersByCanonical) {
+    for (const id of memberIds) componentByItem.set(id, plannedCanonical);
+    const keyed = [...memberIds]
+      .map((id) => items.get(id))
+      .filter((item): item is BulkDedupItem => stableProducerKey(item) !== null)
+      .sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id));
+    if (keyed.length === 0) continue;
+
+    const keys = [...new Set(keyed.map((item) => stableProducerKey(item)!))].sort();
+    if (keys.length > 1) {
+      throw new Error(
+        `bulk recurrence-identity guard blocked component ${plannedCanonical}: ` +
+          `conflicting stable producer identities ${keys.join(', ')}`,
+      );
+    }
+
+    if (!stableProducerKey(items.get(plannedCanonical))) {
+      replacementByCanonical.set(plannedCanonical, keyed[0]!.id);
+    }
+  }
+  if (replacementByCanonical.size === 0) return plan;
+
+  const dispositions = plan.dispositions.map((disposition) => {
+    if (disposition.action === 'hold') return disposition;
+    const component = componentByItem.get(disposition.itemId);
+    const replacement = component ? replacementByCanonical.get(component) : undefined;
+    if (!replacement) return disposition;
+    return disposition.itemId === replacement
+      ? ({ itemId: disposition.itemId, action: 'promote' } as const)
+      : ({ itemId: disposition.itemId, action: 'merge', canonicalId: replacement } as const);
+  });
+  const adjudications = plan.adjudications.map((adjudication) => {
+    const replacement = adjudication.canonical ? replacementByCanonical.get(adjudication.canonical) : undefined;
+    return replacement ? { ...adjudication, canonical: replacement } : adjudication;
+  });
+  return { ...plan, dispositions, adjudications };
 }
 
 function signalsForBulk(a: PromoterItem, b: PromoterItem): PromoterPair['signals'] {
@@ -389,7 +464,8 @@ async function readBulkInput(
   const mapRows = await sql<BulkMapRow[]>`
     SELECT sm.shard_id, sm.item_id, sm.role,
            wi.title, wi.summary, wi.status, wi.item_kind, wi.admission,
-           wi.condition_key, wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
+           wi.condition_key, wi.payload #>> '{watchdogKey}' AS watchdog_key,
+           wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
            wi.created_ts
       FROM harness_shared.dedup_shard_map sm
       JOIN harness_shared.work_items wi
@@ -409,7 +485,7 @@ async function readBulkInput(
     );
   }
 
-  const items = new Map<string, PromoterItem>();
+  const items = new Map<string, BulkDedupItem>();
   for (const row of mapRows) if (!items.has(row.item_id)) items.set(row.item_id, itemFromRow(row));
   const edgeRows = await sql<BulkEdgeRow[]>`
     WITH homes AS MATERIALIZED (
@@ -1348,7 +1424,7 @@ async function judgeBulkPairs(
     let reusedBatches = 0;
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
       .map((id) => input.items.get(id))
-      .filter((item): item is PromoterItem => Boolean(item));
+      .filter((item): item is BulkDedupItem => Boolean(item));
     for (let offset = 0; offset < shardPairs.length; offset += opts.pairsPerCall) {
       const batch = shardPairs.slice(offset, offset + opts.pairsPerCall);
       const pairKeys = batch.map((pair) => pair.pairKey);
@@ -1949,7 +2025,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);
-      const plan = planPromoterDispositions(stageItems, input.pairs, judged.judgements);
+      const plan = guardBulkRecurrenceIdentity(
+        planPromoterDispositions(stageItems, input.pairs, judged.judgements),
+        input.items,
+      );
       const merged = plan.dispositions.filter((disposition) => disposition.action === 'merge').length;
       const held = plan.dispositions.filter((disposition) => disposition.action === 'hold').length;
       let committed:

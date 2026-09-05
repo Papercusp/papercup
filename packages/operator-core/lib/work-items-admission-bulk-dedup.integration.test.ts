@@ -418,6 +418,106 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(adjudications).toEqual([{ a: 't1', b: 't2', verdict: 'r-finding-merge' }]);
   }, 60_000);
 
+  it('keeps a keyed gym successor canonical over its older unkeyed historical twin', async () => {
+    const historicalId = 'EI-20630508400046931';
+    const keyedId = 'EI-22377526107135174';
+    const title = 'Gym champion promoted: validator@beta cycle 1 — consider generalizing';
+    const watchdogKey = 'gym-champion:h1:validator@beta';
+    const rows = [
+      { id: historicalId, created: 1, payload: {} },
+      { id: keyedId, created: 2, payload: { watchdogKey, repeatCount: 1 } },
+    ];
+    for (const row of rows) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+           item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+           admitted_at, admitted_by)
+        VALUES (${WS}, ${HARNESS}, ${row.id}, ${title}, 'Accepted gym champion should remain the stable producer home.',
+                'open', NULL, ${JSON.stringify(row.payload)}::text::jsonb, 'change', NULL,
+                ${row.created}, ${row.created}, ${row.created === 1 ? '[1,0,0]' : '[0,1,0]'}::vector,
+                'gemma', 'admitted', now(), 'test')`;
+    }
+    await db.sql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter, source_tool,
+         report_kind, reported_title, evidence, admission_identity)
+      VALUES (${WS}, ${HARNESS}, ${historicalId}, 'historical-test', 'improvements:capture',
+              'canonical-created', ${title}, '{"historical":true}'::jsonb, '{}'::jsonb)`;
+
+    const result = await runBulk({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-gym-recurrence-identity',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async () => ({
+        text: '',
+        json: {
+          judgements: [
+            {
+              pairKey: `${historicalId}::${keyedId}`,
+              verdict: 'r-finding-merge',
+              reason: 'same accepted champion promotion and same generalization request',
+            },
+          ],
+        },
+        inputTokens: 100,
+        outputTokens: 20,
+      }),
+    });
+
+    expect(result.converged).toBe(true);
+    expect(result.stages[0]).toMatchObject({ pairs: 1, merged: 1 });
+    const items = await db.sql<
+      Array<{
+        feature_id: string;
+        status: string;
+        watchdog_key: string | null;
+        canonical: string | null;
+        see_also: string[];
+      }>
+    >`
+      SELECT feature_id, status, payload #>> '{watchdogKey}' AS watchdog_key,
+             payload #>> '{admissionMerge,canonicalId}' AS canonical,
+             coalesce(see_also, ARRAY[]::text[]) AS see_also
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${[historicalId, keyedId]}::text[])
+       ORDER BY feature_id`;
+    expect(items).toEqual([
+      {
+        feature_id: historicalId,
+        status: 'dropped',
+        watchdog_key: null,
+        canonical: keyedId,
+        see_also: [keyedId],
+      },
+      {
+        feature_id: keyedId,
+        status: 'open',
+        watchdog_key: watchdogKey,
+        canonical: null,
+        see_also: [historicalId],
+      },
+    ]);
+
+    const occurrences = await db.sql<Array<{ canonical: string; kind: string; merged_from: string | null }>>`
+      SELECT canonical_work_item_id AS canonical, report_kind AS kind,
+             evidence->>'mergedFrom' AS merged_from
+        FROM harness_shared.work_item_occurrences
+       WHERE canonical_work_item_id = ANY(${[historicalId, keyedId]}::text[])
+       ORDER BY occurrence_id`;
+    expect(occurrences).toEqual([
+      { canonical: historicalId, kind: 'canonical-created', merged_from: null },
+      { canonical: keyedId, kind: 'duplicate', merged_from: historicalId },
+    ]);
+
+    const adjudications = await db.sql<Array<{ canonical: string | null }>>`
+      SELECT canonical FROM harness_shared.dedup_adjudications
+       WHERE a = ${historicalId} AND b = ${keyedId}`;
+    expect(adjudications).toEqual([{ canonical: keyedId }]);
+  }, 60_000);
+
   /**
    * WI-2140406 F4 — a process death mid-run strands admission_runs rows in
    * status 'running' forever (d035-1-stage-1 + d035-3-census-0, stuck since
