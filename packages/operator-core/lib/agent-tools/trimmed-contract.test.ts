@@ -21,6 +21,9 @@ import {
   checkTrimmedContract,
   trimmedContractViolations,
   unresolvableContracts,
+  classifyDeclaredShapers,
+  SHAPER_CONTRACT_EXEMPT,
+  SHAPER_BASELINE_HIGH_WATERMARK,
   type TrimmedContractSubject,
 } from './trimmed-contract';
 
@@ -167,7 +170,117 @@ describe('the LIVE tool catalog honours every declared trimmed contract', () => 
   it('the guard is actually covering the tools that opted in', () => {
     // Coverage is measured, not assumed: if this drops to zero the suite above
     // is green because it checked nothing.
+    //
+    // EI-21353488282456582: this used to read `toBeGreaterThanOrEqual(1)`, a
+    // floor set at the then-current population of one. It passed for three
+    // weeks while adoption stayed at that single tool, because a floor of one
+    // is satisfied forever by the tool that motivated the guard. The real
+    // coverage property is the classification assertion below; this stays as
+    // the vacuous-green tripwire it was always meant to be.
     const optedIn = subjects.filter((s) => s.shape?.contract && typeof s.shape.trimmed === 'function');
     expect(optedIn.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('every tool declaring a payload shaper is a deliberate covered/exempt decision', () => {
+    const { unclassified } = classifyDeclaredShapers(subjects);
+    // The offenders are interpolated into the MESSAGE, not left to the value
+    // diff: vitest truncates a long array or string repr after a few entries,
+    // and the whole point of this failure is to name every tool still awaiting
+    // a decision.
+    expect(
+      unclassified,
+      `${unclassified.length} tool(s) declare a \`shape.trimmed\` payload shaper but neither ` +
+        'opt in via `shape.contract` nor appear in SHAPER_CONTRACT_EXEMPT:\n' +
+        unclassified.map((t) => `  - ${t}`).join('\n') +
+        '\n\nA shaper that rebuilds its result from a hand-written key list drops anything ' +
+        'not on that list with no truncation notice, and the result still reads ok:true — so ' +
+        'the field looks absent from the data rather than removed by the shaper. Decide: add ' +
+        '`contract: { rows }` to opt in, or add an entry with a REASON to SHAPER_CONTRACT_EXEMPT.',
+    ).toEqual([]);
+  });
+
+  it('the unaudited baseline only ever SHRINKS', () => {
+    const { baseline } = classifyDeclaredShapers(subjects);
+    expect(
+      baseline.length,
+      `SHAPER_CONTRACT_EXEMPT records ${baseline.length} shaper(s) as unaudited debt, over a ` +
+        `watermark of ${SHAPER_BASELINE_HIGH_WATERMARK}. This list is SHRINK-ONLY. If you added ` +
+        'a new payload shaper, do not park it here — opt it in with `contract: { rows }`, or ' +
+        'record a `reasoned` exemption saying why a row contract is wrong for it. Lower the ' +
+        'watermark when you audit one; raising it means a shaper shipped unclassified, which ' +
+        'is what this gate exists to stop.',
+    ).toBeLessThanOrEqual(SHAPER_BASELINE_HIGH_WATERMARK);
+  });
+
+  it('no exemption names a tool that has stopped declaring a shaper', () => {
+    // The other direction. A one-way allowlist rots into a set of claims about
+    // code that has moved — the same hand-typed-list failure this file's header
+    // describes. An exemption whose tool no longer declares a shaper is a stale
+    // claim, and it must be removed rather than left to look like coverage.
+    const { staleExemptions } = classifyDeclaredShapers(subjects);
+    expect(staleExemptions, 'stale SHAPER_CONTRACT_EXEMPT entries — remove them').toEqual([]);
+  });
+});
+
+describe('classifyDeclaredShapers — falsifiability controls', () => {
+  const shaper = (data: unknown) => data;
+  const declaring = (name: string, contract?: { rows: string }): TrimmedContractSubject => ({
+    name,
+    returns: RETURNS,
+    shape: contract ? { trimmed: shaper, contract } : { trimmed: shaper },
+  });
+
+  it('CATCHES a tool that declares a shaper with no decision recorded', () => {
+    const { unclassified } = classifyDeclaredShapers([declaring('fixture:undecided')], {});
+    expect(unclassified).toEqual(['fixture:undecided']);
+  });
+
+  it('calibration: an opted-in tool and an exempt tool both come back CLEAN', () => {
+    const { unclassified } = classifyDeclaredShapers(
+      [declaring('fixture:opted', { rows: 'rows' }), declaring('fixture:exempt')],
+      {
+        'fixture:exempt': {
+          case: 'reasoned',
+          reason: 'deliberately omits optional legs and says so in-band',
+        },
+      },
+    );
+    expect(unclassified).toEqual([]);
+  });
+
+  it('counts baseline DEBT separately from a reasoned decision', () => {
+    // The split is the point: a reasoned exemption is an answer and must not be
+    // rationed, while unaudited debt must be. Conflating them would let the
+    // watermark be satisfied by decisions and hide the debt it exists to cap.
+    const { baseline } = classifyDeclaredShapers(
+      [declaring('fixture:decided'), declaring('fixture:debt')],
+      {
+        'fixture:decided': { case: 'reasoned', reason: 'dropping data is this tool\'s job' },
+        'fixture:debt': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+      },
+    );
+    expect(baseline).toEqual(['fixture:debt']);
+  });
+
+  it('does not count baseline debt for a tool that no longer declares a shaper', () => {
+    // Otherwise the watermark could be satisfied by debt that has evaporated,
+    // leaving room for a real new shaper to be parked without failing the gate.
+    const { baseline } = classifyDeclaredShapers([], {
+      'fixture:departed': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+    });
+    expect(baseline).toEqual([]);
+  });
+
+  it('does not demand a decision from a tool that declares no shaper at all', () => {
+    const noShaper: TrimmedContractSubject = { name: 'fixture:plain', returns: RETURNS };
+    expect(classifyDeclaredShapers([noShaper], {}).unclassified).toEqual([]);
+  });
+
+  it('CATCHES an exemption whose tool no longer declares a shaper', () => {
+    const { staleExemptions } = classifyDeclaredShapers([declaring('fixture:live')], {
+      'fixture:live': { case: 'reasoned', reason: 'still declares one' },
+      'fixture:departed': { case: 'reasoned', reason: 'this tool lost its shaper in a refactor' },
+    });
+    expect(staleExemptions).toEqual(['fixture:departed']);
   });
 });

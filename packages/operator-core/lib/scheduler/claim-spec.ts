@@ -135,6 +135,31 @@ export const ITEM_FIELDS = [
   //
   // NOT rankable — an opaque goal id has no meaningful order, same rationale as `id`/`title`.
   'goal',
+  // `triage_gate` — EI-16052. The improvement-triage decision from
+  // `payload.ideaLifecycle.triageDecision` ('place'|'gate'|'gym'|'reject'), where 'gate'
+  // means a HUMAN gate: triage decided this needs a design draft or an owner before anyone
+  // implements it. Filterable so a drain lane can finally fence gated work OUT —
+  // `{ not: { field:'triage_gate', op:'=', value:'gate' } }`.
+  //
+  // WHY IT HAD TO BE ADDED. Nothing else in the system expresses this. There is no gate
+  // entry in the 19-key floor vocabulary (`ISSUE_FLOOR_EXPLANATIONS`), and no field here
+  // reached into `ideaLifecycle`, so a gated row was claimable by any spec that otherwise
+  // matched it. Measured on the live queue: 418 open non-observation issue-family rows carry
+  // triageDecision='gate' with no `_claimHold`. They are held back today only INCIDENTALLY —
+  // by admission-pending and by ad-hoc `_claimHold` — and admission clears on the promoter's
+  // own cadence, so the exposure GROWS rather than settles. The filing item is its own
+  // reproduction: EI-16052 is triageDecision='gate' + ideaType='needs-design', and
+  // scheduler:get_next served it to a drain member under spec rev 15.
+  //
+  // ⚠ POLARITY. Unlike `goal` (whose positive `=`/`in` form starves on unstamped rows), the
+  // useful form here is the NEGATIVE one, and it is null-safe by the same compiler leg: most
+  // rows carry no `ideaLifecycle` at all, so `not(triage_gate = 'gate')` admits every
+  // unstamped row and excludes only the deliberately gated ones. Prefer that polarity; a
+  // positive `triage_gate = 'place'` fence would silently exclude the whole untriaged backlog.
+  //
+  // NOT rankable — a triage decision is a category, not an order; excluded from
+  // `RANKABLE_ITEM_FIELDS` alongside `fleet`/`risk_tier`.
+  'triage_gate',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -279,7 +304,8 @@ export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
     f !== 'severity' &&
     f !== 'risk_tier' &&
     f !== 'goal' &&
-    f !== 'fleet',
+    f !== 'fleet' &&
+    f !== 'triage_gate',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;

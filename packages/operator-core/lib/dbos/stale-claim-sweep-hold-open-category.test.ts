@@ -72,9 +72,13 @@ vi.mock('../dead-owner-control-sweep', () => ({
   sweepDeadOwnerControlState: async () => ({ owners: [], loopsTerminated: 0, holdsLifted: 0 }),
 }));
 
-// The one reaper this test exercises for real output: one NON-terminal expired
-// hold, so the broadcast branch (`starved.length > 0`) actually fires.
-const oneStarvedHold = {
+// The one reaper this test exercises for real output. TWO NON-terminal expired
+// holds, so the broadcast branch (`starved.length > 0`) fires AND the batching
+// assertion below is not vacuous (EI-16016 — with the single-hold fixture this
+// file used to carry, `toHaveBeenCalledTimes(1)` was satisfied just as well by a
+// per-hold send loop, so batching was untestable here). The third hold is
+// already TERMINAL: inert residue the broadcast must neither name nor count.
+const starvedHoldA = {
   workspace_id: 'ws-1',
   harness_slug: 'papercusp',
   feature_id: 'EI-1',
@@ -84,8 +88,30 @@ const oneStarvedHold = {
   former_reason: 'long-running gate',
   held_open_at: new Date().toISOString(),
 };
+const starvedHoldB = {
+  workspace_id: 'ws-1',
+  harness_slug: 'papercusp',
+  feature_id: 'EI-2',
+  item_kind: 'issue',
+  status: 'open',
+  former_holder: 'su-dead-2',
+  former_reason: 'long-running gate',
+  held_open_at: new Date().toISOString(),
+};
+const terminalResidueHold = {
+  workspace_id: 'ws-1',
+  harness_slug: 'papercusp',
+  feature_id: 'EI-3',
+  item_kind: 'issue',
+  status: 'resolved',
+  former_holder: 'su-dead-3',
+  former_reason: 'long-running gate',
+  held_open_at: new Date().toISOString(),
+};
 vi.mock('../work-items-hold-open', () => ({
-  reclaimStaleHoldOpens: async () => ({ expired: [oneStarvedHold] }),
+  reclaimStaleHoldOpens: async () => ({
+    expired: [starvedHoldA, starvedHoldB, terminalResidueHold],
+  }),
 }));
 
 vi.mock('../plan-items/stale-claims', () => ({
@@ -130,5 +156,29 @@ describe('stale-claim-sweep tick — hold-open-sweep broadcast category (EI-1818
     // isAmbientBroadcast/coalesceRepeatedBroadcasts can default-exclude repeats
     // of it instead of every distinct-feature_id fire piling up as visible spam.
     expect(opts.category).toBe('service-health');
+  });
+
+  it('batches every starved hold into ONE broadcast per sweep run (EI-16016)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tick = buildDefaultChecks().find((c) => c.name === 'stale-claim-sweep')!.tick;
+    await tick();
+    warnSpy.mockRestore();
+
+    // ONE message for TWO starved holds. EI-16016 (filed 2026-07-18) reported this
+    // sweep sending "one coord:send broadcast PER individual expired hold" and
+    // proposed batching — but the broadcast has accumulated all holds of a run into
+    // a single message since its very first commit (52787dd, 2026-07-13, five days
+    // BEFORE that filing). The real multiplicity was many 60s sweep RUNS each
+    // lifting one hold, fixed separately by the ambient `category` stamp asserted
+    // above. So the batching was never missing — only ever UNGUARDED, because the
+    // fixture manufactured a single hold and a per-hold loop would have passed too.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendMessage.mock.calls[0] as [unknown, { summary: string }];
+    expect(opts.summary).toContain('EI-1');
+    expect(opts.summary).toContain('EI-2');
+    // The count is of STARVED holds, not of every expired hold: the already-resolved
+    // third hold is inert residue that must not be named or counted.
+    expect(opts.summary).toContain('lifted 2 EXPIRED hold(s)');
+    expect(opts.summary).not.toContain('EI-3');
   });
 });

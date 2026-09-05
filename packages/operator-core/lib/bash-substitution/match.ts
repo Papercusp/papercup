@@ -56,6 +56,77 @@ export interface MatchCommandOptions {
 const UNSAFE_DEPENDENCY_INSTALL_INTENT = 'policy-violation:unsafe-dependency-install';
 
 /**
+ * The per-row OPT-IN that lets a `not-a-substitute` row still deliver its prose
+ * (D-069 ruling (b), WI-2145718).
+ *
+ * THE DEFECT THIS FIXES: `equivalenceVerdict` was doing two jobs. It is a
+ * VERDICT about whether a tool replaces a command, and it was also the
+ * show/suppress switch for the row's ADVISORY. So a row saying "no tool replaces
+ * this command" could never carry advice — even when the advice is the entire
+ * reason the row exists. Measured live: the only two registry rows with
+ * `match_count = 0` AND `last_fired_at IS NULL` were the two `not-a-substitute`
+ * rows, and `process.ps-pgrep`'s advisory — aimed at 2,307 ps/pgrep atoms across
+ * 63 sessions, and whose own docstring says "the value is carried entirely by
+ * the prose" — had therefore never reached a single agent.
+ *
+ * WHY A MEMBERSHIP SET AND NOT A NEW COLUMN. `pairs/*.ts` is the authoring
+ * surface for every row (`seed.ts` writes the table from it and
+ * `registry-drift.ts` asserts the table still matches), so a DB column would be
+ * a second copy of a fact the pair definition already owns — the duplication the
+ * repo's derive/pin/attest ladder exists to prevent. This mirrors
+ * {@link RENDERED_OUTPUT_TOOLS} directly below, which is keyed the same way and
+ * for the same stated reason.
+ *
+ * WHAT MEMBERSHIP MEANS, precisely: the row's tool genuinely does NOT serve the
+ * command (the verdict stays `not-a-substitute`, and nothing here changes it),
+ * but the intent has a good answer ONE STEP EARLIER, at the launch site. That is
+ * a claim about a DIFFERENT command than the one being run, which is exactly why
+ * it cannot be expressed as an equivalence and why the prose is the payload.
+ *
+ * DELIBERATELY NOT a blanket lift of the skip. Per D-007 the other
+ * `not-a-substitute` rows are documented NEGATIVES — the ~5,100 Grep/Glob calls
+ * agents were correctly told to make — and surfacing one would tell an agent to
+ * stop doing the right thing. Adding a member here is a claim that the row's
+ * prose teaches something its verdict does not, and it needs the same kind of
+ * evidence the entry below carries.
+ */
+export const LAUNCH_SITE_ADVISORY_INTENTS: ReadonlySet<string> = new Set([
+  // ps/pgrep: `dev:processes` really cannot answer "is my job still running"
+  // (no pid selector, agent-kind processes only), so the verdict is right. The
+  // advice is about the LAUNCH: start long jobs with capability:bash
+  // { run_in_background: true } and you get a pollable, reattachable handle.
+  'host-job-liveness-query',
+]);
+
+/** Options for {@link matchAtomsToSubstitutions}. */
+export interface MatchAtomsOptions {
+  /**
+   * Include rows opted in via {@link LAUNCH_SITE_ADVISORY_INTENTS}, and rank
+   * their matches at tier `advise` so the gate actually renders the prose.
+   *
+   * OFF by default, and that default is load-bearing: the COUNTING callers
+   * (`usage-rollup`, `census`, `report`) must keep excluding these rows or they
+   * would book documented-negative atoms as substitutable demand and overstate
+   * the number this plan is trying to move — the exact overstatement D-007's
+   * skip was written to prevent. Only the advisory path passes true.
+   */
+  includeLaunchSiteAdvisories?: boolean;
+}
+
+/**
+ * Is this row a `not-a-substitute` row whose prose is opted in for delivery?
+ *
+ * The stored `tier` of such a row is pinned at `observe` by migration 665's
+ * `tier_requires_equivalence` CHECK, and this does NOT change that: enforcement
+ * still requires equivalence. The `advise` rank is derived HERE, at match time,
+ * for the one thing `advise` does to a launch-site advisory — print it. Nothing
+ * on this path can deny.
+ */
+function isLaunchSiteAdvisoryRow(row: SubstitutionRow): boolean {
+  return row.equivalenceVerdict === 'not-a-substitute' && LAUNCH_SITE_ADVISORY_INTENTS.has(row.intentLabel);
+}
+
+/**
  * A deliberately conservative prefix parser for the one cwd-changing shell
  * form the matcher can prove without executing a shell: `cd <literal> &&` (or
  * `;`) before the command. Variables, substitutions, and other shell syntax
@@ -168,12 +239,18 @@ export function normalizeRegistryFlags(flags = ''): string {
  * leading `cd` hiding the real verb), which would divorce enforcement from the
  * evidence that authorised it.
  *
- * `not-a-substitute` rows are skipped unconditionally. Per D-007 those record a
- * pattern whose tool answers a DIFFERENT question — the ~5,100 Grep/Glob calls
- * where agents were correctly following the harness's own instruction. They
- * exist in the table as documented negatives so nobody re-litigates them, and
- * surfacing one as an advisory would tell an agent to stop doing the right
- * thing.
+ * `not-a-substitute` rows are skipped — with ONE opt-in exception. Per D-007
+ * those record a pattern whose tool answers a DIFFERENT question — the ~5,100
+ * Grep/Glob calls where agents were correctly following the harness's own
+ * instruction. They exist in the table as documented negatives so nobody
+ * re-litigates them, and surfacing one as an advisory would tell an agent to
+ * stop doing the right thing.
+ *
+ * The exception is {@link LAUNCH_SITE_ADVISORY_INTENTS} (WI-2145718 / D-069(b)):
+ * a row whose tool genuinely does not substitute, but whose PROSE points at a
+ * different command one step earlier. This function is the only caller that
+ * passes `includeLaunchSiteAdvisories` — the counting callers must not, or the
+ * documented negatives would re-enter the demand metric.
  */
 export function matchCommandToSubstitutions(
   command: string,
@@ -190,7 +267,11 @@ export function matchCommandToSubstitutions(
   // copies of the same sentence. That dedup is an ADVISORY concern — see
   // matchAtomsToSubstitutions for why COUNTING must not inherit it.
   const seen = new Set<string>();
-  for (const m of matchAtomsToSubstitutions(atomsOf(command), rows)) {
+  for (const m of matchAtomsToSubstitutions(atomsOf(command), rows, {
+    // WI-2145718: this is the ADVISORY path, the only caller that may deliver a
+    // launch-site advisory. The counting callers deliberately omit the option.
+    includeLaunchSiteAdvisories: true,
+  })) {
     if (suppressUnsafeDependencyInstall && m.intentLabel === UNSAFE_DEPENDENCY_INSTALL_INTENT) {
       continue;
     }
@@ -290,6 +371,7 @@ export function atomsOf(command: string): string[] {
 export function matchAtomsToSubstitutions(
   atoms: string[],
   rows: SubstitutionRow[],
+  options?: MatchAtomsOptions,
 ): SubstitutionMatch[] {
   if (atoms.length === 0 || rows.length === 0) return [];
 
@@ -299,7 +381,16 @@ export function matchAtomsToSubstitutions(
     // (the ~5,100 Grep/Glob calls agents were correctly told to make). They are
     // documented negatives, not substitutions — counting them as substitutable
     // demand would overstate the number this plan is trying to move.
-    if (row.equivalenceVerdict === 'not-a-substitute') continue;
+    //
+    // WI-2145718: the ONE exception is a row opted into
+    // LAUNCH_SITE_ADVISORY_INTENTS, and only for a caller that asked for it.
+    // The skip is correct for its intended population and was over-broad by one
+    // axis: it also suppressed the PROSE of a row whose whole value is prose.
+    // Counting callers never pass the option, so the metric is untouched.
+    const launchSiteAdvisory = isLaunchSiteAdvisoryRow(row);
+    if (row.equivalenceVerdict === 'not-a-substitute') {
+      if (!(options?.includeLaunchSiteAdvisories && launchSiteAdvisory)) continue;
+    }
     const pattern = compileRegistryPattern(row.bashPattern, row.bashPatternFlags ?? '');
     if (!pattern) continue;
 
@@ -308,7 +399,10 @@ export function matchAtomsToSubstitutions(
       out.push({
         intentLabel: row.intentLabel,
         toolName: row.toolName,
-        tier: row.tier,
+        // A launch-site advisory ranks `advise` so the gate renders its prose;
+        // its STORED tier stays `observe` (migration 665's CHECK), and `advise`
+        // cannot deny — see isLaunchSiteAdvisoryRow.
+        tier: launchSiteAdvisory ? 'advise' : row.tier,
         advisoryText: row.advisoryText,
         atom,
       });

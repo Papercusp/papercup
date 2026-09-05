@@ -23,6 +23,12 @@ export interface ClaimSpecSubject {
   planItem: string[];
   /** EI-13524: fleet lane stamp (`payload.fleet_slug`), or null when unstamped. */
   fleet: string | null;
+  /**
+   * EI-16052: improvement-triage decision (`payload.ideaLifecycle.triageDecision` —
+   * 'place'|'gate'|'gym'|'reject'), or null when the row was never triaged. 'gate' marks a
+   * HUMAN gate: a design draft or an owner is required before implementation.
+   */
+  triageGate: string | null;
   age: number | null;
   riskTier: string | null;
   redundancy: number | null;
@@ -153,6 +159,9 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
           ? [itemId]
           : strings(payload.source_plan_item_ids),
     fleet: typeof payload.fleet_slug === 'string' && payload.fleet_slug ? payload.fleet_slug : null,
+    // EI-16052: mirrors FIELD_MAP.triage_gate — see triageGateOfPayload for why the null
+    // semantics have to match the SQL leg exactly.
+    triageGate: triageGateOfPayload(payload),
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a
@@ -214,6 +223,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'plan': return subject.plan;
     case 'plan_item': return subject.planItem;
     case 'fleet': return subject.fleet;
+    case 'triage_gate': return subject.triageGate;
     case 'age': return subject.age;
     case 'risk_tier': return subject.riskTier;
     case 'redundancy': return subject.redundancy;
@@ -331,6 +341,26 @@ function matchLeaf(subject: ClaimSpecSubject, leaf: FilterLeaf): boolean {
     }
   }
   return compareScalar(actual, leaf);
+}
+
+/**
+ * EI-16052: read `payload.ideaLifecycle.triageDecision` the way FIELD_MAP.triage_gate's
+ * `payload->'ideaLifecycle'->>'triageDecision'` does.
+ *
+ * The two-level guard is the point, not defensive noise. Postgres `->` on a non-object
+ * yields NULL and `->>` on a missing key yields NULL — neither ever throws and neither ever
+ * returns a non-text scalar. So the JS leg has to answer null in exactly those same cases:
+ * a missing key, a null/array/non-object `ideaLifecycle`, and a `triageDecision` that is not
+ * a string. WI-38326 is the recorded cost of these two legs disagreeing about one field's
+ * null semantics — `redundancy` read null in JS and 1 in SQL, so the same filter admitted
+ * every row on one path and no row on the other, silently.
+ */
+export function triageGateOfPayload(payload: unknown): string | null {
+  if (payload === null || typeof payload !== 'object') return null;
+  const lifecycle = (payload as { ideaLifecycle?: unknown }).ideaLifecycle;
+  if (lifecycle === null || typeof lifecycle !== 'object' || Array.isArray(lifecycle)) return null;
+  const decision = (lifecycle as { triageDecision?: unknown }).triageDecision;
+  return typeof decision === 'string' && decision ? decision : null;
 }
 
 export function matchesClaimSpecFilter(subject: ClaimSpecSubject, filter: FilterNode | undefined): boolean {

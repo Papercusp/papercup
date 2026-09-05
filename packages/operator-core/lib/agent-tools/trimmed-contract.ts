@@ -169,3 +169,177 @@ export function trimmedContractViolations(
   }
   return out;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * COVERAGE — EI-21353488282456582.
+ *
+ * The contract above is opt-in, deliberately: a blanket "every trimmed shaper
+ * must preserve everything promised" rail would be wrong for `coord:orient`,
+ * whose trimmed tier correctly omits whole optional legs and says so in-band.
+ * That reasoning still holds and is not what this section changes.
+ *
+ * What it changes is that opt-in with nothing forcing the choice is opt-in
+ * nobody takes. Measured 2026-09-05, three weeks after this file landed:
+ * exactly ONE tool declaring a payload shaper had opted in — `routines:list`,
+ * the tool whose three repeated defects motivated building the mechanism. The
+ * guard covered its own motivating instance and nothing else, which is
+ * indistinguishable from a guard that works until a second instance appears.
+ *
+ * The coverage assertion that should have caught that read
+ * `expect(optedIn.length).toBeGreaterThanOrEqual(1)`. The instinct was right —
+ * its comment says "if this drops to zero the suite above is green because it
+ * checked nothing" — but the floor was set at the then-current population of
+ * one, and nothing ratchets it, so a single adopter satisfies it forever.
+ *
+ * So this does not widen the contract. It forces a DECISION: a tool declaring
+ * a payload shaper either opts in (`shape.contract`), or is listed in
+ * SHAPER_CONTRACT_EXEMPT with a reason. Adding a shaper without classifying it
+ * fails the build. That is the same inversion that works elsewhere in this repo
+ * — a live-population scan where every member must be a deliberate
+ * covered/exempt decision, rather than an allowlist that only grows.
+ *
+ * The check is BIDIRECTIONAL on purpose. An exemption naming a tool that no
+ * longer declares a shaper is reported too: a one-way list rots into a set of
+ * claims about code that has moved, which is the failure this file's header
+ * already names for hand-typed lists.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Why an entry is not opted in. The two cases are governed DIFFERENTLY and must
+ * not be conflated — mirroring `DarkCase` in libs/flags, where a reasoned
+ * kill-switch and an unfinished-work parking slot share one list but only the
+ * parking subset is rationed by a watermark.
+ *
+ * - `reasoned` — a deliberate decision that this shaper should not carry a row
+ *   contract. Not rationed; it is an answer, not debt.
+ * - `unclassified-baseline` — DEBT. Nobody has audited this shaper yet. It
+ *   predates the coverage gate and is recorded only so the gate can fail on
+ *   anything NEW. Rationed by SHAPER_BASELINE_HIGH_WATERMARK and shrink-only.
+ *
+ * Recording debt as though it were a decision is the failure this split exists
+ * to prevent: it would make the gate read fully-covered while 21 shapers had
+ * never been looked at.
+ */
+export type ShaperExemptionCase = 'reasoned' | 'unclassified-baseline';
+
+export interface ShaperExemption {
+  case: ShaperExemptionCase;
+  reason: string;
+}
+
+/**
+ * Tools that declare a payload shaper and are not opted in to the row contract.
+ *
+ * Every entry needs a REASON, not a placeholder — the reason is what a later
+ * reader uses to decide whether it still holds. Seed and re-seed this from a
+ * measuring run over the live registry (the coverage test names every offender
+ * on failure), never from a grep: a filename glob is wrong in both directions
+ * here — `policy-shape.ts` is not a payload shaper at all, while
+ * `work_items/search.ts`, `scheduler/running.ts` and `fleet_registry/status.ts`
+ * each declare one with no `*-shape.ts` file to glob.
+ */
+export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> = {
+  'coord:orient': {
+    case: 'reasoned',
+    reason:
+      'Its trimmed tier deliberately omits whole optional legs and says so in-band via ' +
+      '`optionalLegsOmitted`. Dropping data is this tool\'s job, so a preserve-everything ' +
+      'contract would be actively wrong for it (see this file\'s header).',
+  },
+
+  // ── BASELINE (debt, shrink-only) ─────────────────────────────────────────
+  // Measured 2026-09-05 from the live registry by the coverage test below.
+  // These predate the gate and have NOT been audited. Removing one — by opting
+  // it in, or by promoting it to `reasoned` after actually looking — is the
+  // intended direction of travel. See SHAPER_BASELINE_HIGH_WATERMARK.
+  'agent_tools:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'coord:presence': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'coord:roster': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'fleet:assignments': {
+    case: 'unclassified-baseline',
+    reason:
+      'pre-existing; not yet audited. This is the CONFIRMED instance of the class ' +
+      '(EI-18763132241176410 re-added a dropped top-level `scope` block). The re-add was ' +
+      'bespoke — the shaper still rebuilds from a hand-written key list — so the same drop ' +
+      'can recur for the next field added to the source tool.',
+  },
+  'fleet:leader-brief': {
+    case: 'unclassified-baseline',
+    reason:
+      'pre-existing; not yet audited. Builds its result with a mutative accumulator ' +
+      '(`const out = {}` … `return out`), a third shape beside spread-source and ' +
+      'key-list-rebuild, in which a key can only ever appear by explicit addition.',
+  },
+  'fleet:status': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'harness_docs:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'locks:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'logs:read': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'plans:attention': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'plans:get': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'plans:items': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'plans:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'scheduler:running': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:burn_down': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:claim': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:complete': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:get': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:list': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+  'work_items:search': { case: 'unclassified-baseline', reason: 'pre-existing; not yet audited' },
+};
+
+/**
+ * Ceiling on the `unclassified-baseline` subset — SHRINK-ONLY.
+ *
+ * Seeded at the measured population on 2026-09-05. It rations DEBT only;
+ * `reasoned` exemptions are not counted, so recording a genuine decision never
+ * has to fight this budget. Lower it as shapers get audited; raising it means
+ * a new shaper shipped unclassified, which is what the gate exists to stop.
+ */
+export const SHAPER_BASELINE_HIGH_WATERMARK = 20;
+
+export interface ShaperClassification {
+  /** Declares a shaper but is neither opted in nor exempt — an undecided tool. */
+  unclassified: string[];
+  /** Exempt but no longer declares a shaper — the exemption has gone stale. */
+  staleExemptions: string[];
+  /** Entries recorded as unaudited debt, rationed by the watermark. */
+  baseline: string[];
+}
+
+/**
+ * Classify every tool that declares a payload shaper.
+ *
+ * `unclassified` is the build-failing set: a shaper nobody decided about. An
+ * empty result means every declared shaper is a deliberate choice, NOT that
+ * every shaper preserves every field — that stronger property is what
+ * `trimmedContractViolations` checks, and only for the opted-in subset.
+ */
+export function classifyDeclaredShapers(
+  tools: readonly TrimmedContractSubject[],
+  exempt: Readonly<Record<string, ShaperExemption>> = SHAPER_CONTRACT_EXEMPT,
+): ShaperClassification {
+  const declaresShaper = (t: TrimmedContractSubject): boolean =>
+    typeof t.shape?.trimmed === 'function';
+
+  const unclassified = tools
+    .filter(declaresShaper)
+    .filter((t) => !t.shape?.contract)
+    .filter((t) => !Object.prototype.hasOwnProperty.call(exempt, t.name))
+    .map((t) => t.name)
+    .sort();
+
+  const declaring = new Set(tools.filter(declaresShaper).map((t) => t.name));
+  const staleExemptions = Object.keys(exempt)
+    .filter((name) => !declaring.has(name))
+    .sort();
+
+  // Counted from the LIVE population, not from the literal's length: an entry
+  // for a tool that no longer declares a shaper is stale, and counting it here
+  // would let the watermark be satisfied by debt that has already evaporated.
+  const baseline = Object.entries(exempt)
+    .filter(([name, e]) => e.case === 'unclassified-baseline' && declaring.has(name))
+    .map(([name]) => name)
+    .sort();
+
+  return { unclassified, staleExemptions, baseline };
+}

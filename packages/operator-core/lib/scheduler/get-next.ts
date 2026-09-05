@@ -348,6 +348,14 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // EI-13524: fleet-owned plan-lane provenance stamped by fleet launch promotion.
   // Filter-only (claim-spec.ts excludes it from rank); shared by both claim families.
   fleet: { col: (sql) => sql`payload->>'fleet_slug'`, kind: 'scalar-text' },
+  // EI-16052: improvement-triage decision ('gate' = a human gate — needs a design draft or
+  // an owner before implementation). Filter-only (claim-spec.ts excludes it from rank).
+  // This leg MUST stay in step with claim-spec-match.ts's `triageGate` subject field: the
+  // two evaluate the same spec on different paths, and WI-38326 is the recorded case of them
+  // silently disagreeing (SQL answered 1 where JS answered null, so one filter admitted ALL
+  // and the other NONE). The nested `->'ideaLifecycle'->>'triageDecision'` reach is the whole
+  // reason this needed a FIELD_MAP entry rather than a plain column.
+  triage_gate: { col: (sql) => sql`payload->'ideaLifecycle'->>'triageDecision'`, kind: 'scalar-text' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
   // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically

@@ -19,6 +19,7 @@ import {
   matchCommandToSubstitutions,
   normalizeRegistryFlags,
   strongestTier,
+  LAUNCH_SITE_ADVISORY_INTENTS,
   MAX_MATCHABLE_ATOM_LENGTH,
   type SubstitutionRow,
 } from './match';
@@ -182,6 +183,73 @@ describe('matchCommandToSubstitutions — safety', () => {
     expect(hits).toEqual([]);
   });
 
+  /**
+   * WI-2145718 / D-069(b). `equivalenceVerdict` was doing two jobs — a VERDICT
+   * about tool equivalence AND the show/suppress switch for the row's prose —
+   * so a row saying "no tool replaces this" could never carry advice. These pin
+   * the narrow opt-in that separates them, and (just as importantly) that the
+   * separation did not leak into the counting path or re-open D-007.
+   */
+  describe('launch-site advisory opt-in', () => {
+    const launchSiteRow = () =>
+      row({
+        intentLabel: 'host-job-liveness-query',
+        bashPattern: String.raw`^(?:ps|pgrep)(?=\s|$)`,
+        toolName: 'dev:processes',
+        tier: 'observe',
+        advisoryText: 'the fix is at the LAUNCH site: capability:bash { run_in_background: true }',
+        equivalenceVerdict: 'not-a-substitute',
+      });
+
+    it('delivers an opted-in row’s prose that the D-007 skip used to swallow', () => {
+      const hits = matchCommandToSubstitutions('ps -p 4242', [launchSiteRow()]);
+      expect(hits).toHaveLength(1);
+      expect(hits[0].advisoryText).toContain('LAUNCH site');
+    });
+
+    it('ranks it `advise` so the gate renders it — its STORED tier stays observe', () => {
+      // The hook prints only at tier advise/deny, and migration 665's
+      // tier_requires_equivalence CHECK pins this row's stored tier at observe.
+      // The rank is derived at match time; enforcement still needs equivalence.
+      const stored = launchSiteRow();
+      expect(stored.tier).toBe('observe');
+      const hits = matchCommandToSubstitutions('ps -p 4242', [stored]);
+      expect(strongestTier(hits)).toBe('advise');
+    });
+
+    it('stays OUT of the counting path, so documented negatives never re-enter the demand metric', () => {
+      // usage-rollup / census / report call this with no options — the default
+      // is what protects the metric, so assert the default, not the option.
+      expect(matchAtomsToSubstitutions(['ps -p 4242'], [launchSiteRow()])).toEqual([]);
+      expect(
+        matchAtomsToSubstitutions(['ps -p 4242'], [launchSiteRow()], { includeLaunchSiteAdvisories: true }),
+      ).toHaveLength(1);
+    });
+
+    it('does NOT lift the skip for other not-a-substitute rows (D-007 intact)', () => {
+      // The whole point of a per-row opt-in: a documented negative that is not a
+      // member stays silent even on the advisory path.
+      const documentedNegative = row({
+        intentLabel: 'recursive-text-search',
+        equivalenceVerdict: 'not-a-substitute',
+      });
+      expect(LAUNCH_SITE_ADVISORY_INTENTS.has('recursive-text-search')).toBe(false);
+      expect(matchCommandToSubstitutions("sed -n '1,40p' a.ts", [documentedNegative])).toEqual([]);
+    });
+
+    it('names only intents that a real pair still declares not-a-substitute, with prose to deliver', () => {
+      // Anti-rot: if a pair is renamed, deleted, or re-verdicted to `equivalent`,
+      // the opt-in silently becomes either dead or redundant. Fail instead.
+      expect(LAUNCH_SITE_ADVISORY_INTENTS.size).toBeGreaterThan(0);
+      for (const intent of LAUNCH_SITE_ADVISORY_INTENTS) {
+        const pair = BASH_GATE_PAIRS.find((p) => p.intentLabel === intent);
+        expect(pair, `no registry pair declares intentLabel ${intent}`).toBeDefined();
+        expect(pair!.expectedVerdict).toBe('not-a-substitute');
+        expect(pair!.advisoryText.trim().length).toBeGreaterThan(0);
+      }
+    });
+  });
+
   it('does not run patterns against atoms past the length cap', () => {
     const huge = `sed -n '1,2p' ${'a'.repeat(MAX_MATCHABLE_ATOM_LENGTH + 10)}`;
     expect(matchCommandToSubstitutions(huge, [row()])).toEqual([]);
@@ -296,7 +364,14 @@ describe('every seeded pair survives the registry round-trip', () => {
       const claimed = fixture.sample.filter(
         (entry) => matchCommandToSubstitutions(entry.atom, [registryRow]).length === 1,
       );
-      const expected = verdict === 'not-a-substitute' ? 0 : fixture.sample.length;
+      // WI-2145718 / D-069(b): ONE class of negative row is no longer inert —
+      // a member of LAUNCH_SITE_ADVISORY_INTENTS keeps the `not-a-substitute`
+      // verdict (no tool replaces the command) but deliberately delivers its
+      // PROSE, so it claims its whole audited sample exactly like an equivalent
+      // row. The zero-claim inversion above still holds for every other negative
+      // row, which is what makes the opt-in per-row rather than a blanket lift.
+      const optedIn = LAUNCH_SITE_ADVISORY_INTENTS.has(pair.intentLabel);
+      const expected = verdict === 'not-a-substitute' && !optedIn ? 0 : fixture.sample.length;
       expect(claimed).toHaveLength(expected);
     });
   }

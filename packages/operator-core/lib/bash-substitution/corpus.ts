@@ -20,6 +20,7 @@ import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { atomize } from './atomize';
+import { LAUNCH_SITE_ADVISORY_INTENTS } from './match';
 import type { SampledCommand, SubstitutionPair } from './types';
 
 /** One line of the audit extract. */
@@ -68,10 +69,24 @@ export function loadPairFixtures<T extends SubstitutionPair>(
  * run with no obvious link to the pair that caused it.
  *
  * `not-a-substitute` pairs are excluded because `matchCommandToSubstitutions`
- * drops them unconditionally per D-007, so their atoms can never produce an
- * advisory however the pre-filter behaves. The verdict is read off the pair,
- * never inferred from a filename, so this cannot drift from what the matcher
- * actually enforces.
+ * drops them per D-007, so their atoms can never produce an advisory however the
+ * pre-filter behaves. The verdict is read off the pair, never inferred from a
+ * filename, so this cannot drift from what the matcher actually enforces.
+ *
+ * ── WI-2145718 / WI-2145714: the one exception, and why the REASON moved ────
+ * That sentence used to say "drops them UNCONDITIONALLY", and the word was doing
+ * real work: it made "verdict is not-a-substitute" a sufficient reason to skip
+ * the fixture. It is no longer true. A {@link LAUNCH_SITE_ADVISORY_INTENTS} row
+ * keeps that verdict but IS delivered, so its atoms can now clear the pre-filter
+ * and reach an agent — which means the hook-parity guards must replay them like
+ * any other enforceable pair, or the one class of row whose delivery path was
+ * just changed is the only one nothing exercises end to end.
+ *
+ * Note what this is NOT: it does not make these pairs enforceable, and it does
+ * not touch the equivalence audit, whose sample answers "does the tool cover the
+ * atom?" — genuinely N/A here and still answered `not-a-substitute`. The
+ * selection is about which fixtures the PRE-FILTER guards replay, which is a
+ * delivery question, and delivery is exactly what changed.
  *
  * `expected` comes back alongside `files` so the caller asserts EXACT coverage
  * rather than `> 0`. A selection that silently dropped fixtures would make both
@@ -83,7 +98,13 @@ export function selectEnforceableFixtures<T extends SubstitutionPair>(
   pairs: readonly T[],
 ): { files: string[]; expected: number } {
   const enforceable = new Set(
-    pairs.filter((p) => p.expectedVerdict !== 'not-a-substitute').map((p) => `${p.id}.sample.json`),
+    pairs
+      .filter(
+        (p) =>
+          p.expectedVerdict !== 'not-a-substitute' ||
+          LAUNCH_SITE_ADVISORY_INTENTS.has(p.intentLabel),
+      )
+      .map((p) => `${p.id}.sample.json`),
   );
   const files = readdirSync(FIXTURE_DIR)
     .filter((f) => f.endsWith('.sample.json') && enforceable.has(f))

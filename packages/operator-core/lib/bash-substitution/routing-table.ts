@@ -18,6 +18,7 @@
  * generated and CI fails on drift.
  */
 import { atomHead, normalizeAtom } from './atomize';
+import { LAUNCH_SITE_ADVISORY_INTENTS } from './match';
 import type { BashSubstitutionPair, SampledCommand, SubstitutionPair } from './types';
 
 export const BEGIN_MARKER = '<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->';
@@ -69,12 +70,44 @@ function pairMatches(pair: BashSubstitutionPair, atom: string): boolean {
  * handled by {@link PHRASE_PREFILTER_PAIR_IDS}. Every other pair must yield at
  * least one head; throwing prevents a novel pattern shape from making this
  * projection silently vacuous.
+ *
+ * ── WI-2145714: the LAUNCH-SITE exception, and why it belongs HERE ──────────
+ * {@link LAUNCH_SITE_ADVISORY_INTENTS} rows are `not-a-substitute` too, but
+ * WI-2145718 made their prose deliverable in the matcher. That fix alone
+ * delivers NOTHING, because this projection sits UPSTREAM of it: the head set it
+ * emits is what the hook's cheap local pre-filter tests, so a head absent here
+ * means the hook short-circuits to allow() and never makes the
+ * `locks:check_command` round-trip at all. The matcher is then never reached and
+ * the row still cannot fire.
+ *
+ * MEASURED before the change (harness_shared.tool_invocations, workspace
+ * papercusp-workspace, tool_name='locks:check_command', 24h to 2026-09-05,
+ * commands whose FIRST atom is ps/pgrep/pidof): 10 reached the gate, and all 10
+ * did so only because they ALSO contained a head already in this set (`grep`,
+ * `head`) — 0 bare polls arrived. That is the whole population `process.ps-pgrep`
+ * exists to advise.
+ *
+ * This does NOT put such a row in the CLAUDE.md routing table: that is
+ * {@link renderRoutingBlock}, which emits `equivalent`/`policyTier` pairs only,
+ * and a launch-site advisory is precisely NOT a "use tool X instead of bash Y"
+ * row — its verdict is right, and its advice is about a DIFFERENT command one
+ * step earlier. Delivery and routing are separate questions; only delivery
+ * changes here.
+ *
+ * COST, stated because it lands on a hot path: every bare `ps`/`pgrep` now pays
+ * the operator round-trip this pre-filter exists to avoid. D-069 measured 3,993
+ * polling commands/7d (~570/day) against ~10,537 check_command calls/24h — about
+ * +5% on that path, which is the price of the row working at all.
  */
 export function deriveSubstitutionPrefilterHeads(entries: PrefilterPairFixture[]): string[] {
   const heads = new Set<string>();
 
   for (const { pair, fixture } of entries) {
-    if (pair.expectedVerdict === 'not-a-substitute' || PHRASE_PREFILTER_PAIR_IDS.has(pair.id)) {
+    const launchSiteAdvisory = LAUNCH_SITE_ADVISORY_INTENTS.has(pair.intentLabel);
+    if (
+      (pair.expectedVerdict === 'not-a-substitute' && !launchSiteAdvisory) ||
+      PHRASE_PREFILTER_PAIR_IDS.has(pair.id)
+    ) {
       continue;
     }
 
