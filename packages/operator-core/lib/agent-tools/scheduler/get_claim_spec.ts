@@ -136,8 +136,14 @@ export default defineTool({
         .min(0)
         .max(CLAIM_SPEC_HISTORY_MAX)
         .optional()
+        // EI-21918830080331891 / EI-21265931516384958: both callers passed `history: true`,
+        // meaning "yes, include history". The name is a NOUN and reads as a flag, and the
+        // bare Zod refusal ("expected number, received boolean") states the type without
+        // stating the COUNT semantics — so the obvious repair from that message alone is
+        // `history: 1`, which silently returns one prior version instead of the several
+        // the caller wanted. Say the count, and say what `true` should have been.
         .describe(
-          `also return up to N (max ${CLAIM_SPEC_HISTORY_MAX}) PRIOR versions of this lane, newest first — the spec bytes a destructive write superseded, enough to rebuild it; 0 returns the current spec without prior versions`,
+          `also return up to N (max ${CLAIM_SPEC_HISTORY_MAX}) PRIOR versions of this lane, newest first — the spec bytes a destructive write superseded, enough to rebuild it; 0 returns the current spec without prior versions. This is a COUNT, not a flag: pass a number, and if you meant \`history: true\` ("include the history") you want \`history: ${CLAIM_SPEC_HISTORY_MAX}\` — the max — not \`1\`, which returns a single prior version`,
         ),
     })
     // The refusal text is the ONLY surface a caller meets at the moment they are holding

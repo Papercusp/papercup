@@ -48,6 +48,9 @@ import pipelinePositionTool from './dev/pipeline_position';
 import factsListTool from './facts/list';
 import loopEndTool from './loop/end';
 import { gitSyncAwaitTool } from './events/sugar';
+// Derived, not transcribed: the describe() below quotes this bound, so the assertion
+// must read the same constant or the two drift apart the moment the max changes.
+import { CLAIM_SPEC_HISTORY_MAX } from '../scheduler/claim-spec-revisions';
 
 type ArgRedirect = string | { tool: string; args?: Record<string, unknown>; note?: string };
 type ToolLike = {
@@ -63,15 +66,19 @@ type ToolLike = {
  * than return [] when no object shape is reachable: a guard that inspected nothing must
  * be an error, never a pass.
  */
-function declaredKeys(tool: ToolLike, label: string): string[] {
+function declaredShape(tool: ToolLike, label: string): Record<string, unknown> {
   let node: unknown = tool.args;
   for (let hop = 0; hop < 8 && node; hop += 1) {
     const shape = (node as { shape?: Record<string, unknown> }).shape;
-    if (shape && typeof shape === 'object') return Object.keys(shape);
+    if (shape && typeof shape === 'object') return shape;
     const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
     node = def?.schema ?? def?.innerType;
   }
   throw new Error(`could not read an object shape from ${label}'s args schema`);
+}
+
+function declaredKeys(tool: ToolLike, label: string): string[] {
+  return Object.keys(declaredShape(tool, label));
 }
 
 function redirects(tool: ToolLike): Record<string, ArgRedirect> {
@@ -266,6 +273,37 @@ describe('P-008 scheduler scope keys', () => {
     // everything would satisfy them both).
     expect(schema.safeParse({ fleet: 'fleet-a' }).success).toBe(true);
     expect(schema.safeParse({ cupId: 'cup-1' }).success).toBe(true);
+  });
+
+  /**
+   * The last two open rows (EI-21918830080331891, EI-21265931516384958): `history: true`,
+   * meaning "yes, include the history". `history` is a noun and reads as a flag, and it
+   * is the ONLY numeric field on this tool — which is what lets the second filing, whose
+   * message names no field at all ("Invalid input: expected number, received boolean"),
+   * be attributed to it from the schema rather than guessed.
+   *
+   * The describe() has to carry more than the type, because the type is the one thing
+   * the Zod refusal already said. Repairing from that message alone yields `history: 1`,
+   * which succeeds while returning one prior version instead of the several the caller
+   * asked for — a silent wrong answer, strictly worse than the refusal it replaced.
+   */
+  it('scheduler:get_claim_spec `history` says COUNT-not-flag, and names the max rather than letting `1` look like the repair', () => {
+    const keys = declaredKeys(getClaimSpecTool as ToolLike, 'scheduler:get_claim_spec');
+    // The attribution premise above. If another numeric field is ever added, the
+    // field-less filing can no longer be pinned to `history` and this reasoning changes.
+    expect(keys).toContain('history');
+
+    const shape = declaredShape(getClaimSpecTool as ToolLike, 'scheduler:get_claim_spec') as Record<
+      string,
+      { description?: string }
+    >;
+    const described = shape.history?.description ?? '';
+    expect(described.length, '`history` must carry a describe()').toBeGreaterThan(40);
+    expect(described).toMatch(/COUNT, not a flag/i);
+    // The load-bearing half: `true` → the max, explicitly NOT 1.
+    expect(described).toMatch(/history: true/);
+    expect(described).toContain(String(CLAIM_SPEC_HISTORY_MAX));
+    expect(described).toMatch(/not `1`|not 1\b/);
   });
 
   it('scheduler:running sends `fleet`/`plan` to fleet:assignments, the fleet-scoped roster', () => {
