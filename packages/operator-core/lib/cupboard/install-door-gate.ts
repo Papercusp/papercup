@@ -51,7 +51,12 @@ import {
   type VerifySignedPackageDeps,
   type VerifySignedPackageInput,
 } from './entitled-delivery';
-import { runInstallPlan, type InstallRunnerDeps, type RunInstallResult } from './install-runner';
+import {
+  runInstallPlan,
+  type ApplyInput,
+  type InstallRunnerDeps,
+  type RunInstallResult,
+} from './install-runner';
 
 /** What a door knows about the listing it was asked to install. */
 export interface DoorListingFacts {
@@ -105,6 +110,17 @@ export interface InstallDoorGateDeps {
   ) => Promise<DoorReleaseChain | null> | DoorReleaseChain | null;
   readonly runner: InstallRunnerDeps;
   readonly verify: VerifySignedPackageDeps;
+  /**
+   * Apply an ENCRYPTED release: decrypt the retrieved ciphertext with
+   * `openRetrievedArtifact` (D-044 §2c), then write it into place.
+   *
+   * Absent by default and REQUIRED for a distribution carrying an encryption
+   * envelope, because the ordinary `runner.apply` would otherwise write
+   * ciphertext to disk as if it were the unit — a corruption that looks like a
+   * successful install. Refusing is the fail-closed half of the same rule that
+   * refuses a paid listing with no chain.
+   */
+  readonly openArtifact?: (input: ApplyInput) => InstalledRelease | Promise<InstalledRelease>;
   readonly nowMs?: () => number;
 }
 
@@ -225,7 +241,26 @@ export async function gateCupboardInstall(
     };
   }
 
-  const run = await runInstallPlan(deps.runner, {
+  // Encryption is decided per APPLIED release, not once for the target: a plan
+  // can carry a public dependency beside an encrypted target, so the choice
+  // belongs at the apply boundary where the distribution manifest is in hand.
+  const runner: InstallRunnerDeps = {
+    ...deps.runner,
+    apply: (applyInput) => {
+      if (applyInput.distribution.encryption !== null) {
+        if (!deps.openArtifact) {
+          throw new Error(
+            `${applyInput.releaseRef} is an encrypted release and no openArtifact seam is configured — ` +
+              'openRetrievedArtifact must decrypt the bytes before they are applied (D-044 §2c)',
+          );
+        }
+        return deps.openArtifact(applyInput);
+      }
+      return deps.runner.apply(applyInput);
+    },
+  };
+
+  const run = await runInstallPlan(runner, {
     plan: planned,
     subject: input.subject,
     entitlements: chain.entitlements,
