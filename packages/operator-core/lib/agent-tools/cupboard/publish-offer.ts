@@ -29,7 +29,7 @@ export default defineTool({
     title: z.string().min(1).max(300),
     pricingModel: z.enum(['free', 'one-time', 'subscription', 'per-use']),
     amountMinor: z.number().int().nonnegative().default(0),
-    currency: z.string().regex(/^[A-Z]{3,8}$/),
+    currency: z.string().regex(/^[A-Z]{3}$/),
     active: z.boolean().optional(),
     unitPriceMicros: z.number().int().positive().optional(),
     meterUnit: z.string().min(1).max(200).optional(),

@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: f9eaffc468834e8b2b81ae82cde170bd2f2fbde7f36f7e5f37e7bc5f36eaca1f
+ * Migration digest: 3bfdcdab51dbc93f49a9c4a84e26139d041907914a4079c0ffe535fff8318038
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "f9eaffc468834e8b2b81ae82cde170bd2f2fbde7f36f7e5f37e7bc5f36eaca1f";
+  "3bfdcdab51dbc93f49a9c4a84e26139d041907914a4079c0ffe535fff8318038";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -22,8 +22,13 @@ export const GENERATED_TABLES = [
   "creator_drafts",
   "harnesses",
   "indexer_runs",
+  "prepaid_credit_balances",
+  "prepaid_credit_events",
+  "prepaid_credit_reservations",
   "publish_rate_limit",
   "reports",
+  "wallet_binding_challenges",
+  "wallet_bindings",
 ] as const;
 
 export interface AuditRow {
@@ -68,6 +73,10 @@ export interface CommerceOffersRow {
   amount_minor: number;
   currency: string;
   active: number;
+  unit_price_micros: number | null;
+  meter_unit: string | null;
+  price_version: string | null;
+  split_manifest_hash: string | null;
 }
 
 export interface CommerceOrdersRow {
@@ -230,6 +239,36 @@ export interface IndexerRunsRow {
   error_summary: string | null;
 }
 
+export interface PrepaidCreditBalancesRow {
+  principal_id: string;
+  available_micros: number;
+  reserved_micros: number;
+  spent_micros: number;
+  debt_micros: number;
+  granted_micros: number;
+  reversed_micros: number;
+  updated_at_ms: number;
+}
+
+export interface PrepaidCreditEventsRow {
+  credit_event_id: string;
+  kind: string;
+  occurred_at_ms: number;
+  principal_id: string;
+  payload_json: string;
+}
+
+export interface PrepaidCreditReservationsRow {
+  reservation_id: string;
+  principal_id: string;
+  channel_id: string;
+  reserved_micros: number;
+  committed_micros: number;
+  state: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
 export interface PublishRateLimitRow {
   github_user_id: number;
   window_start: number;
@@ -247,4 +286,29 @@ export interface ReportsRow {
   resolved_at: number | null;
   resolved_by_operator_note: string | null;
   created_at: number;
+}
+
+export interface WalletBindingChallengesRow {
+  challenge_id: string;
+  principal_id: string;
+  wallet_address: string;
+  chain_id: number;
+  nonce: string;
+  domain: string;
+  uri: string;
+  message: string;
+  issued_at_ms: number;
+  expires_at_ms: number;
+  consumed_at_ms: number | null;
+  consumed_token: string | null;
+}
+
+export interface WalletBindingsRow {
+  principal_id: string;
+  wallet_address: string;
+  chain_id: number;
+  challenge_id: string;
+  verified_at_ms: number;
+  created_at_ms: number;
+  updated_at_ms: number;
 }
