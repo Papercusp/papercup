@@ -35,21 +35,13 @@ import {
   type CarryNoteAttestationRefusal,
 } from './carry-note';
 import {
-  DECLARED_DEPS_VERSION,
   computeFreshness,
   parseDeclaredDeps,
-  shouldMarkRecomputed,
   type DeclaredDeps,
-  type DepStamp,
   type FreshnessResult,
 } from './freshness';
-import {
-  describeUnresolvedFileDep,
-  normalizeDep,
-  resolveCurrentTokens,
-  splitDep,
-  validateDep,
-} from './freshness/resolvers';
+import { resolveCurrentTokens } from './freshness/resolvers';
+import { stampDeclaredDeps } from './freshness/stamp';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -209,64 +201,21 @@ export async function setWorkItemCheckpointWithPrior(
   let recomputed = false;
 
   if (depsSpecified) {
-    // Agents routinely have the work-item id already in hand and pass `WI-123`
-    // instead of the typed `work-item:WI-123` form. Normalize recognized ids before
-    // validation/resolution so the checkpoint records the dependency rather than
-    // accepting the note while silently dropping its freshness edge.
-    const declared = [...new Set((opts?.dependsOn ?? []).map(normalizeDep))];
-    if (declared.length === 0) {
-      depsPayload = null; // explicit clear
-    } else {
-      const priorDeps = await getWorkItemCheckpointDeps(ref);
-      // Resolve the UNION so the prior note's verdict (which decides `recomputed`)
-      // is computed against real tokens even when the dep set changed.
-      const union = [...new Set([...declared, ...(priorDeps?.stamps.map((s) => s.dep) ?? [])])];
-      const tokens = await resolveCurrentTokens(union, {
-        workspaceId: ws,
-        harness: ref.harness,
-      });
-      recomputed = shouldMarkRecomputed(
-        priorDeps ? computeFreshness({ deps: priorDeps, currentTokens: tokens }).verdict : null,
-      );
-
-      const now = Date.now();
-      const stamps: DepStamp[] = [];
-      const warnings: string[] = [];
-      for (const dep of declared) {
-        const invalid = validateDep(dep);
-        if (invalid) {
-          warnings.push(invalid);
-          continue;
-        }
-        const token = tokens.get(dep);
-        if (token == null) {
-          // Stamping an unresolvable dep would make it read as CHANGED the moment
-          // it first resolves — a manufactured false stale. Drop it and say so.
-          // EI-22169368425533789: for a `file:` ref, "unresolvable" is ALSO the
-          // signature of an accurate citation into a sibling checkout in this
-          // multi-repo workspace — probe for that before reporting a dead end.
-          const parts = splitDep(dep);
-          warnings.push(
-            parts?.kind === 'file'
-              ? describeUnresolvedFileDep(dep, { harness: ref.harness })
-              : `"${dep}" could not be resolved right now and was not stamped`,
-          );
-          continue;
-        }
-        stamps.push({ dep, token, at: now });
-      }
-      // Nothing stampable ⇒ CLEAR (null), deliberately, rather than preserving the
-      // prior note's stamps. Preserving them would judge THIS note by the PREVIOUS
-      // note's dependency set, which can read `fresh` for a note whose own
-      // declaration wholly failed — a false fresh. `null` yields `undeclared`, which
-      // routes readers to the time heuristics: an honest "we don't know" beats a
-      // confident wrong answer, and `depsWarnings` tells the author to fix the refs.
-      depsPayload =
-        stamps.length > 0 ? { v: DECLARED_DEPS_VERSION, stamps, ...(recomputed ? { recomputed: true } : {}) } : null;
-      // Only claim `recomputed` if it actually landed on a stored payload.
-      if (depsPayload === null) recomputed = false;
-      if (warnings.length > 0) depsWarnings = warnings;
-    }
+    // EI-19470389781357111: the stamping contract lives in `freshness/stamp` because
+    // the loop carry-note declares dependencies against the SAME substrate. Its
+    // subtleties (drop-don't-stamp an unresolvable dep, clear-don't-preserve when
+    // nothing stamps, decide `recomputed` against the dep UNION) all fail in the
+    // trusting direction, so they get one implementation, not two.
+    // `priorDeps` is passed as a thunk: an explicit `[]` clear must not pay for a read.
+    const stamped = await stampDeclaredDeps({
+      declared: opts?.dependsOn ?? [],
+      priorDeps: () => getWorkItemCheckpointDeps(ref),
+      workspaceId: ws,
+      harness: ref.harness,
+    });
+    depsPayload = stamped.payload;
+    recomputed = stamped.recomputed;
+    if (stamped.warnings.length > 0) depsWarnings = stamped.warnings;
   }
 
   // journal:TRUE since effort-scoped-continuity-2026-09-02 P-003 (was `false`).

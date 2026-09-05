@@ -2074,3 +2074,53 @@ describe('affected-tests: deployed-liveness read guard (EI-19453217565223331)', 
     expect(pkg.scripts?.[SCRIPT]).toContain('check-no-deployed-liveness-read.mjs');
   });
 });
+
+/**
+ * WI-2144851 / P-007 — the reachable-production-advisory gate, wired the same way.
+ *
+ * `scripts/check-reachable-advisories.mjs` attributes every npm advisory to the workspace(s)
+ * that pull it in and gates only on the SHIPPING high/critical set. Its subject is not any
+ * workspace's source — it is the dependency GRAPH — so workspace selection cannot reach it:
+ * a new shipping advisory enters through a manifest/lockfile edit in a workspace whose own
+ * suite has no reason to run a dependency audit. Before this registration the gate existed,
+ * was falsifiable, and ran on NO path at all.
+ *
+ * The pair below is what makes the registration falsifiable rather than merely present:
+ * a predicate that stopped matching manifests, and one that widened to all source, are both
+ * silent failures in opposite directions — the first turns the gate off, the second bills
+ * every source edit ~15s of `npm audit`. Only asserting BOTH catches either.
+ *
+ * The third case covers the silent-no-op shape the whole file exists for
+ * (`if (!ws?.scripts?.[guard.script]) continue`): drop the script from operator-core's
+ * package.json and the registration above stays, looks correct, and attaches nothing.
+ */
+describe('affected-tests: reachable-advisory gate (WI-2144851)', () => {
+  const ADVISORY_SCRIPT = 'lint:reachable-advisories';
+  const ADVISORY_GUARD_PREFIX = `AFFECTED_GUARD\t@papercusp/operator-core\t${ADVISORY_SCRIPT}\t`;
+
+  it('attaches for a dependency-manifest change in another workspace', () => {
+    const out = printAffected('packages/operator-core/package.json');
+    const guardLine = out
+      .split('\n')
+      .filter(Boolean)
+      .find((line) => line.startsWith(ADVISORY_GUARD_PREFIX));
+    expect(guardLine).toBe(
+      `${ADVISORY_GUARD_PREFIX}npm run --silent --workspace @papercusp/operator-core ${ADVISORY_SCRIPT}`,
+    );
+  });
+
+  it('does NOT attach for an ordinary source change (a source edit cannot add an advisory)', () => {
+    const out = printAffected('packages/operator-core/lib/tsc-diagnostics.ts');
+    expect(out).not.toContain(ADVISORY_GUARD_PREFIX);
+  });
+
+  it('keeps the guard script declared on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[ADVISORY_SCRIPT]).toContain('check-reachable-advisories.mjs');
+    // --strict is what makes it GATE rather than report; without it the guard exits 0 on a
+    // brand-new shipping high advisory and the whole registration is decoration.
+    expect(pkg.scripts?.[ADVISORY_SCRIPT]).toContain('--strict');
+  });
+});

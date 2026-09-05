@@ -119,7 +119,11 @@ registerSystemAction('acceptance-grading-sweep', async () => {
          ORDER BY GREATEST(r.rubric_since, a.audited_since) ASC
          LIMIT ${limit}`;
 
-      return rows.map((r) => ({
+      // workspace-work-scope-policy-2026-09-04 P-007: the select is workspace-wide;
+      // plans in a harness the work-scope policy excludes are not graded (no grader
+      // agent is dispatched for them) until the policy widens.
+      const { isHarnessInScope } = await import('../../work-scope-policy');
+      return rows.filter((r) => isHarnessInScope(r.harness_slug)).map((r) => ({
         planSlug: r.plan_slug,
         harnessSlug: r.harness_slug,
         rubricRef: r.rubric_slug,

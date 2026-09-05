@@ -1,0 +1,169 @@
+/**
+ * work-scope-policy.test.ts — the workspace work-scope policy
+ * (plan workspace-work-scope-policy-2026-09-04).
+ * Run: cd packages/operator-core && npx vitest run lib/work-scope-policy.test.ts
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const store: { policy: Record<string, unknown> } = { policy: {} };
+vi.mock('./pot-control-policy', () => ({
+  placementOverride: vi.fn(() => store.policy),
+  readPotControlPolicy: vi.fn(async () => store.policy),
+  writePotControlPolicy: vi.fn(async (patch: Record<string, unknown>) => {
+    store.policy = { ...store.policy, ...patch };
+    return store.policy;
+  }),
+}));
+
+const mod = await import('./work-scope-policy');
+const {
+  matchHarnessPattern,
+  isHarnessInScope,
+  evaluateWorkScope,
+  gateWorkScope,
+  workScopeSqlTerms,
+  recordWorkScopeDecision,
+  setWorkScopePolicy,
+  clearWorkScopePolicy,
+  reconcilePresencePot,
+  classifyForRehome,
+  WORK_SCOPE_LEDGER_CAP,
+} = mod;
+
+const ENFORCE = { mode: 'enforce' as const, allowHarnesses: ['papercusp', 'papercusp/*'], setBy: 'role:su', reason: 'owner: papercusp only' };
+
+beforeEach(() => {
+  store.policy = {};
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+describe('matchHarnessPattern', () => {
+  it('exact, root+sub glob, prefix glob, star', () => {
+    expect(matchHarnessPattern('papercusp', 'papercusp')).toBe(true);
+    expect(matchHarnessPattern('papercusp', 'papercusp-public-site')).toBe(false);
+    expect(matchHarnessPattern('papercusp/*', 'papercusp')).toBe(true);
+    expect(matchHarnessPattern('papercusp/*', 'papercusp/libs/generic/sync')).toBe(true);
+    expect(matchHarnessPattern('papercusp/*', 'papercusp-public-site')).toBe(false);
+    expect(matchHarnessPattern('paper*', 'papercusp-public-site')).toBe(true);
+    expect(matchHarnessPattern('*', 'anything')).toBe(true);
+    expect(matchHarnessPattern('', 'x')).toBe(false);
+  });
+});
+
+describe('fail-open (the contract that keeps a missing policy from freezing the fleet)', () => {
+  it('no policy → allowed, mode off → allowed, unscoped → allowed', () => {
+    expect(evaluateWorkScope({ harness: 'sidestage' }, null)).toEqual({ allowed: true, reason: 'no-policy' });
+    expect(evaluateWorkScope({ harness: 'sidestage' }, { mode: 'off', allowHarnesses: ['papercusp'] })).toEqual({ allowed: true, reason: 'mode-off' });
+    expect(evaluateWorkScope({ harness: 'sidestage' }, { mode: 'enforce', allowHarnesses: [] })).toEqual({ allowed: true, reason: 'mode-off' });
+    expect(evaluateWorkScope({ harness: null }, ENFORCE)).toEqual({ allowed: true, reason: 'unscoped' });
+    expect(evaluateWorkScope({ harness: '*' }, ENFORCE)).toEqual({ allowed: true, reason: 'unscoped' });
+    expect(isHarnessInScope('sidestage', null)).toBe(true);
+  });
+  it('a garbage stored value is treated as no policy', () => {
+    store.policy = { workScope: { mode: 'weird' } };
+    expect(evaluateWorkScope({ harness: 'sidestage' })).toEqual({ allowed: true, reason: 'no-policy' });
+  });
+});
+
+describe('enforce', () => {
+  it('admits the root and its sub-harnesses, denies other pots with a self-explaining message', () => {
+    expect(evaluateWorkScope({ harness: 'papercusp' }, ENFORCE).allowed).toBe(true);
+    expect(evaluateWorkScope({ harness: 'papercusp/libs/papercusp' }, ENFORCE).allowed).toBe(true);
+    const v = evaluateWorkScope({ harness: 'sidestage', plan: 'sidestage-x' }, ENFORCE);
+    expect(v.allowed).toBe(false);
+    if (v.allowed) throw new Error('unreachable');
+    expect(v.code).toBe('scope_denied');
+    expect(v.harness).toBe('sidestage');
+    expect(v.message).toContain("harness 'sidestage'");
+    expect(v.message).toContain('papercusp, papercusp/*');
+    expect(v.message).toContain('set by role:su');
+  });
+  it('exceptions admit by harness glob / plan / goal / workItem', () => {
+    const p = { ...ENFORCE, exceptions: [
+      { harness: 'portal', reason: 'r' },
+      { plan: 'sidestage-auction', reason: 'r' },
+      { goal: 'g-1', reason: 'r' },
+      { workItem: 'WI-1', reason: 'r' },
+    ] };
+    expect(evaluateWorkScope({ harness: 'portal' }, p)).toMatchObject({ allowed: true, reason: 'exception' });
+    expect(evaluateWorkScope({ harness: 'sidestage', plan: 'sidestage-auction' }, p).allowed).toBe(true);
+    expect(evaluateWorkScope({ harness: 'sidestage', goal: 'g-1' }, p).allowed).toBe(true);
+    expect(evaluateWorkScope({ harness: 'sidestage', workItem: 'WI-1' }, p).allowed).toBe(true);
+    expect(evaluateWorkScope({ harness: 'sidestage', workItem: 'WI-2' }, p).allowed).toBe(false);
+  });
+});
+
+describe('ledger', () => {
+  it('gateWorkScope records a denial on the stored policy, bounded to the cap, and never records an allow', async () => {
+    store.policy = { workScope: { ...ENFORCE } };
+    const ok = await gateWorkScope('scheduler:get_next', { harness: 'papercusp', actor: 'su-a' });
+    expect(ok.allowed).toBe(true);
+    expect((store.policy.workScope as { ledger?: unknown }).ledger).toBeUndefined();
+    const denied = await gateWorkScope('scheduler:get_next', { harness: 'sidestage', plan: 'p', actor: 'su-a' });
+    expect(denied.allowed).toBe(false);
+    const ws = store.policy.workScope as { ledger: { entries: unknown[]; counts: Record<string, number> } };
+    expect(ws.ledger.counts.denied).toBe(1);
+    expect(ws.ledger.entries).toHaveLength(1);
+    expect(ws.ledger.entries[0]).toMatchObject({ site: 'scheduler:get_next', verdict: 'denied', harness: 'sidestage', subject: 'p', actor: 'su-a' });
+    for (let i = 0; i < WORK_SCOPE_LEDGER_CAP + 5; i++) await recordWorkScopeDecision({ site: 's', verdict: 'held', harness: 'x' });
+    const after = store.policy.workScope as { ledger: { entries: unknown[]; counts: Record<string, number> } };
+    expect(after.ledger.entries).toHaveLength(WORK_SCOPE_LEDGER_CAP);
+    expect(after.ledger.counts.held).toBe(WORK_SCOPE_LEDGER_CAP + 5);
+    expect(after.ledger.counts.denied).toBe(1);
+  });
+  it('a ledger write failure never blocks the verdict', async () => {
+    store.policy = { workScope: { ...ENFORCE } };
+    const { writePotControlPolicy } = await import('./pot-control-policy');
+    vi.mocked(writePotControlPolicy).mockRejectedValueOnce(new Error('pg down'));
+    const v = await gateWorkScope('capability:launch-agent', { harness: 'sidestage' });
+    expect(v.allowed).toBe(false);
+  });
+});
+
+describe('set / clear', () => {
+  it('set trims, stamps updatedAt, keeps the prior ledger; clear removes it', async () => {
+    store.policy = { breakerThreshold: 5, workScope: { ...ENFORCE, ledger: { entries: [], counts: { denied: 3, held: 0, rehomed: 0 } } } };
+    const stored = await setWorkScopePolicy({ mode: 'enforce', allowHarnesses: [' papercusp ', 'papercusp/*', ''], reason: 'r', setBy: 'role:su' });
+    expect(stored.allowHarnesses).toEqual(['papercusp', 'papercusp/*']);
+    expect(stored.updatedAt).toBeTruthy();
+    expect(stored.ledger?.counts.denied).toBe(3);
+    expect(store.policy.breakerThreshold).toBe(5); // sibling keys untouched
+    await clearWorkScopePolicy();
+    expect(store.policy.workScope).toBeUndefined();
+    expect(store.policy.breakerThreshold).toBe(5);
+  });
+});
+
+describe('workScopeSqlTerms', () => {
+  it('splits exact slugs from LIKE prefixes; null when not enforced or star', () => {
+    expect(workScopeSqlTerms(null)).toBeNull();
+    expect(workScopeSqlTerms({ mode: 'enforce', allowHarnesses: ['*'] })).toBeNull();
+    expect(workScopeSqlTerms(ENFORCE)).toEqual({ exact: ['papercusp', 'papercusp'], likePrefixes: ['papercusp/%'] });
+    expect(workScopeSqlTerms({ mode: 'enforce', allowHarnesses: ['a_b*'] })).toEqual({ exact: [], likePrefixes: ['a\\_b%'] });
+  });
+});
+
+describe('reconcilePresencePot (P-010)', () => {
+  it('corrects a requested pot that disagrees with the harness-derived pot; leaves agreement and unscoped alone', () => {
+    expect(reconcilePresencePot({ requested: 'sb-devboard-hive', derived: 'papercusp', harnessSlug: 'papercusp' })).toMatchObject({ potSlug: 'papercusp', corrected: true });
+    expect(reconcilePresencePot({ requested: 'papercusp', derived: 'papercusp', harnessSlug: 'papercusp' })).toEqual({ potSlug: 'papercusp', corrected: false });
+    expect(reconcilePresencePot({ requested: null, derived: 'papercusp', harnessSlug: 'papercusp' })).toEqual({ potSlug: 'papercusp', corrected: false });
+    expect(reconcilePresencePot({ requested: 'sb-devboard-hive', derived: 'papercusp', harnessSlug: '*' })).toEqual({ potSlug: 'sb-devboard-hive', corrected: false });
+    expect(reconcilePresencePot({ requested: 'sb-devboard-hive', derived: null, harnessSlug: 'papercusp' })).toEqual({ potSlug: 'sb-devboard-hive', corrected: false });
+  });
+});
+
+describe('classifyForRehome (P-009 — the non-naive half)', () => {
+  it('keeps in-scope items, re-homes platform-referencing items, holds genuinely other-pot work', () => {
+    expect(classifyForRehome({ harness: 'papercusp', title: 'x' }, ENFORCE)).toEqual({ action: 'keep', reason: 'in-scope' });
+    const calendarBug = classifyForRehome({ harness: 'calendar', title: 'Repair package.json identity-leak quarantine for git-sync' }, ENFORCE);
+    expect(calendarBug).toMatchObject({ action: 'rehome', to: 'papercusp' });
+    if (calendarBug.action !== 'rehome') throw new Error('unreachable');
+    expect(calendarBug.signals).toEqual(expect.arrayContaining(['term:git-sync', 'term:identity-leak']));
+    const fixerFiled = classifyForRehome({ harness: 'portal', title: 'broken file', createdByRole: 'content-fixer' }, ENFORCE);
+    expect(fixerFiled).toMatchObject({ action: 'rehome', signals: ['system-role:content-fixer'] });
+    const pathRef = classifyForRehome({ harness: 'email', title: 'x', paths: ['packages/operator-core/lib/x.ts'] }, ENFORCE);
+    expect(pathRef).toMatchObject({ action: 'rehome' });
+    expect(classifyForRehome({ harness: 'sidestage', title: 'Seller copilot mission: add auction chat overlay', body: 'SideStage studio' }, ENFORCE)).toEqual({ action: 'hold', reason: 'no-platform-signal' });
+  });
+});

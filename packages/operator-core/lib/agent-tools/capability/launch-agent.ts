@@ -566,6 +566,13 @@ export default defineTool({
     // harness keeps those launches on the su bootstrap path; without it, buildAgentLaunchCommand
     // omits --harness and a fresh psu falls into plain-CLI onboarding before it can receive its brief.
     const slug = args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
+    // workspace-work-scope-policy-2026-09-04 P-005: no agent is launched into a harness
+    // the workspace work-scope policy excludes.
+    {
+      const { gateWorkScope } = await import('../../work-scope-policy');
+      const scope = await gateWorkScope('capability:launch-agent', { harness: slug, plan: (args as { plan?: string }).plan ?? null });
+      if (!scope.allowed) return err(scope.message);
+    }
 
     let callerOwnerId: string | null = null;
     try {

@@ -206,7 +206,6 @@
     "lint:peer-dep-conflicts": "node scripts/check-peer-dep-conflicts.mjs",
     "lint:reachable-advisories": "node scripts/check-reachable-advisories.mjs --strict",
     "lint:reachable-advisories:report": "node scripts/check-reachable-advisories.mjs",
-    "lint:reachable-advisories:list": "node scripts/check-reachable-advisories.mjs --list",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",
     "lint:no-tracked-node-modules": "node scripts/check-tracked-node-modules.mjs",
     "lint:submodule-coverage-ignore": "node scripts/check-submodule-coverage-ignore.mjs",

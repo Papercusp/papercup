@@ -3,11 +3,22 @@
  *
  * Plan: papercusp-su-memory-2026-05-25 (Phase 4, P-017).
  *
- * P-016's dedup-on-write catches *semantic similarity*, but two
+ * P-016's dedup-on-write catches *near-duplicate wording*, but two
  * memories can be semantically related yet directly contradict (e.g.,
  * "Dev prefers terse responses" vs "Dev prefers verbose responses" —
- * not high-cosine, but in conflict). This module runs a small Haiku
+ * closely related, but in conflict). This module runs a small Haiku
  * call against the top-K nearest neighbors to detect that.
+ *
+ * ⚠ P-016 does NOT decide semantically, and does not run by default.
+ * It RETRIEVES top-K neighbours by vector/hybrid search, but the verdict
+ * is `lexicalSimilarity` (trigram-Jaccard >= 0.9) on the full text —
+ * EI-10544: the live hybrid backend scores by RRF, an ORDINAL quantity
+ * (top hit ~1/61 whether or not it is a byte-identical duplicate), so a
+ * fused score cannot make a metric call. And it is gated OFF unless
+ * PAPERCUSP_MEMORY_DEDUP=on. So a REWORDED duplicate is refused by
+ * neither gate at write time; recall-side Gate 2.5 (recall-admission.ts,
+ * word-token Jaccard >= 0.82) is what actually collapses duplicates
+ * today, and it is lexical too. Measured residual: EI-19484539329069426.
  *
  * Reuses the top-K results from P-016's dedup search (no double-pay).
  * Pure function: takes the new text + neighbor texts + an injected

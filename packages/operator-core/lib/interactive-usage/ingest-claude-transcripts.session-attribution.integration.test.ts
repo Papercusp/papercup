@@ -221,3 +221,104 @@ describe('ingestInteractiveUsage — per-owner isolation root sweep (EI-19964643
     expect(res.root).toBe(dir);
   });
 });
+
+describe('ingestInteractiveUsage — harness_slug stamped at INSERT (WI-2144763)', () => {
+  // THE GAP THIS GUARDS. Before WI-2144763 the interactive writer omitted harness_slug
+  // from its INSERT column list entirely: measured 2026-09-05, all 51,784 interactive
+  // rows carried harness_slug IS NULL (0.0%) and rendered as '(unattributed)', against
+  // a jsonl writer at 100% on the same column — a WRITER gap, not a schema gap.
+  //
+  // The fix resolves the value IN SQL via
+  // harness_shared.harness_slug_for_usage_attribution(workspace, ownerId, sessionId)
+  // (migration 1119), taking the coord owner id straight off the isolation ROOT path.
+  // That owner-first route is the whole point: session_briefs covers 83.4% of owners,
+  // where the adv_sessions session route the sample already carries covers only 7.8%,
+  // so resolving through the session would have capped interactive coverage at ~7.8%
+  // while looking like a fix. These tests pin the owner route specifically.
+  it('stamps harness_slug from the isolation-root owner (the session_briefs owner route)', async () => {
+    const owner = 'su-wi2144763-stamp-owner';
+    const uuid = 'aaaa1111-bbbb-2222-cccc-333344445555';
+    await sql`
+      INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, harness_slug)
+           VALUES (${owner}, ${WS}, ${'harness-under-test'})
+      ON CONFLICT (owner_id)
+        DO UPDATE SET harness_slug = EXCLUDED.harness_slug, workspace_id = EXCLUDED.workspace_id`;
+
+    const isolationBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2144763-iso-'));
+    tmpDirs.push(isolationBase);
+    const ownerProjectsDir = path.join(isolationBase, owner, 'projects', 'munged-cwd');
+    await fs.mkdir(ownerProjectsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(ownerProjectsDir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 400, output_tokens: 600 } } }) + '\n',
+    );
+
+    await ingestInteractiveUsage({ adapters: [], includeIsolationRoots: true, isolationBase });
+
+    const rows = await sql<Array<{ harness_slug: string | null }>>`
+      SELECT harness_slug FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].harness_slug).toBe('harness-under-test');
+  });
+
+  it('leaves harness_slug NULL when the owner resolves to nothing — an honest gap, never a fabricated slug', async () => {
+    // The companion half of the guard. A stamp that always produced SOME value would
+    // pass the test above while silently inventing attribution, which is worse than the
+    // NULL it replaced: '(unattributed)' is at least readable as unknown. The function
+    // has exactly two resolution branches (owner → session_briefs, then adv_sessions →
+    // coord_owner_id → session_briefs) and returns NULL when neither resolves; this
+    // owner has no brief and this uuid no adv_sessions row, so both must miss.
+    const owner = 'su-wi2144763-unknown-owner';
+    const uuid = 'bbbb2222-cccc-3333-dddd-444455556666';
+    await sql`DELETE FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
+
+    const isolationBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2144763-iso-null-'));
+    tmpDirs.push(isolationBase);
+    const ownerProjectsDir = path.join(isolationBase, owner, 'projects', 'munged-cwd');
+    await fs.mkdir(ownerProjectsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(ownerProjectsDir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 120, output_tokens: 130 } } }) + '\n',
+    );
+
+    await ingestInteractiveUsage({ adapters: [], includeIsolationRoots: true, isolationBase });
+
+    const rows = await sql<Array<{ harness_slug: string | null }>>`
+      SELECT harness_slug FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].harness_slug).toBeNull();
+  });
+
+  it('CONTROL: the stamp is resolved per-owner, not a constant — a second owner gets its own slug', async () => {
+    // Calibration for the two pins above. If the writer stamped one hardcoded value (or
+    // the fixture leaked between cases), the positive test would still pass. Ingesting a
+    // DIFFERENT owner in the same run must yield that owner's own slug, which is what
+    // makes 'harness-under-test' above evidence of resolution rather than a constant.
+    const owner = 'su-wi2144763-second-owner';
+    const uuid = 'cccc3333-dddd-4444-eeee-666677778888';
+    await sql`
+      INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, harness_slug)
+           VALUES (${owner}, ${WS}, ${'a-different-harness'})
+      ON CONFLICT (owner_id)
+        DO UPDATE SET harness_slug = EXCLUDED.harness_slug, workspace_id = EXCLUDED.workspace_id`;
+
+    const isolationBase = await fs.mkdtemp(path.join(os.tmpdir(), 'wi2144763-iso-2nd-'));
+    tmpDirs.push(isolationBase);
+    const ownerProjectsDir = path.join(isolationBase, owner, 'projects', 'munged-cwd');
+    await fs.mkdir(ownerProjectsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(ownerProjectsDir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 200, output_tokens: 300 } } }) + '\n',
+    );
+
+    await ingestInteractiveUsage({ adapters: [], includeIsolationRoots: true, isolationBase });
+
+    const rows = await sql<Array<{ harness_slug: string | null }>>`
+      SELECT harness_slug FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].harness_slug).toBe('a-different-harness');
+  });
+});

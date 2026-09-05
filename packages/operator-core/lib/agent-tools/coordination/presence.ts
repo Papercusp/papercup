@@ -92,12 +92,25 @@ export async function writePresence(
 ): Promise<void> {
   const agentRole = input.agentRole ?? deriveAgentRole(identity);
   let potSlug = input.potSlug ?? null;
-  if (potSlug == null && harnessSlug) {
+  if (harnessSlug && harnessSlug !== '*') {
     try {
       const { potHomeSlugForHarness } = await import('../../hive-federation');
-      potSlug = await potHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+      const derived = await potHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+      if (potSlug == null) {
+        potSlug = derived;
+      } else {
+        // workspace-work-scope-policy-2026-09-04 P-010: a requested pot that disagrees
+        // with the pot DERIVED from the session's harness is how sessions got homed in
+        // `sb-devboard-hive` while doing papercusp work (EI-22374455128414213). The
+        // derivation wins; the disagreement is logged, never silently persisted.
+        const { reconcilePresencePot } = await import('../../work-scope-policy');
+        const r = reconcilePresencePot({ requested: potSlug, derived, harnessSlug });
+        if (r.corrected) console.warn(`[presence] ${identity.ownerId}: ${r.note}`);
+        potSlug = r.potSlug;
+      }
     } catch {
-      potSlug = null; // best-effort: presence must write even if hive lookup fails
+      // best-effort: presence must write even if hive lookup fails
+      if (potSlug == null) potSlug = null;
     }
   }
   // WI-3898 P1: do NOT default host/pid from the operator's OWN process — see

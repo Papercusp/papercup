@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 850,
+  "count": 851,
   "tools": [
     {
       "name": "ablation:report",
@@ -32059,6 +32059,37 @@
         "when": "You filed a release request that is stale, no longer needed, or was based on a holder snapshot that changed — withdraw it instead of asking the current holder to decline it.",
         "notWhen": "You are the holder pushing back on someone else's request — use work_items:decline_release_request; or you agree the item should go — use work_items:release.",
         "chaining": "work_items:request_release → work_items:withdraw_release_request (requester cancels) → the item remains with its current holder and no consequence fires."
+      }
+    },
+    {
+      "name": "workspace:work_scope",
+      "http": {
+        "path": "/api/agent-tools/workspace/work_scope",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at the chokepoints — launches, scheduler pulls/claims, admission promotion, git-sync fixer dispatch, grading sweeps — never at filing; out-of-scope work is parked, never deleted. Absent ⇒ everything allowed. set/clear are audited + one-call-revertible.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/item would be admitted.",
+        "notWhen": "To steer WHICH items inside an allowed harness a fleet pulls, use scheduler:set_claim_spec. To pause one pot entirely use pot:pause.",
+        "chaining": "config:list-overrides shows the active policy; the ledger on { op:'get' } shows the last denials."
       }
     }
   ]
