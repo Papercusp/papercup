@@ -153,10 +153,14 @@ function clauseIdentity(clause: SpecClauseRevision): string {
 }
 
 function clauseProbe(clause: SpecClauseRevision): string {
+  const args = JSON.stringify({
+    slug: clause.planSlug,
+    specIds: [clause.specId],
+  });
   return (
-    `Probe plans:get-spec-evidence with planSlug=${JSON.stringify(clause.planSlug)}, ` +
-    `specId=${JSON.stringify(clause.specId)}, specRevision=${clause.revision}, ` +
-    `specFingerprint=${JSON.stringify(clause.contentHash)}.`
+    `Probe plans:get-spec-evidence with args=${args}. ` +
+    `This selects the canonical current revision for ${clause.specId}@${clause.revision} ` +
+    `(fingerprint ${JSON.stringify(clause.contentHash)}); the read has no direct revision or fingerprint selector.`
   );
 }
 
