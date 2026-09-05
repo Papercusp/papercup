@@ -159,12 +159,16 @@ export default function GoalEndsSection({
         label = 'Kill criterion saved';
       } else {
         const parsed = parseCeilingInput(ceilingDraft);
+        /* `=== undefined`, NOT a falsy check: `null` is the blank-clears write
+           (EI-20072247655456262) and `0` is a real ceiling, so both must pass
+           this gate. Only an absent `cents` — which `goals:update` would read
+           as "leave unchanged" — is the refusal. */
         if (parsed.problem || parsed.cents === undefined) {
           setProblem(parsed.problem ?? 'that is not a dollar amount');
           return;
         }
         patch = { budgetCents: parsed.cents };
-        label = 'Ceiling saved';
+        label = parsed.cents === null ? 'Ceiling removed' : 'Ceiling saved';
       }
 
       setBusy(true);
@@ -310,8 +314,8 @@ export default function GoalEndsSection({
             />
           </label>
           <p className="hud-goal__note">
-            The declared ceiling this goal&apos;s spend is measured against. This sets or revises a
-            ceiling; it cannot remove one.
+            The declared ceiling this goal&apos;s spend is measured against. Leave it blank to
+            remove the ceiling entirely; removing it clears its window too.
           </p>
           {problem ? (
             <p className="hud-goal__set-alarm" data-testid="goal-ceiling-problem">
@@ -325,7 +329,14 @@ export default function GoalEndsSection({
               disabled={busy || !ceilingDirty(budgetCents, ceilingDraft)}
               data-testid="goal-ceiling-save"
             >
-              {busy ? 'Saving…' : 'Save ceiling'}
+              {busy
+                ? 'Saving…'
+                : /* Names the write it will actually make: a blank draft over a
+                     stored ceiling REMOVES it, and a button that still said
+                     "Save ceiling" would read as the opposite of what happens. */
+                  ceilingDraft.trim() === '' && budgetCents != null
+                  ? 'Remove ceiling'
+                  : 'Save ceiling'}
             </button>
             <button
               type="button"

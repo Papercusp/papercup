@@ -30,15 +30,14 @@ describe('parseCeilingInput', () => {
     expect(parseCeilingInput('$1,250.50')).toEqual({ cents: 125_050, problem: null });
   });
 
-  it('refuses blank, and says the control cannot remove a ceiling', () => {
-    // Measured, not chosen: `goals:update`'s budgetCents is
-    // `z.number().int().nonnegative().optional()` with NO `.nullable()`, so
-    // there is no value this editor could send that unsets a ceiling. A blank
-    // that appeared to clear one would be a control that lies.
-    for (const raw of ['', '   ', '$']) {
-      const r = parseCeilingInput(raw);
-      expect(r.problem).toMatch(/cannot remove one/);
-      expect(r.cents).toBeUndefined();
+  it('reads blank as an explicit REMOVE — null, never an omitted cents', () => {
+    // The null/undefined split is the whole behaviour (EI-20072247655456262):
+    // `goals:update` reads an omitted budgetCents as "leave unchanged", so a
+    // blank that returned `{}` would close the editor having silently done
+    // nothing. `toEqual` is deliberate over `toBe(null)` — it also pins that
+    // no `problem` came back, i.e. that blank is a write and not a refusal.
+    for (const raw of ['', '   ', '$', ' $ ']) {
+      expect(parseCeilingInput(raw), raw).toEqual({ cents: null, problem: null });
     }
   });
 
@@ -100,13 +99,19 @@ describe('dirtiness', () => {
     expect(ceilingDirty(50_000, '600')).toBe(true);
   });
 
-  it('counts BLANK as no-change even when a ceiling is stored — Save never promises a clear', () => {
-    // Blank cannot mean "clear it" (the write path has no way to unset a
-    // ceiling), so an enabled Save over an empty field would promise something
-    // this control cannot deliver.
-    expect(ceilingDirty(50_000, '')).toBe(false);
-    expect(ceilingDirty(50_000, '  $ ')).toBe(false);
+  it('counts BLANK as dirty against a stored ceiling — that is the removal', () => {
+    expect(ceilingDirty(50_000, '')).toBe(true);
+    expect(ceilingDirty(50_000, '  $ ')).toBe(true);
+    // A zero ceiling IS a ceiling, so blanking it is still a removal. Guards
+    // the `>= 0` rather than a truthiness check, which would read 0 as absent.
+    expect(ceilingDirty(0, '')).toBe(true);
+  });
+
+  it('counts BLANK as no-change when there is nothing to remove', () => {
+    // Otherwise the "Set ceiling" path opens with an enabled Save that would
+    // write null over null and report a removal that removed nothing.
     expect(ceilingDirty(null, '')).toBe(false);
+    expect(ceilingDirty(undefined, '   ')).toBe(false);
   });
 
   it('counts a first ceiling on a goal that had none as dirty', () => {

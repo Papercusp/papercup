@@ -83,7 +83,15 @@ const goalUpdateArgs = z.object({
     .describe(
       'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
     ),
-  budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
+  budgetCents: z
+    .number()
+    .int()
+    .nonnegative()
+    .nullable()
+    .optional()
+    .describe(
+      'revise the declared ceiling; omit to leave it untouched, or pass null to REMOVE it (back to no ceiling). Clearing the ceiling clears its window too unless budgetWindowSec is passed in the same call.',
+    ),
   budgetWindowSec: z
     .number()
     .int()
@@ -171,8 +179,9 @@ const goalUpdateTool = defineTool({
   name: 'goals:update',
   needsWorkspaceTx: true,
   description:
-    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, budgetWindowSec?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. ' +
-    'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
+    'Move a GOAL record\'s standing state (harness_shared.goals). ' +
+    'Partial — omitted fields stay untouched; budgetCents, budgetWindowSec, tripwires, parentId, launchSettings and drainFleet take null to CLEAR. ' +
+    'status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
     'status FANS OUT: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
@@ -431,13 +440,32 @@ const goalUpdateTool = defineTool({
       title: args.title ?? prev.title,
       body: args.body ?? prev.body,
       status: args.status ?? prev.status,
-      budgetCents: args.budgetCents ?? (prev.budget_cents === null ? null : Number(prev.budget_cents)),
-      budgetWindowSec:
-        args.budgetWindowSec === undefined
-          ? prev.budget_window_sec === null || prev.budget_window_sec === undefined
+      // `=== undefined`, never `??` — the money ceiling is clearable now
+      // (EI-20072247655456262) and `args.budgetCents ?? prev` reads an explicit
+      // null as "omitted", which would make the clear a silent no-op. The same
+      // form also keeps an explicit `0` ceiling from falling through to prev,
+      // which the `??` version already got right and this must not regress.
+      budgetCents:
+        args.budgetCents === undefined
+          ? prev.budget_cents === null || prev.budget_cents === undefined
             ? null
-            : Number(prev.budget_window_sec)
-          : args.budgetWindowSec,
+            : Number(prev.budget_cents)
+          : args.budgetCents,
+      // A window scopes a ceiling, so removing the ceiling removes its window
+      // too — otherwise the row keeps a dangling `budget_window_sec` that is
+      // inert while there is no ceiling (every enforcement and display path
+      // gates on `budgetCents != null`) and then silently RE-ATTACHES itself to
+      // the next ceiling somebody sets, which is a window they never asked for.
+      // An explicit `budgetWindowSec` in the same call still wins: a caller
+      // naming both fields has said what it wants.
+      budgetWindowSec:
+        args.budgetWindowSec !== undefined
+          ? args.budgetWindowSec
+          : args.budgetCents === null
+            ? null
+            : prev.budget_window_sec === null || prev.budget_window_sec === undefined
+              ? null
+              : Number(prev.budget_window_sec),
       parentId: args.parentId === undefined ? prev.parent_id : args.parentId,
       installSlug: args.installSlug ?? prev.install_slug,
       // Omitted leaves it alone; a blank CLEARS it to null (see the gate above)

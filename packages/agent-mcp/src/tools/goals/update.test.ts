@@ -465,6 +465,75 @@ describe('goals:update — unrestricted amendments are always reversible from hi
   });
 });
 
+/**
+ * The money ceiling is CLEARABLE (EI-20072247655456262).
+ *
+ * It was the only unset-able-looking field on this tool without `.nullable()`,
+ * so there was no value a caller could send that returned a goal to "no
+ * ceiling" — and the HUD's inline ceiling editor was shaped around that gap,
+ * refusing a blank field in as many words. Both halves of the fix are pinned
+ * here: the schema must ACCEPT null, and the handler must WRITE it. Accepting
+ * it while the merge still read `args.budgetCents ?? prev` would be the worst
+ * outcome available — a clear that validates, returns ok, and changes nothing.
+ */
+describe('goals:update — clearing the budget ceiling', () => {
+  const writtenBudget = (): unknown => setParam('budget_cents');
+  const writtenWindow = (): unknown => setParam('budget_window_sec');
+
+  it('accepts a ceiling, an explicit null, and still refuses a negative one', () => {
+    expect(tool.args.safeParse({ id: 'g1', budgetCents: 75000 }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'g1', budgetCents: null }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'g1', budgetCents: -1 }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'g1', budgetCents: 1.5 }).success).toBe(false);
+  });
+
+  it('writes NULL for an explicit null — the removal actually lands', async () => {
+    await tool.handler(tool.args.parse({ id: 'g1', budgetCents: null }) as never, CTX() as never);
+    expect(writtenBudget()).toBeNull();
+  });
+
+  it('preserves the existing ceiling when the field is omitted', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', title: 'Renamed goal' }) as never,
+      CTX() as never,
+    );
+    // The fixture stores '50000' as a STRING (numeric column), so this also
+    // pins that the merge still coerces rather than writing the raw text.
+    expect(writtenBudget()).toBe(50000);
+  });
+
+  it('writes an explicit ZERO ceiling rather than falling through to the prior one', async () => {
+    // The regression the `??` → `=== undefined` change must not introduce in
+    // the other direction: 0 is a real declared ceiling, not an absence.
+    await tool.handler(tool.args.parse({ id: 'g1', budgetCents: 0 }) as never, CTX() as never);
+    expect(writtenBudget()).toBe(0);
+  });
+
+  it('clears the window along with the ceiling — no dangling window to re-attach', async () => {
+    // The fixture has a 604800s window. Left behind, it is inert while there is
+    // no ceiling and then silently scopes the NEXT ceiling somebody sets.
+    await tool.handler(tool.args.parse({ id: 'g1', budgetCents: null }) as never, CTX() as never);
+    expect(writtenWindow()).toBeNull();
+  });
+
+  it('lets an explicit window in the same call win over that clearing', async () => {
+    await tool.handler(
+      tool.args.parse({ id: 'g1', budgetCents: null, budgetWindowSec: 86400 }) as never,
+      CTX() as never,
+    );
+    expect(writtenBudget()).toBeNull();
+    expect(writtenWindow()).toBe(86400);
+  });
+
+  it('leaves the window alone when the ceiling is REVISED rather than removed', async () => {
+    // Paired control for the clearing test above: the window only follows the
+    // ceiling out, never on an ordinary revision.
+    await tool.handler(tool.args.parse({ id: 'g1', budgetCents: 75000 }) as never, CTX() as never);
+    expect(writtenBudget()).toBe(75000);
+    expect(writtenWindow()).toBe(604800);
+  });
+});
+
 describe('goals:update — budget windows', () => {
   const writtenBudgetWindow = (): unknown => setParam('budget_window_sec');
 

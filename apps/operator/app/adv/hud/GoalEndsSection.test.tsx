@@ -24,10 +24,12 @@
  *      server's own copy of the criterion rule comes back — so a flattened
  *      "saved" would close the editor over an unchanged row and leave the alarm
  *      standing with no explanation.
- *   5. Blank never offers a Save. Neither half can clear (the criterion by
- *      judgement, the ceiling because `budgetCents` is not nullable in
- *      `goals:update`), so an enabled Save over an empty field promises
- *      something no request could deliver.
+ *   5. Blank means different things on the two halves, and each has to be the
+ *      thing the button says. The criterion cannot be cleared here BY
+ *      JUDGEMENT, so blank is a refusal. The ceiling CAN be (its `budgetCents`
+ *      became nullable in EI-20072247655456262), so blank REMOVES it — and
+ *      offers that Save only when there is a ceiling to remove, or it would
+ *      report a removal that removed nothing.
  *
  * Every negative is paired with a positive control, per the note in
  * GoalStatusControl.test.tsx: an absence assertion in jsdom passes for reasons
@@ -276,12 +278,28 @@ describe('the ceiling write', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('never offers a Save over a blank field — this control cannot clear a ceiling', () => {
+  it('sends budgetCents:null for a blank field — the removal, not an omission', async () => {
+    // The assertion that matters is `toEqual`, not a key check: an omitted
+    // budgetCents is what `goals:update` reads as "leave unchanged", so a body
+    // of `{ id }` alone would close the editor having removed nothing.
     renderEnds({ budgetCents: 50_000 });
     fireEvent.click(screen.getByTestId('goal-ceiling-edit'));
     fireEvent.change(screen.getByTestId('goal-ceiling-input'), { target: { value: '' } });
+    expect(screen.getByTestId('goal-ceiling-save')).toHaveProperty('disabled', false);
+    expect(screen.getByTestId('goal-ceiling-save').textContent).toContain('Remove');
+    fireEvent.click(screen.getByTestId('goal-ceiling-save'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(writtenBody()).toEqual({ id: 'goal-1', budgetCents: null });
+  });
+
+  it('offers no Save over a blank field when there is no ceiling to remove', () => {
+    renderEnds({ budgetCents: null });
+    fireEvent.click(screen.getByTestId('goal-ceiling-edit'));
+    fireEvent.change(screen.getByTestId('goal-ceiling-input'), { target: { value: '' } });
     expect(screen.getByTestId('goal-ceiling-save')).toHaveProperty('disabled', true);
-    // Paired control: a changed amount DOES enable it.
+    // Paired control: a first amount DOES enable it, so the disabled state
+    // above is the blank rule and not a Save that never enables at all.
     fireEvent.change(screen.getByTestId('goal-ceiling-input'), { target: { value: '600' } });
     expect(screen.getByTestId('goal-ceiling-save')).toHaveProperty('disabled', false);
   });

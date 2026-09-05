@@ -25,17 +25,19 @@
  * criterion being absent. A blank submit here fails the shared rule like any
  * other non-criterion, and the refusal is the shared message.
  *
- * ⚠ NOR CAN IT CLEAR THE CEILING — and here the reason is the WRITE PATH, not
- * a judgement. `goals:update`'s `budgetCents` is
- * `z.number().int().nonnegative().optional()`: no `.nullable()`, unlike its
- * `tripwires`, `parentId` and `launchSettings` siblings, which all take null to
- * clear. So there is no value this editor could send that unsets a ceiling; a
- * blank field that appeared to clear one would either be refused by zod or
- * silently omitted and read as "leave unchanged" — a control that lies about
- * what it did. Blank is therefore "no change requested" and Save stays
- * disabled. If clearing is ever wanted, the change is to widen THAT schema
- * (and its handler) first — not to add a blank-clears path here that the
- * server has no way to honour.
+ * ⚠ IT CAN NOW CLEAR THE CEILING, AND THE ORDER THAT MADE THAT SAFE MATTERS.
+ * Until EI-20072247655456262 `goals:update`'s `budgetCents` was
+ * `z.number().int().nonnegative().optional()` — no `.nullable()`, unlike its
+ * `tripwires`, `parentId` and `launchSettings` siblings, which all took null to
+ * clear — so there was no value this editor could send that unset a ceiling,
+ * and a blank field that appeared to clear one would have been refused by zod
+ * or silently omitted and read as "leave unchanged": a control that lies about
+ * what it did. Blank was therefore "no change requested" and Save stayed
+ * disabled. That item widened the schema AND its handler first, so blank now
+ * parses to `{ cents: null }` and the write actually removes the ceiling. The
+ * precondition is the point: a blank-clears path here is only honest while the
+ * server can honour it, so if that schema ever narrows again, this parse has to
+ * narrow with it — the two are one behaviour split across two layers.
  */
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 
@@ -50,12 +52,19 @@ export const MAX_CEILING_USD = 10_000_000;
 
 export interface CeilingInputResult {
   /**
-   * Cents to write. Present only when `problem` is null — a caller that reads
-   * `cents` without checking `problem` would write `undefined`, which
-   * `goals:update` reads as "leave unchanged", turning a refusal into a
-   * silent no-op that still closes the editor.
+   * Cents to write, or `null` to REMOVE the ceiling (a blank field). Present
+   * only when `problem` is null — a caller that reads `cents` without checking
+   * `problem` would write `undefined`, which `goals:update` reads as "leave
+   * unchanged", turning a refusal into a silent no-op that still closes the
+   * editor.
+   *
+   * ⚠ `null` and `undefined` are DIFFERENT WRITES here, so a caller must not
+   * collapse them with `??` or a falsy check: null removes the ceiling and
+   * undefined leaves it alone. That is the same distinction the write path
+   * makes, and the reason the field is optional-and-nullable rather than
+   * merely optional.
    */
-  cents?: number;
+  cents?: number | null;
   /** The refusal to render under the field, or null when the input is usable. */
   problem: string | null;
 }
@@ -76,12 +85,11 @@ export interface CeilingInputResult {
  */
 export function parseCeilingInput(raw: string): CeilingInputResult {
   const text = raw.trim().replace(/^\$/, '').replace(/,/g, '').trim();
-  if (!text) {
-    return {
-      problem:
-        'Enter a ceiling in dollars, like 500. This control sets or revises a ceiling — it cannot remove one; press Cancel to leave the current ceiling as it is.',
-    };
-  }
+  // Blank REMOVES the ceiling (EI-20072247655456262). Explicitly `null`, never
+  // an omitted `cents`: the write path reads undefined as "leave unchanged", so
+  // returning nothing here would close the editor having done nothing while
+  // looking like it cleared the field.
+  if (!text) return { cents: null, problem: null };
   if (!/^\d+(\.\d{1,2})?$/.test(text)) {
     return {
       problem: `'${raw.trim()}' is not a dollar amount — enter a number like 500 or 1250.50`,
@@ -136,10 +144,12 @@ export function criterionDirty(stored: string | null | undefined, draft: string)
  * Compares PARSED values, not text, so `$500`, `500` and `500.00` are all the
  * same ceiling and none of them offers a Save that would write nothing.
  *
- * BLANK IS NOT DIRTY, even when a ceiling IS stored. Blank cannot mean "clear
- * it" here (see the header — the write path has no way to unset a ceiling), so
- * the only honest reading left is "no change requested", and an enabled Save
- * over an empty field would promise a clear this control cannot deliver.
+ * BLANK IS DIRTY EXACTLY WHEN A CEILING IS STORED. Blank means "remove it"
+ * (see the header — the write path takes null now), so it is a real change
+ * against a stored ceiling and no change at all against none. The second half
+ * is what keeps Save disabled on the "Set ceiling" path: an enabled Save over
+ * an empty field with nothing stored would write null over null and report a
+ * removal that removed nothing.
  *
  * An unparseable NON-blank draft does count as dirty: the owner typed
  * something, and disabling Save on it would hide the refusal that explains
@@ -147,7 +157,7 @@ export function criterionDirty(stored: string | null | undefined, draft: string)
  */
 export function ceilingDirty(storedCents: number | null | undefined, draft: string): boolean {
   const typed = draft.trim().replace(/^\$/, '').replace(/,/g, '').trim();
-  if (!typed) return false;
+  if (!typed) return storedCents != null && storedCents >= 0;
   const parsed = parseCeilingInput(draft);
   if (parsed.problem) return true;
   const stored = storedCents == null || storedCents < 0 ? null : Math.round(storedCents);
