@@ -123,6 +123,15 @@ export interface ClaimSpecAdmissionPreview {
     harness: string | null;
     previousMatched: number | null;
     previousSource: 'authored' | 'default';
+    /**
+     * WI-38283: the OTHER half of the before/after story. `previousMatched` says the lane
+     * moved; this says WHICH guaranteed `not:` predicates the revision stopped carrying —
+     * the destructive-widening shape `confirmCollapse` is blind to. Empty when none were
+     * dropped; absent when there was no authored incumbent to diff against.
+     */
+    droppedExclusions?: string[];
+    /** True when the revision matched strictly more rows than the authored incumbent. */
+    widened?: boolean;
   };
   previewError?: string;
 }
@@ -543,9 +552,11 @@ export default defineTool({
     let poolEffect: ClaimSpecAdmissionPreview['poolEffect'];
     let poolEffectError: string | undefined;
     let poolEffectWarning: string | undefined;
+    // WI-38283: the widening direction the collapse guard does not cover — reported, never refused.
+    let wideningWarning: string | undefined;
     if (admission.preview.mode === 'dynamic') {
       try {
-        const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../../scheduler/spec-pool-preview');
+        const { previewSpecPoolEffect, evaluateCollapseGuard, evaluateWideningDisclosure } = await import('../../scheduler/spec-pool-preview');
         const { activeWorkspaceId } = await import('../../workspace-registry');
         const wsForCount = ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
         const countScope = { workspaceId: wsForCount, harness: resolvedHarness ?? null };
@@ -581,6 +592,30 @@ export default defineTool({
           };
         }
         poolEffectWarning = verdict.warning;
+
+        // WI-38283: the write is going to be STORED past this point, so diff the incumbent's
+        // guaranteed exclusions and say what this revision stopped carrying. Reported on the
+        // RESULT (poolEffect.droppedExclusions) as well as in `warning`, so a caller can branch
+        // on it instead of regex-ing prose. The undo selector is the FLEET SLUG / cupId the
+        // caller addressed, never targetBeeId — that is a sentinel key get_claim_spec cannot read.
+        const disclosure = evaluateWideningDisclosure({
+          matched: current.matched,
+          previousMatched,
+          previousSource,
+          filter: validated.spec.view.filter,
+          previousFilter,
+          target: args.fleet
+            ? { kind: 'fleet', id: args.fleet.trim() }
+            : { kind: 'cup', id: args.cupId as string },
+        });
+        poolEffect = {
+          ...poolEffect,
+          widened: disclosure.widened,
+          ...(previousSource === 'authored'
+            ? { droppedExclusions: disclosure.droppedExclusions.map((d) => d.describe) }
+            : {}),
+        };
+        wideningWarning = disclosure.warning;
       } catch (err) {
         poolEffectError = err instanceof Error ? err.message : String(err);
       }
@@ -652,6 +687,9 @@ export default defineTool({
     }
     if (poolEffectWarning) {
       out.warning = out.warning ? `${out.warning as string}\n${poolEffectWarning}` : poolEffectWarning;
+    }
+    if (wideningWarning) {
+      out.warning = out.warning ? `${out.warning as string}\n${wideningWarning}` : wideningWarning;
     }
     if (poolEffectError) {
       const failOpen = `pool-effect preview failed OPEN (spec stored; collapse guard not evaluated): ${poolEffectError}`;
