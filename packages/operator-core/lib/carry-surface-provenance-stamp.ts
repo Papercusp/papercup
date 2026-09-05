@@ -23,6 +23,7 @@
 import { withBoundedTimeout } from './bounded-timeout';
 import {
   assertsOwnerAuthority,
+  directiveMatches,
   provenanceLintField,
   type ProvenanceLintMatch,
 } from './carry-surface-provenance-lint';
@@ -484,6 +485,29 @@ export function retainedProvenanceText(
     .join('\n')
     .trim();
   return retained || undefined;
+}
+
+/**
+ * EI-20745229385305334 — the STANDING DIRECTIVES a write is about to carry forward out of
+ * text it did not itself supply. Composes the two steps {@link carryProvenanceFields}
+ * already performs for `retainedProvenance` (isolate the inherited bytes, lint them) and
+ * keeps only the instruction-shaped kinds, so a caller that PRESERVES history can ask the
+ * one question the separate signals never answered together: *does the text I am about to
+ * keep tell my successor to do something?*
+ *
+ * Pure, synchronous and fail-soft — safe to call inline on a write path that is often
+ * issued near a context limit. `[]` for every clean case, so a caller can branch on
+ * non-empty alone.
+ */
+export function retainedDirectiveMatches(
+  storedText: string | null | undefined,
+  suppliedText: string | null | undefined,
+): ProvenanceLintMatch[] {
+  try {
+    return directiveMatches(provenanceLintField(retainedProvenanceText(storedText, suppliedText))?.matches);
+  } catch {
+    return [];
+  }
 }
 
 /** Ready-to-spread response fields: `provenanceLint` keeps its pre-P-014 shape

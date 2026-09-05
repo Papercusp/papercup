@@ -818,6 +818,35 @@ const MECHANISM_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
 ]);
 
 /**
+ * EI-20745229385305334 — the kinds that read as a STANDING INSTRUCTION rather than as
+ * narrative: an imperative a successor will ACT ON, not merely believe. Kept here beside
+ * the other kind sets so exactly one place owns "which kinds are directives"; a second
+ * copy in a consuming tool is the drift this file's own classification exists to prevent.
+ *
+ * The distinction is what makes preserve-by-default asymmetric. Stale prose is merely
+ * noise, but a stale imperative is OBEYED — and it reads more urgently than the prose that
+ * retracted it, because it is phrased as an order and the retraction is phrased as a
+ * report. Only the two instruction-shaped kinds qualify: a mechanism claim or a tag
+ * mention is something a reader may wrongly believe, never something they execute.
+ */
+const DIRECTIVE_KINDS: ReadonlySet<ProvenanceLintMatch['kind']> = new Set([
+  'bare-gate-imperative',
+  'owner-attribution',
+]);
+
+/**
+ * The directive-class matches among `matches` — the subset whose survival past a
+ * retraction is actionably harmful rather than untidy. Returns `[]` for the clean case
+ * (and for a lint result that flagged only non-directive kinds), so a caller can treat a
+ * non-empty result as "an instruction is present here".
+ */
+export function directiveMatches(
+  matches: readonly ProvenanceLintMatch[] | null | undefined,
+): ProvenanceLintMatch[] {
+  return (matches ?? []).filter((m) => DIRECTIVE_KINDS.has(m.kind));
+}
+
+/**
  * EI-19448526819046979 — the note for a write whose matches are ALL mechanism-class. The
  * main note is about anchoring a DIRECTIVE or a completed ACTION to a turn ref, which is
  * the wrong remedy here: nothing was ordered and nothing was done, a cause was GUESSED.
