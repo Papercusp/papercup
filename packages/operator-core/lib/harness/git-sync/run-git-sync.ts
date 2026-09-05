@@ -2619,6 +2619,100 @@ async function pruneFailedFetchTempPacks(
   return { removed, bytesReclaimed };
 }
 
+/** `git submodule status` row → path. Row is "<flag><sha> <path> (<describe>)". */
+const submoduleStatusRowPath = (l: string): string | undefined => l.slice(1).trim().split(/\s+/)[1];
+
+/**
+ * The strand census itself, over ALREADY-FETCHED `git submodule status --recursive`
+ * lines. Extracted (EI-20459175302238839) so the release preflight can measure the
+ * SAME condition without running a sync pass — one copy of the logic, never two.
+ *
+ * Callers must preserve the measured-vs-unmeasured distinction themselves: this
+ * returns the census for lines it was GIVEN, so handing it the empty list from a
+ * FAILED `submodule status` would manufacture a false all-clear. Both callers below
+ * only reach it on the exit-0 path.
+ */
+const strandCensusFromStatusLines = async (
+  runGit: RunGit,
+  repo: string,
+  lines: string[],
+  log: (msg: string) => void = () => {},
+): Promise<StrandedSubmodule[]> => {
+  // EI-20402093158205519: a '-' row means only that `submodule.<name>.url` is absent from
+  // .git/config (`git submodule init` never ran). It says NOTHING about whether the
+  // worktree is POPULATED — and a populated one can hold real, uncommitted agent work.
+  // This path's test is therefore strictly WEAKER than the .gitmodules fallback below,
+  // which lstats `<path>/.git`; and because the fallback runs ONLY when discovery FAILS,
+  // the weak test governs the normal (exit 0) case. Measured on the sidestage tree
+  // 2026-08-14: 7 of 8 submodules '-'-prefixed but fully populated, discovery returned
+  // exactly 1 path, and three tracked files sat uncommitted with no error on any tick —
+  // git-sync never visited those repos at all. Silence is the defect: SAY SO. Reporting
+  // (not auto-syncing) is deliberate — these worktrees are commonly parked on deliberate
+  // detached pins, so pulling them into the normal path would fetch/merge/push and UNPIN
+  // them. Registering is the operator's call; losing the work silently is not.
+  const stranded: StrandedSubmodule[] = [];
+  for (const l of lines) {
+    if (l[0] !== '-') continue;
+    const p = submoduleStatusRowPath(l);
+    if (!p) continue;
+    try {
+      await lstat(join(repo, p, '.git')); // populated worktree, just unregistered
+    } catch {
+      continue; // genuinely uninitialized — nothing on disk to strand
+    }
+    const dirty = await runGit(['status', '--porcelain=v1', '--untracked-files=no'], join(repo, p));
+    // Count TRACKED modifications only: scratch/untracked churn (e.g. .vitest-tmp/) would
+    // otherwise cry wolf on every tick that a test run happens to be in flight.
+    const rows = dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean) : [];
+    if (rows.length > 0) {
+      stranded.push({
+        path: p,
+        trackedFiles: rows.length,
+        // Porcelain v1 row is "XY <path>"; keep the paths so the escalation can name the
+        // actual files a human must rescue, not just a count they then have to go find.
+        files: rows.slice(0, 20).map((r) => r.slice(3).trim()),
+      });
+    }
+  }
+  if (stranded.length > 0) {
+    const list = stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join(', ');
+    log(
+      `[git-sync] ⚠ STRANDED WORK: ${stranded.length} POPULATED but UNREGISTERED submodule(s) hold uncommitted tracked changes ` +
+        `that git-sync cannot see and will NEVER commit: ${list} — ` +
+        `they are absent from .git/config (no submodule.<name>.url), so 'git submodule status' marks them '-' and discovery skips them. ` +
+        `Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into .git/config), then re-check the pin before the next tick.`,
+    );
+  }
+  return stranded;
+};
+
+/**
+ * EI-20459175302238839: measure the strand census for `repo` WITHOUT running a sync
+ * pass — the read a release/deploy preflight needs, since a strand means the committed
+ * state a release artifact is built FROM is missing work that exists only on this box.
+ *
+ * Returns `null` for NOT MEASURED (`git submodule status` failed), deliberately distinct
+ * from `[]` (measured, nothing stranded) — the same contract as
+ * `GitSyncOutcome.strandedSubmodules`. A consumer that collapses the two reintroduces
+ * exactly the silence this census exists to break, so callers must branch on `null`
+ * explicitly rather than treating a falsy/empty result as an all-clear.
+ */
+export const censusStrandedSubmodules = async (
+  runGit: RunGit,
+  repo: string,
+  log: (msg: string) => void = () => {},
+): Promise<StrandedSubmodule[] | null> => {
+  const r = await runGit(['submodule', 'status', '--recursive'], repo);
+  if (r.code !== 0) {
+    log(
+      `[strand-census] submodule discovery FAILED in ${repo} (${(r.stderr || r.stdout || 'no output').trim().slice(0, 200)}) — ` +
+        `census NOT MEASURED (null); this is not an all-clear.`,
+    );
+    return null;
+  }
+  return strandCensusFromStatusLines(runGit, repo, r.stdout.split('\n').filter(Boolean), log);
+};
+
 /**
  * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
  * reads the live submodule tree (`git submodule status --recursive`), never a
@@ -2640,56 +2734,20 @@ export const discoverSubmodulesRecursive = async (
   const r = await runGit(['submodule', 'status', '--recursive'], repo);
   if (r.code === 0) {
     const lines = r.stdout.split('\n').filter(Boolean);
-    const rowPath = (l: string) => l.slice(1).trim().split(/\s+/)[1]; // "<flag><sha> <path> (<describe>)" → path
     const paths = lines
       .filter((l) => l[0] !== '-') // skip uninitialized
-      .map(rowPath)
-      .filter(Boolean);
-    // EI-20402093158205519: a '-' row means only that `submodule.<name>.url` is absent from
-    // .git/config (`git submodule init` never ran). It says NOTHING about whether the
-    // worktree is POPULATED — and a populated one can hold real, uncommitted agent work.
-    // This path's test is therefore strictly WEAKER than the .gitmodules fallback below,
-    // which lstats `<path>/.git`; and because the fallback runs ONLY when discovery FAILS,
-    // the weak test governs the normal (exit 0) case. Measured on the sidestage tree
-    // 2026-08-14: 7 of 8 submodules '-'-prefixed but fully populated, discovery returned
-    // exactly 1 path, and three tracked files sat uncommitted with no error on any tick —
-    // git-sync never visited those repos at all. Silence is the defect: SAY SO. Reporting
-    // (not auto-syncing) is deliberate — these worktrees are commonly parked on deliberate
-    // detached pins, so pulling them into the normal path would fetch/merge/push and UNPIN
-    // them. Registering is the operator's call; losing the work silently is not.
-    const stranded: StrandedSubmodule[] = [];
-    for (const l of lines) {
-      if (l[0] !== '-') continue;
-      const p = rowPath(l);
-      if (!p) continue;
-      try {
-        await lstat(join(repo, p, '.git')); // populated worktree, just unregistered
-      } catch {
-        continue; // genuinely uninitialized — nothing on disk to strand
-      }
-      const dirty = await runGit(['status', '--porcelain=v1', '--untracked-files=no'], join(repo, p));
-      // Count TRACKED modifications only: scratch/untracked churn (e.g. .vitest-tmp/) would
-      // otherwise cry wolf on every tick that a test run happens to be in flight.
-      const rows = dirty.code === 0 ? dirty.stdout.split('\n').filter(Boolean) : [];
-      if (rows.length > 0) {
-        stranded.push({
-          path: p,
-          trackedFiles: rows.length,
-          // Porcelain v1 row is "XY <path>"; keep the paths so the escalation can name the
-          // actual files a human must rescue, not just a count they then have to go find.
-          files: rows.slice(0, 20).map((r) => r.slice(3).trim()),
-        });
-      }
-    }
-    if (stranded.length > 0) {
-      const list = stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join(', ');
-      log(
-        `[git-sync] ⚠ STRANDED WORK: ${stranded.length} POPULATED but UNREGISTERED submodule(s) hold uncommitted tracked changes ` +
-          `that git-sync cannot see and will NEVER commit: ${list} — ` +
-          `they are absent from .git/config (no submodule.<name>.url), so 'git submodule status' marks them '-' and discovery skips them. ` +
-          `Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into .git/config), then re-check the pin before the next tick.`,
-      );
-    }
+      .map(submoduleStatusRowPath)
+      .filter((p): p is string => Boolean(p));
+    // The census body lives in `strandCensusFromStatusLines` (EI-20459175302238839) so the
+    // release preflight can measure the SAME condition without running a sync pass — one
+    // copy of the logic, and the same single `submodule status` call on this path.
+    //
+    // MUST be computed on its own statement, NOT inline as `onStrandCensus?.(await …)`:
+    // an optional CALL short-circuits its own ARGUMENTS, so with no callback supplied the
+    // census would never run and its ⚠ STRANDED WORK log would silently vanish — which is
+    // the warning this whole mechanism exists to emit. The log is the point; the callback
+    // is only delivery.
+    const stranded = await strandCensusFromStatusLines(runGit, repo, lines, log);
     // Fire even when EMPTY: the caller needs the all-clear to retire a stale escalation.
     // Only on this (measured) path — see the param doc.
     onStrandCensus?.(stranded);

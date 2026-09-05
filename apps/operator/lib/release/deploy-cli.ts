@@ -15,6 +15,10 @@
  *
  * Flags: --target <ref> | --deploy-commit <sha> | --force | --no-drain
  *        | --no-rollback | --drain-sec <n> | --execute
+ *        | --allow-stranded-submodules   (EI-20459175302238839 — ship despite
+ *          uncommitted tracked work in an unregistered submodule; loud + audited.
+ *          NOTE: --force does NOT bypass this gate; they guard different things —
+ *          --force is about an UN-GREEN commit, this is about MISSING work.)
  *
  * `main` is exported + fully injectable (argv + the gather/deps/execute seams)
  * so the gate's exit-code chokepoint is unit-tested without launching a real
@@ -24,6 +28,10 @@
  */
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+// EI-20459175302238839: TYPE-ONLY (erased at runtime), so importing this module still
+// pulls in none of the git-sync runtime — the real census is lazy-imported below, the
+// same pattern as recordRefusedDeploy.
+import type { StrandedSubmodule } from '@papercusp/operator-core/lib/harness/git-sync/run-git-sync';
 import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { releaseConfig, type ReleaseConfig } from './release-config';
 import {
@@ -69,6 +77,17 @@ export interface DeployCliDeps {
    *  otherwise the refused-path test (and the gate's own `test:affected` run) would spew
    *  fake `refused` rows with the fixture sha into production pipeline_events. */
   recordRefused?: (targetSha: string) => Promise<void>;
+  /**
+   * EI-20459175302238839: measure POPULATED-but-UNREGISTERED submodules holding
+   * uncommitted TRACKED work in the integration tree — work no sweep can carry, so it
+   * exists on exactly one box and in no git history while the artifact we are about to
+   * ship is built from committed state without it.
+   *
+   * Returns `null` for NOT MEASURED, deliberately distinct from `[]` (measured, clean) —
+   * the same contract as `GitSyncOutcome.strandedSubmodules`. Injected so the gate's
+   * branches are unit-testable against stubs, with no git and no real submodules.
+   */
+  censusStranded?: (integrationRoot: string) => Promise<StrandedSubmodule[] | null>;
   /** EI-18835078701597295: record the `coalesced` pipeline event when this attempt
    *  yields to a holder. The CLI is ONE PROCESS PER ATTEMPT, so "how many attempts in
    *  a row have coalesced" cannot live in memory here — it has to be durable, or the
@@ -105,7 +124,8 @@ export interface DeployCliDeps {
  * The deploy CLI entrypoint. Returns the process exit code:
  *   0 — plan-only, noop, or a successful deploy
  *   1 — a deploy ran but failed
- *   2 — REFUSED: an un-green target without --force/--deploy-commit (the gate)
+ *   2 — REFUSED: an un-green target without --force/--deploy-commit, OR stranded
+ *       submodule work without --allow-stranded-submodules (the gate)
  *
  * Pure over its injected deps — `process.exit` is the caller's job (the
  * top-level guard below), so a test can assert the returned code directly.
@@ -121,6 +141,7 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
   const recordCoalesced = injected.recordCoalesced ?? recordCoalescedDeploy;
   const recordParity = injected.recordParity ?? recordDeployParityAfterDeploy;
   const runUnderDeployLock = injected.runUnderDeployLock ?? realRunUnderDeployLock;
+  const censusStranded = injected.censusStranded ?? realCensusStrandedSubmodules;
 
   const arg = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
@@ -190,6 +211,54 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
       return 2;
     }
 
+    // EI-20459175302238839 — STRANDED SUBMODULE GATE. A submodule that is POPULATED but
+    // absent from .git/config (`git submodule init` never ran) is invisible to git-sync:
+    // it holds uncommitted TRACKED work no sweep can ever carry, so the change lives on
+    // exactly one box and in no history, while the artifact we are about to ship is built
+    // from committed state WITHOUT it. Nothing fails and nothing alerts — the pass that
+    // strands the work is otherwise a perfectly clean 'synced'. Twice in one week that
+    // shipped: WI-38933 (a token-kit patch existing in no history, so only that box could
+    // `npm ci`) and WI-38945 (libs/sse export conditions absent from the built image →
+    // production crash-loop). git-sync ALREADY measures this every tick and merely LOGS
+    // it; this gate is the one condition that makes the existing signal refuse instead of
+    // scroll past while a release ships from the affected tree.
+    const allowStranded = has('--allow-stranded-submodules');
+    // A census failure must never wedge every deploy, so a throw folds into the same
+    // NOT-MEASURED branch as an explicit null instead of crashing the CLI.
+    const stranded = await censusStranded(cfg.integrationRoot).catch(() => null);
+    if (stranded === null) {
+      // NOT MEASURED is deliberately NOT an all-clear — collapsing those two is the exact
+      // silence this census exists to break. But it does NOT refuse either: `git submodule
+      // status --recursive` exits non-zero on ONE stray gitlink anywhere in the tree (a
+      // known recurring condition — a swept-in temp repo did it for days on 2026-07-01),
+      // so failing closed here would trade a strand RISK for a pipeline-wedge CERTAINTY.
+      // Say loudly that the check did not run, and why.
+      err(
+        `\n⚠ [deploy] STRANDED-SUBMODULE CHECK DID NOT RUN for ${cfg.integrationRoot} — census NOT MEASURED. ` +
+          `This is NOT an all-clear: uncommitted tracked work in an unregistered submodule would be invisible to this deploy. ` +
+          `Usually a stray gitlink makes 'git submodule status --recursive' exit non-zero — fix with: git rm --cached <path>.`,
+      );
+    } else if (stranded.length > 0) {
+      const list = stranded
+        .map((s) => `${s.path} (${s.trackedFiles} tracked file(s): ${s.files.slice(0, 5).join(', ')})`)
+        .join('; ');
+      if (!allowStranded) {
+        err(
+          `\n[deploy] REFUSING: ${stranded.length} populated but UNREGISTERED submodule(s) hold uncommitted tracked work ` +
+            `that git-sync can NEVER commit — ${list}`,
+        );
+        err('         This deploy would ship committed state WITHOUT that work (the WI-38945 shape: a clean-looking release that crash-loops).');
+        err('         Rescue it first: git submodule init <path> (idempotent), then let git-sync commit it.');
+        err('         Override with --allow-stranded-submodules (ships known-missing work; loud + audited).');
+        await recordRefused(plan.targetSha).catch(() => {});
+        return 2;
+      }
+      err(
+        `\n🚨 DEPLOYING WITH STRANDED WORK — ${stranded.length} unregistered submodule(s) hold uncommitted tracked ` +
+          `changes this release does NOT contain: ${list}`,
+      );
+    }
+
     const deps = makeDeps(cfg, {
       noDrain: has('--no-drain'),
       drainSec: arg('--drain-sec') ? Number(arg('--drain-sec')) : undefined,
@@ -202,6 +271,20 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
         .broadcast(
           `🚨 FORCED un-green deploy of ${plan.targetSha.slice(0, 8)} (NOT green \`${cfg.releaseRef}\`) — escape hatch (D-009), by release-deploy`,
           `Target ${plan.targetSha} is not the green ${cfg.releaseRef} pin. Commits: ${plan.commits.length}. Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
+        )
+        .catch(() => {});
+    }
+
+    // EI-20459175302238839: an ACKED strand bypass is audited like the forced un-green
+    // deploy above — knowingly shipping an artifact that omits work only one box has is at
+    // least as consequential as knowingly shipping an un-green commit.
+    if (stranded && stranded.length > 0) {
+      await deps
+        .broadcast(
+          `🚨 Deploy of ${plan.targetSha.slice(0, 8)} SHIPPED WITH STRANDED WORK — ${stranded.length} unregistered submodule(s), --allow-stranded-submodules`,
+          `Populated but unregistered submodules held uncommitted tracked work this release does NOT contain: ` +
+            `${stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join('; ')}. ` +
+            `Rescue with: git submodule init <path>, then let git-sync commit it.`,
         )
         .catch(() => {});
     }
@@ -272,6 +355,24 @@ export async function main(injected: DeployCliDeps = {}): Promise<number> {
     return 0;
   }
   return lockOutcome.result;
+}
+
+/**
+ * EI-20459175302238839: the real strand census. Lazy-imports operator-core so an
+ * `import` of this module stays light (the same reason as recordRefusedDeploy below) —
+ * the static import above is TYPE-ONLY and erased.
+ *
+ * Returns `null` for NOT MEASURED, distinct from `[]` (measured, clean); the gate
+ * branches on that explicitly rather than treating an empty/falsy result as an all-clear.
+ */
+async function realCensusStrandedSubmodules(integrationRoot: string): Promise<StrandedSubmodule[] | null> {
+  const { censusStrandedSubmodules, runGitBounded } = await import(
+    '@papercusp/operator-core/lib/harness/git-sync/run-git-sync'
+  );
+  // 30s per git call: `submodule status --recursive` plus one `status` per unregistered
+  // submodule, on a tree with ~40 of them. Generous, and bounded so a hung git cannot
+  // stall the deploy chokepoint indefinitely.
+  return censusStrandedSubmodules((args, cwd) => runGitBounded(args, cwd, 30_000), integrationRoot);
 }
 
 /** P-008: append a `refused` deploy event to the /admin/git pipeline history when the
