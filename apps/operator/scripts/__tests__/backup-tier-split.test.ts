@@ -57,6 +57,22 @@ const HEALTH_CHECK_SCRIPT =
 
 const healthCheckSrc = readFileSync(HEALTH_CHECK_SCRIPT, 'utf8');
 
+/**
+ * Shell source with comment lines removed.
+ *
+ * Needed because this file's subject is a heavily-commented script whose comments
+ * QUOTE the constructs the guards assert are absent — so a whole-text match reads
+ * the explanation as the offence, and (worse, in the other direction) a construct
+ * could be "found" only in prose. Line-granular on purpose: a trailing `#` inside
+ * a string would be mangled by anything cleverer, and no guard here needs it.
+ */
+function stripComments(shell: string): string {
+  return shell
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+}
+
 /** The default value of a `VAR="${VAR:-default}"` assignment. */
 function defaultOf(name: string): string | null {
   const m = src.match(new RegExp(`^${name}="\\$\\{${name}:-([^}]*)\\}"`, 'm'));
@@ -142,8 +158,13 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     // ALERT-BACKUP-FAILING at all.
     const tierPass = src.slice(src.indexOf('AUTHORITATIVE PHASE'));
     expect(tierPass.length, 'expected the tier pass header').toBeGreaterThan(0);
-    expect(tierPass).toContain('TIER_FAILED+=');
-    const plainFailedAppends = tierPass.match(/(?<!TIER_)FAILED\+=/g) ?? [];
+    // CODE ONLY. The comments here deliberately QUOTE the deleted gate to say why
+    // it must stay deleted, so a whole-text match finds the very string it is
+    // asserting the absence of — and reports the explanation as the offence.
+    // (This case caught exactly that on its first run.)
+    const tierPassCode = stripComments(tierPass);
+    expect(tierPassCode).toContain('TIER_FAILED+=');
+    const plainFailedAppends = tierPassCode.match(/(?<!TIER_)FAILED\+=/g) ?? [];
     expect(
       plainFailedAppends.length,
       'a tier failure must reach the authoritative FAILED array (dump failure AND the missing-table refusal)',
@@ -152,7 +173,7 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     // tiered database is never in DUMPED any more, so leaving this in would skip
     // the only backup it has on every run while reporting "backup OK".
     expect(
-      tierPass.match(/case " \$\{DUMPED\[\*\]\} " in/),
+      tierPassCode.match(/case " \$\{DUMPED\[\*\]\} " in/),
       'the "did the undifferentiated dump succeed" gate must stay deleted',
     ).toBeNull();
   });
@@ -163,7 +184,12 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     // a run already taking ~20 minutes. The undifferentiated pass must therefore
     // SKIP a tiered database, and the decision has to be made before that pass
     // runs, which is why the two tier vars are declared above it.
-    const wholeDbPass = src.slice(src.indexOf('for db in $DBS; do'));
+    // Comments stripped FIRST: this pass explains the skip in prose that names
+    // is_tiered, so an unstripped match would pass on the explanation alone —
+    // green with the guard actually deleted. The false-PASS direction, and the one
+    // no failing run ever reveals.
+    const code = stripComments(src);
+    const wholeDbPass = code.slice(code.indexOf('for db in $DBS; do'));
     expect(wholeDbPass.length, 'expected the undifferentiated pass').toBeGreaterThan(0);
     expect(
       wholeDbPass.slice(0, wholeDbPass.indexOf('\ndone')),
@@ -189,7 +215,7 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     // database back into the undifferentiated pass. An ignore rule for "$db" would
     // survive that fallback and turn it into silent ZERO coverage — the exact
     // condition WI-2146225 exists to repair. Only "$db-transcript" is ever excluded.
-    const rules = src.match(/ensure_kopiaignore_rule "[^"]*"/g) ?? [];
+    const rules = stripComments(src).match(/ensure_kopiaignore_rule "[^"]*"/g) ?? [];
     expect(rules.length, 'expected .kopiaignore rules to assert on').toBeGreaterThan(0);
     expect(rules).toContain('ensure_kopiaignore_rule "$db-transcript"');
     expect(rules).not.toContain('ensure_kopiaignore_rule "$db"');
