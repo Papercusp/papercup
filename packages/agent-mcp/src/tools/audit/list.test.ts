@@ -151,10 +151,15 @@ describe('audit:list — nullable filter passthrough', () => {
   });
 
   it('binds all three filters together', async () => {
-    await call({ actor: 'a', action: 'b', sinceTs: 5 });
+    // `sinceTs` must be a REAL epoch-millisecond value: the schema now floors
+    // it at MS_EPOCH_FLOOR (EI-20216014898419956) so a wrong-unit value is
+    // refused instead of silently matching every row. This was `5` — a toy
+    // placeholder that the floor correctly rejects. Deliberately distinct
+    // from the single-filter case above so a mis-bound value is still visible.
+    await call({ actor: 'a', action: 'b', sinceTs: 1_778_000_000_000 });
     expect(lastValues).toContain('a');
     expect(lastValues).toContain('b');
-    expect(lastValues).toContain(5);
+    expect(lastValues).toContain(1_778_000_000_000);
   });
 });
 
@@ -186,6 +191,45 @@ describe('audit:list — limit default + cap', () => {
     const r = await dispatchProjectedTool(tool, 'audit:list', { limit: 0 }, MAKE_CTX(), {});
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|limit|positive|greater/i);
+  });
+});
+
+/**
+ * EI-20216014898419956 — the epoch-unit floor, asserted through the REAL
+ * dispatch path rather than the bare zod schema.
+ *
+ * The schema-level cases live in `src/__tests__/audit-list-since-shape.test.ts`.
+ * These exist because the item is about what the CALLER IS TOLD, and a schema
+ * that refuses correctly is still a failure if the dispatch layer flattens the
+ * message to a bare "invalid_args" on the way out. Note the assertions below
+ * deliberately avoid the loose `/invalid_args|.../` alternation used above:
+ * that pattern matches the generic envelope text unconditionally, so it would
+ * pass even if the custom guidance never reached the caller.
+ */
+describe('audit:list — sinceTs epoch-unit floor', () => {
+  const dispatch = async (args: Record<string, unknown>) =>
+    dispatchProjectedTool(lookupByMcpName('audit:list')!, 'audit:list', args, MAKE_CTX(), {});
+
+  it('refuses an epoch-SECONDS value instead of matching every row', async () => {
+    // Pre-fix this dispatched cleanly and bound a value that every row's `ts`
+    // exceeds — a full result set, indistinguishable from a real one.
+    const r = await dispatch({ sinceTs: 1_785_000_000 });
+    expect(r.ok).toBe(false);
+  });
+
+  it('the caller-facing message names the unit and the repair', async () => {
+    const r = await dispatch({ sinceTs: 1_785_000_000 });
+    const message = r.error?.message ?? '';
+    // A generic zod "too_small" carries neither of these, so this is what
+    // proves the custom message survives dispatch-layer formatting.
+    expect(message).toMatch(/millisecond/i);
+    expect(message).toMatch(/1000/);
+  });
+
+  it('CONTROL: the equivalent epoch-MILLISECONDS value still dispatches and binds', async () => {
+    // Without this, deleting the arg entirely would satisfy both cases above.
+    await call({ sinceTs: 1_785_000_000_000 });
+    expect(lastValues).toContain(1_785_000_000_000);
   });
 });
 
