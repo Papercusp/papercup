@@ -302,13 +302,13 @@ describe('AdvShell — strip + header', () => {
     expect(document.querySelector('.pc-advshell__header')).toBeNull();
   });
 
-  it('normalizes a stale non-portal tab deep link to Overview in the cloud embed', async () => {
+  it('preserves a secondary tab deep link in the cloud embed', async () => {
     routeState.search = '?portalEmbed=1&portalTheme=light&tab=docs';
     nuqsState.tab = 'docs';
-    // No strip in any portal embed (owner ask 2026-09-01) — the normalisation
-    // is the URL write, not a rendered tab.
+    // Every ADV destination now mounts in the portal, including its More
+    // sections. Rewriting Docs to Overview would discard the selected section.
     await renderShell({ expectTabs: false });
-    expect(nuqsSetters.tab).toHaveBeenCalledWith('overview');
+    expect(nuqsSetters.tab).not.toHaveBeenCalled();
   });
 
   it('renders ONLY the promoted tabs as real strip tabs (D-001 option C), with NO title bar above them', async () => {

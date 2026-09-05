@@ -9,11 +9,23 @@
  *   2. it NEVER runs inside a submodule, where 45 files carry identity literals by
  *      design and would be quarantined from every commit.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { findIdentityLeakError, identityLeakScopeMatches } from './identity-leak';
 import { DEFAULT_CONTENT_DETECTORS, identityLeakDetector } from './registry';
 import { detectContentOffenders } from '../harness/git-sync/content-guard';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../');
+
+const statusRunGit = (entries: string[]) =>
+  async (args: string[]) =>
+    args[0] === 'status'
+      ? { code: 0, stdout: entries.join('\0') + (entries.length ? '\0' : ''), stderr: '' }
+      : { code: 0, stdout: '', stderr: '' };
 
 /** A `runGit` stub: answers the repo-kind probe, and reports one dirty file. */
 function makeRunGit(superprojectProbe: { code: number; stdout: string }, dirty = 'a.sh') {
@@ -43,8 +55,8 @@ function makeRunGit(superprojectProbe: { code: number; stdout: string }, dirty =
 const LEAKY = `ExecStart=${['', 'home', 'somedev', '.local', 'bin', 'thing'].join('/')}\n`;
 
 describe('findIdentityLeakError', () => {
-  it('flags a hardcoded home path and names the fix', () => {
-    const err = findIdentityLeakError('svc.service', LEAKY);
+  it('flags a hardcoded home path and names the fix', async () => {
+    const err = await findIdentityLeakError('svc.service', LEAKY, REPO_ROOT);
     expect(err).toBeTruthy();
     expect(err).toContain('hardcoded home path');
     // The fix hint must travel WITH the error: it is fed verbatim to the content-fixer,
@@ -52,28 +64,30 @@ describe('findIdentityLeakError', () => {
     expect(err).toMatch(/%h|HOME|homedir/);
   });
 
-  it('returns null for clean text — the overwhelmingly common case', () => {
-    expect(findIdentityLeakError('svc.service', 'ExecStart=%h/.local/bin/thing\n')).toBeNull();
+  it('returns null for clean text — the overwhelmingly common case', async () => {
+    await expect(
+      findIdentityLeakError('svc.service', 'ExecStart=%h/.local/bin/thing\n', REPO_ROOT),
+    ).resolves.toBeNull();
   });
 
-  it('does not throw on empty or binary input', () => {
+  it('does not throw on empty or binary input', async () => {
     // Escaped, never raw: a literal control byte here would red lint:no-control-bytes,
     // a green-checkpoint leg. The runtime string is byte-identical either way.
-    expect(() => findIdentityLeakError('x.txt', '')).not.toThrow();
-    expect(() => findIdentityLeakError('x.bin', '\x00\xff/home/')).not.toThrow();
+    await expect(findIdentityLeakError('x.txt', '', REPO_ROOT)).resolves.toBeNull();
+    await expect(findIdentityLeakError('x.bin', '\x00\xff/home/', REPO_ROOT)).resolves.toBeNull();
   });
 });
 
 describe('identityLeakScopeMatches', () => {
-  it('mirrors the CI lint: source in, generated/vendored out', () => {
-    expect(identityLeakScopeMatches('apps/operator/scripts/systemd/x.service')).toBe(true);
-    expect(identityLeakScopeMatches('node_modules/pkg/index.js')).toBe(false);
-    expect(identityLeakScopeMatches('dist/bundle.js')).toBe(false);
+  it('mirrors the CI lint: source in, generated/vendored out', async () => {
+    await expect(identityLeakScopeMatches('apps/operator/scripts/systemd/x.service', REPO_ROOT)).resolves.toBe(true);
+    await expect(identityLeakScopeMatches('node_modules/pkg/index.js', REPO_ROOT)).resolves.toBe(false);
+    await expect(identityLeakScopeMatches('dist/bundle.js', REPO_ROOT)).resolves.toBe(false);
   });
 
-  it('excludes the dot-prefixed tool caches that made the lint report 412 for 2 real leaks', () => {
-    expect(identityLeakScopeMatches('.tsx-tmp/node-compile-cache/v25/abc')).toBe(false);
-    expect(identityLeakScopeMatches('.content-fixer-tmp/tsx/abc')).toBe(false);
+  it('excludes the dot-prefixed tool caches that made the lint report 412 for 2 real leaks', async () => {
+    await expect(identityLeakScopeMatches('.tsx-tmp/node-compile-cache/v25/abc', REPO_ROOT)).resolves.toBe(false);
+    await expect(identityLeakScopeMatches('.content-fixer-tmp/tsx/abc', REPO_ROOT)).resolves.toBe(false);
   });
 });
 
@@ -98,7 +112,7 @@ describe('content guard honours repoScope', () => {
       calls,
       args: {
         runGit,
-        repoPath: '/repo',
+        repoPath: REPO_ROOT,
         readText: async () => LEAKY,
         detectors: [identityLeakDetector],
         log: () => {},
@@ -129,11 +143,51 @@ describe('content guard honours repoScope', () => {
     const { runGit, calls } = makeRunGit({ code: 0, stdout: '' });
     await detectContentOffenders({
       runGit,
-      repoPath: '/repo',
+      repoPath: REPO_ROOT,
       readText: async () => LEAKY,
       detectors: [{ ...identityLeakDetector, repoScope: undefined }],
       log: () => {},
     } as never);
     expect(calls.some((c) => c[0] === 'rev-parse')).toBe(false);
+  });
+});
+
+describe('identity detector resolves the guarded repository ruleset', () => {
+  const tempRepos: string[] = [];
+
+  afterEach(() => {
+    for (const repo of tempRepos.splice(0)) rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('does not use the operator bundle checkout rules when the guarded tree differs', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'identity-detector-repo-'));
+    tempRepos.push(repo);
+    const moduleDir = join(repo, 'scripts', 'lib');
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(
+      join(moduleDir, 'identity-leak-patterns.mjs'),
+      [
+        "const GENERIC_USERS = new Set(['somedev']);",
+        'export const FIX_HINT = "strip";',
+        'export const BOX_IDENTITY_FIX_HINT = "derive";',
+        'export const isSkippedPath = () => false;',
+        'export const renderLeak = () => "owner";',
+        'export const findOwnerNameLeaks = () => [];',
+        'export function findBoxIdentityPaths(text) {',
+        "  if (!text.includes(['/','home','somedev','/'].join('')) || GENERIC_USERS.has('somedev')) return [];",
+        "  return [{ line: 1, user: 'somedev', text }];",
+        '}',
+      ].join('\n'),
+    );
+
+    const offenders = await detectContentOffenders({
+      repoPath: repo,
+      detectors: [identityLeakDetector],
+      runGit: statusRunGit(['?? fixture.txt']),
+      readText: async () => `HOME=${['', 'home', 'somedev', 'fixture'].join('/')}`,
+      log: () => {},
+    } as never);
+
+    expect(offenders).toEqual([]);
   });
 });
