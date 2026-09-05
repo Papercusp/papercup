@@ -50,6 +50,8 @@ import {
   classifyStaleFailureEntries,
   formatStaleFailureSummary,
   formatTreeDriftAdvisory,
+  classifyFailureScope,
+  formatFailureScopeSummary,
   formatSelectedFilesLine,
 } from "./lib/vitest-summary.mjs";
 import {
@@ -6934,6 +6936,26 @@ if (failed) {
           ]) ?? "",
         ) || null
       : null,
+  })) {
+    errSync(line);
+  }
+  // EI-20072082961786945: the two advisories above answer "did the tree move" and "did THIS
+  // failing file's blob move". Neither answers the question a triager asks FIRST — is this red
+  // mine? — so the break set hands back a workspace + filename and the reader reconstructs the
+  // answer by hand. Intersect each failure with the caller's OWN `--changed-paths` set, and when
+  // there is no such set say that plainly rather than inventing a per-file verdict from a radius
+  // the caller never chose. Advisory only, for the same reason as its two siblings: this is a
+  // label that NARROWS a search, and the exit code / verdict lines must not carry a guess.
+  for (const line of formatFailureScopeSummary({
+    runToken: RUN_TOKEN,
+    classification: classifyFailureScope({
+      entries: failedFileEntries,
+      callerPaths: changedPathsOverride,
+      workspaceDirs: Object.fromEntries(
+        [...wsByName].map(([name, ws]) => [name, ws.dir]),
+      ),
+    }),
+    treeDrifted,
   })) {
     errSync(line);
   }
