@@ -201,10 +201,7 @@ export function gateCheckout(
     input.maxSpendMicros !== undefined &&
     (!Number.isSafeInteger(input.maxSpendMicros) || input.maxSpendMicros <= 0)
   ) {
-    return refuse(
-      'invalid-max-spend',
-      'maxSpendMicros must be a positive safe integer',
-    );
+    return refuse('invalid-max-spend', 'maxSpendMicros must be a positive safe integer');
   }
 
   return {
@@ -217,9 +214,7 @@ export function gateCheckout(
       cancelUrl: input.cancelUrl,
       idempotencyKey: input.idempotencyKey,
       quantity,
-      ...(input.maxSpendMicros !== undefined
-        ? { maxSpendMicros: input.maxSpendMicros }
-        : {}),
+      ...(input.maxSpendMicros !== undefined ? { maxSpendMicros: input.maxSpendMicros } : {}),
     },
   };
 }

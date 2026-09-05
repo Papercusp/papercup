@@ -22,7 +22,7 @@ export default defineTool({
   guidance: {
     when: 'You need what an organization bought, what is refundable, or a reproducible audit/export of its commerce state.',
     notWhen:
-      'Starting a purchase (cupboard:checkout). Requesting a refund (cupboard:refund-request). Diagnosing one user\'s install block (cupboard:support-request).',
+      "Starting a purchase (cupboard:checkout). Requesting a refund (cupboard:refund-request). Diagnosing one user's install block (cupboard:support-request).",
     chaining:
       'Ask for only the dashboards you need. `audit.integrity.rejections` names events the ledger refused — a non-empty list is a data problem, not a display one.',
     seeAlso: ['cupboard:checkout', 'cupboard:refund-request', 'cupboard:support-request'],

@@ -164,20 +164,14 @@ describe('gateCheckout', () => {
   });
 
   it('passes a positive per-use channel cap to the hosted preflight', () => {
-    const decision = gateCheckout(
-      { ...CHECKOUT, maxSpendMicros: 25_000 },
-      snapshot(),
-    );
+    const decision = gateCheckout({ ...CHECKOUT, maxSpendMicros: 25_000 }, snapshot());
     expect(decision.ok).toBe(true);
     if (!decision.ok) throw new Error('unreachable');
     expect(decision.request.maxSpendMicros).toBe(25_000);
   });
 
   it('refuses an invalid per-use channel cap before transport', () => {
-    const decision = gateCheckout(
-      { ...CHECKOUT, maxSpendMicros: 0 },
-      snapshot(),
-    );
+    const decision = gateCheckout({ ...CHECKOUT, maxSpendMicros: 0 }, snapshot());
     expect(decision.ok).toBe(false);
     if (decision.ok) throw new Error('unreachable');
     expect(decision.code).toBe('invalid-max-spend');

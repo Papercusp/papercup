@@ -56,9 +56,7 @@ export default defineTool({
       cancelUrl: args.cancelUrl,
       idempotencyKey: args.idempotencyKey,
       ...(args.quantity !== undefined ? { quantity: args.quantity } : {}),
-      ...(args.maxSpendMicros !== undefined
-        ? { maxSpendMicros: args.maxSpendMicros }
-        : {}),
+      ...(args.maxSpendMicros !== undefined ? { maxSpendMicros: args.maxSpendMicros } : {}),
     });
 
     if (!outcome.ok) {
@@ -82,7 +80,9 @@ export default defineTool({
       url: outcome.session.url,
       idempotentReplay: outcome.session.idempotentReplay,
       ...(outcome.session.idempotentReplay
-        ? { note: 'This idempotencyKey already had a session — the existing order was returned, nothing new was charged.' }
+        ? {
+            note: 'This idempotencyKey already had a session — the existing order was returned, nothing new was charged.',
+          }
         : {}),
     });
   },
