@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTHORSHIP_REVALIDATION_MIN_AGE_MS,
   REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS,
+  REPEAT_DEFERRAL_MIN_QUIET_MS,
   authorshipRevalidationHintFromRow,
   authorshipRevalidationWarning,
   distinctPriorSessionCount,
@@ -21,6 +22,7 @@ import {
   parseWorkedByHistory,
   priorWorkHintFromRow,
   priorWorkWarning,
+  repeatDeferralQuietEnough,
   type AuthorshipRevalidationRow,
   type ClaimTimePriorWorkHint,
 } from './work-item-prior-work';
@@ -174,6 +176,48 @@ describe('repeated-deferral escalation (EI-20284291276800931)', () => {
     expect(w).toMatch(/could NOT BE READ/i);
     expect(w).not.toMatch(/NO checkpoint was ever written/);
     expect(w).toContain('5 distinct sessions');
+  });
+
+  // WI-2145689. A durable finding retired distinct-worker churn as a stuck-item signal 0-for-2:
+  // WI-35902 drew 14 workers and 12 claims in THREE HOURS and then completed normally. The count
+  // alone cannot separate that from a real stall, and the worst false positive is the loudest one —
+  // the gate red WI-212675, re-claimed by 26 sessions within a day, where the correct response is
+  // the one-fixer stand-down and NOT "go re-judge the acceptance criterion".
+  describe('quiet-time gate — many sessions RECENTLY is contention, not deferral', () => {
+    const now = Date.parse('2026-09-05T12:00:00Z');
+    const hoursAgo = (h: number) => now - h * 60 * 60 * 1_000;
+
+    it('does NOT escalate on a hot item re-claimed within the quiet window (the WI-212675 shape)', () => {
+      const w = priorWorkWarning(
+        hint({ priorWorkers: workers(26), lastReleasedBy: 'su-peer', releasedAtMs: hoursAgo(6), hasCheckpoint: true }),
+        now,
+      );
+      expect(w).not.toMatch(/REPEATEDLY DEFERRED/);
+      // It must fall back to the ordinary message, not go silent — the row still has prior work.
+      expect(w).toMatch(/PRIOR WORK/);
+      expect(w).toMatch(/checkpoint exists/);
+    });
+
+    it('DOES escalate once the item has gone quiet past the window', () => {
+      const w = priorWorkWarning(
+        hint({ priorWorkers: workers(3), lastReleasedBy: 'su-peer', releasedAtMs: hoursAgo(72), hasCheckpoint: true }),
+        now,
+      );
+      expect(w).toMatch(/REPEATEDLY DEFERRED/);
+    });
+
+    it('is a genuine boundary, not an always-true guard — both sides checked at the cutoff', () => {
+      // Without this pair the gate could be hard-wired open and every test above would still pass.
+      const justInside = repeatDeferralQuietEnough(now - REPEAT_DEFERRAL_MIN_QUIET_MS + 1, now);
+      const exactlyAt = repeatDeferralQuietEnough(now - REPEAT_DEFERRAL_MIN_QUIET_MS, now);
+      expect(justInside).toBe(false);
+      expect(exactlyAt).toBe(true);
+    });
+
+    it('fails toward the prompt when no release timestamp is recorded', () => {
+      // Documented judgement call, not a measurement: no qualifying live row lacked the timestamp.
+      expect(repeatDeferralQuietEnough(null, now)).toBe(true);
+    });
   });
 
   it('drives the cutoff from the exported constant so wording and threshold cannot drift apart', () => {

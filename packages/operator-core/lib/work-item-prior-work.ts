@@ -341,6 +341,40 @@ export function priorWorkHintFromRow(
 export const REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS = 3;
 
 /**
+ * WI-2145689 — the quiet-time gate, and the reason the count alone is not enough.
+ *
+ * A durable finding retired distinct-worker churn as a stuck-item signal outright, 0-for-2: WI-35902
+ * drew 14 distinct workers and 12 claims in THREE HOURS, was called a hot potato, and then completed
+ * normally. A bare count cannot tell 14 workers in three hours from 36 over three weeks.
+ *
+ * Re-measured across the 123 qualifying papercusp items on 2026-09-05, that failure mode is real but
+ * narrow — by age of `last_released_at`: <6h 1 item · 6-24h 14 · 1-3d 7 · 3-14d 88 · >14d 13. So 82%
+ * are >= 3 days quiet and genuinely match the stall this escalation was written for, which is why the
+ * threshold survives; but the recently-released tail is the WRONG shape, and its loudest member is the
+ * worst possible one. The 26-worker row in the 6-24h bucket is WI-212675, the green-checkpoint gate
+ * red. Many agents re-claiming a gate item within hours is CONTENTION, whose correct response is the
+ * one-fixer stand-down (read `gate.greenCheckpoint.ownership`, send evidence once, stop) — the exact
+ * opposite of "go re-judge the acceptance criterion". Firing there would pull against that rail.
+ *
+ * So: many sessions RECENTLY means contention, and many sessions then SILENCE means a stall. Only the
+ * second one gets the inverted instruction.
+ */
+export const REPEAT_DEFERRAL_MIN_QUIET_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Whether this row is quiet enough for the repeated-deferral reading to apply.
+ *
+ * A null `releasedAtMs` fails toward the escalation. That branch is UNEXERCISED by the live
+ * population (all 123 qualifying items carried a release timestamp), so it is a judgement call and
+ * not a measurement: the prompt is advisory and costs a claimant one question, whereas suppressing
+ * it restores exactly the message this change exists to replace.
+ */
+export function repeatDeferralQuietEnough(releasedAtMs: number | null, nowMs = Date.now()): boolean {
+  if (releasedAtMs == null) return true;
+  return nowMs - releasedAtMs >= REPEAT_DEFERRAL_MIN_QUIET_MS;
+}
+
+/**
  * Distinct sessions recorded against this item, excluding the current claimant (already removed
  * upstream by {@link excludeCurrentClaimant}).
  *
@@ -366,7 +400,7 @@ export function distinctPriorSessionCount(hint: ClaimTimePriorWorkHint): number 
  * claimant and rebuilding finished work, so it says so in those words and names the concrete
  * next action (read the source before building).
  */
-export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null): string | null {
+export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null, nowMs = Date.now()): string | null {
   if (!hint) return null;
 
   const facts: string[] = [];
@@ -383,7 +417,11 @@ export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null): string | 
   const detail = facts.length > 0 ? ` (${facts.join('; ')})` : '';
 
   const distinctSessions = distinctPriorSessionCount(hint);
-  const repeatedlyDeferred = distinctSessions >= REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS;
+  // Both conditions, never the count alone — see REPEAT_DEFERRAL_MIN_QUIET_MS for why a bare count
+  // reads live contention (a hot gate item) as a stalled acceptance criterion.
+  const repeatedlyDeferred =
+    distinctSessions >= REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS &&
+    repeatDeferralQuietEnough(hint.releasedAtMs, nowMs);
 
   // WI-6737: the checkpoint store could not be read. Say exactly that. The `false` branch below
   // is a claim about HISTORY ("nothing was ever written") and is only true when the read actually
