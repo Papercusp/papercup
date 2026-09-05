@@ -2994,6 +2994,93 @@ describe('background `;`-chain trailing-reporter exit-code advisory (WI-6944)', 
 });
 
 /**
+ * EI-19408257709127659 — DOUBLE-BACKGROUNDING. The two guards above catch a
+ * notification carrying the wrong EXIT CODE for a job that really did finish.
+ * This one catches a notification that fires while the job is STILL RUNNING:
+ * `run_in_background: true` already backgrounds the command, so a manual `&`
+ * (or `nohup … &` / `setsid`) forks a second untracked layer whose wrapper
+ * returns immediately. The completion itself is false, not just its code.
+ */
+describe('double-backgrounding false-completion advisory (EI-19408257709127659)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectDoubleBgAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('double-background advisory');
+    expect(hso.additionalContext).toContain('FALSE COMPLETION');
+  };
+
+  it('fires on the exact filed repro (`nohup … > log 2>&1 &`)', () => {
+    const out = runGate(
+      bashWithInput({
+        command: 'nohup npm run test:affected > /tmp/aff.log 2>&1 &',
+        run_in_background: true,
+      }),
+    );
+    expectDoubleBgAdvisory(out);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('nohup');
+  });
+
+  it.each([
+    ['a bare trailing `&`', 'npm run build > /tmp/o 2>&1 &'],
+    ['the `& echo $!` pid-capture idiom', 'npm run test:affected > /tmp/o 2>&1 & echo "launched pid $!"'],
+    ['`setsid` with no `&` — it detaches on its own', 'setsid npm run build > /tmp/o 2>&1'],
+    ['a backgrounded segment mid-chain', 'cd packages/operator-core && npm test > /tmp/o 2>&1 &'],
+  ])('fires on %s', (_label, command) => {
+    expectDoubleBgAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  // The `&`-bearing shapes that are NOT a second fork. Each of these once made
+  // a naive `&` scan useless, so they are pinned as deliberate non-targets.
+  it.each([
+    ['`2>&1` is a redirection, not a background fork', 'npm test > /tmp/o 2>&1'],
+    ['`>&2` is a redirection too', 'npm test 2>/dev/null >&2'],
+    ['`&>log` is a redirection too', 'npm test &> /tmp/o'],
+    ['`&&` short-circuits in one process', 'npm run build > /tmp/o 2>&1 && npm test >> /tmp/o 2>&1'],
+    ['`wait` reaps the child, so the wrapper outlives the job', 'npm test > /tmp/o 2>&1 & wait'],
+    ['bare `nohup` with no `&` does not fork', 'nohup npm run build > /tmp/o 2>&1'],
+  ])('deliberately silent: %s', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  it('silent when NOT backgrounded — there is no completion notification to falsify', () => {
+    // A foreground `&` is a different hazard and already has its own advisory
+    // (EI-20202551640426512); what must NOT appear is the double-background one,
+    // whose whole premise is a tracked background job reporting completion.
+    const out = runGate(bashWithInput({ command: 'npm run build > /tmp/o 2>&1 &' }));
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).not.toContain('double-background advisory');
+    expect(hso.additionalContext).toContain('foreground shell-backgrounding advisory');
+  });
+
+  it('yields to the pipe advisory when both apply (ordering is pinned)', () => {
+    const out = runGate(
+      bashWithInput({ command: 'setsid npm test 2>&1 | tail -20', run_in_background: true }),
+    );
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).toContain('background-pipe exit-code advisory');
+    expect(hso.additionalContext).not.toContain('double-background advisory');
+  });
+
+  // …but a trailing `&` AFTER the pipe stage is deliberately ours, not the pipe
+  // guard's: `_PIPE_TAIL_RE` ends its match at `[^|;&\n]*$`, so a segment ending
+  // in `&` never matches it. That is the right split — with a second fork in
+  // play the notification is false outright, which subsumes a wrong exit code.
+  it('claims `cmd | tail &` — the pipe guard cannot see past the trailing `&`', () => {
+    expectDoubleBgAdvisory(
+      runGate(bashWithInput({ command: 'nohup npm test 2>&1 | tail -20 &', run_in_background: true })),
+    );
+  });
+});
+
+/**
  * EI-18787618439028592 — foreground `| head` SIGPIPE-kill advisory: distinct
  * from the background-pipe exit-code trap above. `head` exits after N lines
  * and SIGPIPEs the upstream writer, killing it mid-run — a hazard that exists

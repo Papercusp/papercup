@@ -1834,6 +1834,71 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── DOUBLE-BACKGROUNDING false-completion advisory (EI-19408257709127659) ──
+# The third member of the family above, and the most misleading of the three.
+# The two guards above catch a notification carrying the WRONG EXIT CODE for a
+# job that really did finish. This one catches a notification that fires while
+# the job is STILL RUNNING — the completion itself is false, not just its code.
+#
+#     Bash { run_in_background: true, command: 'nohup npm run test:affected > log 2>&1 &' }
+#
+# `run_in_background: true` ALREADY backgrounds the whole command. A manual
+# trailing `&` (or `nohup … &` / `setsid`) forks a SECOND, untracked layer:
+# the wrapper shell the tool is tracking returns the instant it forks, so the
+# harness reports `status:"completed"`, exit code 0 — while `ps` and the log
+# show the real job just getting started. The leaf's true exit code is then
+# never reported at all, and the natural next move is to act on a "finished"
+# run that has not finished.
+#
+# Filed live 2026-08-03 (EI-19408257709127659): a backgrounded
+# `nohup npm run test:affected > log 2>&1 &` reported completed/0 while the
+# operator-core suite was still spinning up at load1=103. The trap was already
+# documented for `capability:bash`; this confirms it applies identically to
+# the native `Bash` tool's own `run_in_background`, and prose in a doc did not
+# stop it — hence a detector at the call site.
+#
+# `wait` is an escape: a caller that reaps the child has kept the wrapper alive
+# on purpose, so the tracked process really does outlive the job. Bare `nohup`
+# with NO `&` is deliberately not a target — it does not fork, so nothing is
+# double-backgrounded; `setsid` IS, because it detaches on its own.
+try:
+    if (tool_name.lower() == 'bash'
+            and tool_input.get('run_in_background')
+            and not ADVISORY):
+        _bg_cmd = _strip_quotes_and_comments(command)
+        # Erase the redirections that legitimately contain `&` (`2>&1`, `>&2`,
+        # `&>log`, `&>>log`) before looking for a real backgrounding `&`.
+        _bg_scrub = re.sub(r'\d*>>?&\d*|&>>?', ' ', _bg_cmd)
+        _bg_amp = re.search(r'(?<![&>])&(?!&)', _bg_scrub)
+        _bg_setsid = re.search(r'(?:^|[;&|(\n])\s*(?:\S*/)?setsid\b', _bg_cmd)
+        if (_bg_amp or _bg_setsid) and not re.search(r'\bwait\b', _bg_cmd):
+            if _bg_setsid and not _bg_amp:
+                _bg_what = '`setsid`, which detaches on its own,'
+            elif re.search(r'(?:^|[;&|(\n])\s*(?:\S*/)?nohup\b', _bg_cmd):
+                _bg_what = 'a manual `nohup … &`'
+            else:
+                _bg_what = 'a manual trailing `&`'
+            ADVISORY = (
+                'double-background advisory (EI-19408257709127659): this '
+                'command already runs with `run_in_background: true`, and it '
+                'ALSO contains ' + _bg_what + ' — so it forks a second, '
+                'UNTRACKED layer. The wrapper the tool tracks returns the '
+                'instant it forks, so you will get a `status:"completed"` '
+                'notification (exit code 0) while the real job is still '
+                'running, and the leaf\'s true exit code is never reported at '
+                'all. This is a FALSE COMPLETION, not just a wrong exit code. '
+                'Drop the `&`/`nohup`/`setsid` and pass the plain '
+                'foreground-shaped command (`npm run test:affected > '
+                '/tmp/x.log 2>&1`) — the tool does the backgrounding, tracks '
+                'the real process, and reports its actual exit. If you must '
+                'keep the extra fork, verify liveness against the leaf pid '
+                '(`kill -0 <pid>`, or `tail --pid=<pid> -f /dev/null`) and '
+                'read the verdict from the log, never from the notification. '
+                'Advisory only; this command is proceeding as issued.'
+            )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── grep/rg → `| head` false-absence advisory (EI-20041520588565350) ───────
 # A recursive grep followed by `head` is especially dangerous when the caller
 # is checking whether a symbol has any importers. `head` limits the FIRST N
