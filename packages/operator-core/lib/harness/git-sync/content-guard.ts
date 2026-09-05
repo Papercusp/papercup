@@ -203,7 +203,7 @@ async function tryAutoFix(
   let fixed: string;
   let changed: boolean;
   try {
-    ({ fixed, changed } = d.autoFix(text));
+    ({ fixed, changed } = d.autoFix(text, file));
   } catch (e) {
     io.log?.(`[content-guard] "${d.key}" autoFix threw on ${file} — quarantining instead: ${errMsg(e)}`);
     return null;

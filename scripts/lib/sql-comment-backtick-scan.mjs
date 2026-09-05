@@ -66,6 +66,9 @@
  * @property {number} col 1-based column of the FIRST backtick inside the comment — the one that ends the template.
  * @property {string} text The offending source line, trimmed and capped at 140 chars.
  * @property {number} backticks Unescaped backticks found inside the comment (always >= 2).
+ * @property {'sql' | 'template'} host Which comment hosted it: a `--` comment in a SQL
+ *   template, or a `//` comment inside any other (worker/script source) template. The
+ *   repair differs — see the detector message and `autoFixSqlCommentBacktick`.
  */
 
 const USES_SQL_TAG = /(?<![`\w])sql\s*(?:<[^`]{0,200}>)?\s*`/;
@@ -123,16 +126,181 @@ function firstUnescapedBacktick(line, fromIndex) {
 }
 
 /**
- * Find the first backtick-quoted identifier inside a SQL comment, if any.
+ * A `//` line-comment INSIDE a template literal — the non-SQL host of the same
+ * defect (EI-21219437374882016). `--` is handled by the SQL path above; here the
+ * host is a worker/script SOURCE template (`const WORKER_SRC = \`(() => {`), whose
+ * body is generated JS and therefore carries `//` comments.
+ *
+ * Only `//` is accepted, never a `*`/`/*` continuation: inside a template literal
+ * there is no JSDoc block, so a `*`-leading line is markdown prose. Measured — it
+ * was the single remaining false positive over the tracked tree, and it was
+ * exactly that shape (`**Signal:** ${evidence}` in scout/rubric-rail.ts).
+ */
+const TEMPLATE_COMMENT_MARKER = /^\s*\/\//;
+
+/** Memoized `typescript`, or null when unavailable. @type {unknown | null | undefined} */
+let cachedTs;
+
+/**
+ * Load `typescript` LAZILY and SYNCHRONOUSLY.
+ *
+ * Lazily, because the template path is gated behind a cheap line prescan and most
+ * files never reach it — the edit-time PreToolUse hook runs on every save and must
+ * not pay a ~250ms module load to learn a file has no candidate line.
+ *
+ * Synchronously (`createRequire`, not `await import`), because making this
+ * predicate async would ripple through `autoFix`, which the ContentDetector
+ * contract defines as sync. The cost of that ripple buys nothing.
+ *
+ * @returns {any | null} null when unavailable — see the caller's NOT-MEASURED note.
+ */
+function loadTypeScript() {
+  if (cachedTs !== undefined) return cachedTs;
+  try {
+    // `process.getBuiltinModule` is a plain PROPERTY READ, invisible to a bundler's
+    // static analysis. A `import { createRequire } from 'node:module'` here would be
+    // neutered when this module is bundled into dist-host / dist-sidecar (both of
+    // which do embed this file), and the failure is silent — see EI-22123762178661822.
+    cachedTs = process.getBuiltinModule('node:module').createRequire(import.meta.url)('typescript');
+  } catch {
+    cachedTs = null;
+  }
+  return cachedTs;
+}
+
+/**
+ * 1-based line numbers that begin inside the TEXT of a template literal.
+ *
+ * ── Why a tokenizer here, when the SQL path is deliberately a line scanner ──
+ * The header above explains that an AST walk cannot answer "is this backtick
+ * inside a template?", because by the time you have nodes the stray backtick has
+ * been consumed as the template's TERMINATOR. That objection stands, and this is
+ * NOT a violation of it — it is a DIFFERENT question with a different answer.
+ *
+ * We never ask whether the backtick is inside a template. We ask whether the LINE
+ * BEGINS inside one, and that survives the mis-parse: the stray backtick closes
+ * the template PART-WAY THROUGH the offending line, so the line is still the last
+ * line of the (truncated) template token. The evidence is reinterpreted, but not
+ * before the line starts. That asymmetry is the whole trick.
+ *
+ * A hand-rolled lexer was tried first and rejected on measurement, not taste: it
+ * desynchronised on regex literals and JSX and produced 723 hits over the tracked
+ * tree, against 0 for this. Use the compiler's tokenizer; it already knows.
+ *
+ * @param {string} fileName
+ * @param {string} text
+ * @returns {Set<number> | null} null = NOT MEASURED (no typescript available),
+ *   which is deliberately distinct from an empty set (measured, nothing inside).
+ */
+export function templateInteriorLines(fileName, text) {
+  const ts = loadTypeScript();
+  if (!ts) return null;
+
+  // `.tsx` lexes differently from `.ts` (JSX vs type assertions), so the name is
+  // load-bearing, not decoration — it is what selects the script kind.
+  const sf = ts.createSourceFile(fileName || 'file.ts', text, ts.ScriptTarget.Latest, false, undefined);
+  const inside = new Set();
+
+  /** @param {number} rawPos @param {number} end */
+  const mark = (rawPos, end) => {
+    // `node.pos` includes LEADING TRIVIA, so a comment block sitting immediately
+    // BEFORE a template would otherwise be marked as its interior. Measured: that
+    // single mistake accounted for most of an earlier 123-hit false-positive run.
+    const pos = ts.skipTrivia(text, rawPos);
+    const from = sf.getLineAndCharacterOfPosition(Math.min(pos, text.length)).line;
+    const to = sf.getLineAndCharacterOfPosition(Math.min(end, text.length)).line;
+    // INTERIOR only: the opening line is code, not template text.
+    for (let l = from + 1; l <= to; l++) inside.add(l + 1);
+  };
+
+  /** @param {any} node */
+  const visit = (node) => {
+    if (node.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral) mark(node.pos, node.end);
+    else if (ts.isTemplateExpression(node)) {
+      mark(node.head.pos, node.head.end);
+      for (const span of node.templateSpans) mark(span.literal.pos, span.literal.end);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return inside;
+}
+
+/**
+ * The template-literal host: a `//` comment inside a template, carrying >= 2
+ * unescaped backticks after the marker.
+ *
+ * @param {string} fileName
+ * @param {string} text
+ * @param {string[]} lines
+ * @returns {SqlCommentBacktickHit | null}
+ */
+function findTemplateCommentBacktick(fileName, text, lines) {
+  // CHEAP PRESCAN FIRST — no tokenizer unless a candidate line actually exists.
+  // Backticks are counted only from the `//`, never from column 0: a backtick
+  // before the marker is a template delimiter or code, and counting it flagged
+  // every `` `npm run x -- --flag` `` string in the tree.
+  /** @type {number[]} */
+  const candidates = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!TEMPLATE_COMMENT_MARKER.test(lines[i])) continue;
+    const from = lines[i].indexOf('//');
+    if (countUnescapedBackticks(lines[i], from) < 2) continue;
+    candidates.push(i);
+  }
+  if (candidates.length === 0) return null;
+
+  const interior = templateInteriorLines(fileName, text);
+  // NOT MEASURED: report clean rather than guess. The SQL path is unaffected, and
+  // ts-parse still catches the parse break one entry later.
+  if (!interior) return null;
+
+  for (const i of candidates) {
+    if (!interior.has(i + 1)) continue;
+    const from = lines[i].indexOf('//');
+    const col = firstUnescapedBacktick(lines[i], from);
+    return {
+      line: i + 1,
+      col: col + 1,
+      text: lines[i].trim().slice(0, 140),
+      backticks: countUnescapedBackticks(lines[i], from),
+      host: 'template',
+    };
+  }
+  return null;
+}
+
+/**
+ * Find the first backtick-quoted identifier inside a comment that sits inside a
+ * template literal — in a SQL `--` comment, or in a `//` comment inside any other
+ * template (a worker/script source body).
+ *
+ * The SQL host is checked first and wins ties: it is the only one of the two that
+ * can fail SILENTLY (a truncated query that still parses and RUNS), so when a file
+ * trips both, that is the message worth recording.
+ *
  * @param {string} fileName
  * @param {string} text
  * @returns {SqlCommentBacktickHit | null}
  */
 export function findSqlCommentBacktick(fileName, text) {
   if (GENERATED_FILE_HEADER.test(text)) return null;
-  if (!USES_SQL_TAG.test(text) && !HAS_RAW_DDL.test(text)) return null;
 
   const lines = text.split('\n');
+  const sqlHit = findSqlHostBacktick(text, lines);
+  if (sqlHit) return sqlHit;
+  return findTemplateCommentBacktick(fileName, text, lines);
+}
+
+/**
+ * The original SQL host, unchanged: a `--` comment inside a SQL template.
+ * @param {string} text
+ * @param {string[]} lines
+ * @returns {SqlCommentBacktickHit | null}
+ */
+function findSqlHostBacktick(text, lines) {
+  if (!USES_SQL_TAG.test(text) && !HAS_RAW_DDL.test(text)) return null;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const m = SQL_COMMENT_MARKER.exec(line);
@@ -156,6 +324,7 @@ export function findSqlCommentBacktick(fileName, text) {
       col: col + 1,
       text: line.trim().slice(0, 140),
       backticks,
+      host: 'sql',
     };
   }
   return null;

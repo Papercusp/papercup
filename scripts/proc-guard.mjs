@@ -429,6 +429,47 @@ export function sameTreePath(a, b) {
   return path.resolve(a) === path.resolve(b);
 }
 
+/**
+ * Narrow a matched population to ONE tree (EI-21295926764996833).
+ *
+ * The load-bearing rule is what happens to a row that could NOT be attributed:
+ * it is RETAINED, not dropped. Exclusion requires positive evidence that the
+ * row belongs to a DIFFERENT tree. Dropping unattributable rows would let this
+ * filter answer "nothing is running for your tree" while a live process it
+ * merely failed to read keeps running — turning a liveness check into a false
+ * negative, which is the entire failure class proc-guard exists to prevent.
+ *
+ * Both discarded populations are returned as counts rather than silently
+ * folded away, matching this module's existing `argvTextOnly` posture: a caller
+ * can always audit what was set aside.
+ *
+ * @param {string} procRoot
+ * @param {ProcRow[]} matches - already-matched rows
+ * @param {string} integrationRoot - the tree to keep
+ * @returns {{ selected: ProcRow[]; excludedOtherTree: number; unattributedRetained: number; owningTree: Map<number, { path: string; source: 'integration-root-env' | 'cwd' } | null> }}
+ */
+export function filterByOwningTree(procRoot, matches, integrationRoot) {
+  /** @type {Map<number, { path: string; source: 'integration-root-env' | 'cwd' } | null>} */
+  const owningTree = new Map(
+    matches.map((m) => [m.pid, resolveOwningTree(procRoot, m)]),
+  );
+  let unattributedRetained = 0;
+  const selected = matches.filter((m) => {
+    const tree = owningTree.get(m.pid);
+    if (!tree) {
+      unattributedRetained += 1;
+      return true; // UNKNOWN is never an exclusion.
+    }
+    return sameTreePath(tree.path, integrationRoot);
+  });
+  return {
+    selected,
+    excludedOtherTree: matches.length - selected.length,
+    unattributedRetained,
+    owningTree,
+  };
+}
+
 function isGreenCheckpointPattern(pattern) {
   return GREEN_CHECKPOINT_PATTERN.test(pattern);
 }
@@ -1046,26 +1087,21 @@ async function main(argv) {
   // EI-21295926764996833: attribute every match to its owning tree BEFORE
   // printing. Resolved per match (not per process across all of /proc), so the
   // extra cwd readlink is bounded by the match count.
-  /** @type {Map<number, ReturnType<typeof resolveOwningTree>>} */
-  const owningTree = new Map(
-    allMatches.map((m) => [m.pid, resolveOwningTree(DEFAULT_PROC_ROOT, m)]),
+  // Same code path the tests lock, so the retention property cannot hold in
+  // `filterByOwningTree` while the CLI quietly does something else.
+  const filtered = filterByOwningTree(
+    DEFAULT_PROC_ROOT,
+    allMatches,
+    integrationRootFilter ?? "",
   );
-  // A row is excluded ONLY on positive evidence that it belongs to a different
-  // tree. An unattributable row is RETAINED: dropping it would let this filter
-  // answer "nothing is running" while a live process it merely failed to read
-  // keeps running — the false-negative class this tool exists to prevent.
-  let unattributedRetained = 0;
-  const matches = integrationRootFilter
-    ? allMatches.filter((m) => {
-        const tree = owningTree.get(m.pid);
-        if (!tree) {
-          unattributedRetained += 1;
-          return true;
-        }
-        return sameTreePath(tree.path, integrationRootFilter);
-      })
-    : allMatches;
-  const excludedOtherTree = allMatches.length - matches.length;
+  const owningTree = filtered.owningTree;
+  const matches = integrationRootFilter ? filtered.selected : allMatches;
+  const excludedOtherTree = integrationRootFilter
+    ? filtered.excludedOtherTree
+    : 0;
+  const unattributedRetained = integrationRootFilter
+    ? filtered.unattributedRetained
+    : 0;
   if (matches.length === 0) {
     console.log(
       `proc-guard: no external process matches /${pattern}/ for tree ${path.resolve(String(integrationRootFilter))} ` +

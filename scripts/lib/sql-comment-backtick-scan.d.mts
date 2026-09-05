@@ -2,7 +2,39 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/sql-comment-backtick-scan.mjs and regenerate.
 /**
- * Find the first backtick-quoted identifier inside a SQL comment, if any.
+ * 1-based line numbers that begin inside the TEXT of a template literal.
+ *
+ * ── Why a tokenizer here, when the SQL path is deliberately a line scanner ──
+ * The header above explains that an AST walk cannot answer "is this backtick
+ * inside a template?", because by the time you have nodes the stray backtick has
+ * been consumed as the template's TERMINATOR. That objection stands, and this is
+ * NOT a violation of it — it is a DIFFERENT question with a different answer.
+ *
+ * We never ask whether the backtick is inside a template. We ask whether the LINE
+ * BEGINS inside one, and that survives the mis-parse: the stray backtick closes
+ * the template PART-WAY THROUGH the offending line, so the line is still the last
+ * line of the (truncated) template token. The evidence is reinterpreted, but not
+ * before the line starts. That asymmetry is the whole trick.
+ *
+ * A hand-rolled lexer was tried first and rejected on measurement, not taste: it
+ * desynchronised on regex literals and JSX and produced 723 hits over the tracked
+ * tree, against 0 for this. Use the compiler's tokenizer; it already knows.
+ *
+ * @param {string} fileName
+ * @param {string} text
+ * @returns {Set<number> | null} null = NOT MEASURED (no typescript available),
+ *   which is deliberately distinct from an empty set (measured, nothing inside).
+ */
+export function templateInteriorLines(fileName: string, text: string): Set<number> | null;
+/**
+ * Find the first backtick-quoted identifier inside a comment that sits inside a
+ * template literal — in a SQL `--` comment, or in a `//` comment inside any other
+ * template (a worker/script source body).
+ *
+ * The SQL host is checked first and wins ties: it is the only one of the two that
+ * can fail SILENTLY (a truncated query that still parses and RUNS), so when a file
+ * trips both, that is the message worth recording.
+ *
  * @param {string} fileName
  * @param {string} text
  * @returns {SqlCommentBacktickHit | null}
@@ -26,4 +58,10 @@ export type SqlCommentBacktickHit = {
      * Unescaped backticks found inside the comment (always >= 2).
      */
     backticks: number;
+    /**
+     * Which comment hosted it: a `--` comment in a SQL
+     * template, or a `//` comment inside any other (worker/script source) template. The
+     * repair differs — see the detector message and `autoFixSqlCommentBacktick`.
+     */
+    host: "sql" | "template";
 };

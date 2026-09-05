@@ -118,6 +118,34 @@ export function resolveOwningTree(procRoot: string, processRow: ProcRow): {
  */
 export function sameTreePath(a: string, b: string): boolean;
 /**
+ * Narrow a matched population to ONE tree (EI-21295926764996833).
+ *
+ * The load-bearing rule is what happens to a row that could NOT be attributed:
+ * it is RETAINED, not dropped. Exclusion requires positive evidence that the
+ * row belongs to a DIFFERENT tree. Dropping unattributable rows would let this
+ * filter answer "nothing is running for your tree" while a live process it
+ * merely failed to read keeps running — turning a liveness check into a false
+ * negative, which is the entire failure class proc-guard exists to prevent.
+ *
+ * Both discarded populations are returned as counts rather than silently
+ * folded away, matching this module's existing `argvTextOnly` posture: a caller
+ * can always audit what was set aside.
+ *
+ * @param {string} procRoot
+ * @param {ProcRow[]} matches - already-matched rows
+ * @param {string} integrationRoot - the tree to keep
+ * @returns {{ selected: ProcRow[]; excludedOtherTree: number; unattributedRetained: number; owningTree: Map<number, { path: string; source: 'integration-root-env' | 'cwd' } | null> }}
+ */
+export function filterByOwningTree(procRoot: string, matches: ProcRow[], integrationRoot: string): {
+    selected: ProcRow[];
+    excludedOtherTree: number;
+    unattributedRetained: number;
+    owningTree: Map<number, {
+        path: string;
+        source: "integration-root-env" | "cwd";
+    } | null>;
+};
+/**
  * Parse the ppid out of a /proc/<pid>/stat line. The comm field (2nd field) is
  * parenthesized and may itself contain spaces/parens, so field-splitting must
  * resume from the LAST `)` rather than naively splitting on whitespace — the

@@ -41,6 +41,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { RECLAIM_STALE_MS, WEDGE_SILENT_MS, isSpawnProcessAlive } from '../fleet/spawn-reclaim';
+import { isInProcessLaunchIdentity, type SpawnRowKind } from '../fleet/spawn-row-class';
 import { placementOverride } from '../pot-control-policy';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
@@ -1234,8 +1235,13 @@ export async function reconcileOnePot(
   for (const b of cupRows) {
     const ownerId = b.session_owner || b.spawn_id;
     if (b.launcher_host !== me || b.pid == null) continue;
-    const kind: 'spawn' | 'launch' =
-      (b.run_id ?? '').startsWith('launch-') || b.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
+    // EI-21344971525195182: this was a third hand-copy of the class boundary. It uses the
+    // IDENTITY predicate, NOT spawnRowKind — deliberately: swapping in the `kind` classifier
+    // would reclassify every `durable-spawn:*` row carrying an `invoke-*` run_id (71% of the
+    // class, measured 2026-08-24) from 'launch' to 'spawn', tightening this liveness probe
+    // from /proc-existence to the strict invoke-once-cmdline check. That is a behaviour
+    // change, not a consolidation, so the identity predicate preserves it exactly.
+    const kind: SpawnRowKind = isInProcessLaunchIdentity(b) ? 'launch' : 'spawn';
     if (isAlive(b.pid, kind)) {
       confirmedAliveByOwner.set(ownerId, true);
       confirmedAliveByOwner.set(b.spawn_id, true);

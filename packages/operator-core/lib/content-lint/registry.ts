@@ -77,7 +77,10 @@ export interface ContentDetector {
    * before. Must be PURE + idempotent (given the same text twice it returns the
    * same fix). Omit for detectors with no safe deterministic repair (smart-quotes).
    */
-  autoFix?: (text: string) => { fixed: string; changed: boolean };
+  /** Deterministic repair. `file` is the repo-relative path, threaded through because a
+   *  repair can be path-sensitive (sql-comment-backtick's template host tokenizes `.tsx`
+   *  differently from `.ts`). Optional so detectors that ignore it need no signature. */
+  autoFix?: (text: string, file: string) => { fixed: string; changed: boolean };
   /**
    * Optional REPO SCOPE (EI-19381677675617429). git-sync sweeps the superproject AND
    * every submodule with this same detector list, and `matches` only ever receives a
@@ -288,6 +291,17 @@ export const sqlCommentBacktickDetector: ContentDetector = {
   detect: (file, text) => {
     const hit = findSqlCommentBacktick(file, text);
     if (!hit) return null;
+    if (hit.host === 'template') {
+      return (
+        `backtick-quoted identifier inside a // comment INSIDE a template literal at ` +
+        `line ${hit.line}:${hit.col} — \`${hit.text}\`. That backtick ENDS the enclosing ` +
+        'template, so everything after it is reparsed as real code and the file stops ' +
+        'parsing. The reported error lands wherever the parser first gives up, which is ' +
+        'why this reads as a missing semicolon on a COMMENT line (EI-21219437374882016: ' +
+        '`Expected ";" but found "inputs"`, on a comment, in a worker-source template). ' +
+        'Fix: escape them — \\` — which is what the rest of the same template already does.'
+      );
+    }
     return (
       `backtick-quoted identifier inside a SQL comment at line ${hit.line}:${hit.col} — ` +
       `\`${hit.text}\`. That backtick ENDS the enclosing template literal. ` +
