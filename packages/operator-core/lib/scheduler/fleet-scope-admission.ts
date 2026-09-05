@@ -394,6 +394,56 @@ export function selfFiledFalloutAdmission(
 }
 
 /**
+ * EI-20426366154081065: the sentence a refused member reads when it filed the item
+ * itself but under a kind the carve-out does not admit.
+ *
+ * THE DEFECT THIS REPLACES — the refusal PUBLISHED ITS OWN BYPASS, and the bypass was
+ * the dangerous path. The previous wording ended `File genuine fallout as a bug, or ask
+ * the leader to widen the spec.`, which reads as a one-call fix under an agent's bias
+ * toward unblocking itself. Measured twice in 45 minutes on 2026-08-14, both routed to
+ * one fleet leader: at 10:18:45Z su-6843fb67 was refused on a kind:'task' row, took the
+ * suggestion, re-filed the same work as kind:'bug' (WI-38771) — and it PASSED, because
+ * {@link selfFiledFalloutAdmission} asks only `kind === 'bug' && createdBy === self`.
+ * Had they then acted on it they would have fired `release:checkpoint-run` during a live
+ * auto-refire window, discarding the rescue and costing the fleet a fresh ~55min suite
+ * (green-checkpoint.ts's own stand-down warning). Only a leader wake at 10:26:49Z stopped
+ * it; the same sequence began again at 11:00Z with a different agent.
+ *
+ * So the failure mode was not "blocks useful work". It was: block the SAFE framing (own
+ * the tracked incident, with its history), while recommending a re-file that produces the
+ * UNSAFE one (a fresh row carrying none of that history, whose obvious next action
+ * destroys a running rescue). A guard that routes people from the safe path to the
+ * dangerous path is worse than one that simply refuses.
+ *
+ * WHY THE TEXT AND NOT THE PREDICATE: the loophole is inherent to the carve-out — no
+ * server-derived field distinguishes "I found this broken" from "I want to do this", so
+ * any member can self-authorize out-of-lane work by choosing kind:'bug'. Narrowing the
+ * predicate would break the live repro the carve-out exists for (EI-18732199386440540:
+ * a fleet must absorb the fallout bugs it files mid-run). What turns a latent loophole
+ * into an actively-walked path is the advertisement, which is what this removes.
+ *
+ * Returns '' when the hint does not apply, so the caller can concatenate unconditionally.
+ */
+export function selfFiledKindRefusalHint(
+  item: {
+    kind: ClaimSpecSubject['kind'];
+    createdBy: WorkItem['createdBy'];
+  },
+  scope: FleetScopeContext,
+): string {
+  if (!item.createdBy || item.createdBy !== scope.ownerId) return '';
+  if (item.kind === 'bug') return '';
+  return (
+    ` (you filed this item as kind:'${item.kind}', and the self-filed carve-out admits kind:'bug' only. ` +
+    `Do NOT re-file the same work as a bug to get past this check — the carve-out is for fallout you found ` +
+    `ALREADY BROKEN while working your own lane, so a relabel both self-authorizes out-of-lane work and ` +
+    `strands this row's context on a duplicate the next actor then acts on blind. Take one of the routes ` +
+    `below instead: have the leader widen the lane, or do the work WITHOUT holding the row — the item stays ` +
+    `filed and unassigned on the ledger for whichever lane next admits it.)`
+  );
+}
+
+/**
  * EI-203723: a fleet leader may dispatch an explicitly assigned issue-family
  * item to a member even when the member's claim spec is narrower than that item.
  *
@@ -551,10 +601,11 @@ export async function admitWorkItemForFleetTarget(args: {
       `work-item ${item.id} does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
       `for fleet '${scope.fleetSlug}'` +
       // Tell a refused member WHY the self-filed carve-out did not apply, so the next
-      // move is obvious instead of a leader round-trip to find out.
-      (item.createdBy === scope.ownerId && item.kind !== 'bug'
-        ? ` (you filed this item, but the self-filed carve-out admits kind:'bug' only — this is kind:'${item.kind}'. File genuine fallout as a bug, or ask the leader to widen the spec.)`
-        : ''),
+      // move is obvious instead of a leader round-trip to find out. EI-20426366154081065:
+      // the wording is load-bearing and lives in `selfFiledKindRefusalHint` — the earlier
+      // inline text recommended a re-file that PASSES this very carve-out, i.e. the guard
+      // published its own bypass, and the bypass was the dangerous path.
+      selfFiledKindRefusalHint(item, scope),
   };
 }
 

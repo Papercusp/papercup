@@ -111,6 +111,7 @@ import {
   admitWorkItemForLoopTarget,
   leaderDispatchedAdmission,
   selfFiledFalloutAdmission,
+  selfFiledKindRefusalHint,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeFeatureFamilyExclusions,
   diagnoseFleetScopeFeatureFamilyMatch,
@@ -2685,6 +2686,122 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
   it('leaderDispatchedAdmission fails closed when the durable leader is unavailable', async () => {
     admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null, leaderOwnerId: null });
     await expect(leaderDispatchedAdmission({ assignedBy: 'su-leader' }, scope)).resolves.toBe(false);
+  });
+
+  /**
+   * EI-20426366154081065: the refusal must not PUBLISH ITS OWN BYPASS.
+   *
+   * The pre-fix wording ended `File genuine fallout as a bug, or ask the leader to widen
+   * the spec.` — an instruction to re-file the same work under the one kind
+   * `selfFiledFalloutAdmission` admits. It was taken twice in 45 minutes on 2026-08-14;
+   * the resulting duplicate (WI-38771) carried none of the tracked incident's history and
+   * its obvious next action would have destroyed a live gate auto-refire rescue.
+   *
+   * These assert the BEHAVIOUR (does the sentence recommend a re-file, or warn against
+   * one?) rather than pinning an exact string, so a later rewording that keeps the
+   * warning stays green while a regression to the recommendation goes red.
+   */
+  describe('EI-20426366154081065: the self-filed kind refusal stops advertising the re-file bypass', () => {
+    const hintFor = (kind: WorkItem['kind']) =>
+      selfFiledKindRefusalHint(aWorkItem({ kind, createdBy: 'su-member' }), scope);
+
+    /**
+     * A bare `/file .{0,40} as a bug/` regex CANNOT express this: it matches the
+     * prohibition ("Do NOT re-file the same work as a bug") exactly as readily as the
+     * recommendation it replaced, so it fails the fixed code and would pass a future
+     * regression that merely re-worded the advice. The discriminating property is
+     * whether the CLAUSE mentioning it is negated — so test that, per clause.
+     */
+    const filingClauses = (text: string) =>
+      text
+        .split(/(?<=[.—])\s+|,\s+/)
+        .filter((clause) => /\bfil(e|ing)\b/i.test(clause) && /\bbug\b/i.test(clause));
+
+    it('never instructs the member to re-file the work as a bug', () => {
+      for (const kind of ['task', 'change'] as const) {
+        const hint = hintFor(kind);
+        expect(hint).not.toContain('File genuine fallout as a bug');
+        // Every clause that talks about filing-as-a-bug must be a prohibition.
+        for (const clause of filingClauses(hint)) {
+          expect(clause).toMatch(/\b(not|never|n't)\b/i);
+        }
+      }
+    });
+
+    it('warns AGAINST the re-file and says why the carve-out is not a relabel', () => {
+      const hint = hintFor('task');
+      expect(hint).toMatch(/do not re-file/i);
+      // The two consequences that make the bypass dangerous, not merely irregular.
+      expect(hint).toMatch(/self-authoriz/i);
+      expect(hint).toMatch(/strands|duplicate/i);
+    });
+
+    it('still names the kind that was refused and the kind the carve-out admits', () => {
+      expect(hintFor('task')).toContain("kind:'task'");
+      expect(hintFor('task')).toContain("kind:'bug'");
+    });
+
+    it('names the two containment-preserving routes (widen the lane / work it unheld)', () => {
+      const hint = hintFor('change');
+      expect(hint).toMatch(/widen the lane/i);
+      expect(hint).toMatch(/without holding the row/i);
+    });
+
+    it('is silent when it does not apply — a peer-filed row, and a self-filed bug (already admitted)', () => {
+      expect(selfFiledKindRefusalHint(aWorkItem({ kind: 'task', createdBy: 'su-other' }), scope)).toBe('');
+      expect(selfFiledKindRefusalHint(aWorkItem({ kind: 'bug', createdBy: 'su-member' }), scope)).toBe('');
+      expect(selfFiledKindRefusalHint(aWorkItem({ kind: 'task', createdBy: null }), scope)).toBe('');
+    });
+
+    /**
+     * WIRING, not wording. Every assertion above passes a `selfFiledKindRefusalHint`
+     * that is never CALLED — extracting the sentence into a pure function made it
+     * testable and simultaneously made it possible to leave the refusal path pointing at
+     * the old text. This is the only test here that fails if the seam is not wired.
+     */
+    it('the real refusal path carries the hint — the seam is wired, not just the helper', async () => {
+      admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+      admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+      admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+      admissionMocks.getWorkItem.mockResolvedValue(aWorkItem({ kind: 'task', createdBy: 'su-member' }));
+      // Plan-scoped spec: the ordinary match path must genuinely fail, so the refusal
+      // (and its hint) is what we are reading.
+      admissionMocks.sql.mockResolvedValue([{ matched: false }]);
+
+      const admission = await admitWorkItemForFleetTarget({
+        target: 'su-member',
+        workItemId: 'EI-18731717643670832',
+        workspaceId: 'papercusp-workspace',
+      });
+      expect(admission.allowed).toBe(false);
+      const reason = (admission as Extract<typeof admission, { allowed: false }>).reason;
+      expect(reason).toMatch(/do not re-file/i);
+      expect(reason).not.toContain('File genuine fallout as a bug');
+    });
+
+    it('CONTROL: these assertions reject the pre-fix wording (they are not vacuous)', () => {
+      // The literal sentence this fix removed. Every guard above must fail it.
+      const preFix =
+        ` (you filed this item, but the self-filed carve-out admits kind:'bug' only — this is kind:'task'.` +
+        ` File genuine fallout as a bug, or ask the leader to widen the spec.)`;
+      expect(preFix).toContain('File genuine fallout as a bug');
+      expect(preFix).not.toMatch(/do not re-file/i);
+      expect(preFix).not.toMatch(/without holding the row/i);
+      // The clause guard must actually CATCH it: the pre-fix text has a filing-as-a-bug
+      // clause carrying no negation. Without this the guard could be vacuous — a helper
+      // that found no clauses at all would pass the shipped text for the wrong reason.
+      const preFixClauses = filingClauses(preFix);
+      expect(preFixClauses.length).toBeGreaterThan(0);
+      expect(preFixClauses.some((clause) => !/\b(not|never|n't)\b/i.test(clause))).toBe(true);
+      // ...and the shipped text DOES produce clauses for that guard to inspect, so its
+      // green is "every clause is negated", never "there were no clauses".
+      expect(filingClauses(hintFor('task')).length).toBeGreaterThan(0);
+      // ...and the shipped wording satisfies what the pre-fix wording fails, so the
+      // assertions above discriminate rather than being satisfiable by anything.
+      const shipped = hintFor('task');
+      expect(shipped).not.toContain('File genuine fallout as a bug');
+      expect(shipped).toMatch(/do not re-file/i);
+    });
   });
 
   /**
