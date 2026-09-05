@@ -29,6 +29,7 @@ import {
   analyzeCliPath,
   GITNEXUS_ANALYZE_HEAP_MB,
   GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
+  GITNEXUS_ANALYZE_TIMEOUT_MS,
   GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   GITNEXUS_ANALYZE_STACK_KB,
   GITNEXUS_LBUG_MAX_DB_BYTES,
@@ -828,9 +829,12 @@ describe('the cap VALUE is defensible against what was measured (P-004)', () => 
   // 2026-09-05 over 246,622 nodes WITH embeddings and the 8 GiB pool pin
   // (/tmp/wi39394/run1-embed-run.log, /usr/bin/time "Maximum resident set size"):
   // 15,633,516 kB = 14.9 GiB, peaking in the LadybugDB bulk-load phase — the embedding phase
-  // itself ran at 2.3–3.2 GiB. The pool is native memory outside the V8 heap, so the two
-  // caps are checked against the two shares of that peak they actually govern.
-  const MEASURED_PEAK_GIB = 14.9;
+  // itself ran at 2.3–3.2 GiB. The `--force` + cache-restore path (D-002) peaks higher:
+  // 18,124,040 kB = 17.3 GiB on run #3 and 16,496,640 kB = 15.7 GiB on run #4
+  // (/tmp/wi39394/run3-embed-run.log, run4-embed-run.log), so the worst observed value is
+  // what the caps are checked against. The pool is native memory outside the V8 heap, so
+  // the two caps are checked against the two shares of that peak they actually govern.
+  const MEASURED_PEAK_GIB = 17.3;
   const POOL_GIB = GITNEXUS_LBUG_BUFFER_POOL_BYTES / 1024 ** 3;
   const BG_HOST_CGROUP_GIB = 40;
 
@@ -862,6 +866,36 @@ describe('the cap VALUE is defensible against what was measured (P-004)', () => 
     const worstCaseAnalyzeGib = GITNEXUS_ANALYZE_MEMORY_MAX_BYTES / 1024 ** 3;
     const observedCoTenantsGib = 11.6;
     expect(worstCaseAnalyzeGib + observedCoTenantsGib).toBeLessThan(BG_HOST_CGROUP_GIB);
+  });
+});
+
+describe('GITNEXUS_ANALYZE_TIMEOUT_MS is sized from the measured STEADY-STATE tick (D-002)', () => {
+  // Measured 2026-09-05 (/tmp/wi39394/run4-embed-run.log): a `--force --embeddings 0` pass over
+  // 247,540 nodes that restored 217k cached embeddings and re-embedded the changed nodes took
+  // 2,343s (39:02 wall) at load/core 1.06. The cold one-shot bootstrap (3,139s, run #1) runs
+  // OUTSIDE the routine by design (D-002) and is deliberately NOT what the timeout covers —
+  // the third pin below is what stops a future "just raise it until the bootstrap fits".
+  const MEASURED_STEADY_STATE_SEC = 2343;
+  const BOOTSTRAP_COLD_SEC = 3139;
+
+  it('clears the measured steady-state tick with real headroom (>= 1.5x)', () => {
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeGreaterThanOrEqual(MEASURED_STEADY_STATE_SEC * 1.5);
+  });
+
+  it('is still a CAP — under 2x the measurement, so a wedged indexer is bounded within a tick or two', () => {
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeLessThan(MEASURED_STEADY_STATE_SEC * 2);
+  });
+
+  it('is NOT sized to swallow the cold bootstrap — that pass runs outside the routine', () => {
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS / 1000).toBeLessThan(BOOTSTRAP_COLD_SEC * 1.5);
+  });
+
+  it('exceeds the hourly cron on purpose, which the routine row must absorb via concurrency:skip', () => {
+    // A timeout longer than the cron interval is only safe because an overlapping fire is
+    // SKIPPED, not queued or double-spawned (seed-gitnexus-reindex-routine.ts writes
+    // concurrency 'skip'). If the timeout ever drops back under the hour this pin is moot; if
+    // the seed ever changes concurrency, this comment is where the reasoning lives.
+    expect(GITNEXUS_ANALYZE_TIMEOUT_MS).toBeGreaterThan(60 * 60_000);
   });
 });
 

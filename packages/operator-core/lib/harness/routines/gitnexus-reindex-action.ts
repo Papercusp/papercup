@@ -11,8 +11,10 @@
  * (`lib/bash-substitution/pairs/code-search.ts`).
  *
  * WHY A GATED HOURLY TICK RATHER THAN A PLAIN CRON. Every spawn is a FULL rebuild (see
- * `--force` below) that was measured on this box at **309s cold** on the 2026-08 graph and
- * ~14.5 min of non-embedding work on the 2026-09-05 graph under fleet load. So the cadence
+ * `--force` below) that was measured on this box at **309s cold** on the 2026-08 graph,
+ * ~14.5 min of non-embedding work on the 2026-09-05 graph under fleet load, and **2,343s for
+ * the steady-state tick** (full rebuild + embedding-cache restore + re-embed of the changed
+ * nodes, run #4, load/core 1.06). So the cadence
  * cannot be "run it every hour" — the routine fires hourly but the EXPENSIVE part is
  * conditional: each tick reads the registry + git + loadavg and the latest perf-signals
  * capture (all cheap) and only then decides to spawn. `decideReindex` is the whole policy,
@@ -90,9 +92,22 @@ import {
  *  disambiguates it from other checkouts on the box whose basename would collide. */
 export const GITNEXUS_REPO_NAME = 'papercusp';
 
-/** Cold build measured 309.2s; give a busy/colder box generous headroom without letting
- *  a genuinely wedged indexer hang the tick forever. */
-export const GITNEXUS_ANALYZE_TIMEOUT_MS = 20 * 60_000;
+/**
+ * Sized from the STEADY-STATE tick, not the 2026-08 cold build (309.2s — the figure the old
+ * 20-minute value was cut from, on a graph a third this size and before embeddings).
+ *
+ * Measured 2026-09-05 (D-002, /tmp/wi39394/run4-embed-run.log): a `--force --embeddings 0`
+ * pass over 247,540 nodes that RESTORED 217k cached embeddings and re-embedded the changed
+ * nodes took 2,343s (39:02 wall) under a 1.06 load/core box; the same pass with no embedding
+ * work took 1,660s (run #3). 70 min is ~1.8x the measured steady-state tick and comfortably
+ * above the cold-phase-free full rebuild, while still bounding a genuinely wedged indexer.
+ *
+ * It deliberately EXCEEDS the hourly cron: the routine row is `concurrency: 'skip'`
+ * (seed-gitnexus-reindex-routine.ts), so a fire that lands while the previous tick is still
+ * awaiting its analyze is skipped rather than double-spawned. The cold one-shot bootstrap
+ * (3,139s) is NOT run under this timeout — see the module header.
+ */
+export const GITNEXUS_ANALYZE_TIMEOUT_MS = 70 * 60_000;
 
 /**
  * The analyze child's OWN cgroup ceiling (managedSpawn `memoryMaxBytes`), so a regression
