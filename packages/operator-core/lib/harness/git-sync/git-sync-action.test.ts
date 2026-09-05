@@ -970,6 +970,36 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     log.mockRestore();
   });
 
+  it('names an in-flight git-sync holder instead of calling it a peer', async () => {
+    const holder = {
+      owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
+      owner_label: 'git-sync:papercup',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'lock-system-git-sync',
+      reason: 'auto-commit papercup',
+      acquired_ts: new Date('2026-09-05T13:42:29.066Z'),
+      expires_ts: new Date('2026-09-05T13:52:29.066Z'),
+      fence_seq: 42,
+    };
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+      (opts as { resource: string }).resource === 'libs-papercusp-submodule'
+        ? { ok: false, reason: 'held_exclusive', holders: [holder] }
+        : { ok: true });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining('an in-flight git-sync auto-commit holds libs-papercusp-submodule'),
+      );
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('returns JSON-safe live holders and emits a scoped retry signal for a held lock', async () => {
     const holder = {
       owner: 'su-peer',
@@ -2024,6 +2054,17 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(reportProgress).toBeTypeOf('function');
       await vi.advanceTimersByTimeAsync(15);
       reportProgress();
+      await Promise.resolve();
+      await Promise.resolve();
+      const heartbeatPatches = gitSyncActivityPatches();
+      expect(heartbeatPatches.some(
+        (activity) =>
+          activity.active === true &&
+          activity.phase === 'local-sync' &&
+          typeof activity.updated_at === 'number' &&
+          typeof activity.started_at === 'number' &&
+          activity.updated_at > activity.started_at,
+      )).toBe(true);
       await vi.advanceTimersByTimeAsync(15);
       reportProgress();
       // Two progress touches keep the 40ms idle deadline out, but cannot move
