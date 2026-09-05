@@ -3,4 +3,13 @@ Description=Raise an alarm when the Papercusp DB backup fails (EI-10733)
 
 [Service]
 Type=oneshot
+# WI-2146225: backup-alert.sh resolves this to place its ALERT-BACKUP-FAILING
+# marker and to print its triage commands. A systemd user unit inherits no
+# interactive shell environment, so without this line the alarm would point the
+# responder at whatever the script's fallback is — and an alarm that names the
+# wrong evidence costs a full false triage (the WI-2145397 failure, which burned
+# three agents in thirty minutes on a backup that was in fact healthy).
+# ⚠ KEEP IN SYNC with papercusp-db-backup.service, kopia-healthcheck.service and
+# kopia-snapshots.service.
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
 ExecStart=%h/.config/kopia/backup-alert.sh "papercusp-db-backup.service failed"

@@ -57,7 +57,17 @@ set -uo pipefail
 # defaults are pinned together by host-dump-coverage-defaults.test.ts — if they
 # drift, the hook simply never finds a receipt and keeps dumping, so the failure
 # is a silent return of the redundancy rather than a broken backup.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
+# The FALLBACK moved to /mnt/backup/db-dumps on 2026-09-05 (WI-2146225).
+# WI-2145150 relocated the dumps by setting Environment= on two units and left
+# every fallback here naming /mnt/data/Backup/db-dumps. WI-2145397 made each
+# unit carry the variable, which fixes the units — but a fallback is what runs
+# when there is NO unit: a manual invocation, a new timer someone forgets to
+# annotate, a test. Those silently wrote ~100G back onto the 96%-full volume
+# the relocation existed to escape, re-creating the split rather than erroring.
+# A default should name the volume that actually has room; the env var stays
+# the override. Pinned to host-dump-coverage.ts by
+# host-dump-coverage-defaults.test.ts — change both or that test goes red.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
 BACKUP_USER="${USER:-$(id -un)}"

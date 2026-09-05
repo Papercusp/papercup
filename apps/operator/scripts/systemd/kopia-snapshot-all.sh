@@ -137,15 +137,43 @@ trap cleanup_kopia_pid EXIT
   REQUIRED_SOURCES=(
     "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
   )
-  mapfile -t SRCS < <({ "$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
+  COLD_FILTER="$(printf '%s\n' "${COLD_SOURCES[@]}")"
+  mapfile -t DISCOVERED < <("$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
       | awk -F'@' '/^[a-zA-Z]/' \
       | grep -oE ':/[^ ]+' \
-      | sed 's/^://'
-    for r in ${REQUIRED_SOURCES[@]+"${REQUIRED_SOURCES[@]}"}; do
-      [ -d "$r" ] && printf '%s\n' "$r"
-    done
-    } | sort -u \
-    | grep -vxF "$(printf '%s\n' "${COLD_SOURCES[@]}")")
+      | sed 's/^://' \
+      | sort -u \
+      | grep -vxF "$COLD_FILTER")
+  # ── ORDER: a source that has NEVER been snapshotted goes FIRST ──────────────
+  # Membership alone is not coverage. This sweep runs one `kopia snapshot
+  # create` at --parallel=1, so sources are visited IN ORDER, and the backup
+  # guard aborts the run mid-flight under memory/io pressure (48h of label=hot
+  # on 2026-09-05: 51 started, 46 killed mid-run, 6 finished). A killed cycle
+  # therefore yields a PREFIX of this list, not a random sample.
+  #
+  # Union-then-`sort -u` put /mnt/backup/db-dumps in the /mnt/* tail, behind
+  # every /home/* source — so on 2026-09-05 the REQUIRED_SOURCES fix above
+  # correctly placed the zero-coverage directory into the sweep and it STILL
+  # got no snapshot: the 13:00:04 cycle was killed at 96s, thousands of files
+  # short of ever reaching it. The blind spot simply moved from "cannot enter
+  # the list" to "is always last in a list that rarely finishes".
+  #
+  # So sort by RISK, not by name: a source with no snapshot at all has
+  # unbounded exposure (nothing to restore from, at any age), while an
+  # already-covered source that is skipped this cycle merely gets 30 minutes
+  # staler. First snapshot first, every time.
+  UNCOVERED=()
+  for r in ${REQUIRED_SOURCES[@]+"${REQUIRED_SOURCES[@]}"}; do
+    [ -d "$r" ] || continue
+    printf '%s\n' ${DISCOVERED[@]+"${DISCOVERED[@]}"} | grep -qxF "$r" && continue
+    printf '%s\n' ${UNCOVERED[@]+"${UNCOVERED[@]}"} | grep -qxF "$r" && continue
+    printf '%s\n' "$COLD_FILTER" | grep -qxF "$r" && continue
+    UNCOVERED+=("$r")
+  done
+  if [ "${#UNCOVERED[@]}" -gt 0 ]; then
+    echo "BOOTSTRAP: ${#UNCOVERED[@]} required source(s) have NEVER been snapshotted — ordering first: ${UNCOVERED[*]}"
+  fi
+  SRCS=( ${UNCOVERED[@]+"${UNCOVERED[@]}"} ${DISCOVERED[@]+"${DISCOVERED[@]}"} )
   # Guard: the old loop snapshotted NOTHING, silently, if discovery came back empty
   # — the same shape as the `--max-results-per-source` flag breakage that made
   # healthcheck.sh exit 1 on every run for weeks before anyone noticed. Silent

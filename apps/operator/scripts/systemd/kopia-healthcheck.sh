@@ -49,7 +49,11 @@ LOG="$HOME/.cache/kopia/healthcheck.log"
 # assertion measures the tree the backup actually writes. Hardcoding it here meant
 # a relocated dump left the freshness check pointed at a directory nothing updates.
 # The fallback is unchanged, so a host that never overrides the var is unaffected.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
+# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
+# note in papercusp-db-backup.sh. A health CHECK defaulting to the abandoned
+# directory is the worst case of the class: it reports confidently about a
+# directory nothing writes, which is how this outage stayed green for 13 hours.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 # Injectable so a caller can capture the alert instead of firing it. This is now a
 # convenience for tests, NOT the safety mechanism — see ALARM SAFETY below.
@@ -248,6 +252,36 @@ jdoe@host:/home/jdoe/macos-vm
   else
     printf '  FAIL  %s\n' "exact-source parser rejected a healthy exact block after an ancestor error"; failed=$((failed+1))
   fi
+  # 3b. WI-2146225 — the source-COVERAGE matcher (check 2c) must discriminate.
+  # The failure it guards is ABSENCE, so a matcher that is too loose recreates the
+  # exact false green it was added to kill: a PARENT source (/mnt/data/Backup)
+  # must NOT satisfy a check for its child (/mnt/data/Backup/db-dumps), and an
+  # indented detail row must not be mistaken for a source header. Tested as pure
+  # string work against a fixture, so it needs no repo and no snapshots.
+  src_covered() { # <listing> <wanted source path>
+    printf '%s\n' "$1" | awk -v want=":$2" '
+      /^[^[:space:]]/ && length($0) >= length(want) &&
+      substr($0, length($0) - length(want) + 1) == want { found = 1 }
+      END { exit found ? 0 : 1 }'
+  }
+  cov_listing="jdoe@host:/mnt/data/Backup
+  2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/backup/db-dumps
+jdoe@host:/mnt/backup/db-dumps-other"
+  cov_ok=1
+  # present-as-parent-only must read as NOT covered
+  src_covered "$cov_listing" /mnt/data/Backup/db-dumps && cov_ok=0
+  # a path appearing only in an INDENTED detail row must read as NOT covered
+  src_covered "$cov_listing" /mnt/backup/db-dumps && cov_ok=0
+  # a longer sibling header must not satisfy the shorter path either
+  src_covered "$cov_listing" /mnt/backup/db-dump && cov_ok=0
+  # positive control: the parent itself IS a real header and must read as covered
+  src_covered "$cov_listing" /mnt/data/Backup || cov_ok=0
+  if [ "$cov_ok" = 1 ]; then
+    printf '  ok    %s\n' "source-coverage matcher rejects parent/substring/detail-row matches"; pass=$((pass+1))
+  else
+    printf '  FAIL  %s\n' "source-coverage matcher accepted a non-source as coverage"; failed=$((failed+1))
+  fi
+
   # 4. Production defaults against the real, healthy backup: green and silent.
   #    If this reds, backups are genuinely broken — read the log; do NOT "fix" the test.
   check "production defaults on a healthy backup: green, no page" 0 no
