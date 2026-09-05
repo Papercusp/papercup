@@ -1468,9 +1468,11 @@ import './cupboard/unpublish';
 // commerce-door-gate, so the authorization rules (unknown org, actor not in org,
 // order ownership, refundable ceiling) are decided once rather than four times.
 import './cupboard/checkout';
+import './cupboard/publish-offer';
 import './cupboard/refund-request';
 import './cupboard/support-request';
 import './cupboard/commerce-dashboards';
+import './cupboard/bind-wallet';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';
