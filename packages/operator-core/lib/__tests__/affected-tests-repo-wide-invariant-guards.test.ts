@@ -2182,3 +2182,83 @@ describe('affected-tests: rust advisory gate (WI-2144851)', () => {
     expect(pkg.scripts?.[RUST_SCRIPT]).toContain('--strict');
   });
 });
+
+/**
+ * WI-2144851 / P-007 — the SBOM/INVENTORY half of the same audit clause.
+ *
+ * The two advisory gates above each scan ONE hand-chosen lockfile. Neither can see a
+ * dependency graph outside its own scope, and a graph nobody scans is not reported clean —
+ * it is not measured, which reads identically from outside. `scripts/check-lockfile-census.mjs`
+ * derives the whole lockfile population from the filesystem and forces every row into an
+ * explicit bucket, so a new blind spot fails instead of waiting to be found by hand.
+ *
+ * TRIGGER SCOPE is the WIDEST of the three on purpose, and that is the point of the first
+ * case: the event that matters is a lockfile APPEARING at a path that does not exist yet,
+ * which no narrower matcher can enumerate in advance. Both blind spots that motivated the
+ * file entered exactly that way.
+ */
+describe('affected-tests: lockfile census / SBOM gate (WI-2144851)', () => {
+  const CENSUS_SCRIPT = 'lint:lockfile-census';
+  const CENSUS_GUARD_PREFIX = `AFFECTED_GUARD\t@papercusp/operator-core\t${CENSUS_SCRIPT}\t`;
+
+  it('attaches for a lockfile at a path that does not exist yet', () => {
+    const out = printAffected('some/newly/added/package/package-lock.json');
+    const guardLine = out
+      .split('\n')
+      .filter(Boolean)
+      .find((line) => line.startsWith(CENSUS_GUARD_PREFIX));
+    expect(guardLine).toBe(
+      `${CENSUS_GUARD_PREFIX}npm run --silent --workspace @papercusp/operator-core ${CENSUS_SCRIPT}`,
+    );
+  });
+
+  it('attaches for a new Cargo.lock anywhere in the tree', () => {
+    // Deliberately WIDER than the Rust advisory gate, which fires only on the shipped
+    // lockfile. Coverage of a graph and the SHIPPING of that graph are different
+    // questions, and the census is the one that must see every candidate.
+    expect(printAffected('some/rust/crate/Cargo.lock')).toContain(CENSUS_GUARD_PREFIX);
+    expect(printAffected('apps/tui/Cargo.lock')).toContain(CENSUS_GUARD_PREFIX);
+  });
+
+  it('attaches for a change to the census script itself', () => {
+    expect(printAffected('scripts/check-lockfile-census.mjs')).toContain(CENSUS_GUARD_PREFIX);
+  });
+
+  it('does NOT attach for an ordinary source change', () => {
+    expect(printAffected('packages/operator-core/lib/tsc-diagnostics.ts')).not.toContain(CENSUS_GUARD_PREFIX);
+  });
+
+  it('does NOT attach for a lockfile inside node_modules', () => {
+    // Vendored lockfiles under node_modules are not this repo's dependency graph, and the
+    // walker prunes them; billing a census run for one would be pure noise.
+    expect(printAffected('node_modules/some-dep/package-lock.json')).not.toContain(CENSUS_GUARD_PREFIX);
+  });
+
+  // The case that is not ceremony: this exact omission silently unattached the Rust guard
+  // during its own development. `if (!ws?.scripts?.[guard.script]) continue` skips an entry
+  // whose script is missing from the HOST workspace's package.json, with no message. The
+  // registry entry looks right, the negative controls still pass — a guard that never
+  // attaches also never over-attaches — and the gate runs on no path at all.
+  it('keeps the guard script declared on the host workspace, with --strict', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[CENSUS_SCRIPT]).toContain('check-lockfile-census.mjs');
+    // Without --strict an UNCLASSIFIED lockfile exits 0 and the registration is decoration.
+    expect(pkg.scripts?.[CENSUS_SCRIPT]).toContain('--strict');
+  });
+
+  // syft is a dev-box binary, not a pipeline dependency, and emitSbom REFUSES when it is
+  // absent rather than skipping quietly. That refusal is correct for an on-demand
+  // inventory and would red-pin every host without syft if it sat on the gate path.
+  it('keeps SBOM emission OFF the gate path and on its own root entrypoint', () => {
+    const rootPkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const corePkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(corePkg.scripts?.[CENSUS_SCRIPT]).not.toContain('--sbom');
+    expect(rootPkg.scripts?.['lint:lockfile-census:sbom']).toContain('--sbom');
+  });
+});

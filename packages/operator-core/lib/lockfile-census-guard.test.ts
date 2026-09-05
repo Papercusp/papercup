@@ -246,7 +246,7 @@ describe('npmDepCounts / cargoDepCounts', () => {
   };
 
   it('counts a wholly-dev lockfile as shipping ZERO, not as N deps', () => {
-    expect(npmDepCounts(devOnlyLock)).toEqual({ shipped: 0, devOnly: 2, total: 2 });
+    expect(npmDepCounts(devOnlyLock)).toEqual({ shipped: 0, devOnly: 2, total: 2, rootName: 'thing' });
   });
 
   it('counts a runtime dependency as shipped', () => {
@@ -257,7 +257,7 @@ describe('npmDepCounts / cargoDepCounts', () => {
         'node_modules/vitest': { version: '4.0.0', dev: true },
       },
     });
-    expect(counts).toEqual({ shipped: 1, devOnly: 1, total: 2 });
+    expect(counts).toEqual({ shipped: 1, devOnly: 1, total: 2, rootName: 'thing' });
   });
 
   // A package resolved at two paths — dev in one tree, runtime in another — ships. This
@@ -271,7 +271,7 @@ describe('npmDepCounts / cargoDepCounts', () => {
         'apps/x/node_modules/tinyglobby': { version: '1.0.0' },
       },
     });
-    expect(counts).toEqual({ shipped: 1, devOnly: 0, total: 1 });
+    expect(counts).toEqual({ shipped: 1, devOnly: 0, total: 1, rootName: 'thing' });
   });
 
   it('REFUSES a lockfile with no packages map rather than reporting it as shipping nothing', () => {
@@ -337,6 +337,9 @@ describe('build-only classification is DERIVED from the measurement', () => {
 describe('countCataloguedDependencies', () => {
   const bom = (components: unknown[]) => ({ components });
 
+  // The exact two components a syft run that catalogued NO dependency actually returned
+  // for papercusp-desktop/package-lock.json, measured 2026-09-05. Under the old
+  // `components === 0` check this shape scored 2 and passed.
   it('excludes the synthetic file node and the subject root package', () => {
     expect(
       countCataloguedDependencies(
@@ -346,8 +349,25 @@ describe('countCataloguedDependencies', () => {
         ]),
         'papercusp-desktop/package-lock.json',
         '/repo',
+        '@papercusp/desktop',
       ),
     ).toBe(0);
+  });
+
+  // Without the lockfile's own root name it cannot be told from a dependency, so the
+  // count is deliberately conservative rather than guessing — one component too many
+  // fails no gate, whereas silently dropping a real dependency would hide a gap.
+  it('keeps the root package when its name was not supplied', () => {
+    expect(
+      countCataloguedDependencies(
+        bom([
+          { name: '@papercusp/desktop', version: '0.0.17', type: 'library' },
+          { name: '/repo/papercusp-desktop/package-lock.json', type: 'file' },
+        ]),
+        'papercusp-desktop/package-lock.json',
+        '/repo',
+      ),
+    ).toBe(1);
   });
 
   it('counts real dependencies', () => {
@@ -371,11 +391,13 @@ describe('countCataloguedDependencies', () => {
 
 describe('assertSbomCoverage', () => {
   it('PASSES when the catalog meets the lockfile’s own shipped count', () => {
-    // Calibrated against all four real subjects 2026-09-05: catalogued runs at or just
-    // above shipped (the excess is root and workspace package nodes), never below.
-    expect(() => assertSbomCoverage('a', 510, { shipped: 509, devOnly: 0, total: 509 })).not.toThrow();
+    // The three real 2026-09-05 calibration points, verbatim: docs-viewer 509/509,
+    // Cargo 615/615, root 2469 shipped / 2481 catalogued (+12 workspace package nodes).
+    expect(() => assertSbomCoverage('a', 509, { shipped: 509, devOnly: 0, total: 509 })).not.toThrow();
     expect(() => assertSbomCoverage('a', 615, { shipped: 615, devOnly: 0, total: 615 })).not.toThrow();
-    expect(() => assertSbomCoverage('a', 1, { shipped: 0, devOnly: 12, total: 12 })).not.toThrow();
+    expect(() => assertSbomCoverage('a', 2481, { shipped: 2469, devOnly: 1250, total: 3719 })).not.toThrow();
+    // Build-only: zero shipped, zero catalogued, and that agreement is the pass.
+    expect(() => assertSbomCoverage('a', 0, { shipped: 0, devOnly: 12, total: 12 })).not.toThrow();
   });
 
   it('REFUSES a catalog shorter than the lockfile it was made from', () => {
