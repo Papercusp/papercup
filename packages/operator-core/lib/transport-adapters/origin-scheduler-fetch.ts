@@ -19,6 +19,7 @@
  *     its idempotent/ambiguous-write retry policy remain authoritative.
  */
 
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   getOriginScheduler,
   type OriginSchedulerClass,
@@ -191,6 +192,189 @@ export function isIdempotentReadMethod(method: string): boolean {
 }
 
 /**
+ * Single-flight coalescing for identical concurrent idempotent reads.
+ *
+ * The finite queue is only `CONNECTION_CAPPED_MAX_IN_FLIGHT` (2) slots wide on
+ * a real connection-capped path — a plain browser tab, and the desktop's
+ * pre-IPC-ready startup window. Startup measurably issues the SAME read more
+ * than once: duplicate bootstrap/options, auth, and profile requests were
+ * observed sharing that two-slot queue with visible reads and delaying
+ * dispatch by up to 6.040s (EI-22365555120139128, rolled up under
+ * EI-22367004519166693). Every duplicate burns one of the two slots to fetch
+ * bytes the page is already fetching.
+ *
+ * Coalescing is applied ONLY where it is semantically transparent:
+ *   - a safe method (GET/HEAD — the same bar `isIdempotentReadMethod` already
+ *     uses for transparent retry). OPTIONS is excluded because a CORS preflight
+ *     is issued by the browser itself and never passes through `window.fetch`;
+ *   - no request body;
+ *   - a byte-identical request identity: same absolute URL AND every
+ *     `RequestInit` field that can change the response (headers, credentials,
+ *     cache, redirect, mode, integrity).
+ * Anything else runs on its own, so two requests that could legitimately
+ * differ are never merged.
+ *
+ * The shared request runs on its OWN `AbortController` rather than on any one
+ * caller's signal: a caller cancelling must not cancel the read another caller
+ * is still waiting on. Waiters are ref-counted and the shared read is aborted
+ * only when the LAST of them goes away, which preserves today's cancellation
+ * behaviour exactly for the uncoalesced single-caller case.
+ *
+ * This is strictly an IN-FLIGHT concern, never a response cache: the entry is
+ * dropped the moment the shared read settles, so a later identical read always
+ * goes to the network.
+ */
+interface InFlightRead {
+  promise: Promise<Response>;
+  /** Waiters still expecting a response; the shared read aborts at zero. */
+  waiting: number;
+  /** Total joiners ever — decides whether a response must be cloned. */
+  joined: number;
+  controller: AbortController | null;
+}
+
+/** Pinned per the shared-lib singleton rule: a second module record would give
+ *  the wrapper a second, empty map and silently stop coalescing. */
+const dedupeState = pinModuleState(
+  '@papercusp/operator-core.transport-adapters.origin-scheduler-fetch',
+  () => ({ inFlightReads: new Map<string, InFlightRead>() }),
+);
+
+/** Test seam: coalescing is in-flight state, so a suite that installs the
+ *  wrapper repeatedly must be able to start from an empty map. */
+export function _resetOriginSchedulerFetchDedupeForTests(): void {
+  dedupeState.inFlightReads.clear();
+}
+
+/** Everything about a request, other than method and URL, that can change the
+ *  response. Two requests may only be coalesced when this matches exactly. */
+function requestVariantOf(input: RequestInfo | URL, init?: RequestInit): string {
+  const req =
+    typeof input === 'object' && input !== null ? (input as Partial<Request>) : undefined;
+  const headers = headersOf(input, init);
+  const entries: string[] = [];
+  headers.forEach((value, name) => {
+    entries.push(`${name}:${value}`);
+  });
+  entries.sort();
+  // JSON keeps the key unambiguous without embedding a control-byte delimiter
+  // (`lint:no-control-bytes` is a green-checkpoint leg).
+  return JSON.stringify([
+    init?.credentials ?? req?.credentials ?? '',
+    init?.cache ?? req?.cache ?? '',
+    init?.redirect ?? req?.redirect ?? '',
+    init?.mode ?? req?.mode ?? '',
+    init?.integrity ?? req?.integrity ?? '',
+    entries,
+  ]);
+}
+
+function hasRequestBody(input: RequestInfo | URL, init?: RequestInit): boolean {
+  if (init && init.body !== undefined && init.body !== null) return true;
+  const req =
+    typeof input === 'object' && input !== null ? (input as Partial<Request>) : undefined;
+  return Boolean(req && 'body' in req && req.body);
+}
+
+/** The coalescing key, or `null` when this request must run on its own. */
+function coalescableReadKey(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  decision: OriginSchedulerFetchDecision,
+): string | null {
+  const method = decision.method ?? methodOf(input, init);
+  if (!SAFE_READ_METHODS.has(method)) return null;
+  if (hasRequestBody(input, init)) return null;
+  let href: string;
+  try {
+    href = new URL(rawUrlOf(input), window.location.href).href;
+  } catch {
+    return null;
+  }
+  return JSON.stringify([method, href, requestVariantOf(input, init)]);
+}
+
+function abortErrorOf(signal: AbortSignal | undefined): unknown {
+  const reason = signal ? (signal as AbortSignal & { reason?: unknown }).reason : undefined;
+  if (reason !== undefined) return reason;
+  const error = new Error('The operation was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+/** Attach one caller to an in-flight shared read. */
+function joinInFlightRead(entry: InFlightRead, signal: AbortSignal | undefined): Promise<Response> {
+  entry.joined += 1;
+  if (signal?.aborted) return Promise.reject(abortErrorOf(signal));
+
+  entry.waiting += 1;
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      // Only THIS caller gives up. The shared read is abandoned solely when
+      // the last waiter has gone, so a peer still awaiting it is unaffected.
+      entry.waiting -= 1;
+      if (entry.waiting <= 0) entry.controller?.abort();
+      reject(abortErrorOf(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    entry.promise.then(
+      (response) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        // A single consumer owns the response outright; cloning would buffer
+        // the body for nothing. Only a genuinely coalesced read needs a copy,
+        // and a test double without `clone` is handed the response as-is.
+        resolve(
+          entry.joined > 1 && typeof response.clone === 'function' ? response.clone() : response,
+        );
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function runScheduledFetch(
+  inner: typeof fetch,
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  origin: string,
+  requestClass: OriginSchedulerClass,
+  signal: AbortSignal | undefined,
+): Promise<Response> {
+  const scheduler = getOriginScheduler(origin);
+  const runOptions: OriginSchedulerRunOptions = {
+    class: requestClass,
+    ...(signal ? { signal } : {}),
+  };
+
+  return scheduler.run((schedulerSignal, context) => {
+    // Keep the caller's Request/RequestInit merge semantics intact.  The
+    // scheduler signal is the only override: it chains caller cancellation
+    // and guarantees a total deadline can release a stuck slot.
+    const nextInit: RequestInit = { ...(init ?? {}), signal: schedulerSignal };
+    return inner(input, nextInit).then((response) => {
+      const length = response.headers.get('content-length');
+      if (length !== null) {
+        const bytes = Number(length);
+        if (Number.isFinite(bytes) && bytes >= 0) context.recordBytes(bytes);
+      }
+      context.recordProtocol(response.headers.get('x-papercusp-protocol'));
+      return response;
+    });
+  }, runOptions);
+}
+
+/**
  * Install the one global fetch wrapper.  The current function is captured and
  * called for the actual request, preserving whatever transport wrapper was
  * installed before us (desktop IPC, workspace headers, or native HTTP).
@@ -209,31 +393,33 @@ export function installOriginSchedulerFetch(): InstallHandle | null {
       return inner(input, init);
     }
 
-    const scheduler = getOriginScheduler(decision.origin);
+    const { origin, requestClass } = decision;
     const signal = requestSignalOf(input, init);
-    const runOptions: OriginSchedulerRunOptions = {
-      class: decision.requestClass,
-      ...(signal ? { signal } : {}),
-    };
 
-    return scheduler.run(
-      (schedulerSignal, context) => {
-        // Keep the caller's Request/RequestInit merge semantics intact.  The
-        // scheduler signal is the only override: it chains caller cancellation
-        // and guarantees a total deadline can release a stuck slot.
-        const nextInit: RequestInit = { ...(init ?? {}), signal: schedulerSignal };
-        return inner(input, nextInit).then((response) => {
-          const length = response.headers.get('content-length');
-          if (length !== null) {
-            const bytes = Number(length);
-            if (Number.isFinite(bytes) && bytes >= 0) context.recordBytes(bytes);
-          }
-          context.recordProtocol(response.headers.get('x-papercusp-protocol'));
-          return response;
-        });
-      },
-      runOptions,
-    );
+    const key = coalescableReadKey(input, init, decision);
+    if (key === null) return runScheduledFetch(inner, input, init, origin, requestClass, signal);
+
+    const { inFlightReads } = dedupeState;
+    const existing = inFlightReads.get(key);
+    if (existing) return joinInFlightRead(existing, signal);
+
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const entry: InFlightRead = {
+      promise: runScheduledFetch(inner, input, init, origin, requestClass, controller?.signal),
+      waiting: 0,
+      joined: 0,
+      controller,
+    };
+    inFlightReads.set(key, entry);
+
+    // In-flight only, never a cache: drop the entry the moment it settles so a
+    // later identical read always reaches the network.
+    const drop = (): void => {
+      if (inFlightReads.get(key) === entry) inFlightReads.delete(key);
+    };
+    void entry.promise.then(drop, drop);
+
+    return joinInFlightRead(entry, signal);
   }) as FetchWithMarker;
 
   wrapped[WRAPPED_MARK] = true;

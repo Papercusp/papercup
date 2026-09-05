@@ -32,6 +32,28 @@ import { listAllProjectedTools, normalizeMcpName } from '@papercusp/agent-mcp';
  */
 export const normalizeToolName = normalizeMcpName;
 
+/** Strip the client's `mcp__<server>__` advertising wrapper, if present. */
+function stripClientWrapper(requested: string): string {
+  return requested.replace(/^mcp__[A-Za-z0-9-]+__/, '');
+}
+
+/**
+ * True when `requested` is shaped like a PLUGIN-contributed tool (`<plugin>.<verb>` —
+ * design-phase.lint_spec, gitnexus.context, repomix.pack). Core tools are `<server>:<verb>`,
+ * so the DOT is what separates the two families.
+ *
+ * Deliberately syntactic, not a hand-maintained plugin-name list: the whole point is that
+ * this runs when the registry does NOT yet contain the tool, so there is nothing to match a
+ * list against, and a stale list would be exactly the code-describing metadata the
+ * derived-truth ladder forbids.
+ *
+ * NOTE: cannot be built on `normalizeToolName` — that normalizer folds `.` and `:` onto one
+ * separator, which erases the very distinction being tested here.
+ */
+export function isPluginNamespacedToolName(requested: string): boolean {
+  return stripClientWrapper(requested).includes('.');
+}
+
 /** Cheap similarity for suggestion ranking: exact-normalized ≫ substring ≫ token overlap. */
 function scoreCandidate(requestedNorm: string, candidateNorm: string): number {
   if (candidateNorm === requestedNorm) return 1000;
@@ -86,6 +108,24 @@ export function unknownToolReferral(requested: string): string {
     `If this name looks right and you recently saw it added/documented, it may exist in ` +
     `source but not be deployed to THIS operator yet (a red release gate stalls the ` +
     `staging→live window well past its normal <=15min) — check dev:pipeline_position before ` +
-    `concluding the doc or the registry itself is wrong.`
+    `concluding the doc or the registry itself is wrong.` +
+    // EI-22365453839629245: a FOURTH reason, specific to plugin-contributed tools and the one
+    // most likely to be misdiagnosed. Plugin tools reach the projected registry through an
+    // asynchronous sweep inside getPluginHost() (plugin-host-runtime.ts, SWEEP_BUDGET_MS) whose
+    // tools land INCREMENTALLY — "tools registered before the cap stay live; a slow sweep
+    // finishes in the background". The host restarts with the operator, so for a window after
+    // every restart a plugin's verbs register one at a time: a SIBLING verb dispatches fine
+    // while this one still misses. Both prior reasons above read as permanent ("typo" /
+    // "not deployed"), so without this line the transient case gets filed as a real defect —
+    // which is exactly how gitnexus once got misdiagnosed as down (host-bootstrap.ts, plugin-
+    // system-hive-port-2026-06-11 P-012) and how this very ticket was filed.
+    (isPluginNamespacedToolName(requested)
+      ? ` This name is PLUGIN-shaped (<plugin>.<verb>). Plugin tools enter the registry via an ` +
+        `ASYNCHRONOUS sweep in the plugin host, which restarts with the operator — so shortly ` +
+        `after an operator restart a plugin verb can still be unregistered while a SIBLING verb ` +
+        `of the same plugin dispatches fine. That makes this miss very likely TRANSIENT rather ` +
+        `than a removed or broken tool. Check plugins:runtime_status for loaded plugins and load ` +
+        `errors, then retry, before concluding the plugin is down or the tool does not exist.`
+      : '')
   );
 }

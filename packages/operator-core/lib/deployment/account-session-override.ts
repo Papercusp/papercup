@@ -46,7 +46,11 @@ export interface AccountSessionOverride {
 
 export const DEFAULT_ACCOUNT_OVERRIDE: AccountSessionOverride = { forcedAccounts: [], excludeAccounts: [] };
 
-const OVERRIDE_STATE_TABLE = 'operator_account_override' as const;
+/** EXPORTED so `account-default-marker-rule.ts` can PIN its own copy of this table
+ *  name against the real one in a test, instead of silently duplicating it (the
+ *  rule must not import this module at module scope — that would pull the operator
+ *  -state/PG stack into every `events/rules.ts` import). */
+export const OVERRIDE_STATE_TABLE = 'operator_account_override' as const;
 
 function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];

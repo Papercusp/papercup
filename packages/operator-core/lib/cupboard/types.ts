@@ -619,6 +619,8 @@ export interface HarnessListing {
   tags: string[];
   created_at: number;
   updated_at: number;
+  /** Canonical immutable release manifest when the server exposes it. */
+  release_manifest?: import('./listing-manifest').CupboardReleaseManifest | null;
 }
 
 /**

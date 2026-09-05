@@ -19,6 +19,7 @@ import '../index';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { capabilityMapText } from './capability-map';
 import {
+  isPluginNamespacedToolName,
   normalizeToolName,
   suggestClosestToolNames,
   unknownToolReferral,
@@ -76,6 +77,55 @@ describe('unknownToolReferral', () => {
     const text = unknownToolReferral('testing:run');
     expect(text).toContain('not be deployed to THIS operator yet');
     expect(text).toContain('dev:pipeline_position');
+  });
+
+  // EI-22365453839629245: the plugin-sweep window. Plugin verbs register INCREMENTALLY after
+  // an operator restart, so one verb can miss while a sibling dispatches — a transient miss
+  // that both other reasons ("typo", "not deployed") would have the agent read as permanent.
+  it('names the transient plugin-sweep window for a plugin-shaped name', () => {
+    const text = unknownToolReferral('design-phase.validate_spec');
+    expect(text).toContain('PLUGIN-shaped');
+    expect(text).toContain('TRANSIENT');
+    expect(text).toContain('plugins:runtime_status');
+    // The sibling-verb asymmetry is the load-bearing detail: it is what made the real report
+    // look like a real defect (search_registry worked; validate_spec/lint_spec did not).
+    expect(text).toContain('SIBLING verb');
+  });
+
+  it('recognises a plugin-shaped name through the client mcp__<server>__ wrapper', () => {
+    const text = unknownToolReferral('mcp__papercusp-su__gitnexus.context');
+    expect(text).toContain('PLUGIN-shaped');
+  });
+
+  // Falsifiability control: without this, the three assertions above would still pass if the
+  // hint were appended UNCONDITIONALLY, which would tell every typo'd core-tool caller to go
+  // read plugin status. A core `ns:verb` name must NOT get the plugin branch.
+  it('does NOT add the plugin hint for a core colon-form or client-underscore name', () => {
+    for (const name of ['locks_acquire', 'testing:run', 'qqqxyzzz', 'mcp__papercusp-su__locks_acquire']) {
+      const text = unknownToolReferral(name);
+      expect(text).not.toContain('PLUGIN-shaped');
+      expect(text).not.toContain('plugins:runtime_status');
+    }
+  });
+});
+
+describe('isPluginNamespacedToolName', () => {
+  it('is true only for the dot-separated <plugin>.<verb> family', () => {
+    expect(isPluginNamespacedToolName('design-phase.lint_spec')).toBe(true);
+    expect(isPluginNamespacedToolName('repomix.pack')).toBe(true);
+    expect(isPluginNamespacedToolName('mcp__papercusp-su__design-phase.lint_spec')).toBe(true);
+    expect(isPluginNamespacedToolName('work_items:claim')).toBe(false);
+    expect(isPluginNamespacedToolName('work_items_claim')).toBe(false);
+    expect(isPluginNamespacedToolName('mcp__papercusp-su__work_items_claim')).toBe(false);
+  });
+
+  // Guards the documented reason this cannot be built on normalizeToolName: that normalizer
+  // folds '.' and ':' onto ONE separator, so reusing it would classify every core tool as a
+  // plugin tool. If someone "simplifies" the helper onto it, this reds.
+  it('stays distinct from the separator-folding normalizer', () => {
+    expect(normalizeToolName('design-phase.lint_spec')).toBe(normalizeToolName('design-phase:lint_spec'));
+    expect(isPluginNamespacedToolName('design-phase.lint_spec')).toBe(true);
+    expect(isPluginNamespacedToolName('design-phase:lint_spec')).toBe(false);
   });
 });
 

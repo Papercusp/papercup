@@ -49,12 +49,22 @@ export const PLAN_ITEM_LANE_RESYNC_ACTION = "plan-item.resyncLane";
  *  drained, and back when an item reopens). Never ships a plan. */
 export const PLAN_DRAIN_TRANSITION_ACTION = "plan.applyDrainTransition";
 
+/** EI-19944784972017743: the action name deployment/account-default-marker-rule.ts
+ *  fires when the owner's account override row changes, to re-publish THIS process's
+ *  `PAPERCUSP_DEFAULT_ACCOUNT_ACTIVE` marker. The marker is per-PROCESS, so without
+ *  this a SIBLING long-lived host (bg-host) keeps its boot-time value and goes on
+ *  routing in-process anthropic-direct calls at `~/.claude` after the owner has
+ *  nominated a default pool account — the exact traffic setting a default is meant
+ *  to move. Rides the change stream the override table already emits. */
+export const ACCOUNT_DEFAULT_MARKER_SYNC_ACTION = "accounts.syncDefaultMarker";
+
 /** The closed set of recognised built-in (non-tool) reaction action names. */
 export const BUILTIN_ACTIONS: ReadonlySet<string> = new Set<string>([
   CACHE_BUMP_TAGS_ACTION,
   PLAN_ITEM_RECONCILE_ACTION,
   PLAN_ITEM_LANE_RESYNC_ACTION,
   PLAN_DRAIN_TRANSITION_ACTION,
+  ACCOUNT_DEFAULT_MARKER_SYNC_ACTION,
 ]);
 
 /** Whether `fire` names a built-in in-process action (vs a projected tool). */
@@ -255,6 +265,20 @@ export async function fireBuiltinReactionAction(
       for (const p of plans) {
         await applyPlanDrainTransition(p.planSlug, p.harnessSlug).catch(() => null);
       }
+      return { ok: true };
+    }
+    case ACCOUNT_DEFAULT_MARKER_SYNC_ACTION: {
+      // Imported lazily for the same reason as the drain transition above: this
+      // module is loaded on EVERY reaction dispatch, and account-pool-store pulls
+      // in the pool/override/gateway-observability stack. A static import would
+      // also risk a cycle, since that stack reaches back into operator state.
+      //
+      // `syncDefaultAccountEnv` is itself fail-soft (it keeps the previous marker
+      // on a read error rather than flipping every in-process call to a different
+      // transport), so a failure here is already the safe direction; the next
+      // override write re-fires this, and host boot re-syncs regardless.
+      const { syncDefaultAccountEnv } = await import("../deployment/account-pool-store");
+      await syncDefaultAccountEnv(workspaceId).catch(() => undefined);
       return { ok: true };
     }
     default:

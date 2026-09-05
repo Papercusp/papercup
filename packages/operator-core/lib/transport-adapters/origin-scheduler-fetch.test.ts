@@ -6,6 +6,7 @@ import {
   getOriginScheduler,
 } from '@papercusp/sync';
 import {
+  _resetOriginSchedulerFetchDedupeForTests,
   classifyOriginSchedulerFetch,
   installOriginSchedulerFetch,
   isIdempotentReadMethod,
@@ -43,12 +44,39 @@ function stubWindow(fetchImpl: typeof fetch): void {
 
 afterEach(() => {
   _resetOriginSchedulersForTests();
+  _resetOriginSchedulerFetchDedupeForTests();
   vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
   _resetOriginSchedulersForTests();
+  _resetOriginSchedulerFetchDedupeForTests();
 });
+
+/**
+ * A response double that models real body-consumption semantics: each object
+ * may be read once, and `clone()` yields an independently readable copy. A
+ * coalesced caller handed the SAME object as its peer therefore fails here,
+ * which is the property the single-flight tests below actually check.
+ */
+function cloneableResponse(body: string, headers: Record<string, string> = {}): Response {
+  const make = (): Response => {
+    let used = false;
+    return {
+      headers: new Headers(headers),
+      get bodyUsed() {
+        return used;
+      },
+      clone: () => make(),
+      text: async () => {
+        if (used) throw new TypeError('body already read');
+        used = true;
+        return body;
+      },
+    } as unknown as Response;
+  };
+  return make();
+}
 
 describe('classifyOriginSchedulerFetch', () => {
   it('classifies safe reads as foreground and mutations as interactive', () => {
@@ -246,5 +274,118 @@ describe('installOriginSchedulerFetch', () => {
     await window.fetch('https://external.example/api/x');
     expect(inner).toHaveBeenCalledTimes(4);
     first?.uninstall();
+  });
+});
+
+/**
+ * EI-22367004519166693 / EI-22365555120139128: startup repeats the same
+ * bootstrap, auth and profile reads, and each duplicate consumes one of only
+ * two connection-capped slots that visible reads also need.
+ */
+describe('installOriginSchedulerFetch single-flight read coalescing', () => {
+  it('collapses identical concurrent reads into one underlying request', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async () => {
+      await hold.promise;
+      return response({ 'content-length': '10' });
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    const first = window.fetch('/api/bootstrap');
+    const second = window.fetch('/api/bootstrap');
+    const third = window.fetch('/api/bootstrap');
+    await tick();
+
+    // The duplicates never reach the transport, so they never take a slot.
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    hold.resolve();
+    await expect(Promise.all([first, second, third])).resolves.toHaveLength(3);
+    expect(inner).toHaveBeenCalledTimes(1);
+    handle?.uninstall();
+  });
+
+  it('gives every coalesced caller an independently readable body', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async () => {
+      await hold.promise;
+      return cloneableResponse('{"ok":true}');
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    const first = window.fetch('/api/profile');
+    const second = window.fetch('/api/profile');
+    await tick();
+    hold.resolve();
+
+    const [a, b] = await Promise.all([first, second]);
+    // Handing both callers the same Response would make the second read throw.
+    await expect(a.text()).resolves.toBe('{"ok":true}');
+    await expect(b.text()).resolves.toBe('{"ok":true}');
+    expect(inner).toHaveBeenCalledTimes(1);
+    handle?.uninstall();
+  });
+
+  it('never merges requests that could legitimately differ', async () => {
+    const inner = vi.fn(async () => response());
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 4, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    await Promise.all([
+      // Differing auth header: a shared response could cross privilege.
+      window.fetch('/api/whoami', { headers: { authorization: 'a' } }),
+      window.fetch('/api/whoami', { headers: { authorization: 'b' } }),
+      // Differing query string.
+      window.fetch('/api/list?page=1'),
+      window.fetch('/api/list?page=2'),
+      // Mutations are never idempotent.
+      window.fetch('/api/act', { method: 'POST', body: '{}' }),
+      window.fetch('/api/act', { method: 'POST', body: '{}' }),
+    ]);
+
+    expect(inner).toHaveBeenCalledTimes(6);
+    handle?.uninstall();
+  });
+
+  it('coalesces in flight only — it is not a response cache', async () => {
+    const inner = vi.fn(async () => response());
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    await window.fetch('/api/options');
+    await window.fetch('/api/options');
+
+    expect(inner).toHaveBeenCalledTimes(2);
+    handle?.uninstall();
+  });
+
+  it('lets one caller cancel without cancelling the read its peer awaits', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async () => {
+      await hold.promise;
+      return response();
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    const controller = new AbortController();
+    const abandoned = window.fetch('/api/auth', { signal: controller.signal });
+    const kept = window.fetch('/api/auth');
+    await tick();
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    await expect(abandoned).rejects.toBeDefined();
+
+    hold.resolve();
+    await expect(kept).resolves.toBeDefined();
+    handle?.uninstall();
   });
 });
