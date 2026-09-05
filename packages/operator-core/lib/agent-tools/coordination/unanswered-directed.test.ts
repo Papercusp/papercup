@@ -7,10 +7,13 @@ import {
   rowsToOpenAsksMap,
   partitionUnansweredByLiveness,
   decorateUnansweredLiveness,
+  partitionOpenAsksByLiveness,
+  decorateOpenAsksLiveness,
   UNANSWERED_NEWEST_CAP,
   type UnansweredDirectedRow,
   type UnansweredDirectedSummary,
   type OpenAskRow,
+  type OpenAskSummary,
 } from './unanswered-directed';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
@@ -244,6 +247,128 @@ describe('rowsToOpenAsksMap (pure)', () => {
       NOW,
     );
     expect(map.get('su-a')?.oldestTo).toBe('');
+  });
+});
+
+describe('open-ask recipient liveness (pure)', () => {
+  const summary = (overrides: Partial<OpenAskRow> = {}): OpenAskSummary =>
+    rowsToOpenAsksMap(
+      [
+        openAskRow({
+          cnt: 3,
+          oldest_ts_ms: NOW - 300_000,
+          newest_ids: ['m-dead', 'm-live'],
+          newest_to: ['su-dead', 'su-live'],
+          newest_summary: [null, null],
+          newest_ts_ms: [NOW - 300_000, NOW - 60_000],
+          recipient_total: 2,
+          recipient_ids: ['su-dead', 'su-live'],
+          recipient_cnts: [2, 1],
+          recipient_oldest_ts_ms: [NOW - 300_000, NOW - 60_000],
+          ...overrides,
+        }),
+      ],
+      NOW,
+    ).get('su-a')!;
+
+  it('folds the bounded per-recipient rollup and marks omitted recipients', () => {
+    const out = rowsToOpenAsksMap(
+      [
+        openAskRow({
+          cnt: 3,
+          recipient_total: 3,
+          recipient_ids: ['su-dead', 'su-live'],
+          recipient_cnts: [2, 1],
+          recipient_oldest_ts_ms: [NOW - 300_000, NOW - 60_000],
+        }),
+      ],
+      NOW,
+    ).get('su-a');
+
+    expect(out?.recipients).toEqual([
+      { to: 'su-dead', count: 2, oldestAgeMs: 300_000 },
+      { to: 'su-live', count: 1, oldestAgeMs: 60_000 },
+    ]);
+    expect(out?.recipientsTruncated).toBe(true);
+  });
+
+  it('demotes only positively-ended recipients while retaining their asks as stale', () => {
+    const out = partitionOpenAsksByLiveness(summary(), (id) =>
+      id === 'su-dead' ? 'ended' : 'live',
+    );
+
+    expect(out.count).toBe(1);
+    expect(out.oldestAgeMs).toBe(60_000);
+    expect(out.oldestTo).toBe('su-live');
+    expect(out.staleCount).toBe(2);
+    expect(out.staleOldestAgeMs).toBe(300_000);
+    expect(out.newest.map((e) => [e.msgId, e.recipientState])).toEqual([
+      ['m-dead', 'ended'],
+      ['m-live', 'live'],
+    ]);
+  });
+
+  it('fails open for unknown, missing, and throwing liveness evidence', () => {
+    for (const state of [null, undefined]) {
+      const out = partitionOpenAsksByLiveness(summary(), () => state);
+      expect(out.count).toBe(3);
+      expect(out.staleCount).toBe(0);
+    }
+
+    const out = partitionOpenAsksByLiveness(summary(), () => {
+      throw new Error('presence unavailable');
+    });
+    expect(out.count).toBe(3);
+    expect(out.staleCount).toBe(0);
+    expect(out.oldestAgeMs).toBe(300_000);
+  });
+
+  it('keeps omitted recipients counted and marks staleCount as a floor', () => {
+    const out = partitionOpenAsksByLiveness(
+      summary({ recipient_total: 3, recipient_ids: ['su-dead'], recipient_cnts: [2], recipient_oldest_ts_ms: [NOW - 300_000] }),
+      (id) => (id === 'su-dead' ? 'ended' : 'live'),
+    );
+
+    expect(out.count).toBe(1); // one omitted recipient remains an unknown obligation
+    expect(out.staleCount).toBe(2);
+    expect(out.staleCountBounded).toBe(true);
+    expect(out.oldestAgeMs).toBe(300_000); // the omitted ask's age is unknown
+  });
+
+  it('resolves a deduplicated recipient batch across sender summaries', async () => {
+    const map = new Map([
+      ['su-a', summary()],
+      [
+        'su-c',
+        summary({
+          cnt: 1,
+          oldest_ts_ms: NOW - 60_000,
+          newest_ids: ['m-live'],
+          newest_to: ['su-live'],
+          newest_summary: [null],
+          newest_ts_ms: [NOW - 60_000],
+          recipient_ids: ['su-live'],
+          recipient_cnts: [1],
+          recipient_oldest_ts_ms: [NOW - 60_000],
+          recipient_total: 1,
+        }),
+      ],
+    ]);
+    const calls: string[][] = [];
+    const out = await decorateOpenAsksLiveness(map, {
+      recipientStatesFn: async (ids) => {
+        calls.push(ids);
+        return new Map([
+          ['su-dead', 'ended' as const],
+          ['su-live', 'live' as const],
+        ]);
+      },
+    });
+
+    expect(calls).toEqual([['su-dead', 'su-live']]);
+    expect(out.get('su-a')?.count).toBe(1);
+    expect(out.get('su-a')?.staleCount).toBe(2);
+    expect(out.get('su-c')?.count).toBe(1);
   });
 });
 
