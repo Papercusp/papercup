@@ -103,15 +103,11 @@ export { bindCurrentCallerDispatch as bindInnerDispatch } from '../orchestration
 export default defineTool({
   name: 'code:run',
   description:
-    'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
-    "call, returning only the script's summary (plus explicitly returned image/audio blocks) — " +
-    'collapsing N sequential model turns into one and ' +
-    'keeping intermediate payloads out of context. Write the ' +
-    'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
-    'previews write-effect mutations before committing. Colon name → dotted call: only the ' +
-    'namespace/verb separator `:` becomes `.`, while `_` stays inside each segment ' +
-    '(work_items:get → tools.work_items.get or tools.workItems.get; sessions:read → tools.sessions.read; ' +
-    'tools:invoke → tools.tools.invoke, never bare tools.invoke); never invent a fourth spelling.',
+    'Run a multi-step tool-orchestration JS script in one call with tools.ns.verb(args). Only the ' +
+    'returned summary/media re-enters context; intermediate results stay in the runtime. Wrong ' +
+    'names return typed signatures; dryRun:true previews write effects. Colon-to-dot mapping ' +
+    'preserves underscores (`work_items:get` → tools.work_items.get or tools.workItems.get; ' +
+    '`tools:invoke` → tools.tools.invoke).',
   guidance: {
     when:
       'MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: ' +
