@@ -141,7 +141,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import {
   setWorkItemCheckpointWithPrior,
   getWorkItemCheckpoint,
@@ -983,7 +983,7 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES],
   // EI-20193605443762570: this handler owns its DB scopes through its
   // work-item/checkpoint accessors and never reads ctx.tx. Avoid retaining the
   // ambient workspace transaction across those awaits under fleet load.
