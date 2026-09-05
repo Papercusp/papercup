@@ -461,7 +461,7 @@ Measured 2026-09-02 (WI-2140986): that reclaimed 60.89 GiB from gateway_payload_
 55s with no contention and no data loss.
 
 INVESTIGATION RECIPE (traps verified while working WI-38595, 2026-08-14, and WI-2141004, 2026-09-02):
-1. PostgreSQL is usually NOT the consumer, despite this alarm's title — but "not PostgreSQL" is a HYPOTHESIS TO TEST, never a conclusion to inherit. The probe watches the VOLUME holding PGDATA, and that volume is shared with \$HOME. Size PGDATA with 'sudo -n du -xsh $BACKUP_DB_DATA_DIR' — an unprivileged du prints a SILENT '4.0K' (permission denied) rather than an error, which reads as 'Postgres is tiny' for the wrong reason. Start from the LARGEST RELATIONS block above and from a fresh directory scan; do not start from any remembered figure, including one quoted in an older issue. This step used to carry a measured example here, and it went stale and misdirected three work-items for three weeks.
+1. PostgreSQL is usually NOT the consumer, despite this alarm's title — but \"not PostgreSQL\" is a HYPOTHESIS TO TEST, never a conclusion to inherit. The probe watches the VOLUME holding PGDATA, and that volume is shared with \$HOME. Size PGDATA with 'sudo -n du -xsh $BACKUP_DB_DATA_DIR' — an unprivileged du prints a SILENT '4.0K' (permission denied) rather than an error, which reads as 'Postgres is tiny' for the wrong reason. Start from the LARGEST RELATIONS block above and from a fresh directory scan; do not start from any remembered figure, including one quoted in an older issue. This step used to carry a measured example here, and it went stale and misdirected three work-items for three weeks.
 2. CONFIRM WHICH VOLUME a directory is on before reclaiming anything: 'findmnt -T <path>' or 'stat -c %d <path>'. On this box /tmp is a BIND MOUNT from a second physical disk, so deleting 136 GiB of stale /tmp scratch frees exactly nothing on the volume this alarm is about.
 3. Enumerate consumers in ONE bounded backgrounded pass: 'nice -n 19 ionice -c3 du -x -d3 / | sort -hr > /tmp/scan-1.txt' (~7 min here). Re-run it later into scan-2.txt and DIFF the two — a diff of two snapshots is the only reliable attribution of NET growth per directory.
 4. Do NOT attribute growth by mtime ('find -newermt'). It counts a file's WHOLE size when the file is merely touched, so a single live VM image reads as hundreds of GiB 'written' in 26h. Note also that qcow2 images grow monotonically and never return space the guest frees — and the .img suffix lies, so check the magic ('QFI\\373' = qcow2)."
@@ -832,6 +832,23 @@ if [ "${1:-}" = "--self-test" ]; then
   mkdir -p "$t/dump" "$t/state"
   self="${BASH_SOURCE[0]}"
   p=0; f=0
+  # ── WI-2145430 recurrence guard: the shell's OWN runtime errors ──────────
+  # `bash -n` is STRUCTURALLY BLIND to this class, so the syntax check that
+  # guards this script cannot see it. An unescaped double quote inside a
+  # multi-line double-quoted alarm body is VALID SYNTAX: it closes the string
+  # early, so the body is silently TRUNCATED and the remainder is re-parsed as
+  # stray words. The only channel that reports it is stderr — and every nested
+  # probe run below used to send stderr to /dev/null, so a filed alarm could
+  # lose its entire investigation recipe with all cases green. That is exactly
+  # what the disk-headroom body did: it closed at `but "not PostgreSQL"` and
+  # dropped the whole 4-step INVESTIGATION RECIPE from every EI it ever filed.
+  # Bash prefixes its own diagnostics with "<script>: line N:", which is never
+  # legitimate probe output, so that signature — not "stderr is non-empty" — is
+  # the tripwire: several probes below use stderr as their reporting channel.
+  selftest_stderr="$t/selftest-stderr.log"; : > "$selftest_stderr"
+  # For probes that capture stderr into a variable to assert on its CONTENT:
+  # feed that text through here so it reaches the same tripwire.
+  note_shell_errors() { printf '%s\n' "$1" | grep -aE ': line [0-9]+:' >> "$selftest_stderr" || true; }
   # <name> <stale:yes|no> <want-marker:yes|no> [ENV=VAL ...]
   check() {
     local name="$1" stale="$2" want_marker="$3"; shift 3
@@ -844,7 +861,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
-        "$@" bash "$self" >/dev/null 2>&1
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
     # BACKUP_ARTIFACTS can name several dumps, so a red writes one stale-* marker PER
     # artifact — glob-match ANY of them (a bare `[ -f state/stale-* ]` errors with
     # "binary operator expected" the moment the glob expands to >1 file).
@@ -885,7 +902,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
-        "$@" bash "$self" >/dev/null 2>&1
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
     local got_marker=no
     [ -f "$t/state/stale-tmp" ] && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
@@ -956,7 +973,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="$opt" \
-        "$@" bash "$self" >/dev/null 2>&1
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
     local got_marker=no
     compgen -G "$t/state/stale-*" >/dev/null 2>&1 && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
@@ -1002,7 +1019,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="$opt" BACKUP_ALERT_FORCE=1 \
-        bash "$self" >/dev/null 2>&1
+        bash "$self" >/dev/null 2>>"$selftest_stderr"
     local got_marker=no
     [ -f "$t/state/workspace-dead-dump-tmp" ] && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
@@ -1032,7 +1049,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
-        "$@" bash "$self" >/dev/null 2>&1
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
     local got_marker=no
     [ -f "$t/state/db-disk-red-ei-filed" ] && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
@@ -1072,6 +1089,7 @@ if [ "${1:-}" = "--self-test" ]; then
         BACKUP_OPTIONAL_ARTIFACTS="" BACKUP_NO_FILE=1 \
         PATH="$selftest_df_bin:$PATH" \
         bash "$self" 2>&1 >/dev/null)"
+    note_shell_errors "$out"
     if printf '%s' "$out" | grep -qE "$want_re"; then
       printf '  ok    %s\n' "$name"; p=$((p+1))
     else
@@ -1207,6 +1225,7 @@ $(trend_seed 7200 10485760)" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
         PATH="$selftest_df_bin:$PATH" \
         "$@" bash "$self" 2>&1 >/dev/null)"
+    note_shell_errors "$out"
     [ -f "$t/state/backup-volume-red-ei-filed" ] && got_marker=yes
     if [ "$got_marker" = "$want_marker" ] && printf '%s' "$out" | grep -qE "$want_re"; then
       printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
@@ -1255,7 +1274,7 @@ $(trend_seed 7200 10485760)" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
         BACKUP_TMPDIR_WATCH="$t/tmpwatch" BACKUP_TMPDIR_MAX_ENTRIES="$thresh" \
-        "$@" bash "$self" >/dev/null 2>&1
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
     local got_marker=no
     compgen -G "$t/state/tmpdir-entries-red*" >/dev/null 2>&1 && got_marker=yes
     if [ "$got_marker" = "$want_marker" ]; then
@@ -1330,6 +1349,21 @@ $(trend_seed 7200 10485760)" \
         "$t/shapes" '2 papercusp-affected-tests-<n>-<hex>\.log$' \
         papercusp-affected-tests-123-abcdef12.log papercusp-affected-tests-456-deadbeef.log
   printf '  ---- %d passed, %d failed (post tmpdir-shapes block)\n' "$p" "$f"
+
+  # 27. WI-2145430: no path any case above exercised may make the SHELL itself
+  #     complain. This runs last on purpose — it is a verdict over the stderr
+  #     every preceding case produced, so widening the self-test automatically
+  #     widens this guard, with no pattern list to hand-maintain.
+  # Grep HERE, not only in note_shell_errors: the redirected probe runs append
+  # their WHOLE stderr, and several of them legitimately log there, so matching
+  # on "non-empty" would fail on ordinary output.
+  selftest_shell_errs="$(grep -aE ': line [0-9]+:' "$selftest_stderr" 2>/dev/null | sort -u | head -5)"
+  if [ -z "$selftest_shell_errs" ]; then
+    printf '  ok    no bash runtime error on any exercised probe path\n'; p=$((p+1))
+  else
+    printf '  FAIL  the shell itself errored on an exercised probe path:\n%s\n' "$selftest_shell_errs"; f=$((f+1))
+  fi
+  printf '  ---- %d passed, %d failed (post shell-runtime-error block)\n' "$p" "$f"
 
   [ "$f" -eq 0 ] || exit 1
   exit 0
