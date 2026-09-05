@@ -18,9 +18,13 @@ vi.mock('../../scheduler/get-next', () => ({
   readIssueClaimability: vi.fn(),
 }));
 vi.mock('../../scheduler/claim-spec-store', () => ({
+  getClaimSpecRecord: vi.fn(),
   resolveFleetClaimSpec: vi.fn(),
   listFleetClaimSpecCandidates: vi.fn(),
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
+}));
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  readFleetPauseState: vi.fn(),
 }));
 // EI-21834285144372521: the handler now runs the SAME post-claim plan-lane guard
 // scheduler:get_next uses, read-only, over plan-linked rows in the returned page. Mocked so
@@ -36,14 +40,21 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import { readIssueClaimability } from '../../scheduler/get-next';
-import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
+import {
+  getClaimSpecRecord,
+  resolveFleetClaimSpec,
+  listFleetClaimSpecCandidates,
+} from '../../scheduler/claim-spec-store';
+import { readFleetPauseState } from '../../scheduler/fleet-scope-admission';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { materializeCountEvidence } from '../../count-evidence-contract';
 
 const readM = vi.mocked(readIssueClaimability);
+const recordM = vi.mocked(getClaimSpecRecord);
 const recM = vi.mocked(resolveFleetClaimSpec);
 const candM = vi.mocked(listFleetClaimSpecCandidates);
+const pauseM = vi.mocked(readFleetPauseState);
 const laneM = vi.mocked(planItemLaneBlockReason);
 
 const tool = (await import('./claimable')).default;
@@ -162,8 +173,20 @@ beforeEach(() => {
     admitted: admittedValue,
     ...(readOpts.sampleLimit ? { sample: sampleValue } : {}),
   })) as never);
+  recordM.mockResolvedValue({
+    source: 'default',
+    spec: {
+      specId: 'default-fixed-ordering',
+      revision: 0,
+      view: { filter: undefined },
+    },
+    revision: null,
+    updatedBy: null,
+    updatedAt: null,
+  });
   mockResolvedTyped(recM, null);
   mockResolvedTyped(candM, []);
+  pauseM.mockResolvedValue({ windingDown: false, reason: null });
   laneM.mockResolvedValue(null);
 });
 
@@ -183,7 +206,7 @@ describe('work_items:claimable handler', () => {
     });
   });
 
-  it('no spec/kind: reads the whole lane; claimableCount === oracle survivors; rows from the lister; default provenance', async () => {
+  it('no spec/kind: reads the caller-effective lane; claimableCount === oracle survivors; rows from the lister; default provenance for solo callers', async () => {
     const out = await run({ harness: 'papercup' });
     // the snapshot read was called with an EMPTY filter (whole issue-family lane), caller identity threaded.
     expect(readM).toHaveBeenCalledWith(
@@ -208,8 +231,92 @@ describe('work_items:claimable handler', () => {
     expect(out.excludedBreakdown.taken).toBe(2);
     expect(out.queueControl).toEqual(BREAKDOWN.queueControl);
     expect(out.spec).toEqual({ specId: 'default-fixed-ordering', revision: 0, source: 'default' });
-    // NEVER claims — no spec record was resolved and no claim mock exists.
+    expect(recordM).toHaveBeenCalledWith({ cupId: 'probe', workspaceId: 'ws-1' });
+    // NEVER claims — this read only resolves the caller's spec and measures the oracle.
     expect(recM).not.toHaveBeenCalled();
+  });
+
+  it('EI-22395160648139412: omitted spec resolves the caller-effective inherited fleet spec instead of DEFAULT_CLAIM_SPEC', async () => {
+    recordM.mockResolvedValue({
+      source: 'fleet',
+      spec: {
+        specId: 'goal-drain-lane',
+        revision: 4,
+        view: { filter: { field: 'goal', op: '=', value: 'work-on-everything-813959' } },
+        states: ['open'],
+      },
+      revision: 4,
+      updatedBy: null,
+      updatedAt: null,
+      harnessSlug: null,
+      fleetSlug: 'goal-drain-work-on-everything-813959',
+    });
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(recordM).toHaveBeenCalledWith({ cupId: 'probe', workspaceId: 'ws-1' });
+    expect(readM.mock.calls[0]![0]).toEqual({
+      field: 'goal',
+      op: '=',
+      value: 'work-on-everything-813959',
+    });
+    expect(readM.mock.calls[0]![1]).toEqual(
+      expect.objectContaining({
+        states: ['open'],
+        spec: expect.objectContaining({ specId: 'goal-drain-lane', revision: 4 }),
+      }),
+    );
+    expect(out.spec).toEqual({
+      specId: 'goal-drain-lane',
+      revision: 4,
+      source: 'fleet',
+      fleetSlug: 'goal-drain-work-on-everything-813959',
+      matchedBy: 'caller-effective',
+    });
+    expect(out.countEvidence.contract.population.selector.claimSpec).toMatchObject({
+      specId: 'goal-drain-lane',
+      revision: 4,
+      source: 'fleet',
+      fleetSlug: 'goal-drain-work-on-everything-813959',
+      matchedBy: 'caller-effective',
+    });
+  });
+
+  it('EI-22395160648139412: winding-down fleet keeps the effective spec identity but reports no new claimable rows', async () => {
+    recordM.mockResolvedValue({
+      source: 'fleet',
+      spec: {
+        specId: 'goal-drain-lane',
+        revision: 4,
+        view: { filter: { field: 'goal', op: '=', value: 'work-on-everything-813959' } },
+        states: ['open'],
+      },
+      revision: 4,
+      updatedBy: null,
+      updatedAt: null,
+      harnessSlug: null,
+      fleetSlug: 'goal-drain-work-on-everything-813959',
+    });
+    pauseM.mockResolvedValue({ windingDown: true, reason: 'drain complete' });
+
+    const out = await run({ harness: 'papercup' });
+
+    expect(out.spec).toMatchObject({
+      specId: 'goal-drain-lane',
+      revision: 4,
+      source: 'fleet',
+      fleetSlug: 'goal-drain-work-on-everything-813959',
+      matchedBy: 'caller-effective',
+    });
+    expect(out.fleetControl).toEqual({
+      state: 'winding-down',
+      reason: 'drain complete',
+      newWork: 'blocked',
+    });
+    expect(out.claimableCount).toBe(0);
+    expect(out.rows).toEqual([]);
+    expect(out.note).toContain('FLEET WINDING DOWN');
+    expect(out.note).toContain('matchedByFilter is diagnostic only');
   });
 
   it('emits self-identifying count evidence with an explicit no-cutoff contract', async () => {

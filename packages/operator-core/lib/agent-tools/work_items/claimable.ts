@@ -38,10 +38,12 @@ import { filingGraceSec } from '../../work-items';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
+  getClaimSpecRecord,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
   resolveClaimSpecWorkspace,
 } from '../../scheduler/claim-spec-store';
+import { readFleetPauseState } from '../../scheduler/fleet-scope-admission';
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
 import {
   COUNT_EVIDENCE_COMPARISON_RULE,
@@ -156,7 +158,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "a fleet's claim-spec scoping the lane (its view.filter + states + rank ordering) — the FLEET SLUG, the spec's own `specId`, or a strict `revN` shorthand when that revision uniquely identifies one live fleet spec (ambiguous/unrecognized values error with candidates; they never silently widen to the whole backlog). Omit ⇒ the whole issue-family lane for the harness (DEFAULT_CLAIM_SPEC).",
+        "a fleet's claim-spec scoping the lane (its view.filter + states + rank ordering) — the FLEET SLUG, the spec's own `specId`, or a strict `revN` shorthand when that revision uniquely identifies one live fleet spec (ambiguous/unrecognized values error with candidates; they never silently widen to the whole backlog). Omit ⇒ the caller's effective per-bee/inherited fleet spec, or DEFAULT_CLAIM_SPEC for an unscoped caller.",
       ),
     states: z
       .array(z.string().min(1).max(40))
@@ -226,11 +228,15 @@ export default defineTool({
       revision: number | null;
       source: 'cup' | 'fleet' | 'default';
       fleetSlug?: string;
-      matchedBy?: 'fleet-slug' | 'spec-id' | 'revision-shorthand';
+      matchedBy?: 'fleet-slug' | 'spec-id' | 'revision-shorthand' | 'caller-effective';
     } = {
       specId: 'default-fixed-ordering',
       revision: 0,
       source: 'default',
+    };
+    let fleetControl: { state: 'active' | 'winding-down'; reason: string | null } = {
+      state: 'active',
+      reason: null,
     };
     if (args.spec) {
       const resolved = await resolveFleetClaimSpec({ spec: args.spec, workspaceId: ws }).catch(() => undefined);
@@ -290,6 +296,74 @@ export default defineTool({
         fleetSlug: resolved.fleetSlug,
         matchedBy: resolved.matchedBy,
       };
+    } else {
+      // scheduler:get_next resolves the caller's per-bee/inherited fleet spec before
+      // applying the claim floors. A claimability read that silently falls back to
+      // DEFAULT_CLAIM_SPEC answers a different question and can turn a paused/de-scoped
+      // fleet lane into a false healthy count (EI-22395160648139412).
+      const callerRecord = await getClaimSpecRecord({ cupId: assignee, workspaceId: ws }).catch(() => undefined);
+      if (callerRecord === undefined) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'failed to resolve the caller-effective claim spec — lookup error, not a default lane; retry',
+              }),
+            },
+          ],
+        };
+      }
+      if (callerRecord.source === 'default' && callerRecord.fleetSlug) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error:
+                  `blocked: caller membership names fleet '${callerRecord.fleetSlug}' but no valid inherited claim spec exists; ` +
+                  'refusing to widen claimability to DEFAULT_CLAIM_SPEC during the fleet transition',
+                specFallbackReason: 'fleet-transition',
+                spec: {
+                  specId: callerRecord.spec.specId,
+                  revision: callerRecord.revision,
+                  source: callerRecord.source,
+                  fleetSlug: callerRecord.fleetSlug,
+                },
+              }),
+            },
+          ],
+        };
+      }
+      if (callerRecord.source !== 'default') {
+        spec = callerRecord.spec;
+        specFilter = callerRecord.spec.view.filter;
+        specStates = callerRecord.spec.states;
+        specProvenance = {
+          specId: callerRecord.spec.specId,
+          revision: callerRecord.revision,
+          source: callerRecord.source,
+          ...(callerRecord.fleetSlug ? { fleetSlug: callerRecord.fleetSlug } : {}),
+          matchedBy: 'caller-effective',
+        };
+        if (callerRecord.source === 'fleet' && callerRecord.fleetSlug) {
+          const pause = await readFleetPauseState(
+            {
+              ownerId: assignee,
+              fleetSlug: callerRecord.fleetSlug,
+              fleetRole: 'member',
+              record: callerRecord,
+              workspaceId: ws ?? '',
+            },
+            ws,
+          ).catch(() => ({ windingDown: false, reason: null }));
+          if (pause.windingDown) {
+            fleetControl = { state: 'winding-down', reason: pause.reason };
+          }
+        }
+      }
     }
 
     // Effective filter = the spec's filter AND (optional) a kind restriction. Both are
@@ -369,6 +443,9 @@ export default defineTool({
     // never an over-exclusion) when the page was truncated — some owner-gated rows beyond the
     // page may still inflate the count in that case, which the note below says plainly.
     const correctedClaimableCount = Math.max(0, breakdown.claimable - ownerGateExcluded.length);
+    const fleetWindingDown = fleetControl.state === 'winding-down';
+    const effectiveClaimableCount = fleetWindingDown ? 0 : correctedClaimableCount;
+    const effectiveClaimableRows = fleetWindingDown ? [] : claimable;
     // WI-7316: the "lane reads as drained when it isn't" case. The per-row hint already rides
     // on `ownerGateExcluded` above — but the field a caller ACTS on is `claimableCount`, and a
     // bare `0` gives them no reason to go read an exclusion list at all. That is exactly the
@@ -398,7 +475,7 @@ export default defineTool({
     // not cover every SQL-admitted row, the corrected value is an honest UPPER bound
     // rather than a fabricated exact count.
     const planProseScanComplete = breakdown.claimable <= claimableRows.length;
-    const claimableExactness: CountExactness = planProseScanComplete
+    const claimableExactness: CountExactness = fleetWindingDown || planProseScanComplete
       ? { status: 'exact' }
       : {
           status: 'bounded',
@@ -433,7 +510,7 @@ export default defineTool({
         cutoff: { kind: 'none' },
         writer: {
           id: 'readIssueClaimability+planItemLaneBlockReason',
-          revision: 'repeatable-read-plus-bounded-plan-prose-guard-v1',
+          revision: 'repeatable-read-plus-bounded-plan-prose-guard-plus-fleet-control-v2',
         },
         unit: {
           id: 'canonical-work-item',
@@ -448,20 +525,23 @@ export default defineTool({
           filingGraceSeconds,
           rigAvailable: args.rigAvailable === true,
           planProseScanComplete,
+          fleetControl,
         },
         measuredAt,
         comparisonRule: COUNT_EVIDENCE_COMPARISON_RULE,
       },
       metrics: {
         claimable: {
-          value: correctedClaimableCount,
+          value: effectiveClaimableCount,
           metric: {
             id: 'claimable-count',
-            definition: 'rows surviving the spec filter, every scheduler hard floor, and the measured plan-prose guard',
+            definition:
+              'rows surviving the caller-effective spec filter, every scheduler hard floor, the measured plan-prose guard, and the fleet new-work control gate',
           },
           status: {
             id: 'claimable-for-caller',
-            definition: 'claimable now for the named caller under its cooldown, filing grace, rig, and reserved-lane context',
+            definition:
+              'claimable now for the named caller under its cooldown, filing grace, rig, reserved-lane, and fleet-control context',
           },
           exactness: claimableExactness,
           zeroMeaning:
@@ -500,13 +580,13 @@ export default defineTool({
        *  plan-linked row this page found to be owner-gated in plan prose (EI-21834285144372521;
        *  see ownerGateExcluded below) — exact when `returned < limit`; a safe under-correction
        *  (never an over-exclusion) when the page was truncated. */
-      claimableCount: correctedClaimableCount,
+      claimableCount: effectiveClaimableCount,
       /** EI-18835176695181727: alias of `claimableCount`. Sibling read tools (e.g.
        *  dev:pg_query) return `{ rows, count }`; a caller who guesses that shape here
        *  instead of `{ claimable, claimableCount }` gets `undefined`-keyed access —
        *  which silently yields `[]`/`0`, not an error, and `0` reads as "queue drained"
        *  at exactly the moment a drain/wind-down call is made on it. Purely additive. */
-      count: correctedClaimableCount,
+      count: effectiveClaimableCount,
       /** In-lane issue-family rows the spec's own filter matched, BEFORE floors. */
       matchedByFilter: breakdown.matchedByFilter,
       /** Self-identifying count contracts. Materialize one metric through
@@ -515,10 +595,10 @@ export default defineTool({
       /** EI-16028: coverage of the affinity rank term's item-side path metadata over the
        * full claimable survivor set (never the returned, LIMIT-capped page). */
       affinityCoverage: breakdown.affinityCoverage,
-      returned: claimable.length,
-      claimable,
+      returned: effectiveClaimableRows.length,
+      claimable: effectiveClaimableRows,
       /** EI-18835176695181727: alias of `claimable` — see `count` above. */
-      rows: claimable,
+      rows: effectiveClaimableRows,
       /** Per-floor stranding counts (INDEPENDENT/overlapping — they do NOT sum). */
       excludedBreakdown: breakdown.excluded,
       /** P-018: additive, independent queue-control axes. A row may appear on more
@@ -539,10 +619,22 @@ export default defineTool({
        *  that a real claim would immediately release. Only present when non-empty. */
       ...(ownerGateExcluded.length > 0 ? { ownerGateExcluded } : {}),
       spec: specProvenance,
+      ...(fleetWindingDown
+        ? {
+            fleetControl: {
+              state: 'winding-down',
+              reason: fleetControl.reason,
+              newWork: 'blocked',
+            },
+          }
+        : {}),
       states: states ? [...states] : null,
       note:
         '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors, MINUS any plan-prose owner-gated row this page detected — the SAME oracle scheduler:get_next runs, plus the post-claim plan-lane guard it also applies). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
         `${filingGraceSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
+        (fleetWindingDown
+          ? ` ⚠ FLEET WINDING DOWN${fleetControl.reason ? `: ${fleetControl.reason}` : ''} — the caller-effective spec is still reported above, but fleet control blocks NEW work, so claimableCount/rows are forced to zero; matchedByFilter is diagnostic only.`
+          : '') +
         // WI-7316: leads the warning block on purpose — it is the only one that changes the
         // reader's CONCLUSION about an empty result rather than qualifying a number in it.
         staleBlockedNote +
