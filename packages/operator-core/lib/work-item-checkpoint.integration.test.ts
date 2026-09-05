@@ -24,8 +24,10 @@ vi.mock('./workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { setWorkItemCheckpoint, getWorkItemCheckpoint } = await import('./work-item-checkpoint');
-const { workItemScope } = await import('./carry-note');
+const { setWorkItemCheckpoint, getWorkItemCheckpoint, attestWorkItemCheckpointUnchanged } = await import(
+  './work-item-checkpoint'
+);
+const { workItemScope, shortCarryHash, CARRY_NOTE_ATTESTATION_MAX_CHAIN } = await import('./carry-note');
 
 const HARNESS = 'h1';
 
@@ -41,6 +43,13 @@ const CARRY_NOTES_DDL = `
     journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
     deps jsonb,
+    -- migration 1118 (P-007/R-06) unchanged-attestation state. body_ts = when the note
+    -- TEXT last actually changed (NULL on pre-1118 rows; readers coalesce to
+    -- updated_ts); attested_count = the consecutive-attestation chain since the last
+    -- real body write. Kept in step with the real schema deliberately: this fixture
+    -- tracks harness_shared.carry_notes rather than stubbing a minimal subset.
+    body_ts bigint,
+    attested_count integer NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, scope))`;
 const WORK_ITEMS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.work_items (
@@ -59,6 +68,14 @@ const WORK_ITEMS_DDL = `
     taken_by text,
     taken_at timestamptz,
     last_progress_at timestamptz,
+    -- P-007/R-06: the G2 subject-movement guard reads this column. It is updated_ts
+    -- (bigint EPOCH MILLISECONDS), NOT an updated_at timestamptz — work_items has no
+    -- such column, and work_items:get's camelCase updatedAt is a PROJECTION of this
+    -- one. Getting that wrong is not a loud failure: the guard's read throws, its
+    -- deliberate fail-open catch swallows it, and G2 silently never runs. A fixture
+    -- that invented an updated_at column would have made this suite green over a dead guard,
+    -- so the column name here is load-bearing and must track the real table.
+    updated_ts bigint,
     admission text, admitted_at timestamptz, admitted_by text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id))`;
 
@@ -111,11 +128,22 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' })).toBe('padded');
   });
 
-  it('blank / null / undefined ⇒ CLEAR (deletes the row); re-read is null', async () => {
+  it('blank / null / undefined ⇒ CLEAR; re-read is null (the ROW survives — P-003 journaling)', async () => {
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' }, 'state');
     expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' }, '   ')).toBeNull(); // blank clears
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' })).toBeNull();
-    expect(await rowCount()).toBe(0);
+    // effort-scoped-continuity-2026-09-02 P-003 flipped this scope to journal:true.
+    // A clear therefore keeps the row (the trajectory ring outlives the note) instead
+    // of deleting it — deliberately, and called out as "THE ONE BEHAVIOUR CHANGE" at
+    // the journal:true site. What every reader depends on is unchanged and is what
+    // this test now pins: `note` still reads back NULL. The row is a survivor, not a
+    // resurrected checkpoint.
+    expect(await rowCount()).toBe(1);
+    const [cleared] = await db.sql<Array<{ note: string | null; journal: unknown }>>`
+      SELECT note, journal FROM harness_shared.carry_notes
+       WHERE scope = ${workItemScope(HARNESS, 'WI-1')}`;
+    expect(cleared?.note).toBeNull();
+    expect(Array.isArray(cleared?.journal) ? (cleared.journal as unknown[]).length : 0).toBeGreaterThan(0);
 
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' }, 'again');
     expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' }, null)).toBeNull(); // null clears
@@ -337,7 +365,7 @@ describe('work-item checkpoint store (C6) — concurrent writes + cross-workspac
       'B-state',
     );
 
-    // CLEAR in WS-A (delete that row) → WS-B's row is still present + intact.
+    // CLEAR in WS-A → WS-B's row is still present + intact.
     expect(
       await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, null),
     ).toBeNull();
@@ -345,6 +373,182 @@ describe('work-item checkpoint store (C6) — concurrent writes + cross-workspac
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe(
       'B-state',
     );
-    expect(await rowsFor('WI-ISO')).toEqual([{ workspace_id: 'ws-b', checkpoint: 'B-state' }]);
+    // effort-scoped-continuity-2026-09-02 P-003 flipped the work-item scope to
+    // journal:true, so a CLEAR no longer deletes the row — the ring outlives the
+    // note and WS-A survives with checkpoint null. That is orthogonal to what this
+    // test is actually about: WS-B is untouched either way.
+    expect(await rowsFor('WI-ISO')).toEqual([
+      { workspace_id: 'ws-a', checkpoint: null },
+      { workspace_id: 'ws-b', checkpoint: 'B-state' },
+    ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// P-007/R-06 — G2, the work-item-specific anti-concealment guard.
+//
+// G1 (content binding) and G3 (bounded chain) are properties of the stored note and
+// are proven in carry-note.integration.test.ts. G2 is the only guard that needs the
+// SUBJECT: if the work-item row itself moved after the checkpoint body was written,
+// "unchanged" is a false claim no matter what the agent believes, so the honest
+// answer is a real checkpoint.
+//
+// READ THIS BEFORE EDITING: the guard's read is deliberately fail-OPEN (an unreadable
+// row must not manufacture a refusal). That makes a broken read INDISTINGUISHABLE from
+// a satisfied guard — a wrong column name, a fixture that drifted from the real table,
+// and a genuinely-unmoved item all produce the same green. The refusal tests below are
+// therefore the canary: fail-open cannot produce a refusal, so they are the only thing
+// standing between this suite and a permanent vacuous pass. Keep at least one.
+// ───────────────────────────────────────────────────────────────────────────────
+describe('P-007/R-06 G2 — an attestation cannot conceal a work-item that moved', () => {
+  const ITEM = 'WI-ATTEST';
+  const BODY = 'parked waiting on the release gate; nothing has moved';
+
+  /** Write a checkpoint and return the instant its BODY was stored. */
+  async function seedCheckpoint(workItemId = ITEM, body = BODY): Promise<number> {
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId }, body);
+    const rows = await db.sql<Array<{ body_ts: string | null; updated_ts: string }>>`
+      SELECT body_ts, updated_ts FROM harness_shared.carry_notes
+       WHERE scope = ${workItemScope(HARNESS, workItemId)}`;
+    const row = rows[0];
+    if (!row) throw new Error('checkpoint was not stored');
+    return Number(row.body_ts ?? row.updated_ts);
+  }
+
+  async function insertItem(workItemId: string, updatedTs: number, harnessSlug = 'operator:default'): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, updated_ts)
+      VALUES ('default', ${harnessSlug}, ${workItemId}, 'open', 'feature', ${updatedTs})`;
+  }
+
+  async function attestedCount(workItemId = ITEM): Promise<number> {
+    const rows = await db.sql<Array<{ attested_count: number }>>`
+      SELECT attested_count FROM harness_shared.carry_notes
+       WHERE scope = ${workItemScope(HARNESS, workItemId)}`;
+    return Number(rows[0]?.attested_count ?? -1);
+  }
+
+  it('passes cheaply for the population that pays for pointless rewrites: an item that has NOT moved', async () => {
+    const bodyTs = await seedCheckpoint();
+    // The measured case — a parked or blocked agent whose item is exactly where it
+    // was when the checkpoint was written.
+    await insertItem(ITEM, bodyTs - 60_000);
+
+    const res = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash(BODY) },
+    );
+    expect(res.ok).toBe(true);
+    expect(res.refusedReason).toBeUndefined();
+    expect(res.attestedCount).toBe(1);
+    expect(res.itemUpdatedAtMs).toBe(bodyTs - 60_000);
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: ITEM })).toBe(BODY); // no rewrite
+  });
+
+  it('REFUSES when the item row moved after the body was written (the canary — see the note above)', async () => {
+    const bodyTs = await seedCheckpoint();
+    // A state flip / reassignment / any write that stamps the item's own clock.
+    await insertItem(ITEM, bodyTs + 1);
+
+    const res = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash(BODY) },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.refusedReason).toBe('attestation_state_changed');
+    // Reported so the caller can say WHAT moved, not merely that something did.
+    expect(res.itemUpdatedAtMs).toBe(bodyTs + 1);
+    // The guard runs BEFORE the store write, so a refusal must not have spent a slot
+    // from the chain budget — otherwise a rejected attestation silently shrinks the
+    // allowance left for a legitimate one.
+    expect(await attestedCount()).toBe(0);
+  });
+
+  it('a refusal leaves the FULL chain budget available to the real write that follows', async () => {
+    const bodyTs = await seedCheckpoint();
+    await insertItem(ITEM, bodyTs + 1);
+    expect(
+      (await attestWorkItemCheckpointUnchanged({ harness: HARNESS, workItemId: ITEM }, {
+        contentHash: shortCarryHash(BODY),
+      })).refusedReason,
+    ).toBe('attestation_state_changed');
+
+    // The agent does what the refusal asked for: writes real state. That write pins a
+    // new body_ts ahead of the item's clock, so attestation is available again — with
+    // the whole budget, not a budget the refusal quietly ate into.
+    const rewritten = 'state after the item actually moved';
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: ITEM }, rewritten);
+    const res = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash(rewritten) },
+    );
+    expect(res.ok).toBe(true);
+    expect(res.remainingAttestations).toBe(CARRY_NOTE_ATTESTATION_MAX_CHAIN - 1);
+  });
+
+  it('a same-id row in ANOTHER harness that moved also refuses — the guard reads MAX, never an arbitrary row', async () => {
+    const bodyTs = await seedCheckpoint();
+    // feature_id is unique only WITH harness_slug, and a checkpoint scope may carry the
+    // wildcard harness, so one id can match several rows. A joined LIMIT 1 would pick
+    // one arbitrarily — and picking arbitrarily can answer in the PASS direction,
+    // concealing exactly the movement this guard exists to catch. MAX is refuse-biased.
+    await insertItem(ITEM, bodyTs - 60_000, 'harness-a');
+    await insertItem(ITEM, bodyTs + 1, 'harness-b');
+
+    const res = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash(BODY) },
+    );
+    expect(res.refusedReason).toBe('attestation_state_changed');
+    expect(res.itemUpdatedAtMs).toBe(bodyTs + 1); // the newest of the two, deterministically
+  });
+
+  it('no work-item row at all: G2 cannot fire, and G1/G3 still bound the attestation', async () => {
+    await seedCheckpoint();
+    // Nothing inserted — the subject is unreadable, not unmoved.
+    const ok = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash(BODY) },
+    );
+    expect(ok.ok).toBe(true);
+    expect(ok.itemUpdatedAtMs).toBeNull(); // honest: not "it did not move", but "unknown"
+
+    // G1 is still reached through the wrapper — the work-item path delegates to the
+    // store's guards rather than replacing them.
+    const mismatch = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: ITEM },
+      { contentHash: shortCarryHash('a body nobody stored') },
+    );
+    expect(mismatch.refusedReason).toBe('attestation_hash_mismatch');
+    expect(mismatch.currentHash).toBe(shortCarryHash(BODY));
+  });
+
+  it('a failing G2 read fails OPEN — a guard that cannot run must not become a new way to block', async () => {
+    await seedCheckpoint();
+    // Make the guarded read throw outright, the way a missing table/column or a
+    // permissions fault would in production.
+    await db.sql.unsafe('ALTER TABLE harness_shared.work_items RENAME TO work_items_hidden');
+    try {
+      const res = await attestWorkItemCheckpointUnchanged(
+        { harness: HARNESS, workItemId: ITEM },
+        { contentHash: shortCarryHash(BODY) },
+      );
+      expect(res.ok).toBe(true);
+      expect(res.itemUpdatedAtMs).toBeNull();
+    } finally {
+      await db.sql.unsafe('ALTER TABLE harness_shared.work_items_hidden RENAME TO work_items');
+    }
+  });
+
+  it('attestation refuses for an item that never had a checkpoint — nothing to be still-current about', async () => {
+    await insertItem('WI-NO-CHECKPOINT', Date.now());
+    const res = await attestWorkItemCheckpointUnchanged(
+      { harness: HARNESS, workItemId: 'WI-NO-CHECKPOINT' },
+      { contentHash: shortCarryHash('anything') },
+    );
+    expect(res.ok).toBe(false);
+    expect(res.refusedReason).toBe('attestation_no_checkpoint');
+    expect(await rowCount()).toBe(0); // and it did not invent a row
   });
 });
