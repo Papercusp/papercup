@@ -43,6 +43,7 @@ import type {
   Offer,
   Order,
   OrderState,
+  PerUseOfferTerms,
   Payout,
   Product,
   Refund,
@@ -96,6 +97,44 @@ export function sumMoney(amounts: readonly Money[], currency: string): MoneySum 
 }
 
 // ---------------------------------------------------------------------------
+// Offer catalog dashboard
+// ---------------------------------------------------------------------------
+
+export interface CommerceCatalogLine {
+  readonly offerId: string;
+  readonly productId: string;
+  readonly productTitle: string | null;
+  readonly skuRef: string | null;
+  readonly creatorId: string | null;
+  readonly pricingModel: Offer['pricingModel'];
+  readonly price: Money;
+  readonly perUse: PerUseOfferTerms | null;
+  readonly active: boolean;
+  readonly productActive: boolean | null;
+}
+
+/** Exact offer terms visible to buyers before they choose a payment rail. */
+export function commerceCatalogDashboard(
+  ledger: LedgerState,
+): readonly CommerceCatalogLine[] {
+  return sortedById(ledger.offers.values(), (offer) => offer.offerId).map((offer) => {
+    const product = ledger.products.get(offer.productId);
+    return {
+      offerId: offer.offerId,
+      productId: offer.productId,
+      productTitle: product?.title ?? null,
+      skuRef: product?.skuRef ?? null,
+      creatorId: product?.creatorId ?? null,
+      pricingModel: offer.pricingModel,
+      price: offer.price,
+      perUse: offer.perUse ?? null,
+      active: offer.active,
+      productActive: product?.active ?? null,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Checkout dashboard
 // ---------------------------------------------------------------------------
 
@@ -106,6 +145,7 @@ export interface CheckoutLine {
   readonly productTitle: string | null;
   readonly offerId: string;
   readonly pricingModel: Offer['pricingModel'] | null;
+  readonly perUse: PerUseOfferTerms | null;
   readonly amount: Money;
   readonly refundedMinor: number;
   /** Null when the order never reached `paid` — there is nothing to entitle. */
@@ -176,6 +216,7 @@ export function checkoutDashboard(input: CheckoutDashboardInput): CheckoutDashbo
       productTitle: product?.title ?? null,
       offerId: order.offerId,
       pricingModel: offer?.pricingModel ?? null,
+      perUse: offer?.perUse ?? null,
       amount: order.amount,
       refundedMinor: order.refundedMinor,
       entitlementId: ent?.entitlementId ?? null,
@@ -469,6 +510,8 @@ export interface AuditPayoutRow {
 
 export interface AuditExport {
   readonly schema: 'cupboard.audit.v1';
+  readonly products: readonly Product[];
+  readonly offers: readonly Offer[];
   readonly orders: readonly Order[];
   readonly entitlements: readonly Entitlement[];
   readonly refunds: readonly Refund[];
@@ -512,6 +555,8 @@ export function auditExport(input: AuditExportInput): AuditExport {
 
   return {
     schema: 'cupboard.audit.v1',
+    products: sortedById(ledger.products.values(), (p) => p.productId),
+    offers: sortedById(ledger.offers.values(), (o) => o.offerId),
     orders: sortedById(ledger.orders.values(), (o) => o.orderId),
     entitlements: sortedById(ledger.entitlements.values(), (e) => e.entitlementId),
     refunds: sortedById(ledger.refunds.values(), (r) => r.refundId),
