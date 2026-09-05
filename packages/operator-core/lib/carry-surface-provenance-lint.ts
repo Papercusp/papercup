@@ -765,7 +765,11 @@ export const PROVENANCE_LINT_NOTE =
   'provenance_lint: this carry-surface write contains an owner-attributed directive and/or a claimed COMPLETED ' +
   'action (e.g. "posted evidence to WI-####", "messaged the fleet leader su-…") with no verifiable turn ref. ' +
   'Anchor each to the turn where it ACTUALLY happened with [turn:<session>@<iso-ts>] (the system verifies it ' +
-  'against your own transcript and stamps owner-vs-agent origin — P-014); a hand-written [owner:…] tag alone ' +
+  'against your own transcript and stamps owner-vs-agent origin — P-014). For the turn you are writing FROM, ' +
+  'write the sentinel [turn:self] and the platform expands it to the real ref at write time — do NOT hand-guess ' +
+  'a timestamp: no field in any wake, orient, or tool result states your current turn ts, so the adjacent-looking ' +
+  'ones are all subtly wrong and store an anchor that resolves to nothing (EI-19425644478222007). ' +
+  'A hand-written [owner:…] tag alone ' +
   'asserts but does not prove. A checkpoint that NARRATES an action ("I did X") is only valid AFTER X\'s tool ' +
   'call returned ok in the SAME turn — a specific artifact id (post/msg/WI ref) is NOT proof it happened ' +
   '(they can be fabricated, EI-18226077402946717), so a downstream reader must independently verify it, never ' +
