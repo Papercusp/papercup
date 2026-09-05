@@ -4087,6 +4087,37 @@ export default defineTool({
   // The intended contract is pinned by 'conditional assumptions gate (D-004
   // record-only vs terminal close)' and 'published JSON schema (tools/list
   // projection) preserves conditional assumptions' in complete.test.ts.
+  // EI-19486111655110215: the conditional gate documented directly above is enforced at
+  // HANDLER time, one phase after the schema. So a call that is BOTH schema-invalid and
+  // missing `assumptions` was refused twice — once per phase — and the second refusal
+  // reads like "my completion object is still malformed", because that is what a silent
+  // coercion looks like. This does not move the gate (see the ⚠ above: it must stay
+  // conditional); it only lets the FIRST refusal also name what the second one will say.
+  //
+  // Pure and total by contract — it sees raw, unvalidated input of any shape.
+  argPreconditions: (rawInput: unknown): readonly string[] => {
+    if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return [];
+    const root = rawInput as Record<string, unknown>;
+    const hasCloseIntent = (entry: Record<string, unknown>, fallbackState: unknown): boolean => {
+      const state = entry.state ?? fallbackState;
+      if (typeof state === 'string' && CLOSE_INTENT_STATES.has(state.trim().toLowerCase())) return true;
+      // Mirrors the handler's `inferredCloseState`: an issue-family close can be carried by
+      // completion.status alone. Family is unknowable from raw input, so this over-includes
+      // rather than under-warns — the cost of a spurious line is one sentence, the cost of a
+      // missing one is the round-trip this whole hook exists to remove.
+      const completion = entry.completion;
+      if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return false;
+      const status = (completion as Record<string, unknown>).status;
+      return typeof status === 'string' && CLOSE_INTENT_STATES.has(status.trim().toLowerCase());
+    };
+    const entries: Record<string, unknown>[] = Array.isArray(root.items)
+      ? root.items.filter((it): it is Record<string, unknown> => Boolean(it) && typeof it === 'object' && !Array.isArray(it))
+      : [root];
+    const needsAssumptions = entries.some(
+      (entry) => hasCloseIntent(entry, root.state) && (entry.assumptions ?? root.assumptions) === undefined,
+    );
+    return needsAssumptions ? [ASSUMPTIONS_REQUIRED_MESSAGE] : [];
+  },
   args: z.preprocess(
     (raw, ctx) => {
       const hoisted = hoistMisplacedCompletionFields(raw);
