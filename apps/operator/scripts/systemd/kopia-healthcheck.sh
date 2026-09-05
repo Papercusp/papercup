@@ -258,11 +258,18 @@ jdoe@host:/home/jdoe/macos-vm
   # must NOT satisfy a check for its child (/mnt/data/Backup/db-dumps), and an
   # indented detail row must not be mistaken for a source header. Tested as pure
   # string work against a fixture, so it needs no repo and no snapshots.
+  # Mirrors check 2c's production matcher: coverage requires a COMPLETE snapshot
+  # row inside the source's own block, never merely the presence of a header.
   src_covered() { # <listing> <wanted source path>
-    printf '%s\n' "$1" | awk -v want=":$2" '
-      /^[^[:space:]]/ && length($0) >= length(want) &&
-      substr($0, length($0) - length(want) + 1) == want { found = 1 }
-      END { exit found ? 0 : 1 }'
+    [ "$(printf '%s\n' "$1" | awk -v want=":$2" '
+      /^[^[:space:]]/ {
+        inblock = (length($0) >= length(want) &&
+                   substr($0, length($0) - length(want) + 1) == want)
+        if (inblock) seen = 1
+        next
+      }
+      inblock && /^[[:space:]]/ && $0 !~ /<ERROR>/ && $0 !~ /incomplete/ { complete = 1 }
+      END { print (complete ? "complete" : (seen ? "registered-only" : "absent")) }')" = complete ]
   }
   cov_listing="jdoe@host:/mnt/data/Backup
   2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/backup/db-dumps
@@ -280,6 +287,36 @@ jdoe@host:/mnt/backup/db-dumps-other"
     printf '  ok    %s\n' "source-coverage matcher rejects parent/substring/detail-row matches"; pass=$((pass+1))
   else
     printf '  FAIL  %s\n' "source-coverage matcher accepted a non-source as coverage"; failed=$((failed+1))
+  fi
+
+  # 3c. WI-2146225 — A SOURCE HEADER IS NOT COVERAGE. The first version of check
+  # 2c matched the header alone, and `kopia snapshot list --all` prints a header
+  # for a source whose only snapshots are incomplete (it hides those rows unless
+  # --incomplete is passed). Since the backup guard aborts sweeps under pressure
+  # and every abort leaves exactly that residue, a header-only check goes green
+  # the moment the first snapshot STARTS and stays green while every one of them
+  # is killed. Observed live on 2026-09-05 against two `incomplete:canceled`
+  # snapshots of 2 KB. This is the case that must never regress.
+  inc_ok=1
+  # header alone, zero rows — what --all shows for an incomplete-only source
+  src_covered "jdoe@host:/mnt/backup/db-dumps" /mnt/backup/db-dumps && inc_ok=0
+  # an explicitly incomplete row must not count either
+  src_covered "jdoe@host:/mnt/backup/db-dumps
+  2026-09-05 13:15:24 EDT kbeef1 incomplete:canceled 2 KB drwxrwxr-x files:3 dirs:4 (incomplete)" \
+    /mnt/backup/db-dumps && inc_ok=0
+  # an <ERROR> row is not a snapshot either
+  src_covered "jdoe@host:/mnt/backup/db-dumps
+  2026-09-05 13:15:24 EDT <ERROR> error reading directory: entry not found" \
+    /mnt/backup/db-dumps && inc_ok=0
+  # positive control: one real completed row IS coverage — without this the three
+  # assertions above would all pass against a matcher that never returns true.
+  src_covered "jdoe@host:/mnt/backup/db-dumps
+  2026-09-05 13:15:24 EDT abc123 130 GB drwxrwxr-x files:743 dirs:12 (latest-1)" \
+    /mnt/backup/db-dumps || inc_ok=0
+  if [ "$inc_ok" = 1 ]; then
+    printf '  ok    %s\n' "coverage requires a COMPLETE snapshot, not just a source header"; pass=$((pass+1))
+  else
+    printf '  FAIL  %s\n' "coverage matcher accepted a header/incomplete/error row as coverage"; failed=$((failed+1))
   fi
 
   # 4. Production defaults against the real, healthy backup: green and silent.
@@ -425,13 +462,48 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 # ABSENCE is the condition, so it must be asserted directly. Exact suffix match
 # on the unindented header line, not a substring: a parent source would
 # otherwise satisfy a check for its child and re-create the same false green.
-if ! sudo -n /usr/bin/kopia snapshot list --all 2>/dev/null \
-     | awk -v want=":$DUMP" '
-         /^[^[:space:]]/ && length($0) >= length(want) &&
-         substr($0, length($0) - length(want) + 1) == want { found = 1 }
-         END { exit found ? 0 : 1 }'; then
-  fail "the Postgres dump directory $DUMP is NOT a kopia source — it has never been snapshotted, so the dumps are NOT leaving this machine. Local dumps can be fresh and restorable while this is true (checks 1/2/2b all stay green), which is how this hid. snapshot-all.sh now force-includes it via REQUIRED_SOURCES; if this is still failing, that union is not reaching kopia."
-fi
+#
+# ⚠ A SOURCE HEADER IS NOT COVERAGE (WI-2146225, 2026-09-05 — the first version
+# of this very check had this bug). `kopia snapshot list --all` prints the
+# source header for a source whose ONLY snapshots are incomplete, and hides the
+# incomplete rows themselves unless --incomplete is passed. So a header-only
+# match reports COVERED off a source with nothing restorable in it. Observed
+# directly: three bootstrap attempts left
+#   <user>@<host>:/mnt/backup/db-dumps        <- header, no rows
+# and `--incomplete` revealed two `incomplete:canceled` snapshots of 2 KB.
+# A header-matching check called that COVERED.
+#
+# That is not a cosmetic edge case here, it is the LIKELY steady state: the
+# backup guard aborts sweeps under pressure (46 of 51 hot cycles killed
+# mid-run over the 48h to 2026-09-05), and every abort leaves exactly this
+# residue. A header-only check would therefore go green the moment the FIRST
+# snapshot STARTED and stay green forever while every one of them was killed —
+# the same false green this leg exists to kill, resurrected one layer in.
+#
+# Assert the thing itself: at least one COMPLETE snapshot row inside this
+# source's own block. Rows are indented; error rows carry <ERROR>; incomplete
+# rows carry `incomplete`. Registered-but-never-completed is reported
+# SEPARATELY from never-registered because they have different repairs — the
+# first is a sweep that cannot finish, the second is a discovery hole.
+COV_LISTING=$(sudo -n /usr/bin/kopia snapshot list --all 2>/dev/null || true)
+cov_state=$(printf '%s\n' "$COV_LISTING" | awk -v want=":$DUMP" '
+    /^[^[:space:]]/ {
+      inblock = (length($0) >= length(want) &&
+                 substr($0, length($0) - length(want) + 1) == want)
+      if (inblock) seen = 1
+      next
+    }
+    inblock && /^[[:space:]]/ && $0 !~ /<ERROR>/ && $0 !~ /incomplete/ { complete = 1 }
+    END { print (complete ? "complete" : (seen ? "registered-only" : "absent")) }')
+case "$cov_state" in
+  complete) : ;;
+  registered-only)
+    fail "the Postgres dump directory $DUMP is a kopia source but has NO COMPLETE SNAPSHOT — every attempt so far was left incomplete (run \`kopia snapshot list --incomplete\` on it to see them). The dumps are NOT restorable from the repo. This is the sweep being aborted mid-run, not a discovery hole: check the backup guard's kill reasons in \`journalctl --user -u kopia-snapshots.service\`."
+    ;;
+  *)
+    fail "the Postgres dump directory $DUMP is NOT a kopia source — it has never been snapshotted, so the dumps are NOT leaving this machine. Local dumps can be fresh and restorable while this is true (checks 1/2/2b all stay green), which is how this hid. snapshot-all.sh now force-includes it via REQUIRED_SOURCES; if this is still failing, that union is not reaching kopia."
+    ;;
+esac
 
 # ── 2b. PER-SOURCE RECENCY: the DAILY curated home source ────────────────────
 # Check 2 above takes the newest snapshot across ALL sources (`--all -n 1 | sort -r |
