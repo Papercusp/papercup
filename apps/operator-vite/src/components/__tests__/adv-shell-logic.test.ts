@@ -45,17 +45,15 @@ describe('ADV_TABS', () => {
     expect([...PORTAL_EMBED_ADV_TAB_IDS]).toEqual([]);
     expect(portalEmbedAdvTabs(ADV_TABS, true)).toEqual([]);
     expect(portalEmbedAdvTabs(ADV_TABS, false)).toEqual([...ADV_TABS]);
-    // The content-only destinations the portal frames as `/adv?tab=<id>`:
-    // Overview, HUD, Work (harnesses) and Learning joined Workflows + Brainstorm.
-    expect([...PORTAL_EMBED_ADV_CONTENT_IDS]).toEqual([
-      'overview', 'hud', 'harnesses', 'learning', 'workflows', 'brainstorm',
-    ]);
-    for (const id of ['overview', 'hud', 'harnesses', 'learning', 'workflows', 'brainstorm'] as const) {
+    // The content-only destinations the portal owns: since
+    // portal-parity-adv-tabs-2026-09-05 (D-004) that is EVERY ADV tab, so an
+    // embedded deep link to any tab renders that tab — never a collapsed Overview.
+    expect([...PORTAL_EMBED_ADV_CONTENT_IDS]).toEqual([...ADV_TAB_IDS]);
+    expect(ADV_TAB_IDS).toHaveLength(20);
+    for (const id of ADV_TAB_IDS) {
       expect(portalEmbedAdvTab(id, true)).toBe(id);
+      expect(portalEmbedAdvTab(id, false)).toBe(id);
     }
-    // A stale deep link to a tab the portal does not frame lands on Overview.
-    expect(portalEmbedAdvTab('docs', true)).toBe('overview');
-    expect(portalEmbedAdvTab('docs', false)).toBe('docs');
   });
 
   it('every tab has the required shape (id, label, icon, accent, accentRgb)', () => {

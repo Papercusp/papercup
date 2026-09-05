@@ -104,6 +104,10 @@ export type OperatorSurfaceKind =
   | 'scheduled'
   | 'frames'
   | 'evals'
+  // /coord — the multi-agent coordination dashboard (gap G2 of the parity
+  // inventory; portal-parity-adv-tabs-2026-09-05 P-004). Not an ADV tab: a
+  // route of its own in the operator, mounted here the same way.
+  | 'coord'
   // The operator top-nav's utility destinations (portal-parity D-007 / D-009:
   // "the cloud cupboard and dev and support tabs should all be in the web
   // portal", and Settings is the operator's own settings surface).
@@ -203,6 +207,9 @@ export const OPERATOR_SURFACES: Record<
   stats: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvStatsTab')),
   history: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvHistoryTab')),
   create: lazy(() => import('../../../../apps/operator/app/adv/create/AdvCreateDock')),
+  // /coord — the operator route renders <CoordDashboard /> and nothing else
+  // (apps/operator-vite/src/routes/coord.tsx), so the dashboard IS the surface.
+  coord: lazy(() => import('../../../../apps/operator/app/coord/CoordDashboard')),
   // The operator top-nav's utility set (portal-parity D-007 / D-009).
   // /cloud-workspaces — the SAME page as `desktops` above, landing on its
   // default step: the operator's own "Cloud" nav target is this route.

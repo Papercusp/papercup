@@ -69,6 +69,8 @@ export type OperatorSurfaceKind =
   | 'scheduled'
   | 'frames'
   | 'evals'
+  // /coord — the multi-agent coordination dashboard (portal-parity-adv-tabs-2026-09-05 P-004).
+  | 'coord'
   // The operator top-nav's utility destinations (portal-parity D-007 / D-009).
   | 'cloud'
   | 'cupboard'
