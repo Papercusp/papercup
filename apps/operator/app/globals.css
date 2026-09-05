@@ -22,6 +22,10 @@
 @import './_semantic.honeycomb.css';
 @import './_semantic.portal-light.css';
 @import './_semantic.portal-dark.css';
+/* The element baselines + shared building blocks (.pc-card/.pc-input/.pc-btn*…) live in
+   their own file so a host that mounts operator surfaces natively WITHOUT this stylesheet
+   (the cloud portal, via packages/operator-ui/src/surfaces) gets them too. */
+@import './_primitives.css';
 
 :root {
   color-scheme: dark;
@@ -235,28 +239,6 @@ html[data-portal-embed='true'] .portal-focused-work-surface > .op-inbox {
 [data-anim="slide-right"][data-state="closed"]{ animation: pc-slide-right-out var(--dur-normal) var(--ease-in); }
 [data-anim="lift"][data-state="open"]  { animation: pc-lift-in  var(--dur-panel) var(--ease-out); }
 [data-anim="lift"][data-state="closed"]{ animation: pc-lift-out var(--dur-normal) var(--ease-in);  }
-
-.pc-animate-in {
-  animation: pc-lift-in var(--dur-panel) var(--ease-out) both;
-}
-.pc-animate-in--fast {
-  animation-duration: var(--dur-fast);
-}
-.pc-animate-in--down {
-  animation-name: pc-slide-down-in;
-}
-.pc-animate-in--right {
-  animation-name: pc-slide-right-in;
-}
-.pc-animate-in--fade {
-  animation-name: pc-fade-in;
-}
-.pc-animate-in--delay-1 {
-  animation-delay: 35ms;
-}
-.pc-animate-in--delay-2 {
-  animation-delay: 70ms;
-}
 
 @media (prefers-reduced-motion: reduce) {
   [data-anim],
@@ -708,164 +690,6 @@ button {
   cursor: pointer;
 }
 
-:where(
-  input:not([type]),
-  input[type="text"],
-  input[type="number"],
-  input[type="email"],
-  input[type="search"],
-  input[type="tel"],
-  input[type="url"],
-  input[type="password"],
-  input[type="date"],
-  input[type="time"],
-  input[type="datetime-local"],
-  textarea
-) {
-  background: var(--bg-2);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 8px;
-  outline: none;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-
-:where(
-  input:not([type]),
-  input[type="text"],
-  input[type="number"],
-  input[type="email"],
-  input[type="search"],
-  input[type="tel"],
-  input[type="url"],
-  input[type="password"],
-  input[type="date"],
-  input[type="time"],
-  input[type="datetime-local"],
-  textarea
-):focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 45%);
-}
-
-:where(input[type="checkbox"], input[type="radio"], input[type="range"]) {
-  accent-color: var(--accent);
-}
-
-/* ── The one button system (design-simplification P-015) ─────────────────────
- * Two orthogonal axes, applied by app/harness/Button.tsx:
- *   size    — sm (this baseline, 26px chrome) | lg (.pc-btn-lg, 40px page CTA)
- *   variant — neutral (this baseline) | .pc-btn-accent | .pc-btn-primary
- *             | .pc-btn-destructive | .pc-btn-ghost
- * `.pc-btn` is on every <Button>, so an `asChild` link gets the same chrome a
- * bare <button> gets free. Every rule below is specificity-0 `:where()`, so
- * SOURCE ORDER decides: size + variant rules must stay AFTER this baseline.
- * (This replaced the parallel `.pc-button` CTA recipe — do not reintroduce it.) */
-:where(button, .pc-btn) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 26px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-2);
-  color: var(--fg-dim);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  text-decoration: none;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out),
-    opacity var(--dur-fast) var(--ease-out);
-}
-
-:where(button, .pc-btn):hover:not(:disabled) {
-  background: var(--bg-3);
-  border-color: var(--accent);
-  color: var(--fg);
-}
-
-:where(button, .pc-btn):focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
-}
-
-:where(button, .pc-btn):disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-:where(.pc-btn-primary) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
-}
-
-:where(.pc-btn-primary):hover:not(:disabled) {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-  color: var(--accent-ink);
-}
-
-:where(.pc-btn-destructive) {
-  background: color-mix(in oklab, var(--bad), transparent 86%);
-  border-color: color-mix(in oklab, var(--bad), transparent 55%);
-  color: var(--bad);
-}
-
-:where(.pc-btn-destructive):hover:not(:disabled) {
-  background: color-mix(in oklab, var(--bad), transparent 76%);
-  border-color: color-mix(in oklab, var(--bad), transparent 35%);
-  color: var(--fg);
-}
-
-:where(.pc-btn-ghost) {
-  background: transparent;
-  border-color: transparent;
-  color: var(--fg-dim);
-}
-
-:where(.pc-btn-ghost):hover:not(:disabled) {
-  background: var(--bg-2);
-  border-color: var(--border);
-  color: var(--fg);
-}
-
-/* Soft accent tint — the everyday page CTA (the old bare `.pc-button`). */
-:where(.pc-btn-accent) {
-  background: rgb(from var(--accent) r g b / 0.09);
-  border-color: rgb(from var(--accent) r g b / 0.20);
-  color: var(--fg);
-}
-
-:where(.pc-btn-accent):hover:not(:disabled) {
-  background: rgb(from var(--accent) r g b / 0.15);
-  border-color: rgb(from var(--accent-strong) r g b / 0.36);
-  color: var(--fg);
-}
-
-/* Size lg — the 40px page-CTA scale. Geometry only: orthogonal to variant, so
- * it composes with any of the surface variants above. */
-:where(.pc-btn-lg) {
-  gap: 7px;
-  min-height: 40px;
-  padding: 10px 15px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 720;
-}
-
 code, pre, kbd {
   font-family: ui-monospace, "JetBrains Mono", "Menlo", monospace;
   font-size: 0.92em;
@@ -873,15 +697,6 @@ code, pre, kbd {
 
 code {
   color: #d9f3ff;
-}
-
-pre, .pc-code {
-  overflow-x: auto;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--bg-deeper), transparent 46%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
 }
 
 /* Reset only the properties set above that would bleed into vditor's
@@ -1380,67 +1195,6 @@ p {
   margin: 8px 0 16px;
   color: var(--fg-dim);
 }
-
-.pc-card {
-  position: relative;
-  overflow: hidden;
-  background: var(--frost), color-mix(in srgb, var(--bg-1), transparent 28%);
-  border: 1px solid var(--border);
-  border-radius: 22px;
-  padding: 24px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.21), inset 0 1px 0 rgba(255,255,255,0.04);
-  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
-}
-
-.pc-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(circle at 20% 0%, rgb(from var(--accent-strong) r g b / 0.08), transparent 36%);
-  opacity: 0;
-  transition: opacity 160ms ease;
-}
-
-.pc-card:hover {
-  border-color: rgb(from var(--accent-strong) r g b / 0.28);
-  box-shadow: none;
-}
-
-.pc-card:hover::before {
-  opacity: 1;
-}
-
-.pc-input {
-  display: block;
-  width: 100%;
-  padding: 9px 11px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: rgba(255,255,255,0.03);
-  color: var(--fg);
-  font-family: ui-monospace, "JetBrains Mono", "Menlo", monospace;
-  font-size: 13px;
-}
-
-.pc-input:focus {
-  outline: 2px solid rgb(from var(--accent) r g b / 0.45);
-  outline-offset: 1px;
-  border-color: rgb(from var(--accent) r g b / 0.28);
-}
-
-.pc-warn {
-  border: 1px solid var(--warn-border);
-  background: var(--warn-bg);
-  border-radius: 12px;
-  padding: 14px 16px;
-  margin: 0 0 20px;
-  color: var(--fg);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.pc-warn strong { color: var(--warn); }
 
 .pc-grid {
   display: grid;
@@ -2728,11 +2482,6 @@ p {
 
 .pc-marketplace-empty.compact {
   padding: 14px;
-}
-
-.pc-marketplace-loading {
-  padding: 28px;
-  color: var(--fg-dim);
 }
 
 .pc-marketplace-snapshot-toolbar {
@@ -4437,18 +4186,6 @@ body.h-harness-top-collapsed .pc-header {
   margin-top: 11px;
 }
 
-.pc-btn-mini {
-  min-height: 27px;
-  padding: 0 9px;
-  color: color-mix(in oklab, var(--fg), white 3%);
-  font-size: 12px;
-  font-weight: 720;
-  border-radius: 8px;
-  background:
-    linear-gradient(90deg, rgba(var(--operator-gold), 0.060), transparent 70%, rgba(var(--operator-arc), 0.060)),
-    rgba(255, 255, 255, 0.040);
-}
-
 .operator-entry__state {
   margin-left: auto;
   text-align: right;
@@ -4868,12 +4605,6 @@ body.h-harness-top-collapsed .pc-header {
   scrollbar-color: rgb(from var(--accent-strong) r g b / 0.30) transparent;
 }
 
-.pc-btn-mini.pc-btn-destructive {
-  color: #fff7f7;
-  border-color: rgba(248, 113, 113, 0.54);
-  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.070), rgba(248, 113, 113, 0.22));
-}
-
 .operator-confirm-strip {
   display: flex;
   flex-wrap: wrap;
@@ -4965,14 +4696,6 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-entry__buttons {
   flex-wrap: wrap;
-}
-
-.pc-btn-mini:disabled {
-  opacity: 0.58;
-  cursor: not-allowed;
-  border-color: rgba(148, 163, 184, 0.24);
-  color: color-mix(in oklab, var(--fg-dim), white 12%);
-  background: rgba(255, 255, 255, 0.028);
 }
 
 .operator-feed-banner {
@@ -5705,19 +5428,6 @@ body.h-harness-top-collapsed .pc-header {
 .operator-entry__buttons {
   margin-left: auto;
   justify-content: flex-end;
-}
-
-.pc-btn-mini.pc-btn-ghost {
-  color: color-mix(in oklab, var(--fg-dim), white 18%);
-  border-color: rgba(var(--operator-gold), 0.22);
-  background: rgba(255, 255, 255, 0.026);
-}
-
-.pc-btn-mini.pc-btn-ghost:hover,
-.pc-btn-mini.pc-btn-ghost:focus-visible {
-  color: #f4fdff;
-  border-color: rgba(var(--operator-arc), 0.30);
-  background: rgba(var(--operator-arc), 0.060);
 }
 
 .operator-entry--inform-card {
@@ -7909,54 +7619,6 @@ body.h-harness-top-collapsed .pc-header {
   transform: translateY(-1px);
 }
 
-.pc-support-actions .pc-btn,
-.pc-support-resources,
-.pc-support-faq {
-  transition:
-    transform var(--dur-fast) var(--ease-out),
-    border-color var(--dur-fast) var(--ease-out),
-    background var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-.pc-support-actions .pc-btn:hover,
-.pc-support-resources:hover,
-.pc-support-faq:hover {
-  transform: translateY(-1px);
-}
-.pc-support-faq {
-  overflow: hidden;
-}
-.pc-support-faq-summary {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.pc-support-faq-chevron {
-  display: inline-flex;
-  transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
-}
-.pc-support-faq[open] .pc-support-faq-chevron {
-  transform: rotate(90deg);
-  color: var(--accent);
-}
-.pc-support-faq[open] .pc-support-faq-answer {
-  animation: pc-slide-up-in var(--dur-normal) var(--ease-out);
-}
-
-@media (prefers-reduced-motion: reduce) {
-
-  .pc-marketplace-dialog-backdrop,
-  .pc-marketplace-dialog,
-  .pc-support-faq[open] .pc-support-faq-answer,
-  .pc-header::after,
-  .pc-header-nav-link.is-route-pending::after,
-  .pc-header-nav-link[data-route-pending="true"]::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
-}
-
 @supports (view-transition-name: root) {
   ::view-transition-old(root) {
     animation: pc-fade-out var(--dur-fast) var(--ease-in) both;
@@ -8189,12 +7851,6 @@ body.h-harness-top-collapsed .pc-header {
     linear-gradient(90deg, rgb(from var(--rose-400) r g b / 0.032), transparent 16%),
     linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.016)),
     color-mix(in srgb, var(--bg-1), transparent 26%);
-}
-
-.pc-btn-mini.pc-btn-destructive {
-  border-color: rgb(from var(--rose-400) r g b / 0.22);
-  background: rgb(from var(--rose-400) r g b / 0.070);
-  color: color-mix(in oklab, var(--bad), white 22%);
 }
 
 /* Operator usability fix: keep the primary action clearly discoverable. */
@@ -10494,83 +10150,6 @@ html[data-visual-effects='minimal'] .pc-header-quote-text {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 14px rgb(from var(--accent) r g b / 0.06);
 }
 
-.pc-support-shell {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.1);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at 12% 0%, rgb(from var(--accent-strong) r g b / 0.09), transparent 26rem),
-    radial-gradient(circle at 88% 0%, rgb(from var(--amber-400) r g b / 0.06), transparent 20rem),
-    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)),
-    color-mix(in srgb, var(--bg-deep), transparent 18%);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255,255,255,0.06);
-}
-.pc-support-shell::before,
-.pc-support-shell::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-.pc-support-shell::before {
-  background:
-    repeating-linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.035) 0 1px, transparent 1px 72px),
-    repeating-linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.025) 0 1px, transparent 1px 58px);
-  opacity: 0.34;
-}
-.pc-support-shell::after {
-  inset: 14px;
-  border: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
-  clip-path: polygon(16px 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%, 0 16px);
-}
-.pc-support-shell > * {
-  position: relative;
-  z-index: 1;
-}
-.pc-support-shell .pc-support-actions .pc-btn,
-.pc-support-shell .pc-support-resources,
-.pc-support-shell .pc-support-faq {
-  border-radius: 0 !important;
-  clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%, 0 12px);
-}
-.pc-support-shell .pc-support-actions .pc-btn,
-.pc-support-shell .pc-support-resources {
-  box-shadow: 0 16px 34px rgba(0,0,0,0.16);
-}
-.pc-support-shell .pc-support-faq {
-  position: relative;
-  isolation: isolate;
-}
-.pc-support-shell .pc-support-faq::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(120deg, transparent 0 38%, rgba(255,255,255,0.12) 46%, transparent 52%) -100% 0 / 36% 100% no-repeat,
-    linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.06), rgba(255,255,255,0.01));
-  /* WI-6542: always-on beam dropped. The sweep layer is parked off-canvas by its own
-     `-100% 0` background-position; opacity is pinned to the old cycle's mid value so the
-     static tint layer keeps its perceived strength instead of jumping to full. */
-  opacity: 0.4;
-  pointer-events: none;
-}
-.pc-support-shell .pc-support-faq[open] {
-  box-shadow: 0 16px 32px rgba(0,0,0,0.18), 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.08);
-}
-.pc-support-shell .pc-support-faq-summary {
-  position: relative;
-  z-index: 1;
-}
-.pc-support-shell .pc-support-faq-answer {
-  position: relative;
-  z-index: 1;
-}
-.pc-support-shell .pc-support-resources a {
-  text-shadow: 0 0 10px rgb(from var(--accent) r g b / 0.14);
-}
-
 @media (max-width: 1100px) {
   .operator-panel--maximal-hud .operator-panel__titleblock {
     align-items: flex-start;
@@ -10597,25 +10176,6 @@ html[data-visual-effects='minimal'] .pc-header-quote-text {
   .pc-header-hud-line {
     left: 16px;
     right: 16px;
-  }
-  .pc-support-shell {
-    border-radius: 18px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hud-telemetry-marquee__track,
-  .operator-reactor-shell__backplate,
-  .operator-reactor-core__flare,
-  .operator-panel--maximal-hud .operator-panel__metric-card,
-  .operator-panel--maximal-hud .operator-panel__metric-card::before,
-  .operator-hud-scan-beam,
-  .pc-header-hud-line,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-card::before,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-dialog::before,
-  .pc-support-shell .pc-support-faq::before {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
   }
 }
 
@@ -11972,82 +11532,6 @@ body:not(.papercusp-chromeless) .pc-header {
 
 .pc-marketplace-list--maximal-hud .pc-marketplace-card:hover .pc-marketplace-meta span::after {
   animation: pcMarketplaceCardSignal 900ms ease-out 1;
-}
-
-.pc-support-shell::before {
-  background:
-    repeating-linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.045) 0 1px, transparent 1px 72px),
-    repeating-linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.030) 0 1px, transparent 1px 58px),
-    radial-gradient(circle at 50% 0%, rgb(from var(--accent-strong) r g b / 0.13), transparent 34rem);
-  /* WI-6542: always-on loop dropped — background-position-only drift, rests at `from`. */
-}
-
-.pc-support-shell h1 {
-  position: relative;
-  text-shadow:
-    0 0 22px rgb(from var(--accent-strong) r g b / 0.20),
-    0 0 42px rgb(from var(--emerald-400) r g b / 0.08);
-}
-
-.pc-support-shell h1::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 36%;
-  bottom: -6px;
-  height: 1px;
-  pointer-events: none;
-  background: linear-gradient(90deg, rgba(226, 252, 255, 0.92), rgb(from var(--accent-strong) r g b / 0.42), transparent);
-  box-shadow: 0 0 14px rgb(from var(--accent-strong) r g b / 0.54);
-}
-
-.pc-support-shell .pc-support-actions {
-  position: relative;
-  isolation: isolate;
-}
-
-.pc-support-shell .pc-support-actions::before {
-  content: "";
-  position: absolute;
-  inset: -8px;
-  z-index: -1;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgb(from var(--accent-strong) r g b / 0.12), transparent);
-  filter: blur(8px);
-  /* WI-6542: always-on sweep dropped. Sheen-only pseudo-element, opacity:0 at both ends
-     of the old cycle, so it rests invisible rather than parking a lit bar on screen. */
-  opacity: 0;
-}
-
-.pc-support-shell .pc-support-faq::after {
-  content: "";
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 2px;
-  pointer-events: none;
-  background: linear-gradient(180deg, transparent, rgb(from var(--accent-strong) r g b / 0.54), rgb(from var(--emerald-400) r g b / 0.38), transparent);
-  opacity: 0.28;
-  filter: drop-shadow(0 0 8px rgb(from var(--accent-strong) r g b / 0.28));
-}
-
-.pc-support-shell .pc-support-faq[open]::after {
-  opacity: 0.9;
-  filter: drop-shadow(0 0 14px rgb(from var(--accent-strong) r g b / 0.54));
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pc-marketplace-list--maximal-hud::before,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-toolbar-copy::after,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-search::after,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-card-icon::after,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-card:hover .pc-marketplace-meta span::after,
-  .pc-support-shell::before,
-  .pc-support-shell .pc-support-actions::before {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
 }
 
 /* Public marketplace package parity: the installed shared UI renders the
@@ -13605,28 +13089,6 @@ div[class*="grid-area:toc"]::before {
     0 0 22px rgb(from var(--accent) r g b / 0.08);
 }
 
-.pc-marketplace-hero-v2,
-.pc-marketplace-pagehead,
-.pc-marketplace-loading {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-}
-
-.pc-marketplace-hero-v2::before,
-.pc-marketplace-pagehead::before,
-.pc-marketplace-loading::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(120deg, transparent 0 36%, rgba(226, 252, 255, 0.14) 46%, transparent 54%) -120% 0 / 34% 100% no-repeat,
-    radial-gradient(circle at 14% 0%, rgb(from var(--accent-strong) r g b / 0.10), transparent 14rem);
-  opacity: 0.72;
-  animation: pcMarketplaceTabSweep 5.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
-}
-
 .pc-marketplace-hero-v2 {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.16);
   border-radius: 32px;
@@ -13658,23 +13120,6 @@ div[class*="grid-area:toc"]::before {
   pointer-events: none;
   background: linear-gradient(90deg, rgba(226, 252, 255, 0.92), rgb(from var(--accent-strong) r g b / 0.46), transparent);
   box-shadow: 0 0 16px rgb(from var(--accent-strong) r g b / 0.48);
-}
-
-.pc-marketplace-pagehead,
-.pc-marketplace-loading {
-  box-shadow:
-    0 22px 60px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.pc-marketplace-mini-stats div,
-.pc-marketplace-loading .pc-marketplace-card {
-  position: relative;
-  overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.05),
-    0 16px 34px rgba(0, 0, 0, 0.12),
-    0 0 24px rgb(from var(--accent) r g b / 0.05);
 }
 
 .pc-marketplace-mini-stats div::after {
@@ -13735,26 +13180,6 @@ div[class*="grid-area:toc"]::before {
   box-shadow:
     0 20px 54px rgba(0, 0, 0, 0.15),
     inset 0 1px 0 rgba(255,255,255,0.045);
-}
-
-.pc-marketplace-loading .pc-marketplace-card-head span:not(.pc-marketplace-card-icon),
-.pc-marketplace-loading p {
-  text-shadow: 0 0 10px rgb(from var(--accent-strong) r g b / 0.10);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pc-marketplace-frame::after,
-  .pc-marketplace-tabs.pc-tabs::after,
-  .pc-marketplace-hero-v2::before,
-  .pc-marketplace-pagehead::before,
-  .pc-marketplace-loading::before,
-  .pc-marketplace-mini-stats div::after,
-  .pc-marketplace-category-card::before,
-  .pc-marketplace-steps li::before,
-  .pc-marketplace-category-icon::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
 }
 
 /* Operator clarity refinement: turn the footer into quiet, readable utility
@@ -14350,30 +13775,6 @@ div[class*="grid-area:toc"]::before {
   z-index: -1;
 }
 
-.pc-marketplace-tabs.pc-tabs,
-.pc-marketplace-hero-v2,
-.pc-marketplace-pagehead,
-.pc-marketplace-toolbar-copy,
-.pc-marketplace-search,
-.pc-marketplace-card,
-.pc-marketplace-empty,
-.pc-marketplace-loading,
-.pc-marketplace-mini-stats div,
-.pc-marketplace-category-card,
-.pc-marketplace-steps,
-.pc-marketplace-steps li {
-  border-color: rgba(148, 196, 228, 0.18) !important;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.040), rgba(255,255,255,0.010)),
-    linear-gradient(135deg, rgba(255,255,255,0.020), transparent 42%, rgb(from var(--accent-strong) r g b / 0.04) 74%, transparent 100%),
-    var(--pc-market-metal) !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.070),
-    inset 0 -1px 0 rgba(0,0,0,0.34),
-    0 18px 44px rgba(0, 0, 0, 0.18),
-    0 0 0 1px rgb(from var(--accent-strong) r g b / 0.05) !important;
-}
-
 .pc-marketplace-hero-v2,
 .pc-marketplace-pagehead,
 .pc-marketplace-card,
@@ -14584,13 +13985,6 @@ div[class*="grid-area:toc"]::before {
   background: linear-gradient(0deg, rgb(from var(--rose-400) r g b / 0.14), rgb(from var(--rose-400) r g b / 0.14));
   border-color: rgb(from var(--rose-400) r g b / 0.28);
   box-shadow: 0 18px 34px rgba(94, 24, 37, 0.16);
-}
-
-.pc-marketplace-empty,
-.pc-marketplace-loading {
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.010)),
-    color-mix(in srgb, var(--bg-deep), transparent 18%) !important;
 }
 
 /* Operator clarity refinement: when there is no timeline content yet, make the
@@ -21025,319 +20419,10 @@ body:has(.operator-panel) {
   color: rgb(from var(--accent-strong) r g b / 0.88);
 }
 
-/* ---- /settings/personal-vault ---- */
-.pc-personal-vault {
-  --vault-good: #63d6a0;
-  --vault-good-soft: color-mix(in srgb, var(--vault-good), transparent 88%);
-  --vault-accent-soft: color-mix(in srgb, var(--accent), transparent 88%);
-  max-width: 1120px;
-  margin-inline: auto;
-}
-
-.pc-vault-hero {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 20px;
-  overflow: hidden;
-  padding: 28px;
-  border: 1px solid color-mix(in srgb, var(--accent), var(--border) 72%);
-  border-radius: 18px;
-  background:
-    radial-gradient(circle at 88% 15%, rgb(from var(--accent) r g b / 0.18), transparent 34%),
-    linear-gradient(145deg, color-mix(in srgb, var(--bg-1), var(--accent) 5%), var(--bg-1));
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.18);
-}
-
-.pc-vault-hero h1,
-.pc-vault-section-heading h2,
-.pc-vault-step-section > h2,
-.pc-vault-advanced-section > h2 { margin: 3px 0 0; }
-
-.pc-vault-eyebrow,
-.pc-vault-step-kicker {
-  color: color-mix(in srgb, var(--accent-strong), white 18%);
-  font-size: 10px;
-  font-weight: 750;
-  text-transform: uppercase;
-}
-
-.pc-vault-health {
-  align-self: start;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 30px;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-2);
-  color: color-mix(in srgb, var(--fg), transparent 18%);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.pc-vault-health.is-ready {
-  border-color: color-mix(in srgb, var(--vault-good), transparent 60%);
-  background: var(--vault-good-soft);
-  color: color-mix(in srgb, var(--vault-good), white 24%);
-}
-
-.pc-vault-health.is-paused {
-  border-color: color-mix(in srgb, var(--warn, #fbbf24), transparent 58%);
-  color: var(--warn, #fbbf24);
-}
-
-.pc-vault-overview {
-  padding: 22px;
-  border-color: color-mix(in srgb, var(--accent), var(--border) 82%);
-  background: color-mix(in srgb, var(--bg-1), var(--accent) 2.5%);
-}
-
-.pc-vault-section-heading {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.pc-vault-enable-control {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 190px;
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-2);
-}
-
-.pc-vault-enable-control > span:last-child,
-.pc-vault-next-action > span:last-child {
-  display: flex;
-  flex-direction: column;
-}
-.pc-vault-pause-note { max-width: 680px; }
-
-.pc-vault-steps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.pc-vault-steps li {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  min-width: 0;
-  padding: 13px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--bg-2);
-}
-
-.pc-vault-steps li.is-complete {
-  border-color: color-mix(in srgb, var(--vault-good), transparent 68%);
-  background: var(--vault-good-soft);
-}
-
-.pc-vault-steps li > span:last-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pc-vault-steps li > span:last-child > span {
-  overflow: hidden;
-  color: color-mix(in srgb, var(--fg), transparent 44%);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pc-vault-step-number {
-  display: inline-grid;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
-  border-radius: 999px;
-  background: var(--vault-accent-soft);
-  color: color-mix(in srgb, var(--accent-strong), white 20%);
-  font-size: 12px;
-  font-weight: 750;
-}
-
 .is-complete .pc-vault-step-number {
   border-color: color-mix(in srgb, var(--vault-good), transparent 44%);
   background: color-mix(in srgb, var(--vault-good), transparent 80%);
   color: color-mix(in srgb, var(--vault-good), white 26%);
-}
-
-.pc-vault-next-action {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 14px;
-  padding: 13px 15px;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 62%);
-  border-radius: 12px;
-  background: var(--vault-accent-soft);
-}
-
-.pc-vault-next-action > span:last-child > span {
-  margin-top: 2px;
-  color: color-mix(in srgb, var(--fg), transparent 30%);
-  font-size: 12px;
-}
-
-.pc-vault-next-icon { color: var(--accent-strong); font-size: 20px; }
-
-.pc-vault-summary {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  margin: 18px 0 0;
-  padding: 1px;
-  border-radius: 12px;
-  background: var(--border);
-}
-
-.pc-vault-summary > div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  padding: 13px 14px;
-  background: var(--bg-1);
-}
-
-.pc-vault-summary dt {
-  color: color-mix(in srgb, var(--fg), transparent 48%);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.pc-vault-summary dd {
-  margin: 5px 0 1px;
-  color: var(--fg);
-  font-size: 20px;
-  font-weight: 700;
-}
-
-.pc-vault-summary span {
-  overflow: hidden;
-  color: color-mix(in srgb, var(--fg), transparent 48%);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pc-vault-step-section { position: relative; padding: 22px; }
-.pc-vault-step-section > .pc-vault-step-kicker { display: block; margin-bottom: 2px; }
-
-.pc-vault-provider-card {
-  background: color-mix(in srgb, var(--bg-2), transparent 18%);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
-}
-
-.pc-vault-account-card { background: color-mix(in srgb, var(--bg-1), var(--accent) 1.5%); }
-
-.pc-vault-account-details,
-.pc-vault-disclosure {
-  margin-top: 12px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--bg-2), transparent 18%);
-}
-
-.pc-vault-account-details > summary,
-.pc-vault-disclosure > summary {
-  padding: 10px 12px;
-  color: color-mix(in srgb, var(--fg), transparent 22%);
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.pc-vault-account-details[open] > summary,
-.pc-vault-disclosure[open] > summary { border-bottom: 1px solid var(--border); }
-.pc-vault-account-details fieldset { margin: 0; padding: 13px; border: 0; }
-
-.pc-vault-disclosure > div {
-  margin: 0 !important;
-  border: 0 !important;
-  border-radius: 0 0 9px 9px !important;
-}
-
-.pc-vault-advanced-section {
-  border-style: dashed;
-  background: color-mix(in srgb, var(--bg-1), transparent 24%);
-}
-
-.pc-vault-advanced-disclosure {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-1), transparent 20%);
-}
-
-.pc-vault-advanced-disclosure > summary {
-  padding: 14px 16px;
-  cursor: pointer;
-}
-
-.pc-vault-advanced-disclosure > summary > span {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.pc-vault-advanced-disclosure > summary span span {
-  color: color-mix(in srgb, var(--fg), transparent 48%);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.pc-vault-advanced-disclosure[open] > summary {
-  border-bottom: 1px solid var(--border);
-}
-
-.pc-vault-advanced-content {
-  display: grid;
-  gap: 14px;
-  padding: 14px;
-}
-
-.pc-vault-visually-hidden {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  overflow: hidden !important;
-  clip: rect(0 0 0 0) !important;
-  clip-path: inset(50%) !important;
-  white-space: nowrap !important;
-}
-
-@media (max-width: 860px) {
-  .pc-vault-steps,
-  .pc-vault-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 620px) {
-  .pc-vault-hero { display: grid; grid-template-columns: 1fr; padding: 20px; }
-  .pc-vault-section-heading { display: grid; grid-template-columns: 1fr; }
-  .pc-vault-health { justify-self: start; }
-  .pc-vault-enable-control { min-width: 0; }
-  .pc-vault-steps,
-  .pc-vault-summary { grid-template-columns: 1fr; }
-  .pc-vault-steps li > span:last-child > span,
-  .pc-vault-summary span { white-space: normal; }
 }
 
 /* Console launcher button — sibling to .pc-voice-btn in the chrome
@@ -22316,31 +21401,6 @@ body:has(.operator-panel) {
 .pc-field { display: flex; flex-direction: column; gap: 4px; max-width: 540px; }
 .pc-field__label { font-size: 12px; color: var(--fg-mute); }
 .pc-field__hint { font-size: 11.5px; color: var(--fg-mute); line-height: 1.5; }
-.pc-input {
-  background: var(--bg-1);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 13px;
-  font-family: inherit;
-}
-.pc-input:focus { outline: none; border-color: var(--accent); }
-
-.pc-btn {
-  background: var(--bg-3);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.pc-btn:hover { background: var(--bg-4); }
-.pc-btn--primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent-strong); }
-.pc-btn--primary:hover { background: var(--accent-strong); }
-.pc-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .pc-provider-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
 @media (min-width: 880px) { .pc-provider-grid { grid-template-columns: 1fr 1fr; } }
@@ -22370,8 +21430,6 @@ body:has(.operator-panel) {
 
 .pc-cost-modes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .pc-cost-modes li { font-size: 12px; line-height: 1.55; }
-
-.pc-badge { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; }
 .pc-badge--required { background: rgb(from var(--accent) r g b / 0.16); color: var(--accent); }
 .pc-badge--optional { background: var(--bg-3); color: var(--fg-mute); }
 
@@ -22571,7 +21629,6 @@ body:has(.operator-panel) {
     grid-template-columns: 1fr;
   }
 }
-.pc-btn--large { padding: 11px 20px; font-size: 14px; }
 
 .pc-setup-wizard__sidebar-footer {
   margin-top: 12px;
@@ -25259,20 +24316,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--accent), transparent 30%);
 }
 
-@media (prefers-reduced-motion: reduce) {
-
-  .pc-marketplace-dialog-backdrop,
-  .pc-marketplace-dialog,
-  .pc-support-faq[open] .pc-support-faq-answer,
-  .oracle-fab.has-unread .oracle-fab-badge,
-  .pc-header::after,
-  .pc-header-nav-link.is-route-pending::after,
-  .pc-header-nav-link[data-route-pending="true"]::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
-}
-
 .oracle-fab--maximal-hud {
   overflow: hidden;
 }
@@ -25374,24 +24417,6 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .oracle-dock--maximal-hud .oracle-tab,
 .oracle-dock--maximal-hud .oracle-tab-add {
   clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%, 0 8px);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hud-telemetry-marquee__track,
-  .operator-reactor-shell__backplate,
-  .operator-reactor-core__flare,
-  .operator-panel--maximal-hud .operator-panel__metric-card,
-  .operator-panel--maximal-hud .operator-panel__metric-card::before,
-  .operator-hud-scan-beam,
-  .pc-header-hud-line,
-  .oracle-fab--maximal-hud::before,
-  .oracle-hud-scanline,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-card::before,
-  .pc-marketplace-list--maximal-hud .pc-marketplace-dialog::before,
-  .pc-support-shell .pc-support-faq::before {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
 }
 
 /* Maximal HUD experiment branch: oracle stacking fix */

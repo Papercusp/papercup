@@ -126,7 +126,7 @@ describe('capabilityBuildCacheWritePaths (EI-12725 — out-of-tree build caches 
   });
 });
 
-describe('buildCapabilitySandboxCommand — fail-open', () => {
+describe('buildCapabilitySandboxCommand — optional trusted path remains fail-open', () => {
   it('flag OFF → raw command, not sandboxed (reason flag-off, mode raw)', () => {
     const d = buildCapabilitySandboxCommand({ cmd: CMD, cwd: CWD }, { ...base, enabled: false });
     expect(d.sandboxed).toBe(false);

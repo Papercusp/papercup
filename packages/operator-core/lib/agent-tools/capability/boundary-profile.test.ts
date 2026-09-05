@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -5,6 +6,7 @@ import {
   type BoundaryProfileDeps,
 } from './boundary-profile';
 import type { SessionToolConfinement } from '../../capability-envelope/session-confinement';
+import { capabilityExecSandboxPolicy } from './exec-sandbox';
 
 const none: BoundaryProfileDeps = {
   declaredConfinement: async () => null,
@@ -53,6 +55,16 @@ describe('resolveOperationBoundaryProfile', () => {
     expect(result).toEqual({ kind: 'confined', reason: 'autonomous-caller' });
   });
 
+  it('turns an autonomous caller into a required exec sandbox without consulting the rollout flag', async () => {
+    await expect(
+      capabilityExecSandboxPolicy({ role: 'worker' }),
+    ).resolves.toEqual({
+      enabled: true,
+      required: true,
+      profile: { kind: 'confined', reason: 'autonomous-caller' },
+    });
+  });
+
   it('lets launch-declared confinement override superuser privilege', async () => {
     const result = await resolveOperationBoundaryProfile(
       { isSuperuser: true, role: 'operator', uiClientId: 'su-directed' },
@@ -76,5 +88,28 @@ describe('resolveOperationBoundaryProfile', () => {
       kind: 'confined',
       reason: 'unattributed-caller',
     });
+  });
+});
+
+describe('operation-boundary handler wiring — resource parity', () => {
+  const source = (file: string): string =>
+    readFileSync(new URL(file, import.meta.url), 'utf8');
+
+  it.each([
+    ['bash.ts', 2],
+    ['git.ts', 2],
+    ['inspect.ts', 2],
+  ] as const)('%s resolves the server profile and passes required confinement to every spawn', (file, requiredUses) => {
+    const text = source(file);
+    expect(text).toContain('await capabilityExecSandboxPolicy(ctx)');
+    expect(text.match(/sandboxRequired: sandboxPolicy\.required/g)).toHaveLength(requiredUses);
+  });
+
+  it('fetch.ts resolves the same server profile and carries it through policy plus bounded streaming', () => {
+    const text = source('fetch.ts');
+    expect(text).toContain('await resolveOperationBoundaryProfile(ctx)');
+    expect(text).toContain('await fetchWithCapabilityPolicy({');
+    expect(text).toMatch(/fetchWithCapabilityPolicy\(\{[\s\S]*?profile,[\s\S]*?maxRedirects:/);
+    expect(text).toMatch(/readResponseBody\(res, maxBytes, ctx\.stateDir, maxDownloadBytes\)/);
   });
 });

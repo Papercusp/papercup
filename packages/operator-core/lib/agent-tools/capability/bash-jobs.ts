@@ -567,10 +567,9 @@ export function scratchDir(stateDir: string | undefined): string {
  *  stage's exit code" still has the standard escape hatch (`cmd || true`,
  *  `cmd; true`) — same as any pipefail-enabled shell.
  *
- *  When `sandboxEnabled` (the resolved papercusp-capability-exec-sandbox flag,
- *  P-022/D-008), the `bash -c` runs inside a bwrap OS sandbox (fs + credential
- *  containment) where bwrap works; FAIL-OPEN to a raw spawn otherwise (a logged
- *  warning), so a host without a working bwrap is never bricked. */
+ *  When `sandboxEnabled`, the `bash -c` runs inside the existing SRT/bwrap OS
+ *  sandbox. Optional trusted-owner rollout remains fail-open for compatibility;
+ *  `sandboxRequired` (confined work) refuses before spawn if no wrapper works. */
 function spawnShell(
   command: string,
   cwd: string,
@@ -1347,8 +1346,7 @@ export interface RunOptions {
   redactValues?: readonly string[];
   /** Per-event streamer (foreground only). */
   onChunk?: (chunk: string) => void;
-  /** Resolved papercusp-capability-exec-sandbox flag (P-022/D-008). When true the
-   *  command runs inside a bwrap OS sandbox where bwrap works; fail-open otherwise. */
+  /** Whether to engage the existing SRT/bwrap execution sandbox. */
   sandboxEnabled?: boolean;
   /** Confined profile: wrapper unavailability refuses before the command starts. */
   sandboxRequired?: boolean;

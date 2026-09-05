@@ -403,7 +403,9 @@ export function capabilitySandboxDenyAllEgress(): boolean {
 /**
  * Decide how to spawn a capability subprocess. PURE given its opts (bwrap
  * availability + flag + knobs are inputs), so the full argv is unit-testable
- * without a live bwrap. FAIL-OPEN: not-enabled or bwrap-unavailable ⇒ run raw.
+ * without a live bwrap. The optional trusted-owner rollout remains FAIL-OPEN
+ * for compatibility; `required:true` is the confined path and returns an
+ * unavailable decision that callers must refuse before spawn.
  */
 export function buildCapabilitySandboxCommand(
   input: BuildSandboxInput,
@@ -425,7 +427,8 @@ export function buildCapabilitySandboxCommand(
   });
   if (!opts.enabled) return opts.required ? unavailable('flag-off') : raw('flag-off');
   // srt and our bwrap both rest on bubblewrap; if bwrap can't sandbox here, srt
-  // can't either, so fail OPEN to raw (never a wrapper that errors at runtime).
+  // can't either. Optional trusted calls retain the legacy raw fallback;
+  // required/confined calls return unavailable and are refused before spawn.
   const works = opts.bwrapWorks ?? capabilityBwrapWorks();
   if (!works) return opts.required ? unavailable('bwrap-unavailable') : raw('bwrap-unavailable');
 
@@ -527,11 +530,10 @@ export function buildCapabilitySandboxCommand(
 }
 
 /**
- * Resolve the `papercusp-capability-exec-sandbox` flag at spawn time. DEFAULT-OFF
- * and FAIL-OPEN: a flag-IO error resolves to OFF (run raw) so a PostHog hiccup can
- * never make capability exec start failing — the owner's flip is the only thing
- * that arms it. Call once per tool invocation in the handler (async flag IO), then
- * pass the boolean into the sync `buildCapabilitySandboxCommand`.
+ * Resolve the optional trusted-owner `papercusp-capability-exec-sandbox` rollout
+ * flag at spawn time. DEFAULT-OFF and FAIL-OPEN for that compatibility path: a
+ * flag-IO error resolves to OFF. Confined callers do not use this result —
+ * `capabilityExecSandboxPolicy` forces their wrapper on and requires it.
  */
 export async function capabilityExecSandboxEnabled(): Promise<boolean> {
   try {

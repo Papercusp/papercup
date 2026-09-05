@@ -37,6 +37,8 @@ import {
   SIGNED_PROTOCOL_SCHEMA_VERSION,
   isSignedProtocolContext,
   signedProtocolContextMatches,
+  type ExpectedSignedProtocolContext,
+  storeGenerationOrdinal,
   type SignedProtocolContext,
 } from './signed-context';
 
@@ -88,7 +90,7 @@ export interface SignedStagingAdvance extends StagingAdvancePayload {
 }
 
 function isNonNegInt(x: unknown): x is number {
-  return typeof x === 'number' && Number.isInteger(x) && x >= 0;
+  return typeof x === 'number' && Number.isSafeInteger(x) && x >= 0;
 }
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -203,7 +205,9 @@ export type StagingAdvanceAcceptance =
         | 'non-fast-forward'
         | 'unknown-sha'
         | 'legacy-version'
-        | 'context-mismatch';
+        | 'context-mismatch'
+        | 'unknown-generation'
+        | 'stale-generation';
     };
 
 export interface AcceptStagingAdvanceOpts {
@@ -236,8 +240,10 @@ export interface AcceptStagingAdvanceOpts {
    */
   maxGrantedEpoch?: number;
   /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
-  expectedContext?: SignedProtocolContext;
+  expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
+  /** Generations already accepted through this device's signed snapshots. */
+  knownStoreGenerations?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -255,13 +261,12 @@ export function acceptStagingAdvance(
   opts: AcceptStagingAdvanceOpts = {},
 ): StagingAdvanceAcceptance {
   if (!isSignedStagingAdvance(incoming)) return { ok: false, reason: 'malformed' };
-  if (opts.expectedContext) {
-    if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION && opts.allowLegacy === false) {
-      return { ok: false, reason: 'legacy-version' };
-    }
-    if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(incoming, opts.expectedContext)) {
-      return { ok: false, reason: 'context-mismatch' };
-    }
+  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION && opts.allowLegacy !== true) {
+    return { ok: false, reason: 'legacy-version' };
+  }
+  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&
+      (!opts.expectedContext || !signedProtocolContextMatches(incoming, opts.expectedContext))) {
+    return { ok: false, reason: 'context-mismatch' };
   }
   if (opts.expectedDevice !== undefined) {
     if (incoming.device_pubkey !== opts.expectedDevice) return { ok: false, reason: 'wrong-device' };
@@ -269,6 +274,14 @@ export function acceptStagingAdvance(
     return { ok: false, reason: 'wrong-device' };
   }
   if (!verifyStagingAdvance(incoming)) return { ok: false, reason: 'bad-signature' };
+  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && opts.knownStoreGenerations) {
+    const known = opts.knownStoreGenerations[incoming.device_pubkey];
+    if (known !== incoming.store_generation) {
+      const oldOrdinal = storeGenerationOrdinal(known);
+      const newOrdinal = storeGenerationOrdinal(incoming.store_generation)!;
+      return { ok: false, reason: oldOrdinal === null || newOrdinal > oldOrdinal ? 'unknown-generation' : 'stale-generation' };
+    }
+  }
   if (opts.maxGrantedEpoch !== undefined && incoming.epoch > opts.maxGrantedEpoch) {
     return { ok: false, reason: 'ungranted-epoch' };
   }
