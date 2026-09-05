@@ -1483,6 +1483,89 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return `thread-post:${post.id}`;
   }
 
+  it('authors unified sections through proposal preflight and stores only canonical promise and method fields', async () => {
+    const workspaceId = activeWorkspaceId();
+    const subject = 'unified-proposal-subject';
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner)
+      VALUES (${workspaceId},'papercusp',${subject},'# Export',md5('# Export'),1,'Export','active','su-test')`;
+    const proposed = await rubrics.proposeRubric({
+      rubricId: 'unified-proposal-acceptance', kind: 'acceptance', subjectPlan: subject,
+      characteristic: 'plan-acceptance', title: 'Complete export', by: 'requirement-author',
+      criteria: [{
+        key: 'complete-export', title: 'Complete export',
+        intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
+        acceptance: { condition: 'The export contains every selected record.',
+          falsifier: 'A selected record is missing.', requiredScope: ['tree'],
+          requiredTestLayers: ['integration'], evidencePlane: 'tree',
+          role: 'outcome', mandatory: true, passRatings: ['healthy'] },
+        verification: { method: 'Run the export fixture.',
+          check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } },
+      }],
+    });
+    expect(proposed.criteria[0]).toMatchObject({
+      key: 'complete-export', intent: { request: 'Export every record.', sourceRefs: ['request:export'] },
+      model: 'The export contains every selected record.', driftMarkers: 'A selected record is missing.',
+      method: 'Run the export fixture.', requiredTestLayers: ['integration'],
+      check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+    });
+    const stored = await storedTemplateData(proposed.rubricId);
+    expect(stored.criteria[0]).not.toHaveProperty('acceptance');
+    expect(stored.criteria[0]).not.toHaveProperty('verification');
+  });
+
+  it('amends unified proof depth with approval, preserves BAR identity for methods, and retains projection history', async () => {
+    const seeded = await seedBarContract('unified-amendment-subject');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const key = before.criteria[0]!.key;
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require integration proof of the outcome.',
+      requirement: { key, acceptance: { requiredTestLayers: ['integration'] } },
+    };
+    await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    const changed = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    expect(changed.revision).toBe(before.revision! + 1);
+    expect(changed.criteria[0]!.barKey).toBe(before.criteria[0]!.barKey);
+    expect(changed.criteria[0]!.barHash).not.toBe(before.criteria[0]!.barHash);
+    expect(changed.criteria[1]).toEqual(before.criteria[1]);
+
+    const method = { method: 'Run the integration fixture and compare every output record.',
+      check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] } };
+    const preview = await rubrics.previewAcceptanceBarAmendment({ rubricId: seeded.rubricSlug,
+      actorId: 'method-author', requirement: { key, verification: method } });
+    expect(preview).toMatchObject({ approvalRequired: false, nextBarSetHash: changed.barSetHash });
+    const verified = (await rubrics.amendRubric({ rubricId: seeded.rubricSlug,
+      actorId: 'method-author', requirement: { key, verification: method } }))!;
+    expect(verified.barSetHash).toBe(changed.barSetHash);
+    expect(verified.criteria[0]).toMatchObject({ ...method, barHash: changed.criteria[0]!.barHash });
+    expect(verified.criteria[1]).toEqual(changed.criteria[1]);
+
+    // The complete-set door must normalize before its transaction's check/path
+    // preflight too; no flat method/check is supplied by this caller.
+    const replaced = (await rubrics.amendRubric({ rubricId: seeded.rubricSlug, actorId: 'method-author',
+      criteria: verified.criteria.map(({ model, bar: _bar, driftMarkers, method: oldMethod,
+        check, replication, ...criterion }) => ({ ...criterion,
+        acceptance: { condition: model, falsifier: driftMarkers },
+        verification: { method: oldMethod, ...(check ? { check } : {}), ...(replication ? { replication } : {}) },
+      })),
+    }))!;
+    expect(replaced.barSetHash).toBe(verified.barSetHash);
+    expect(replaced.criteria[0]).toMatchObject(method);
+    expect(replaced.revision).toBeGreaterThan(changed.revision!);
+    const revisions = await db.adminSql`SELECT r.source_bar_key, r.required_test_layers, r.revision,
+      r.source_rubric_revision FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+      WHERE c.workspace_id=${seeded.workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${seeded.subject}
+      ORDER BY c.spec_id,r.revision`;
+    const first = revisions.filter((row) => row.source_bar_key === 'R-1');
+    expect(first[0]!.required_test_layers).toEqual([]);
+    expect(first.at(-1)!.required_test_layers).toEqual(['integration']);
+    expect(Number(first.at(-1)!.source_rubric_revision)).toBe(replaced.revision);
+    expect(first.length).toBeGreaterThan(2);
+    expect(revisions.filter((row) => row.source_bar_key === 'R-2').at(-1)!.required_test_layers).toEqual([]);
+  });
+
   it('previews structural plane amendments without writes and requires an actual outside-lineage approval', async () => {
     const seeded = await seedBarContract('plane-approval-subject');
     const before = await rubrics.getRubric(seeded.rubricSlug);
