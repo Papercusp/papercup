@@ -42,6 +42,13 @@ import './context-gauge-wiring';
 // rejection indistinguishable from a typo. See server-vintage-wiring.ts.
 import './server-vintage-wiring';
 
+// Wire @papercusp/db-org's build-stamp seam to the SAME build-info.ts source —
+// EI-19484133375867605: stamps the emitting build into `[connect-phase-deadline]` /
+// `[db-call-deadline]`, so a diagnostic pasted into a work-item carries its own
+// provenance and a corrected message stops being re-filed by agents whose host still
+// runs the pre-fix bytes. See db-diagnostic-stamp-wiring.ts.
+import './db-diagnostic-stamp-wiring';
+
 // Wire tooldef's ambient-dispatch-arg-keys seam to `PROJECTION_ARG` —
 // EI-22174225494240206: without this, an `Unrecognized key` hint's "accepts ONLY"
 // list omits genuinely-accepted dispatch-level args (`projection`) and tells the
@@ -1354,6 +1361,7 @@ import './plans/disarm-schedule';
 import './plans/revisions-list';
 import './plans/revisions-backfill';
 import './plans/acceptance-bar-migration';
+import './plans/acceptance-bar-census';
 import './plans/backfill-dependency-edges';
 import './plans/revision-transcript';
 import './plans/revision-summary';
