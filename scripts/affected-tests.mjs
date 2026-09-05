@@ -3942,6 +3942,49 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/gen-testing-domains-contract.ts" ||
       f === ".papercusp/testing-domains.json",
   },
+  {
+    // EI-20244970883634313 — the result-door OPT-OUT population guard. `skipResultDoor`
+    // is a typed `ResultDoorSkipReason` union (WI-37843), so every opt-out already has to
+    // state a reason from a closed set; what nothing prevented was a NEW opt-out being
+    // added silently. The guard is shrink-only against an inline BASELINE of the 11 sites
+    // measured when it landed, and `--list` reprints the measured population for
+    // re-seeding (never a hand-run grep).
+    //
+    // WIRED REPO-WIDE rather than left to workspace selection because the subject is the
+    // POPULATION of opt-outs across the tree: the guard scans `packages`, `libs` and
+    // `apps` (ROOTS in scripts/check-result-door-optouts.mjs) while its enforcing test
+    // lives in @papercusp/operator-core. Left at the `test` tier it would run only when
+    // operator-core was independently affected, so an opt-out added under apps/ or libs/
+    // would get NO local signal and first surface as a red fleet gate — and the census
+    // would report it PARTIALLY covered, a set that is shrink-only at
+    // PARTIAL_COVERAGE_HIGH_WATERMARK. Registering here is the remedy
+    // check-lint-guard-reachability.mjs names for exactly this shape.
+    //
+    // TRIGGER SCOPE is every TypeScript source under the three scanned roots: an opt-out
+    // is a `skipResultDoor: '<reason>'` assignment and any of those files can introduce
+    // one, so it cannot be narrowed by path without losing the coverage this entry exists
+    // to buy. Plus the guard itself, whose inline BASELINE is what a bad edit would widen.
+    // COST measured 2026-09-05 via this exact npm script: 3.3s, exit 0 over the whole real
+    // tree (11 known sites, 11 declarations, 0 NEW offenders) — measured green FIRST, on
+    // the same precedent as the entries above, so wiring it cannot red-pin the fleet on
+    // debt that accrued while it slept. Slower than the sub-second tasks here, and still
+    // far cheaper than the operator-core suite this replaces as the signal path.
+    //
+    // NO hostSuiteRatchet, deliberately. The enforcing test
+    // (packages/operator-core/lib/result-door-optout-guard.test.ts) does re-run the same
+    // scanTree() assertion, but it lives in operator-core — the workspace an opt-out edit
+    // elsewhere does NOT make affected — so declaring one would skip this guard in
+    // precisely the cross-workspace case it was registered to cover.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-new-result-door-optout",
+    appliesTo: (f) =>
+      f === "scripts/check-result-door-optouts.mjs" ||
+      (/^(?:packages|libs|apps)\//.test(f) &&
+        /\.tsx?$/.test(f) &&
+        !/(?:^|\/)(?:_retired|dist|dist-sidecar|node_modules|build|\.next|target|coverage|env-sidecars)\//.test(
+          f,
+        )),
+  },
 ];
 
 const workspaces = [
