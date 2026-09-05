@@ -31,6 +31,7 @@ import { readImprovementItems, readObservationItems } from '../harness/improveme
 import type { SignalOrigin } from '../harness/improvements/provenance';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { getRubric, listRubrics } from '../rubrics';
+import { activeWorkspaceId } from '../workspace-registry';
 import {
   revertWeight,
   type DeferralRecord,
@@ -41,6 +42,9 @@ import {
   type StateOfHiveReaders,
   type StructuredObservationRecord,
 } from './corpus-digest';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const SPEND_WINDOW_MS = 7 * DAY_MS;
 
 /** ISO timestamp from an epoch-ms bigint column (postgres-js returns bigint as string). */
 function epochMsToIso(v: string | number | null): string {
@@ -92,9 +96,13 @@ async function fetchReverts(): Promise<RevertRecord[]> {
 }
 
 /** Spend buckets: agent_usage_samples rolled up by (harness, role) — where
- *  time/tokens went. */
-async function fetchSpend(): Promise<SpendRecord[]> {
+ *  time/tokens went. Keep the current-state read tenant-scoped and bounded to
+ *  the trailing seven days. */
+async function fetchSpend(opts: { workspaceId?: string; nowMs?: number } = {}): Promise<SpendRecord[]> {
   const { sql } = getOrgPg();
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const nowMs = opts.nowMs ?? Date.now();
+  const windowStartMs = nowMs - SPEND_WINDOW_MS;
   const rows = await sql<
     { harness_slug: string | null; role: string | null; cost: string | null; input: string | null; output: string | null; runs: string }[]
   >`
@@ -105,6 +113,9 @@ async function fetchSpend(): Promise<SpendRecord[]> {
            COALESCE(SUM(output_tokens), 0)  AS output,
            COUNT(*)                          AS runs
       FROM harness_shared.agent_usage_samples
+     WHERE workspace_id = ${workspaceId}
+       AND ts >= ${windowStartMs}
+       AND ts <= ${nowMs}
      GROUP BY harness_slug, role
      ORDER BY cost DESC NULLS LAST
      LIMIT 200`;
@@ -231,6 +242,10 @@ function toStructuredObservation(c: ImprovementCandidate): StructuredObservation
 
 /** Options for {@link buildStateOfHiveReaders}. */
 export interface BuildStateOfHiveReadersOptions {
+  /** Workspace whose spend rows feed this digest; defaults to the active workspace. */
+  workspaceId?: string;
+  /** Digest clock used for the spend lookback bounds; defaults to the current time. */
+  nowMs?: number;
   /**
    * Signal origins the STRUCTURED-observation (rubricRatings) lane surfaces. Omitted
    * ⇒ readObservationItems's own default (ORGANIC_ONLY) — synthetic rows
@@ -251,6 +266,8 @@ export interface BuildStateOfHiveReadersOptions {
  * wraps each reader defensively, so one bad query doesn't kill the whole digest.
  */
 export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {}): StateOfHiveReaders {
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const nowMs = opts.nowMs ?? Date.now();
   return {
     async completions(): Promise<ChangeFeedEntry[]> {
       return gatherCompletions(buildChangeFeedReaders());
@@ -272,7 +289,7 @@ export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {
       return [...improvements, ...observations];
     },
     async spend() {
-      return fetchSpend();
+      return fetchSpend({ workspaceId, nowMs });
     },
     async deferrals() {
       return fetchDeferrals();
