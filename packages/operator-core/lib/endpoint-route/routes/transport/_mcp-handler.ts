@@ -667,6 +667,48 @@ export function crossHiveSelfSweepHint(toolName: string, slug: string, scopeHive
 }
 
 /**
+ * EI-20206112532711097: docs-surface tools, whose `harness:'all'` refusal must name
+ * `harness:'engineering'`.
+ *
+ * The clamp is CORRECT and must not widen — `'all'` is the cross-workspace escape and a
+ * workspace-scoped session may not use it. But this refusal is worse than the bare "no"
+ * that CROSS_HIVE_LAUNCH_TOOLS above was written for: its generic repair, "Name a concrete
+ * harness in scope", is ACTIVELY WRONG for a docs read. The reporting session followed it
+ * to `harness:'papercusp'` and got a different corpus — `resolveDocsHarness` maps the
+ * `'engineering'` sentinel and `'all'` to the SAME `{ harnessSlug: 'papercusp',
+ * engineering: true }` reference, while a plain `'papercusp'` resolves to
+ * `engineering: false`, that harness's OWN doc surface, which does not contain
+ * agent-insights/ or the framework reference.
+ *
+ * So the wrong repair does not fail loudly — it returns a weak or empty result from the
+ * wrong corpus, which reads exactly like "no such page exists". That is the false-negative
+ * class docs:search's own guidance already fights (EI-18894866320087268); this hint stops
+ * the refusal from manufacturing it one layer earlier.
+ *
+ * `docs:index` / `docs:section` are excluded deliberately: they accept no `harness` arg, so
+ * this branch can never fire for them.
+ */
+const ENGINEERING_DOCS_SURFACE_TOOLS: ReadonlySet<string> = new Set([
+  'docs:get',
+  'docs:search',
+  'docs:outline',
+  'docs:author',
+]);
+
+/** The `harness:'engineering'` repair for a docs-surface tool, or '' for any other tool. */
+export function engineeringDocsSurfaceHint(toolName: string): string {
+  if (!ENGINEERING_DOCS_SURFACE_TOOLS.has(toolName)) return '';
+  return (
+    " For a docs surface the in-scope repair is `harness:'engineering'`, NOT a concrete harness slug: " +
+    "'engineering' resolves to the SAME engineering-reference corpus `harness:'all'` would have read " +
+    '(agent-insights/ and the Papercusp framework reference), so substituting it loses nothing. Naming ' +
+    "the harness that owns those docs instead (`harness:'papercusp'`) reads that harness's own doc " +
+    'surface, which does NOT contain them — a weak or empty result there is the wrong corpus, not an ' +
+    'absent page.'
+  );
+}
+
+/**
  * EI-22344259264889593 / EI-22344366831358072: a session may execute in a
  * repo-less Hive while its canonical editable checkout remains the workspace's
  * platform/self Pot. The generic Hive clamp rejected both halves of the one
@@ -917,7 +959,7 @@ async function applyScopedSuperuserTransportClamp(
             content: [
               {
                 type: 'text' as const,
-                text: `harness_forbidden: harness:'${requestedHarness}' is the unscoped global escape; this session is scoped to workspace "${spawnCtx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+                text: `harness_forbidden: harness:'${requestedHarness}' is the unscoped global escape; this session is scoped to workspace "${spawnCtx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.${engineeringDocsSurfaceHint(toolName)}`,
               },
             ],
           },
@@ -2868,7 +2910,7 @@ const handler = createMcpHandler(
                   content: [
                     {
                       type: 'text' as const,
-                      text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+                      text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.${engineeringDocsSurfaceHint(toolName)}`,
                     },
                   ],
                 };
