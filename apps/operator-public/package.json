@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev --local",
+    "predeploy": "wrangler d1 migrations apply papercusp-cupboard --remote",
     "deploy": "wrangler deploy",
     "db:types:generate": "node scripts/generate-db-row-types.mjs",
     "db:types:check": "node scripts/generate-db-row-types.mjs --check",

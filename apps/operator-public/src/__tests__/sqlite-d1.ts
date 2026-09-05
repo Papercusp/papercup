@@ -69,8 +69,15 @@ export function makeSqliteDb(): { db: D1Database; raw: DatabaseSync } {
     prepare: (sql: string) => makeStatement(raw, sql),
     batch: async <T>(statements: D1PreparedStatement[]) => {
       const out: D1Result<T>[] = [];
-      for (const s of statements) out.push((await s.run()) as D1Result<T>);
-      return out;
+      raw.exec('BEGIN IMMEDIATE');
+      try {
+        for (const s of statements) out.push((await s.run()) as D1Result<T>);
+        raw.exec('COMMIT');
+        return out;
+      } catch (error) {
+        raw.exec('ROLLBACK');
+        throw error;
+      }
     },
     exec: async (sql: string) => {
       raw.exec(sql);
