@@ -2334,15 +2334,26 @@ describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () 
 
     // never reaches the suite — that's the whole point of `skip`.
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(appendPipelineEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: 'ws-42',
-        installSlug: 'my-harness',
-        kind: 'green_checkpoint',
-        status: 'skipped-disabled',
-        detail: { reason: 'gate_disabled' },
-      }),
-    );
+    const events = appendPipelineEvent.mock.calls.map(([event]) => event as Record<string, unknown>);
+    const anchor = events.find((event) => event.kind === 'green_checkpoint_fire');
+    const outcome = events.find((event) => event.kind === 'green_checkpoint' && event.status === 'skipped-disabled');
+    expect(anchor).toMatchObject({
+      workspaceId: 'ws-42',
+      installSlug: 'my-harness',
+      kind: 'green_checkpoint_fire',
+      status: 'fired',
+      detail: { gateFireId: expect.any(String) },
+    });
+    expect(outcome).toMatchObject({
+      workspaceId: 'ws-42',
+      installSlug: 'my-harness',
+      kind: 'green_checkpoint',
+      status: 'skipped-disabled',
+      detail: {
+        reason: 'gate_disabled',
+        gateFireId: (anchor?.detail as { gateFireId?: string })?.gateFireId,
+      },
+    });
     expect(fakeSql.unsafe).toHaveBeenCalledWith(
       expect.stringContaining('harness_escalations'),
       [
@@ -2615,6 +2626,21 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(d.from).toBe('b'.repeat(12));
     expect(d.advancedTo).toBe('c'.repeat(12));
     expect((d.failingTests as string[]).length).toBe(20);
+  });
+
+  it('P-001: buildCheckpointDetail preserves the producer gate-fire identity or a valid fallback', () => {
+    const direct = buildCheckpointDetail(
+      { reason: 'advanced', green: true, gateFireId: 'producer-fire' },
+      'launcher-fire',
+    );
+    expect(direct.gateFireId).toBe('producer-fire');
+
+    const fallback = buildCheckpointDetail({ reason: 'advanced', green: true }, 'launcher-fire');
+    expect(fallback.gateFireId).toBe('launcher-fire');
+
+    const invalid = buildCheckpointDetail({ reason: 'advanced', green: true }, "bad'; touch /tmp/pwned; '");
+    expect(invalid.gateFireId).toBeUndefined();
+    expect(JSON.stringify(invalid)).not.toContain('touch /tmp/pwned');
   });
 
   it('EI-218328: buildCheckpointDetail persists only bounded run-bound checkpoint evidence', () => {
@@ -3653,6 +3679,11 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     const opts = spawnMock.mock.calls[0]![2] as { env?: Record<string, string> };
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_WORKSPACE).toBe('ws-42');
     expect(opts.env?.PAPERCUSP_GATE_VERDICT_HARNESS).toBe('my-harness');
+    const anchor = appendPipelineEvent.mock.calls
+      .map(([event]) => event as Record<string, unknown>)
+      .find((event) => event.kind === 'green_checkpoint_fire');
+    expect(opts.env?.PAPERCUSP_GATE_FIRE_ID).toMatch(/^[a-f0-9-]{36}$/);
+    expect((anchor?.detail as { gateFireId?: string })?.gateFireId).toBe(opts.env?.PAPERCUSP_GATE_FIRE_ID);
   });
 });
 
