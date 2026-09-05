@@ -523,6 +523,11 @@ test('forced six-connection HTTP/1.1 hosted matrix stays live and replays exactl
   const beforeOffline = await syncSnapshot(page);
   const replayBase = beforeOffline.invalidations.bySseName[CONTROL_QUERY] ?? 0;
   await cdp.send('Network.emulateNetworkConditions', networkProfile(true));
+  // CDP offline emulation does not promise to tear down an EventSource socket
+  // that was already established. Drive the production visibility-pause path
+  // while the browser is offline so the physical stream is deterministically
+  // closed before the invalidation is emitted.
+  await setSyntheticVisibility(page, true);
   await expect.poll(async () => (await syncSnapshot(page)).sse.connectedSinceMs, {
     timeout: 10_000,
   }).toBeNull();
@@ -532,6 +537,7 @@ test('forced six-connection HTTP/1.1 hosted matrix stays live and replays exactl
 
   const replayStarted = Date.now();
   await cdp.send('Network.emulateNetworkConditions', networkProfile(false));
+  await setSyntheticVisibility(page, false);
   await expect.poll(async () => {
     const snapshot = await syncSnapshot(page);
     return {
