@@ -371,6 +371,7 @@ export async function evaluatePlanAcceptanceGate(
   // them: the code-truth checks and the rubric checks are independently killable, so
   // rolling back one must not silently disable the other.
   const rubricGate = await getFlag(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE, 'system').catch(() => true);
+  let deferredBarShipRefusal: PlanAcceptanceGateVerdict | undefined;
 
   // Exemptions: a rubric-template plan does not get an acceptance rubric of its own
   // (infinite regress), and a scheduled template INSTANCE is an auto-generated
@@ -443,12 +444,22 @@ export async function evaluatePlanAcceptanceGate(
         expectedApplicable: rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null),
       });
       if (!barLifecycle.satisfied) {
-        return {
+        const refusal: PlanAcceptanceGateVerdict = {
           satisfied: false,
           code: 'acceptance_bar_contract_not_ready',
           message:
             barLifecycle.message ?? `plan '${planSlug}' cannot be marked shipped: acceptance BAR contract is not ready`,
         };
+        if (!barLifecycle.codes.includes('bar_snapshot_grading_missing')) return refusal;
+        // The normal missing-grade refusal recruits the existing independent
+        // grader. Let it run only after the BAR's pre-grading obligations pass,
+        // while retaining this ship refusal through every later success path.
+        // In particular, a card arriving between reads cannot waive live proof.
+        deferredBarShipRefusal = refusal;
+        const preGrading = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'pre-grading', {
+          expectedApplicable: true,
+        });
+        if (!preGrading.satisfied) return refusal;
       }
     }
   } catch {
@@ -1227,6 +1238,8 @@ export async function evaluatePlanAcceptanceGate(
         `scorecards:emit; the latest implementer verdict is authoritative.`,
     };
   }
+  if (deferredBarShipRefusal) return deferredBarShipRefusal;
+
   // EI-22181490624100467 — the ship is going to happen; record WHAT the graded
   // evidence's deployment position actually was, so the shipped artifact cannot
   // imply more than it verified. Fail-soft by contract (the probe swallows its own

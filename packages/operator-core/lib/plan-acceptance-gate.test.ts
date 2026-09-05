@@ -24,6 +24,7 @@ import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
+import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdict } from './acceptance-bar-lifecycle-evaluator';
 import {
   areAcceptanceLineageRelated,
   resolvePlanImplementerIdentities,
@@ -61,6 +62,7 @@ vi.mock('./acceptance-author-identity', () => ({
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
 }));
+vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptanceBarLifecycle: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
@@ -97,6 +99,7 @@ const mockRevisionRead = vi.mocked(readRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
+const mockBarLifecycle = vi.mocked(readAndEvaluateAcceptanceBarLifecycle);
 const mockLineageRelated = vi.mocked(areAcceptanceLineageRelated);
 const mockPlanImplementers = vi.mocked(resolvePlanImplementerIdentities);
 const mockGraderVia = vi.mocked(readGraderSelectionVia);
@@ -157,6 +160,8 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockBarLifecycle.mockResolvedValue({ phase: 'ship', applicable: false, satisfied: true,
+    codes: [], blockingBars: [], nextRepair: null, message: null });
   mockRubrics.mockImplementation(async (planSlug) => {
     const one = await mockRubric(planSlug);
     return one ? [one] : [];
@@ -344,6 +349,49 @@ describe('evaluatePlanAcceptanceGate', () => {
 
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'owner waiver' } });
     expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
+  });
+
+  describe('BAR missing-grade recruitment', () => {
+    const verdict = (phase: AcceptanceBarLifecycleVerdict['phase'],
+      codes: AcceptanceBarLifecycleVerdict['codes']): AcceptanceBarLifecycleVerdict => ({
+      phase, applicable: true, satisfied: codes.length === 0, codes,
+      blockingBars: [], nextRepair: null, message: codes.length ? 'BAR proof or grading is incomplete' : null,
+    });
+
+    it('exposes the existing ungraded refusal after pre-grading is ready', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_grading_missing', 'bar_snapshot_evidence_plane_unmet', 'bar_snapshot_author_verdict_missing']
+        : []));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
+        .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
+    });
+
+    it('does not recruit through incomplete METHOD or vetting prerequisites', async () => {
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase,
+        phase === 'ship' ? ['bar_snapshot_grading_missing', 'bar_snapshot_method_missing'] : ['bar_snapshot_method_missing']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(mockRubrics).not.toHaveBeenCalled();
+    });
+
+    it('keeps a proof-only ship refusal at the BAR boundary', async () => {
+      mockBarLifecycle.mockResolvedValue(verdict('ship', ['bar_snapshot_evidence_plane_unmet']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(mockBarLifecycle).toHaveBeenCalledTimes(1);
+    });
+
+    it('cannot ship if a grade arrives after the initial BAR snapshot', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([scorecard()]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_grading_missing', 'bar_snapshot_evidence_plane_unmet'] : []));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11'))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+    });
   });
 
   it('no acceptance rubric → acceptance_rubric_missing with the propose recipe', async () => {
