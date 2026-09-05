@@ -257,7 +257,10 @@ describe('tracked-files helper (WI-6730)', () => {
     // is in now. It CONSTRUCTS the adversarial filename, so it keeps failing on a revert.
     const root = mkdtempSync(join(tmpdir(), 'tracked-files-quoted-'));
     try {
-      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+      // WI-41180: bound the sync spawn — the pure lane shares one worker fork, so a hang here
+      // wedges every file in it until the batch watchdog kills the task.
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
       git('init', '-q');
       git('config', 'user.email', 'test@example.invalid');
       git('config', 'user.name', 'test');

@@ -149,7 +149,7 @@ describe('spawn-row class boundary: only one implementation exists', () => {
     const candidates = execFileSync(
       'git',
       ['grep', '-l', '--untracked', '-e', IN_PROCESS_LAUNCH_SPAWN_ID_PREFIX, '--', '*.ts'],
-      { cwd: REPO_ROOT, encoding: 'utf8' },
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000, killSignal: 'SIGKILL' },
     )
       .split('\n')
       .map((l) => l.trim())

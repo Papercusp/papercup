@@ -39,6 +39,10 @@ function candidateFiles(): string[] {
     out = execFileSync('git', ['grep', '--untracked', '-l', '-F', TABLE, '--', '*.ts'], {
       cwd: ROOT,
       encoding: 'utf8',
+      // WI-41180: bound the sync spawn — the pure lane shares one worker fork, so a hang here
+      // wedges every file in it until the batch watchdog kills the task.
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     });
   } catch {
     return []; // git grep exits 1 on no matches; the calibration below turns that into a failure.
@@ -192,6 +196,10 @@ return ${COMMIT_INSTALL_FN}(tx, { proposal: p });
         out = execFileSync('git', ['grep', '--untracked', '-l', '-F', `${COMMIT_INSTALL_FN}(`, '--', '*.ts'], {
           cwd: ROOT,
           encoding: 'utf8',
+          // WI-41180: a sync spawn in the PURE lane blocks the shared worker fork, which vitest
+          // cannot time out. A tree-wide `git grep` is exactly the call that can hang under load.
+          timeout: 120_000,
+          killSignal: 'SIGKILL',
         });
       } catch {
         out = '';

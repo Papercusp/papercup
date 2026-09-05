@@ -77,7 +77,11 @@ describe('shrink-swapfile.sh precondition gate', () => {
     expect(existsSync(script)).toBe(true);
     // syntax check: a script that cannot parse would make every refusal below
     // pass for the wrong reason.
-    expect(() => execFileSync('bash', ['-n', script], { stdio: 'pipe' })).not.toThrow();
+    // WI-41180: bounded like runGate's call above — an unbounded sync spawn wedges the shared
+    // pure-lane worker fork, which vitest cannot time out.
+    expect(() =>
+      execFileSync('bash', ['-n', script], { stdio: 'pipe', timeout: 30_000, killSignal: 'SIGKILL' }),
+    ).not.toThrow();
   });
 
   // CALIBRATION: proves the gate can say yes. Without this, a gate broken into
