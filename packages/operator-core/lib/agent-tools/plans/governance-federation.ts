@@ -226,7 +226,19 @@ export function admissibleCertificate(projection: GovernanceFederationProjection
   if (status !== 'finalized') return null;
   const cert = round.certificates[0];
   if (!cert || !verifyFinalizationCertificate(cert)) return null;
+  // A certificate carrying no weighted tally was finalized without consulting
+  // reduceGovernanceVotes, so its `admitted` bit rests on an unweighted count
+  // that ignores revocation, delegation and key epochs. Federation refuses it
+  // rather than importing an unreduced verdict from a peer pot.
+  if (!isReducedTally(cert.tally)) return null;
   return cert;
+}
+
+/** A federated certificate arrives as untrusted JSON: verify the tally's shape, not just its presence. */
+function isReducedTally(tally: FinalizationCertificate['tally']): boolean {
+  if (tally == null || typeof tally !== 'object') return false;
+  const fields = ['approveWeight', 'rejectWeight', 'abstainWeight', 'totalEligibleWeight', 'participatingWeight', 'replacements'] as const;
+  return fields.every((f) => Number.isFinite(tally[f]) && tally[f] >= 0);
 }
 
 export type IngestDropReason = 'foreign-pot' | 'non-member-peer' | 'unverified-signature' | 'immutable-conflict';
