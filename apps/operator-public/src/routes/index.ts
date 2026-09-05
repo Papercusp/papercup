@@ -7,6 +7,7 @@ import { adminRoute } from './admin.ts';
 import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
 import { commerceRoute } from './commerce.ts';
+import { walletBindingRoute } from './wallet-binding.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 
 /**
@@ -35,6 +36,7 @@ export function buildApi(
   api.route('/', workspaceHostArtifactsRoute());
   api.route('/', creatorDraftsRoute());
   api.route('/', commerceRoute({ fetchImpl: options.fetchImpl, loadOrgs: options.loadOrgs }));
+  api.route('/', walletBindingRoute());
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);
