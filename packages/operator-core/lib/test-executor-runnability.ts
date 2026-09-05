@@ -188,6 +188,44 @@ export function matchesResolvedVitestContract(
   );
 }
 
+/**
+ * A package `test` script is routinely a CHAIN — `npm run test:unit && npm run
+ * test:wdio` — so the executor a spec needs can sit one hop away from the script
+ * the contract names. Expand every same-package `npm run <name>` /
+ * `npm run-script <name>` / `npm test` reference (bounded, cycle-safe) and probe
+ * the whole reachable text, not one line of it. Measured 2026-09-05: the wdio
+ * package chained its `test` script to add a node:test unit suite, and every
+ * packaged spec read as UNRUNNABLE although `wdio run wdio.conf.ts` still ran
+ * one hop down — a false gate red on a repo-wide lint:tests guard.
+ * Cross-package refs (`npm --prefix … run …`) are deliberately NOT followed: the
+ * contract is about THIS package's executor.
+ */
+const NPM_SAME_PACKAGE_RUN_REF = /\bnpm\s+(?:run|run-script)\s+([A-Za-z0-9:_.\-]+)|\bnpm\s+(?:test|t)\b/g;
+const MAX_SCRIPT_HOPS = 8;
+
+function expandPackageScript(
+  deps: TestRunnabilityDependencies,
+  packageJsonPath: string,
+  script: string,
+): string | undefined {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+  const visit = (name: string, depth: number): void => {
+    if (depth > MAX_SCRIPT_HOPS || seen.has(name)) return;
+    seen.add(name);
+    const text = deps.readPackageScript(packageJsonPath, name);
+    if (text === undefined) return;
+    parts.push(text);
+    for (const match of text.matchAll(NPM_SAME_PACKAGE_RUN_REF)) {
+      visit(match[1] ?? 'test', depth + 1);
+    }
+  };
+  visit(script, 0);
+  return parts.length === 0 ? undefined : parts.join('\n');
+}
+
+const WDIO_PACKAGE_DIR = 'tools/perf-test/wdio/';
+
 function explicitExecutor(
   repoRoot: string,
   relativeFile: string,
@@ -196,7 +234,7 @@ function explicitExecutor(
   if (/^apps\/operator\/e2e\/.*\.spec\.ts$/.test(relativeFile)) {
     const config = resolve(repoRoot, 'apps/operator/playwright.config.ts');
     const packageJson = resolve(repoRoot, 'apps/operator/package.json');
-    const script = deps.readPackageScript(packageJson, 'test:e2e');
+    const script = expandPackageScript(deps, packageJson, 'test:e2e');
     if (deps.exists(config) && script !== undefined && /\bplaywright\s+test\b/.test(script)) {
       return { file: relativeFile, runnable: true, executor: 'playwright' };
     }
@@ -208,9 +246,9 @@ function explicitExecutor(
   }
 
   if (/^tools\/perf-test\/wdio\/specs\/.*\.spec\.ts$/.test(relativeFile)) {
-    const config = resolve(repoRoot, 'tools/perf-test/wdio/wdio.conf.ts');
-    const packageJson = resolve(repoRoot, 'tools/perf-test/wdio/package.json');
-    const script = deps.readPackageScript(packageJson, 'test');
+    const config = resolve(repoRoot, `${WDIO_PACKAGE_DIR}wdio.conf.ts`);
+    const packageJson = resolve(repoRoot, `${WDIO_PACKAGE_DIR}package.json`);
+    const script = expandPackageScript(deps, packageJson, 'test');
     if (deps.exists(config) && script !== undefined && /\bwdio\s+run\s+wdio\.conf\.ts\b/.test(script)) {
       return { file: relativeFile, runnable: true, executor: 'webdriverio' };
     }
@@ -218,6 +256,27 @@ function explicitExecutor(
       file: relativeFile,
       runnable: false,
       reason: 'WebdriverIO path has no wdio.conf.ts + package test executor',
+    };
+  }
+
+  // The wdio package's own unit tests (`perf-report.test.ts`) run under node's
+  // built-in test runner via its `test` chain, not under Vitest — the Vitest
+  // router would otherwise route them to the repo-root config, which excludes
+  // them, and report a runnable file as an executor gap.
+  if (/^tools\/perf-test\/wdio\/[^/]+\.test\.ts$/.test(relativeFile)) {
+    const packageJson = resolve(repoRoot, `${WDIO_PACKAGE_DIR}package.json`);
+    const script = expandPackageScript(deps, packageJson, 'test');
+    const baseName = relativeFile.slice(WDIO_PACKAGE_DIR.length);
+    const nodeTestRunner = script !== undefined && /\bnode\b[^\n&|;]*\s--test\b/.test(script);
+    const namesThisFile =
+      script !== undefined && (script.includes(baseName) || /\*\.test\.ts\b/.test(script));
+    if (nodeTestRunner && namesThisFile) {
+      return { file: relativeFile, runnable: true, executor: 'node' };
+    }
+    return {
+      file: relativeFile,
+      runnable: false,
+      reason: `no \`node --test\` executor naming ${baseName} is reachable from the wdio package \`test\` script`,
     };
   }
 

@@ -121,6 +121,71 @@ describe('test executor runnability', () => {
     expect(discoverRoute).not.toHaveBeenCalled();
   });
 
+  it('follows same-package `npm run` chains to the executor — a chained `test` script is not an executor gap', async () => {
+    // The shape that produced a false lint:tests red on 2026-09-05: `test` chains
+    // a node:test unit suite and the real wdio invocation one hop down.
+    const scripts: Record<string, string> = {
+      test: 'npm run test:unit && npm run test:wdio',
+      'test:unit': 'node --import tsx --test perf-report.test.ts',
+      'test:wdio': 'wdio run wdio.conf.ts',
+      'test:e2e': 'npm run-script test:e2e:real',
+      'test:e2e:real': 'playwright test',
+    };
+    const discoverRoute = vi.fn();
+    const audit = createTestRunnabilityAuditor(
+      ROOT,
+      dependencies({ discoverRoute, readPackageScript: (_path, script) => scripts[script] }),
+    );
+
+    await expect(audit('tools/perf-test/wdio/specs/smoke.spec.ts')).resolves.toMatchObject({
+      runnable: true,
+      executor: 'webdriverio',
+    });
+    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+      runnable: true,
+      executor: 'node',
+    });
+    await expect(audit('apps/operator/e2e/chat.spec.ts')).resolves.toMatchObject({
+      runnable: true,
+      executor: 'playwright',
+    });
+    expect(discoverRoute).not.toHaveBeenCalled();
+  });
+
+  it('terminates on a cyclic `npm run` chain and fails closed when no executor is reachable', async () => {
+    const scripts: Record<string, string> = {
+      test: 'npm run test:all',
+      'test:all': 'npm test',
+    };
+    const audit = createTestRunnabilityAuditor(
+      ROOT,
+      dependencies({ readPackageScript: (_path, script) => scripts[script] }),
+    );
+
+    await expect(audit('tools/perf-test/wdio/specs/smoke.spec.ts')).resolves.toMatchObject({
+      runnable: false,
+      reason: expect.stringContaining('WebdriverIO'),
+    });
+    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+      runnable: false,
+      reason: expect.stringContaining('node --test'),
+    });
+  });
+
+  it('does not accept a node --test executor that never names the wdio unit file', async () => {
+    const scripts: Record<string, string> = {
+      test: 'npm run test:unit',
+      'test:unit': 'node --import tsx --test other-suite.test.ts',
+    };
+    const audit = createTestRunnabilityAuditor(
+      ROOT,
+      dependencies({ readPackageScript: (_path, script) => scripts[script] }),
+    );
+    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+      runnable: false,
+    });
+  });
+
   it('fails closed when an explicit runner entrypoint or discovered route is missing', async () => {
     const explicitAudit = createTestRunnabilityAuditor(
       ROOT,

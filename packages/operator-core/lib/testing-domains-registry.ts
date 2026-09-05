@@ -230,7 +230,12 @@ defineTestDomain({
     {
       id: 'wdio',
       label: 'WebdriverIO',
-      globs: ['tools/perf-test/wdio/specs/**/*.spec.ts'],
+      globs: [
+        'tools/perf-test/wdio/specs/**/*.spec.ts',
+        // The package's own node:test unit suite (perf-report.test.ts), run by
+        // the same `npm --prefix tools/perf-test/wdio test` chain as the specs.
+        'tools/perf-test/wdio/*.test.ts',
+      ],
       runners: [
         { kind: 'admin-suite', suiteId: 'packaged-readiness' },
         {
@@ -1136,6 +1141,10 @@ defineTestDomain({
         'apps/operator/__tests__/**/*.test.ts',
       ] },
     { id: 'e2e', label: 'E2E (all specs)', globs: ['apps/operator/e2e/*.spec.ts'] },
+    // Vitest UNIT tests co-located with the e2e helpers they cover (e.g. the
+    // hosted-http1 acceptance config parser) — run by apps/operator's Vitest
+    // config, which does not exclude e2e/, never by Playwright.
+    { id: 'e2e-helpers', label: 'E2E helpers (unit)', globs: ['apps/operator/e2e/*.test.ts'] },
   ],
 });
 
