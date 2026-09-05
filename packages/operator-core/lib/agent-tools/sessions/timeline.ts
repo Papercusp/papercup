@@ -573,7 +573,24 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
-    owner: z.string().min(1).max(120).describe("Agent ownerId, short handle, or 'self'."),
+    // EI-22069000224788496: the cursor is an OFFSET (see cursorForOffset) — it carries
+    // neither the owner nor the filters, so a continuation sent as `{ cursor }` alone is
+    // refused for a missing `owner`, and the caller reads only Zod's "expected string,
+    // received undefined". The response that handed them the cursor never restated the
+    // requirement. A field-level `error` is the seam that reaches them: it replaces that
+    // leaf at the moment of refusal and is not emitted into the JSON Schema, so it costs
+    // no prompt weight. It covers the plain missing-owner call too, which is the same
+    // question asked earlier.
+    owner: z
+      .string({
+        error:
+          "owner is required — sessions:timeline reads ONE agent's timeline; pass 'self' for yourself, " +
+          'or an ownerId / short handle. A `cursor` does NOT carry it: the cursor is a position only, ' +
+          'so a continuation must re-send the SAME owner and filters alongside it.',
+      })
+      .min(1)
+      .max(120)
+      .describe("Agent ownerId, short handle, or 'self'."),
     since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
     until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
     limit: z.number().int().min(1).max(300).optional().describe('Max merged entries, 1..300 (default 100).'),
@@ -590,7 +607,7 @@ export default defineTool({
       ),
     include_auto: z.boolean().optional().describe('Include automatic hook/status traffic such as activity:report, coord:glance, coord:inbox, and auto:true coord messages. Default false.'),
     group_repeated: z.boolean().optional().describe('Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.'),
-    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call with the same filters.'),
+    cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.'),
   }),
   result: timelineResultSchema,
   async handler(args, ctx: PapercuspUnifiedToolContext) {

@@ -329,19 +329,22 @@ export const CODE_RUN_BATCH_CONTEXT: ToolDispatchOverride = {
       return { content: [{ text: JSON.stringify({ items: S13_WORK_ITEMS, count: S13_WORK_ITEMS.length }) }] };
     }
     if (canon === 'work_items:get') {
-      const id = String(a.id ?? '');
-      const n = Number(id.split('-')[1] ?? 0);
-      const blocked = n % 4 === 0; // a deterministic ~quarter are blocked
-      return {
-        content: [
-          {
-            text: JSON.stringify({
-              id,
-              state: blocked ? 'blocked' : 'open',
-              ...(blocked ? { blockedReason: 'waiting on an upstream dependency', blockedBy: [`WI-${n - 1}`] } : {}),
-            }),
+      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : a.id ? [String(a.id)] : [];
+      const results = ids.map((id) => {
+        const n = Number(id.split('-')[1] ?? 0);
+        const blocked = n % 4 === 0; // a deterministic ~quarter are blocked
+        return {
+          ok: true as const,
+          id,
+          workItem: {
+            id,
+            state: blocked ? 'blocked' : 'open',
+            ...(blocked ? { blockedReason: 'waiting on an upstream dependency', blockedBy: [`WI-${n - 1}`] } : {}),
           },
-        ],
+        };
+      });
+      return {
+        content: [{ text: JSON.stringify({ ok: true, results, counts: { ok: results.length, failed: 0 } }) }],
       };
     }
     if (canon === 'code:tools') {
@@ -368,7 +371,7 @@ export const CODE_RUN_BATCH_CONTEXT: ToolDispatchOverride = {
           {
             text:
               'declare const tools: {\n  work_items: {\n    list(args?: { status?: string }): Promise<unknown>;\n' +
-              '    get(args: { id: string }): Promise<unknown>;\n  };\n  call(toolName: string, args?: unknown): Promise<unknown>;\n};',
+              '    get(args: { id?: string; ids?: string[] }): Promise<unknown>;\n  };\n  call(toolName: string, args?: unknown): Promise<unknown>;\n};',
           },
         ],
       };
@@ -383,7 +386,11 @@ export const CODE_RUN_BATCH_CONTEXT: ToolDispatchOverride = {
               summary: {
                 scanned: S13_WORK_ITEMS.length,
                 blocked: ['WI-200', 'WI-204', 'WI-208'],
-                reasons: { 'WI-200': 'waiting on an upstream dependency' },
+                reasons: {
+                  'WI-200': 'waiting on an upstream dependency',
+                  'WI-204': 'waiting on an upstream dependency',
+                  'WI-208': 'waiting on an upstream dependency',
+                },
               },
               dryRun: !!a.dryRun,
               plannedMutations: [],
@@ -407,12 +414,21 @@ export const SMALL_BATCH_CONTEXT: ToolDispatchOverride = {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
     if (canon === 'work_items:get') {
-      const id = String(a.id ?? '');
-      const n = Number(id.split('-')[1] ?? 0);
+      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : a.id ? [String(a.id)] : [];
+      const results = ids.map((id) => {
+        const n = Number(id.split('-')[1] ?? 0);
+        return {
+          ok: true as const,
+          id,
+          workItem: {
+            id,
+            state: n % 2 === 0 ? 'blocked' : 'open',
+            ...(n % 2 === 0 ? { blockedReason: 'awaiting review' } : {}),
+          },
+        };
+      });
       return {
-        content: [
-          { text: JSON.stringify({ id, state: n % 2 === 0 ? 'blocked' : 'open', ...(n % 2 === 0 ? { blockedReason: 'awaiting review' } : {}) }) },
-        ],
+        content: [{ text: JSON.stringify({ ok: true, results, counts: { ok: results.length, failed: 0 } }) }],
       };
     }
     if (canon === 'code:tools') {
@@ -427,10 +443,9 @@ export const SMALL_BATCH_CONTEXT: ToolDispatchOverride = {
 
 /**
  * SU-S16 (batch WRITE via dry-run): the user asks to mark every OPEN work item
- * as observed — a per-item WRITE over a collection. The engineer should collapse
- * it into one code:run (ideally dryRun:true to preview, then commit), not loop
- * `work_items:set_state` one call at a time. `work_items:list` returns 9 open
- * items; the write tool + code:run are stubbed believably.
+ * to `wip` — a valid homogeneous WRITE over a collection. The engineer should
+ * collapse it into one native bulk `work_items:set_state { ids, state }` call,
+ * not loop the scalar form or route a homogeneous mutation through code:run.
  */
 const S16_OPEN_ITEMS = Array.from({ length: 9 }, (_, i) => ({ id: `WI-${400 + i}`, state: 'open' }));
 export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
@@ -441,7 +456,11 @@ export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
       return { content: [{ text: JSON.stringify({ items: S16_OPEN_ITEMS, count: S16_OPEN_ITEMS.length }) }] };
     }
     if (canon === 'work_items:set_state') {
-      return { content: [{ text: JSON.stringify({ ok: true, id: a.row ?? a.id ?? '' }) }] };
+      const ids = Array.isArray(a.ids) ? (a.ids as string[]) : a.id ? [String(a.id)] : [];
+      const results = ids.map((id) => ({ ok: true, id, appliedState: a.state ?? null }));
+      return {
+        content: [{ text: JSON.stringify({ ok: true, results, counts: { ok: results.length, failed: 0 } }) }],
+      };
     }
     if (canon === 'code:tools') {
       return { content: [{ text: JSON.stringify({ namespaces: [{ ns: 'work_items', verbs: ['list', 'setState'] }], count: 2 }) }] };
@@ -453,7 +472,7 @@ export const BATCH_WRITE_CONTEXT: ToolDispatchOverride = {
             text: JSON.stringify({
               ok: true,
               dryRun: !!a.dryRun,
-              plannedMutations: a.dryRun ? S16_OPEN_ITEMS.map((w) => ({ tool: 'work_items:set_state', args: { id: w.id, state: 'observed' } })) : [],
+              plannedMutations: a.dryRun ? S16_OPEN_ITEMS.map((w) => ({ tool: 'work_items:set_state', args: { id: w.id, state: 'wip' } })) : [],
               summary: { updated: a.dryRun ? 0 : S16_OPEN_ITEMS.length },
             }),
           },

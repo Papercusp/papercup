@@ -111,6 +111,30 @@ export function assertToolCallCountAtMost(specs: string[], max: number, meta: Me
   };
 }
 
+/** ERROR unless one matching call carries an array argument with at least the
+ * requested number of elements. A call-count guard alone cannot distinguish a
+ * genuine native bulk call from one scalar call that touched only the first
+ * row (WI-2146035). */
+export function assertToolCalledWithArrayArg(
+  specs: string[],
+  argKey: string,
+  minLength: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const hit = allToolCalls(run).some((tc) => {
+        if (!nameMatches(tc.name, specs)) return false;
+        const value = (tc.input as Record<string, unknown> | null | undefined)?.[argKey];
+        return Array.isArray(value) && value.length >= minLength;
+      });
+      return hit ? [] : [violation(meta)];
+    },
+  };
+}
+
 /** ERROR unless `specs` (exact or `group:*`) were called AT LEAST `min` times in
  *  total — the load-bearing "must have re-fetched" gate. Used by the delta
  *  fallback scenario (agent-tool-delta-protocol P-007): when the base snapshot
@@ -133,7 +157,7 @@ export function assertToolCallCountAtLeast(specs: string[], min: number, meta: M
  * single assistant/model turn. P-012: raw RPC count is not inference cost — three parallel tool_use
  * blocks in one response are already one inference turn and must pass the batching rubric.
  */
-export function assertCodeRunOrSingleTurnFanout(
+export function assertCodeRunOrBulkOrSingleTurnFanout(
   specs: string[],
   requiredDirectCalls: number,
   meta: Meta,
@@ -143,6 +167,11 @@ export function assertCodeRunOrSingleTurnFanout(
     name: meta.name,
     eval: (run) => {
       if (allToolCalls(run).some((tc) => nameMatches(tc.name, ['code:run']))) return [];
+      if (allToolCalls(run).some((tc) => {
+        if (!nameMatches(tc.name, specs)) return false;
+        const ids = (tc.input as Record<string, unknown> | null | undefined)?.ids;
+        return Array.isArray(ids) && ids.length >= requiredDirectCalls;
+      })) return [];
       const hitTurns = run.turns
         .map((turn, index) => ({ index, count: turn.toolCalls.filter((tc) => nameMatches(tc.name, specs)).length }))
         .filter((row) => row.count > 0);

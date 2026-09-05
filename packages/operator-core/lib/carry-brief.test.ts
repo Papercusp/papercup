@@ -1049,10 +1049,92 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     };
 
     const out = renderCarryBriefColdExtras(brief);
-    const disclosure = /checks: showing (\d+) of 23 stored rows in this excerpt/.exec(out);
+    const disclosure = /⚠ checks: (\d+) of 23 rows on THIS ITEM'S checkpoint are NOT shown above/.exec(out);
     expect(disclosure).not.toBeNull();
-    expect(Number(disclosure?.[1])).toBeLessThan(23);
-    expect(out).toContain("full set: work_items:get { id: 'WI-3496', harness: 'h' }");
+    // Some rows are hidden, but not vacuously all-or-nothing: the count must be a
+    // real subset, so a renderer that silently stopped emitting rows still fails.
+    expect(Number(disclosure?.[1])).toBeGreaterThan(0);
+    expect(Number(disclosure?.[1])).toBeLessThanOrEqual(23);
+    expect(out).toContain("work_items:get { id: 'WI-3496', harness: 'h' }");
+  });
+
+  // EI-22431465725244151. The old wording ("checks: showing 0 of 11 stored rows in
+  // this excerpt") read as a note about the excerpt rather than as unread state, and
+  // the loop's own fully-rendered "CARRIED CHECKS" block made the document look like
+  // its checks had already been read in full. Both halves are asserted here because
+  // either one alone restores the false sense of completeness.
+  it('names the hidden work-item check rows as a separate set from the loop block', () => {
+    const checks = Array.from(
+      { length: 23 },
+      (_, i) => `- ? [#row-${String(i + 1).padStart(2, '0')}] stored check ${i + 1} — re-check: echo check-${i + 1}`,
+    ).join('\n');
+    const checkpoint = `## Did\ncheckpoint narrative\n\n## Checks\n${checks}`;
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-3496', title: null, body: null, harness: 'h', checkpoint }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+      checks: [{ claim: 'the loop carries its own unrelated check', verified: 'observed' }],
+    } as CarryBrief;
+
+    const out = renderCarryBriefColdExtras(brief);
+
+    // 1. The loop block must not present itself as THE carried set...
+    expect(out).toContain("🧪 CARRIED CHECKS (this LOOP's)");
+    // ...and must point at the item that holds the other one, by id.
+    expect(out).toContain("These are the LOOP's checks and NOT the only ones in this document");
+    expect(out).toMatch(/NOT the only ones in this document — WI-3496/);
+    // 2. The item's own line must read as unread state, not as excerpt formatting.
+    expect(out).toMatch(/rows on THIS ITEM'S checkpoint are NOT shown above/);
+    expect(out).toContain('an unread row cannot warn you');
+    // The superseded phrasing must not come back.
+    expect(out).not.toContain('stored rows in this excerpt');
+  });
+
+  it('does not claim rows are hidden when the excerpt showed all of them', () => {
+    const checkpoint = `## Did\nshort\n\n## Checks\n- ? [#only] one row — re-check: echo one`;
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-1', title: null, body: null, harness: 'h', checkpoint }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+
+    // Negative control for the warning above: a fully-shown set must NOT raise it,
+    // or the ⚠ becomes background noise and stops being read.
+    expect(out).not.toContain('are NOT shown above');
+  });
+
+  it('omits the cross-reference when no held item carries checks', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{ id: 'WI-2', title: null, body: null, harness: 'h', checkpoint: '## Did\nno checks here' }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+      checks: [{ claim: 'loop-only check', verified: 'observed' }],
+    } as CarryBrief;
+
+    const out = renderCarryBriefColdExtras(brief);
+
+    expect(out).toContain("🧪 CARRIED CHECKS (this LOOP's)");
+    expect(out).not.toContain('NOT the only ones in this document');
   });
 
   it('labels checkpoint paths with the held harness root after a cold resume', () => {

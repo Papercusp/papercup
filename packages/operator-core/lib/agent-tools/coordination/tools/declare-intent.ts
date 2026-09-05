@@ -136,8 +136,25 @@ export default defineTool({
       .string()
       .nullish()
       .describe('Plan slug this work belongs to, if any; null is treated like omission.'),
+    // EI-21139039044360936: the caller passed a WI-/EI- work-item id and read back only
+    // the shared `P-NNN form required` string, which names the FORM and not the route —
+    // so the recovery was "retry without items", losing the lane declaration entirely.
+    // The arg description has named scheduler:get_next since 2026-08-12 and the filing is
+    // from 2026-08-22, so the description alone did not prevent it: the correction has to
+    // be at the refusal. A regex message is not emitted into the JSON Schema, so this
+    // costs no prompt weight — which is what makes it available at all here
+    // (coord:declare-intent has 44 chars of headroom against the 1500 budget).
     items: z
-      .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
+      .array(
+        z
+          .string()
+          .regex(
+            /^P-\d{3,}$/,
+            'P-NNN form required — `items` is the PLAN-item lane (P-001). A WI-/EI- work-item is ' +
+              'claimed by scheduler:get_next, which declares its intent for you; do not pass one here. ' +
+              'To declare an ad-hoc lane, omit `items` and name the work-item in `intent`.',
+          ),
+      )
       .max(40)
       .optional()
       .describe(

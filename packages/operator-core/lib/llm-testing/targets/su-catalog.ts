@@ -148,8 +148,23 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   },
   {
     name: 'work_items:get',
-    description: 'Fetch one work item with its acceptance + lifecycle.',
-    input: obj({ id: { type: 'string' } }, ['id']),
+    description:
+      'Fetch one OR many work items with acceptance + lifecycle. Use id for one or ids (1–100) for a native bulk read; correlate the keyed results by id.',
+    input: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'One work-item id (the scalar form).' },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          maxItems: 100,
+          description: 'Many work-item ids in one native bulk read.',
+        },
+        harness: { type: 'string' },
+      },
+      anyOf: [{ required: ['id'] }, { required: ['ids'] }],
+    },
   },
   {
     name: 'work_items:complete',
@@ -161,17 +176,49 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     // (`completionRef` + `assumptions`) that cannot fit a positional row.
     name: 'work_items:set_state',
     description:
-      'Set a work-item state with keyed args { id, state, harness? }. Terminal states require completionRef and assumptions; prefer work_items:complete for terminal evidence.',
-    input: obj(
-      {
+      'Set lifecycle state for one or many work-items. Use { id, state } for one, { ids, state } for one homogeneous bulk mutation, or items[] for per-item states. Terminal states require completionRef and assumptions; prefer work_items:complete for terminal evidence.',
+    input: {
+      type: 'object',
+      properties: {
         id: { type: 'string' },
-        state: { type: 'string' },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          maxItems: 200,
+          description: 'Many ids receiving the same state.',
+        },
+        items: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 200,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              state: { type: 'string' },
+              harness: { type: 'string' },
+              completionRef: { type: 'string' },
+              assumptions: { oneOf: [{ type: 'array', items: { type: 'string' } }, { const: 'none' }] },
+            },
+            required: ['id', 'state'],
+          },
+        },
+        state: {
+          type: 'string',
+          enum: ['open', 'wip', 'blocked', 'needs-human', 'done', 'dropped'],
+        },
         harness: { type: 'string' },
         completionRef: { type: 'string' },
         assumptions: { oneOf: [{ type: 'array', items: { type: 'string' } }, { const: 'none' }] },
+        force: { type: 'boolean' },
       },
-      ['id', 'state'],
-    ),
+      anyOf: [
+        { required: ['id', 'state'] },
+        { required: ['ids', 'state'] },
+        { required: ['items'] },
+      ],
+    },
   },
   // --- harness / status ---
   {

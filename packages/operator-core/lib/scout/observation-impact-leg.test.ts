@@ -18,6 +18,7 @@ import {
   patternRefToIssueId,
   resolveObservationsImpact,
   OBS_IMPACT_KILL_ENV,
+  SURFACING_BASIS_NOTE,
   type DigestPatternView,
   type GroundedIdeaRow,
   type ObservationFiling,
@@ -206,7 +207,18 @@ describe('resolveObservationsImpact — impure leg (fail-open, short-circuit)', 
     ];
     const deps = makeDeps({ filings, digest, grounded });
     const res = await resolveObservationsImpact(who, {}, deps);
-    expect(res?.summary).toEqual({ filings: 1, surfacedAsPattern: 1, ideasGrounded: 1, shipped: 1 });
+    expect(res?.summary).toEqual({
+      filings: 1,
+      surfacedAsPattern: 1,
+      ideasGrounded: 1,
+      shipped: 1,
+      // Digest WAS read here, so the ceiling is measured — no slotsUnknown marker.
+      basis: {
+        citableSlotsHiveWide: 1,
+        observationNamingSlots: 1,
+        note: SURFACING_BASIS_NOTE,
+      },
+    });
     expect(res?.error).toBeUndefined();
     // grounded-ideas fetch was scoped to the citing ref only.
     expect(deps.loadGroundedIdeas).toHaveBeenCalledWith(['wi:EI-1']);
@@ -219,7 +231,19 @@ describe('resolveObservationsImpact — impure leg (fail-open, short-circuit)', 
       filings: [],
       patterns: [],
       ideas: [],
-      summary: { filings: 0, surfacedAsPattern: 0, ideasGrounded: 0, shipped: 0 },
+      summary: {
+        filings: 0,
+        surfacedAsPattern: 0,
+        ideasGrounded: 0,
+        shipped: 0,
+        // Digest never synthesized on this path ⇒ the ceiling is unknown, not measured-zero.
+        basis: {
+          citableSlotsHiveWide: 0,
+          observationNamingSlots: 0,
+          slotsUnknown: true,
+          note: SURFACING_BASIS_NOTE,
+        },
+      },
     });
     expect(deps.synthesizeDigest).not.toHaveBeenCalled();
     expect(deps.loadGroundedIdeas).not.toHaveBeenCalled();
@@ -261,7 +285,19 @@ describe('resolveObservationsImpact — impure leg (fail-open, short-circuit)', 
       filings: [],
       patterns: [],
       ideas: [],
-      summary: { filings: 0, surfacedAsPattern: 0, ideasGrounded: 0, shipped: 0 },
+      summary: {
+        filings: 0,
+        surfacedAsPattern: 0,
+        ideasGrounded: 0,
+        shipped: 0,
+        // Digest never synthesized on this path ⇒ the ceiling is unknown, not measured-zero.
+        basis: {
+          citableSlotsHiveWide: 0,
+          observationNamingSlots: 0,
+          slotsUnknown: true,
+          note: SURFACING_BASIS_NOTE,
+        },
+      },
     });
   });
 
@@ -280,5 +316,92 @@ describe('resolveObservationsImpact — impure leg (fail-open, short-circuit)', 
 
   it('is VITEST-inert with no deps injected — never touches the real digest/PG', async () => {
     expect(await resolveObservationsImpact(who)).toBeUndefined();
+  });
+});
+
+/**
+ * EI-20305547503222578 — `surfacedAsPattern` on its own is uninterpretable, because the
+ * ceiling it counts against is tiny and shared by every filer (the digest collapses each
+ * cluster to ONE exemplar and caps each lane at `perCategory ?? 20`). The modal reading of
+ * a HEALTHY pipeline is therefore 0, previously indistinguishable from a dead one. These
+ * guards pin the two properties that make the added denominator worth anything: it is
+ * HIVE-WIDE (not a restatement of the numerator), and a ceiling that was never measured is
+ * reported UNKNOWN rather than as a second misleading zero.
+ */
+describe('summary.basis — the denominator that makes surfacedAsPattern readable', () => {
+  const mine: ObservationFiling[] = [{ id: 'EI-1', filedAtMs: 100 }];
+
+  it('counts the HIVE-WIDE slot population, not the caller-citing subset', () => {
+    const patterns: DigestPatternView[] = [
+      { ref: 'wi:EI-1', summary: 'mine' }, // the one citing me
+      { ref: 'wi:EI-500', summary: 'someone else' },
+      { ref: 'wi:EI-501', summary: 'someone else again' },
+    ];
+    const res = computeObservationsImpact(mine, patterns, []);
+
+    expect(res.summary.surfacedAsPattern).toBe(1);
+    expect(res.summary.basis.observationNamingSlots).toBe(3);
+    // THE POINT: a denominator equal to the numerator would carry no information at all —
+    // it would just restate my own tally and leave a 0 exactly as unreadable as before.
+    expect(res.summary.basis.observationNamingSlots).toBeGreaterThan(res.summary.surfacedAsPattern);
+    expect(res.summary.basis.slotsUnknown).toBeUndefined();
+  });
+
+  it('separates slots that can name an observation from citable-lane slots that cannot', () => {
+    // A friction cluster with no resolvable newest member gets a `friction:<sig>` ref
+    // (corpus-digest), so it occupies a citable-lane slot that can never name a filing.
+    const patterns: DigestPatternView[] = [
+      { ref: 'wi:EI-1', summary: 'names an observation' },
+      { ref: 'friction:some-cluster-signature', summary: 'names no observation' },
+    ];
+    const res = computeObservationsImpact(mine, patterns, []);
+
+    expect(res.summary.basis.citableSlotsHiveWide).toBe(2);
+    expect(res.summary.basis.observationNamingSlots).toBe(1);
+  });
+
+  it('reports an UNMEASURED ceiling as unknown, not as zero, when the digest leg fails', async () => {
+    const deps = makeDeps({ filings: [{ id: 'EI-1', filedAtMs: Date.now() }], digestThrows: true });
+    const failed = await resolveObservationsImpact('su-01293', {}, deps);
+
+    expect(failed?.error).toBeDefined();
+    expect(failed?.summary.surfacedAsPattern).toBe(0);
+    // Without this marker the fail-open path would assert a measured ceiling of 0 — the
+    // same false-zero class this whole block exists to remove, one level down.
+    expect(failed?.summary.basis.slotsUnknown).toBe(true);
+
+    // CALIBRATION: a predicate that answered "unknown" unconditionally would pass the
+    // assertion above while telling nobody anything. The healthy path must still be
+    // reported as MEASURED through the very same field.
+    const healthy = await resolveObservationsImpact(
+      'su-01293',
+      {},
+      makeDeps({
+        filings: [{ id: 'EI-1', filedAtMs: Date.now() }],
+        digest: emptyDigest({ recurringFriction: [pat('wi:EI-1')] }),
+      }),
+    );
+    expect(healthy?.error).toBeUndefined();
+    expect(healthy?.summary.basis.slotsUnknown).toBeUndefined();
+    expect(healthy?.summary.basis.observationNamingSlots).toBe(1);
+  });
+
+  it('reports unknown on the no-filings short-circuit, which never reads the digest', async () => {
+    const deps = makeDeps({ filings: [] });
+    const res = await resolveObservationsImpact('su-01293', {}, deps);
+
+    expect(res?.summary.filings).toBe(0);
+    expect(res?.summary.basis.slotsUnknown).toBe(true);
+    // The short-circuit's whole purpose is skipping the heavy synthesis — so the ceiling
+    // is genuinely unmeasured here, and the marker is what says so.
+    expect(deps.synthesizeDigest).not.toHaveBeenCalled();
+  });
+
+  it('carries the mechanism note, and keeps numbers out of it so it cannot drift', () => {
+    const res = computeObservationsImpact(mine, [{ ref: 'wi:EI-1', summary: 'p' }], []);
+    expect(res.summary.basis.note).toBe(SURFACING_BASIS_NOTE);
+    // Numbers belong in the derived fields; a note quoting a cap would rot the moment
+    // `perCategory` changed, and would be believed because it reads like a measurement.
+    expect(SURFACING_BASIS_NOTE).not.toMatch(/\d/);
   });
 });

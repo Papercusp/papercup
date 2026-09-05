@@ -228,7 +228,26 @@ function renderCheckpointChecksDisclosure(
   const stored = splitCarryNoteChecks(checkpoint).checks;
   if (stored.length === 0 || excerpt.trim() === checkpoint.trim()) return '';
   const shown = stored.filter((check) => excerpt.includes(renderCheckLine(check))).length;
-  return `\n    checks: showing ${shown} of ${stored.length} stored rows in this excerpt — full set: ${workItemFetchHint(id, harness)}`;
+  const hidden = stored.length - shown;
+  if (hidden === 0) {
+    return `\n    checks: all ${stored.length} stored rows shown above — full set: ${workItemFetchHint(id, harness)}`;
+  }
+  // EI-22431465725244151: this line used to read "showing 0 of 11 stored rows in
+  // this excerpt", which parses as a formatting note about the excerpt above it —
+  // not as "there are rows here nobody has read". A reader who has already been
+  // shown a fully-rendered `🧪 CARRIED CHECKS` block (the LOOP's set, a DIFFERENT
+  // population that renders earlier in this same document) has no cue left that a
+  // second set exists at all. Measured cost of that reading: a held item's stored
+  // discriminator row went unread, the successor re-derived the lane with the wrong
+  // predicate, and wrote a wrong scope claim onto a durable carry surface.
+  //
+  // So say the two things the old wording did not: these rows are THIS ITEM'S, and
+  // some of them have not been shown to anyone.
+  return (
+    `\n    ⚠ checks: ${hidden} of ${stored.length} rows on THIS ITEM'S checkpoint are NOT shown above` +
+    ` — a separate set from the loop's "CARRIED CHECKS" block, and an unread row cannot warn you.` +
+    ` Read them before acting on this item: ${workItemFetchHint(id, harness)}`
+  );
 }
 /** An INACTIVE loop's carry-note older than this renders as a labeled STALE
  *  pointer instead of verbatim — a dead lane's "Next action" is history, not the
@@ -1455,10 +1474,25 @@ export function renderCarryBriefColdExtras(
   if (brief.checks && brief.checks.length > 0) {
     // P-001 delivery parity: same double-delivery rationale as walls — a carried
     // claim whose probe dissolves in a capped note is the phantom-re-anchor shape.
+    //
+    // EI-22431465725244151: NAME whose checks these are. A held work-item's
+    // checkpoint carries its OWN `## Checks` rows — a different population, written
+    // on a different cadence — and those render later and are routinely elided. An
+    // unqualified "CARRIED CHECKS" heading over a complete-looking list is read as
+    // THE carried set, so finishing this block feels like finishing the checks and
+    // the item's rows are never opened. Cross-reference them here, at the only
+    // moment the false sense of completeness actually forms.
+    const heldWithChecks = brief.heldItems
+      .filter((h) => h.checkpoint && splitCarryNoteChecks(h.checkpoint).checks.length > 0)
+      .map((h) => h.id);
+    const alsoOnItems =
+      heldWithChecks.length > 0
+        ? `\n  ⚠ These are the LOOP's checks and NOT the only ones in this document — ${heldWithChecks.join(', ')} carr${heldWithChecks.length === 1 ? 'ies' : 'y'} a SEPARATE set on the work-item checkpoint below. Finishing this block is not finishing the checks.`
+        : '';
     sections.push(
-      `🧪 CARRIED CHECKS — claims + their probes (✓ verified w/ evidence · ? PREDICTED — run the re-check before relying; clear via loop:checkpoint { checks }):\n${brief.checks
+      `🧪 CARRIED CHECKS (this LOOP's) — claims + their probes (✓ verified w/ evidence · ? PREDICTED — run the re-check before relying; clear via loop:checkpoint { checks }):\n${brief.checks
         .map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`)
-        .join('\n')}`,
+        .join('\n')}${alsoOnItems}`,
     );
   }
   const idleNoteGuard = detectIdleNoteGuard(brief.loop?.carryNote, deferredItems);

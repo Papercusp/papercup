@@ -110,10 +110,37 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     const e = SU_CATALOG.find((e) => e.name === 'work_items:set_state')!;
     const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
     expect(props).toHaveProperty('id');
+    expect(props).toHaveProperty('ids');
+    expect(props).toHaveProperty('items');
     expect(props).toHaveProperty('state');
     expect(props).toHaveProperty('completionRef');
     expect(props).toHaveProperty('assumptions');
     expect(props).not.toHaveProperty('row');
+    expect((props.ids as { maxItems?: number }).maxItems).toBe(200);
+    expect((e.input as { anyOf?: unknown[] }).anyOf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ required: ['id', 'state'] }),
+        expect.objectContaining({ required: ['ids', 'state'] }),
+        expect.objectContaining({ required: ['items'] }),
+      ]),
+    );
+  });
+
+  it('work_items:get advertises the real scalar-or-bulk id contract', () => {
+    const e = SU_CATALOG.find((entry) => entry.name === 'work_items:get')!;
+    const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(props).toHaveProperty('id');
+    expect(props).toHaveProperty('ids');
+    expect((props.ids as { minItems?: number; maxItems?: number })).toMatchObject({
+      minItems: 1,
+      maxItems: 100,
+    });
+    expect((e.input as { anyOf?: unknown[] }).anyOf).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ required: ['id'] }),
+        expect.objectContaining({ required: ['ids'] }),
+      ]),
+    );
   });
 
   it('audit:list documents its self-describing TOON read contract (EI-136)', () => {

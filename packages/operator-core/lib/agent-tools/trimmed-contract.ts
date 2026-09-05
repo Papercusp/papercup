@@ -58,7 +58,30 @@ export interface TrimmedContractSubject {
   /** The tool's `shape` block. */
   shape?: {
     trimmed?: (data: unknown, sctx: { args: unknown; tier: 'trimmed' | 'standard' }) => unknown;
-    contract?: { rows: string; fields?: readonly string[] };
+    contract?: {
+      rows: string;
+      fields?: readonly string[];
+      /**
+       * TOP-LEVEL envelope keys that must survive trimming, checked on their own
+       * axis (WI-2145870). `rows`/`fields` guard the row FIELDS; this guards the
+       * blocks beside the rows.
+       *
+       * The two axes are independent, and guarding only rows misses this class's
+       * worst instance: `fleet:assignments` emits a `scope` block
+       * ({agent, plan, fleet, harness, selfScoped, filtered}) and a hand-written
+       * reconstruction dropped it, so `summary` survived verbatim while the
+       * caveat SCOPING it did not (EI-18763132241176410) — a self-scoped
+       * `agents:1, claims:0` became indistinguishable from a measured-empty
+       * fleet. Row fields are usually the VALUES; the newcomer at top level is
+       * usually the QUALIFIER (scope, provenance, boundedness), and losing a
+       * qualifier while keeping the values produces a confident WRONG reading
+       * rather than a visibly missing one.
+       *
+       * Declared per-tool on the tool's own contract, deliberately not a central
+       * hand-maintained list.
+       */
+      preserve?: readonly string[];
+    };
   };
   /** The tool's `guidance.returns` prose. */
   returns?: unknown;
@@ -70,6 +93,13 @@ export interface TrimmedContractViolation {
   dropped: string[];
   /** Every field the contract required, for the message. */
   required: string[];
+  /**
+   * Top-level `contract.preserve` keys the trimmed shaper did not emit. Reported
+   * separately from `dropped` because the remedy differs: a row-field drop is
+   * usually an incomplete row allowlist, a top-level drop is usually a
+   * hand-written envelope reconstruction that forgot a block.
+   */
+  droppedTopLevel?: string[];
   detail: string;
 }
 
@@ -99,10 +129,18 @@ export function checkTrimmedContract(tool: TrimmedContractSubject): TrimmedContr
   const trimmed = tool.shape?.trimmed;
   if (!contract || typeof trimmed !== 'function') return null;
 
-  const required = contract.fields ? [...contract.fields] : parseReturnsRowFields(tool.returns);
-  if (!required || required.length === 0) return null;
+  const resolved = contract.fields ? [...contract.fields] : parseReturnsRowFields(tool.returns);
+  const required = resolved ?? [];
+  // WI-2145870: the top-level axis. A tool may guard either axis or both, so the
+  // opt-in test is the UNION — a preserve-only contract is a legitimate subject.
+  const preserve = (contract.preserve ?? []).filter((k) => k !== contract.rows);
+  if (required.length === 0 && preserve.length === 0) return null;
 
-  const input = { [contract.rows]: [syntheticRow(required)] };
+  const input: Record<string, unknown> = { [contract.rows]: [syntheticRow(required)] };
+  // Same synthetic-sentinel method as the rows, one level out. A distinct prefix
+  // so a top-level sentinel can never be confused with a row one while debugging.
+  for (const key of preserve) input[key] = `__contract_top__${key}`;
+
   let out: unknown;
   try {
     out = trimmed(input, { args: {}, tier: 'trimmed' });
@@ -115,31 +153,63 @@ export function checkTrimmedContract(tool: TrimmedContractSubject): TrimmedContr
     };
   }
 
-  const rows = (out as Record<string, unknown> | null)?.[contract.rows];
-  if (!Array.isArray(rows) || rows.length === 0) {
-    return {
-      tool: tool.name,
-      dropped: [],
-      required,
-      detail:
-        `its trimmed shaper returned no \`${contract.rows}\` rows for a 1-row input — ` +
-        `either \`contract.rows\` names the wrong key, or the shaper dropped the row set entirely.`,
-    };
+  const envelope = (out as Record<string, unknown> | null) ?? {};
+  // Presence, not value equality — mirroring the row axis, where a shaper that
+  // nulls a field it cannot cheaply compute has still told the reader the key
+  // exists. Only a REMOVED key is a drop.
+  const droppedTopLevel = preserve.filter((k) => !(k in envelope));
+
+  // A preserve-only contract must not be judged on rows it never promised. Guard
+  // the rows axis behind its own opt-in, or a preserve-only tool would fail on
+  // the synthetic empty row below and report a defect it does not have.
+  if (required.length > 0) {
+    const rows = envelope[contract.rows];
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return {
+        tool: tool.name,
+        dropped: [],
+        required,
+        ...(droppedTopLevel.length > 0 ? { droppedTopLevel } : {}),
+        detail:
+          `its trimmed shaper returned no \`${contract.rows}\` rows for a 1-row input — ` +
+          `either \`contract.rows\` names the wrong key, or the shaper dropped the row set entirely.`,
+      };
+    }
+
+    const emitted = new Set(Object.keys((rows[0] ?? {}) as Record<string, unknown>));
+    const dropped = required.filter((f) => !emitted.has(f));
+    if (dropped.length > 0) {
+      return {
+        tool: tool.name,
+        dropped,
+        required,
+        ...(droppedTopLevel.length > 0 ? { droppedTopLevel } : {}),
+        detail:
+          `\`returns\` promises { ${required.join(', ')} } on each row, but the trimmed shaper — ` +
+          `the tier agents get BY DEFAULT — emitted a row without ${dropped.map((d) => `\`${d}\``).join(', ')}. ` +
+          `An allowlist that rebuilds the row drops anything not on it, and the result still reads ok:true, ` +
+          `so the field looks absent from the data rather than removed by the shaper.` +
+          (droppedTopLevel.length > 0
+            ? ` It ALSO dropped the top-level ${droppedTopLevel.map((d) => `\`${d}\``).join(', ')}.`
+            : ''),
+      };
+    }
   }
 
-  const emitted = new Set(Object.keys((rows[0] ?? {}) as Record<string, unknown>));
-  const dropped = required.filter((f) => !emitted.has(f));
-  if (dropped.length === 0) return null;
+  if (droppedTopLevel.length === 0) return null;
 
   return {
     tool: tool.name,
-    dropped,
+    dropped: [],
     required,
+    droppedTopLevel,
     detail:
-      `\`returns\` promises { ${required.join(', ')} } on each row, but the trimmed shaper — ` +
-      `the tier agents get BY DEFAULT — emitted a row without ${dropped.map((d) => `\`${d}\``).join(', ')}. ` +
-      `An allowlist that rebuilds the row drops anything not on it, and the result still reads ok:true, ` +
-      `so the field looks absent from the data rather than removed by the shaper.`,
+      `its trimmed shaper dropped the top-level ${droppedTopLevel.map((d) => `\`${d}\``).join(', ')} ` +
+      `promised by \`contract.preserve\`. The rows survived, so the result reads ok:true and complete — ` +
+      `but a top-level block is typically the QUALIFIER on those rows (scope, provenance, boundedness), ` +
+      `and losing it while keeping the values yields a confident WRONG reading rather than a visibly ` +
+      `missing one: a self-scoped \`agents:1, claims:0\` becomes indistinguishable from a measured-empty ` +
+      `fleet. A hand-written envelope reconstruction drops anything it does not name.`,
   };
 }
 

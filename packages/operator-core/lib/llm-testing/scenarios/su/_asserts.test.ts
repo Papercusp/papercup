@@ -23,7 +23,8 @@ import { describe, it, expect } from 'vitest';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 import {
-  assertCodeRunOrSingleTurnFanout,
+  assertCodeRunOrBulkOrSingleTurnFanout,
+  assertToolCalledWithArrayArg,
   assertTextForbidsAffirmed,
   assertTextForbidsInTurnAfter,
   assertTextForbidsFromTurn,
@@ -174,8 +175,15 @@ describe('assertTextForbidsFromTurn', () => {
   });
 });
 
-describe('assertCodeRunOrSingleTurnFanout', () => {
-  const assertion = assertCodeRunOrSingleTurnFanout(['work_items:get'], 3, META);
+describe('assertCodeRunOrBulkOrSingleTurnFanout', () => {
+  const assertion = assertCodeRunOrBulkOrSingleTurnFanout(['work_items:get'], 3, META);
+
+  it('passes one native bulk call carrying every id', () => {
+    const run = mkRun([mkTurn({
+      toolCalls: [{ name: 'work_items:get', input: { ids: ['WI-1', 'WI-2', 'WI-3'] } }],
+    })]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
 
   it('passes three direct RPCs emitted together in one model turn', () => {
     const run = mkRun([mkTurn({
@@ -199,6 +207,24 @@ describe('assertCodeRunOrSingleTurnFanout', () => {
       mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-2' } }] }),
       mkTurn({ toolCalls: [{ name: 'work_items:get', input: { id: 'WI-3' } }] }),
     ]);
+    expect(assertion.eval(run)).toHaveLength(1);
+  });
+});
+
+describe('assertToolCalledWithArrayArg', () => {
+  const assertion = assertToolCalledWithArrayArg(['work_items:set_state'], 'ids', 3, META);
+
+  it('passes a matching bulk call with the required array length', () => {
+    const run = mkRun([mkTurn({
+      toolCalls: [{ name: 'work_items:set_state', input: { ids: ['WI-1', 'WI-2', 'WI-3'], state: 'wip' } }],
+    })]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('rejects a scalar call even when the tool name matches', () => {
+    const run = mkRun([mkTurn({
+      toolCalls: [{ name: 'work_items:set_state', input: { id: 'WI-1', state: 'wip' } }],
+    })]);
     expect(assertion.eval(run)).toHaveLength(1);
   });
 });

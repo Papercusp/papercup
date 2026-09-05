@@ -147,9 +147,9 @@ export interface SurfacingBasis {
 /** The mechanism note carried on every {@link SurfacingBasis}. */
 export const SURFACING_BASIS_NOTE =
   'The digest collapses each friction cluster to ONE exemplar and caps each citable lane, so only ' +
-  'the slots counted here are cited hive-wide at any instant — shared across every filer. A 0 is ' +
-  'therefore the expected reading for the large majority of filers and is NOT evidence that your ' +
-  'filings went unread or that the pipeline is dead.';
+  'the slots counted here are cited hive-wide at any instant — shared across every filer. A zero ' +
+  'is therefore the expected reading for the large majority of filers and is NOT evidence that ' +
+  'your filings went unread or that the pipeline is dead.';
 
 /** The demand-pull observation→impact readback (P-021). */
 export interface ObservationsImpact {
@@ -461,7 +461,11 @@ export async function resolveObservationsImpact(
       error = err instanceof Error ? err.message : String(err);
     }
 
-    const impact = computeObservationsImpact(filings, patterns, ideas);
+    // A failed digest leg leaves `patterns` empty for a reason that is NOT "the digest
+    // surfaced nothing" — so the ceiling is unknown, never a measured zero.
+    const impact = computeObservationsImpact(filings, patterns, ideas, {
+      patternsRead: error === undefined,
+    });
     return error ? { ...impact, error } : impact;
   } catch {
     return undefined;

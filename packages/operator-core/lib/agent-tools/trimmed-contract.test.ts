@@ -139,6 +139,74 @@ describe('checkTrimmedContract — falsifiability controls', () => {
   });
 });
 
+describe('checkTrimmedContract — the TOP-LEVEL axis (WI-2145870)', () => {
+  const withPreserve = (
+    trimmed: (d: unknown) => unknown,
+    preserve: readonly string[] = ['scope'],
+    over: Partial<TrimmedContractSubject> = {},
+  ): TrimmedContractSubject => ({
+    name: 'fixture:tool',
+    returns: RETURNS,
+    shape: { trimmed, contract: { rows: 'rows', preserve } },
+    ...over,
+  });
+
+  /** Correct on BOTH axes: every row field preserved AND the top-level block carried. */
+  const keepsTopLevel = (data: unknown) => ({
+    ...(rightShaper(data) as Record<string, unknown>),
+    scope: (data as { scope?: unknown }).scope,
+  });
+
+  it('CATCHES a shaper that keeps every ROW field but drops a top-level block', () => {
+    // `rightShaper` is this file's own "correct" shaper — and it IS correct, on
+    // the row axis. It also rebuilds the envelope as `{ rows }`, so the block
+    // beside the rows vanishes. That combination is the whole point of this
+    // item: the row guard reads green while the qualifier is gone, which is how
+    // a self-scoped `fleet:assignments` became indistinguishable from a
+    // measured-empty fleet (EI-18763132241176410).
+    const v = checkTrimmedContract(withPreserve(rightShaper));
+    expect(v).not.toBeNull();
+    expect(v?.droppedTopLevel).toEqual(['scope']);
+    expect(v?.dropped).toEqual([]);
+  });
+
+  it('calibration: carrying the top-level block through comes back CLEAN', () => {
+    expect(checkTrimmedContract(withPreserve(keepsTopLevel))).toBeNull();
+  });
+
+  it('checks the top-level axis even when NO row field list resolves (preserve-only)', () => {
+    // The same vacuity this item reports, one level down: a preserve-only
+    // contract must not be silently skipped by the row axis's opt-in test.
+    const v = checkTrimmedContract(
+      withPreserve(rightShaper, ['scope'], { returns: 'prose that names no row block' }),
+    );
+    expect(v?.droppedTopLevel).toEqual(['scope']);
+  });
+
+  it('treats an explicitly-nulled top-level key as PRESENT (the key is the signal)', () => {
+    const nulling = (data: unknown) => ({
+      ...(rightShaper(data) as Record<string, unknown>),
+      scope: null,
+    });
+    expect(checkTrimmedContract(withPreserve(nulling))).toBeNull();
+  });
+
+  it('reports BOTH axes when a shaper drops a row field AND a top-level block', () => {
+    const v = checkTrimmedContract(withPreserve(wrongShaper));
+    expect(v?.dropped).toEqual(['triggerKind']);
+    expect(v?.droppedTopLevel).toEqual(['scope']);
+    expect(v?.detail).toContain('top-level');
+  });
+
+  it('ignores a preserve entry naming the rows key itself (no self-collision)', () => {
+    expect(checkTrimmedContract(withPreserve(rightShaper, ['rows']))).toBeNull();
+  });
+
+  it('does not fire on a contract that declares no preserve list', () => {
+    expect(checkTrimmedContract(subject(rightShaper))).toBeNull();
+  });
+});
+
 describe('the LIVE tool catalog honours every declared trimmed contract', () => {
   const declared = listDeclaredToolShapers();
 

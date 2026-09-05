@@ -22,12 +22,12 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolCalled, assertToolCallCountAtMost } from './_asserts';
+import { assertToolCalledWithArrayArg, assertToolCallCountAtMost } from './_asserts';
 import { BULK_GET_CONTEXT } from './_overrides';
 
 export const SU_S21_BULK_READ_NOT_HAND_LOOP: Scenario = {
   id: 'su-S21-bulk-read-not-hand-loop',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -38,11 +38,11 @@ export const SU_S21_BULK_READ_NOT_HAND_LOOP: Scenario = {
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: BULK_GET_CONTEXT,
   asserts: [
-    assertToolCalled(['work_items:get'], {
+    assertToolCalledWithArrayArg(['work_items:get'], 'ids', 6, {
       name: 'reaches-for-bulk-get',
       claim:
         'Expected the engineer to fetch the 6 items\' detail via work_items:get { ids:[…] } — ' +
-        'work_items:get was never called.',
+        'no call carried all 6 ids.',
       suggestion: 'Pass every id you need in ONE work_items:get { ids:[…] } call.',
     }),
     assertToolCallCountAtMost(['work_items:get'], 1, {

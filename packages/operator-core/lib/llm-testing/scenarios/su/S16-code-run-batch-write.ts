@@ -4,7 +4,7 @@
  * code-execution-tool-orchestration B-CX-3 framing).
  *
  * Question: when the user asks to apply the SAME mutation to every item in a
- * collection (here: mark every open work item observed → one terminal state), does
+ * collection (here: move every open work item to `wip`), does
  * the engineer reach for the verb's BULK arg — ONE `work_items:set_state { ids:[…],
  * state }` — instead of firing the write once per item?
  *
@@ -24,28 +24,28 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolCalled, assertToolCallCountAtMost } from './_asserts';
+import { assertToolCalledWithArrayArg, assertToolCallCountAtMost } from './_asserts';
 import { BATCH_WRITE_CONTEXT } from './_overrides';
 
 export const SU_S16_CODE_RUN_BATCH_WRITE: Scenario = {
   id: 'su-S16-code-run-batch-write',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer asks the engineer to mark every open work item in the papercusp harness as observed — the SAME state change applied to a collection. work_items:list returns 9 open items. The engineer should collapse the per-item write into ONE bulk work_items:set_state { ids:[…], state } call (every repeated-call verb is now dual-arity) rather than issuing a write per item or reaching for code:run (which is for heterogeneous/conditional batches).',
+    'A developer asks the engineer to move every open work item in the papercusp harness to wip — the SAME valid lifecycle change applied to a collection. work_items:list returns 9 open items. The engineer should collapse the per-item write into ONE bulk work_items:set_state { ids:[…], state:"wip" } call (every repeated-call verb is now dual-arity) rather than issuing a write per item or reaching for code:run (which is for heterogeneous/conditional batches).',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 6, maxWallSecs: 200, maxCostUsd: 1.5 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   toolOverride: BATCH_WRITE_CONTEXT,
   asserts: [
-    assertToolCalled(['work_items:set_state'], {
+    assertToolCalledWithArrayArg(['work_items:set_state'], 'ids', 9, {
       name: 'reaches-for-bulk-set-state',
       claim:
-        'Expected the engineer to mark the 9 open items via the bulk work_items:set_state ' +
-        '{ ids:[…], state } arg — work_items:set_state was never called.',
-      suggestion: 'Collapse the homogeneous per-item write into ONE work_items:set_state { ids:[…], state } call.',
+        'Expected the engineer to move all 9 open items via one bulk work_items:set_state ' +
+        '{ ids:[…], state:"wip" } call — no call carried all 9 ids.',
+      suggestion: 'Collapse the homogeneous mutation into ONE work_items:set_state { ids:[…], state:"wip" } call.',
     }),
     assertToolCallCountAtMost(['work_items:set_state'], 2, {
       name: 'does-not-hand-loop-writes',
