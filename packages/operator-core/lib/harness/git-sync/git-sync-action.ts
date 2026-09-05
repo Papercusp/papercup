@@ -148,7 +148,7 @@ import {
 } from './routine-metadata-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolScope, type SignedSnapshotFloor } from '../../sync/pot-git/signed-context';
-import { resolveStoreProtocolContext } from '../../sync/pot-git/signed-context-store';
+import { assertGitServingCapability, guardGitServingSigner, validateGitServingState, type GitServingCapability, type GitServingRequest, type GitServingState } from '../../sync/pot-git/serving-capability';
 import { getHiveBySlug } from '../../hive-store';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {
@@ -174,14 +174,8 @@ import { Duplex } from 'node:stream';
 // returns an EMPTY roster. The *ForLocalPot wrapper resolves the federated scope first
 // (a no-op on an owner).
 import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
-import { resolveUsageActor } from '../usage-actor';
-import {
-  explainHiveGitActorAbsence,
-  pickHiveGitActor,
-  type HiveGitActor,
-} from './hive-git-actor';
+import type { HiveGitActor } from './hive-git-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
-import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { resolveAuthorCommsTier } from '../../sync/hyperbee/comms-tier-gate';
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -3597,7 +3591,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
 
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
     if (!actor?.devicePubkey) return; // gh unauthenticated — no device identity to publish as
 
     const genesisBaselineSha = await deriveGenesisBaselineSha(entry, branch);
@@ -3762,150 +3756,55 @@ function hasRelocatedHiveGitDial(handle: unknown): handle is RelocatedHiveGitDia
   );
 }
 
-/**
- * P-203 Leg A — the identity every hive-git leg of this pot signs, announces
- * and dials as. Prefers the pot home harness's LIVE swarm announce identity
- * (`BootedHarnessHandle.announceIdentity`: the device peers file our socket
- * under, so the only device an announcement from us may name); falls back to
- * the gh-login actor when no in-process swarm identity exists. Rationale and
- * the live tower split that motivated it: `hive-git-actor.ts`.
- *
- * Looked up by the LOCAL install slug first (WI-3496: a joined member's harness
- * is registered under its own install slug, and the pot-home slug need not
- * exist here at all), then by the pot-home slug for a hive's submodule installs,
- * which share the home harness's swarm join — and therefore its identity — and
- * have no booted handle of their own.
- */
+/** P-514: only the process serving the requested hive/repository may choose
+ * the signing identity and store generation. Discovery failures are retryable;
+ * a gh login is never serving evidence. */
+interface ServingHiveGitActor extends HiveGitActor {
+  capability: GitServingCapability;
+  sign(bytes: Buffer): Promise<Buffer>;
+  assertServing(): Promise<void>;
+}
+
 async function resolveHiveGitActor(
   workspaceId: string,
   installSlug: string,
   potHomeSlug: string,
-): Promise<HiveGitActor | null> {
-  let booted: { devicePubkeyBase64: string; githubUserId: number; keychainId: string } | null = null;
+  repoKey: string,
+): Promise<ServingHiveGitActor | null> {
   try {
-    const { getBootedHarness } = await import('../../sync/hyperbee/boot-all');
-    const handle =
-      getBootedHarness(workspaceId, installSlug) ??
-      (installSlug === potHomeSlug ? null : getBootedHarness(workspaceId, potHomeSlug));
-    booted = handle?.announceIdentity ?? null;
-  } catch {
-    booted = null; // boot-all unavailable in this process
-  }
-
-  // WI-2142873: a miss above is evidence about THIS PROCESS, not about the pot.
-  // The substrate owner and the routine running git-sync are routinely separate
-  // OS processes and this registry is process-local, so ask the owner before
-  // concluding that no swarm identity exists. Same process split, and the same
-  // published row, that `resolveHiveGitDialContext` consults one function below
-  // (EI-20438405483051865) — that leg taught the dial about relocation while
-  // this one kept silently downgrading the IDENTITY.
-  let ownerReportsBooted: boolean | undefined;
-  let lastAdvertisedServingDevicePubkey: string | undefined;
-  if (!booted) {
-    const owner = await resolveOwnerAnnounceIdentity(workspaceId, installSlug, potHomeSlug);
-    booted = owner.identity;
-    ownerReportsBooted = owner.ownerReportsBooted;
-    // WI-2142873 follow-on: `ownerReportsBooted` is UNKNOWN whenever the
-    // advertisement is merely too OLD, and UNKNOWN keeps the gh-login fallback.
-    // On a host where one process is BOTH substrate owner and git-sync host,
-    // its own restart guarantees that window — so read WHO the owner last said
-    // serves this pot, ignoring freshness, and let the decision refuse rather
-    // than sign as a device we can see is not the one.
-    if (!booted) {
-      lastAdvertisedServingDevicePubkey = await resolveLastAdvertisedServingDevice(
-        workspaceId,
-        installSlug,
-        potHomeSlug,
-      );
+    const request: GitServingRequest = { workspaceId, installSlug, potHomeSlug,
+      scope: await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey) };
+    const resolve = async (): Promise<GitServingState> => {
+      const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
+      const handle = getBootedHarness(workspaceId, installSlug) ??
+        (installSlug === potHomeSlug ? null : getBootedHarness(workspaceId, potHomeSlug));
+      if (handle) {
+        return validateGitServingState(await handle.getGitServingCapability?.(request), request);
+      }
+      const { getPgGitServingCapability } = await import('../../sync/hyperbee/substrate-booted-handles-pg');
+      const state = await getPgGitServingCapability(request);
+      if (state.status !== 'ready') {
+        // A tick is real demand, but boot completion is never inferred here.
+        // The boot API arbitrates process ownership and coalesces requests.
+        void bootSingleHarness(workspaceId, installSlug).catch(() => {});
+      }
+      return state;
+    };
+    const state = validateGitServingState(await resolve(), request);
+    if (state.status !== 'ready') {
+      console.warn(`[git-sync] ${installSlug}: serving unavailable (${state.status}: ${state.reason}); retry next tick`);
+      return null;
     }
-  }
-
-  const ghActor = booted ? null : await resolveUsageActor();
-  const evidence = { ownerReportsBooted, lastAdvertisedServingDevicePubkey };
-  const actor = pickHiveGitActor(booted, ghActor, resolveDeviceKeychainId, evidence);
-  if (!actor) {
-    const reason = explainHiveGitActorAbsence(booted, ghActor, evidence);
-    if (reason === 'refused-owner-booted-identity-unavailable') {
-      console.warn(
-        `[git-sync] ${installSlug}: REFUSING to act as the gh-login device for pot ${potHomeSlug} — ` +
-          `the substrate owner holds a booted handle for it but advertised no announce identity ` +
-          `(likely a pre-WI-2142873 substrate owner). Signing under a device that does not serve ` +
-          `this pot's topic would mint announcements no peer can dial; skipping this leg instead.`,
-      );
-    } else if (reason === 'refused-stale-advertisement-names-another-device') {
-      console.warn(
-        `[git-sync] ${installSlug}: REFUSING to act as the gh-login device for pot ${potHomeSlug} — ` +
-          `the substrate owner's advertisement is too stale to read as liveness, but it names ` +
-          `${lastAdvertisedServingDevicePubkey?.slice(0, 8)} as the device serving this pot, which is not us. ` +
-          `This is the boot window after the owner restarts; signing here mints one unfetchable ` +
-          `announcement per restart and re-arms every peer's convergence bar. Skipping this leg; ` +
-          `the next tick announces once the owner re-advertises.`,
-      );
-    }
-  }
-  return actor;
-}
-
-/**
- * WHO the substrate owner last said serves this pot, ignoring how old that
- * claim is (WI-2142873 follow-on). Never throws and returns `undefined` when
- * nothing was ever advertised — which is the genuine single-account box, and
- * must keep the historical gh-login fallback.
- */
-async function resolveLastAdvertisedServingDevice(
-  workspaceId: string,
-  installSlug: string,
-  potHomeSlug: string,
-): Promise<string | undefined> {
-  try {
-    const { getPgLastKnownHarnessAnnounceDevice } = await import(
-      '../../sync/hyperbee/substrate-booted-handles-pg'
-    );
-    const slugs = installSlug === potHomeSlug ? [installSlug] : [installSlug, potHomeSlug];
-    for (const slug of slugs) {
-      const answer = await getPgLastKnownHarnessAnnounceDevice(workspaceId, slug);
-      if (answer?.devicePubkeyBase64) return answer.devicePubkeyBase64;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Ask the substrate owner which device serves this pot, when our own
- * process-local registry has no handle (WI-2142873).
- *
- * Tries the local install slug first and then the pot home, mirroring the
- * registry lookup above exactly: a hive's submodule installs share the home
- * harness's swarm join, and therefore its identity, without a handle of their
- * own. Never throws — an unreadable advertisement leaves `ownerReportsBooted`
- * undefined (UNKNOWN), which preserves the historical gh-login fallback rather
- * than converting a PG hiccup into a refusal.
- */
-async function resolveOwnerAnnounceIdentity(
-  workspaceId: string,
-  installSlug: string,
-  potHomeSlug: string,
-): Promise<{
-  identity: { devicePubkeyBase64: string; githubUserId: number; keychainId: string } | null;
-  ownerReportsBooted: boolean | undefined;
-}> {
-  try {
-    const { getPgBootedHarnessAnnounceIdentity } = await import(
-      '../../sync/hyperbee/substrate-booted-handles-pg'
-    );
-    const slugs = installSlug === potHomeSlug ? [installSlug] : [installSlug, potHomeSlug];
-    let ownerReportsBooted: boolean | undefined;
-    for (const slug of slugs) {
-      const answer = await getPgBootedHarnessAnnounceIdentity(workspaceId, slug);
-      if (!answer) continue; // UNKNOWN for this slug — leaves the flag untouched
-      ownerReportsBooted = ownerReportsBooted === true ? true : answer.booted;
-      if (answer.identity) return { identity: answer.identity, ownerReportsBooted: true };
-    }
-    return { identity: null, ownerReportsBooted };
-  } catch {
-    return { identity: null, ownerReportsBooted: undefined };
+    const capability = state.capability;
+    const { devicePubkeyBase64, githubUserId, keychainId } = capability.identity;
+    return { devicePubkey: devicePubkeyBase64, githubUserId, keychainId, source: 'booted-swarm',
+      capability,
+      assertServing: () => assertGitServingCapability(capability, request, resolve),
+      sign: guardGitServingSigner(capability, request, resolve, bytes => signWithDeviceKey(keychainId, bytes)),
+    };
+  } catch (error) {
+    console.warn(`[git-sync] ${installSlug}: serving unavailable (unknown: ${error instanceof Error ? error.message : String(error)}); retry next tick`);
+    return null;
   }
 }
 
@@ -4251,7 +4150,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       }
     }
 
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
     // Self-identification must NOT ride on gh reachability: resolveUsageActor
     // returns null whenever `gh` is unauthenticated or GET /user fails (rate
     // limit), and an undefined self here used to (a) let `find(d => d !==
@@ -4791,7 +4690,7 @@ async function runRefAnnounceLeg(
     if (!potHomeSlug) return;
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
     const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
@@ -4815,16 +4714,13 @@ async function runRefAnnounceLeg(
     `;
     const priorState = stateRows[0]?.ref_announce ?? null;
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-    const signedProtocolContext = await resolveStoreProtocolContext({
-      sql, slug, workspaceId, repoPath, scope: protocolScope, device: actor.devicePubkey,
-    });
+    const signedProtocolContext = actor.capability.context;
     const priorPublishVersion = priorState?.publishGeneration === signedProtocolContext.store_generation && Number.isSafeInteger(priorState?.publishVersion)
       ? Math.max(0, priorState?.publishVersion ?? 0)
       : 0;
     const replayFloors: Record<string, SignedSnapshotFloor> = Object.fromEntries(Object.entries(priorState?.replayFloors ?? {})
       .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope)));
-    const keychainId = actor.keychainId;
-    const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
+    const sign = actor.sign;
 
     // 1. Publish: announce our own namespace advance, if any.
     const publishOutcome = await runRefAnnouncePublishTick({
@@ -4841,6 +4737,7 @@ async function runRefAnnounceLeg(
       context: signedProtocolContext,
     });
     if (publishOutcome.announcement) {
+      await actor.assertServing();
       const announcement = publishOutcome.announcement;
       replayFloors[actor.devicePubkey] = {
         ...signedProtocolContext, version: announcement.version, sigrefs_oid: announcement.sigrefs_oid,
@@ -5239,7 +5136,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if (!potHomeSlug) return void (await decline('no_hive_home'));
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
     // gh unauthenticated — no device identity to sign/integrate as
     if (!actor) return void (await decline('no_device_identity'));
     const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
@@ -5531,10 +5428,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const { epoch } = grant;
     const { priorSeq } = grant;
 
-    const keychainId = actor.keychainId;
-    const signedProtocolContext = await resolveStoreProtocolContext({
-      sql, slug, workspaceId, repoPath, scope: protocolScope, device: actor.devicePubkey,
-    });
+    const signedProtocolContext = actor.capability.context;
     const snapshots = await sql<{ state: RefAnnounceRoutineState | null }[]>`
       SELECT metadata->'ref_announce' AS state FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
@@ -5555,7 +5449,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
       context: signedProtocolContext,
       acceptedSnapshots: snapshots[0]?.state?.replayFloors ?? {},
-      sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
+      sign: actor.sign,
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
       deps: { isIntegrator: async () => true }, // gated above — skip the re-query
@@ -5578,6 +5472,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     }
 
     if (outcome.announcement) {
+      await actor.assertServing();
       // Local wake for any same-machine waiter, then federate hive-wide (the
       // ref-announce.ts idiom) so every OTHER member's worktree-bridge driver
       // (P-204) wakes on the same key.
@@ -5643,7 +5538,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
             })),
             nowMs: Date.now(),
           },
-          (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
+          actor.sign,
         );
       } catch (e) {
         console.warn(
@@ -5848,7 +5743,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // additionally per-announcement conditional inside handleStagingAdvance
     // (it only fires when the sha is genuinely missing), which is what makes it
     // safe to wire unconditionally on a self-announcing single-machine box.
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
     const dialContext = actor ? await resolveHiveGitDialContext(workspaceId, slug) : null;
     const openDuplex =
       actor && dialContext
