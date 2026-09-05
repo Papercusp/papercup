@@ -2831,6 +2831,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/gen-knowledge-packs.mjs",
   },
   {
+    // EI-22373464081881716 — `gen:gitnexus-bridge:check` verifies that the shipped CommonJS
+    // plugin artifact still matches the TypeScript source. The generator is declared in the
+    // root package only, while the affected-tests registry executes workspace-owned scripts;
+    // without this alias and route, the runtime-artifact parity test existed but could not
+    // run from a change to the nested plugin submodule.
+    //
+    // The superproject reports any edit inside `libs/papercusp` as its bare gitlink path, so
+    // that root is intentionally part of the trigger set. The generator, registry, and
+    // workspace manifest are also included because each can change what this check enforces.
+    workspace: "@papercusp/operator-core",
+    script: "gen:gitnexus-bridge:check",
+    appliesTo: (f) =>
+      f === "libs/papercusp" ||
+      f === "scripts/gen-gitnexus-bridge-runtime.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json",
+  },
+  {
     // WI-2144666 — `gen:su-decomposition:check` verifies that the committed su identity
     // part documents and the pinned COMPOSITION_MODEL.md section still derive byte-for-byte
     // from the canonical su.md + tiling. The guard was declared only in root package.json,

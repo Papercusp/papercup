@@ -150,8 +150,17 @@ function resolvesRevision(revision, cwd = ROOT) {
   return git(['rev-parse', '--verify', '--end-of-options', revision], { cwd, allowFail: true }) !== null;
 }
 
-/** Submodule paths, repo-relative, from .gitmodules (never from a plain `git ls-files`). */
-function submodulePaths() {
+/**
+ * Submodule paths, repo-relative, from .gitmodules (never from a plain `git ls-files`).
+ *
+ * EXPORTED for the PostToolUse nudge hook, which is installed OUTSIDE any repo and must
+ * ask each git question of the owning repo exactly as this CLI does. The hook could
+ * re-derive this in four lines; it must not. `libs/generic/*` and `libs/papercusp` ARE
+ * submodules, so submodule routing is not an edge case here — it is this guard's whole
+ * trigger class, and a hook that re-implemented it slightly differently would fail open
+ * (no nudge) on precisely the files the guard exists for, silently and forever.
+ */
+export function submodulePaths() {
   const out = git(['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$'], {
     allowFail: true,
   });
@@ -169,8 +178,10 @@ function submodulePaths() {
  * submodule. Every git question about a file must be asked of its OWNING repo — the
  * documented submodule trap is that the superproject answers "absent" for a file that is
  * committed, which reads exactly like "your change is not there".
+ *
+ * EXPORTED for the same reason as `submodulePaths` above — see its note.
  */
-function repoForPath(file, submodules) {
+export function repoForPath(file, submodules) {
   let best = null;
   for (const sub of submodules) {
     if (file === sub || file.startsWith(`${sub}/`)) {

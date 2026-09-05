@@ -222,12 +222,15 @@ reload_and_enable() {
 
 health_check() {
   local port=$1
-  "$CURL_BIN" --fail --silent --show-error --max-time "$CURL_TIMEOUT_SEC" \
-    "http://127.0.0.1:${port}${HEALTH_PATH}" >/dev/null
+  # A refused connection during a restart is an expected, transient probe
+  # result. Keep curl quiet here; wait_for_health emits one actionable line
+  # only after the bounded retry window is exhausted.
+  "$CURL_BIN" --fail --silent --max-time "$CURL_TIMEOUT_SEC" \
+    "http://127.0.0.1:${port}${HEALTH_PATH}" >/dev/null 2>/dev/null
 }
 
 wait_for_health() {
-  local port=$1 attempts=$((HEALTH_WAIT_SEC + 1))
+  local port=$1 attempts=$((HEALTH_WAIT_SEC + 1)) total_attempts=$((HEALTH_WAIT_SEC + 1))
   while ((attempts > 0)); do
     if health_check "$port"; then
       return 0
@@ -235,6 +238,8 @@ wait_for_health() {
     attempts=$((attempts - 1))
     ((attempts > 0)) && sleep 1
   done
+  printf 'cloud-portal: ERROR: health check failed for http://127.0.0.1:%s%s after %d attempt(s)\n' \
+    "$port" "$HEALTH_PATH" "$total_attempts" >&2
   return 1
 }
 

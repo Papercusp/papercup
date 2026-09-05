@@ -45,6 +45,7 @@ import {
   emptyAnswerBanner,
   lspClientIdentity,
   startedNewClient,
+  runLspAdapterLeg,
   runAstGrepFacadeLeg,
   runGitnexusFacadeLeg,
   runPackerFacadeLeg,
@@ -67,6 +68,60 @@ const site = (path: string, line1: number | null): SymbolSite => ({
   path,
   line1,
   kind: null,
+});
+
+type AcceptanceLegId = 'lsp-adapter' | 'gitnexus' | 'ast-grep' | 'packers';
+
+/**
+ * EI-22348204566094835: a plural acceptance claim needs a census, not a
+ * spot-check. The required set is the current acceptance contract; the
+ * registered set is derived from the executable leg functions imported above.
+ */
+const REQUIRED_ACCEPTANCE_LEGS: readonly AcceptanceLegId[] = [
+  'lsp-adapter',
+  'gitnexus',
+  'ast-grep',
+  'packers',
+];
+const REGISTERED_ACCEPTANCE_LEGS = {
+  'lsp-adapter': runLspAdapterLeg,
+  gitnexus: runGitnexusFacadeLeg,
+  'ast-grep': runAstGrepFacadeLeg,
+  packers: runPackerFacadeLeg,
+} as const;
+
+function reconcileRequiredAndRegistered(
+  required: readonly string[],
+  registered: readonly string[],
+): { missing: string[]; unexpected: string[] } {
+  const requiredSet = new Set(required);
+  const registeredSet = new Set(registered);
+  return {
+    missing: [...requiredSet].filter((id) => !registeredSet.has(id)).sort(),
+    unexpected: [...registeredSet].filter((id) => !requiredSet.has(id)).sort(),
+  };
+}
+
+describe('acceptance-leg registration census (EI-22348204566094835)', () => {
+  it('reconciles every required acceptance leg against an executable registration', () => {
+    expect(
+      reconcileRequiredAndRegistered(REQUIRED_ACCEPTANCE_LEGS, Object.keys(REGISTERED_ACCEPTANCE_LEGS)),
+    ).toEqual({ missing: [], unexpected: [] });
+  });
+
+  it('is falsifiable in both directions instead of accepting a subset', () => {
+    const missingOne = Object.keys(REGISTERED_ACCEPTANCE_LEGS).filter((id) => id !== 'ast-grep');
+    expect(reconcileRequiredAndRegistered(REQUIRED_ACCEPTANCE_LEGS, missingOne)).toEqual({
+      missing: ['ast-grep'],
+      unexpected: [],
+    });
+
+    const withUnexpected = [...Object.keys(REGISTERED_ACCEPTANCE_LEGS), 'retired-leg'];
+    expect(reconcileRequiredAndRegistered(REQUIRED_ACCEPTANCE_LEGS, withUnexpected)).toEqual({
+      missing: [],
+      unexpected: ['retired-leg'],
+    });
+  });
 });
 
 describe('bench probes point at real code', () => {

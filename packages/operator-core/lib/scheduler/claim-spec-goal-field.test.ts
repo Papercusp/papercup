@@ -102,6 +102,18 @@ describe('claim-spec `goal` field (WI-37711)', () => {
     ).toBe(true);
   });
 
+  it('does not treat a negative predicate as an ownership fence for another active goal', () => {
+    // `goal != mine` admits a row belonging to a different goal as well as NULL rows.
+    // A negative leaf is therefore suitable only inside a measured exclusion fence that
+    // names the active-goal set; it is not a replacement for `goal = mine`.
+    expect(
+      matchesClaimSpecFilter(
+        { ...FULL_SUBJECT, goal: 'goal-other' },
+        { field: 'goal', op: '!=', value: 'goal-9f3' },
+      ),
+    ).toBe(true);
+  });
+
   it('supports `in` so one lane can drain several goals', () => {
     expect(
       matchesClaimSpecFilter(FULL_SUBJECT, { field: 'goal', op: 'in', value: ['goal-9f3', 'goal-zzz'] }),

@@ -419,12 +419,56 @@ describe('handoff_to_mug tags', () => {
   });
 
   it('drops a handoff with no summary (warn emitted)', () => {
-    const r = parseOperatorTurn('<handoff_to_mug harness="papercup">');
+    const r = parseOperatorTurn('<handoff harness="papercup">');
     expect(r.handoffs).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('dropped malformed <handoff_to_mug>'),
-      expect.any(Object),
-    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped malformed <handoff>'), expect.any(Object));
+  });
+
+  /**
+   * EI-20052781635798548 — the Mug/Kettle/cup tier was RETIRED 2026-08-09, so
+   * `<handoff_to_mug>` names a destination that no longer exists. The prompt now tells
+   * the brain to emit `<handoff>`.
+   *
+   * ⚠ THE OLD SPELLINGS MUST KEEP PARSING, and that is the whole reason this block
+   * exists rather than a find-and-replace. A live session holds its prompt text
+   * in-context for the REST OF ITS LIFETIME: it cannot learn the new tag mid-conversation,
+   * so the turn it emits right after a prompt change still carries the old name. A parser
+   * that recognised only the new spelling would not throw on that turn — it would find no
+   * handoff and DROP IT, losing the user's request with no error. Same silent-loss class
+   * WI-37616 fixed one layer down. So each rename here is additive, never a swap.
+   */
+  describe('handoff tag spellings — all three parse, none silently dropped', () => {
+    const SPELLINGS = ['handoff', 'handoff_to_mug', 'handoff_to_queen'] as const;
+
+    it.each(SPELLINGS)('<%s> parses to the same handoff', (tag) => {
+      const r = parseOperatorTurn(`<${tag} summary="rewrite auth" harness="papercup" tier="high">`);
+      expect(r.handoffs).toHaveLength(1);
+      expect(r.handoffs[0].summary).toBe('rewrite auth');
+      expect(r.handoffs[0].harness).toBe('papercup');
+      expect(r.handoffs[0].tier).toBe('high');
+    });
+
+    /**
+     * The strip regex is the FALLBACK path, so a spelling it misses does not fail loudly —
+     * it leaks a raw control tag into the user's chat bubble as prose, on exactly the turns
+     * where the model omitted <say>. This is the lockstep assertion the comment on
+     * CONTROL_TAG_STRIP_RE promises.
+     */
+    it.each(SPELLINGS)('<%s> is stripped from the no-<say> prose fallback', (tag) => {
+      const r = parseOperatorTurn(`Filing that now. <${tag} summary="x" harness="papercup">`);
+      expect(r.say).toBe('Filing that now.');
+      expect(r.say).not.toContain(tag);
+    });
+
+    it('mixed spellings in ONE turn are all collected (a session mid-prompt-change)', () => {
+      const r = parseOperatorTurn(
+        '<say>Filing all three.</say>\n' +
+          '<handoff summary="new name" harness="a">\n' +
+          '<handoff_to_mug summary="previous name" harness="b">\n' +
+          '<handoff_to_queen summary="original name" harness="c">',
+      );
+      expect(r.handoffs.map((h) => h.summary)).toEqual(['new name', 'previous name', 'original name']);
+    });
   });
 
   it('collects multiple handoff tags in one turn (small batch)', () => {

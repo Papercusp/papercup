@@ -289,6 +289,82 @@ esac
     }
   });
 
+  it("suppresses transient curl noise and reports one bounded health failure diagnostic", () => {
+    const transient = fixture();
+    const transientSystemctl = staleTestSystemctl(transient);
+    const transientCurl = join(transient.binDir, "curl-transient");
+    const transientState = join(transient.dir, "curl-transient-state");
+    writeFileSync(
+      transientCurl,
+      `#!/usr/bin/env bash
+set -eu
+if [[ ! -e '${transientState}' ]]; then
+  : > '${transientState}'
+  printf '%s\\n' 'curl: (7) transient fixture noise' >&2
+  exit 7
+fi
+exit 0
+`,
+    );
+    chmodSync(transientCurl, 0o755);
+
+    try {
+      const result = run(transient, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: transientSystemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: transientCurl,
+        PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC: "1",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("curl: (7) transient fixture noise");
+      expect(result.stdout).toContain("handoff complete: papercusp-cloud-portal.service runs the standalone production artifact");
+    } finally {
+      rmSync(transient.dir, { recursive: true, force: true });
+    }
+
+    const failing = fixture();
+    const failingSystemctl = join(failing.binDir, "systemctl-failing-health");
+    const failingCurl = join(failing.binDir, "curl-failing-health");
+    writeFileSync(
+      failingSystemctl,
+      `#!/usr/bin/env bash
+set -eu
+shift
+case "$1" in
+  daemon-reload|enable|stop|reset-failed|start) exit 0 ;;
+  is-active) exit 1 ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    chmodSync(failingSystemctl, 0o755);
+    writeFileSync(
+      failingCurl,
+      `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' 'curl: (7) final fixture noise' >&2
+exit 7
+`,
+    );
+    chmodSync(failingCurl, 0o755);
+
+    try {
+      const result = run(failing, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: failingSystemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: failingCurl,
+        PAPERCUSP_CLOUD_PORTAL_SS: "/bin/false",
+        PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC: "1",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain("curl: (7) final fixture noise");
+      expect(result.stderr).toContain(
+        "cloud-portal: ERROR: health check failed for http://127.0.0.1:3801/ after 2 attempt(s)",
+      );
+      expect(result.stderr.match(/health check failed for/g)).toHaveLength(1);
+    } finally {
+      rmSync(failing.dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses handoff onto a stale current release when the checkout has moved on (WI-2141210)", () => {
     const files = fixture();
     try {

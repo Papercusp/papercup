@@ -28,6 +28,7 @@
     "lint:headless-verify-entrypoint": "vitest run lib/doc-claims/headless-verify-entrypoint.test.ts",
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
+    "gen:gitnexus-bridge:check": "node ../../scripts/gen-gitnexus-bridge-runtime.mjs --check",
     "lint:guidance-returns-schema": "node ../../scripts/check-guidance-returns-schema.mjs",
     "lint:reachable-advisories": "node ../../scripts/check-reachable-advisories.mjs --strict",
     "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",

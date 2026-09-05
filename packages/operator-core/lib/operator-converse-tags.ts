@@ -58,7 +58,7 @@ export interface SpawnRequest {
 }
 
 /**
- * `<handoff_to_mug>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
+ * `<handoff>` — the SENTINEL'S placement seam (sentinel-herald Phase 4,
  * P-014). The Sentinel/Herald never places work itself (its capability envelope
  * denies cup:spawn/placement by design); instead it SUGGESTS + HANDS OFF: it
  * files a HIGH-PRIORITY work_item the user asked for and nudges the Mug, who is
@@ -66,7 +66,7 @@ export interface SpawnRequest {
  * dispatch-side-effect shape — but honored ONLY for role==='sentinel' (the
  * operator path never reads it). The Sentinel must NOT emit `<spawn>`.
  *
- *   <handoff_to_mug summary="…" harness="…" feature="…" tier="low|medium|high"
+ *   <handoff summary="…" harness="…" feature="…" tier="low|medium|high"
  *                   urgent="true" capability="…">
  */
 export interface HandoffRequest {
@@ -123,7 +123,7 @@ export interface ParsedOperatorTurn {
   /** Spawn requests emitted this turn. Empty array when none. */
   spawns: SpawnRequest[];
   /**
-   * `<handoff_to_mug>` requests emitted this turn (sentinel-herald P-014).
+   * `<handoff>` requests emitted this turn (sentinel-herald P-014).
    * Empty array when none. The converse dispatch honors these ONLY when the
    * turn's role is 'sentinel' — the operator path ignores them (it spawns
    * directly via `spawns`). Parallel handoffs in one turn are allowed.
@@ -170,16 +170,28 @@ const CONTINUE_RE = /<continue\s*\/?>/i;
 // role required; feature/chunk/extras optional. Multiple <spawn> tags per
 // turn are allowed (parallel fan-out: "review these three plans").
 const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
-// <handoff_to_mug summary="…" harness="…" feature="…" tier="…" urgent="true"
+// <handoff summary="…" harness="…" feature="…" tier="…" urgent="true"
 //  capability="…"> — self-closing. summary required; the rest optional. Multiple
 // per turn allowed (the Sentinel can hand off a small batch). Same attr-bag shape
 // as <spawn>. (sentinel-herald P-014.)
-// DUAL-ACCEPT (cup-lexicon-full-rename-2026-07-09 P-006): the prompt now emits
-// `<handoff_to_mug>`, but a live session that already holds the OLD prompt text
-// in-context for the rest of its lifetime may still emit `<handoff_to_queen>` —
-// parse both. Drop the old alternative once no old-prompt sessions remain
-// (Slice H / P-010 cleanup sweep).
-const HANDOFF_RE = /<handoff_to_(?:mug|queen)\s+([^>]+?)\s*\/?>/gi;
+//
+// DUAL-ACCEPT, now THREE spellings deep. Each rename kept the previous name
+// parseable rather than swapping it, for one reason stated once here:
+//   a live session holds its prompt text in-context for the REST OF ITS LIFETIME.
+// It cannot learn a new tag mid-conversation, so the turn it emits after a prompt
+// change still carries the old spelling. A parser that recognised only the new
+// name would not error on that turn — `parseConverseTags` would simply find no
+// handoff and drop it, losing the user's request silently. That is the same
+// silent-loss class WI-37616 fixed one layer down, which is why the alias is
+// additive every time and never a swap.
+//   `<handoff_to_queen>` — original (pre cup-lexicon-full-rename-2026-07-09).
+//   `<handoff_to_mug>`   — P-006 of that plan.
+//   `<handoff>`          — EI-20052781635798548: the Mug/Kettle/cup tier was
+//                          RETIRED 2026-08-09, so the destination in the name no
+//                          longer exists. Role-neutral, and the name the prompt
+//                          now tells the brain to emit.
+// Retire an old alternative only when no session can still hold that prompt text.
+const HANDOFF_RE = /<handoff(?:_to_(?:mug|queen))?\s+([^>]+?)\s*\/?>/gi;
 // <delegate_deep summary="…" brief="…" harness="…"> — self-closing. summary
 // required; the rest optional. Multiple per turn allowed; the dispatch lane caps
 // actual concurrency.
@@ -191,10 +203,16 @@ const DELEGATE_DEEP_RE = /<delegate_deep\s+([^>]+?)\s*\/?>/gi;
 // raw JSON into the chat bubble.
 const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
 const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
-// Strip a self-closing <spawn …>/<handoff_to_mug …>/<handoff_to_queen …> (dual-accept,
-// see HANDOFF_RE) from the no-<say> prose fallback so a stray control tag never leaks
+// Strip a self-closing <spawn …>/<handoff …> (all three handoff spellings, see
+// HANDOFF_RE) from the no-<say> prose fallback so a stray control tag never leaks
 // as raw text into the chat bubble.
-const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff_to_mug|handoff_to_queen|delegate_deep)\s+[^>]*?\/?>/gi;
+//
+// ⚠ THIS ALTERNATION MUST STAY IN LOCKSTEP WITH `HANDOFF_RE`. It is the FALLBACK
+// path, so a spelling that HANDOFF_RE parses but this one misses does not fail
+// loudly — it leaks a raw `<handoff …>` tag into the user's chat bubble as prose,
+// on exactly the turns where the model omitted <say>. Add a spelling to both or
+// neither; `operator-converse-tags.test.ts` asserts the two agree.
+const CONTROL_TAG_STRIP_RE = /<(?:spawn|handoff(?:_to_(?:mug|queen))?|delegate_deep)\s+[^>]*?\/?>/gi;
 
 /**
  * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
@@ -396,7 +414,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     });
   }
 
-  // <handoff_to_mug …> (dual-accept: also <handoff_to_queen …>, see HANDOFF_RE) —
+  // <handoff …> (dual-accept: also the legacy <handoff_to_mug …>/<handoff_to_queen …>, see HANDOFF_RE) —
   // the Sentinel's file-and-nudge placement seam (sentinel-herald P-014). Collect
   // every tag in the turn. Like <spawn>, a missing required attr (here `summary`)
   // drops the tag with a warn. `tier` is constrained to low|medium|high (anything
@@ -409,7 +427,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     const summary = (attrs['summary'] ?? '').trim();
     if (!summary) {
 
-      console.warn('[operator-converse] dropped malformed <handoff_to_mug>: missing summary', {
+      console.warn('[operator-converse] dropped malformed <handoff>: missing summary', {
         attrs,
       });
       continue;

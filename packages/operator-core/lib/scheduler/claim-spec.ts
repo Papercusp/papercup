@@ -126,9 +126,12 @@ export const ITEM_FIELDS = [
   // the queue, so those rows carry a goal_id and NO plan, and the `plan`/`tags` approximations
   // miss exactly them.
   //
-  // ⚠ NULLABLE, so per WI-5181 a `not`/`!=` leaf on it silently excludes every unstamped row
-  // in the SQL compiler (most rows are unstamped today). Scope a goal lane with the POSITIVE
-  // `=`/`in` form; the negative form needs the documented NULL treatment.
+  // ⚠ NULLABLE and sparsely stamped. The POSITIVE `=`/`in` form excludes every unstamped row,
+  // so it can starve a newly-created goal whose queue has no stamped rows yet. The compiler's
+  // NULL-safe `not`/`!=` form admits unstamped rows; use that polarity only as a measured
+  // exclusion fence (with the active-goal set verified), never as an unexamined substitute for
+  // this goal's own positive fence. See the GOAL contract and scheduler:set_claim_spec's
+  // positive-fence replacement guard (EI-22389918023611568).
   //
   // NOT rankable — an opaque goal id has no meaningful order, same rationale as `id`/`title`.
   'goal',

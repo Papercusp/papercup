@@ -3,7 +3,76 @@
  * (fleet-reliability-verification-2026-07-10 P-011).
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+import { PROBE_HOPS } from '../sync/pot-git/federation-probe';
 import { classifyGateCanary, runGateCanary, runGateCanaries, type GateCanaryDef } from './canary';
+
+const GATE_CANARY_SWEEP_SOURCE = readFileSync(
+  fileURLToPath(new URL('./gate-canary-sweep-action.ts', import.meta.url)),
+  'utf8',
+);
+
+function reconcileRequiredAndRegistered(
+  required: readonly string[],
+  registered: readonly string[],
+): { missing: string[]; unexpected: string[] } {
+  const requiredSet = new Set(required);
+  const registeredSet = new Set(registered);
+  return {
+    missing: [...requiredSet].filter((id) => !registeredSet.has(id)).sort(),
+    unexpected: [...registeredSet].filter((id) => !requiredSet.has(id)).sort(),
+  };
+}
+
+describe('acceptance member censuses (EI-22348204566094835)', () => {
+  it('preserves the captured-only probe-hop contract and reconciles it bidirectionally', () => {
+    const required = ['captured'] as const;
+    expect(PROBE_HOPS).toEqual(['captured']);
+    expect(reconcileRequiredAndRegistered(required, PROBE_HOPS)).toEqual({
+      missing: [],
+      unexpected: [],
+    });
+
+    expect(reconcileRequiredAndRegistered(required, [])).toEqual({
+      missing: ['captured'],
+      unexpected: [],
+    });
+    expect(reconcileRequiredAndRegistered(required, [...PROBE_HOPS, 'projected'])).toEqual({
+      missing: [],
+      unexpected: ['projected'],
+    });
+  });
+
+  it('reconciles every standing gate-canary fact registration against the required set', () => {
+    // These are executable fact-key references, not a second list of canary
+    // implementations. Derive registrations from the action source so removing
+    // either recordCanaryVerdict call makes the census red.
+    const required = [
+      'GATE_CANARY_SWEEP_FACT_KEY',
+      'GREEN_CHECKPOINT_PARSER_CANARY_FACT_KEY',
+    ] as const;
+    const registered = [...GATE_CANARY_SWEEP_SOURCE.matchAll(/factKey:\s*([A-Z][A-Z0-9_]*CANARY[A-Z0-9_]*)/g)].map(
+      (match) => match[1],
+    );
+
+    expect(reconcileRequiredAndRegistered(required, registered)).toEqual({
+      missing: [],
+      unexpected: [],
+    });
+    expect(reconcileRequiredAndRegistered(required, ['GATE_CANARY_SWEEP_FACT_KEY'])).toEqual({
+      missing: ['GREEN_CHECKPOINT_PARSER_CANARY_FACT_KEY'],
+      unexpected: [],
+    });
+    expect(
+      reconcileRequiredAndRegistered(required, [...required, 'RETIRED_GATE_CANARY_FACT_KEY']),
+    ).toEqual({
+      missing: [],
+      unexpected: ['RETIRED_GATE_CANARY_FACT_KEY'],
+    });
+  });
+});
 
 describe('classifyGateCanary', () => {
   it('canaryOk:null (undetermined) is ALWAYS gate-suspect, regardless of systemGreen', () => {
