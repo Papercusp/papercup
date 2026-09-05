@@ -26,14 +26,21 @@ vi.mock('../../../sync-sse', () => ({
   backfillSince: () => [],
 }));
 
-/** Captured `sseResponse` options, so the test can drive `setup` itself. */
+/**
+ * Captured `sseResponse` options, so the test can drive `setup` itself.
+ *
+ * Recorded into an ARRAY rather than a `let x: T | null`: TS cannot see the
+ * assignment inside the mock closure, so after `x = null` it narrows the later
+ * read to `never` and the `.setup` access stops compiling. `at(-1)` yields a
+ * plain `T | undefined` with no narrowing to fight.
+ */
 type CapturedSse = { setup: (sink: unknown) => Promise<void> };
-let capturedSse: CapturedSse | null = null;
+const sseCalls: CapturedSse[] = [];
 
 vi.mock('@papercusp/sse', () => ({
   // Read lazily at call time, so module hoisting is not a problem.
   sseResponse: (opts: CapturedSse) => {
-    capturedSse = opts;
+    sseCalls.push(opts);
     return new Response('stream');
   },
   parseLastEventId: () => null,
@@ -51,13 +58,14 @@ async function optsForUrl(url: string): Promise<SubscribeOpts> {
   const mod = await import('./sse');
   const route = mod.default as unknown as SseRoute;
 
-  capturedSse = null;
+  sseCalls.length = 0;
   await route.handler(new Request(url));
-  if (capturedSse === null) throw new Error('sseResponse was never called — route wiring changed');
+  const captured = sseCalls.at(-1);
+  if (!captured) throw new Error('sseResponse was never called — route wiring changed');
 
   // The mocked sseResponse never runs `setup` on its own; drive it the way the
   // real helper does, so the route's actual subscribe() call is exercised.
-  await capturedSse.setup({ closed: false, event: () => {}, onClose: () => {} });
+  await captured.setup({ closed: false, event: () => {}, onClose: () => {} });
 
   const call = subscribeMock.mock.calls.at(-1);
   if (!call) throw new Error('subscribe was never called');
