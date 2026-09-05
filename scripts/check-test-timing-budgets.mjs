@@ -79,6 +79,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -225,7 +226,10 @@ function main() {
   for (const abs of files) {
     let text;
     try {
-      text = readFileSync(abs, 'utf8');
+      // Mask comments before matching (guard-string-literal-blindness): a `// budget: 50ms`
+      // note or a doc comment quoting `toBeLessThan(5)` must not mint a phantom tight budget.
+      // Ranges are blanked in place, so `lineOf` still reports the original line.
+      text = stripCommentsOnly(readFileSync(abs, 'utf8'), abs);
     } catch {
       continue;
     }
