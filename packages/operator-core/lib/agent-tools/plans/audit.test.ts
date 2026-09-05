@@ -6,7 +6,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 
-const { mockOrgSql } = vi.hoisted(() => ({ mockOrgSql: vi.fn() }));
+const { mockOrgSql, mockOrgSqlArray } = vi.hoisted(() => {
+  const mockOrgSql = vi.fn();
+  const mockOrgSqlArray = vi.fn((values: unknown[]) => values);
+  (mockOrgSql as unknown as { array: typeof mockOrgSqlArray }).array = mockOrgSqlArray;
+  return { mockOrgSql, mockOrgSqlArray };
+});
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
@@ -599,6 +604,41 @@ describe('plans:audit phase:activation', () => {
     expect(result.underRead.unsuppliedTurns).toBe(19);
   });
 
+  it('keeps source-kind/session-id pairs aligned in both detector queries', async () => {
+    mockOrgSql.mockImplementation((...args: unknown[]) => {
+      const first = args[0];
+      if (!Array.isArray(first) || !('raw' in first)) return first;
+      const text = (first as unknown as string[]).join('?');
+      if (text.includes('MIN(turns.turn_idx)')) {
+        return Promise.resolve([
+          { source_kind: 'codex', session_id: 'session-full-id', min_turn: 0, max_turn: 20 },
+          { source_kind: 'claude', session_id: 'session-b', min_turn: 0, max_turn: 30 },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const result = ((await tool.handler(activationArgs({
+      sourceRanges: [
+        { sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 },
+        { sourceKind: 'claude', sessionId: 'session-b', fromTurn: 0, toTurn: 30 },
+      ],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    expect(result.sourceSpan).toMatchObject({
+      unmeasuredSessions: [],
+      gapTurns: 0,
+    });
+    expect(mockOrgSqlArray).toHaveBeenCalledWith(['codex', 'claude']);
+    expect(mockOrgSqlArray).toHaveBeenCalledWith(['session-full-id', 'session-b']);
+    const queryTexts = mockOrgSql.mock.calls
+      .map(([strings]) => (Array.isArray(strings) && 'raw' in strings ? (strings as string[]).join('?') : ''))
+      .filter(Boolean);
+    expect(queryTexts.filter((text) => text.includes('FROM unnest('))).toHaveLength(2);
+    expect(queryTexts.every((text) => !text.includes('(source_kind, session_id) IN'))).toBe(true);
+  });
+
   it('an under-read read failure is REPORTED, never propagated — the audit is already recorded', async () => {
     mockOrgSql.mockRejectedValue(new Error('session_turns unavailable'));
 
@@ -616,7 +656,7 @@ describe('plans:audit phase:activation', () => {
       const first = args[0];
       if (!Array.isArray(first) || !('raw' in first)) return first; // the sql(values) helper
       const text = (first as unknown as string[]).join('?');
-      if (text.includes('MIN(turn_idx)')) {
+      if (text.includes('MIN(turns.turn_idx)')) {
         // The fixture declares turns 0-20; the transcript actually runs to 40.
         return Promise.resolve([
           { source_kind: 'codex', session_id: 'session-full-id', min_turn: 0, max_turn: 40 },
@@ -662,7 +702,7 @@ describe('plans:audit phase:activation', () => {
       const first = args[0];
       if (!Array.isArray(first) || !('raw' in first)) return first;
       const text = (first as unknown as string[]).join('?');
-      if (text.includes('MIN(turn_idx)')) return Promise.reject(new Error('extent read failed'));
+      if (text.includes('MIN(turns.turn_idx)')) return Promise.reject(new Error('extent read failed'));
       return Promise.resolve([]);
     });
 
