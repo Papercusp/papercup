@@ -1497,6 +1497,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed semantic disposition for scripts/lib/tracked-files.mjs: its `pending` directory-walk worklist in the filesystem fallback is consumed within one synchronous enumeration and is hard-bounded by FALLBACK_MAX_ENTRIES (it throws rather than continue past the bound), so it is finite traversal state, not a resident resource queue, and starts no independent resident work.",
   },
+  {
+    path: "scripts/vendor-gitnexus-patch.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/vendor-gitnexus-patch.mjs: this offline installation repair invokes synchronous execFileSync('patch') only for missing entries in the finite, version-pinned local patch manifest; --check starts no child. The child patches a known local package file and is awaited before its marker is verified, with no detached worker, network request, resident queue, or independently scheduled productive work.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
