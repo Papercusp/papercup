@@ -1460,6 +1460,16 @@ import './cupboard/install-goal';
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
 import './cupboard/search';
 import './cupboard/unpublish';
+// shared-pot-dao-cupboard-v1-2026-09-04 D-045 §3d — the four P-011 commerce doors.
+// Before these, commerce-accounts.ts and commerce-dashboards.ts had ZERO production
+// importers (WI-2146273): P-011 promised checkout/refund/support/audit surfaces that
+// existed only as modules a test imported directly. Every one routes through the ONE
+// commerce-door-gate, so the authorization rules (unknown org, actor not in org,
+// order ownership, refundable ceiling) are decided once rather than four times.
+import './cupboard/checkout';
+import './cupboard/refund-request';
+import './cupboard/support-request';
+import './cupboard/commerce-dashboards';
 // autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
 // discovery half of the Pot's superpower (catalog → choose → harness:create).
 import './blueprint/catalog';
