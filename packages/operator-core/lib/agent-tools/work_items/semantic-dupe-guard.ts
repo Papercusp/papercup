@@ -38,6 +38,19 @@ import { withIterativeScan } from '../search/hnsw-iterative-scan';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
+// Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
+// `assessSourceCoverage`: this guard is not a `SearchSource`, and SEARCH_SOURCE_SURFACES
+// is asserted exhaustive in both directions against SEARCH_SOURCES.
+import {
+  assessSurfaceCoverage,
+  type CoverageSnapshot,
+  type SourceCoverageAssessment,
+} from '../../search/coverage-gate';
+
+/** The label this consumer's coverage verdict is reported under. */
+const DUPE_GUARD_COVERAGE_SOURCE = 'work_items:semantic-dupe-guard';
+/** The one vector surface `queryCandidatesReal` actually reads. */
+const DUPE_GUARD_SURFACES = ['harness_shared.work_items.embedding'] as const;
 /**
  * CALIBRATION — MEASURED 2026-08-12 (WI-38056, plan luna-audit-fixes-2026-08-12
  * D-002). Re-tune only against a fresh measurement; the numbers below are not
@@ -128,6 +141,12 @@ export interface SemanticDupeResult {
    *  (D-010), not returned to the filing agent. */
   soft: SemanticDupeCandidate[];
   thresholds: { hard: number; soft: number };
+  /** Embedding-coverage verdict for the vector surface this guard queries (WI-9393).
+   *  Load-bearing on the EMPTY `hard`+`soft` result, which is the dangerous one: it
+   *  cannot otherwise distinguish "no duplicate exists" from "the duplicate exists but
+   *  is not embedded, so this query could never have seen it". Absent only when the
+   *  assessment itself failed — the guard's verdict never depends on it. */
+  coverage?: SourceCoverageAssessment;
 }
 
 /** Injectable seams (tests + any future non-backfill space). */
@@ -141,6 +160,10 @@ export interface SemanticDupeDeps {
    *  similarity in SQL alongside the cosine. Optional 4th arg: existing seams that
    *  ignore it keep working, they just forfeit the co-signal promotion. */
   queryCandidates: (vec: number[], mode: string, harness?: string, title?: string) => Promise<SemanticDupeCandidate[]>;
+  /** The embedding-coverage snapshot backing {@link SemanticDupeResult.coverage}.
+   *  Optional so no existing caller/test changes; tests inject it to assess without a
+   *  DB. Omitted ⇒ the real TTL-memoised loader. */
+  loadCoverage?: () => Promise<CoverageSnapshot>;
 }
 
 function threshold(raw: string | undefined, dflt: number): number {
@@ -251,9 +274,50 @@ export async function findSemanticDupes(
   // Inert under vitest unless a test injects deps: the real resolver
   // lazy-loads an ONNX model, which unrelated tool tests must never pay.
   if (process.env.VITEST && !deps) return null;
+  let result: SemanticDupeResult | null;
   try {
-    return await withBudget(BUDGET_MS, classify(deps ?? realDeps, input));
+    result = await withBudget(BUDGET_MS, classify(deps ?? realDeps, input));
   } catch {
     return null;
+  }
+  if (!result) return null;
+  // DELIBERATELY outside the budget wrapper and in its own try/catch: coverage is a
+  // diagnostic ABOUT the verdict, so it must never be able to cost us one.
+  try {
+    const snapshot = await loadDupeGuardCoverage(deps?.loadCoverage);
+    if (snapshot === null) return result;
+    return {
+      ...result,
+      coverage: assessSurfaceCoverage(DUPE_GUARD_COVERAGE_SOURCE, DUPE_GUARD_SURFACES, snapshot),
+    };
+  } catch {
+    return result;
+  }
+}
+
+/** The snapshot for {@link DUPE_GUARD_SURFACES}. A failed READ yields an EMPTY map,
+ *  which `assessSurfaceCoverage` already renders as `unknown` — never as healthy, and
+ *  never as a hand-written verdict object that could drift from the shared logic.
+ *  `null` means "do not assess at all", which is not the same statement. */
+async function loadDupeGuardCoverage(
+  seam?: () => Promise<CoverageSnapshot>,
+): Promise<CoverageSnapshot | null> {
+  if (seam) {
+    try {
+      return await seam();
+    } catch {
+      return new Map();
+    }
+  }
+  // Inert under vitest unless a test injects the seam — the real loader reaches for the
+  // org PG pool, and unrelated tool tests must no more pay for that than for the ONNX
+  // model the VITEST guard in findSemanticDupes exists to spare them.
+  if (process.env.VITEST) return null;
+  try {
+    const { loadCoverageSnapshotCached } = await import('../../search/coverage-gate');
+    const { sql } = getOrgPg();
+    return await loadCoverageSnapshotCached(sql, activeWorkspaceId());
+  } catch {
+    return new Map();
   }
 }
