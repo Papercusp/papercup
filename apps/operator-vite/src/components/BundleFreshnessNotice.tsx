@@ -100,6 +100,9 @@ export default function BundleFreshnessNotice() {
     };
 
     void check();
+    // timer-classification: must-sample — samples /api/health for the SERVED bundle sha.
+    // No store pushes "a newer build is deployed" into the webview (the sync layer carries
+    // data queries, not the host's build identity), so the only signal source is a fetch.
     const timer = setInterval(() => void check(), POLL_MS);
     // Re-check when the window regains attention — by far the highest-value
     // trigger, because an owner returning to a long-idle window is exactly the

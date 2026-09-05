@@ -56,6 +56,7 @@ import { RecorderHost } from '@papercusp/testing-shell';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@papercusp/flags/client';
 import ChromeShellWithChatFaces from '../components/chat-faces/ChatFacesHost';
+import LeftSidebar from '../components/left-sidebar/LeftSidebar';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import RoutedPlanDashboardHost from '../components/RoutedPlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
@@ -160,10 +161,10 @@ const DevAdminRail =
     ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
     : null;
 
-// Left sidebar (left-sidebar-tauri-2026-06-07) — the Swarm / Voice / Hives
-// rail, the desktop twin of the pui dock's retired main pane. First-class app
-// chrome (NOT dev-gated); lazy so the shell paint doesn't pay for its panels.
-const LeftSidebar = lazy(() => import('../components/left-sidebar/LeftSidebar'));
+// Left sidebar (left-sidebar-tauri-2026-06-07) — first-class app chrome, not a
+// deferred panel. Its shell is eager so the first React commit reserves the
+// rail's width; the individual tab bodies remain lazy inside LeftSidebar.
+// Deferring this shell produced a deterministic 0.714 CLS on the hosted portal.
 // NOTE: the operator-voice controls (PapercupVoiceBar) used to mount here as a
 // top strip; they now live at the TOP of the left rail (LeftSidebar), always
 // visible on every tab (owner request 2026-06-22).
