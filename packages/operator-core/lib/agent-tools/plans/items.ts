@@ -63,6 +63,7 @@ import {
   planInSpecTriadScope,
   specTriadGate,
   specTriadEpoch,
+  type SpecTriadScopeReason,
 } from "./spec-triad-policy";
 import type { SpecTriadLegName } from "@papercusp/plan-parser";
 import { getFlag } from "@papercusp/flags/server";
@@ -277,6 +278,13 @@ interface ItemRow {
   citedWorkItems?: CitedWorkItemRefState[];
 }
 
+interface SpecTriadDiagnostic {
+  plan: string;
+  missing: SpecTriadLegName[];
+  scopeReason: SpecTriadScopeReason;
+  note: string;
+}
+
 export default defineTool({
   name: "plans:items",
   description:
@@ -409,6 +417,7 @@ export default defineTool({
               return {
                 rows: [] as ItemRow[],
                 unknownHarnesses: [opts.harnessSlug],
+                specTriadDiagnostics: [] as SpecTriadDiagnostic[],
               };
             }
             throw error;
@@ -429,6 +438,7 @@ export default defineTool({
               return {
                 rows: [] as ItemRow[],
                 unknownHarnesses: [opts.harnessSlug],
+                specTriadDiagnostics: [] as SpecTriadDiagnostic[],
               };
             }
             throw error;
@@ -480,6 +490,7 @@ export default defineTool({
         }
 
         const rows: ItemRow[] = [];
+        const specTriadDiagnostics: SpecTriadDiagnostic[] = [];
 
         // engineer-issues D-005: one batch read of every open issue-block across all
         // plans (keyed '<slug>#<item>'), hoisted out of the plan loop. Overlaying it
@@ -526,6 +537,20 @@ export default defineTool({
             specTriadOpts,
           );
 
+          // Surface the plan-level reason before item filters run. In particular,
+          // actionable=true intentionally removes every gated row, so without
+          // this diagnostic the empty result is indistinguishable from a drained
+          // plan. Keep the row-level `specTriadMissing` below for non-actionable
+          // reads, where the item itself remains visible.
+          if (triad.gated) {
+            specTriadDiagnostics.push({
+              plan: row.planSlug,
+              missing: triad.missing,
+              scopeReason: triad.scope.reason,
+              note: triad.note ?? "",
+            });
+          }
+
           for (const item of resolvedItems) {
             if (itemIds && !itemIds.includes(item.id)) continue;
             if (args.actionable && item.effectiveStatus !== "todo") continue;
@@ -559,7 +584,7 @@ export default defineTool({
         };
         rows.sort((a, b) => impRank(a.item) - impRank(b.item));
 
-        return { rows, unknownHarnesses: [] };
+        return { rows, unknownHarnesses: [], specTriadDiagnostics };
       },
     );
 
@@ -576,6 +601,7 @@ export default defineTool({
         isError: true,
       };
     }
+    const specTriadDiagnostics = cached.specTriadDiagnostics;
     // Coverage rollup (work→plan_item edges + direct plan-item claim) is a live
     // coordination read, not plan content. Refresh it on every call so a plan-table
     // cache hit cannot replay a liveness verdict from before a claim or heartbeat
@@ -676,6 +702,13 @@ export default defineTool({
     return {
       data: {
         items: limitedRows,
+        // A gated plan contributes no actionable rows by design, so keep its
+        // plan-level explanation visible even when `items` is empty. Unknown
+        // plan scopes explicitly carry an empty array to preserve the
+        // diagnostic contract without inventing a plan-level reason.
+        ...(specTriadDiagnostics.length > 0 || cached.unknownHarnesses.length > 0
+          ? { specTriadDiagnostics }
+          : {}),
         ...(truncated ? { truncated: true } : {}),
         // EI-22174704695369849: how many `todo` items this `actionable` query
         // withheld because a LIVE holder is on them. Returned to the CALLER, not
