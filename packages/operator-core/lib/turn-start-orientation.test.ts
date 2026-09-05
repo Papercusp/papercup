@@ -29,6 +29,7 @@ import type { ScoredItem } from './harness/improvements/digest';
 const base: OrientationState = {
   held: [],
   unansweredDirected: 0,
+  unansweredStale: 0,
   openAsks: null,
   inboxRecent: [],
   announcedGates: [],
@@ -51,6 +52,7 @@ const withWork: OrientationState = {
     },
   ],
   unansweredDirected: 2,
+  unansweredStale: 0,
   openAsks: null,
   inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
   announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
@@ -490,6 +492,7 @@ describe('turn-start-orientation — what it says', () => {
     expect(state).toEqual({
       held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
       unansweredDirected: 1,
+      unansweredStale: 0,
       openAsks: null,
       inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
       announcedGates: [{ event: 'fleet:f:ready' }],
@@ -553,6 +556,30 @@ describe('turn-start-orientation — what it says', () => {
 });
 
 describe('turn-start-orientation — what it costs', () => {
+  // EI-20085805220385722 — the stale half must stay VISIBLE without inheriting
+  // the "answer first" priority. Both halves of that are asserted: an agent
+  // whose only asks come from dead senders must not be told to drop its work,
+  // and must not have the obligation silently disappear either.
+  it('reports ended-sender asks WITHOUT the answer-first priority', () => {
+    const out = composeOrientationBlock({
+      state: { ...base, unansweredDirected: 0, unansweredStale: 2 },
+      committed: null,
+      epoch: EPOCH,
+    });
+    expect(out).toContain('2 more from ENDED senders');
+    expect(out).not.toContain('awaiting YOUR reply');
+  });
+
+  it('re-emits when a sender DIES and its ask moves from live to stale', () => {
+    // The total is unchanged, so a fingerprint folding the two together would
+    // suppress precisely the transition the reader needs to see.
+    const live: OrientationState = { ...base, unansweredDirected: 1, unansweredStale: 0 };
+    const died: OrientationState = { ...base, unansweredDirected: 0, unansweredStale: 1 };
+    expect(orientationUnchanged(fingerprintOrientation(live, EPOCH), fingerprintOrientation(died, EPOCH))).toBe(
+      false,
+    );
+  });
+
   it('never exceeds its budget, even with an absurd number of held items', () => {
     const state: OrientationState = {
       ...base,

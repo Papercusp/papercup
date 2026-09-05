@@ -361,6 +361,7 @@ export function isEmptyOrientation(state: OrientationState): boolean {
   return (
     state.held.length === 0 &&
     state.unansweredDirected === 0 &&
+    state.unansweredStale === 0 &&
     state.openAsks === null &&
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
@@ -475,6 +476,11 @@ export function fingerprintOrientation(
       .sort()
       .join(','),
     unanswered: state.unansweredDirected,
+    // EI-20085805220385722: its own token, not folded into `unanswered` — the
+    // two move independently (a sender DYING demotes an ask from one to the
+    // other with the total unchanged, and that transition is exactly what the
+    // reader needs re-emitted).
+    unansweredStale: state.unansweredStale,
     // COUNT ONLY, mirroring `unanswered` above (not identity, not age): a
     // fingerprint keyed on oldestAgeMs would re-emit every turn purely
     // because time passed, defeating the whole point of the diff.
@@ -533,6 +539,7 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.unanswered === b.unanswered &&
     // REQUIRED, same rule as `unanswered` beside it: writing the token in
     // fingerprintOrientation does nothing unless it is compared here.
+    (a.unansweredStale ?? 0) === (b.unansweredStale ?? 0) &&
     (a.openAsks ?? 0) === (b.openAsks ?? 0) &&
     a.inbox === b.inbox &&
     a.gates === b.gates &&
@@ -660,6 +667,14 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
   }
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
+  }
+  // EI-20085805220385722: reported, but deliberately NOT as "answer first" —
+  // the sender is gone, so nobody is blocked and answering costs a turn nobody
+  // reads. Shown so the obligation is visible rather than silently vanished.
+  if (state.unansweredStale > 0) {
+    lines.push(
+      `- ${state.unansweredStale} more from ENDED senders — no one is waiting; close them out, don't prioritise.`,
+    );
   }
   // The reciprocal counter (WI-2142142): asks THIS agent made that a peer has
   // not yet answered. Lower priority than the line above (an ask you are
@@ -884,6 +899,7 @@ export async function resolveOrientationState(
   return {
     held,
     unansweredDirected: inbox.count,
+    unansweredStale: inbox.staleCount ?? 0,
     inboxRecent: inbox.newest,
     announcedGates,
     openAsks,
@@ -956,13 +972,14 @@ export function defaultOrientationDeps(): OrientationDeps {
       return summary
         ? {
             count: summary.count,
+            staleCount: summary.staleCount,
             newest: summary.newest.map((entry) => ({
               msgId: entry.msgId,
               from: entry.from,
               ...(entry.summary ? { summary: entry.summary } : {}),
             })),
           }
-        : { count: 0, newest: [] };
+        : { count: 0, staleCount: 0, newest: [] };
     },
     // WI-2142142: the sender-side mirror of `inbox` above, from the SAME
     // module (unanswered-directed.ts) so the two definitions of "answered"

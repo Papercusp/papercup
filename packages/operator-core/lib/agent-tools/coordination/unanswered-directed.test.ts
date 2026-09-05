@@ -6,6 +6,7 @@ import {
   rowsToUnansweredMap,
   rowsToOpenAsksMap,
   partitionUnansweredByLiveness,
+  decorateUnansweredLiveness,
   UNANSWERED_NEWEST_CAP,
   type UnansweredDirectedRow,
   type UnansweredDirectedSummary,
@@ -423,6 +424,41 @@ describe('partitionUnansweredByLiveness (pure)', () => {
     expect(out.oldestAgeMs).toBe(before.oldestAgeMs);
     expect(out.newest).toEqual(before.newest); // not restamped when nothing moved
     expect(out.staleCountBounded).toBeUndefined();
+  });
+
+  it('an UNKNOWN sender is never presumed dead — the regression that zeroed every counter', async () => {
+    // The defect this guards, measured 2026-09-05: this seam first asked
+    // `resolveSessionStates` for a verdict on bare sender ids. That oracle
+    // answers 'ended' for an id it has never heard of — a bare subject carries
+    // no heartbeat, so not-wakeable + no-live-turn derives death, reported as a
+    // MEASURED verdict (no `signalMissing`, and `heartbeatFresh: true` sits
+    // right beside `ended`). Every unanswered message in the integration suite
+    // went to zero. Only POSITIVE death evidence may demote, so a sender absent
+    // from the ended set must keep counting.
+    const map = new Map([['su-a', summary()]]);
+    const out = await decorateUnansweredLiveness(map, { endedSendersFn: async () => new Set<string>() });
+    expect(out.get('su-a')?.count).toBe(3);
+    expect(out.get('su-a')?.staleCount).toBe(0);
+  });
+
+  it('demotes exactly the senders the evidence names, and nothing else', async () => {
+    const map = new Map([['su-a', summary()]]);
+    const out = await decorateUnansweredLiveness(map, {
+      endedSendersFn: async (ids) => new Set(ids.filter((id) => id === 'su-dead')),
+    });
+    expect(out.get('su-a')?.count).toBe(1);
+    expect(out.get('su-a')?.staleCount).toBe(2);
+  });
+
+  it('a THROWING evidence read leaves the map unpartitioned', async () => {
+    const map = new Map([['su-a', summary()]]);
+    const out = await decorateUnansweredLiveness(map, {
+      endedSendersFn: async () => {
+        throw new Error('adv_sessions unavailable');
+      },
+    });
+    expect(out.get('su-a')?.count).toBe(3);
+    expect(out.get('su-a')?.staleCount).toBe(0);
   });
 
   it('a summary with no rollup is a no-op — never a silent demotion to zero', () => {

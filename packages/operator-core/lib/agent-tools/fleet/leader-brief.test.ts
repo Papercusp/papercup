@@ -1569,7 +1569,14 @@ describe('projectMember (pure)', () => {
   });
 
   it('carries `unanswered` verbatim when the decoration stamped one', () => {
-    const unanswered = { count: 2, oldestAgeMs: 90_000, newest: [{ msgId: 'm1', from: 'su-2', ageMs: 1000 }] };
+    const unanswered = {
+      count: 2,
+      oldestAgeMs: 90_000,
+      newest: [{ msgId: 'm1', from: 'su-2', ageMs: 1000 }],
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      senders: [{ from: 'su-2', count: 2, oldestAgeMs: 90_000 }],
+    };
     const m = projectMember(baseAgent({ unanswered }), NOW);
     expect(m.unanswered).toEqual(unanswered);
   });
