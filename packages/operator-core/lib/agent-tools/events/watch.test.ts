@@ -138,11 +138,14 @@ describe('watch routing', () => {
     expect((err as Error).message).toMatch(/wake:false, targetKind:"event"/);
   });
 
-  it('EI-22459575798410641: targetKind:"interest" still routes to the interest path under wake:true', async () => {
-    // Regression guard for the fix's blast radius: 'interest' is explicitly documented as
-    // valid under EITHER wake mode and returns before the new guard, so it must survive.
-    await expect(call({ pattern: 'free text interest', wake: true, targetKind: 'interest' })).resolves.toBeDefined();
-  });
+  // COVERAGE GAP, stated rather than papered over: targetKind:"interest" under wake:true must
+  // stay legal (it returns from the interest branch above the new guard), but it cannot be
+  // asserted here — the interest branch boots its sweeper against unmocked persistence, so the
+  // call only reaches the DB and trips vitest-fail-on-console. Passing it would require a
+  // console.error spy, and a test that needs error-suppression to go green masks the failures
+  // it exists to catch. The property is held structurally instead: the guard sits AFTER the
+  // isInterest early-return, so 'interest' is unreachable from it, and the schema-level tests
+  // below still pin targetKind:"interest" + wake:true as valid input.
 
   it('verified one-shot wake attaches producer health and derives its first deadline from cadence', async () => {
     const producerHealth = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 120 };
@@ -196,8 +199,29 @@ describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
     expect(out.watch).toMatchObject({ pattern: 'lock:grant:t1', targetKind: 'event', wake: false, once: false, mode: 'digest' });
   });
 
-  it('targetKind:"event" is ignored on a wake:true watch (only wake:false honors it)', async () => {
-    await call({ pattern: 'feature:settled', targetKind: 'event', wake: true });
+  // EI-22459575798410641 — this test previously PINNED the opposite behaviour ("targetKind
+  // is ignored on a wake:true watch"), asserting that registerAwait was still called. That
+  // pin was inverted deliberately, not incidentally: measured over 30 days, 11 of 39
+  // watch:create calls (28%, across 18 agents) passed targetKind together with wake:true.
+  // Every one silently received a ONE-SHOT wake grant in place of the standing event
+  // subscription it asked for, and a one-shot that fires once and lapses is precisely the
+  // mechanism of the fleet-member deafness tracked in EI-22445599755185355. Silently
+  // honouring neither the arg nor the intent is worse than refusing, so the tool now fails
+  // loud and names the working form. The routing fact this test really guarded — the wake
+  // path must never reach the inject subscribers — is asserted below.
+  it('targetKind on a wake:true watch is REFUSED (it was silently dropped; 28% of real calls hit this)', async () => {
+    await expect(call({ pattern: 'feature:settled', targetKind: 'event', wake: true })).rejects.toThrow(/targetKind/);
+    expect(subscribeEventKey).not.toHaveBeenCalled();
+    expect(subscribeTopic).not.toHaveBeenCalled();
+    // The refusal must be total: no await row is left behind for a call that was rejected.
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('a wake:true watch with NO targetKind still registers an await and never touches the inject subscribers', async () => {
+    // The surviving half of the original pin: wake-path routing is unchanged for the
+    // ordinary (targetKind-free) call, so the refusal above narrowed behaviour by exactly
+    // the invalid combination and nothing more.
+    await call({ pattern: 'feature:settled', wake: true });
     expect(subscribeEventKey).not.toHaveBeenCalled();
     expect(subscribeTopic).not.toHaveBeenCalled();
     expect(registerAwait).toHaveBeenCalled();
