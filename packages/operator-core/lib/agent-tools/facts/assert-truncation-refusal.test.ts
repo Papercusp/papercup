@@ -170,6 +170,97 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     expect(assertFactSpy).not.toHaveBeenCalled();
   });
 
+  /**
+   * EI-20190692981938411 — the refusal reported `truncationField().droppedChars`
+   * as the amount "over the cap". Those are two different quantities: droppedChars
+   * is what a CLIP would discard, and clampFactBody backs up to a sentence/word
+   * boundary, so it exceeds the true overage by however far it backed up. The
+   * caller was then told to cut a number that did not answer "how much am I over?",
+   * and could not derive the real one (the cap applies AFTER slot normalization).
+   * Measured live: 3 round-trips for one write.
+   */
+  describe('refusal arithmetic — measured length + the exact cut (EI-20190692981938411)', () => {
+    /** The refusal message, or a hard failure if the handler did not refuse. */
+    async function refusalMessage(key: string, body: string): Promise<string> {
+      try {
+        await assertTool.handler({ scope: 'owner', scopeRef: 'su-test', key, body } as never, ctx);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error('expected facts:assert to REFUSE the over-cap body, but it resolved');
+    }
+
+    // Sentence-shaped, so clampFactBody clips at a boundary well short of the cap —
+    // the case where droppedChars and the true overage diverge.
+    const SENTENCE = 'This is a sentence of some length that ends here. ';
+    const OVERAGE = 7;
+    const sentenceBody = SENTENCE.repeat(
+      Math.ceil((FACT_BODY_MAX_CHARS + OVERAGE) / SENTENCE.length),
+    ).slice(0, FACT_BODY_MAX_CHARS + OVERAGE);
+
+    it('reports the MEASURED length and the true overage, not the clip size', async () => {
+      // Calibration: this fixture is only meaningful while the two numbers differ.
+      // If clampFactBody ever stops backing up to a boundary, this assertion fails
+      // loudly rather than letting the test below silently prove nothing.
+      const droppedChars = sentenceBody.trim().length - clampFactBody(sentenceBody).length;
+      expect(sentenceBody.trim().length).toBe(FACT_BODY_MAX_CHARS + OVERAGE);
+      expect(droppedChars).toBeGreaterThan(OVERAGE);
+
+      const message = await refusalMessage('k-measured-length', sentenceBody);
+
+      // The measured length, stated outright — the caller cannot compute it, because
+      // the cap is applied to the post-normalization string.
+      expect(message).toContain(`${FACT_BODY_MAX_CHARS + OVERAGE} chars measured after normalization`);
+      // The true overage against the cap, and the actionable instruction built on it.
+      expect(message).toContain(`${OVERAGE} over the ${FACT_BODY_MAX_CHARS}-char cap`);
+      expect(message).toContain(`CUT AT LEAST ${OVERAGE} CHARS`);
+      // THE REGRESSION, pinned to the EXACT pre-fix wording. Matching the looser
+      // `${droppedChars} over the` would be vacuous: the old message read
+      // "54 char(s) over the 1200-char cap", so that pattern missed it and the
+      // assertion would have passed against the bug it is meant to catch.
+      expect(message).not.toMatch(new RegExp(String.raw`${droppedChars} char\(s\) over the`));
+      // The clip size is still disclosed — it is real information, just not the cut.
+      expect(message).toContain(`discard ${droppedChars} char(s)`);
+      expect(assertFactSpy).not.toHaveBeenCalled();
+    });
+
+    it('cutting exactly the advertised number of chars makes the write fit', async () => {
+      // The message promises "CUT AT LEAST N CHARS and it fits". That promise is the
+      // whole point of the item, so assert it end-to-end rather than trusting the
+      // arithmetic: cut exactly N and the very next call must reach the write path.
+      const trimmed = sentenceBody.slice(0, sentenceBody.length - OVERAGE);
+      // "AT LEAST" is load-bearing: cutting exactly N lands the body ON the cap, and
+      // the store's own .trim() may shave a little further when the cut falls on a
+      // sentence boundary (here 1199, not 1200). Both satisfy the promise, so assert
+      // the promise — within the cap — rather than pinning an exact length.
+      expect(trimmed.trim().length).toBeLessThanOrEqual(FACT_BODY_MAX_CHARS);
+
+      const result = await assertTool.handler(
+        { scope: 'owner', scopeRef: 'su-test', key: 'k-exact-cut', body: trimmed } as never,
+        ctx,
+      );
+      expect(assertFactSpy).toHaveBeenCalledTimes(1);
+      expect(payloadOf(result).ok).toBe(true);
+      // Landing exactly ON the cap must not be disclosed as a clipped write.
+      expect(payloadOf(result).truncated).toBeUndefined();
+    });
+
+    it('does not claim the clip discards more than the overage when it hard-cuts', async () => {
+      // A single unbroken token has no boundary to back up to, so clampFactBody hard-
+      // cuts at the cap and the two numbers coincide. The explanatory clause is
+      // conditional precisely so it cannot state a falsehood here.
+      const body = 'z'.repeat(FACT_BODY_MAX_CHARS + 137);
+      expect(body.trim().length - clampFactBody(body).length).toBe(137);
+
+      const message = await refusalMessage('k-hard-cut', body);
+
+      expect(message).toContain(`${FACT_BODY_MAX_CHARS + 137} chars measured after normalization`);
+      expect(message).toContain(`137 over the ${FACT_BODY_MAX_CHARS}-char cap`);
+      expect(message).toContain('discard 137 char(s)');
+      expect(message).not.toContain('more than the overage');
+    });
+  });
+
   it('does NOT refuse (and reaches the write path) for a body within the cap', async () => {
     // A within-cap body must sail past the refusal check straight to assertFact.
     // Asserted at the write boundary itself — the handler resolves cleanly and

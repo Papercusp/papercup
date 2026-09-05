@@ -449,10 +449,33 @@ function normalizeFactInput(key: string, body: string, slot?: FactSafetySlot): {
 function truncationRefusal(body: string): string | undefined {
   const preview = truncationField(body, clampFactBody(body));
   if (!preview) return undefined;
+  // EI-20190692981938411: the refusal used to report `preview.droppedChars` as the
+  // amount "over the cap", which is a DIFFERENT quantity and left each retry a guess
+  // (measured live: 3 round-trips for one write). Two numbers were collapsed into one:
+  //   overage            = bodyChars - cap — the true excess, and so the SMALLEST cut
+  //                        that fits (cutting exactly this lands the body ON the cap);
+  //   preview.droppedChars = what a CLIP would actually discard, which is larger
+  //                        whenever clampFactBody backs up to a sentence/word boundary
+  //                        rather than hard-cutting. Measured: a body 7 chars over the
+  //                        1200 cap reported "54 char(s) over" — a 47-char misstatement.
+  // Both are worth saying, but only the first answers "how much do I cut?". The caller
+  // also cannot derive either from their side, because the cap is applied AFTER slot
+  // normalization — hence stating the measured length explicitly rather than expecting
+  // them to measure the string they sent.
+  const bodyChars = body.trim().length;
+  const overage = bodyChars - FACT_BODY_MAX_CHARS;
+  // Only claim the clip discards MORE than the overage when it actually does — on a
+  // pathological single-sentence body the clamp hard-cuts and the two coincide.
+  const clipNote =
+    preview.droppedChars > overage
+      ? `Clipping instead would discard ${preview.droppedChars} char(s) — more than the overage, because the ` +
+        `clip backs up to a sentence/word boundary — silently dropping`
+      : `Clipping instead would discard ${preview.droppedChars} char(s), silently dropping`;
   return (
-    `facts:assert — body is ${preview.droppedChars} char(s) over the ${FACT_BODY_MAX_CHARS}-char cap and would be ` +
-    `CLIPPED, silently dropping this operative tail: "${preview.droppedTail ?? '(tail unavailable)'}". No write ` +
-    `happened. Either shorten the body to front-load the operative clause within ${FACT_BODY_MAX_CHARS} chars, or ` +
+    `facts:assert — body is ${bodyChars} chars measured after normalization, ${overage} over the ` +
+    `${FACT_BODY_MAX_CHARS}-char cap: CUT AT LEAST ${overage} CHARS and it fits. No write happened. ` +
+    `${clipNote} this operative tail: "${preview.droppedTail ?? '(tail unavailable)'}". ` +
+    `Either shorten the body to front-load the operative clause within ${FACT_BODY_MAX_CHARS} chars, or ` +
     `re-call with acceptTruncation:true to force the clipped write through anyway.`
   );
 }
