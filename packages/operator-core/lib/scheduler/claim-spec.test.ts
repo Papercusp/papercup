@@ -605,14 +605,26 @@ describe('claim-spec `view.fence` macro — server-side expansion (WI-6050)', ()
     expect(words).toContain('p2p');
     expect(words).toContain('replication'); // WI-5639's leaked term — the single highest-value entry
     // EI-20240035377782004: buildP2pLaneFence excludes on EITHER `title` OR
-    // `summary` matching (title-only was the live scope leak) — every term
-    // therefore produces TWO leaves, one per field, both `word`-matched.
+    // `summary` matching (title-only was the live scope leak).
+    // WI-5280: `plan` is the structural THIRD leg — a P2P plan can deliberately
+    // use neutral item titles and summaries, so content-only matching cannot
+    // describe a non-P2P lane. Every term therefore produces THREE leaves, one
+    // per field, all `word`-matched.
+    const FENCE_FIELDS = ['title', 'summary', 'plan'] as const;
     filter.not.any.forEach((leaf) => {
-      expect(['title', 'summary']).toContain(leaf.field);
+      expect(FENCE_FIELDS).toContain(leaf.field);
       expect(leaf.op).toBe('word');
     });
     const fields = new Set(filter.not.any.map((leaf) => leaf.field));
-    expect(fields).toEqual(new Set(['title', 'summary']));
+    expect(fields).toEqual(new Set(FENCE_FIELDS));
+    // WI-2145984: pin the legs per-TERM, not just as a set. The set assertion
+    // alone still passes if one field silently stops covering some terms (the
+    // exact shape of the title-only scope leak), because other terms keep the
+    // field present in the set.
+    for (const field of FENCE_FIELDS) {
+      const covered = filter.not.any.filter((leaf) => leaf.field === field).map((leaf) => leaf.value);
+      expect(new Set(covered)).toEqual(new Set(words));
+    }
   });
 });
 
