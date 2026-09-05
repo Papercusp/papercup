@@ -223,7 +223,7 @@
 }
 .pc-dev-api-desc {
   margin: 8px 0 0 0;
-  color: #cbd5e1;
+  color: var(--fg-dim, #cbd5e1);
 }
 
 .pc-dev-api-ctx,
@@ -336,7 +336,7 @@
   color: #fbbf24;
 }
 .pc-header-nav-link.is-dev:hover {
-  color: #fde68a;
+  color: var(--warn, #fde68a);
 }
 
 /* ── Tab bodies ───────────────────────────────────── */
@@ -1555,7 +1555,7 @@
   border: 1px solid transparent;
   border-left: 3px solid transparent;
   border-radius: 6px;
-  color: #d8e5ef;
+  color: var(--fg-dim, #d8e5ef);
   transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
 }
 
@@ -1568,7 +1568,7 @@
   background: color-mix(in srgb, var(--accent), transparent 90%);
   border-color: color-mix(in srgb, var(--accent), transparent 76%);
   border-left-color: var(--pc-dev-accent);
-  color: #eaf8ff;
+  color: var(--fg, #eaf8ff);
 }
 
 .pc-dev-tab-label {
@@ -1606,7 +1606,7 @@
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 82%);
   border-radius: 7px;
   background: color-mix(in srgb, var(--accent-strong), transparent 95.5%);
-  color: #d8e5ef;
+  color: var(--fg, #d8e5ef);
   cursor: pointer;
   font: inherit;
 }
@@ -1692,7 +1692,7 @@
 .pc-sql-role select {
   background: color-mix(in srgb, var(--bg-deepest), transparent 18%);
   border-color: color-mix(in srgb, var(--accent-strong), transparent 82%);
-  color: #edf6ff;
+  color: var(--fg, #edf6ff);
 }
 
 .pc-dev-input:focus,
@@ -1731,7 +1731,7 @@
 .pc-tables-add-filter,
 .pc-tables-composer-cancel {
   border-color: color-mix(in srgb, var(--accent-strong), transparent 78%);
-  color: #b9e7ff;
+  color: var(--accent-strong, #b9e7ff);
 }
 
 .pc-dev-btn-mini:hover,
@@ -1877,7 +1877,7 @@
 }
 
 .pc-dev-api-tool.has-required .pc-dev-api-tool-name {
-  color: #eaf8ff;
+  color: var(--fg, #eaf8ff);
 }
 
 .pc-dev-api-tool-badges {
@@ -1989,7 +1989,7 @@
 .pc-tables-row.is-active {
   background: color-mix(in srgb, var(--accent), transparent 88%);
   border-left-color: var(--pc-dev-accent);
-  color: #eaf8ff;
+  color: var(--fg, #eaf8ff);
 }
 
 .pc-tables-main {
@@ -2091,7 +2091,7 @@
 
 .pc-sql-title strong,
 .pc-studio-toolbar-title {
-  color: #edf6ff;
+  color: var(--fg, #edf6ff);
   font-size: 13px;
 }
 
@@ -2171,7 +2171,7 @@
 .pc-dev-backups-terminal header button {
   background: color-mix(in srgb, var(--accent-strong), transparent 94.5%);
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 78%);
-  color: #dceefa;
+  color: var(--fg, #dceefa);
 }
 
 .pc-dev-backups-actions button:hover:not(:disabled),
