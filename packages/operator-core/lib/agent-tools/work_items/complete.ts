@@ -3281,12 +3281,29 @@ async function completeOne(
   } catch {
     /* fail-open: the completion record must never be lost to a criteria evaluation fault */
   }
-  const terminalCriteriaUnmet = authorityWithFindings === 'committed' && terminalCriteria?.downgrade === true;
+  // D-018: the ENFORCEMENT kill-switch. This gate changes close outcomes for ~6.1% of
+  // committed bug/change closes fleet-wide the moment it deploys, so it needs a rollback
+  // that is not a revert. OFF suppresses ONLY the downgrade — the evaluator above has
+  // already run and its verdict is still reported, so the gate stays MEASURABLE while
+  // disabled rather than becoming a blind spot.
+  //
+  // The read fails SAFE-ON, not safe-off: the flag's own default is ON, so a transient
+  // flag-store fault resolves to the shipped behaviour instead of silently disabling the
+  // gate for every agent at once. This is the opposite direction from D-003's fail-open,
+  // and deliberately so — D-003 protects the completion RECORD from an evaluator fault,
+  // whereas this protects ENFORCEMENT from a flag-read fault. Neither can lose a record.
+  const terminalCriteriaEnforced = terminalCriteria?.downgrade
+    ? await getFlag(FLAGS.TERMINAL_CRITERIA_ENFORCEMENT, activeWorkspaceId()).catch(() => true)
+    : true;
+  const terminalCriteriaUnmet =
+    terminalCriteriaEnforced && authorityWithFindings === 'committed' && terminalCriteria?.downgrade === true;
   const terminalCriteriaWarning = terminalCriteria?.downgrade
     ? `completion for ${it.id}: ${terminalCriteria.warning}` +
       (terminalCriteriaUnmet
         ? ` Authority landed 'proposed' rather than 'committed' as a result.`
-        : ` Authority was already '${authorityWithFindings}', so this did not change it.`) +
+        : !terminalCriteriaEnforced
+          ? ` Enforcement is DISABLED (flag ${FLAGS.TERMINAL_CRITERIA_ENFORCEMENT} is off), so authority stayed '${authorityWithFindings}'; this verdict is recorded but not applied.`
+          : ` Authority was already '${authorityWithFindings}', so this did not change it.`) +
       (terminalCriteria.refusedDeclaration ? ` Note: ${terminalCriteria.refusedDeclaration}` : '')
     : undefined;
   const completionAuthority =
