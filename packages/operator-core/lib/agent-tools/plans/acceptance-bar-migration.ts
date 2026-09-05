@@ -17,6 +17,8 @@ import { runAcceptanceBarMigrationInDatabase } from '../../acceptance-bar-migrat
 const argsSchema = z.object({
   harness: harnessArg,
   planSlug: z.string().min(1).max(200).optional().describe('Optional single-plan scope for a controlled dogfood pass.'),
+  legacyCriterionMap: z.record(z.string().regex(/^R-\d+$/), z.string().min(1)).optional()
+    .describe('First backfill only: explicit R-N to existing acceptance criterion key mapping. Must cover both complete sets one-to-one. Preserves existing identity, outcome, falsifier and METHOD; never rewrites a locked BAR contract. Requires planSlug.'),
   cursor: z.string().min(1).max(500).optional().describe('Slug cursor returned by a prior page.'),
   batchSize: z.number().int().positive().max(500).optional().describe('Plans per page (default 25).'),
   dryRun: z
@@ -42,6 +44,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    if (args.legacyCriterionMap && !args.planSlug) throw new Error('invalid_args: legacyCriterionMap requires a single planSlug');
     const sctx = harnessScopedCtx(args.harness, ctx);
     const { workspaceId, harnessSlug } = await resolvePlanWriteScope(sctx);
     const actorId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
@@ -53,6 +56,7 @@ export default defineTool({
       cursor: args.cursor,
       batchSize: args.batchSize,
       dryRun: args.dryRun,
+      legacyCriterionMap: args.legacyCriterionMap,
     });
     const ctxAny = ctx as { metadata?: (data: Record<string, unknown>) => void };
     ctxAny.metadata?.({

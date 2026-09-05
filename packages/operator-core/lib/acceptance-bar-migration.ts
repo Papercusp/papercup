@@ -114,6 +114,7 @@ export interface AcceptanceBarMigrationDatabaseOptions {
   cursor?: string | null;
   batchSize?: number;
   dryRun?: boolean;
+  legacyCriterionMap?: Record<string, string>;
   now?: Date;
 }
 
@@ -305,6 +306,7 @@ export async function runAcceptanceBarMigrationInDatabase(
           adoptionEpoch: Number(current.acceptance_bar_epoch ?? 1),
           cohort,
           backfilled: decision.action === 'legacy-backfill',
+          legacyCriterionMap: options.legacyCriterionMap,
           actorId: options.actorId,
           now,
         });

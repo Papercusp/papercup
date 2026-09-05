@@ -90,6 +90,27 @@ describe('Requirements BAR parser', () => {
 });
 
 describe('acceptance BAR seed builder', () => {
+  it('adopts explicitly mapped legacy criteria without losing their identity, stronger outcomes or METHODS', () => {
+    const existing = { kind: 'acceptance', subjectPlan: input.planSlug, characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], criteria: [
+        { key: 'persisted-outcome', title: 'Persisted outcome', model: 'The canonical bar is durably persisted and immediately readable.', method: 'Run the exact roundtrip fixture.', driftMarkers: 'The read misses the committed value.' },
+        { key: 'visible-outcome', title: 'Visible outcome', model: 'The live service exposes the current verdict and its exact revision.', method: 'Read the service verdict and compare the revision.', driftMarkers: 'The response names an older revision.' },
+      ] };
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: existing }).ok).toBe(false);
+    const map = { 'R-1': 'persisted-outcome', 'R-2': 'visible-outcome' };
+    const built = buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: existing,
+      backfilled: true, legacyCriterionMap: map });
+    expect(built.ok).toBe(true);
+    if (!built.ok) throw new Error(built.message);
+    expect(built.criteria[0]).toMatchObject({ ...existing.criteria[0], barKey: 'R-1',
+      barProvenance: { lifecycle: 'legacy-backfilled' } });
+    expect(built.templateData.barContract).toMatchObject({ cohort: 'post-epoch' });
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: existing,
+      backfilled: true, legacyCriterionMap: { 'R-1': 'persisted-outcome', 'R-2': 'persisted-outcome' } }).ok).toBe(false);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), existingTemplateData: built.templateData,
+      backfilled: true, legacyCriterionMap: map }).ok).toBe(false);
+  });
+
   it('creates one mandatory outcome per requirement and one hash-pinned clause per map edge', () => {
     const built = buildAcceptanceBarSeed({ ...input, planContent: plan() });
     expect(built.ok).toBe(true);

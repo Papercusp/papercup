@@ -138,6 +138,29 @@ async function insertPlan(slug: string, content: string, status: string) {
 }
 
 describe('runAcceptanceBarMigrationInDatabase', () => {
+  it('adopts a complete explicit legacy-criterion map through the canonical transaction', async () => {
+    await insertPlan('legacy-identity', validContent('legacy-identity', 'active'), 'active');
+    const legacy = { kind: 'acceptance', subjectPlan: 'legacy-identity', characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], criteria: [{
+        key: 'canonical-outcome', title: 'Canonical outcome', model: 'The migration writes one canonical BAR and retains its immutable history.',
+        method: 'Run the real database migration and replay.', driftMarkers: 'A canonical revision is absent or overwritten.',
+      }] };
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
+      VALUES (${WORKSPACE},${HARNESS},'acceptance-legacy-identity','Legacy acceptance','active','legacy body',md5('legacy body'),3,'rubric',${JSON.stringify(legacy)}::jsonb)`;
+    const before = await runAcceptanceBarMigrationInDatabase({ workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      actorId: 'su-migration-test', planSlug: 'legacy-identity' });
+    expect(before.outcomes[0]!.status).toBe('failed');
+    const result = await runAcceptanceBarMigrationInDatabase({ workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      actorId: 'su-migration-test', planSlug: 'legacy-identity', legacyCriterionMap: { 'R-1': 'canonical-outcome' } });
+    expect(result.outcomes[0], result.outcomes[0]!.detail).toMatchObject({ status: 'applied' });
+    const [rubric] = await db.sql`SELECT version,template_data FROM harness_shared.harness_plans
+      WHERE plan_slug='acceptance-legacy-identity'`;
+    expect(Number(rubric.version)).toBe(4);
+    expect(rubric.template_data.criteria[0]).toMatchObject({ ...legacy.criteria[0], barKey: 'R-1', mandatory: true,
+      barProvenance: { lifecycle: 'legacy-backfilled' } });
+  });
+
   it('keeps a post-epoch executable plan in its cohort while recording honestly backfilled BARs', async () => {
     await insertPlan('strict-late-bars', validContent('strict-late-bars', 'active'), 'active');
     await db.sql`UPDATE harness_shared.harness_plans

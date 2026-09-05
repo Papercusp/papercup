@@ -84,6 +84,8 @@ export interface AcceptanceBarSeedBuildInput {
   cohort: AcceptanceBarCohort;
   /** Server-owned late-authoring provenance; independent of enforcement cohort. */
   backfilled?: boolean;
+  /** Explicit R-N → existing criterion identity adoption, only before a BAR contract exists. */
+  legacyCriterionMap?: Record<string, string>;
   adoptionEpoch: number;
   subjectPlanRevision: number;
   rubricSlug: string;
@@ -368,13 +370,24 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       detail: `rubric '${input.rubricSlug}' is not the acceptance rubric for '${input.planSlug}'`,
     }]);
   }
+  const legacyMap = input.legacyCriterionMap;
+  if (legacyMap && (!input.backfilled || !existing || existing.barContract ||
+      Object.keys(legacyMap).length !== requirements.bars.length ||
+      new Set(Object.values(legacyMap)).size !== existing.criteria.length ||
+      existing.criteria.length !== requirements.bars.length ||
+      requirements.bars.some((bar) => !existing.criteria.some((criterion) =>
+        criterion.key === legacyMap[bar.barKey] && criterion.role !== 'disclosure' && criterion.model?.trim())))) {
+    return refusal([{ code: 'bar_rubric_conflict',
+      detail: 'legacyCriterionMap must bijectively map every Requirements BAR to every existing outcome criterion, only during first backfill' }]);
+  }
   const existingByBar = new Map(
     (existing?.criteria ?? [])
       .filter((criterion) => criterion.barKey)
       .map((criterion) => [criterion.barKey!, criterion] as const),
   );
   const extras = (existing?.criteria ?? []).filter(
-    (criterion) => !criterion.barKey || !mappingByKey.has(criterion.barKey),
+    (criterion) => (!criterion.barKey || !mappingByKey.has(criterion.barKey)) &&
+      !Object.values(legacyMap ?? {}).includes(criterion.key),
   );
   if (extras.length > 0) {
     return refusal([{
@@ -385,6 +398,17 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
 
   const criteria = requirements.bars.map((bar) => {
     const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input);
+    const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
+    if (legacy) {
+      // Keep the graded identity, full outcome, falsifier and METHOD intact.
+      // Adoption adds structural BAR pins; it must not weaken an older rubric
+      // whose outcome text is more precise than the original Requirements seed.
+      return normalizeAcceptanceBarCriterion({ ...legacy,
+        barKey: bar.barKey, role: 'outcome', mandatory: true,
+        requiredScope: seeded.requiredScope, evidencePlane: seeded.evidencePlane,
+        passRatings: seeded.passRatings, barProvenance: seeded.barProvenance,
+      });
+    }
     const prior = existingByBar.get(bar.barKey);
     if (!prior || prior.barHash !== seeded.barHash) return seeded;
     return {
@@ -492,6 +516,7 @@ export interface TransactionalAcceptanceBarSeedInput {
   cohort: AcceptanceBarCohort;
   /** Only the canonical migration adapter sets this from its classified action. */
   backfilled?: boolean;
+  legacyCriterionMap?: Record<string, string>;
   actorId: string;
   now: Date;
 }
@@ -600,6 +625,7 @@ export async function seedAcceptanceBarsInTransaction(
     declaredAt: seedInstant,
     cohort: input.cohort,
     backfilled: input.backfilled,
+    legacyCriterionMap: input.legacyCriterionMap,
     adoptionEpoch: input.adoptionEpoch,
     subjectPlanRevision: input.planVersion,
     rubricSlug,
@@ -639,7 +665,9 @@ export async function seedAcceptanceBarsInTransaction(
         return Boolean(next && next.barHash === criterion.barHash);
       })
     : false;
-  if (existing && input.planStatus !== 'draft' && !sameBarMeaning) {
+  const adoptingLegacy = input.backfilled && input.legacyCriterionMap &&
+    existingTemplate?.success && !existingTemplate.data.barContract;
+  if (existing && input.planStatus !== 'draft' && !sameBarMeaning && !adoptingLegacy) {
     return refusal([{
       code: 'bar_amendment_required',
       detail: `Requirements changed BAR meaning after plan status '${input.planStatus ?? 'unknown'}'; use the amendment transaction`,
