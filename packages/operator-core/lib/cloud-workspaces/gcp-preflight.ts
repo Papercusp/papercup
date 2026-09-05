@@ -116,7 +116,12 @@ export const GCP_DEFAULT_WORKSPACE_HOST_IMAGE = {
 } as const;
 
 const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-const SERVICE_ACCOUNT_EMAIL = /^[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com$/;
+// User-managed service accounts use `<name>@<project>.iam.gserviceaccount.com`, while
+// Compute Engine's Google-managed default identity uses the distinct
+// `<project-number>-compute@developer.gserviceaccount.com` form.  Keep the latter exact — an
+// arbitrary address on developer.gserviceaccount.com must not become a service-account bypass.
+const SERVICE_ACCOUNT_EMAIL =
+  /^(?:[^@\s]+@[^@\s]+\.iam\.gserviceaccount\.com|\d+-compute@developer\.gserviceaccount\.com)$/;
 const SAFE_CREDENTIAL_TYPES = new Set([
   'authorized_user',
   'impersonated_service_account',
@@ -927,11 +932,17 @@ export async function runGcpWorkspaceHostPreflight(
     }>(
       fetchImpl,
       token,
-      `https://compute.googleapis.com/compute/v1/projects/${encodedProject}?fields=quotas(metric,limit,usage)`,
+      // Compute's project endpoint answers the nested selector
+      // `fields=quotas(metric,limit,usage)` with HTTP 200 + `{}`. Requesting the repeated field
+      // itself preserves all three quota members and avoids turning a malformed partial-response
+      // selector into a false-green zero-row census.
+      `https://compute.googleapis.com/compute/v1/projects/${encodedProject}?fields=quotas`,
     );
     quotas = (computeProject.quotas ?? []).map(quotaSnapshot).filter((entry): entry is GcpQuotaSnapshot => !!entry);
     const exhausted = quotas.filter((quota) => quota.limit > 0 && quota.remaining <= 0);
-    if (exhausted.length === 0)
+    if (quotas.length === 0)
+      checks.push(checkFailure('quotas', 'Compute quota verification returned no parseable quota metrics.'));
+    else if (exhausted.length === 0)
       checks.push({
         id: 'quotas',
         status: 'pass',

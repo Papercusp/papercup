@@ -12,6 +12,7 @@ import {
 
 const SECRET = 'ya29.this-access-token-must-never-escape';
 const PROJECT = 'active-alcove-504205-q3';
+const DEFAULT_COMPUTE_SERVICE_ACCOUNT = '243118361453-compute@developer.gserviceaccount.com';
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
@@ -121,14 +122,17 @@ describe('GCP workspace-host credential references', () => {
     ]);
   });
 
-  it('refuses a service-account identity imported into gcloud before requesting a token', async () => {
-    const exec = vi.fn(async () => ({ stdout: 'canary@example.iam.gserviceaccount.com\n' }));
+  it.each(['canary@example.iam.gserviceaccount.com', DEFAULT_COMPUTE_SERVICE_ACCOUNT])(
+    'refuses service-account identity %s imported into gcloud before requesting a token',
+    async (identity) => {
+      const exec = vi.fn(async () => ({ stdout: `${identity}\n` }));
 
-    await expect(acquireGcpGcloudActiveUserAuth({ exec })).rejects.toThrow(
-      'gcp_gcloud_active_user_service_account_forbidden',
-    );
-    expect(exec).toHaveBeenCalledTimes(1);
-  });
+      await expect(acquireGcpGcloudActiveUserAuth({ exec })).rejects.toThrow(
+        'gcp_gcloud_active_user_service_account_forbidden',
+      );
+      expect(exec).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('fails closed on a service-account ADC file before the ADC token supplier runs', async () => {
     const acquireAdcAuth = vi.fn(async () => ({ accessToken: SECRET }));
@@ -268,6 +272,10 @@ describe('GCP workspace-host preflight', () => {
     expect(report.selectedImage?.name).toBe('ubuntu-2404-noble-amd64-v20260801');
     expect(JSON.stringify(report)).not.toMatch(/ya29\.|refresh_token|private_key|client_secret/);
 
+    const quotaCall = vi.mocked(fetchImpl).mock.calls.find(([url]) => String(url).includes('/compute/v1/projects/'));
+    expect(String(quotaCall?.[0])).toContain('?fields=quotas');
+    expect(String(quotaCall?.[0])).not.toContain('quotas(');
+
     const iamCall = vi.mocked(fetchImpl).mock.calls.find(([url]) => String(url).includes(':testIamPermissions'));
     expect(JSON.parse(String(iamCall?.[1]?.body))).toEqual({
       permissions: [...GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS],
@@ -315,6 +323,23 @@ describe('GCP workspace-host preflight', () => {
     expect(iam?.remediation?.suggestedRoles).toContain('roles/iap.tunnelResourceAccessor');
     expect(iam?.remediation?.suggestedRoles).toContain('roles/compute.networkAdmin');
     expect(report.checks.find((check) => check.id === 'quotas')?.remediation?.code).toBe('increase-quota');
+  });
+
+  it.each([
+    { label: 'empty', quotas: [] },
+    { label: 'unparseable', quotas: [{ metric: 'CPUS_ALL_REGIONS' }] },
+  ])('fails closed when the Compute quota response is $label', async ({ quotas }) => {
+    const report = await runGcpWorkspaceHostPreflight(
+      {},
+      deps({ fetch: successFetch({ '?fields=quotas': json({ quotas }) }) }),
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.quotas).toEqual([]);
+    expect(report.checks.find((check) => check.id === 'quotas')).toMatchObject({
+      status: 'fail',
+      summary: 'Compute quota verification returned no parseable quota metrics.',
+    });
   });
 
   it('requires the image permissions the workspace-host release path actually calls', () => {
@@ -408,6 +433,32 @@ describe('GCP workspace-host preflight', () => {
     expect(
       vi.mocked(fetchImpl).mock.calls.some(([url]) => String(url).includes('workspace-runtime%40example-project')),
     ).toBe(true);
+  });
+
+  it('accepts the canonical default Compute Engine service account and checks actAs on that exact identity', async () => {
+    const fetchImpl = successFetch();
+    const report = await runGcpWorkspaceHostPreflight(
+      { runtimeServiceAccount: DEFAULT_COMPUTE_SERVICE_ACCOUNT },
+      deps({ fetch: fetchImpl }),
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.checks.find((check) => check.id === 'iam.serviceAccount')).toMatchObject({ status: 'pass' });
+    expect(
+      vi
+        .mocked(fetchImpl)
+        .mock.calls.some(([url]) => String(url).includes(encodeURIComponent(DEFAULT_COMPUTE_SERVICE_ACCOUNT))),
+    ).toBe(true);
+  });
+
+  it.each([
+    'workspace-runtime@developer.gserviceaccount.com',
+    '243118361453-worker@developer.gserviceaccount.com',
+    '243118361453-compute@developer.gserviceaccount.com.example.org',
+  ])('rejects non-canonical default-service-account lookalike %s', async (runtimeServiceAccount) => {
+    await expect(runGcpWorkspaceHostPreflight({ runtimeServiceAccount }, deps())).rejects.toThrow(
+      'gcp_preflight_invalid_runtime_service_account',
+    );
   });
 });
 
