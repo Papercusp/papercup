@@ -38,6 +38,7 @@
 // package leaves it inferred for the same reason.
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE, GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
+import { budgetSpendScope } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
 // (the board and the popup) reported goals dark for days as staffed. The
@@ -115,6 +116,22 @@ export interface GoalSummaryRow {
   tripwires: GoalTripwire[];
   budgetCents: number | null;
   spentCents: number | null;
+  /**
+   * The population `spentCents` measured, in the SAME vocabulary the kickoff
+   * brief renders — both resolve through `budgetSpendScope`, so the two
+   * readouts cannot drift into disagreeing about the same number.
+   *
+   * Present because THIS row is the one every sync client receives, which made
+   * a bare figure here the last unlabelled goal-spend readout in the tree
+   * (spend-attribution-...-2026-09-04, acceptance criterion 1: the sync row was
+   * neither labelled nor recorded out of scope).
+   *
+   * Always a string, including when `spentCents` is null:
+   * `unverified-provenance:unmarked-snapshot` says the figure is ABSENT because
+   * its provenance was unrecognised, which is a different claim from "no spend"
+   * and is exactly the distinction a bare null erases.
+   */
+  spentCentsScope: string;
   createdAt: string | null;
   /**
    * When the goal's DEFINITION last changed — NOT when it last made progress.
@@ -339,6 +356,12 @@ function toSummary(
     typeof metadata.spentCents === 'number'
       ? (metadata.spentCents as number)
       : null;
+  // Resolved through the SAME helper the kickoff brief uses, over the SAME
+  // provenance allowlist that gates `spentCents` directly above — so the label
+  // cannot say "authoritative" about a figure this site just nulled out.
+  const spentCentsScope = budgetSpendScope(
+    typeof metadata.spentCentsSource === 'string' ? (metadata.spentCentsSource as string) : null,
+  );
   return {
     id: r.id,
     title: r.title,
@@ -364,6 +387,7 @@ function toSummary(
     tripwires: parseTripwires(r.tripwires),
     budgetCents: r.budget_cents == null ? null : Number(r.budget_cents),
     spentCents,
+    spentCentsScope,
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     lastActivityAt: iso(r.last_activity_at),
