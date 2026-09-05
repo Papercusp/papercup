@@ -49,7 +49,9 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
   `features:*`/`issues:*` are legacy per-kind views (`unify-work-items`).
 - **Plan** — project history + design intent, **PG-canonical** (`harness_plans`;
   the old `docs/plans/*.md` files were removed). `plans:*` reads/writes;
-  `harness:'all'` for Papercusp's own plans.
+  `harness:'all'` for Papercusp's own plans — but only from an unscoped
+  (`--all-workspaces`) session; a workspace-scoped one must name a concrete
+  in-scope harness.
 - **Doc** — project documentation. `docs:outline` / `get` / `search`.
 
 A `coding` harness's feature *state* moves through its pipeline (scoper →
@@ -71,17 +73,24 @@ property of your session.** There are two ways they find out:
 1. **Your session is scoped to a harness** (`ctx.harnessSlug` set) — those
    tools serve it automatically; pass nothing.
 2. **You're at workspace scope** (no harness) — **name the harness on the
-   call.** Pass `harness: '<slug>'` for a specific project, or
-   **`harness: 'all'`** for the workspace-level (un-scoped) root — for
-   `docs:*` that's `PAPERCUSP_PROJECT_DOCS_ROOT`. Without it you get
-   `harness_required`, which never means "this session can't," only "you
-   haven't said which harness yet — decide and pass it." **You are never
-   blocked.**
+   call.** Pass `harness: '<slug>'` for a specific project. For `docs:*`
+   reads of Papercusp's own engineering reference (`agent-insights/` + the
+   framework docs) pass **`harness: 'engineering'`**; `harness: 'all'` is
+   reserved for a truly unscoped (`--all-workspaces`) session, because the
+   scoped transport rejects that cross-workspace sentinel as
+   `harness_forbidden`. The two reach the SAME corpus, so nothing is lost —
+   but do NOT "fix" that refusal by naming the harness that owns the docs
+   (`harness: 'papercusp'`): that reads *that harness's* own doc surface,
+   and its empty result looks exactly like an absent page. Without any
+   harness you get `harness_required`, which never means "this session
+   can't," only "you haven't said which harness yet — decide and pass it."
+   **You are never blocked.**
 
 This applies to `plans:*` for **reads *and* writes**: when you write or
 lint a plan, the decision is just "which project is this plan about?" →
 that slug (`{ harness: '<slug>' }`), or `harness:'all'` for a
-workspace-level / cross-cutting one. Use `cross_harness:docs_*` /
+workspace-level / cross-cutting one — again, `'all'` only from an unscoped
+session. Use `cross_harness:docs_*` /
 `cross_harness:plans_*` to read *another* harness from a scoped session.
 
 If you don't know which project the user means, `harness:list` to pick one
