@@ -1002,6 +1002,19 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     };
   }
   let claim: { claimId: string; autoClaimed: boolean } | null = null;
+  /**
+   * EI-22427741014249929: the wip auto-convert's outcome, surfaced instead of
+   * discarded. The convert call below is best-effort and its result was thrown
+   * away entirely, so when it transferred the linked work-item off another agent
+   * the response mentioned no work-item at all — `claim:{ autoClaimed:true }`
+   * reads as "I claimed the PLAN ITEM" and the execution-record handover was
+   * invisible to both agents. Now the caller is told either that a live holder
+   * kept it, or which record was taken and from whom.
+   */
+  let executionRecord:
+    | { outcome: 'held-by-live-peer'; workItemId: string | null; heldBy: string; note: string }
+    | { outcome: 'taken-over'; workItemId: string; priorHolder: string; basis: string }
+    | null = null;
   if (agentId && it.status === 'wip') {
     const scope = await resolvePlanScope(harnessSlug ? { harnessSlug } : {});
     const ownerName = await resolveAdoptedName(scope.workspaceId, agentId.ownerId).catch(() => null);
@@ -1059,7 +1072,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     // Fail-safe to OFF on a flag-read error.
     const autoConvert = await getFlag(FLAGS.PLAN_ITEM_CLAIM_AUTO_CONVERT, 'system').catch(() => false);
     if (autoConvert) {
-      await convertPlanItem({
+      const converted = await convertPlanItem({
         workspaceId: scope.workspaceId,
         harnessSlug: scope.harnessSlug,
         planSlug: it.slug,
@@ -1072,9 +1085,32 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         // projection can tell this MECHANISM string apart from a declared goal
         // (P-029/D-060) without a detector that drifts from the writer.
         intent: autoConvertClaimIntent(it.itemId),
-      }).catch((e) =>
-        console.warn(`[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e),
-      );
+      }).catch((e) => {
+        console.warn(`[plans:set-status] auto-convert ${it.slug}#${it.itemId} failed:`, (e as Error)?.message ?? e);
+        return null;
+      });
+      // EI-22427741014249929: report what the auto-convert did to the EXECUTION
+      // RECORD. Both branches were previously silent — the refusal because the
+      // result was discarded, the takeover because it did not exist as a concept.
+      if (converted?.status === 'refused' && converted.assignee) {
+        executionRecord = {
+          outcome: 'held-by-live-peer',
+          workItemId: null,
+          heldBy: converted.assignee,
+          note: converted.reason,
+        };
+      } else if (
+        (converted?.status === 'resumed' || converted?.status === 'converted') &&
+        converted.executionRecordTakeover
+      ) {
+        const t = converted.executionRecordTakeover;
+        executionRecord = {
+          outcome: 'taken-over',
+          workItemId: t.workItemId,
+          priorHolder: t.priorHolder,
+          basis: t.basis,
+        };
+      }
     }
   }
 
@@ -1829,6 +1865,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     filePath: result.filePath,
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
     ...(claim ? { claim } : {}),
+    ...(executionRecord ? { executionRecord } : {}),
     ...(claimReleased ? { claimReleased } : {}),
     ...(assignmentReleased ? { assignmentReleased } : {}),
     ...(workItemSynced ? { workItemSynced } : {}),
