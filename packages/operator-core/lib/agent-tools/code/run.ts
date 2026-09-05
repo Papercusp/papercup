@@ -108,9 +108,10 @@ export default defineTool({
     'collapsing N sequential model turns into one and ' +
     'keeping intermediate payloads out of context. Write the ' +
     'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
-    'previews write-effect mutations before committing. Colon name → dotted call: `:`/`_` → `.` ' +
-    '(sessions:read → tools.sessions.read; tools:invoke → tools.tools.invoke, never bare ' +
-    'tools.invoke); never invent a fourth spelling.',
+    'previews write-effect mutations before committing. Colon name → dotted call: only the ' +
+    'namespace/verb separator `:` becomes `.`, while `_` stays inside each segment ' +
+    '(work_items:get → tools.work_items.get or tools.workItems.get; sessions:read → tools.sessions.read; ' +
+    'tools:invoke → tools.tools.invoke, never bare tools.invoke); never invent a fourth spelling.',
   guidance: {
     when:
       'MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: ' +
