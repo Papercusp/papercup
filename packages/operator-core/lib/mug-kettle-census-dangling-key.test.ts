@@ -42,6 +42,12 @@ import {
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CENSUS = join(REPO_ROOT, 'scripts/mug-kettle-surface-census.mjs');
 const BASELINE = join(REPO_ROOT, 'scripts/ungated-mug-kettle-baseline.json');
+// Overridable so falsifiability can be proven against a COPY outside the tree, rather than
+// by mutating the shared checkout — where git-sync can commit the mutant mid-probe (CLAUDE.md,
+// "Proving a guard is falsifiable"). Defaults to the real path; nothing in CI sets it.
+const GUARD =
+  process.env.MUG_KETTLE_GUARD_PATH ??
+  join(REPO_ROOT, 'scripts/check-ungated-mug-kettle.mjs');
 
 /**
  * Mirrors `isTestFile` at mug-kettle-surface-census.mjs:81 and the `.tsx?` + basename
@@ -162,9 +168,55 @@ describe('mug/kettle census — dangling filename-keyed entries (EI-200593085946
       `These scripts/ungated-mug-kettle-baseline.json entries name a path that no longer exists. ` +
         `Each row is keyed \`tier|SUBJECT|path\` where SUBJECT is ALSO derived from the filename, ` +
         `so a rename desyncs both fields and the entry can never match again — it becomes a ` +
-        `permanent phantom the ratchet counts as covered. Re-key the row to the new path (and its ` +
-        `SUBJECT), or drop it if the surface was deleted.`,
+        `permanent phantom the ratchet counts as covered.\n` +
+        `  If the surface was DELETED or retired, drop the row(s) with:\n` +
+        `      npm run lint:no-ungated-mug-kettle -- --reseed --reason "<why the surface was retired>"\n` +
+        `  --reseed is the ONLY flag that writes the baseline (--list merely prints to stdout), and a ` +
+        `shrinking re-seed REFUSES without --reason, which is what keeps the shrink deliberate.\n` +
+        `  If the surface was RENAMED, re-key the row to the new path (and its SUBJECT) by hand — and ` +
+        `re-key the census literal too, or a re-seed snapshots a census that has gone blind to a ` +
+        `surface that still exists and makes that blindness permanent.`,
     ).toEqual([]);
+  });
+
+  /**
+   * The detector above already worked; what failed was its LOCALITY. A dangling row is
+   * created by whoever retires a file and surfaces hours later, at the gate, to a different
+   * agent with no reason to connect a red test to someone else's retirement slice. The only
+   * thing that shortens that loop is the failure text naming the exact repair command — so
+   * the command is itself load-bearing and pinned here (EI-20203730618121482).
+   */
+  it('the guard script names the command that actually WRITES the baseline', () => {
+    const src = readFileSync(GUARD, 'utf8');
+
+    // Scope to the stale-entry BRANCH, not the whole file. A mutation probe against the
+    // pre-fix source proved a file-wide `includes('--reseed --reason')` VACUOUS: the flag
+    // pair also appears in the header usage comment (line ~52), so that assertion passed on
+    // the very source it was meant to reject. Only the branch that prints the advice can
+    // testify about the advice.
+    const start = src.indexOf('if (stale.length)');
+    expect(
+      start,
+      'the stale-entry branch must exist in scripts/check-ungated-mug-kettle.mjs — if it was ' +
+        'renamed or removed, re-anchor this guard rather than deleting it.',
+    ).toBeGreaterThan(-1);
+    const rest = src.slice(start);
+    const nextBranch = rest.indexOf('\nif (', 1);
+    const staleBranch = nextBranch > 0 ? rest.slice(0, nextBranch) : rest;
+
+    expect(
+      staleBranch.includes('Prune with --list'),
+      'The stale-entry message must not send the reader to --list: it only prints the current ' +
+        'entries to stdout (writeStdoutSync) and writes nothing, so the phantom row survives ' +
+        'and reds the gate again, hours later, for a different agent.',
+    ).toBe(false);
+
+    expect(
+      staleBranch.includes('--reseed --reason'),
+      'The stale-entry message must name --reseed --reason inline — the only path that reaches ' +
+        'writeBaselineAtomically — so a dangling row is a one-command fix rather than a hunt. ' +
+        'A mention elsewhere in the file does not count: the reader is looking at this message.',
+    ).toBe(true);
   });
 });
 

@@ -668,8 +668,16 @@ if (newlyGated.length) {
 
 if (stale.length) {
   // Shrink-only: a baseline entry that no longer exists is GOOD (a surface was retired).
+  // Name the command that actually WRITES. `--list` only prints the current entries to
+  // stdout (writeStdoutSync); `--reseed` is the sole caller of writeBaselineAtomically, so
+  // telling the reader to "prune with --list" sends them to a no-op and the phantom row
+  // survives to red the gate again, hours later, for a different agent (EI-20203730618121482).
   console.log(
-    `\n${stale.length} baseline entr(y|ies) no longer present — the surface shrank. Prune with --list.`,
+    `\n${stale.length} baseline entr(y|ies) no longer present — the surface shrank.\n` +
+      `  If the surface was DELETED or retired, drop the row(s) with:\n` +
+      `      npm run lint:no-ungated-mug-kettle -- --reseed --reason "<why the surface was retired>"\n` +
+      `  If it was RENAMED, re-key the census literal first and confirm the census sees it again;\n` +
+      `  re-seeding while the census is blind to a surface that still exists makes that blindness permanent.`,
   );
 }
 
