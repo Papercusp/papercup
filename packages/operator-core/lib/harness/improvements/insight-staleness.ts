@@ -63,9 +63,43 @@ const REPO_PATH_RE = /^(?:apps|packages|libs|scripts|bin)\/[\w@./-]+\.[a-z]{1,5}
  * paragraph in which the marker belongs to a DIFFERENT file, and `live.ts` must
  * still be checked. A sentence boundary separates those two; a line break does
  * not reliably separate either.
+ *
+ * These are STRONG markers: each is a deliberate statement ABOUT A FILE, so one
+ * occurrence suppresses that path everywhere in the doc (see the per-PATH rule in
+ * extractCitedPaths).
  */
 const REMOVAL_MARKER_RE =
   /\b(?:used to|moved (?:off|from|to|onto)|moved the|no longer|removed|deleted|retired|replaced|superseded|since deleted|migrated (?:off|from|onto)|formerly|previously|was (?:at|in)|lived (?:at|in)|old(?:er)? (?:path|location)|deprecated)\b/i;
+
+/**
+ * WEAK markers — words that mean "removed" HERE but are ordinary English elsewhere,
+ * so they suppress only the sentence they appear in and never the whole document.
+ *
+ * `gone` earns its place by measurement (EI-20565868233772131).
+ * `starlight-migration-2026-05-20` says, under a heading reading "Both fumadocs
+ * setups were removed":
+ *
+ *     `apps/operator/source.config.ts`, `apps/operator/lib/source.ts`, … are all gone.
+ *
+ * Every strong marker the sentence could have used sits in a NEIGHBOURING sentence
+ * ("removed" in the heading, "retired" in the next line), and sentence scope
+ * correctly refuses to reach either — so the runbook was flagged for citing two
+ * files it exists to document as deleted, escalated, severity-bumped minor→major,
+ * and survived a triage round that read the flag as genuine.
+ *
+ * It is WEAK because the same word is routine prose about non-files, and the
+ * per-PATH rule would then erase a live citation elsewhere in the doc. Measured
+ * over all 784 insights: treating `gone` as strong retired 2 false positives but
+ * HID 2 real ones — `pg-connection-exhaustion-too-many-clients` cites
+ * `libs/papercusp/libs/db/src/connection.ts` twice, once in a sentence about a
+ * network peer ("the client is gone"), and `federation-public-release-known-
+ * limitations` cites `bin/local-matrix.sh` three times the same way. Sentence-local
+ * scoping keeps both flagged while still silencing the runbook above.
+ *
+ * Add a word here, not to REMOVAL_MARKER_RE, whenever it is a word people also use
+ * about things that are not files.
+ */
+const WEAK_REMOVAL_MARKER_RE = /\bgone\b/i;
 
 /**
  * Sentence-terminator followed by whitespace. Applied to backtick-MASKED text so a
@@ -116,6 +150,11 @@ export function extractCitedPaths(raw: string): string[] {
     }
     const prose = masked.slice(sentStart, sentEnd);
     if (REMOVAL_MARKER_RE.test(prose)) acknowledgedRemoved.add(token);
+    // A WEAK marker suppresses only THIS occurrence: the token is neither trusted
+    // as a live citation nor added to the doc-wide acknowledged set, so a path
+    // cited cleanly elsewhere survives. A path whose ONLY occurrences are
+    // weak-marked never reaches `clean`, so it is still dropped.
+    else if (WEAK_REMOVAL_MARKER_RE.test(prose)) continue;
     else clean.add(token);
   }
   // Per-PATH (not per-occurrence): a path the insight marks as removed/moved ANYWHERE

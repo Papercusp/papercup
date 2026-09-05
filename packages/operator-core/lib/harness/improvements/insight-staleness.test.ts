@@ -44,6 +44,67 @@ describe('extractCitedPaths — conservative repo-file extraction', () => {
     expect(extractCitedPaths('An old file was removed.\nSee `packages/x/live.ts`.')).toEqual(['packages/x/live.ts']);
   });
 
+  it('Class 1 (EI-20565868233772131): "are all gone" is a removal marker', () => {
+    // starlight-migration-2026-05-20 lists the deleted fumadocs entrypoints and ends
+    // the sentence "…are all gone." Every other marker it could have used sits in a
+    // NEIGHBOURING sentence, which sentence scope correctly refuses to reach — so the
+    // runbook was flagged for citing two files it exists to document as deleted.
+    expect(
+      extractCitedPaths('`apps/operator/source.config.ts`, `apps/operator/lib/source.ts` are all gone.'),
+    ).toEqual([]);
+    expect(extractCitedPaths('That entrypoint is gone; use the Hono host.')).toEqual([]);
+
+    // POSITIVE CONTROL — the guard must not have been widened into inertness: the
+    // same two paths in a sentence that asserts them as LIVE are still extracted.
+    expect(
+      extractCitedPaths('`apps/operator/source.config.ts`, `apps/operator/lib/source.ts` are the entrypoints.').sort(),
+    ).toEqual(['apps/operator/lib/source.ts', 'apps/operator/source.config.ts']);
+
+    // …and a file whose own NAME contains the new marker word must not suppress
+    // itself (backtick masking), the same hazard `removed.ts` already covers.
+    expect(extractCitedPaths('See `packages/x/gone.ts` for the impl.')).toEqual(['packages/x/gone.ts']);
+  });
+
+  it('a WEAK marker is sentence-local: it never erases the same path cited cleanly elsewhere', () => {
+    // Measured over all 784 insights (EI-20565868233772131): treating `gone` as a
+    // STRONG marker retired 2 false positives but HID 2 real ones, because the
+    // per-PATH rule erased live citations from docs that also use "gone" about a
+    // network peer. `pg-connection-exhaustion-too-many-clients` is the real shape:
+    const doc = [
+      'The pool size comes from `libs/papercusp/libs/db/src/connection.ts`.',
+      '',
+      'A backend whose client is gone still holds a slot; `libs/papercusp/libs/db/src/connection.ts` sets the check interval.',
+    ].join('\n');
+    expect(extractCitedPaths(doc)).toEqual(['libs/papercusp/libs/db/src/connection.ts']);
+
+    // …whereas a STRONG marker keeps its doc-wide reach (EI-510, unchanged).
+    const strong = [
+      'The pool size comes from `libs/papercusp/libs/db/src/connection.ts`.',
+      '',
+      '`libs/papercusp/libs/db/src/connection.ts` was removed in the migration.',
+    ].join('\n');
+    expect(extractCitedPaths(strong)).toEqual([]);
+
+    // A path whose ONLY occurrence is weak-marked is still dropped — that is the
+    // starlight-migration case this whole change exists for.
+    expect(extractCitedPaths('`apps/operator/source.config.ts` and friends are all gone.')).toEqual([]);
+  });
+
+  it('KNOWN LIMIT: a marker suppresses EVERY path in its sentence, live ones included', () => {
+    // Sentence scope binds a marker to the whole sentence, not to the nearest path,
+    // so a sentence mixing a live and a removed citation suppresses both. This is the
+    // module's stated bias (a missed citation is fine; a false "stale" capture is
+    // noise), and it is NOT specific to any one marker word — `removed` has always
+    // behaved this way. Pinned so the next reader finds it documented rather than
+    // rediscovering it through a fixture that mysteriously stops producing a signal.
+    expect(extractCitedPaths('Live `libs/flags/src/types.ts`, removed `packages/x/a.ts`.')).toEqual([]);
+    expect(extractCitedPaths('Live `libs/flags/src/types.ts`, gone `packages/x/a.ts`.')).toEqual([]);
+    // Splitting them into separate sentences is what preserves the live citation.
+    expect(
+      extractCitedPaths('`packages/x/a.ts` is gone. Live `libs/flags/src/types.ts` stays.'),
+    ).toEqual(['libs/flags/src/types.ts']);
+  });
+
   it('drops ellipsis path placeholders (EI-510): `.../` is an elision, not a real file', () => {
     expect(extractCitedPaths('Each route under `apps/operator/app/.../page.tsx` is retired.')).toEqual([]);
     expect(extractCitedPaths('See `packages/operator-core/lib/../oops.ts`.')).toEqual([]);
@@ -167,8 +228,11 @@ describe('scanInsightStaleness', () => {
     expect(apoptotic.body).toMatch(/status: superseded/);
     expect(apoptotic.title).not.toMatch(/\d/); // still a stable, count-free title
 
+    // The prose deliberately carries NO removal marker: this fixture's point is the
+    // partial-missing CLASSIFICATION, and any marker word would suppress every path
+    // in its sentence (see the mixed-sentence test below), leaving nothing to classify.
     const [partial] = scanInsightStaleness(
-      [insight('one-moved', 'Live `libs/flags/src/types.ts`, gone `packages/x/gone.ts`.')],
+      [insight('one-moved', 'Live `libs/flags/src/types.ts` plus `packages/x/vanished.ts`.')],
       exists(['libs/flags/src/types.ts']),
     );
     expect(partial.title).toMatch(/cites files that no longer exist/i);
