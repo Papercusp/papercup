@@ -460,6 +460,51 @@ describe('routines:list', () => {
   });
 
   /*
+   * EI-20206183390542424 — `limit` was REJECTED here while every sibling list surface
+   * (work_items:list, issues:list, and locks:list as of 2026-09-05) accepts it.
+   *
+   * Measured in harness_shared.tool_invocations: 29 calls from 23 DISTINCT agents passed
+   * `limit` to this tool and got invalid_args — the single largest rejected-key cluster
+   * on it, still firing the day this was written. The tool's own truncation notice told
+   * callers to "narrow with installSlug/name/group, rollup:true" while omitting the one
+   * verb they actually reached for, and the CAP=60 shape proved the capability already
+   * existed — callers simply had no way to ask for less.
+   *
+   * The contract that makes a bounded read safe is the second assertion, not the first:
+   * `limit` narrows routines[] ONLY and `count` keeps the TRUE total. Without that, a
+   * narrowed read is indistinguishable from a genuinely smaller fleet — the same
+   * bounded-measurement-read-as-a-verdict failure this file already guards elsewhere.
+   */
+  it('accepts limit, bounds routines[] by it, and keeps count the true total', async () => {
+    expect(listTool.args.safeParse({ limit: 2 }).success).toBe(true);
+    expect(listTool.args.safeParse({ limit: 0 }).success).toBe(false);
+    expect(listTool.args.safeParse({ limit: 501 }).success).toBe(false);
+
+    const row = (name: string) => ({
+      install_slug: 'home-harness',
+      name,
+      trigger_kind: 'cron',
+      trigger_config: { cron: '0 * * * * *' },
+      target_role: 'system:noop',
+      active: true,
+      next_fire_at: null,
+      last_fired_at: null,
+    });
+    sqlMock.mockResolvedValue([row('a'), row('b'), row('c')]);
+
+    const bounded = body(await listTool.handler({ limit: 2 } as never, { role: 'su' } as never));
+    expect(bounded.routines).toHaveLength(2);
+    expect(bounded.routines.map((r: { name: string }) => r.name)).toEqual(['a', 'b']);
+    expect(bounded.count).toBe(3);
+
+    // Control: an omitted limit must not silently bound the read.
+    sqlMock.mockResolvedValue([row('a'), row('b'), row('c')]);
+    const unbounded = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(unbounded.routines).toHaveLength(3);
+    expect(unbounded.count).toBe(3);
+  });
+
+  /*
    * EI-19336000265007219 — a DELIBERATE PAUSE must be distinguishable from a STALL.
    *
    * routines:set has recorded metadata.pause { reason, pausedBy, pausedAtMs } on every
