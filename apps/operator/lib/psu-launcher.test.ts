@@ -22,6 +22,7 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  pickRole,
   PSU_HELP_TEXT,
   planValue,
   parkRoleScopedMcpJson,
@@ -65,6 +66,7 @@ import {
   gatewayPinEnv,
   gatewayAutoEnv,
   codexAutoPoolWarning,
+  warnIfCodexAutoPoolWalled,
   accountRoutingMode,
   codexGatewayConfigPatch,
   accountPinnable,
@@ -294,6 +296,29 @@ import {
 // inlined copy because it is a plain node script with no TS imports. The drift
 // guard below keeps the OMP seed exactly aligned with every other trimmed client.
 import { CORE_MCP_TOOL_NAMES } from "@papercusp/orchestrator";
+
+describe("interactive role picker", () => {
+  it("shows the fixed SU role without waiting for an unavailable operator", async () => {
+    const select = vi.fn().mockResolvedValue("su");
+    vi.doMock("@inquirer/prompts", () => ({ select }));
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new DOMException("Operator unavailable", "TimeoutError"),
+    );
+    try {
+      await expect(pickRole()).resolves.toEqual({ role: "su", roles: [] });
+      expect(select).toHaveBeenCalledWith({
+        message: "Role",
+        choices: [
+          { name: "su  — engineer collaborator (full SU catalog)", value: "su" },
+        ],
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+      vi.doUnmock("@inquirer/prompts");
+    }
+  });
+});
 
 describe("normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed psu in 0.4s)", () => {
   const noWarn = { warn: () => {} };
@@ -4398,6 +4423,124 @@ describe("psu-launcher arg parsing", () => {
     });
     expect(warning).toContain("0 of 2 ChatGPT accounts serviceable");
     expect(warning).toContain("earliest recovery unknown");
+  });
+
+  it("warnIfCodexAutoPoolWalled: probes the live stats endpoint and fails open for healthy, legacy, unreachable, and timed-out responses", async () => {
+    const allWalledFetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 7,
+        codexEarliestRecoveryAt: Date.now() + 60_000,
+      }),
+    })) as unknown as typeof fetch;
+    const log = vi.fn();
+    await expect(
+      warnIfCodexAutoPoolWalled({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        fetchImpl: allWalledFetch,
+        log,
+        port: 9876,
+        timeoutMs: 25,
+      }),
+    ).resolves.toContain("0 of 7 ChatGPT accounts serviceable");
+    expect(allWalledFetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:9876/stats",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(log).toHaveBeenCalledOnce();
+
+    for (const stats of [
+      { codexHealthyAccounts: 1, codexTotalAccounts: 7 },
+      { codexTotalAccounts: 7 },
+    ]) {
+      const quietLog = vi.fn();
+      await expect(
+        warnIfCodexAutoPoolWalled({
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          account: "auto",
+          fetchImpl: vi.fn(async () => ({ ok: true, json: async () => stats })) as unknown as typeof fetch,
+          log: quietLog,
+        }),
+      ).resolves.toBeNull();
+      expect(quietLog).not.toHaveBeenCalled();
+    }
+
+    await expect(
+      warnIfCodexAutoPoolWalled({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        fetchImpl: vi.fn(async () => {
+          throw new Error("gateway unavailable");
+        }) as unknown as typeof fetch,
+      }),
+    ).resolves.toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      const timedOut = warnIfCodexAutoPoolWalled({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        timeoutMs: 5,
+        fetchImpl: vi.fn((_url, init) => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        })) as unknown as typeof fetch,
+      });
+      await vi.advanceTimersByTimeAsync(6);
+      await expect(timedOut).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("warnIfCodexAutoPoolWalled: skips the network for routes outside the Codex auto pool", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(
+      warnIfCodexAutoPoolWalled({
+        agent: "claude",
+        model: "claude-fable-5",
+        account: "auto",
+        fetchImpl,
+      }),
+    ).resolves.toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("wires the Codex auto-pool preflight into fresh SU, role, same-backend resume, and cross-backend port launches", () => {
+    const source = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
+    );
+    const section = (start, end) => {
+      const from = source.indexOf(start);
+      const to = end ? source.indexOf(end, from + start.length) : source.length;
+      expect(from).toBeGreaterThan(-1);
+      expect(to).toBeGreaterThan(from);
+      return source.slice(from, to);
+    };
+
+    const role = section("async function roleFlow(", "async function setClaudeTokenFlow(");
+    expect(role.indexOf("await warnIfCodexAutoPoolWalled(")).toBeGreaterThan(-1);
+    expect(role.indexOf("/api/agent-mcp/console/bootstrap-role")).toBeGreaterThan(
+      role.indexOf("await warnIfCodexAutoPoolWalled("),
+    );
+
+    const resume = section("async function launchResolvedResume(", "async function resumeFlow(");
+    expect(resume).toContain('target.operation === "port"');
+    expect(resume).toContain("await launchSessionPort(");
+    expect(resume).toContain("await warnIfCodexAutoPoolWalled(");
+
+    const port = section("async function launchSessionPort(", "async function launchResolvedResume(");
+    expect(port).toContain("await launchFreshSu(");
+    const fresh = section("async function launchFreshSu(", null);
+    expect(fresh).toContain("await warnIfCodexAutoPoolWalled(");
+
+    expect(source.match(/await warnIfCodexAutoPoolWalled\(/g) ?? []).toHaveLength(3);
   });
 
   it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
