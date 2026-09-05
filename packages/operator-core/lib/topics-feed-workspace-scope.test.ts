@@ -85,7 +85,8 @@ async function loadTopicsFeed(): Promise<void> {
       }
     },
   }));
-  vi.doMock('@papercusp/db-org', () => ({
+  vi.doMock('@papercusp/db-org', async (orig) => ({
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql: (() => []) as unknown }),
   }));
   vi.doMock('./agent-tools/coordination/log', () => ({

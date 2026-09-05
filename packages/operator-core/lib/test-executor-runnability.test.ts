@@ -126,7 +126,7 @@ describe('test executor runnability', () => {
     // a node:test unit suite and the real wdio invocation one hop down.
     const scripts: Record<string, string> = {
       test: 'npm run test:unit && npm run test:wdio',
-      'test:unit': 'node --import tsx --test perf-report.test.ts',
+      'test:unit': 'node --import tsx --test perf-report.node-test.ts',
       'test:wdio': 'wdio run wdio.conf.ts',
       'test:e2e': 'npm run-script test:e2e:real',
       'test:e2e:real': 'playwright test',
@@ -141,7 +141,7 @@ describe('test executor runnability', () => {
       runnable: true,
       executor: 'webdriverio',
     });
-    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+    await expect(audit('tools/perf-test/wdio/perf-report.node-test.ts')).resolves.toMatchObject({
       runnable: true,
       executor: 'node',
     });
@@ -166,7 +166,7 @@ describe('test executor runnability', () => {
       runnable: false,
       reason: expect.stringContaining('WebdriverIO'),
     });
-    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+    await expect(audit('tools/perf-test/wdio/perf-report.node-test.ts')).resolves.toMatchObject({
       runnable: false,
       reason: expect.stringContaining('node --test'),
     });
@@ -181,7 +181,7 @@ describe('test executor runnability', () => {
       ROOT,
       dependencies({ readPackageScript: (_path, script) => scripts[script] }),
     );
-    await expect(audit('tools/perf-test/wdio/perf-report.test.ts')).resolves.toMatchObject({
+    await expect(audit('tools/perf-test/wdio/perf-report.node-test.ts')).resolves.toMatchObject({
       runnable: false,
     });
   });

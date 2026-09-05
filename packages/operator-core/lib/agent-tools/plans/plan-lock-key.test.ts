@@ -38,7 +38,8 @@ const dbMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   createDedicatedOrgPg: dbMocks.createDedicatedOrgPg,
   withDbCallDeadline: dbMocks.withDbCallDeadline,
 }));

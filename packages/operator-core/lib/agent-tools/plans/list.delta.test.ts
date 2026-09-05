@@ -39,7 +39,7 @@ describe('plans:list delta capability', () => {
 
   it('scope folds in the workspace dimension; declares schemaVersion + max age', () => {
     expect(delta.scope!({}, { workspaceId: 'ws-9' } as never)).toBe('ws-9');
-    expect(delta.schemaVersion).toBe('plans-list-v1');
+    expect(delta.schemaVersion).toBe('plans-list-v2');
     expect(delta.maxDeltaAge).toBe(5 * 60_000);
   });
 });

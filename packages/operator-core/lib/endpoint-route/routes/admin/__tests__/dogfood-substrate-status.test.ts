@@ -53,7 +53,11 @@ const H = vi.hoisted(() => {
 vi.mock('../../../../sync/hyperbee/boot-all', () => ({
   listBootedHandles: H.listBootedHandles,
 }));
-vi.mock('../../../../background-workers', () => ({
+// Spread the real module: the route graph transitively reaches
+// resource-profile.ts → utilityHostEnabled, so a bare factory strands the file
+// at collection ("No utilityHostEnabled export is defined on the mock").
+vi.mock('../../../../background-workers', async (orig) => ({
+  ...(await orig<typeof import('../../../../background-workers')>()),
   requestOnlyHost: H.requestOnlyHost,
   isSubstrateOwnerProcess: H.isSubstrateOwnerProcess,
 }));
