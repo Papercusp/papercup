@@ -269,6 +269,65 @@ describe('WI-2141796 — SLOW-but-served and genuinely-unreadable must not look 
     expect(late[0]).toContain('DID eventually resolve');
   });
 
+  it('caches a late result so a consistently slow block eventually advances instead of starving the cursor', async () => {
+    const cursor = createMergeCursor();
+    const ops = [put('a', 1000), put('b', 2000)];
+    let getCalls = 0;
+    const log: AdmittedLog = {
+      keyHex: 'SLOWREUSE',
+      length: ops.length,
+      get: async (i) => {
+        getCalls++;
+        if (i === 1) await new Promise((r) => setTimeout(r, 60));
+        return ops[i] ?? null;
+      },
+    };
+    const applied: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // The first pass times out at index 1 and registers a late-result cache.
+    const first = await mergeAdmittedLogsIncremental([log], cursor, {
+      applyImpl: async (op) => {
+        applied.push(op.hbKey ?? '');
+        return true;
+      },
+      getTimeoutMs: 5,
+      cursorLabel: 'low-load-repro',
+    });
+    expect(first.caughtUp).toBe(false);
+    expect(cursor.positions.get('SLOWREUSE')).toBe(1);
+    expect(getCalls).toBe(2); // index 0 + one physical attempt for index 1
+
+    // A second pass before the 60ms read resolves may retry (preserving the
+    // never-settling-read contract), but its eventual result is cached.
+    const second = await mergeAdmittedLogsIncremental([log], cursor, {
+      applyImpl: async (op) => {
+        applied.push(op.hbKey ?? '');
+        return true;
+      },
+      getTimeoutMs: 5,
+      cursorLabel: 'low-load-repro',
+    });
+    expect(second.caughtUp).toBe(false);
+    expect(getCalls).toBe(3);
+
+    // Once either late read resolves, the next pass consumes its cached result.
+    await new Promise((r) => setTimeout(r, 80));
+    const third = await mergeAdmittedLogsIncremental([log], cursor, {
+      applyImpl: async (op) => {
+        applied.push(op.hbKey ?? '');
+        return true;
+      },
+      getTimeoutMs: 5,
+      cursorLabel: 'low-load-repro',
+    });
+    expect(third.caughtUp).toBe(true);
+    expect(cursor.positions.get('SLOWREUSE')).toBe(2);
+    expect(getCalls).toBe(3);
+    expect(applied).toEqual(['a', 'b']);
+    expect(lateReads(warnSpy).length).toBeGreaterThan(0);
+  });
+
   it('stays SILENT for a read that never settles — the control that gives the late-read line its meaning', async () => {
     const cursor = createMergeCursor();
     const log = logWithStalledIndex('D00D', [put('a', 1000), put('b', 2000)], 1);

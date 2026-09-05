@@ -13,12 +13,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { goalReadiness } from '@papercusp/agent-mcp/goal-deps';
+import type { GoalLaunchResolution, GoalPortfolioBrief } from '../goal-launch-settings';
+import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import type { GoalHolders, ResolvedGoalHolder } from './holder';
-import {
-  startGoalById,
-  type StartGoalByIdDeps,
-  type StartGoalByIdInput,
-} from './start-goal-by-id';
+import { startGoalById, type StartGoalByIdDeps, type StartGoalByIdInput } from './start-goal-by-id';
 
 type GoalRow = {
   id: string;
@@ -72,10 +70,7 @@ function holder(overrides: Partial<ResolvedGoalHolder> = {}): ResolvedGoalHolder
   };
 }
 
-function holdersFixture(
-  liveness: GoalHolders['liveness'],
-  rows: ResolvedGoalHolder[] = [],
-): GoalHolders {
+function holdersFixture(liveness: GoalHolders['liveness'], rows: ResolvedGoalHolder[] = []): GoalHolders {
   const elected = rows[0] ?? null;
   const allLive = rows.filter((r) => r.live === true);
   return {
@@ -99,15 +94,91 @@ function holdersFixture(
 const READY = goalReadiness([]);
 const BLOCKED = goalReadiness([{ kind: 'plan', ref: 'plan:papercusp/some-prereq', status: 'draft' }]);
 
+function launchResolution(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchResolution {
+  return {
+    goalId: GOAL,
+    settings: null,
+    goalBrief: null,
+    effective: {},
+    ceilings: { maxAgents: 12, maxPerFleet: 5 },
+    headcount: { total: 0, fleet: null },
+    budget: null,
+    refusal: null,
+    degraded: false,
+    degradedReasons: [],
+    ...overrides,
+  };
+}
+
+function portfolioBrief(): GoalPortfolioBrief {
+  return {
+    schemaVersion: 1,
+    assembledAt: '2026-09-04T23:00:00.000Z',
+    goal: {
+      id: GOAL,
+      title: 'Fix the roof',
+      status: 'active',
+      body: 'the long form',
+      killCriterion: 'no dry week by October',
+      standing: false,
+      parentId: null,
+    },
+    worklist: [
+      {
+        ref: 'plan:papercusp/roof',
+        ordinal: 1,
+        harness: 'papercusp',
+        slug: 'roof',
+        title: 'Roof plan',
+        status: 'active',
+        next: null,
+        counts: { todo: 1, wip: 0, blocked: 0, needsHuman: 0, done: 0 },
+        ambiguousMatches: 0,
+        placement: {
+          state: 'unplaced',
+          activeLane: null,
+          fleet: null,
+          launchTransaction: null,
+          reconciliation: { consistent: true, action: 'none', reason: 'none', toolCall: null },
+        },
+      },
+    ],
+    pots: [],
+    drainFleet: { slug: null, exists: null, controlState: null, leaderOwnerId: null, live: null, working: null },
+    queue: {
+      total: 1,
+      terminal: 0,
+      inFlight: 0,
+      blocked: 0,
+      needsHuman: 0,
+      claimable: 1,
+      claimabilityScope: 'issue-family',
+    },
+    launch: {
+      settings: null,
+      ceilings: { maxAgents: 12, maxPerFleet: 5 },
+      headcount: { total: 0, fleet: null },
+    },
+    budget: { budgetCents: 80000, spentCents: 0, spentCentsAt: null, budgetWindowSec: null },
+    tripwires: [],
+    pending: { blenderIdeas: 0, acceptanceRubric: null },
+    continuity: { checkpoint: null, lastOwnerReportAt: null },
+    priorities: ['Delegate the next plan.'],
+    degradedReasons: [],
+  };
+}
+
 function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
   deps: StartGoalByIdDeps;
   launch: ReturnType<typeof vi.fn>;
+  resolveGoalLaunch: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
   refreshControlAnchor: ReturnType<typeof vi.fn>;
   neutralize: ReturnType<typeof vi.fn>;
   notifyHandoff: ReturnType<typeof vi.fn>;
 } {
   const launch = vi.fn().mockResolvedValue({ ownerId: 'su-new-holder', warnings: ['w1'] });
+  const resolveGoalLaunch = vi.fn().mockResolvedValue(launchResolution());
   const attach = vi.fn().mockResolvedValue({ ok: true, error: null });
   const refreshControlAnchor = vi.fn().mockResolvedValue(null);
   const neutralize = vi.fn().mockResolvedValue(undefined);
@@ -115,6 +186,7 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
   const stampAgentOwner = vi.fn().mockResolvedValue(undefined);
   const deps: StartGoalByIdDeps = {
     launch,
+    resolveGoalLaunch,
     attach,
     refreshControlAnchor,
     neutralize,
@@ -125,18 +197,16 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
     // A recognisable stub rather than the real builder: these tests assert that
     // a brief was built FROM THE GOAL ROW and reached the launch door, which a
     // stub echoing its own inputs proves and the real prose would only obscure.
-    buildBrief: vi.fn((o: Parameters<StartGoalByIdDeps['buildBrief']>[0]) =>
-      `BRIEF(${o.goalId}|${o.title}|kc=${o.killCriterion ?? 'none'}|cents=${o.budgetCents ?? 'none'})`,
+    buildBrief: vi.fn(
+      (o: Parameters<StartGoalByIdDeps['buildBrief']>[0]) =>
+        `BRIEF(${o.goalId}|${o.title}|kc=${o.killCriterion ?? 'none'}|cents=${o.budgetCents ?? 'none'})`,
     ) as unknown as StartGoalByIdDeps['buildBrief'],
     ...overrides,
   };
-  return { deps, launch, attach, refreshControlAnchor, neutralize, notifyHandoff };
+  return { deps, launch, resolveGoalLaunch, attach, refreshControlAnchor, neutralize, notifyHandoff };
 }
 
-function run(
-  deps: StartGoalByIdDeps,
-  opts: { rows?: GoalRow[]; input?: Partial<StartGoalByIdInput> } = {},
-) {
+function run(deps: StartGoalByIdDeps, opts: { rows?: GoalRow[]; input?: Partial<StartGoalByIdInput> } = {}) {
   return startGoalById(fakeSql(opts.rows ?? [goalRow()]), { workspaceId: WS, goalId: GOAL, ...opts.input }, deps);
 }
 
@@ -168,9 +238,7 @@ describe('startGoalById — the idempotence guard (D-006)', () => {
 
   it('refuses a goal with a LIVE holder, naming the holder', async () => {
     const { deps, launch } = makeDeps({
-      resolveHolders: vi
-        .fn()
-        .mockResolvedValue(holdersFixture('held', [holder({ ownerId: 'su-alive', live: true })])),
+      resolveHolders: vi.fn().mockResolvedValue(holdersFixture('held', [holder({ ownerId: 'su-alive', live: true })])),
     });
     const res = await run(deps);
     expect(res).toMatchObject({ ok: false, reason: 'already-held' });
@@ -189,9 +257,7 @@ describe('startGoalById — the idempotence guard (D-006)', () => {
 
   it('proceeds past a LOST holder — that is the recovery case', async () => {
     const { deps, launch } = makeDeps({
-      resolveHolders: vi
-        .fn()
-        .mockResolvedValue(holdersFixture('lost', [holder({ live: false })])),
+      resolveHolders: vi.fn().mockResolvedValue(holdersFixture('lost', [holder({ live: false })])),
     });
     const res = await run(deps);
     expect(res).toMatchObject({ ok: true, ownerId: 'su-new-holder' });
@@ -248,6 +314,7 @@ describe('startGoalById — launch then attach', () => {
       // knowing its own goal. A caller who omits the brief now gets one built
       // from the goal row.
       kickoffPrompt: 'BRIEF(fix-the-roof-a1b2c3|Fix the roof|kc=no dry week by October|cents=80000)',
+      resolvedLaunch: expect.objectContaining({ goalId: GOAL, refusal: null }),
     });
     expect(attach).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -323,10 +390,11 @@ describe('startGoalById — launch then attach', () => {
 
     expect(res).toMatchObject({ ok: true, warnings: ['w1'] });
     expect(order).toEqual(['attach', 'stamp']);
-    expect(deps.stampAgentOwner).toHaveBeenCalledWith(
-      expect.anything(),
-      { workspaceId: WS, goalId: GOAL, ownerId: 'su-new-holder' },
-    );
+    expect(deps.stampAgentOwner).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId: WS,
+      goalId: GOAL,
+      ownerId: 'su-new-holder',
+    });
   });
 
   it('keeps a successful start when the metadata stamp fails, exposing the failure as a warning', async () => {
@@ -388,6 +456,83 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
     const arg = (deps.buildBrief as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(arg.budgetCents).toBeNull();
     expect(arg.killCriterion).toBeNull();
+  });
+
+  it('reads the GOAL portfolio once, embeds it in the default brief, and hands the same resolution to launch', async () => {
+    const portfolio = portfolioBrief();
+    const resolved = launchResolution({
+      goalBrief: {
+        title: 'Fix the roof',
+        body: 'the long form',
+        killCriterion: 'no dry week by October',
+        budgetCents: 80000,
+        budgetWindowSec: null,
+        standing: false,
+        portfolio,
+      },
+    });
+    const { deps, launch } = makeDeps({
+      resolveGoalLaunch: vi.fn().mockResolvedValue(resolved),
+      buildBrief: vi.fn(buildGoalKickoffBrief),
+    });
+
+    await run(deps);
+
+    expect(deps.resolveGoalLaunch).toHaveBeenCalledTimes(1);
+    expect(deps.resolveGoalLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WS,
+        goalId: GOAL,
+        goalRole: 'goal',
+        sql: expect.anything(),
+      }),
+    );
+    expect(deps.buildBrief).toHaveBeenCalledWith(expect.objectContaining({ portfolio }));
+    const sent = launch.mock.calls[0]?.[0] as { kickoffPrompt: string; resolvedLaunch: GoalLaunchResolution };
+    expect(sent.resolvedLaunch).toBe(resolved);
+    expect(sent.kickoffPrompt).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-09-04T23:00:00.000Z');
+  });
+
+  it('adds the same snapshot to an explicit package brief exactly once', async () => {
+    const portfolio = portfolioBrief();
+    const resolved = launchResolution({
+      goalBrief: {
+        title: 'Fix the roof',
+        body: 'the long form',
+        killCriterion: 'no dry week by October',
+        budgetCents: 80000,
+        budgetWindowSec: null,
+        standing: false,
+        portfolio,
+      },
+    });
+    const { deps, launch } = makeDeps({ resolveGoalLaunch: vi.fn().mockResolvedValue(resolved) });
+
+    await run(deps, { input: { kickoffPrompt: 'package brief' } });
+
+    const sent = launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(sent).toContain('package brief');
+    expect(sent.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
+    expect(deps.buildBrief).not.toHaveBeenCalled();
+  });
+
+  it('honors a launch-policy refusal before opening a holder process', async () => {
+    const { deps, launch } = makeDeps({
+      resolveGoalLaunch: vi.fn().mockResolvedValue(
+        launchResolution({
+          refusal: {
+            reason: 'goal_budget_exceeded',
+            limit: 100,
+            current: 100,
+            requested: 1,
+            message: 'budget exhausted',
+          },
+        }),
+      ),
+    });
+
+    await expect(run(deps)).rejects.toThrow('goal-holder-launch refused for fix-the-roof-a1b2c3: budget exhausted');
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('an explicitly supplied brief still WINS over the built default', async () => {

@@ -157,6 +157,45 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     expect(kickoff.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
   });
 
+  it('uses an activation-supplied resolution without performing a second policy/portfolio read', async () => {
+    const resolved = resolution({
+      goalBrief: { ...resolution().goalBrief!, portfolio: portfolio() },
+    });
+    const d = deps(resolution());
+
+    await launchGoalHolderSession(
+      {
+        workspaceId: 'workspace-1',
+        goalId: 'goal-1',
+        harnessSlug: 'hive-1',
+        resolvedLaunch: resolved,
+      },
+      d,
+    );
+
+    expect(d.resolveGoalLaunch).not.toHaveBeenCalled();
+    expect(d.launch.mock.calls[0]?.[0]?.kickoffPrompt).toContain(
+      'GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z',
+    );
+  });
+
+  it('rejects a supplied resolution for a different goal before launch', async () => {
+    const d = deps();
+
+    await expect(
+      launchGoalHolderSession(
+        {
+          workspaceId: 'workspace-1',
+          goalId: 'goal-1',
+          harnessSlug: 'hive-1',
+          resolvedLaunch: resolution({ goalId: 'other-goal' }),
+        },
+        d,
+      ),
+    ).rejects.toThrow('supplied launch resolution targets other-goal');
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('refuses to launch a mute holder when neither an override nor stored goal brief is available', async () => {
     const d = deps(resolution({ goalBrief: null }));
     await expect(
@@ -260,21 +299,13 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     );
 
     expect(deactivate).toHaveBeenCalledWith('su-stale-replacement', expect.stringContaining('epoch 4'));
-    expect(clearAuto).toHaveBeenCalledWith(
-      'workspace-1',
-      'su-stale-replacement',
-      expect.stringContaining('epoch 4'),
-    );
+    expect(clearAuto).toHaveBeenCalledWith('workspace-1', 'su-stale-replacement', expect.stringContaining('epoch 4'));
     expect(message).toHaveBeenCalledWith(
       'su-stale-replacement',
       expect.any(String),
       expect.stringContaining('AUTO and the recurring loop were disabled'),
     );
-    expect(wake).toHaveBeenCalledWith(
-      'su-stale-replacement',
-      expect.any(String),
-      'workspace-1',
-    );
+    expect(wake).toHaveBeenCalledWith('su-stale-replacement', expect.any(String), 'workspace-1');
     expect(result).toEqual({ loopDeactivated: true, autoCleared: true, woken: 1, staged: 0 });
   });
 });

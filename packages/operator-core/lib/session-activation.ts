@@ -81,6 +81,25 @@ function snapshot(input: {
   }) as SessionActivation;
 }
 
+/** Validate and canonicalize a persisted activation envelope before projecting it. */
+export function normalizeSessionActivation(value: unknown): SessionActivation | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('session activation must be an object');
+  const raw = value as Record<string, unknown>;
+  const status = raw.status;
+  if (status !== 'desired' && status !== 'prepared' && status !== 'applied' && status !== 'failed') {
+    throw new Error('session activation has an invalid status');
+  }
+  const attribution = raw.attribution as ActivationAttribution;
+  const desired = assertRevision(raw.desired as ActivationRevision);
+  const prepared = raw.prepared == null ? null : assertRevision(raw.prepared as ActivationRevision);
+  const applied = raw.applied == null ? null : assertRevision(raw.applied as ActivationRevision);
+  if (status === 'prepared' && !prepared) throw new Error('prepared activation requires a prepared revision');
+  if (status === 'applied' && !applied) throw new Error('applied activation requires an applied revision');
+  if (status === 'failed' && !String(raw.failure ?? '').trim()) throw new Error('failed activation requires a failure');
+  return snapshot({ attribution, desired, prepared, applied, status, failure: typeof raw.failure === 'string' ? raw.failure : undefined });
+}
+
 /** Create the first desired record for a session. */
 export function desiredActivation(
   attribution: ActivationAttribution,
@@ -166,4 +185,3 @@ export function activationIdempotencyKey(sessionId: string, revision: Activation
   if (!sessionId.trim()) throw new Error('activation idempotency key requires a sessionId');
   return `session-activation:${sessionId}:${activationRevisionKey(revision)}`;
 }
-

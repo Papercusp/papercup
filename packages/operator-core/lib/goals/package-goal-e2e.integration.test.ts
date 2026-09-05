@@ -40,11 +40,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 
-import {
-  startGoalFromPackage,
-  DEFAULT_DEPS,
-  type StartGoalFromPackageDeps,
-} from './start-from-package';
+import { startGoalFromPackage, DEFAULT_DEPS, type StartGoalFromPackageDeps } from './start-from-package';
 import { DEFAULT_START_GOAL_BY_ID_DEPS, startGoalById } from './start-goal-by-id';
 import { resolveGoalHoldersFromRows } from './holder';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
@@ -196,30 +192,24 @@ describe('P-016 front half: typed start → mint → attach → brief (real seam
     expect(brief).toContain(STANDING_GOAL_KILL_POLARITY); // D-003/P-008 standing clause
     expect(brief).toContain('worklist'); // P-025 worklist duty travels in the body
     expect(brief).toContain('Stack the GRADE overlay'); // D-011 GRADE-stacking duty
+    // Existing-goal activation must carry the same server-composed portfolio
+    // snapshot as goals:start, even when package content supplies an explicit
+    // kickoff brief.
+    expect(brief).toContain('GOAL PORTFOLIO SNAPSHOT —');
   });
 
   it('the P-025 datatype was ensured in the registry as a REAL row', async () => {
     const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
-    const res = await startGoalFromPackage(
-      rootSql,
-      { workspaceId: WS, ref: REF, harness: HARNESS },
-      e2eDeps(capture),
-    );
+    const res = await startGoalFromPackage(rootSql, { workspaceId: WS, ref: REF, harness: HARNESS }, e2eDeps(capture));
     expect(res.ok).toBe(true);
-    const rows = await rootSql<
-      Array<{ id: string }>
-    >`SELECT id FROM harness_shared.datatype_registry
+    const rows = await rootSql<Array<{ id: string }>>`SELECT id FROM harness_shared.datatype_registry
        WHERE workspace_id = ${WS} AND id = 'plan-ref-list'`;
     expect(rows).toHaveLength(1);
   });
 
   it('minting with no harness refuses and leaves the fresh workspace EMPTY', async () => {
     const capture = { kickoffPrompt: null as string | null, launched: [] as string[] };
-    const res = await startGoalFromPackage(
-      rootSql,
-      { workspaceId: WS, ref: REF },
-      e2eDeps(capture),
-    );
+    const res = await startGoalFromPackage(rootSql, { workspaceId: WS, ref: REF }, e2eDeps(capture));
     expect(res.ok).toBe(false);
     expect(capture.launched).toHaveLength(0);
     const [{ count }] = await rootSql<

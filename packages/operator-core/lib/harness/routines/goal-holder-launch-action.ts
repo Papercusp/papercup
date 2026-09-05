@@ -38,6 +38,15 @@ export interface GoalHolderLaunchInput {
    *  the spawn-safe PAPERCUSP_KICKOFF_PROMPT env). Omitted ⇒ build the
    *  canonical brief from the goal row returned by launch-policy resolution. */
   kickoffPrompt?: string | null;
+  /**
+   * A resolution already assembled by the caller's activation transaction.
+   * Existing-goal activation reads the goal's policy and GOAL portfolio once,
+   * then hands that exact projection through here; resolving again in this
+   * door would both pay for a second projection and allow the first-turn brief
+   * to disagree with the activation read. Direct recovery callers omit this
+   * and keep the historical resolver-owned path.
+   */
+  resolvedLaunch?: GoalLaunchResolution | null;
 }
 
 export interface GoalHolderLaunchResult {
@@ -111,8 +120,7 @@ export async function neutralizeGoalHolderSession(
   input: { workspaceId: string; goalId: string; ownerId: string; reason: string },
   deps: GoalHolderNeutralizeDeps = DEFAULT_NEUTRALIZE_DEPS,
 ): Promise<{ loopDeactivated: boolean; autoCleared: boolean; woken: number; staged: number }> {
-  const summary =
-    `GOAL launch neutralized: '${input.goalId}' elected another holder before ${input.ownerId} attached`;
+  const summary = `GOAL launch neutralized: '${input.goalId}' elected another holder before ${input.ownerId} attached`;
   const loopDeactivated = await deps.deactivate(input.ownerId, input.reason);
   const autoCleared = await deps.clearAuto(input.workspaceId, input.ownerId, input.reason);
   await deps.notifyOrders(input.ownerId);
@@ -154,13 +162,21 @@ export async function launchGoalHolderSession(
   const goalId = required(input.goalId, 'goalId');
   const harnessSlug = required(input.harnessSlug, 'harnessSlug');
 
-  const resolved = await deps.resolveGoalLaunch({
-    workspaceId,
-    goalId,
-    launcherOwnerId: input.launcherOwnerId ?? null,
-    goalRole: 'goal',
-    requested: {},
-  });
+  const resolved =
+    input.resolvedLaunch ??
+    (await deps.resolveGoalLaunch({
+      workspaceId,
+      goalId,
+      launcherOwnerId: input.launcherOwnerId ?? null,
+      goalRole: 'goal',
+      requested: {},
+    }));
+  if (resolved.goalId !== goalId) {
+    throw new Error(
+      `goal-holder-launch refused for ${goalId}: the supplied launch resolution targets ` +
+        `${resolved.goalId ?? 'no goal'} — refusing to launch with mismatched goal policy`,
+    );
+  }
   if (resolved.refusal) {
     throw new Error(`goal-holder-launch refused for ${goalId}: ${resolved.refusal.message}`);
   }

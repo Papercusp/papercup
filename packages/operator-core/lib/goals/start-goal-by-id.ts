@@ -60,16 +60,13 @@ import {
   type GoalHolderLaunchResult,
 } from '../harness/routines/goal-holder-launch-action';
 import { resolveGoalHolders, type GoalHolders } from './holder';
-import {
-  setMode,
-  type GoalModeElectionExpectation,
-  type GoalModeElectionReceipt,
-} from '../modes/store';
+import { setMode, type GoalModeElectionExpectation, type GoalModeElectionReceipt } from '../modes/store';
 import { notifyGoalHolderHandoff } from './holder-handoff';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 // Same direction the sibling package-start door already imports (start-from-package.ts):
 // lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
+import { renderGoalPortfolioBrief, resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../goal-launch-settings';
 
 export interface StartGoalByIdInput {
   workspaceId: string;
@@ -139,11 +136,7 @@ function numericOrNull(value: string | number | null | undefined): number | null
 export interface StartGoalByIdDeps {
   launch: (input: GoalHolderLaunchInput) => Promise<GoalHolderLaunchResult>;
   resolveHolders: (sql: Sql, opts: { workspaceId: string; goalId: string }) => Promise<GoalHolders>;
-  readReadiness: (
-    sql: Sql,
-    workspaceId: string,
-    goalId: string,
-  ) => ReturnType<typeof readGoalReadiness>;
+  readReadiness: (sql: Sql, workspaceId: string, goalId: string) => ReturnType<typeof readGoalReadiness>;
   /** The holder-row attachment — wraps `setMode` in production. */
   attach: (opts: {
     sql: Sql;
@@ -158,12 +151,7 @@ export interface StartGoalByIdDeps {
     error?: string | null;
     goalElection?: GoalModeElectionReceipt;
   }>;
-  neutralize: (input: {
-    workspaceId: string;
-    goalId: string;
-    ownerId: string;
-    reason: string;
-  }) => Promise<unknown>;
+  neutralize: (input: { workspaceId: string; goalId: string; ownerId: string; reason: string }) => Promise<unknown>;
   notifyHandoff: (workspaceId: string, election: GoalModeElectionReceipt) => Promise<unknown>;
   /**
    * Refreshes the compact control projection after a direct GOAL attachment.
@@ -176,10 +164,13 @@ export interface StartGoalByIdDeps {
    * This is deliberately a separate, fail-soft post-start step: attachment is
    * the holder guarantee, while metadata is a convenience read projection.
    */
-  stampAgentOwner: (
-    sql: Sql,
-    opts: { workspaceId: string; goalId: string; ownerId: string },
-  ) => Promise<void>;
+  stampAgentOwner: (sql: Sql, opts: { workspaceId: string; goalId: string; ownerId: string }) => Promise<void>;
+  /**
+   * Resolves the goal's launch policy and, for the GOAL slot, its one live
+   * portfolio projection. The activation path owns this read so the exact
+   * resolution can be handed to the launch door without a second projection.
+   */
+  resolveGoalLaunch: (args: Parameters<typeof resolveGoalLaunchForGoal>[0]) => Promise<GoalLaunchResolution>;
   /**
    * Builds the DEFAULT first-turn brief when the caller passes no
    * `kickoffPrompt` (EI-21566842357792802). Injectable for the same reason the
@@ -192,12 +183,12 @@ export interface StartGoalByIdDeps {
 export const DEFAULT_START_GOAL_BY_ID_DEPS: StartGoalByIdDeps = {
   launch: launchGoalHolderSession,
   resolveHolders: resolveGoalHolders,
+  resolveGoalLaunch: resolveGoalLaunchForGoal,
   buildBrief: buildGoalKickoffBrief,
   // The structural GoalSqlTag/Sql mismatch is bridged HERE, once — the same
   // cast goal-auto-start.ts makes at its call site (postgres' PendingQuery is
   // Promise-like but the generic signatures are not mutually assignable).
-  readReadiness: (sql, workspaceId, goalId) =>
-    readGoalReadiness(sql as unknown as GoalSqlTag, workspaceId, goalId),
+  readReadiness: (sql, workspaceId, goalId) => readGoalReadiness(sql as unknown as GoalSqlTag, workspaceId, goalId),
   attach: async ({ sql, workspaceId, goalId, ownerId, goalTitle, setBy, expectedLease }) => {
     const result = await setMode({
       workspaceId,
@@ -322,8 +313,7 @@ export async function startGoalById(
           `Pass startBlocked: true (+ startBlockedReason) if starting blocked is deliberate.`,
       };
     }
-    startBlockedOverride =
-      input.startBlockedReason?.trim() || `started despite unsatisfied blocker(s): ${unsatisfied}`;
+    startBlockedOverride = input.startBlockedReason?.trim() || `started despite unsatisfied blocker(s): ${unsatisfied}`;
   }
 
   /* EI-21566842357792802 — a goal agent MUST be told its goal.
@@ -346,17 +336,41 @@ export async function startGoalById(
      trigger/schedule/watchdog leg", so EVERY caller that omits it had the same
      defect. A per-door fix would have left the watchdog and external-trigger legs
      launching mute goal agents. An explicit caller-supplied brief still wins. */
+  /*
+     Resolve the GOAL launch slot HERE, before opening the process. This is the
+     canonical existing-goal activation path, so it must pay the same
+     `goalRole: 'goal'` portfolio read as `goals:start` and `goal-auto-start`.
+     Hand the resulting object through to the launch door: resolving again
+     there would be a second projection and could brief the holder from a
+     different point-in-time portfolio.
+  */
+  const resolvedLaunch = await deps.resolveGoalLaunch({
+    workspaceId,
+    goalId,
+    goalRole: 'goal',
+    requested: {},
+    launcherOwnerId: input.launcherOwnerId ?? null,
+    sql,
+  });
+  if (resolvedLaunch.refusal) {
+    throw new Error(`goal-holder-launch refused for ${goalId}: ${resolvedLaunch.refusal.message}`);
+  }
+  const portfolio = resolvedLaunch.goalBrief?.portfolio ?? null;
   const kickoffPrompt =
-    input.kickoffPrompt ??
-    deps.buildBrief({
-      goalId,
-      title: goal.title,
-      killCriterion: goal.kill_criterion,
-      body: goal.body,
-      budgetCents: numericOrNull(goal.budget_cents),
-      budgetWindowSec: numericOrNull(goal.budget_window_sec),
-      standing: goal.standing ?? false,
-    });
+    input.kickoffPrompt == null
+      ? deps.buildBrief({
+          goalId,
+          title: goal.title,
+          killCriterion: goal.kill_criterion,
+          body: goal.body,
+          budgetCents: numericOrNull(goal.budget_cents),
+          budgetWindowSec: numericOrNull(goal.budget_window_sec),
+          standing: goal.standing ?? false,
+          portfolio,
+        })
+      : portfolio && !input.kickoffPrompt.includes('GOAL PORTFOLIO SNAPSHOT —')
+        ? `${input.kickoffPrompt}\n\n${renderGoalPortfolioBrief(portfolio)}`
+        : input.kickoffPrompt;
 
   // ── launch, then attach (launch failures throw from the launch door) ────
   const launched = await deps.launch({
@@ -366,6 +380,7 @@ export async function startGoalById(
     launcherOwnerId: input.launcherOwnerId ?? null,
     deferSpawn: input.deferSpawn ?? false,
     kickoffPrompt,
+    resolvedLaunch,
   });
 
   const setBy = input.launcherOwnerId ?? 'goal-start-by-id';

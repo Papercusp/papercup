@@ -76,6 +76,7 @@ import { resolveGoalEffectiveActivity, GOAL_DORMANT_STATUS } from './activity';
 import { probeProcessLiveness } from '../agent-tools/coordination/presence';
 import { RECORDED_SESSION_SOURCE } from '../agent-tools/coordination/recorded-sessions';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
+import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
 import { GOAL_MODE } from '../modes/goal-session';
 import { setMode } from '../modes/store';
 
@@ -182,6 +183,7 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
     },
     // NOT stubbed — the real fold over the real oracle is the subject of this file.
     resolveHolders: resolveGoalHolders,
+    resolveGoalLaunch: resolveGoalLaunchForGoal,
     buildBrief: buildGoalKickoffBrief,
     readReadiness: async () => ({ actionable: true, premiseInvalidated: false, blockers: [] }),
     attach: async ({ sql, workspaceId, goalId, ownerId, setBy, expectedLease }) => {
@@ -311,8 +313,7 @@ describe('a KILLED goal holder (pid gone, adv_sessions.ended_at never written)',
 
     // ...and it keeps reading as active: nothing was lost.
     expect(
-      resolveGoalEffectiveActivity({ status: 'active', launchSettings: null, liveness: holders.liveness })
-        .deactivated,
+      resolveGoalEffectiveActivity({ status: 'active', launchSettings: null, liveness: holders.liveness }).deactivated,
     ).toBe(false);
   }, 60_000);
 

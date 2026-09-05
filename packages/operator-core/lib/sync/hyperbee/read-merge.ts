@@ -363,6 +363,11 @@ interface WinnerMeta {
   src: string; // sourceLogKeyHex ('' when absent) — lwwPick's total-order tiebreak
 }
 
+/** Result of one physical `log.get(position)` attempt. */
+type ReadAttemptResult =
+  | { kind: 'op'; op: PeerLogOp | null }
+  | { kind: 'read-error'; err: unknown };
+
 /**
  * Durable-for-the-process fold state of an incremental merge: per-log read
  * cursors + the materialized per-key winner metadata. Created once per booted
@@ -416,6 +421,13 @@ export interface MergeCursor {
    * bound, and the failure lives in whether a SPECIFIC POSITION ever advances.
    */
   readStalls?: Map<string, number>;
+  /**
+   * P-203 / D-018: `${log.keyHex}:${position}` → late results from timed-out
+   * reads. A result that eventually arrives is consumed before another read is
+   * issued, while a never-settling attempt still permits the existing retry
+   * semantics on the next pass.
+   */
+  lateReadResults?: Map<string, ReadAttemptResult[]>;
 }
 
 export function createMergeCursor(): MergeCursor {
@@ -425,6 +437,7 @@ export function createMergeCursor(): MergeCursor {
     applyThrows: new Map(),
     readThrows: new Map(),
     readStalls: new Map(),
+    lateReadResults: new Map(),
   };
 }
 
@@ -1291,6 +1304,9 @@ export async function mergeAdmittedLogsIncremental(
   // partial pass on top of a known-invalid fold.
   for (const log of logs) {
     if (log.length < (cursor.positions.get(log.keyHex) ?? 0)) {
+      // The caller will normally replace the cursor after this signal. Drop
+      // retained late reads so a re-fold cannot consume a stale position.
+      cursor.lateReadResults?.clear();
       return { applied: 0, decoded: 0, caughtUp: false, truncated: true };
     }
   }
@@ -1366,18 +1382,34 @@ export async function mergeAdmittedLogsIncremental(
       // forever (the pre-fix behavior — "silent REV fed_event outage class").
       let op: PeerLogOp | null;
       try {
-        const got = await readOpBoundedDetailed(log, pos, getTimeoutMs);
+        const readIdent = `${log.keyHex}:${pos}`;
+        const lateQueue = cursor.lateReadResults?.get(readIdent);
+        const cached = lateQueue?.shift();
+        if (lateQueue && lateQueue.length === 0) cursor.lateReadResults?.delete(readIdent);
+        const got =
+          cached ??
+          (await readOpBoundedDetailed(log, pos, getTimeoutMs, (result) => {
+            // A late result is useful only while this cursor is still held at
+            // the same position. If another attempt already advanced it, drop
+            // the stale result rather than applying it at a later position.
+            if ((cursor.positions.get(log.keyHex) ?? 0) !== pos) return;
+            const queue = cursor.lateReadResults?.get(readIdent) ?? [];
+            queue.push(result);
+            (cursor.lateReadResults ??= new Map()).set(readIdent, queue);
+          }));
+        // A cached result (or an immediate fresh result) owns this position;
+        // any additional late results for it are stale once the cursor moves.
+        if (cached || got.kind !== 'unavailable') cursor.lateReadResults?.delete(readIdent);
         if (got.kind === 'unavailable') {
-          // WI-2141796 — retry from here next pass (UNBOUNDED, unchanged: a peer
-          // withholding one block is usually transient and dead-lettering a
-          // readable-later op would lose it). What IS new is that we SAY SO. A
-          // permanent stall here pins this log's cursor forever and every
-          // subsequent op in a strictly-sequential single-writer log is
-          // unreachable behind it — previously with no output at all.
+          // WI-2141796 / P-203: retry from here next pass (UNBOUNDED, because a
+          // peer withholding one block is usually transient and dead-lettering
+          // it would lose it). D-018 additionally consumes any late result
+          // before issuing another read, so a slow-but-served block cannot pin
+          // the cursor forever while never-settling reads retain their existing
+          // retry behavior.
           const stalls = (cursor.readStalls ??= new Map());
-          const ident = `${log.keyHex}:${pos}`;
-          const n = (stalls.get(ident) ?? 0) + 1;
-          stalls.set(ident, n);
+          const n = (stalls.get(readIdent) ?? 0) + 1;
+          stalls.set(readIdent, n);
           // Announce on 1, then on each POWER OF TWO, then every 100th. A flat
           // `n === 1 || n % 100 === 0` leaves passes 2..99 silent — and that is
           // precisely the window where a one-pass blip turns into a wedged
@@ -1545,18 +1577,31 @@ async function readOpBoundedDetailed(
   log: AdmittedLog,
   i: number,
   timeoutMs: number,
+  onLateResult?: (result: ReadAttemptResult) => void,
 ): Promise<
   | { kind: 'op'; op: PeerLogOp | null }
-  | { kind: 'unavailable'; pending: Promise<boolean>; startedAtMs: number }
+  | {
+      kind: 'unavailable';
+      pending: Promise<boolean>;
+      startedAtMs: number;
+    }
   | { kind: 'read-error'; err: unknown }
 > {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const UNAVAILABLE = Symbol('unavailable');
   const startedAtMs = Date.now();
+  // Start the physical read exactly once. The promise resolves to a tagged
+  // result instead of rejecting so a late failure is safely consumable by the
+  // next pass and cannot become an unhandled rejection.
+  const result = Promise.resolve()
+    .then(() => log.get(i))
+    .then(
+      (op) => ({ kind: 'op' as const, op }),
+      (err) => ({ kind: 'read-error' as const, err }),
+    );
   try {
-    const get = Promise.resolve(log.get(i)).then((op) => ({ kind: 'op' as const, op }));
     if (timeoutMs <= 0) {
-      return await get;
+      return await result;
     }
     const timeout = new Promise<typeof UNAVAILABLE>((resolve) => {
       timer = setTimeout(() => resolve(UNAVAILABLE), timeoutMs);
@@ -1564,9 +1609,11 @@ async function readOpBoundedDetailed(
         (timer as { unref: () => void }).unref();
       }
     });
-    const r = await Promise.race([get, timeout]);
+    const r = await Promise.race([result, timeout]);
     if (r !== UNAVAILABLE) return r;
-    // WI-2141796 — hand the caller the STILL-PENDING read and when it started.
+    // WI-2141796 / P-203 — hand the caller the STILL-PENDING read and when it
+    // started. D-018 retains its eventual tagged result by position so a later
+    // pass can consume a slow-but-served block before issuing another read.
     // The bound proves only that the read did not FINISH in time; it says nothing
     // about whether the block is UNREADABLE or merely SLOW, and that distinction
     // is the one this outage class has never been able to make. Whether this
@@ -1576,13 +1623,15 @@ async function readOpBoundedDetailed(
     // abandons this read, so a raw promise that later REJECTS would be an
     // unhandled rejection. `true` = the read did eventually arrive (slow, not
     // unreadable); `false` = it eventually rejected.
-    const pending = get.then(
-      () => true,
-      () => false,
-    );
+    const pending = result.then((r) => {
+      try {
+        onLateResult?.(r);
+      } catch {
+        // A diagnostic cache must never turn a late read into a merge failure.
+      }
+      return r.kind === 'op';
+    });
     return { kind: 'unavailable', pending, startedAtMs };
-  } catch (err) {
-    return { kind: 'read-error', err };
   } finally {
     if (timer) clearTimeout(timer);
   }

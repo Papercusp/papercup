@@ -6,6 +6,8 @@ import {
   CONTROL_TRANSITION_MAX_TOKENS,
   CONTROL_TRANSITION_SCHEMA,
   acknowledgeControlTransition,
+  failControlTransitionActivation,
+  markControlTransitionPrepared,
   decideControlTransitionDelivery,
   estimateControlAnchorTokens,
   normalizeControlAnchorState,
@@ -104,6 +106,19 @@ describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
 });
 
 describe('compact durable CTRL anchor', () => {
+  it('projects a truthful desired activation envelope without inventing applied state', () => {
+    const activation = {
+      schemaVersion: 1 as const,
+      attribution: { actorId: 'actor', principalId: 'principal', sessionId: 'session' },
+      desired: { specificationRevision: 'a'.repeat(64), stateRevision: '1' },
+      prepared: null,
+      applied: null,
+      status: 'desired' as const,
+    };
+    const normalized = normalizeControlAnchorState(state({ activation }));
+    expect(normalized.activation).toMatchObject({ desired: activation.desired, prepared: null, applied: null, status: 'desired' });
+  });
+
   it('carries a deterministic superseded stand-down and omits ordinary authority', () => {
     const superseded = projectGoalHolderAuthority({
       status: 'superseded',
@@ -262,6 +277,28 @@ describe('compact durable CTRL anchor', () => {
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 5, ack.sql)).resolves.toBe(true);
     expect(ack.calls[0]!.statement).toMatch(/UPDATE/);
     expect(ack.calls[0]!.values).toContain(5);
+  });
+
+  it('marks activation prepared/failing through conditional revision guards', async () => {
+    const preparedSql = sqlReturning([{ control_generation: 5 }]);
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: '1' };
+    await expect(markControlTransitionPrepared('su-x', 'ws-test', 5, revision, preparedSql.sql)).resolves.toBe(true);
+    expect(preparedSql.calls[0]!.statement).toMatch(/activation/);
+    expect(preparedSql.calls[0]!.values).toContain(JSON.stringify(revision));
+
+    const failedSql = sqlReturning([{ control_generation: 5 }]);
+    await expect(failControlTransitionActivation('su-x', 'ws-test', 5, revision, 'render failed', failedSql.sql)).resolves.toBe(true);
+    expect(failedSql.calls[0]!.statement).toMatch(/failed/);
+  });
+
+  it('acknowledges a revision only when its prepared JSON matches (and keeps legacy SQL shape otherwise)', async () => {
+    const revision = { specificationRevision: 'b'.repeat(64), stateRevision: '2' };
+    const activationAck = sqlReturning([{ control_delivered_generation: 6 }]);
+    await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, activationAck.sql, revision)).resolves.toBe(true);
+    expect(activationAck.calls[0]!.statement).toMatch(/activation/);
+    const legacyAck = sqlReturning([{ control_delivered_generation: 6 }]);
+    await expect(acknowledgeControlTransition('su-x', 'ws-test', 6, legacyAck.sql)).resolves.toBe(true);
+    expect(legacyAck.calls[0]!.statement).not.toMatch(/activation/);
   });
 
   it('rejects generation-behind payloads and full-resyncs from current anchor state', () => {
