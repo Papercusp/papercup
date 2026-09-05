@@ -72,6 +72,17 @@ describe('SU-S32 audit world', () => {
     expect(r.ok).toBe(true);
     expect(r.impliesAutonomy).toBe(false);
     expect(r.instructionsFact).toBe('asserted');
+    expect(r.contract).toContain("mode:set { mode:'audit', enabled:false");
+    expect(r.contract).toContain('that exit call is your FIRST action');
+  });
+
+  it('coord:orient re-injects the same active AUDIT contract before a later-turn mutation', async () => {
+    const entered = await call('mode:set', { mode: 'audit', ownerDirected: true, instructions: 'the p2p program' });
+    const oriented = await call('coord:orient', { intent: 'Owner-routed remediation' });
+    expect(oriented.activeModes).toEqual([
+      expect.objectContaining({ mode: 'audit', axis: 'overlay', contract: entered.contract }),
+    ]);
+    expect(oriented.activeModes[0].contract).toContain('mutate the audited subject only after it succeeds');
   });
 
   it('canonicalises the mcp prefix and passes unmodelled tools through', async () => {

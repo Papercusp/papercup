@@ -442,6 +442,15 @@ const PRESENCE = [
 
 // --- the override ------------------------------------------------------------
 
+const ACTIVE_AUDIT_CONTRACT =
+  'AUDIT (overlay, single-shot): read the WHOLE program — full plan lifecycle including ' +
+  'shipped/superseded/archived, each ## Now against the ledger, flow and churn markers, ' +
+  'holder liveness, mechanisms with citations. Read-only toward the subject. Deliver verdict + ' +
+  'report + coverage, then ROUTE remediation. Delivery does not clear the durable mode row: ' +
+  "explicitly call mode:set { mode:'audit', enabled:false, reason:'audit report delivered' } " +
+  'after the report. If the owner routes remediation while AUDIT is still active, that exit ' +
+  'call is your FIRST action; mutate the audited subject only after it succeeds.';
+
 export const AUDIT_WORLD: ToolDispatchOverride = {
   override(name, rawArgs) {
     const canon = canonical(name);
@@ -459,8 +468,7 @@ export const AUDIT_WORLD: ToolDispatchOverride = {
           impliesAutonomy: false,
           instructions,
           instructionsFact: instructions ? 'asserted' : 'none',
-          contract:
-            'AUDIT (overlay, single-shot): read the WHOLE program — full plan lifecycle including shipped/superseded/archived, each ## Now against the ledger, flow and churn markers, holder liveness, mechanisms with citations. Read-only toward the subject. Deliver verdict + report + coverage, then ROUTE remediation. Exits when the report is delivered.',
+          contract: ACTIVE_AUDIT_CONTRACT,
         });
       }
 
@@ -531,6 +539,7 @@ export const AUDIT_WORLD: ToolDispatchOverride = {
         return json({
           ok: true,
           host: { now: AUDIT_WORLD_NOW },
+          activeModes: [{ mode: 'audit', axis: 'overlay', contract: ACTIVE_AUDIT_CONTRACT }],
           assignments: [],
           claimable: [{ id: 'WI-7320', title: 'Write p2p program status summary (September)' }],
           inbox: { unread: 0 },

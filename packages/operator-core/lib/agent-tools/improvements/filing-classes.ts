@@ -40,7 +40,7 @@ async function findExistingClassItem(
      WHERE workspace_id = ${workspaceId}
        AND payload -> 'filingClass' ->> 'toolName' = ${toolName}
        AND status NOT IN ('done', 'dropped', 'resolved', 'closed')
-     ORDER BY created_at DESC
+     ORDER BY created_ts DESC
      LIMIT 1`;
   const row = rows[0];
   return row ? { id: row.feature_id, state: row.status } : null;
@@ -135,6 +135,24 @@ export default defineTool({
               toolName: args.toolName,
               minMembers: census.minMembers,
               note: `'${args.toolName}' is not at or above the class threshold in this population — nothing to file.`,
+            }),
+          },
+        ],
+      };
+    }
+
+    if (cls.openMemberCount === 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'class_has_no_open_members',
+              toolName: cls.toolName,
+              memberCount: cls.memberCount,
+              byState: cls.byState,
+              note: 'Every member work-item is already terminal — the class closed itself. Filing one would route triage at dead filings. (The routed-ledger outcome lags the work-item state; that lag is what makes this check necessary.)',
             }),
           },
         ],

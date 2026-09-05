@@ -511,8 +511,9 @@ export interface WorkspaceHostProviderContext {
    * enters the stored intent: the spec keeps the small provisioning intent, and the script is
    * re-derived from the controller's own trusted release each time it is needed.
    *
-   * Omitted ⇒ the instance gets the durable mount only (the pre-P-046 behaviour), which is
-   * correct for lifecycle actions that do not create a fresh host.
+   * Omitted ⇒ the instance gets the durable mount only (the pre-P-046 behaviour). Lifecycle
+   * actions that create a fresh boot/runtime layer (`restore`, `upgrade`) or deliberately repair
+   * startup state MUST re-render this value; ordinary start/stop/restart/snapshot actions omit it.
    */
   hostBootstrapScript?: string;
   log?: (

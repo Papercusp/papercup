@@ -36,7 +36,7 @@ export default defineTool({
   name: 'improvements:triage',
   profile: 'engineer',
   description:
-    'Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
+    'Triage turn: route each scored idea by the D-005 taxonomy (product→place; code-bug→the policy tier\'s lane; infra-environment→owner-escalation; process-prompt→gate/gym; needs-design→plans:new). The risk-tier policy is the one safety verdict — triage adds only routing (D-003). Before routing, a deployment-staleness screen diverts a tool-failure filing whose tool source differs from the serving build to land-the-deploy, not a code fix (P-003). Persists the decision on the idea lifecycle. (P-010) Per-Hive scope filtering.',
   guidance: {
     when:
       'To triage captured ideas: read the digest summary, walk the human queue in RANK order (the P-040 ranker — triage-all carries each item\'s rank breakdown), classify by the D-005 taxonomy, decide (place/gate/gym/reject), and record your judgment. (P-010) Pass harnessSlug for one Hive. mode=retriage-all re-routes the open-idea WINDOW after a taxonomy/policy change — every mode returns `coverage`; retriage-all adds `complete`, and complete:false means ideas beyond the window KEPT their old routing.',

@@ -8,6 +8,8 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[] } }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -85,7 +87,13 @@ describe('selectUngradedFilings', () => {
   });
 
   it('never selects a filing with a non-finite timestamp (never act blind)', () => {
-    const bad: SuUngradedCandidate = { ideaId: 'nan', title: null, routedRef: 'wi:nan', routedAtMs: Number.NaN };
+    const bad: UngradedCandidate = {
+      ideaId: 'nan',
+      origin: 'su-ideate',
+      title: null,
+      routedRef: 'wi:nan',
+      routedAtMs: Number.NaN,
+    };
     expect(selectUngradedFilings([bad], opts)).toEqual([]);
   });
 });

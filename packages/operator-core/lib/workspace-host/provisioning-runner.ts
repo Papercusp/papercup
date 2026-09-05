@@ -65,7 +65,7 @@ const DEFAULT_RETRY_AFTER_MS = 2_000;
 const MAX_CONTROLLER_TRANSITIONS_PER_REQUEST = 256;
 
 /** Production host-bootstrap render: the controller's own trusted release and SSH public key. */
-async function defaultRenderHostBootstrap(hostId: string): Promise<string> {
+export async function renderControllerWorkspaceHostBootstrap(hostId: string): Promise<string> {
   const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
   return renderWorkspaceHostProvisionBootstrap(hostId, profile);
 }
@@ -771,7 +771,7 @@ export async function runWorkspaceHostProvisioning(
   // that never needed the render at all.
   let hostBootstrapScript: string | undefined;
   if (input.provider.capabilities.lifecycle.hostBootstrap) {
-    const render = input.renderHostBootstrap ?? defaultRenderHostBootstrap;
+    const render = input.renderHostBootstrap ?? renderControllerWorkspaceHostBootstrap;
     try {
       hostBootstrapScript = await render(hostId);
     } catch (error) {

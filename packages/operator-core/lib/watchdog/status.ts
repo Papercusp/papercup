@@ -330,7 +330,7 @@ export async function readScheduledWatchdogStatus(args: {
   // The DBOS step runs in the dedicated bg-host, while this reader usually runs
   // in the API process. Their environment overrides may differ, so the step's
   // persisted readback is authoritative whenever present.
-  const config = runSummary.config ?? suIdeateUngradedConfig();
+  const config = runSummary.config ?? ungradedFilingsConfig();
   const eligibleBeforeMs = nowMs - Math.max(0, config.effectiveThresholdSec) * 1_000;
 
   const [eligibility, fireRows] = await Promise.all([

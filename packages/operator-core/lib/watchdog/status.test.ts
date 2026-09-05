@@ -11,7 +11,8 @@ function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler
       overrideSource: 'default' as const,
       overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC' as const,
       rawOverride: null,
-      epochMs: 1,
+      // P-001: the whole per-origin floor policy, not one origin's epochMs.
+      policy: { byOrigin: { 'su-ideate': 1 }, fallbackMs: 1 },
       batchCap: 10,
       ...patch.config,
     },
@@ -154,7 +155,10 @@ describe('classifyScheduledWatchdogStatus', () => {
                   overrideSource: 'environment',
                   overrideEnv: 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC',
                   rawOverride: '172800',
-                  epochMs: 1_783_728_000_000,
+                  policy: {
+                    byOrigin: { 'su-ideate': 1_783_728_000_000 },
+                    fallbackMs: 1_783_728_000_000,
+                  },
                   batchCap: 10,
                 },
               },
@@ -194,7 +198,10 @@ describe('classifyScheduledWatchdogStatus', () => {
       expect(status.scheduler).toMatchObject({ lastResultCount: 0, lastNudgedCount: 0 });
       expect(status).toMatchObject({ ok: false, effectiveState: 'eligible-sweep-empty' });
       const eligibilityCall = calls.find((call) => call.text.includes('FROM harness_shared.scout_routed_ideas'));
-      expect(eligibilityCall?.values[0]).toBe(nowMs - 172_800_000);
+      // P-001: the eligibility read now goes through readUngradedEligibility, whose
+      // leading binds are the per-origin floor policy — so assert the threshold is
+      // BOUND, not that it sits at a fixed position that the contract does not promise.
+      expect(eligibilityCall?.values).toContain(nowMs - 172_800_000);
     } finally {
       vi.unstubAllEnvs();
     }

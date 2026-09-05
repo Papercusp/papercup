@@ -59,6 +59,15 @@
  * that exit as its unlock. The v4 assertion therefore walks calls chronologically:
  * subject mutations fail while audit is active, and become eligible only after an
  * explicit mode exit.
+ *
+ * VERSION 5 — ACTIVE CONTRACT RE-INJECTION + EXPLICIT SINGLE-SHOT EXIT
+ * (WI-2146629). Provider v4 run 408297d8 delivered a correct report, then the
+ * simulated owner routed remediation. The agent's first call was coord:orient,
+ * but AUDIT_WORLD returned no active-mode contract even though production orient
+ * re-injects it; the earlier mode result also said merely "Exits when the report
+ * is delivered", which can be read as automatic row clearing. The v5 world
+ * mirrors production by carrying the active AUDIT contract on orient, and the
+ * contract makes the explicit exit call the first action before routed mutation.
  */
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, Scenario } from '@papercusp/testing-shell/llm';
@@ -122,7 +131,7 @@ const NO_MUTATION_WHILE_AUDIT_ACTIVE: Extract<DeterministicAssert, { kind: 'cust
 
 export const SU_S32_AUDIT_MODE_WHOLE_PICTURE: Scenario = {
   id: 'su-S32-audit-mode-whole-picture',
-  version: 4,
+  version: 5,
   target: 'su',
   transport: 'in-process',
   toolOverride: AUDIT_WORLD,

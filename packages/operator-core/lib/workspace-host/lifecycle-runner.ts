@@ -28,6 +28,7 @@ import {
 } from './observability-store';
 import {
   assertProviderConnectionUsable,
+  renderControllerWorkspaceHostBootstrap,
   WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
 } from './provisioning-runner';
@@ -59,6 +60,8 @@ export interface RunWorkspaceHostLifecycleInput {
   actorId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostLifecycleStore;
+  /** Test seam for lifecycle actions that must install the controller's current trusted release. */
+  renderHostBootstrap?: (hostId: string) => Promise<string>;
 }
 
 export interface WorkspaceHostLifecycleStore {
@@ -262,10 +265,28 @@ export async function runWorkspaceHostLifecycle(
     throw new WorkspaceHostProvisioningRequestError(['workspace-host provider and connection must match stored target']);
   }
 
+  let hostBootstrapScript: string | undefined;
+  if (
+    input.provider.capabilities.lifecycle.hostBootstrap &&
+    (input.action === 'repair' || input.action === 'upgrade' || input.action === 'restore')
+  ) {
+    const bootstrapHostId = input.action === 'restore' ? input.desired?.hostId : hostId;
+    if (!bootstrapHostId) {
+      throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
+    }
+    const render = input.renderHostBootstrap ?? renderControllerWorkspaceHostBootstrap;
+    try {
+      hostBootstrapScript = await render(bootstrapHostId);
+    } catch (error) {
+      throw new WorkspaceHostProvisioningRequestError([message(error)]);
+    }
+  }
+
   const context: WorkspaceHostProviderContext = {
     workspaceId,
     requestId: operationId,
     connection: { ...input.connection, scope: target.desired.scope },
+    ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   };

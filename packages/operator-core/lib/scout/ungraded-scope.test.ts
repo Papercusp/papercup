@@ -177,18 +177,26 @@ describe('P-010 recurrence guard: one definition, not four', () => {
   /** Files allowed to write the predicate themselves, each for a stated reason. */
   const SANCTIONED: Record<string, string> = {
     'scout/ungraded-scope.ts': 'this module IS the definition',
+    'scout/filing-class-aggregation.ts':
+      'P-002: JOINs work_items on a jsonb toolFailure payload predicate, which no ' +
+      'row/census read here can express — but it resolves all three axes from THIS ' +
+      "module's policy (per-origin floor, terminality, shadow-variant exclusion) and " +
+      'names no origin of its own',
   };
   // P-001 (agent-review-filing-rail-and-class-aggregation-2026-09-05): this set used to
-  // hold three entries. `scout/ungraded-filings-watchdog.ts` and `watchdog/status.ts`
-  // each wrote the predicate for a stated reason — "row selection, not a census" and
-  // "eligibility, not a population count" — and BOTH reasons were true and both files
-  // still drifted, because each one silently scoped itself to origin='su-ideate' while
-  // the census governed every producer. Measured 2026-09-02 (EI-22180311569503146): the
-  // rail acted on 22 of 1,675 actionable rows and agent-review's 1,397 had no consumer.
-  // A sanctioned exception whose reason is about the SHAPE of the read (rows vs counts)
-  // does not protect the AXES, which is what actually drifts. Both now call this module,
-  // so the exception list is the definition itself and nothing else. Do not re-add an
-  // entry here to make a widened read compile; add the read to ungraded-scope.ts.
+  // hold `scout/ungraded-filings-watchdog.ts` and `watchdog/status.ts` too. Each wrote
+  // the predicate for a stated reason — "row selection, not a census" and "eligibility,
+  // not a population count" — and BOTH reasons were true, and both files still drifted,
+  // because each silently scoped itself to origin='su-ideate' while the census governed
+  // every producer. Measured 2026-09-02 (EI-22180311569503146): the rail acted on 22 of
+  // 1,675 actionable rows and agent-review's 1,397 had no consumer at all.
+  //
+  // THE LESSON FOR ANYONE ADDING AN ENTRY BELOW: a reason about the SHAPE of the read
+  // (rows vs counts, join vs aggregate) does not protect the AXES, and the axes are what
+  // actually drift. An entry is legitimate only when the read genuinely cannot be
+  // expressed by this module AND it resolves origin/terminality/floor FROM this module's
+  // exported policy. Never add one merely to make a widened read compile — if it can call
+  // readActionableUngradedFilings / readUngradedEligibility / readUngradedBreakdown, it must.
 
   const walk = (dir: string, acc: string[] = []): string[] => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {

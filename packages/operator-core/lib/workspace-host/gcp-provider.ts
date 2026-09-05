@@ -101,6 +101,7 @@ export interface GcpFirewallObservation extends GcpResourceObservation {
 
 export interface GcpInstanceObservation extends GcpResourceObservation {
   status: GcpComputeInstanceStatus;
+  metadataFingerprint?: string;
   sourceImage?: string;
   attachedDiskNames: readonly string[];
   internalIp?: string;
@@ -244,6 +245,11 @@ export interface GcpInstanceInsertInput {
   metadata: { items: readonly { key: string; value: string }[] };
 }
 
+export interface GcpInstanceMetadataInput {
+  fingerprint: string;
+  items: readonly { key: string; value: string }[];
+}
+
 export interface GcpSnapshotInsertInput {
   name: string;
   sourceDisk: string;
@@ -330,6 +336,13 @@ export interface GcpWorkspaceHostApiClient {
   startInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   stopInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   resetInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
+  setInstanceMetadata(
+    projectId: string,
+    zone: string,
+    name: string,
+    input: GcpInstanceMetadataInput,
+    requestId: string,
+  ): Promise<GcpOperationRef>;
   deleteInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteDisk(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteFirewall(projectId: string, name: string, requestId: string): Promise<GcpOperationRef>;
@@ -495,6 +508,15 @@ type GcpStepInput =
       instanceName: string;
       requestId: string;
       hostId: string;
+    }
+  | {
+      op: 'set-instance-metadata';
+      projectId: string;
+      zone: string;
+      instanceName: string;
+      requestId: string;
+      hostId: string;
+      request: GcpInstanceMetadataInput;
     }
   | {
       op: 'create-snapshot';
@@ -1114,7 +1136,7 @@ function metadata(
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
   entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);
-  entries.set('startup-script', durableFilesystemStartupScript(settings, hostBootstrapScript));
+  entries.set('startup-script', durableFilesystemStartupScript(settings.dataDeviceName, hostBootstrapScript));
   return [...entries.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
@@ -1131,10 +1153,10 @@ function metadata(
  * second producer for this argument.
  */
 function durableFilesystemStartupScript(
-  settings: GcpWorkspaceHostDesiredProviderSettings,
+  dataDeviceName: string,
   hostBootstrapScript?: string,
 ): string {
-  const device = `/dev/disk/by-id/google-${settings.dataDeviceName}`;
+  const device = `/dev/disk/by-id/google-${dataDeviceName}`;
   const userScript = hostBootstrapScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
   return [
     '#!/usr/bin/env bash',
@@ -1180,6 +1202,34 @@ function durableFilesystemStartupScript(
     ...(userScript ? ['', '# User-supplied bootstrap follows the durable mount.', userScript] : []),
     '',
   ].join('\n');
+}
+
+function refreshedInstanceMetadata(
+  observed: GcpInstanceObservation,
+  hostBootstrapScript: string,
+): GcpInstanceMetadataInput {
+  const fingerprint = requireString(observed.metadataFingerprint, 'GCP instance metadata fingerprint');
+  if (!observed.recreateInput) throw new Error('GCP lifecycle bootstrap refresh requires a fresh instance read');
+  const dataDisk = observed.recreateInput.disks.find((disk) => disk.boot === false);
+  const dataDeviceName = requireString(dataDisk?.deviceName, 'GCP data disk deviceName');
+  const entries = new Map(observed.recreateInput.metadata.items.map(({ key, value }) => [key, value]));
+  entries.set('startup-script', durableFilesystemStartupScript(dataDeviceName, hostBootstrapScript));
+  return {
+    fingerprint,
+    items: [...entries.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => ({ key, value })),
+  };
+}
+
+function sameMetadata(
+  observed: GcpInstanceObservation,
+  expected: GcpInstanceMetadataInput,
+): boolean {
+  const actual = observed.recreateInput?.metadata.items ?? [];
+  const normalize = (items: readonly { key: string; value: string }[]) =>
+    [...items].sort((left, right) => left.key.localeCompare(right.key));
+  return JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected.items));
 }
 
 function resource(
@@ -1348,6 +1398,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     );
     const requestId = gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:${request.action}:${instance.providerId}`);
     if (request.action === 'upgrade') {
+      if (!ctx.hostBootstrapScript) {
+        throw new Error('GCP upgrade requires a controller-authored host bootstrap');
+      }
       const imageId = assertGcpImmutableImageId(request.image.id, 'gcp.upgrade.image.id');
       const observed = await this.client.getInstance(projectId, zone, instance.providerId);
       if (!observed?.recreateInput) {
@@ -1396,6 +1449,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             requiresNat: request.host.resources.some((item) => item.kind === NAT_KIND),
             request: {
               ...observed.recreateInput,
+              metadata: { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript).items },
               disks: [
                 {
                   ...bootDisk,
@@ -1477,6 +1531,51 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         });
       }
       return steps;
+    }
+    if (request.action === 'repair') {
+      if (!ctx.hostBootstrapScript) {
+        throw new Error('GCP repair requires a controller-authored host bootstrap');
+      }
+      const observed = await this.client.getInstance(projectId, zone, instance.providerId);
+      if (!observed) throw new Error(`GCP repair instance '${instance.providerId}' is absent`);
+      assertManagedHostResource(observed, request.host.hostId, 'repair instance');
+      const refreshKey = `${request.idempotencyKey}:refresh-bootstrap:${instance.providerId}`;
+      const resetKey = `${request.idempotencyKey}:repair:${instance.providerId}`;
+      return [
+        {
+          id: 'refresh-bootstrap-metadata',
+          action: 'repair',
+          resourceKind: VM_KIND,
+          dependsOn: [],
+          idempotencyKey: refreshKey,
+          destructive: false,
+          input: {
+            op: 'set-instance-metadata',
+            projectId,
+            zone,
+            instanceName: instance.providerId,
+            requestId: gcpWorkspaceHostRequestUuid(refreshKey),
+            hostId: request.host.hostId,
+            request: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript),
+          } satisfies GcpStepInput,
+        },
+        {
+          id: 'repair-instance',
+          action: 'repair',
+          resourceKind: VM_KIND,
+          dependsOn: ['refresh-bootstrap-metadata'],
+          idempotencyKey: resetKey,
+          destructive: false,
+          input: {
+            op: 'repair-instance',
+            projectId,
+            zone,
+            instanceName: instance.providerId,
+            requestId: gcpWorkspaceHostRequestUuid(resetKey),
+            hostId: request.host.hostId,
+          } satisfies GcpStepInput,
+        },
+      ];
     }
     const op =
       request.action === 'start'
@@ -2071,6 +2170,25 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           () => this.client.resetInstance(input.projectId, input.zone, input.instanceName, input.requestId),
           ctx.signal,
         );
+      case 'set-instance-metadata': {
+        const operation = await this.client.setInstanceMetadata(
+          input.projectId,
+          input.zone,
+          input.instanceName,
+          input.request,
+          input.requestId,
+        );
+        if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
+        const found = await this.client.getInstance(input.projectId, input.zone, input.instanceName);
+        if (!found || !sameMetadata(found, input.request)) {
+          throw new Error(`GCP instance '${input.instanceName}' did not retain refreshed startup metadata`);
+        }
+        return this.applied(
+          request,
+          resource(VM_KIND, found.name, { parentProviderId: input.projectId, zone: input.zone }),
+          operation.name,
+        );
+      }
       case 'create-snapshot': {
         requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
         const sourceDisk = await this.client.getDisk(input.projectId, input.zone, input.request.sourceDisk);
@@ -2314,6 +2432,15 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             zone: 'zone' in input ? input.zone : undefined,
           }),
         );
+      if (input.op === 'set-instance-metadata') {
+        if (sameMetadata(existing as GcpInstanceObservation, input.request)) {
+          return this.unchanged(
+            request,
+            resource(VM_KIND, existing.name, { parentProviderId: input.projectId, zone: input.zone }),
+          );
+        }
+        return this.apply(request, ctx);
+      }
       if ('instanceName' in input) {
         const wanted = input.op === 'stop-instance' ? 'TERMINATED' : 'RUNNING';
         if ('status' in existing && existing.status === wanted)

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
   type WorkspaceHostApplyResult,
   type WorkspaceHostPlan,
@@ -37,7 +38,7 @@ const connection: WorkspaceHostProviderConnection = {
   scope: desired.scope,
 };
 
-function providerHarness() {
+function providerHarness(hostBootstrap = false) {
   const plan: WorkspaceHostPlan = {
     planId: 'plan-start-1',
     operationId: 'op-1',
@@ -59,6 +60,7 @@ function providerHarness() {
   const reconcile = vi.fn<WorkspaceHostProvider['reconcile']>();
   const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
+    capabilities: fakeWorkspaceHostCapabilities({ lifecycle: { hostBootstrap } }),
     validateConnection: vi.fn(async () => ({
       ok: true,
       checkedAt: '2026-08-27T00:00:00Z',
@@ -136,6 +138,31 @@ describe('runWorkspaceHostLifecycle', () => {
       hostId: 'host-1',
     });
     expect(store.recordObservation).toHaveBeenCalledOnce();
+  });
+
+  it('renders the current controller bootstrap before a repair plan and passes it only through provider context', async () => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness(true);
+    apply.mockResolvedValue({
+      operationId: 'op-1',
+      stepId: 'start-instance',
+      state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z',
+      resource: vm,
+    });
+    const renderHostBootstrap = vi.fn(async () => '#!/usr/bin/env bash\necho repaired');
+
+    await runWorkspaceHostLifecycle({
+      ...input(provider, store),
+      action: 'repair',
+      renderHostBootstrap,
+    });
+
+    expect(renderHostBootstrap).toHaveBeenCalledWith('host-1');
+    expect(provider.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'repair' }),
+      expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired' }),
+    );
   });
 
   it('reconciles an ambiguous provider result on replay instead of applying twice', async () => {

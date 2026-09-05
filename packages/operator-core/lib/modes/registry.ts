@@ -666,8 +666,12 @@ on a test's subject the way the goal paths join on a goal's.)`,
     contract: `## AUDIT mode — binding contract
 The objective is a VERDICT ON A PROGRAM: not progress on it, and not a status
 read of its items. Scope arrives in this mode's own \`instructions\`. Single-shot
-by default — exit (\`enabled:false\`) once the report is delivered, or when the
-owner says so. Overlay: stacks with AUTO / IDEATE and implies NEITHER.
+by default — after delivering the report, explicitly call
+\`mode:set { mode:'audit', enabled:false, reason:'audit report delivered' }\`.
+Delivery does NOT clear the durable mode row. If the owner immediately routes
+remediation while AUDIT is still active, that exit call is your FIRST action;
+only then may you mutate the audited subject. Overlay: stacks with AUTO / IDEATE
+and implies NEITHER.
 1. SCOPE + CENSUS. Resolve the scope to its FULL population — shipped,
    superseded and archived rows INCLUDED. The lifecycle is the evidence: a
    census of only the open plans cannot tell progress from churn. Register the
@@ -696,8 +700,11 @@ owner says so. Overlay: stacks with AUTO / IDEATE and implies NEITHER.
 7. DELIVER. A verdict answering the owner's ACTUAL questions; what is left, in
    execution order; owner-only decisions with provenance; ranked recommendations.
    Publish the report, record it on the audit work-item with a coverage record
-   (population / checked / residue), THEN ask the remediation route. AUDIT never
-   executes remediation un-routed.
+   (population / checked / residue), THEN ask the remediation route. Immediately
+   after delivery, explicitly clear AUDIT with \`mode:set { mode:'audit',
+   enabled:false, reason:'audit report delivered' }\`; the row never clears itself.
+   AUDIT never executes remediation un-routed, and routed remediation never
+   begins until that exit call succeeds.
 8. RAILS. Read-only toward the subject: file findings, no drive-by fixes
    mid-audit. "All items terminal" is NOT a finished plan — check the plan's own
    status and its ship ceremony. A single grep is not an absence proof. A bounded

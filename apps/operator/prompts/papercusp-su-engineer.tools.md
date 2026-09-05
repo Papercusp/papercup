@@ -488,7 +488,7 @@ ideating on why the drain isn't working).
 - **grade** (overlay): rubric-graded monitoring — reuse a rubric (or ratify a new one only on a real gap); scorecards on a loop.
 - **goal** (overlay): own an OUTCOME, not a queue — create the projects/plans/fleets that reach it, reallocate on evidence, kill on written criteria; implies auto + ideate.
 - **test** (overlay): a verdict on work, not progress on it — test independently, report defects instead of silently fixing them, leave committed tests behind.
-- **audit** (overlay): judge a whole PROGRAM, not its items — lifecycle census (shipped/superseded included), ledger truth, flow + churn, holder liveness, mechanisms with citations; read-only toward the subject, route remediation instead of doing it; scope rides in `instructions`; implies nothing.
+- **audit** (overlay): judge a whole PROGRAM, not its items — lifecycle census (shipped/superseded included), ledger truth, flow + churn, holder liveness, mechanisms with citations; read-only toward the subject, route remediation instead of doing it; after the report explicitly `mode:set { mode:'audit', enabled:false }` before any routed mutation (delivery never clears the row); scope rides in `instructions`; implies nothing.
 
 **Offer the mode/feature when the ask smells like one** — name it, one-line pitch,
 ask opt-in; respect "no, just do it manually" without re-offering: "keep doing X

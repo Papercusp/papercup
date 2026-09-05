@@ -866,7 +866,15 @@ describe('AUDIT mode', () => {
     const c = audit!.contract;
     expect(c).toContain('Read-only toward the subject');
     expect(c).toContain('no drive-by fixes');
-    expect(c).toContain('never\n   executes remediation un-routed');
+    expect(c).toContain('AUDIT never executes remediation un-routed');
+  });
+
+  it('requires an explicit mode exit after delivery and before routed remediation', () => {
+    const c = audit!.contract;
+    expect(c).toContain("mode:set { mode:'audit', enabled:false");
+    expect(c).toContain('Delivery does NOT clear the durable mode row');
+    expect(c).toContain('that exit call is your FIRST action');
+    expect(c).toContain('never\n   begins until that exit call succeeds');
   });
 
   it('keeps the anti-false-verdict rails a report is most likely to violate', () => {

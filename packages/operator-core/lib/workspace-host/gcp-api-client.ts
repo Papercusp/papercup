@@ -26,6 +26,7 @@ import type {
   GcpFirewallInsertInput,
   GcpFirewallObservation,
   GcpInstanceInsertInput,
+  GcpInstanceMetadataInput,
   GcpInstanceGuestAttribute,
   GcpInstanceObservation,
   GcpNatInsertInput,
@@ -165,7 +166,7 @@ interface RawInstance extends RawResource {
     mode?: 'READ_WRITE';
   }>;
   serviceAccounts?: Array<{ email?: string; scopes?: string[] }>;
-  metadata?: { items?: Array<{ key?: string; value?: string }> };
+  metadata?: { fingerprint?: string; items?: Array<{ key?: string; value?: string }> };
 }
 
 interface RawGuestAttributes {
@@ -848,6 +849,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         ? { externalIp: raw.networkInterfaces[0].accessConfigs[0].natIP }
         : {}),
       ...(bootDisk?.sourceImage ? { sourceImage: bootDisk.sourceImage } : {}),
+      ...(raw.metadata?.fingerprint ? { metadataFingerprint: raw.metadata.fingerprint } : {}),
       ...(recreated ? { recreateInput: recreated } : {}),
     };
   }
@@ -1091,6 +1093,24 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
 
   resetInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef> {
     return this.instanceAction(projectId, zone, name, requestId, 'reset');
+  }
+
+  setInstanceMetadata(
+    projectId: string,
+    zone: string,
+    name: string,
+    input: GcpInstanceMetadataInput,
+    requestId: string,
+  ): Promise<GcpOperationRef> {
+    return this.mutate(
+      projectId,
+      'zone',
+      zone,
+      requestId,
+      `${this.projectBase(projectId)}/zones/${segment(zone, 'zone')}/instances/${segment(name, 'instance_name')}/setMetadata`,
+      'POST',
+      input,
+    );
   }
 
   private instanceAction(

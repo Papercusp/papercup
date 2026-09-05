@@ -23,6 +23,7 @@ import {
   type GcpFirewallInsertInput,
   type GcpFirewallObservation,
   type GcpInstanceInsertInput,
+  type GcpInstanceMetadataInput,
   type GcpInstanceObservation,
   type GcpNatInsertInput,
   type GcpNatObservation,
@@ -136,6 +137,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   readonly insertNatCalls: Array<{ input: GcpNatInsertInput; requestId: string }> = [];
   readonly insertDiskCalls: Array<{ input: GcpDiskInsertInput; requestId: string }> = [];
   readonly insertInstanceCalls: Array<{ input: GcpInstanceInsertInput; requestId: string }> = [];
+  readonly setInstanceMetadataCalls: Array<{ input: GcpInstanceMetadataInput; requestId: string }> = [];
   readonly snapshotCalls: Array<{ input: GcpSnapshotInsertInput; requestId: string }> = [];
   readonly waitedOperations: GcpOperationRef[] = [];
   startCalls = 0;
@@ -445,6 +447,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         ...(input.networkInterfaces[0].accessConfigs ? { externalIp: '203.0.113.42' } : {}),
         // No `agentOnline` — see setAgentOnline() above. The real client never writes it.
         labels: input.labels,
+        metadataFingerprint: 'metadata-fingerprint-1',
         recreateInput: input,
         observedAt: NOW,
       });
@@ -471,6 +474,25 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   async resetInstance(_projectId: string, zone: string, name: string, requestId: string) {
     this.resetCalls += 1;
     return this.instanceMutation(requestId, zone, name, 'RUNNING');
+  }
+
+  async setInstanceMetadata(
+    _projectId: string,
+    zone: string,
+    name: string,
+    input: GcpInstanceMetadataInput,
+    requestId: string,
+  ) {
+    return this.mutation(requestId, 'zone', zone, () => {
+      const instance = this.instances.get(name);
+      if (!instance?.recreateInput) throw new Error(`fake GCP client has no instance '${name}'`);
+      this.setInstanceMetadataCalls.push({ input, requestId });
+      this.instances.set(name, {
+        ...instance,
+        metadataFingerprint: `${input.fingerprint}-next`,
+        recreateInput: { ...instance.recreateInput, metadata: { items: [...input.items] } },
+      });
+    });
   }
 
   async deleteInstance(_projectId: string, zone: string, name: string, requestId: string) {
@@ -1045,7 +1067,7 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
     const report = await runFakeWorkspaceHostProviderContractSuite(provider, {
       adapterKind: 'fake',
       reportRef: 'artifact://workspace-host/gcp/provider-contract-1',
-      context: context(),
+      context: context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
       desired: desired(),
       operationId: 'contract-operation',
       idempotencyKey: 'contract-operation',
@@ -1089,7 +1111,7 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
               name: 'manual-snapshot',
             }
           : { action, operationId: `operation:${action}`, idempotencyKey: `operation:${action}`, host },
-        context(),
+        context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
       );
       for (const step of plan.steps) {
         const result = await provider.apply(
@@ -1103,8 +1125,11 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       start: client.startCalls,
       stop: client.stopCalls,
       reset: client.resetCalls,
+      metadataRefreshes: client.setInstanceMetadataCalls.length,
       snapshots: client.snapshotCalls.length,
-    }).toEqual({ start: 2, stop: 2, reset: 2, snapshots: 1 });
+    }).toEqual({ start: 2, stop: 2, reset: 2, metadataRefreshes: 1, snapshots: 1 });
+    expect(client.setInstanceMetadataCalls[0]?.input.items.find(({ key }) => key === 'startup-script')?.value)
+      .toContain('echo current-controller-bootstrap');
     expect(client.snapshotCalls[0]?.input.labels).toEqual({
       'papercusp-host-id': 'host-gcp-1',
       'papercusp-managed': 'true',
@@ -1206,7 +1231,7 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
           host,
           image: { id: 'projects/papercusp/global/images/family/papercusp-workspace-host' },
         },
-        context(),
+        context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
       ),
     ).rejects.toThrow('family aliases are forbidden');
     const plan = await provider.plan(
@@ -1217,7 +1242,7 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
         host,
         image: { id: 'projects/papercusp/global/images/papercusp-v2' },
       },
-      context(),
+      context({}, '#!/usr/bin/env bash\necho current-controller-bootstrap\n'),
     );
     expect(plan.steps.map(({ id, dependsOn }) => ({ id, dependsOn }))).toEqual([
       { id: 'delete-boot-runtime', dependsOn: [] },

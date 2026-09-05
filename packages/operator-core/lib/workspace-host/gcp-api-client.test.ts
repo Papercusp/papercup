@@ -463,6 +463,13 @@ describe('ADC-backed GCP workspace-host API client', () => {
       REQUEST_ID,
     );
     await client.insertInstance(PROJECT, ZONE, instance, REQUEST_ID);
+    await client.setInstanceMetadata(
+      PROJECT,
+      ZONE,
+      'pc-host-vm',
+      { fingerprint: 'metadata-fingerprint-1', items: [{ key: 'startup-script', value: '#!/bin/bash\necho current' }] },
+      REQUEST_ID,
+    );
     await client.createSnapshot(
       PROJECT,
       ZONE,
@@ -506,6 +513,11 @@ describe('ADC-backed GCP workspace-host API client', () => {
     expect(JSON.parse(String(snapshotCall.init?.body))).toEqual({
       name: 'pc-host-snapshot',
       labels: { 'papercusp-host-id': 'host-1' },
+    });
+    const metadataCall = calls.find(({ url }) => url.includes('/setMetadata?'))!;
+    expect(JSON.parse(String(metadataCall.init?.body))).toEqual({
+      fingerprint: 'metadata-fingerprint-1',
+      items: [{ key: 'startup-script', value: '#!/bin/bash\necho current' }],
     });
     expect(observed).toMatchObject({
       projectId: PROJECT,
