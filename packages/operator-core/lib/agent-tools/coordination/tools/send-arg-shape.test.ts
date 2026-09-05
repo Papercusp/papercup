@@ -643,22 +643,52 @@ describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable
     };
   };
 
+  /**
+   * The predicate, extracted so it can be aimed at a KNOWN-BAD control as well
+   * as at the live schema. A guard that has only ever been pointed at the fixed
+   * text is a guard nobody has tested; the control below is what makes this one
+   * falsifiable without mutating a file in the shared tree (git-sync sweeps the
+   * whole tree on a timer, so an in-tree mutation probe can be committed by a
+   * sweep even when nothing goes wrong).
+   */
+  const capTeachingFailures = (description: string): string[] => {
+    const failures: string[] = [];
+    if (description === '') failures.push('empty');
+    // The NUMBER a caller needs, carried from the constant the refusal enforces.
+    if (!description.includes(String(DEFAULT_INBOX_BODY_CAP))) failures.push('no cap value');
+    // The CONDITION — a cap stated without it reads as unconditional and pushes
+    // callers into needlessly truncating an exempt FYI.
+    if (!/expects/i.test(description)) failures.push('cap not scoped to expects');
+    if (!/none/i.test(description)) failures.push("no 'none' exemption");
+    // The CONSEQUENCE. "Capped" reads as truncation; nothing is sent at all.
+    if (!/refus|reject|nothing is sent/i.test(description)) failures.push('refusal not stated');
+    return failures;
+  };
+
   it('states the real cap on every body schema surface a caller composes against', () => {
     for (const [surface, description] of Object.entries(bodyDescriptions())) {
-      expect(description, `${surface} must not be empty`).not.toBe('');
-      // The NUMBER a caller needs, carried from the constant the refusal enforces.
-      expect(description, `${surface} must state the cap`).toContain(
-        String(DEFAULT_INBOX_BODY_CAP),
-      );
-      // The CONDITION — a cap stated without it reads as unconditional and
-      // pushes callers into needlessly truncating an exempt FYI.
-      expect(description, `${surface} must scope the cap to expects`).toMatch(/expects/i);
-      expect(description, `${surface} must name the 'none' exemption`).toMatch(/none/i);
-      // The CONSEQUENCE. "Capped" reads as truncation; nothing is sent at all.
-      expect(description, `${surface} must say the send is refused`).toMatch(
-        /refus|reject|nothing is sent/i,
-      );
+      expect(capTeachingFailures(description), `${surface} must teach the cap`).toEqual([]);
     }
+  });
+
+  it('CONTROL — the pre-fix description (shape only, no length) fails this predicate', () => {
+    // Verbatim tail of the description as it shipped before this fix. It is a
+    // thorough, careful paragraph about SHAPE — which is exactly why the gap was
+    // invisible: nothing about it looks incomplete. If a future rewrite drops the
+    // length sentence, the live schema regresses to this string's behaviour and
+    // the test above goes red instead of silently passing.
+    const preFix =
+      'The message body: an ARRAY of sections. A plain string is REFUSED — the minimum is ' +
+      '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +
+      'dispositions — a concession, an experimental result, an explicitly-undetermined claim — ' +
+      'each with its own `premises`, `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`, ' +
+      '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
+      'are refused on a section.';
+
+    // Note it already contained "expects" and "REFUSED" (about SHAPE, not length)
+    // — so a laxer predicate would have passed it and proved nothing. The cap
+    // VALUE is the assertion carrying the weight here.
+    expect(capTeachingFailures(preFix)).toContain('no cap value');
   });
 
   it('the documented cap is the one actually enforced — schema text and refusal agree', () => {
