@@ -468,7 +468,16 @@ export interface DecideInput {
   /** `systemctl --user show <unit> -p Result,NRestarts,ExecMainCode,ExecMainStatus` — only
    *  fetched/needed when we're actually about to consider restarting (the caller may omit it). */
   show:
-    | { result?: string; unitFileState?: string; loadState?: string; execMainCode?: string; execMainStatus?: number }
+    | {
+        result?: string;
+        unitFileState?: string;
+        loadState?: string;
+        /** EI-22375866670391854: the authoritative per-unit run state. Outranks absence from
+         *  `list-units`, which is only an inference about residency. */
+        activeState?: string;
+        execMainCode?: string;
+        execMainStatus?: number;
+      }
     | undefined;
   state: UnitFlapState;
   autoRestartFlagOn: boolean;
@@ -498,17 +507,36 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
   // with a second restart, but the previous verdict is held until a terminal state is observed.
   // Episodic transitions retain the distinct `run-in-flight` action so their run-level semantics
   // remain explicit.
-  if (isSystemdTransitioning(status?.active)) {
+  // EI-22375866670391854: ABSENCE FROM `list-units` IS AN INFERENCE; `ActiveState` IS A
+  // MEASUREMENT — so when the two are available, the measurement wins.
+  //
+  // A unit missing from the list used to be treated as down unconditionally, and the down-path
+  // then announced it as "loaded but not resident … currently inactive". That claim was never
+  // checked against the one property that could refute it, so ANY reason the list came back
+  // without a unit — a drifted pattern (the measured cause), a partial read, a future rename —
+  // surfaced to the whole fleet as "this core service is down". Four such broadcasts landed in
+  // one batch about units systemd had `active (running)`, and the same false alarm was filed
+  // five separate times before anyone found the cause: a false alarm on the highest-severity
+  // signal the fleet has teaches every reader to discount the next one, which may be real.
+  //
+  // Consulting the show-probe here makes the whole CLASS unreachable rather than just its
+  // measured instance. An UNREADABLE ActiveState stays down — that is an honest unknown, and
+  // the conservative direction for a supervisor.
+  const activeState = status ? status.active : show?.activeState;
+
+  if (isSystemdTransitioning(activeState)) {
     return {
       action:
-        entry.episodic && isEpisodicRunInFlight(status?.active)
+        entry.episodic && isEpisodicRunInFlight(activeState)
           ? { kind: 'run-in-flight', unit: entry.name }
           : { kind: 'waiting-transition', unit: entry.name },
       nextState: state,
     };
   }
 
-  const down = isUnitDown(status, { episodic: entry.episodic });
+  const down = status
+    ? isUnitDown(status, { episodic: entry.episodic })
+    : (isActiveStateDown(show?.activeState, { episodic: entry.episodic }) ?? true);
 
   if (!down) {
     const wasDown = state.wasDown;
@@ -584,9 +612,13 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
         // EI-21531785497245954: ...and `LoadState=loaded` positively confirms PRESENCE. This is the
         // third state the old boolean could not express: the unit resolved fine, it is simply not
         // resident in `list-units` because it is idle. Measured on papercup-live-federation-gate,
-        // which `list-units 'papercup*' --all` omits while `show` reports LoadState=loaded,
+        // which `list-units --all` omits while `show` reports LoadState=loaded,
         // UnitFileState=enabled-runtime, Result=success — reported for weeks as "not loaded and its
         // state could not be read", which is false on both clauses.
+        // NOTE (EI-22375866670391854): reaching this branch at all now requires an UNREADABLE
+        // ActiveState — see the guard above. A unit that is merely non-resident while systemd
+        // reports it active never gets here, so this state can no longer be claimed about a
+        // running service.
         confirmedLoaded: show?.loadState === 'loaded',
         notify: justWentDown,
       },
@@ -932,6 +964,39 @@ export interface ReconcileTickResult {
   degraded: boolean;
 }
 
+/** systemd unit-type suffixes, so a registry entry that already names one is passed through
+ *  verbatim instead of having `.service` appended to it. */
+const SYSTEMD_UNIT_SUFFIX_RE =
+  /\.(service|timer|socket|target|mount|automount|swap|path|slice|scope|device)$/;
+
+/**
+ * The `list-units` PATTERNS for one supervised registry, DERIVED from the registry's own unit
+ * names rather than hardcoded.
+ *
+ * EI-22375866670391854 (also filed as EI-22385488367114177, EI-22384738074232316,
+ * EI-22381604521211834, EI-22392509856811605 — five times, each guessing a different mechanism):
+ * this call used the literal glob `'papercup*'`. On 2026-08-27 four supervised entries were
+ * renamed to the `papercusp-` prefix — `papercusp-bg-host`, `papercusp-bg-host-watchdog`,
+ * `papercusp-dev-api` (:3070), `papercusp-staging-api` (:3170) — and `papercup*` cannot match
+ * `papercusp-…` (they diverge at the 8th character). Those four, and ONLY those four, vanished
+ * from every tick's list, so the down-path below reported all four core services as
+ * "loaded but not resident … currently inactive" while systemd had them `active (running)` —
+ * including the very unit serving the request that disproved it. A hardcoded glob is a second
+ * copy of a truth the registry owns, and it drifted the moment the registry was renamed; the
+ * derived form cannot.
+ *
+ * Exact per-unit patterns (not a prefix glob) also stop the list carrying ~40 unrelated units
+ * the loop discards anyway.
+ */
+export function supervisionListUnitPatterns(registry: readonly { unit?: string }[]): string[] {
+  const patterns = new Set<string>();
+  for (const entry of registry) {
+    if (!entry.unit) continue;
+    patterns.add(SYSTEMD_UNIT_SUFFIX_RE.test(entry.unit) ? entry.unit : `${entry.unit}.service`);
+  }
+  return [...patterns].sort();
+}
+
 /**
  * One reconciler tick. Lists live systemd-user units ONCE, decides + (best-effort) acts for
  * every `layer:'systemd-user'` supervised entry. Never throws — a `systemctl --user list-units`
@@ -943,9 +1008,16 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   const registry = (deps.registry ?? supervisedProcesses)().filter((e) => e.layer === 'systemd-user');
   const now = deps.now();
 
+  const unitPatterns = supervisionListUnitPatterns(registry);
+  if (unitPatterns.length === 0) {
+    // No systemd-user entry to reconcile. Returning here also keeps us from ever calling
+    // `list-units --all` with NO pattern, which would enumerate every user unit on the box.
+    return { checked: 0, actions: [], degraded: false };
+  }
+
   let listOutput: string;
   try {
-    listOutput = await deps.execUser(['list-units', 'papercup*', '--all', '--no-legend']);
+    listOutput = await deps.execUser(['list-units', ...unitPatterns, '--all', '--no-legend']);
   } catch (err) {
     if (!degradedWarned) {
       degradedWarned = true;
@@ -996,6 +1068,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           nRestarts?: number;
           unitFileState?: string;
           loadState?: string;
+          activeState?: string;
           execMainCode?: string;
           execMainStatus?: number;
         }
@@ -1019,7 +1092,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           // EI-21339603192900833: ExecMainCode/ExecMainStatus are what separate a run that
           // FAILED from one that was STOPPED. Without them the reconciler cannot tell the
           // difference and defaults to the accusing reading.
-          'Result,NRestarts,Restart,UnitFileState,LoadState,ExecMainCode,ExecMainStatus',
+          // EI-22375866670391854: ActiveState is the AUTHORITATIVE per-unit answer to "is it
+          // running?". Absence from `list-units` is an inference about residency; this is a
+          // measurement. Without it the down-path had no way to contradict its own inference.
+          'Result,NRestarts,Restart,UnitFileState,LoadState,ActiveState,ExecMainCode,ExecMainStatus',
         ]);
         const props = parseSystemctlShowProperties(raw);
         const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
@@ -1030,6 +1106,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
           unitFileState: props.UnitFileState,
           loadState: props.LoadState,
+          activeState: props.ActiveState,
           execMainCode: props.ExecMainCode,
           execMainStatus: Number.isFinite(execMainStatus) ? execMainStatus : undefined,
         };

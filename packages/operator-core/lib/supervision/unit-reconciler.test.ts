@@ -15,6 +15,7 @@ import {
   decideReconcile,
   initialFlapState,
   reconcileTick,
+  supervisionListUnitPatterns,
   _resetReconcilerState,
   checkRestartPolicyDrift,
   checkSilentCrashLoop,
@@ -449,6 +450,143 @@ describe('decideReconcile', () => {
       confirmedLoaded: true,
       notify: true,
     });
+  });
+
+  // ── EI-22375866670391854: a false "loaded but not resident / currently inactive" alarm for
+  //    four ACTIVE core services. Filed five times (also EI-22385488367114177,
+  //    EI-22384738074232316, EI-22381604521211834, EI-22392509856811605), each guessing a
+  //    different mechanism — missing `--all`, a bus/session difference, a restart race. All
+  //    wrong. The cause was a hardcoded `list-units 'papercup*'` glob that stopped matching four
+  //    entries renamed to `papercusp-` on 2026-08-27. Two guards: the pattern must be DERIVED,
+  //    and the residency inference must never outrank a measured ActiveState. ──
+
+  it('EI-22375866670391854: list-units patterns are DERIVED from the registry, so a papercusp- rename cannot fall out of the list', () => {
+    const patterns = supervisionListUnitPatterns([
+      { unit: 'papercusp-bg-host' },
+      { unit: 'papercusp-bg-host-watchdog' },
+      { unit: 'papercusp-dev-api' },
+      { unit: 'papercusp-staging-api' },
+      { unit: 'papercup-mcp-proxy' },
+      { unit: 'papercup-live-federation-gate.timer' },
+      { unit: undefined },
+    ]);
+
+    // The four units the false alarm named. `papercup*` cannot match `papercusp-…` — they
+    // diverge at the 8th character — which is exactly why these four, and only these four,
+    // vanished from every tick's list while systemd had them active (running).
+    expect(patterns).toContain('papercusp-bg-host.service');
+    expect(patterns).toContain('papercusp-bg-host-watchdog.service');
+    expect(patterns).toContain('papercusp-dev-api.service');
+    expect(patterns).toContain('papercusp-staging-api.service');
+    // Positive control: the entries that always worked still resolve, and a unit that already
+    // names its type keeps it rather than becoming `….timer.service`.
+    expect(patterns).toContain('papercup-mcp-proxy.service');
+    expect(patterns).toContain('papercup-live-federation-gate.timer');
+    // An entry with no unit contributes nothing, and nothing here is a bare prefix glob: a
+    // pattern-less `list-units --all` would enumerate every user unit on the box.
+    expect(patterns).toHaveLength(6);
+    expect(patterns.some((p) => p.includes('*'))).toBe(false);
+  });
+
+  it('EI-22375866670391854: CONTROL — the pre-fix literal glob misses exactly the four renamed units, the derived patterns do not', () => {
+    // A deliberately-wrong implementation kept permanently as the control (the module-subject
+    // tier from CLAUDE.md § "Proving a guard is falsifiable" — a copy-out mutation cannot reach
+    // a module the test imports by specifier). This is the code that shipped, verbatim in shape.
+    const PRE_FIX_PATTERNS = ['papercup*'];
+    const globMatches = (pattern: string, unit: string) =>
+      new RegExp(`^${pattern.split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(unit);
+    const matchedBy = (patterns: string[], unit: string) => patterns.some((p) => globMatches(p, unit));
+
+    const RENAMED = ['papercusp-bg-host.service', 'papercusp-bg-host-watchdog.service', 'papercusp-dev-api.service', 'papercusp-staging-api.service'];
+    const ALWAYS_WORKED = ['papercup-mcp-proxy.service', 'papercup-inference-gateway.service'];
+
+    // CALIBRATION — the instrument works: the old glob really did match the units that never
+    // misbehaved. Without this, "the old glob matches nothing" would look like the same result.
+    for (const unit of ALWAYS_WORKED) expect(matchedBy(PRE_FIX_PATTERNS, unit)).toBe(true);
+
+    // THE DEFECT: the old glob matches none of the four the alarm named. Verified against real
+    // systemd on 2026-09-05 — `list-units 'papercup*' --all` returned 47 papercup-NAMED units
+    // and 0 papercusp-NAMED ones, while all four were `loaded active running`.
+    for (const unit of RENAMED) expect(matchedBy(PRE_FIX_PATTERNS, unit)).toBe(false);
+
+    // ...and the derived patterns cover every one of them, renamed or not.
+    const derived = supervisionListUnitPatterns([...RENAMED, ...ALWAYS_WORKED].map((u) => ({ unit: u })));
+    for (const unit of [...RENAMED, ...ALWAYS_WORKED]) expect(matchedBy(derived, unit)).toBe(true);
+  });
+
+  it('EI-22375866670391854: a unit ABSENT from list-units but ActiveState=active is NOT reported down', () => {
+    const { action } = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: undefined, // the list came back without it — an inference, not a measurement
+      show: { loadState: 'loaded', unitFileState: 'enabled', activeState: 'active', result: 'success' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    // Before this guard the same input produced `report-only / unit-not-found /
+    // confirmedLoaded:true`, which the notifier renders as "loaded but not resident … currently
+    // inactive — this persistent service is expected to stay resident; investigate".
+    expect(action.kind).not.toBe('report-only');
+    expect(action).toEqual({ kind: 'healthy', unit: 'mcp-proxy', firstObservation: true });
+  });
+
+  it('EI-22375866670391854: an UNREADABLE ActiveState still reports down — the guard did not just silence the alarm', () => {
+    const { action } = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: undefined,
+      // show-probe answered, but ActiveState was not among the properties it could read.
+      show: { loadState: 'loaded', unitFileState: 'enabled', result: 'success' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    // An honest unknown stays down: that is the conservative direction for a supervisor, and it
+    // is what makes the passing test above evidence of a MEASUREMENT rather than of a mute.
+    expect(action).toMatchObject({ kind: 'report-only', reason: 'unit-not-found', confirmedLoaded: true });
+  });
+
+  it('EI-22375866670391854: ActiveState=inactive on an absent unit still alarms (a real down is still reported)', () => {
+    const { action } = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: undefined,
+      show: { loadState: 'loaded', unitFileState: 'enabled', activeState: 'inactive', result: 'success' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toMatchObject({ kind: 'report-only', reason: 'unit-not-found', confirmedLoaded: true });
+  });
+
+  it('EI-22375866670391854: end-to-end — an active papercusp- unit missing from the list broadcasts NOTHING', async () => {
+    _resetReconcilerState();
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const listArgs: string[][] = [];
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) => {
+        if (args[0] === 'list-units') {
+          listArgs.push(args);
+          return ''; // the drifted-glob case: the unit is active but absent from the list
+        }
+        return 'LoadState=loaded\nUnitFileState=enabled\nResult=success\nActiveState=active\nRestart=always\n';
+      },
+      now: () => 1_000_000,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [
+        { name: 'operator', layer: 'systemd-user', unit: 'papercusp-dev-api', criticality: 'critical', autoRestart: true },
+      ],
+      log: () => {},
+    };
+
+    await reconcileTick(deps);
+
+    // The tick asks for the unit by its real name rather than a prefix that no longer matches.
+    expect(listArgs[0]).toContain('papercusp-dev-api.service');
+    // And nothing is broadcast about a service systemd reports active — the whole defect was
+    // four such "core service is down" escalations reaching every agent in the coord stream.
+    const summaries = notify.mock.calls.map((c) => c[0]!.summary);
+    expect(summaries.filter((s) => s.includes('not resident'))).toEqual([]);
+    expect(summaries.filter((s) => s.includes('is down'))).toEqual([]);
   });
 
   it('EI-22361981911655947: loaded persistent services are not mislabeled as idle oneshots', async () => {
