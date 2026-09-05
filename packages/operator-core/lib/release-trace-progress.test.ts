@@ -361,3 +361,117 @@ describe('certifyCheckpointProgress — purity', () => {
     ).toBe('stalled');
   });
 });
+
+/**
+ * P-003 — the D-004 interlock, asserted at the CERTIFICATE level.
+ *
+ * D-004 forbids any verdict path from recommending a manual `release:checkpoint-run` while the
+ * run is inside its auto-refire re-triage window: firing there discards the in-flight rescue and
+ * spends a full suite. A CALLER can only honour that if the flag reaches it, so the property the
+ * certificate owes is total — `inRetriageWindow` must survive on EVERY verdict this function can
+ * return, not merely on the ones where it seemed relevant when the branch was written.
+ *
+ * That totality is the whole point, and it is exactly what a per-branch spot check misses. The
+ * dangerous branch is `stalled`: it is the one that looks most like "this run is dead, fire a new
+ * one", so a certificate that dropped the flag precisely there would read as license for the
+ * forbidden verb. `no-run` matters for the opposite reason — an absent reading must not be able
+ * to launder the flag away either.
+ *
+ * The release-trace SIDE of this interlock (that no non-advancing recommendation names or reaches
+ * `release:checkpoint-run`) is asserted in release-trace.test.ts and is deliberately not repeated.
+ */
+describe('P-003: D-004 re-triage interlock survives on every verdict', () => {
+  const started = NOW - 1_800_000;
+
+  /** One input per REACHABLE basis, each carrying the re-triage flag. */
+  const cases: ReadonlyArray<{ basis: string; verdict: string; input: Parameters<typeof certifyCheckpointProgress>[0] }> = [
+    { basis: 'no-run', verdict: 'unknown', input: { active: false, inRetriageWindow: true } },
+    {
+      basis: 'evidence-too-old',
+      verdict: 'unknown',
+      input: { active: true, asOfAgeMs: 7_200_000, startedAtMs: started, progressAtMs: NOW - 1_000, inRetriageWindow: true },
+    },
+    {
+      basis: 'verdict-published',
+      verdict: 'progressing',
+      input: {
+        active: true,
+        activeSource: 'run-lock',
+        startedAtMs: started,
+        progressAtMs: NOW - 1_000,
+        verdictWrittenAtMs: NOW - 60_000,
+        inRetriageWindow: true,
+      },
+    },
+    {
+      basis: 'progress-unmeasured',
+      verdict: 'unknown',
+      input: { active: true, activeSource: 'run-lock', startedAtMs: started, inRetriageWindow: true },
+    },
+    {
+      basis: 'ambiguous-fallback',
+      verdict: 'unknown',
+      input: { active: true, activeSource: 'run-lock', startedAtMs: started, progressAtMs: started, inRetriageWindow: true },
+    },
+    {
+      basis: 'clock-skew',
+      verdict: 'unknown',
+      input: { active: true, activeSource: 'run-lock', startedAtMs: started, progressAtMs: NOW + 600_000, inRetriageWindow: true },
+    },
+    {
+      basis: 'live-heartbeat',
+      verdict: 'progressing',
+      input: { active: true, activeSource: 'run-lock', startedAtMs: started, progressAtMs: NOW - 1_000, inRetriageWindow: true },
+    },
+    {
+      basis: 'heartbeat-stale',
+      verdict: 'stalled',
+      input: {
+        active: true,
+        activeSource: 'run-lock',
+        startedAtMs: started,
+        progressAtMs: NOW - (DEFAULT_STALL_THRESHOLD_MS + 60_000),
+        inRetriageWindow: true,
+      },
+    },
+  ];
+
+  it('reaches every basis this function can return — the coverage claim itself', () => {
+    // Without this, a rule reordering could silently route several cases to the SAME basis and the
+    // sweep below would still pass while no longer covering what its name claims.
+    const reached = cases.map((c) => certifyCheckpointProgress(c.input, NOW).basis);
+    expect(new Set(reached).size).toBe(cases.length);
+    expect(reached).toEqual(cases.map((c) => c.basis));
+  });
+
+  it('surfaces inRetriageWindow on every verdict, including stalled', () => {
+    for (const { basis, verdict, input } of cases) {
+      const cert = certifyCheckpointProgress(input, NOW);
+      expect({ basis: cert.basis, verdict: cert.verdict, retriage: cert.inRetriageWindow }).toEqual({
+        basis,
+        verdict,
+        retriage: true,
+      });
+    }
+  });
+
+  it('does not invent the flag when the reading never carried it', () => {
+    // The control. Without it, a certificate that hardcoded `inRetriageWindow: true` would satisfy
+    // every assertion above while destroying the flag's meaning.
+    for (const { input } of cases) {
+      const withoutFlag = { ...input, inRetriageWindow: undefined };
+      expect(certifyCheckpointProgress(withoutFlag, NOW).inRetriageWindow).toBe(false);
+    }
+  });
+
+  it('the stalled certificate says out loud that a manual run is forbidden here', () => {
+    // `stalled` is the branch whose detail a reader is most likely to act on, so the prohibition
+    // must be IN the sentence rather than left to the caller to remember.
+    const stalled = cases.find((c) => c.verdict === 'stalled')!;
+    const detail = certifyCheckpointProgress(stalled.input, NOW).detail;
+    expect(detail).toContain('do NOT fire a manual checkpoint run');
+    expect(certifyCheckpointProgress({ ...stalled.input, inRetriageWindow: undefined }, NOW).detail).not.toContain(
+      'do NOT fire a manual checkpoint run',
+    );
+  });
+});
