@@ -268,10 +268,25 @@ export async function startReadyScoutPlan(
   // an unadmitted revision here becomes work the whole fleet picks up before anyone
   // notices. It reaches none of the other wiring sites (it runs its own SQL and calls
   // no plan-start-gate entrypoint), which is exactly why it needs its own call.
+  //
+  // The revision hash is read through THIS function's own `sql` rather than left to
+  // the gate's default loader. Two reasons, and the second is the load-bearing one:
+  // the gate's loader opens its own connection (which this sweep's caller does not
+  // own), and a separate read could return a NEWER revision than the one this sweep
+  // is about to promote — admitting a revision nobody is starting.
+  const revRows = await sql<{ content_hash: string | null }[]>`
+    SELECT content_hash
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.workspaceId}
+       AND harness_slug = ${args.planStorageSlug}
+       AND plan_slug    = ${args.planSlug}`;
+  if (revRows.length === 0)
+    return { outcome: 'plan-not-found', promoted: 0, flagOff: false, axisWritten: false };
   const admission = await checkPlanAdmission({
     slug: args.planSlug,
     door: 'autostart',
     opts: { workspaceId: args.workspaceId, harnessSlug: args.planStorageSlug },
+    planRevisionHash: revRows[0].content_hash ?? '',
   });
   if (!admission.admitted) {
     return {

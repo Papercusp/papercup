@@ -197,6 +197,9 @@ describe('scoutReadyAutostartSweep population', () => {
     sweepMocks.sql
       .mockReset()
       .mockResolvedValueOnce([{ plan_slug: 'scout-gate-resilience', title: 'Gate resilience', has_open_items: true }])
+      // P-004: startReadyScoutPlan reads the plan's revision hash through this same
+      // `sql` before asking the admission gate, so the sequence has three queries.
+      .mockResolvedValueOnce([{ content_hash: 'rev-1' }])
       .mockResolvedValueOnce([{ prev_op_status: null }]);
     promoteMock.mockReset().mockResolvedValueOnce({
       promoted: 0,
@@ -311,7 +314,7 @@ describe('startReadyScoutPlan', () => {
       ratificationWindowSec: 3_600,
       materiality: { maxChangedLines: 200, maxChangedItems: 3 },
     }));
-    const { sql, queries } = fakeSql([{ prev_op_status: null }]);
+    const { sql, queries } = fakeSql([{ content_hash: 'rev-1', prev_op_status: null }]);
 
     const r = await startReadyScoutPlan(sql, args, axis(true));
 
