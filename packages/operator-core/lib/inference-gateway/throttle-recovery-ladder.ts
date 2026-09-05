@@ -29,6 +29,13 @@
  *       the pool's then-best account, retry. A 529 overload carries its own
  *       `backoffMs` because nothing rate-pauses the account, so an immediate
  *       re-acquire would return instantly and re-burn the overloaded upstream.
+ *       The absorb is a bet that the POOL recovers inside the budget, so a
+ *       caller that knows the pool's recovery horizon (`poolRecoveryAt`, the
+ *       codex lanes' `AccountPool.earliestAvailableAt`) hands it in and the
+ *       rung declines when the horizon lies past the absorb deadline: an
+ *       all-walled pool whose earliest reset is hours out FAILS FAST instead of
+ *       sleeping the whole budget to re-pick an account that cannot have
+ *       recovered (plan codex-auto-route-all-walled-fail-fast-2026-09-05).
  *   (3) FORWARD — the ladder is exhausted. `transient:false` here IS the
  *       all-walled fail-fast: a multi-hour usage wall never burns the wait
  *       budget, it falls straight through to the lane's terminal shaping (and,
@@ -101,6 +108,15 @@ export function decideThrottleRecovery(input: {
    * for a transient burst carrying no reset header.
    */
   lastExhaustResetAt: number;
+  /**
+   * The POOL's recovery horizon, when the lane can compute one
+   * (`AccountPool.earliestAvailableAt`): 0 ⇒ some account can serve now;
+   * an epoch ms ⇒ the earliest instant any account is expected back;
+   * `Infinity` ⇒ every account is out with no known recovery. Omitted ⇒ the
+   * caller has no pool view and rung (2) keeps its pre-horizon behaviour.
+   * Rung (2) fires only when this horizon falls at/before the absorb deadline.
+   */
+  poolRecoveryAt?: number;
   state: ThrottleLadderState;
   budgets: ThrottleLadderBudgets;
   /** Injectable clock for tests. */
@@ -127,8 +143,10 @@ export function decideThrottleRecovery(input: {
   ) {
     return { action: 'wait', waitMs, transient };
   }
-  // (2) EXTENDED ABSORPTION.
-  if (state.absorbDeadlineAt > 0 && now < state.absorbDeadlineAt && !state.headersSent) {
+  // (2) EXTENDED ABSORPTION — only a bet worth placing when the pool can recover
+  // inside the budget; a known horizon past the deadline is the all-walled fail-fast.
+  const poolRecoversInBudget = input.poolRecoveryAt === undefined || input.poolRecoveryAt <= state.absorbDeadlineAt;
+  if (state.absorbDeadlineAt > 0 && now < state.absorbDeadlineAt && !state.headersSent && poolRecoversInBudget) {
     return {
       action: 'absorb',
       backoffMs: input.status === 529 ? budgets.overloadBackoffMs : 0,

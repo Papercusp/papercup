@@ -18,6 +18,42 @@ export interface ActiveAccount {
   egressPool?: AccountEgress[];
 }
 
+/** Why a caller is clearing a park early — the pool logs it and (for `transport`) bounds it. */
+export type AccountReadmitReason = 'transport' | 'store' | 'admin';
+
+export interface AccountReadmitOptions {
+  reason?: AccountReadmitReason;
+  /**
+   * Refuse to clear a park whose remaining duration exceeds this bound. The egress-probe
+   * transport-recovery path passes the circuit-open ceiling: a transport circuit can only
+   * ever have parked an account for at most that long, so a park that outlives it was a
+   * measured usage WALL (a 5h/7d 429 reset) that a healthy proxy does NOT cure — clearing it
+   * re-admitted walled accounts into rotation and the fleet re-burned every one of them
+   * (plan codex-auto-route-all-walled-fail-fast-2026-09-05, D-001).
+   */
+  maxParkMs?: number;
+}
+
+/** Inputs to `AccountPool.earliestAvailableAt` — the pool's RECOVERY HORIZON. */
+export interface AccountRecoveryHorizonOptions {
+  /** Clock override (epoch ms); defaults to the pool's own `now()`. */
+  now?: number;
+  /** The shared health key: an UNPARKED entry scoring `Infinity` is not serviceable now. */
+  keyOf?: (account: ActiveAccount) => number;
+  /**
+   * When the caller knows an instant the account recovers OUTSIDE the pool's own park (a
+   * durable rate-hint window reset, a governor pause), return it here; the horizon for that
+   * entry is the LATER of its park and this instant. `undefined` ⇒ no external knowledge.
+   */
+  recoverAtOf?: (account: ActiveAccount) => number | undefined;
+}
+
+/** A parked (out-of-rotation) account: when it was parked and until when. */
+export interface AccountParkState {
+  parkedAt: number;
+  until: number;
+}
+
 /**
  * Shared account-selection/failover contract used by every cloud gateway lane.
  * `active()` may advance a pool cursor; read-only callers use `peek()` or `entries()`.
@@ -34,8 +70,18 @@ export interface AccountPool {
   ): ActiveAccount | null;
   /** Resolve an account-affinity pin without silently substituting another account. */
   select?(accountId: string): ActiveAccount | null;
-  /** Clear a transport/rate pause when a health probe proves the account usable again. */
-  readmit?(accountId: string): void;
+  /** Clear a transport/rate pause early. Returns true iff a park was actually cleared; a
+   *  `maxParkMs`-bounded call REFUSES (false) a park longer than the bound — see AccountReadmitOptions. */
+  readmit?(accountId: string, opts?: AccountReadmitOptions): boolean;
+  /**
+   * The pool's RECOVERY HORIZON: 0 when any entry can serve NOW (unparked AND `keyOf` finite),
+   * else the earliest epoch ms at which any entry is expected back (its park expiry, raised by
+   * `recoverAtOf` when the caller knows a later external reset), or `Infinity` when no entry has
+   * a known recovery instant. The codex 429 ladder absorbs only when this is within its budget.
+   */
+  earliestAvailableAt?(opts?: AccountRecoveryHorizonOptions): number;
+  /** The park an account is currently under, or undefined when it is in rotation. */
+  parkState?(accountId: string): AccountParkState | undefined;
   /** Atomically replace live entries without changing the pool object held by the gateway. */
   reload?(next: readonly ActiveAccount[]): void;
   /** Accounts currently in rotation, optionally filtered by an additional health predicate. */

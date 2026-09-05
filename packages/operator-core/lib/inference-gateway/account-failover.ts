@@ -20,7 +20,13 @@
  * Pure + synchronous (a small Map + a cursor); the credential refresh + token getters live in the
  * resolvers the entries wrap (launch.ts). `now()` is injectable for tests.
  */
-import type { ActiveAccount, AccountPool } from './provider-contracts';
+import type {
+  ActiveAccount,
+  AccountPool,
+  AccountParkState,
+  AccountReadmitOptions,
+  AccountRecoveryHorizonOptions,
+} from './provider-contracts';
 
 export interface FailoverPoolOptions {
   now?: () => number;
@@ -145,6 +151,12 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  cold-rest causation probe (WI-3151). A NATURAL expiry needs no entry here: exhaustedUntil retains
    *  the (now-past) reset boundary, which msSinceReadmit reads directly. */
   const readmittedAt = new Map<string, number>();
+  /** accountId → epoch ms the CURRENT park began (set in onExhausted alongside exhaustedUntil, cleared on
+   *  readmit / reload-prune). Read by parkState() so the store↔pool reconciliation can tell whether a
+   *  durable availability reading is NEWER than the park it would clear (plan
+   *  codex-auto-route-all-walled-fail-fast-2026-09-05, P-008): a reading taken BEFORE the park says
+   *  nothing about whether the park's cause has cleared. */
+  const parkedAt = new Map<string, number>();
   /** Round-robin cursor — the NEXT index to consider, advanced on every `active()` so unpinned
    *  egress spreads across the whole pool instead of concentrating on one account. */
   let rrIdx = 0;
@@ -217,7 +229,9 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     resetAt: number,
     keyOf?: (account: ActiveAccount) => number,
   ): ActiveAccount | null {
-    exhaustedUntil.set(exhaustedId, resetAt > now() ? resetAt : now() + FIVE_HOURS_MS);
+    const at = now();
+    exhaustedUntil.set(exhaustedId, resetAt > at ? resetAt : at + FIVE_HOURS_MS);
+    parkedAt.set(exhaustedId, at);
     // Re-exhausted ⇒ no longer "freshly readmitted"; drop any stale early-readmit stamp so the next
     // rejoin's boundary is this new pause's expiry, not a prior readmit() (msSinceReadmit, WI-3151).
     readmittedAt.delete(exhaustedId);
@@ -252,15 +266,81 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   }
 
   /** Clear an account's out-of-rotation pause AHEAD of its reset — the dual of onExhausted. Called when a
-   *  half-open egress probe confirms the proxy RECOVERED, so a token-healthy account rejoins rotation the
-   *  instant its transport is healthy again, instead of sitting out the full circuit window (owner-reported
-   *  2026-06-21: flaky proxies kept healthy accounts out 60s → empty-pool "all throttled" sheds). No-op if
-   *  the account wasn't paused. */
-  function readmit(accountId: string): void {
-    if (exhaustedUntil.delete(accountId)) {
-      readmittedAt.set(accountId, now()); // stamp the rejoin moment for the cold-rest probe (WI-3151)
-      log('warn', `inference-gateway: '${accountId}' readmitted to rotation (egress proxy recovered)`);
+   *  half-open egress probe confirms the proxy RECOVERED (`reason:'transport'`), when the durable
+   *  availability store reports the account serviceable again (`reason:'store'`, P-008), or by the
+   *  /admin/readmit operator lever (`reason:'admin'`), so a token-healthy account rejoins rotation the
+   *  instant it is usable again instead of sitting out the full window (owner-reported 2026-06-21: flaky
+   *  proxies kept healthy accounts out 60s → empty-pool "all throttled" sheds). No-op (false) if the
+   *  account wasn't paused.
+   *
+   *  `maxParkMs` bounds WHICH parks a caller may clear: a transport-probe readmit passes the circuit-open
+   *  ceiling, because a transport circuit can only ever have created a park that short — a park that
+   *  outlives it is a measured 5h/7d usage WALL a healthy proxy does not cure. Before this bound the
+   *  proactive egress probe readmitted every walled codex account on each successful probe, the fleet
+   *  re-burned all of them, and `active()` kept "finding" capacity that did not exist
+   *  (codex-auto-route-all-walled-fail-fast-2026-09-05 D-001). */
+  function readmit(accountId: string, opts: AccountReadmitOptions = {}): boolean {
+    const until = exhaustedUntil.get(accountId);
+    if (until === undefined) return false;
+    const reason = opts.reason ?? 'transport';
+    const at = now();
+    if (opts.maxParkMs !== undefined && until - at > opts.maxParkMs) {
+      log(
+        'warn',
+        `inference-gateway: '${accountId}' readmit (${reason}) REFUSED — park runs ${Math.round((until - at) / 1000)}s more, exceeds the ${Math.round(opts.maxParkMs / 1000)}s ${reason} horizon (a usage wall, not a ${reason} pause)`,
+      );
+      return false;
     }
+    exhaustedUntil.delete(accountId);
+    parkedAt.delete(accountId);
+    readmittedAt.set(accountId, at); // stamp the rejoin moment for the cold-rest probe (WI-3151)
+    const why =
+      reason === 'transport'
+        ? 'egress proxy recovered'
+        : reason === 'store'
+          ? 'availability store reports capacity'
+          : 'operator readmit';
+    log('warn', `inference-gateway: '${accountId}' readmitted to rotation (${why})`);
+    return true;
+  }
+
+  /** The park `accountId` is currently under, or undefined when it is in rotation (never parked, or its
+   *  park expired / was cleared). `parkedAt` is when THIS park began — the freshness boundary a
+   *  store-driven readmit compares its reading against. */
+  function parkState(accountId: string): AccountParkState | undefined {
+    const until = exhaustedUntil.get(accountId);
+    if (until === undefined || until <= now()) return undefined;
+    return { parkedAt: parkedAt.get(accountId) ?? 0, until };
+  }
+
+  /** The pool's RECOVERY HORIZON (codex-auto-route-all-walled-fail-fast-2026-09-05 P-001): the instant
+   *  the pool is next expected to have a serviceable account.
+   *
+   *    0         — some entry can serve NOW: not parked AND (keyOf ?? 0) is finite;
+   *    epoch ms  — every entry is out; this is the EARLIEST of their known recovery instants, where an
+   *                entry's instant is the LATER of its park expiry and the caller's `recoverAtOf` (a
+   *                durable window reset / governor pause the pool itself cannot see);
+   *    Infinity  — every entry is out and NONE has a known recovery instant (e.g. keyOf says Infinity
+   *                for reasons with no reset — a shed, an unavailable transport).
+   *
+   *  The codex 429 ladder absorbs (parks the request and re-picks later) ONLY when this horizon falls
+   *  inside its absorb budget; an all-walled pool with resets hours away fails fast instead of sleeping
+   *  the whole budget on an account that cannot recover in time — the stall the owner measured on
+   *  2026-09-05 (every auto-routed codex request hung ~2min on a pool whose earliest reset was ~3h out).
+   *  Read-only: never advances the cursor. */
+  function earliestAvailableAt(opts: AccountRecoveryHorizonOptions = {}): number {
+    const at = opts.now ?? now();
+    let horizon = Infinity;
+    for (const e of live) {
+      const until = exhaustedUntil.get(e.accountId);
+      const parked = until !== undefined && until > at;
+      if (!parked && (opts.keyOf?.(e) ?? 0) < Infinity) return 0;
+      const external = opts.recoverAtOf?.(e);
+      const externalAt = external !== undefined && Number.isFinite(external) && external > at ? external : 0;
+      const candidate = Math.max(parked ? until : 0, externalAt);
+      if (candidate > 0 && candidate < horizon) horizon = candidate;
+    }
+    return horizon;
   }
 
   /** Cold-rest causation probe (WI-3151): ms since this account last REJOINED rotation from a cold rest,
@@ -305,6 +385,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     const presentIds = new Set(live.map((e) => e.accountId));
     for (const id of [...exhaustedUntil.keys()]) if (!presentIds.has(id)) exhaustedUntil.delete(id);
     for (const id of [...readmittedAt.keys()]) if (!presentIds.has(id)) readmittedAt.delete(id);
+    for (const id of [...parkedAt.keys()]) if (!presentIds.has(id)) parkedAt.delete(id);
     rrIdx = rrIdx % live.length;
     log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
   }
@@ -339,6 +420,8 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     select,
     reload,
     readmit,
+    parkState,
+    earliestAvailableAt,
     msSinceReadmit,
     healthyCount,
     peek,
