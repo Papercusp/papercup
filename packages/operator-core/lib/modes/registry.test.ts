@@ -189,6 +189,55 @@ describe('GOAL mode STANDING clause (work-on-everything-goal-2026-08-23 P-008)',
   });
 });
 
+describe('GOAL mode ALREADY-ACHIEVED branch (EI-20185531758694925)', () => {
+  const goal = modeById('goal');
+
+  it('gives the arrive-at-a-terminal-goal case an explicit three-step branch', () => {
+    expect(goal).not.toBeNull();
+    const c = goal!.contract;
+
+    expect(c).toContain('ALREADY ACHIEVED');
+    // The check is ordered BEFORE the kickoff, because running the kickoff
+    // contract over a closed goal is the failure the clause prevents.
+    expect(c).toMatch(/read goals:get BEFORE the kickoff\s+question/);
+    // The three steps, each named as an action rather than a sentiment.
+    expect(c).toMatch(/\(1\) RE-VERIFY/);
+    expect(c).toMatch(/\(2\) CORRECT/);
+    expect(c).toMatch(/\(3\) REPORT[\s\S]*?and STOP/);
+    // Re-verification uses evidence measured now, not inherited from the record.
+    expect(c).toMatch(/evidence you MEASURE now/);
+    // A FAILED re-verification is a regression, not a licence to rebuild — this
+    // is the branch that stops step (1) collapsing into step (2).
+    expect(c).toMatch(/If re-verification FAILS the outcome has REGRESSED/);
+    expect(c).toMatch(/do not quietly rebuild it/);
+    // Anything further is new scope and routes through the existing door.
+    expect(c).toMatch(/ANYTHING BEYOND THOSE THREE IS A NEW OUTCOME/);
+    expect(c).toContain('goals:propose');
+  });
+
+  it('settles the AUTO tension toward asking, and says why the premise fails', () => {
+    const c = goal!.contract;
+    // The item this clause closes asked for the tension to be RESOLVED in the
+    // contract rather than re-decided per agent, so assert the resolution and
+    // its reasoning, not merely that the words "AUTO" and "ask" co-occur.
+    expect(c).toMatch(/THE QUESTION BEATS THE DISCLOSURE/);
+    expect(c).toMatch(/at an achieved goal that premise is GONE/);
+    expect(c).toMatch(/every further hour is spend nobody agreed to/);
+    expect(c).toMatch(/So ASK\./);
+  });
+
+  it('places the branch ahead of the portfolio-creating clauses it guards', () => {
+    const c = goal!.contract;
+    // Ordering is load-bearing: an agent reading top-down must meet this branch
+    // BEFORE the clauses that tell it to file a goal and spawn pots/plans. A
+    // correct clause appended below those would read as guidance it already
+    // walked past.
+    expect(c.indexOf('ALREADY ACHIEVED')).toBeGreaterThan(-1);
+    expect(c.indexOf('Then FILE THE GOAL')).toBeGreaterThan(-1);
+    expect(c.indexOf('ALREADY ACHIEVED')).toBeLessThan(c.indexOf('Then FILE THE GOAL'));
+  });
+});
+
 describe('GOAL mode owner-report floor (WI-2140700) — the obligation lives in the every-wake contract', () => {
   const goal = modeById('goal');
 

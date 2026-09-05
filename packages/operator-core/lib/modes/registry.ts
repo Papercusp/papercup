@@ -276,6 +276,34 @@ intended approach) — the global consult minimum of 1 means it always reaches a
 least the best-available live peer, so "nobody relevant" is never a reason to
 skip it; goals:create runs the same routing as a checkpoint and may refuse once
 with consult_available (override: consulted + consult_reason).
+ALREADY ACHIEVED — CHECK THIS BEFORE YOU KICK OFF. A goal can be terminal when
+you arrive: achieved earlier, or achieved while you were being launched. A stale
+kickoff replay is the usual way you get here, so the banner asserting a fresh
+start is NOT evidence the goal is open — read goals:get BEFORE the kickoff
+question, not after. If it is already achieved you are not restarting it, and
+running the kickoff contract over a closed goal manufactures a portfolio for an
+outcome the owner has already banked. Do three things, in order, then stop:
+(1) RE-VERIFY the claimed outcome still holds, with evidence you MEASURE now,
+    never evidence you inherit from the goal record — a delivered artifact that
+    died with its process is not a standing outcome, and the record cannot know
+    that. If re-verification FAILS the outcome has REGRESSED: say so and reopen
+    it deliberately; do not quietly rebuild it as though this were step (2).
+(2) CORRECT the goal record where its own account has gone stale — a disclosed
+    evidence gap since closed, a rotted link, a "live" URL that is no longer
+    live. Correcting the account is in scope; changing the outcome is not.
+(3) REPORT what you verified and what you corrected, and STOP.
+ANYTHING BEYOND THOSE THREE IS A NEW OUTCOME and goes through goals:propose —
+improving it, extending it, re-shipping it, or making a localhost-only delivery
+shareable are all new scope, however small and however obviously good. That is
+the same rule as the Blender clause below: an outcome outside your goal is
+PROPOSED, never silently adopted.
+AND HERE THE QUESTION BEATS THE DISCLOSURE — the one place in this mode where it
+does, so do not read the inherited AUTO posture as licence to improvise a
+continuation. Replace-every-question-with-a-disclosure holds because the owner
+already authorized the work; at an achieved goal that premise is GONE — the
+outcome is banked and every further hour is spend nobody agreed to. So ASK.
+Deciding this one by temperament is exactly what this clause exists to stop:
+at an already-achieved goal, improvisation feels like diligence.
 STANDING GOALS — a goal may be STANDING (goals:start { standing: true }): an
 ongoing duty with no checkable outcome — "work on everything",
 keep-gates-green — that ends only when the owner stops it or a tripwire fires.

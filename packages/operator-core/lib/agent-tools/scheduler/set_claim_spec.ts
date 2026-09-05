@@ -341,6 +341,11 @@ export default defineTool({
       'A coding-FACTORY push role (scoper/architect/worker/validator): it is handed a FEATURE_ID and never calls get_next, so a spec is inert. Not for hand-picked micro-dispatch, or for overriding global floors (blocked/ready/dedup/cursed) — the resolver enforces those.',
     chaining: 'scheduler:set_claim_spec → the puller applies it on the next scheduler:get_next.',
     seeAlso: [
+      // EI-20185841251188914 — see the same note on scheduler:get_claim_spec. In seeAlso
+      // rather than when/notWhen/chaining because seeAlso is outside the prompt-weight
+      // budget; pinned by scope-args-contract.test.ts.
+      'scheduler:get_claim_spec (read back the spec you just wrote — MIRROR SCOPE ARGS: it takes workspace and NO harness, this write takes harness and NO workspace, so do not copy a scope key across the get→set→get chain)',
+      'scheduler:preview_spec_delta (dry-run this revision first — the scope superset: cupId|fleet plus BOTH harness and workspace)',
       'scheduler:get_next (the puller pulls per this spec)',
       'scheduler:running (what is executing now)',
       'fleet:assignments (drill into a member/bee)',
