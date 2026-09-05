@@ -14,22 +14,23 @@
  * to be remembered. Setting the policy is what turns enforcement on, which is the
  * plan's own activation model ("activate enforcement only after evidence", P-013).
  *
- * IT FAILS CLOSED THE MOMENT THE POLICY EXISTS. A pot that HAS opted in but has no
- * certificate source configured is REFUSED (`missing-certificate`), never passed:
- * "governance is switched on but nothing can answer for it" is the one state where
- * guessing in the caller's favour silently defeats the whole gate.
+ * IT FAILS CLOSED THE MOMENT THE POLICY EXISTS. A pot that HAS opted in but whose
+ * production governance log cannot resolve a valid certificate for the exact plan
+ * revision is REFUSED (`missing-certificate`), never passed. Storage, scope, or
+ * integrity failures therefore cannot silently disable the gate.
  *
  * WHY TWO SEAMS. Policy and certificate resolution are separately replaceable
  * (D-025's ArtifactStore pattern) because they have different owners: the policy is
- * pot configuration, while the certificate comes from the P-005 federated
- * governance log whose transport is still being built. A test — or the eventual
- * on-chain bridge — swaps one without touching the other.
+ * pot configuration, while the production certificate comes from the P-005
+ * federated governance-event store. A test or a later on-chain bridge can swap one
+ * without touching the other.
  */
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { PlanGovernanceControls } from './governance-federation';
 import { assertPlanAdmission, type AdmissionCertificate, type AdmissionRefusalCode, type PlanAdmissionDoor } from './plan-admission-enforcement';
 import type { PlanAdmissionPolicy } from './plan-admission-policy';
 import { resolvePlanAdmissionMode, validatePlanAdmissionPolicy } from './plan-admission-policy';
+import { productionPlanAdmissionCertificateSource } from './plan-admission-certificate-source';
 import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
 
 /** What a door needs to identify the plan it is about to act on. */
@@ -74,6 +75,7 @@ export interface PlanAdmissionCertificateSource {
     planRevisionHash: string;
     policy: PlanAdmissionPolicy;
     nowMs: number;
+    opts: PlanSourceOpts;
   }): Promise<{ certificate: AdmissionCertificate | null; governance?: PlanGovernanceControls | null }>;
 }
 
@@ -118,7 +120,7 @@ const state = pinModuleState<AdmissionGateState>('@papercusp/operator-core.plan-
   shadowSink: null,
 }));
 
-/** Install the certificate provider. Pass null to restore the un-provisioned (refusing) state. */
+/** Install a certificate-provider override. Pass null to restore the production governance-event source. */
 export function configurePlanAdmissionCertificateSource(source: PlanAdmissionCertificateSource | null): void {
   state.certificateSource = source;
 }
@@ -196,6 +198,21 @@ export const PLAN_ADMISSION_DOOR_SITES = [
  */
 export const PLAN_ADMISSION_GATE_ENTRYPOINTS = ['checkPlanAdmission', 'checkPlanStartable'] as const;
 
+/**
+ * Emergency OFF switch for enforcement application. Default-on: absent or any
+ * value other than an explicit off token leaves the owner policy in force. Turning
+ * it off runs the identical verdict path in shadow mode; it never mutates or
+ * reinterprets the signed policy bytes.
+ */
+export const PLAN_ADMISSION_ENFORCEMENT_ENV = 'PAPERCUSP_PLAN_ADMISSION_ENFORCEMENT';
+
+export function planAdmissionEnforcementEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env[PLAN_ADMISSION_ENFORCEMENT_ENV]?.trim().toLowerCase();
+  return raw !== '0' && raw !== 'false' && raw !== 'off' && raw !== 'disabled';
+}
+
 /** Why a door did not evaluate admission at all. Both are PASSES, and both say so out loud. */
 /**
  * Why a door was admitted without an applied verdict.
@@ -229,7 +246,7 @@ export type PlanAdmissionVerdict =
 const HINTS: Record<AdmissionRefusalCode, string> = {
   'unknown-door': 'this door is not a recognised plan admission door — add it to PLAN_ADMISSION_DOORS and wire it',
   'missing-plan-revision': 'the plan row carries no content hash, so its exact revision cannot be identified',
-  'missing-certificate': 'this pot requires ratification but no admission certificate was resolved for the current plan revision — ratify the revision, or configure a certificate source',
+  'missing-certificate': 'this pot requires ratification but no admission certificate was resolved for the current plan revision — ratify and persist the revision, or repair the governance-event source',
   'certificate-rejected': 'the ratification round did not approve this plan revision',
   'revision-mismatch': 'the plan has been edited since it was ratified — ratify the current revision',
   'policy-epoch-mismatch': 'the certificate was issued under an older governance policy epoch — re-ratify under the current policy',
@@ -302,9 +319,16 @@ export async function checkPlanAdmission(subject: PlanAdmissionSubject): Promise
     if (!row) return { admitted: true, skipped: 'plan-not-found' };
     planRevisionHash = row.contentHash ?? '';
   }
-  const resolved = state.certificateSource
-    ? await state.certificateSource.resolve({ slug: subject.slug, door: subject.door, planRevisionHash, policy, nowMs })
-    : { certificate: null, governance: null };
+  const certificateSource =
+    state.certificateSource ?? productionPlanAdmissionCertificateSource;
+  const resolved = await certificateSource.resolve({
+    slug: subject.slug,
+    door: subject.door,
+    planRevisionHash,
+    policy,
+    nowMs,
+    opts,
+  });
 
   const result = assertPlanAdmission({
     door: subject.door,
@@ -320,7 +344,10 @@ export async function checkPlanAdmission(subject: PlanAdmissionSubject): Promise
   // what makes the evidence trustworthy: an observation produced by a cheaper or
   // short-circuited path would measure something other than the enforcement it is
   // supposed to predict.
-  if (resolvePlanAdmissionMode(policy) === 'shadow') {
+  if (
+    !planAdmissionEnforcementEnabled() ||
+    resolvePlanAdmissionMode(policy) === 'shadow'
+  ) {
     const observation: PlanAdmissionShadowObservation = {
       slug: subject.slug,
       door: subject.door,
