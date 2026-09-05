@@ -72,7 +72,7 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
   const PAGE = 100;
 
   it('scoping BEFORE the page returns the agent\'s ask even when it sorts far past the page', () => {
-    const mine = ask('mine-1', MINE);
+    const mine = ask('mine-1', MINE, MINE_ASKED_AT);
     const groups = fleetFeedBurying(mine, 145);
 
     const scopedThenPaged = paginateAttentionGroups(scopeGroupsToOwner(groups, MINE), {
@@ -87,7 +87,7 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
   });
 
   it('paging BEFORE the scope loses it — this is the regression, kept as a control', () => {
-    const mine = ask('mine-1', MINE);
+    const mine = ask('mine-1', MINE, MINE_ASKED_AT);
     const groups = fleetFeedBurying(mine, 145);
 
     // Exactly what the popup used to do: take page one of the fleet-wide feed,
@@ -103,12 +103,12 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
   });
 
   it('scoping keeps every one of the agent\'s items and no one else\'s', () => {
-    const a = ask('mine-1', MINE);
-    const b = ask('mine-2', MINE);
+    const a = ask('mine-1', MINE, MINE_ASKED_AT);
+    const b = ask('mine-2', MINE, '2026-09-04T10:00:00.000Z');
     const groups = buildAttentionGroups([
-      ask('theirs-1', 'su-other'),
+      ask('theirs-1', 'su-other', '2026-09-04T11:00:00.000Z'),
       a,
-      ask('theirs-2', 'su-other-2'),
+      ask('theirs-2', 'su-other-2', '2026-09-04T12:00:00.000Z'),
       b,
     ]);
 
@@ -119,7 +119,10 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
   });
 
   it('drops groups emptied by the scope rather than leaving a titled empty shelf', () => {
-    const groups = buildAttentionGroups([ask('theirs-1', 'su-other'), ask('mine-1', MINE)]);
+    const groups = buildAttentionGroups([
+      ask('theirs-1', 'su-other', '2026-09-04T11:00:00.000Z'),
+      ask('mine-1', MINE, MINE_ASKED_AT),
+    ]);
     expect(groups.length).toBeGreaterThan(0);
 
     const scoped = scopeGroupsToOwner(groups, 'su-nobody');
@@ -131,14 +134,18 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
     // A splice-based scope would keep `maxImportance` from an item that the
     // scope removed, so the surviving group would claim an urgency no item in
     // it justifies.
+    // `blocker`, not `critical`: severityToImportance's union is
+    // blocker|question|advisory, so an out-of-union severity falls to the
+    // `normal` default and the two items end up sharing a maxImportance —
+    // which made the final assertion below pass vacuously on the first run.
     const theirsUrgent = coordEscalationToAttention({
       msgId: 'theirs-urgent',
-      severity: 'critical',
+      severity: 'blocker',
       summary: 'theirs',
       from: 'su-other',
       options: [],
     });
-    const mineQuiet = ask('mine-quiet', MINE);
+    const mineQuiet = ask('mine-quiet', MINE, MINE_ASKED_AT);
     const groups = buildAttentionGroups([theirsUrgent, mineQuiet]);
     const together = groups.find((g) => g.items.some((i) => i.id === mineQuiet.id))!;
 
@@ -153,7 +160,7 @@ describe('owner-scoped attention feed (WI-2144754)', () => {
   });
 
   it('tier counts describe the scoped set, so a scoped read cannot report fleet-wide totals', () => {
-    const mine = ask('mine-1', MINE);
+    const mine = ask('mine-1', MINE, MINE_ASKED_AT);
     const groups = fleetFeedBurying(mine, 145);
 
     const unscoped = groupByTier(groups.flatMap((g) => g.items)).counts;
