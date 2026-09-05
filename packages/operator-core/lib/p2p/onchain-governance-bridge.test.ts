@@ -161,7 +161,7 @@ describe('on-chain governance bridge — what may reach a chain', () => {
   });
 
   it('does not let ratification bypass the bounded treasury role caps', () => {
-    const overCap: BridgeAction = { ...transfer, kind: 'treasury-transfer', request: { ...transfer.kind === 'treasury-transfer' ? transfer.request : ({} as never), amountMicros: 5_000n } };
+    const overCap: BridgeAction = { kind: 'treasury-transfer', treasury, request: { role: 'settlement', token, recipient, amountMicros: 5_000n, settlementReceiptHash: 'r', policyApproved: true } };
     expect(mirror(overCap)).toMatchObject({ ok: false, code: 'treasury-refused' });
     const disabledRole: BridgeAction = { kind: 'treasury-transfer', treasury, request: { role: 'host-payout', token, recipient, amountMicros: 10n, settlementReceiptHash: 'r', policyApproved: true } };
     expect(mirror(disabledRole)).toMatchObject({ ok: false, code: 'treasury-refused' });
@@ -192,11 +192,14 @@ describe('on-chain governance bridge — execution is at-most-once and one-way',
   it('produces the same mirrorId for the same certificate and action, and a different one per round', () => {
     const a = mirror(transfer);
     const b = mirror(transfer);
-    expect(a.ok && b.ok && a.plan.mirrorId).toBe(b.ok ? b.plan.mirrorId : null);
-
     const otherRound = certificate(['approve', 'approve', 'approve', 'approve']);
     const c = planOnChainMirror({ certificate: otherRound, authorizedByCertificateHash: otherRound.certificateHash, action: transfer });
-    expect(a.ok && c.ok && a.plan.mirrorId === c.plan.mirrorId).toBe(false);
+    // Every leg must have produced a plan, or the comparisons below prove nothing.
+    if (!a.ok || !b.ok || !c.ok) throw new Error('expected all three mirrors to plan successfully');
+
+    expect(a.plan.mirrorId).toBe(b.plan.mirrorId);
+    expect(a.plan.certificateHash).not.toBe(c.plan.certificateHash);
+    expect(a.plan.mirrorId).not.toBe(c.plan.mirrorId);
   });
 
   it('keeps the ratified decision standing when the chain submission fails, and retries cleanly', async () => {

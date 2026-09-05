@@ -100,10 +100,9 @@ export function planOnChainMirror(input: MirrorRequest): BridgeResult {
   if (!certificate.admitted) {
     return { ok: false, code: 'certificate-not-admitted', detail: `round ${certificate.roundId} was not admitted: ${certificate.reason}` };
   }
-  if (!isMirrorableActionKind(action.kind)) {
-    return { ok: false, code: 'decision-not-mirrorable', detail: `'${action.kind}' is a P2P-authoritative decision and is never mirrored on-chain` };
-  }
-
+  // Narrow on the action itself, not via a predicate over `action.kind`: a type
+  // predicate on a property does not narrow the parent union, and the settlement
+  // arm below needs the discriminated member, not the widened one.
   if (action.kind === 'treasury-transfer') {
     const authorized = authorizeTreasuryTransfer(action.treasury, action.request);
     if (!authorized.ok) return { ok: false, code: 'treasury-refused', detail: `${authorized.code}: ${authorized.detail}` };
@@ -126,6 +125,10 @@ export function planOnChainMirror(input: MirrorRequest): BridgeResult {
         settlement: null,
       },
     };
+  }
+
+  if (action.kind !== 'settlement-batch') {
+    return { ok: false, code: 'decision-not-mirrorable', detail: `'${action.kind}' is a P2P-authoritative decision and is never mirrored on-chain` };
   }
 
   const built = buildEvmBatchSettlementRequest({
