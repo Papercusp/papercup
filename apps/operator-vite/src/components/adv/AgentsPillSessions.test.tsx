@@ -14,7 +14,6 @@ import {
   appendEndedPage,
   endedDisplayName,
   endedSessionStreamUrl,
-  headlineToSafeHtml,
   hitMatchLabel,
   idMatchLabel,
   idMatchStreamUrl,
@@ -272,20 +271,10 @@ describe('endedSessionStreamUrl', () => {
   });
 });
 
-describe('headlineToSafeHtml', () => {
-  it('escapes transcript HTML but restores the engine <mark> tags', () => {
-    expect(headlineToSafeHtml('run <mark>deploy</mark> & <script>alert(1)</script>')).toBe(
-      'run <mark>deploy</mark> &amp; &lt;script&gt;alert(1)&lt;/script&gt;',
-    );
-  });
-
-  it('does not let a transcript smuggle a fake mark attribute through', () => {
-    // Only the engine's bare `<mark>` survives; `<mark onx=...>` stays escaped.
-    expect(headlineToSafeHtml('<mark onmouseover=alert(1)>x</mark>')).toBe(
-      '&lt;mark onmouseover=alert(1)&gt;x</mark>',
-    );
-  });
-});
+// `headlineToSafeHtml` moved to `apps/operator/lib/search-highlight.ts` so the
+// two operator-tree search surfaces can share ONE escaper with this one
+// (security-boundary-remediation-and-usability-2026-09-04 P-003). Its unit
+// tests moved with it, to `apps/operator/lib/search-highlight.test.ts`.
 
 describe('endedDisplayName', () => {
   it('label → short owner id → agent #id', () => {
@@ -726,6 +715,51 @@ describe('SessionSearchResults renders the match label (P-004 wiring)', () => {
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
     expect(screen.getByTestId('hit-provenance').textContent).toBe('no highlight');
     expect(screen.getByTestId('hit-sid-old-0').getAttribute('data-matched-by')).toBeNull();
+  });
+
+  /**
+   * security-boundary-remediation-and-usability-2026-09-04 P-003, under D-001.
+   *
+   * The escaper's own unit tests live with it in
+   * `apps/operator/lib/search-highlight.test.ts`. What only a COMPONENT test can
+   * catch is the wiring: that this row still routes its headline THROUGH the
+   * escaper. That is the regression that actually happens — the function keeps
+   * passing its unit tests while a render site quietly goes back to
+   * `h.highlight`, and every unit test stays green.
+   */
+  it('renders transcript markup inert while keeping <mark> highlighting', async () => {
+    respondWith([
+      result({
+        sessionId: 'sid-xss',
+        hits: [
+          // A marked term (must survive) beside markup (must not). `<img
+          // onerror>` is the vector that matters: it fires with no <script>
+          // tag, so it survives any filter that only strips <script>.
+          hit({ turnIdx: 0, highlight: 'the <mark>deploy</mark> ran <img src=x onerror="alert(1)">' }),
+          // highlight EMPTY → the excerpt fallback arm, which is raw document
+          // head with no engine post-processing at all.
+          hit({ turnIdx: 1, highlight: '', excerpt: '<script>alert(2)</script>' }),
+        ],
+      }),
+    ]);
+    render(<SessionSearchResults query="deploy" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+
+    // HOSTILE PATH FAILS: neither payload became a live element.
+    const marked = screen.getByTestId('hit-sid-xss-0');
+    const fallback = screen.getByTestId('hit-sid-xss-1');
+    expect(marked.querySelector('img')).toBeNull();
+    expect(fallback.querySelector('script')).toBeNull();
+
+    // …and both are still SHOWN, as text. Escaping must not silently eat
+    // content: a transcript search that drops the markup you searched for is
+    // broken in the other direction.
+    expect(marked.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(fallback.textContent).toContain('<script>alert(2)</script>');
+
+    // LEGITIMATE PATH SUCCEEDS: the engine's own <mark> is a real element.
+    expect(marked.querySelectorAll('mark')).toHaveLength(1);
+    expect(marked.querySelector('mark')?.textContent).toBe('deploy');
   });
 });
 

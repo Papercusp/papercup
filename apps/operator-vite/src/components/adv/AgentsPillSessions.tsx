@@ -38,6 +38,7 @@ import { useOpenHudConversation } from './use-open-hud-conversation';
 import { mergeIdMatches } from '@papercusp/operator-core/lib/adv-session-search';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
+import { hitDisplayHtml } from '@/lib/search-highlight';
 import type { BoundLexicon } from '@papercusp/lexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import {
@@ -226,19 +227,6 @@ export function endedSessionStreamUrl(
   return null;
 }
 
-/** ts_headline output → safe HTML: escape EVERYTHING, then restore only the
- *  engine's own <mark> tags. Transcripts routinely contain HTML/JS snippets —
- *  raw dangerouslySetInnerHTML of a headline over them would inject markup.
- *  Pure — exported for tests. */
-export function headlineToSafeHtml(headline: string): string {
-  return headline
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('&lt;mark&gt;', '<mark>')
-    .replaceAll('&lt;/mark&gt;', '</mark>');
-}
-
 /**
  * How to label a hit's match (P-004), or null when the row needs no label.
  * Pure — exported for tests.
@@ -272,8 +260,13 @@ export function headlineToSafeHtml(headline: string): string {
 export function hitMatchLabel(
   hit: Pick<SearchTurnHit, 'matchedBy' | 'semanticScore' | 'highlight' | 'excerpt'>,
 ): { label: string; title: string; unhighlighted: boolean } | null {
-  // Mirror what the row actually RENDERS (`highlight || excerpt`) — asking
-  // whether `highlight` alone has marks would misjudge the fallback case.
+  // Mirror what the row actually RENDERS — asking whether `highlight` alone
+  // has marks would misjudge the fallback case. The row renders through
+  // `hitDisplayHtml`, whose precedence this reproduces; it does NOT reuse that
+  // helper because this needs the raw text to look for `<mark>`, and
+  // `hitDisplayHtml` returns escaped HTML in which `<mark>` is the one tag that
+  // survives escaping — so a substring test against it would be testing the
+  // escaper, not the engine's highlighting.
   const shown = hit.highlight || hit.excerpt || '';
   const unhighlighted = !shown.includes('<mark>');
   const semantic = hit.matchedBy === 'semantic';
@@ -580,7 +573,10 @@ function SearchResultRow({
             )}
             <span
               // Engine ts_headline output, escaped except its own <mark> tags.
-              dangerouslySetInnerHTML={{ __html: headlineToSafeHtml(h.highlight || h.excerpt) }}
+              // The `highlight || excerpt` precedence lives in the shared helper
+              // with the escaping, so the three search surfaces cannot drift
+              // apart on either half (P-003).
+              dangerouslySetInnerHTML={{ __html: hitDisplayHtml(h) }}
             />
           </div>
         );
