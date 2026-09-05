@@ -1608,7 +1608,22 @@ export default defineTool({
                   const retireIdentity = (c: { id?: string; claim?: string }) =>
                     sanitizeCarryRowId(c.id) ?? (c.claim ?? '').trim();
                   const droppedKeys = new Set(droppedRows.map((c) => retireIdentity(c)));
-                  const requestedKeys = new Set(wantsRetireIds);
+                  // EI-22385255026192781: the STORED side is sanitized (above), but the
+                  // caller's strings were not — and the only place an agent ever SEES a
+                  // row id is the rendered `[#id]` anchor, whose '#' sanitizeCarryRowId
+                  // strips (it is outside CARRY_ROW_ID_ALLOWED). So copying the id from
+                  // the note you just read produced `#foo` vs a stored `foo` and refused
+                  // on a difference the renderer itself introduced. Normalize a requested
+                  // key ONLY when its sanitized form matches a real dropped identity:
+                  // a retireIds entry may equally be raw CLAIM TEXT, which must survive
+                  // untouched, and a genuinely wrong id must still mismatch.
+                  const requestedKeys = new Set(
+                    wantsRetireIds.map((k) => {
+                      if (droppedKeys.has(k)) return k;
+                      const asId = sanitizeCarryRowId(k);
+                      return asId && droppedKeys.has(asId) ? asId : k;
+                    }),
+                  );
                   const setsMatch =
                     droppedKeys.size === requestedKeys.size && [...droppedKeys].every((k) => requestedKeys.has(k));
                   if (!setsMatch) {
