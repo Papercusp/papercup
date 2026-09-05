@@ -4719,6 +4719,100 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.authorityWarning).toBeUndefined();
     });
   });
+
+  // ── D-018: the terminal-criteria ENFORCEMENT kill-switch ────────────────────────────
+  // Added because a vetting reviewer asked the question no criterion asked: this gate
+  // changes close outcomes for ~6.1% of committed bug/change closes fleet-wide the moment
+  // it deploys, and its only rollback was a revert.
+  //
+  // The subject is the DOWNGRADE, not the evaluator — `evaluateCloseTerminalCriteria` is
+  // unit-tested in terminal-criteria.test.ts and is deliberately untouched by the flag, so
+  // OFF stays measurable rather than becoming a blind spot. Each test therefore asserts the
+  // recorded verdict is STILL PRESENT alongside whatever authority landed.
+  describe('terminal-criteria enforcement kill-switch (D-018)', () => {
+    beforeEach(() => {
+      // `kind: 'change'` is load-bearing: claimsRemediation() gates on the item kind, so the
+      // default `feature` fixture would make every criterion `not-applicable` and this whole
+      // block would pass against a gate that never ran.
+      getWorkItem.mockResolvedValue({ ...item, id: 'WI-1', kind: 'change', state: 'open', family: 'issue' });
+      setWorkItemStateWithAliasInfo.mockImplementation(async (_id: string, state: string) =>
+        okState({ ...item, id: 'WI-1', kind: 'change', family: 'issue', state }),
+      );
+    });
+
+    const stateOpts = () => setWorkItemStateWithAliasInfo.mock.calls[0]?.[2] as Record<string, unknown>;
+
+    /**
+     * A close that WOULD otherwise land `committed` (verifiedHow + testResult is the
+     * qualifying evidence pair) but whose sole stated verification is the one mode that
+     * cannot distinguish a fix from no fix. Without the criteria stage this is `committed`.
+     */
+    const downgradingClose = {
+      id: 'WI-1',
+      state: 'resolved',
+      completion: { summary: 'fixed it', verifiedHow: 'already-passing', testResult: '26/26 green' },
+    };
+
+    /** Answer only for the enforcement flag, so other flag reads keep their own defaults. */
+    const enforcement = (value: boolean) =>
+      getFlag.mockImplementation(async (key: unknown) =>
+        key === 'papercusp-terminal-criteria-enforcement' ? value : false,
+      );
+
+    it('ON (the shipped default): an unmet criterion downgrades the close to `proposed`', async () => {
+      enforcement(true);
+      const r = await one(downgradingClose);
+      expect(stateOpts().completionAuthority).toBe('proposed');
+      expect(r.completionAuthority).toBe('proposed');
+      expect(r.countsTowardBurnDown).toBe(false);
+    });
+
+    it('OFF: the SAME close lands `committed` — the switch actually switches something off', async () => {
+      enforcement(false);
+      const r = await one(downgradingClose);
+      expect(stateOpts().completionAuthority).toBe('committed');
+      expect(r.completionAuthority).toBe('committed');
+    });
+
+    it('OFF still RECORDS the verdict and says enforcement is disabled — OFF is not a blind spot', async () => {
+      enforcement(false);
+      const r = await one(downgradingClose);
+      const warning = String(
+        r.terminalCriteriaWarning ?? r.authorityWarning ?? stateOpts().terminalCriteriaWarning ?? '',
+      );
+      // The verdict survives the switch: a reader can still see WHAT the gate found.
+      expect(warning).toMatch(/already-passing/i);
+      // ...and that it was deliberately not applied, rather than silently absent.
+      expect(warning).toMatch(/DISABLED|not applied/i);
+      expect(warning).toContain('papercusp-terminal-criteria-enforcement');
+    });
+
+    // The direction that matters. A flag-store fault must NOT silently disable a fleet-wide
+    // gate: the flag's own default is ON, so an unreadable flag resolves to the shipped
+    // behaviour. This is deliberately the OPPOSITE of D-003's fail-open, which protects the
+    // completion RECORD from an evaluator fault. Neither can lose a record.
+    it('FAILS SAFE-ON: a flag-read fault keeps enforcing rather than disabling the gate', async () => {
+      getFlag.mockRejectedValue(new Error('flag store unreachable'));
+      const r = await one(downgradingClose);
+      expect(stateOpts().completionAuthority).toBe('proposed');
+      expect(r.completionAuthority).toBe('proposed');
+    });
+
+    // Guards the flag read against being hoisted out of its guard onto every close. A close
+    // with nothing to downgrade must not consult the flag at all.
+    it('does not consult the flag when there is no downgrade to suppress', async () => {
+      enforcement(true);
+      await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed it', verifiedHow: 'unit', testResult: '26/26 green', filesChanged: ['a.ts'] },
+      });
+      const consulted = getFlag.mock.calls.some(
+        (c: unknown[]) => c[0] === 'papercusp-terminal-criteria-enforcement',
+      );
+      expect(consulted).toBe(false);
+    });
+  });
 });
 
 // ── EI-19362441037986499: a record-only completion of an ALREADY-TERMINAL item ────────────
