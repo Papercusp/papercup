@@ -673,7 +673,7 @@ const markdownPreviewOutlineCss = `
     --pc-outline-kind: var(--accent, #57d7ff);
   }
   .pc-md-outline a[data-plan-outline-kind='decision'] {
-    --pc-outline-kind: var(--warning, #fb923c);
+    --pc-outline-kind: var(--warn, #fb923c);
   }
   .pc-md-outline a:hover {
     color: var(--fg, #e7f7ff);
