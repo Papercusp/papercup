@@ -59,12 +59,29 @@ type ToolLike = {
 };
 
 /**
- * D-008: `.refine()`/`.superRefine()`/`.preprocess()` wrap a ZodObject in ZodEffects, so
- * `.shape` is UNDEFINED on those tools and any `shape`-based assertion passes vacuously
- * (`scheduler:get_claim_spec` and `dev:pipeline_position` are both in that state here —
- * get_claim_spec via a top-level `.refine`). Walk the effect chain, and THROW rather
- * than return [] when no object shape is reachable: a guard that inspected nothing must
- * be an error, never a pass.
+ * Resolve a tool's declared top-level arg shape, and THROW rather than return [] when no
+ * object shape is reachable: a guard that inspected nothing must be an error, never a
+ * pass. That rule is the load-bearing half of this helper and is unchanged.
+ *
+ * ⚠ The MECHANISM this comment used to state is RETRACTED — do not re-derive it from the
+ * old wording. It read: "`.refine()`/`.superRefine()`/`.preprocess()` wrap a ZodObject in
+ * ZodEffects, so `.shape` is UNDEFINED on those tools ... (`scheduler:get_claim_spec` and
+ * `dev:pipeline_position` are both in that state here)". Measured at zod 4.4.3 and
+ * recorded as D-011/D-012 on `tool-contract-class-sizing-and-non-vacuous-guard-2026-09-05`:
+ *
+ *   - `.refine()` / `.superRefine()` KEEP `.shape`. They were never the cause, so the
+ *     ZodEffects story explains none of the real blind spot.
+ *   - `.shape` is unreachable through exactly three shapes: **preprocess, union, and
+ *     pipe**. Their `_def` is `{type, in, out}` (preprocess/pipe) or `{type, options}`
+ *     (union) — neither carries `schema` or `innerType`, so the walk below does NOT
+ *     unwrap them. It throws, which is the correct outcome, not a missed case.
+ *   - `scheduler:get_claim_spec` and `dev:pipeline_position` are NOT vacuous: they
+ *     resolve 4 and 3 keys respectively. This file proves it rather than asserting it —
+ *     `declaredKeys` is called on both below, and would throw if either were unreadable.
+ *
+ * So the guard's BEHAVIOUR was always sound; only the explanation was wrong. A guard whose
+ * comment teaches a retracted mechanism re-teaches it to every future reader, which is why
+ * this is corrected in place instead of deleted (WI-2146083).
  */
 function declaredShape(tool: ToolLike, label: string): Record<string, unknown> {
   let node: unknown = tool.args;
