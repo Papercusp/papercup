@@ -47,7 +47,6 @@ const {
   insertDeliveries,
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
-  retireFleetLeadershipWatchesForOwners,
   listActiveAwaits,
   listActiveAwaitsForKey,
   fireAwaitsForKey,
@@ -276,43 +275,6 @@ describe('await-event store (PG)', () => {
       predicateWatches: 1,
     });
     expect(await listActiveAwaits('leader-b')).toEqual([]);
-  });
-
-  it('retires only fleet-leadership machinery for an owner, preserving other lifecycle watches', async () => {
-    const fleet = { kind: 'fleet-leadership', ref: 'alpha' };
-    const other = { kind: 'work-item-claim', ref: 'WI-1' };
-    const fleetAwait = await registerAwait({
-      subscriberId: 'leader-a',
-      eventKey: 'fleet:member-dead:alpha',
-      once: false,
-      boundTo: fleet,
-    });
-    const otherAwait = await registerAwait({
-      subscriberId: 'leader-a',
-      eventKey: 'work-item:claim:WI-1',
-      once: false,
-      boundTo: other,
-    });
-    await rootSql`
-      INSERT INTO harness_shared.predicate_watches (id, owner_id, bound_to)
-      VALUES ('fleet-owner-a', 'leader-a', ${JSON.stringify(fleet)}::text::jsonb),
-             ('other-owner-a', 'leader-a', ${JSON.stringify(other)}::text::jsonb)`;
-
-    await expect(retireFleetLeadershipWatchesForOwners(['leader-a'])).resolves.toEqual({
-      awaits: 1,
-      predicateWatches: 1,
-    });
-    expect(await listActiveAwaits('leader-a')).toEqual([otherAwait]);
-    expect(fleetAwait.cancelledAt).toBeNull();
-    const predicateRows = await rootSql<{ id: string; active: boolean }[]>`
-      SELECT id, active
-        FROM harness_shared.predicate_watches
-       WHERE owner_id = 'leader-a'
-       ORDER BY id`;
-    expect(predicateRows).toEqual([
-      { id: 'fleet-owner-a', active: false },
-      { id: 'other-owner-a', active: true },
-    ]);
   });
 
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {

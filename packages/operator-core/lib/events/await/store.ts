@@ -517,46 +517,6 @@ export async function retireLifecycleBoundWatchesForOwners(
   });
 }
 
-/**
- * Retire only fleet-leadership machinery for owners whose loop/session ended.
- *
- * `loop:end` knows the owner identity but deliberately does not need to know
- * which fleet refs that owner led. Keep this inverse narrower than
- * `retireLifecycleBoundWatchesForOwners`: ending a loop must not cancel an
- * unrelated bound interest (for example a work-item or escalation watch).
- */
-export async function retireFleetLeadershipWatchesForOwners(
-  ownerIds: readonly string[],
-  opts: { client?: ReturnType<typeof getOrgPg>['sql'] } = {},
-): Promise<LifecycleRetirementResult> {
-  const owners = [...new Set(ownerIds.map((id) => id.trim()).filter(Boolean))];
-  if (owners.length === 0) return { awaits: 0, predicateWatches: 0 };
-  return boundedOrgTxn(
-    async (tx) => {
-      const awaits = await tx`
-        UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
-         WHERE subscriber_id = ANY(${owners}::text[])
-           AND bound_to->>'kind' = 'fleet-leadership'
-           AND cancelled_at IS NULL
-           AND (once = false OR fired_at IS NULL)
-        RETURNING id
-      `;
-      const predicateWatches = await tx`
-        UPDATE harness_shared.predicate_watches
-           SET active = false,
-               last_error = coalesce(last_error, 'gc: fleet leadership lifecycle retired')
-         WHERE owner_id = ANY(${owners}::text[])
-           AND bound_to->>'kind' = 'fleet-leadership'
-           AND active
-        RETURNING id
-      `;
-      return { awaits: awaits.length, predicateWatches: predicateWatches.length };
-    },
-    { client: opts.client },
-  );
-}
-
 /** Fold lifecycle provenance without overwriting source payload fields silently. */
 export function withLifecycleBindingProvenance(
   payload: unknown,
