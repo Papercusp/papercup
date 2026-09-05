@@ -233,6 +233,8 @@ import {
   renewFrozenCandidateRepairFixerReservation,
   finalizeFrozenCandidateRepairFixer,
   writeFrozenCandidateRepairQueue,
+  applyFrozenCandidateRepairQueueTransition,
+  FrozenRepairQueueWriteConflictError,
   type AutoServePlan,
   type DeployEventRow,
   type ReleaseFixerRecord,
@@ -3451,6 +3453,131 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ),
       ['ws-42', 'my-harness'],
     );
+  });
+
+  it('P-027 (D-014): a version-guarded write matches only the row version the caller read; a miss throws the FRESH row instead of overwriting it', async () => {
+    fakeSql.unsafe.mockClear();
+    const advanced = { ...queue, repairHead: 'd'.repeat(40), updatedAtMs: 9 };
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([])) // 1: repairTickLegs read (manifest derivation)
+      .mockResolvedValueOnce(sqlRows([])) // 2: the guarded UPDATE matches NO row (a peer moved it)
+      .mockResolvedValueOnce(sqlRows([{ repair_queue: advanced }])); // 3: fresh re-read for the error
+    await expect(
+      writeFrozenCandidateRepairQueue(target, queue, { expectedUpdatedAtMs: queue.updatedAtMs }),
+    ).rejects.toMatchObject({
+      code: 'frozen-repair-queue-write-conflict',
+      expectedUpdatedAtMs: queue.updatedAtMs,
+      fresh: { status: 'value', queue: expect.objectContaining({ repairHead: 'd'.repeat(40), updatedAtMs: 9 }) },
+    });
+    // The predicate is on the row version the caller read, as TEXT, positioned after the
+    // statement's own four parameters, and the statement RETURNS so a miss is observable.
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(
+        /AND target_role = 'system:green-checkpoint'\s+AND metadata->'repair_queue'->>'updatedAtMs' = \$5::text\s+RETURNING true AS written/,
+      ),
+      ['ws-42', 'my-harness', expect.any(String), expect.any(String), String(queue.updatedAtMs)],
+    );
+    // No manifest publish after a refused write: the row was never ours to describe.
+    expect(fakeSql.unsafe).toHaveBeenCalledTimes(3);
+
+    // A hit resolves; the create path asserts ABSENCE with no extra parameter; the retire path
+    // takes the same guard at its own position.
+    fakeSql.unsafe.mockClear();
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await expect(
+      writeFrozenCandidateRepairQueue(target, queue, { expectedUpdatedAtMs: queue.updatedAtMs }),
+    ).resolves.toBeUndefined();
+    fakeSql.unsafe.mockClear();
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, queue, { expectedUpdatedAtMs: null });
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/AND metadata->'repair_queue' IS NULL\s+RETURNING true AS written/),
+      ['ws-42', 'my-harness', expect.any(String), expect.any(String)],
+    );
+    fakeSql.unsafe.mockClear();
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([]));
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: advanced }]));
+    await expect(writeFrozenCandidateRepairQueue(target, null, { expectedUpdatedAtMs: 2 })).rejects.toBeInstanceOf(
+      FrozenRepairQueueWriteConflictError,
+    );
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(/AND metadata->'repair_queue'->>'updatedAtMs' = \$3::text\s+RETURNING true AS written/),
+      ['ws-42', 'my-harness', '2'],
+    );
+
+    // The legacy unconditional write is byte-identical to before: no predicate, no RETURNING check.
+    fakeSql.unsafe.mockClear();
+    await writeFrozenCandidateRepairQueue(target, queue);
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      2,
+      expect.not.stringMatching(/updatedAtMs' = \$/),
+      ['ws-42', 'my-harness', expect.any(String), expect.any(String)],
+    );
+  });
+
+  it('P-027 (D-014): applyFrozenCandidateRepairQueueTransition reduces the FRESH row (not the caller\'s copy), bumps the version, absorbs a CAS miss by re-reading, and writes nothing for an identity or an absent row', async () => {
+    const fresh = { ...queue, repairHead: 'd'.repeat(40), updatedAtMs: 10 };
+    let rowNow: unknown = fresh;
+    let updateMisses = 1;
+    const updates: Array<{ sql: string; params: unknown[] }> = [];
+    fakeSql.unsafe.mockClear();
+    fakeSql.unsafe.mockImplementation(async (sqlText: unknown, params?: unknown) => {
+      const s = String(sqlText);
+      if (/SELECT metadata->'repair_queue' AS repair_queue/.test(s)) {
+        return sqlRows(rowNow === null ? [] : [{ repair_queue: rowNow }]);
+      }
+      if (/repairTickLegs/.test(s)) return sqlRows([]);
+      if (/UPDATE harness_shared\.routines/.test(s) && /RETURNING true AS written/.test(s)) {
+        updates.push({ sql: s, params: params as unknown[] });
+        if (updateMisses > 0) {
+          updateMisses -= 1;
+          return sqlRows([]);
+        }
+        rowNow = JSON.parse((params as string[])[2]).repair_queue;
+        return sqlRows([{ written: true }]);
+      }
+      return sqlRows([]);
+    });
+    try {
+      // The caller's snapshot (`queue`, repairHead c…, updatedAtMs 2) is NOT what the reducer
+      // sees: it is applied to the row as it stands (repairHead d…, updatedAtMs 10). The reducer
+      // does not move the version, so the writer bumps it; the first CAS misses and is re-read.
+      const outcome = await applyFrozenCandidateRepairQueueTransition(target, (row) => ({
+        ...row,
+        phase: 'ready-to-verify' as const,
+      }));
+      expect(outcome).toMatchObject({ status: 'written', retries: 1 });
+      expect(outcome.queue).toMatchObject({ repairHead: 'd'.repeat(40), phase: 'ready-to-verify', updatedAtMs: 11 });
+      expect(updates).toHaveLength(2);
+      for (const u of updates) expect(u.params[4]).toBe('10');
+      expect((rowNow as { repairHead: string; updatedAtMs: number }).repairHead).toBe('d'.repeat(40));
+      expect((rowNow as { updatedAtMs: number }).updatedAtMs).toBe(11);
+
+      // Identity: the reducer returns the fresh row itself — nothing to persist, no UPDATE.
+      const same = await applyFrozenCandidateRepairQueueTransition(target, (row) => row);
+      expect(same.status).toBe('unchanged');
+      expect(same.queue).toMatchObject({ updatedAtMs: 11 });
+      expect(updates).toHaveLength(2);
+
+      // Absent: the row was retired under us — never resurrected from a snapshot.
+      rowNow = null;
+      const gone = await applyFrozenCandidateRepairQueueTransition(target, (row) => ({ ...row, attempts: 99 }));
+      expect(gone).toMatchObject({ status: 'absent', queue: null, fresh: null });
+      expect(updates).toHaveLength(2);
+
+      // Exhausted: a writer that keeps moving the row surfaces as the conflict, never a silent clobber.
+      rowNow = fresh;
+      updateMisses = 99;
+      await expect(
+        applyFrozenCandidateRepairQueueTransition(target, (row) => ({ ...row, attempts: 1 }), { maxAttempts: 2 }),
+      ).rejects.toBeInstanceOf(FrozenRepairQueueWriteConflictError);
+      expect(updates).toHaveLength(4);
+    } finally {
+      fakeSql.unsafe.mockImplementation(async (..._a: unknown[]) => Object.assign([] as unknown[], { count: 0 }));
+    }
   });
 
   it('retires only the exact inspected queue and returns the replacement on a CAS miss', async () => {
