@@ -27,7 +27,11 @@
  * switcher self-hides until install-time provisioning (P-017) brings the others up.
  */
 
-import { defaultDetectSourceRoot } from './env-operator-launcher';
+import {
+  defaultDetectSourceArchivePending,
+  defaultDetectSourceRoot,
+  type SkipReason,
+} from './env-operator-launcher';
 import { isVmReleaseDistribution } from '../vm-release-runtime-policy';
 
 export interface DevOperatorDescriptor {
@@ -103,10 +107,63 @@ export interface ResolvedDevOperator extends DevOperatorDescriptor {
   enabled: boolean;
 }
 
+/**
+ * WHY an env is missing from `operators`, in the LAUNCHER's own vocabulary
+ * (EI-19421499550693822). Two of the three values are `Extract`ed from the launcher's
+ * `SkipReason` union rather than re-spelled here, so if that union renames one the
+ * `Extract` collapses to `never` and every construction site fails typecheck — the two
+ * surfaces cannot drift into disagreeing about the same condition (derived-truth ladder,
+ * rung 2). `isTransientSkip()` from the launcher tells "not yet" from "not on this
+ * machine" for the two source-tree values; branch on THAT, never on the prose.
+ */
+export type DevOperatorOmissionReason =
+  | Extract<SkipReason, 'no-source-tree' | 'source-tree-pending'>
+  | 'vm-release-distribution';
+
+/** One env deliberately absent from `operators`, with the reason a machine can branch on. */
+export interface OmittedDevOperator {
+  /** The `DevOperatorDescriptor.id` that was omitted (e.g. 'dev', 'local'). */
+  id: string;
+  /** WHY it was omitted. Never prose — see DevOperatorOmissionReason. */
+  reason: DevOperatorOmissionReason;
+}
+
+/**
+ * The source-tree axis as a READBACK, not an inference from an absent entry
+ * (EI-19421499550693822).
+ *
+ * WHY THIS EXISTS. `resolveDevOperators` filters `requiresSourceTree` envs (dev/local)
+ * out of `operators` entirely when no runnable tree is present — the deliberate fix for
+ * the WI-3284 permanently-grey-button wall. But the response carried no record that
+ * anything had been dropped, so an absent `dev` was indistinguishable between "no source
+ * shipped (expected)", "a shipped archive failed to extract (a bug)", "half-extracted, so
+ * the marker check rejected it", and "this endpoint is broken". Diagnosing that needed an
+ * SSH + a log grep for `[dev-source]` on the target machine — unavailable to CI, to a
+ * remote acceptance check, and to the UI itself.
+ *
+ * WHY `status` RATHER THAN A BARE `hasSourceTree: boolean`. The vm-release path returns
+ * before any detection runs, so a boolean there would have to be `false` — a MEASUREMENT
+ * this code never took, reported as one. Same corrective as `StagingBuildIdentity` below
+ * (D-052: absence must never render as a clean identity).
+ */
+export type DevOperatorSourceTreeReadback =
+  | { status: 'measured'; present: boolean }
+  | { status: 'not_measured'; reason: 'vm-release-distribution' };
+
 export interface ResolveDevOperatorsResult {
   operators: ResolvedDevOperator[];
   /** The port this operator listens on (null if undeterminable). */
   selfPort: number | null;
+  /**
+   * DIAGNOSTIC (the switcher bar does not render it): whether a runnable source tree was
+   * detected on this machine. Pairs with `omitted` — see DevOperatorSourceTreeReadback.
+   */
+  sourceTree: DevOperatorSourceTreeReadback;
+  /**
+   * DIAGNOSTIC (not rendered): envs that exist in the canonical list but were left OUT of
+   * `operators`, and why. Empty means nothing was dropped — an assertion, not a silence.
+   */
+  omitted: OmittedDevOperator[];
 }
 
 export interface ResolveDevOperatorsDeps {
@@ -130,6 +187,14 @@ export interface ResolveDevOperatorsDeps {
    * (dev/local) are omitted from the result entirely — see the descriptor doc.
    */
   hasSourceTree?: boolean;
+  /**
+   * Whether a source archive SHIPPED with this build but has not finished extracting yet
+   * (tests). Default: `defaultDetectSourceArchivePending()` — the SAME check the launcher
+   * uses. It splits the source-less omission into the TRANSIENT `source-tree-pending` and
+   * the TERMINAL `no-source-tree`; reading the transient one as terminal already produced
+   * a false FAIL in the WI-3307 acceptance gate (EI-19442842364710969).
+   */
+  sourceArchivePending?: boolean;
   /** Test seam; defaults to the live process environment. */
   env?: NodeJS.ProcessEnv;
 }
@@ -287,6 +352,14 @@ export async function resolveDevOperators(
     const origin = selfPort == null ? `http://${host}:3070` : `http://${host}:${selfPort}`;
     return {
       selfPort,
+      // Nothing probed the filesystem on this path, so the source-tree axis is
+      // NOT_MEASURED rather than false — and the envs this distribution drops are
+      // still named, so an empty `omitted` never has to stand for "and also these".
+      sourceTree: { status: 'not_measured', reason: 'vm-release-distribution' },
+      omitted: (deps.candidates ?? DEV_OPERATORS).map((d) => ({
+        id: d.id,
+        reason: 'vm-release-distribution' as const,
+      })),
       operators: [{
         id: 'release',
         label: 'release',
@@ -310,9 +383,23 @@ export async function resolveDevOperators(
   // here omitted dev/local from the list while local was literally running
   // (WI-3307 mac verify, 2026-07-07).
   const hasSourceTree = deps.hasSourceTree ?? defaultDetectSourceRoot() != null;
-  const candidates = (deps.candidates ?? DEV_OPERATORS).filter(
-    (d) => hasSourceTree || !d.requiresSourceTree,
-  );
+  const allCandidates = deps.candidates ?? DEV_OPERATORS;
+  const candidates = allCandidates.filter((d) => hasSourceTree || !d.requiresSourceTree);
+  // The omission above is deliberate and stays; what was missing is the READBACK for it
+  // (EI-19421499550693822). Report WHAT was dropped and WHY, in the launcher's own
+  // vocabulary, so a packaged-build acceptance check is one curl rather than an SSH plus
+  // a `[dev-source]` log grep on the target machine. The pending/terminal split is the
+  // launcher's own (defaultDetectSourceArchivePending), so the two surfaces cannot
+  // disagree about whether a tree is still coming.
+  const omitted: OmittedDevOperator[] = hasSourceTree
+    ? []
+    : (() => {
+        const dropped = allCandidates.filter((d) => d.requiresSourceTree);
+        if (dropped.length === 0) return [];
+        const pending = deps.sourceArchivePending ?? defaultDetectSourceArchivePending();
+        const reason: DevOperatorOmissionReason = pending ? 'source-tree-pending' : 'no-source-tree';
+        return dropped.map((d) => ({ id: d.id, reason }));
+      })();
 
   const envOps = await Promise.all(
     candidates.map(async (d): Promise<ResolvedDevOperator> => {
@@ -346,5 +433,10 @@ export async function resolveDevOperators(
     ...releaseProbe,
   };
 
-  return { operators: [...envOps, releaseOp], selfPort };
+  return {
+    operators: [...envOps, releaseOp],
+    selfPort,
+    sourceTree: { status: 'measured', present: hasSourceTree },
+    omitted,
+  };
 }

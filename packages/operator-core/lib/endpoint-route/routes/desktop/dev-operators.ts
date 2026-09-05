@@ -19,6 +19,14 @@
  * which envs are off and re-enable them via the same loopback API the UI uses. See
  * agent-insights/env-switcher-and-local-env-provisioning.
  *
+ * The SOURCE-TREE axis is legible the same way (EI-19421499550693822). dev/local are
+ * omitted from `operators` entirely where no runnable tree exists (the WI-3284 grey-button
+ * fix — deliberate, and unchanged here), which used to make an absent `dev` ambiguous
+ * between "no source shipped (expected)" and "a shipped archive failed to extract (a
+ * bug)". `sourceTree` and `omitted` report that axis explicitly, using the launcher's own
+ * `SkipReason` vocabulary, so a packaged-build acceptance check is one curl instead of an
+ * SSH plus a `[dev-source]` log grep. Neither field is rendered by the switcher bar.
+ *
  * auth: GET {} (the cookie-less desktop-webview read posture, like setup-wizard-state).
  * POST 'loopback' + a cross-site CSRF guard (it mutates a preference) — mirrors
  * git-remote-main / bootstrap-pot-start.
@@ -42,8 +50,13 @@ export default [
     auth: {},
     async handler() {
       const { disabled } = readEnvSwitcherPrefs();
-      const { operators, selfPort } = await resolveDevOperators({ disabledIds: disabled });
-      return new Response(JSON.stringify({ ok: true, operators, selfPort }), {
+      const { operators, selfPort, sourceTree, omitted } = await resolveDevOperators({
+        disabledIds: disabled,
+      });
+      // `sourceTree` + `omitted` are DIAGNOSTIC — the switcher bar renders neither; they
+      // exist so a machine reader can tell an expected omission from a broken one
+      // (EI-19421499550693822). See the AGENT-LEGIBILITY note above.
+      return new Response(JSON.stringify({ ok: true, operators, selfPort, sourceTree, omitted }), {
         headers: { ...JSON_HEADERS, ...CORS_HEADERS },
       });
     },
