@@ -33,6 +33,7 @@
     "lint:guidance-returns-schema": "node ../../scripts/check-guidance-returns-schema.mjs",
     "lint:reachable-advisories": "node ../../scripts/check-reachable-advisories.mjs --strict",
     "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",
+    "lint:no-new-result-door-optout": "node ../../scripts/check-result-door-optouts.mjs",
     "lint:lockfile-census": "node ../../scripts/check-lockfile-census.mjs --strict",
     "lint:resource-governor-enforcement": "node ../../scripts/check-resource-governor-enforcement.mjs",
     "lint:recovery-timers-declared": "vitest run lib/system-health/recovery-dependency-audit.test.ts",
