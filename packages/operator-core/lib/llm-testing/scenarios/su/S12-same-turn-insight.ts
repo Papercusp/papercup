@@ -39,7 +39,7 @@ export const S12_PROVEN_CONTEXT_PROMPT =
 
 export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   id: 'su-S12-same-turn-insight',
-  version: 3,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:

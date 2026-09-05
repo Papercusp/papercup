@@ -38,7 +38,7 @@ if (!insightAssert) throw new Error('S12 writes-insight-same-turn assert is miss
 
 describe('SU-S12 same-turn insight write', () => {
   it('seeds turn 0 with the proven cause and recurrence marker without naming the action under test', () => {
-    expect(SU_S12_SAME_TURN_INSIGHT.version).toBe(3);
+    expect(SU_S12_SAME_TURN_INSIGHT.version).toBe(4);
     expect(SU_S12_SAME_TURN_INSIGHT.triggers).toEqual([
       {
         on: 'after_turn',
