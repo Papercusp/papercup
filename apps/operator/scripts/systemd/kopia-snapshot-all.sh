@@ -162,18 +162,44 @@ trap cleanup_kopia_pid EXIT
   # unbounded exposure (nothing to restore from, at any age), while an
   # already-covered source that is skipped this cycle merely gets 30 minutes
   # staler. First snapshot first, every time.
-  UNCOVERED=()
+  # 2026-09-05 (WI-2146225): hoist EVERY required source, not only the
+  # never-snapshotted ones. The previous test skipped any source already in
+  # DISCOVERED, which made this hoist ONE-SHOT AND SELF-DISABLING: DISCOVERED is
+  # `kopia snapshot list --all`, so the instant a required path got its FIRST
+  # snapshot it re-entered DISCOVERED, `sort -u` dropped it into the /mnt/* tail,
+  # and it was never prioritised again.
+  #
+  # Measured, not theorised: two ad-hoc snapshots taken at 13:17 and 14:12 EDT to
+  # establish tier-1 coverage put /mnt/backup/db-dumps at position 13 of 15 —
+  # behind the three /home trees that are 82% of cycle cost (469 of 572 CPU-s).
+  # At --parallel=1 with the guard killing runs mid-flight (16 of ~35 fires that
+  # day), no cycle ever reached position 13: zero scheduled captures in the ~8
+  # fires after 14:12. Establishing coverage is what disabled the prioritisation
+  # that earns coverage.
+  #
+  # The old rationale — an already-covered source "merely gets 30 minutes
+  # staler" — holds only if sweeps FINISH. Here they almost never do, so a
+  # deprioritised source is unbounded-stale, which is the same exposure the hoist
+  # exists to prevent; the binary never-snapshotted? is a decaying proxy for risk
+  # that evaporates exactly when coverage turns fragile rather than absent.
+  # A path in REQUIRED_SOURCES MUST be covered: keep it first, every cycle.
+  PRIORITY=()
   for r in ${REQUIRED_SOURCES[@]+"${REQUIRED_SOURCES[@]}"}; do
     [ -d "$r" ] || continue
-    printf '%s\n' ${DISCOVERED[@]+"${DISCOVERED[@]}"} | grep -qxF "$r" && continue
-    printf '%s\n' ${UNCOVERED[@]+"${UNCOVERED[@]}"} | grep -qxF "$r" && continue
+    printf '%s\n' ${PRIORITY[@]+"${PRIORITY[@]}"} | grep -qxF "$r" && continue
     printf '%s\n' "$COLD_FILTER" | grep -qxF "$r" && continue
-    UNCOVERED+=("$r")
+    PRIORITY+=("$r")
   done
-  if [ "${#UNCOVERED[@]}" -gt 0 ]; then
-    echo "BOOTSTRAP: ${#UNCOVERED[@]} required source(s) have NEVER been snapshotted — ordering first: ${UNCOVERED[*]}"
+  # Strip hoisted paths out of the tail so one cycle cannot snapshot them twice.
+  TAIL=()
+  for d in ${DISCOVERED[@]+"${DISCOVERED[@]}"}; do
+    printf '%s\n' ${PRIORITY[@]+"${PRIORITY[@]}"} | grep -qxF "$d" && continue
+    TAIL+=("$d")
+  done
+  if [ "${#PRIORITY[@]}" -gt 0 ]; then
+    echo "PRIORITY: ${#PRIORITY[@]} required source(s) ordered first: ${PRIORITY[*]}"
   fi
-  SRCS=( ${UNCOVERED[@]+"${UNCOVERED[@]}"} ${DISCOVERED[@]+"${DISCOVERED[@]}"} )
+  SRCS=( ${PRIORITY[@]+"${PRIORITY[@]}"} ${TAIL[@]+"${TAIL[@]}"} )
   # Guard: the old loop snapshotted NOTHING, silently, if discovery came back empty
   # — the same shape as the `--max-results-per-source` flag breakage that made
   # healthcheck.sh exit 1 on every run for weeks before anyone noticed. Silent
