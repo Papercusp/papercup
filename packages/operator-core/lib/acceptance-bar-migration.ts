@@ -19,6 +19,7 @@ export const ACCEPTANCE_BAR_MIGRATION_DEFAULT_BATCH_SIZE = 25;
 
 const TERMINAL_STATUSES = new Set([
   'shipped',
+  'superseded',
   'retired',
   'deprecated',
   'closed',
@@ -84,7 +85,7 @@ export function classifyAcceptanceBarMigration(
     return {
       planSlug: plan.planSlug,
       action: 'legacy-backfill',
-      cohort: plan.acceptanceBarCohort ?? 'legacy-backfilled',
+      cohort: 'legacy-backfilled',
       reason: 'Requirements contains explicit R-N source bars',
     };
   }
@@ -92,7 +93,7 @@ export function classifyAcceptanceBarMigration(
     return {
       planSlug: plan.planSlug,
       action: 'legacy-backfill',
-      cohort: plan.acceptanceBarCohort ?? 'legacy-backfilled',
+      cohort: 'legacy-backfilled',
       reason: 'caller supplied an explicit current criterion and verified a live mapping',
     };
   }
@@ -160,7 +161,13 @@ function appendLegacyCriterionSource(
     ? `${content.slice(0, requirementHeading.index + requirementHeading[0].length)}\n\n${requirement}${content.slice(requirementHeading.index + requirementHeading[0].length)}`
     : `${content.trimEnd()}\n\n## Requirements\n\n${requirement}\n`;
   const mapping = `| ${barKey} | ${source.planItemIds.join(', ')} | ${evidencePlane} |`;
-  return `${withRequirements.trimEnd()}\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n${mapping}\n`;
+  const mapSection = `### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n${mapping}\n`;
+  const designHeading = /^##\s+Design\s*$/im.exec(withRequirements);
+  if (!designHeading) return `${withRequirements.trimEnd()}\n\n## Design\n\n${mapSection}`;
+  const designBodyStart = designHeading.index + designHeading[0].length;
+  const nextSection = /^##\s+/im.exec(withRequirements.slice(designBodyStart));
+  const insertAt = nextSection ? designBodyStart + nextSection.index : withRequirements.length;
+  return `${withRequirements.slice(0, insertAt).trimEnd()}\n\n${mapSection}${withRequirements.slice(insertAt)}`;
 }
 
 /**

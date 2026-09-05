@@ -136,6 +136,24 @@ describe('sync interest declaration — one definition, reached by import', () =
     );
   });
 
+  it('the comment stripper removes prose without eating code (positive + negative control)', () => {
+    // A stripper that removed too much would make every scan below vacuous,
+    // and a vacuous scan reports "no duplicates" exactly like a clean tree.
+    const contract = SOURCES.find((f) => isContractFile(f.rel))!;
+
+    // NEGATIVE control: the prose mention that made this guard fire on its
+    // first run is gone from what we match against...
+    expect(contract.raw).toMatch(/A second copy of/);
+    expect(contract.text).not.toMatch(/A second copy of/);
+
+    // ...POSITIVE control: the declaration itself survived intact.
+    expect(contract.text).toMatch(/export const INTEREST_PARAM\s*=/);
+    expect(contract.text).toMatch(/export const MAX_DECLARED_QUERY_NAMES\s*=/);
+
+    // A URL in a string literal must not be mistaken for a line comment.
+    expect(stripComments(`const u = 'http://x/sse'; const v = 'keep';`)).toMatch(/keep/);
+  });
+
   it('the param NAME is written as a literal in exactly one place', () => {
     // Read the value off the module rather than restating it: a test that
     // hard-codes 'queries' is itself the duplicate it is trying to forbid.

@@ -336,6 +336,114 @@ Preserve this plan body.
     expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['pot-coordination-health']);
   });
 
+  it('persists and reads normalized unpinned standard-rubric composition refs', async () => {
+    const parent = await rubrics.proposeRubric({
+      rubricId: 'composition-parent',
+      characteristic: 'composition',
+      title: 'Composition parent',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'parent-author',
+    });
+    expect(parent.status).toBe('active');
+
+    const composed = await rubrics.proposeRubric({
+      rubricId: 'composition-child',
+      characteristic: 'composition',
+      title: 'Composition child',
+      criteria: sampleCriteria,
+      composes: [' composition-parent ', 'composition-parent'],
+      by: 'child-author',
+    });
+    expect(composed.composes).toEqual(['composition-parent']);
+
+    const [stored] = await db.adminSql<{ template_data: { composes?: string[] } }[]>`
+      SELECT template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = 'composition-child'
+         AND template = 'rubric'`;
+    expect(stored.template_data.composes).toEqual(['composition-parent']);
+    expect((await rubrics.getRubric('composition-child'))?.composes).toEqual(['composition-parent']);
+  });
+
+  it('validates composition targets live on propose and amend, preserving the prior edge on refusal', async () => {
+    const validInput = {
+      characteristic: 'composition-validation',
+      title: 'Composition validation',
+      criteria: sampleCriteria,
+      by: 'composition-author',
+    } as const;
+
+    await expect(
+      rubrics.proposeRubric({ rubricId: 'composition-dangling', ...validInput, composes: ['does-not-exist'] }),
+    ).rejects.toThrow(/composes unknown rubric/i);
+    expect(await rubrics.getRubric('composition-dangling')).toBeNull();
+
+    await expect(
+      rubrics.proposeRubric({ rubricId: 'composition-self', ...validInput, composes: ['composition-self'] }),
+    ).rejects.toThrow(/cannot compose itself/i);
+    expect(await rubrics.getRubric('composition-self')).toBeNull();
+
+    const subjectPlan = 'composition-acceptance-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Composition acceptance subject', 'active', '2026-09-04', '2026-09-04', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+    await rubrics.proposeRubric({
+      rubricId: 'composition-acceptance-parent',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'composition-validation',
+      title: 'Composition acceptance parent',
+      criteria: [{
+        key: 'outcome',
+        title: 'Outcome',
+        driftMarkers: 'the outcome regresses',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }],
+      by: 'acceptance-author',
+    });
+
+    await expect(
+      rubrics.proposeRubric({ rubricId: 'composition-non-standard', ...validInput, composes: ['composition-acceptance-parent'] }),
+    ).rejects.toThrow(/composes non-standard rubric/i);
+    expect(await rubrics.getRubric('composition-non-standard')).toBeNull();
+
+    await rubrics.proposeRubric({
+      rubricId: 'composition-parent',
+      characteristic: 'composition-validation',
+      title: 'Composition parent',
+      criteria: sampleCriteria,
+      status: 'active',
+      by: 'parent-author',
+    });
+    await rubrics.proposeRubric({
+      rubricId: 'composition-amendment',
+      ...validInput,
+      composes: ['composition-parent'],
+    });
+    await expect(
+      rubrics.amendRubric({
+        rubricId: 'composition-amendment',
+        composes: ['does-not-exist'],
+        by: 'composition-author',
+      }),
+    ).rejects.toThrow(/composes unknown rubric/i);
+    expect((await rubrics.getRubric('composition-amendment'))?.composes).toEqual(['composition-parent']);
+
+    const amended = await rubrics.amendRubric({
+      rubricId: 'composition-amendment',
+      composes: [' composition-parent ', 'composition-parent'],
+      by: 'composition-author',
+    });
+    expect(amended?.composes).toEqual(['composition-parent']);
+  });
+
   it('ratify flips proposed → active and records the TRUE ratifier, not the author (EI-10751)', async () => {
     await rubrics.proposeRubric({ rubricId: 'x', characteristic: 'c', title: 'X', criteria: sampleCriteria, by: 'author-a' });
     const active = await rubrics.ratifyRubric('x', 'queen-1');

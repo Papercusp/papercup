@@ -187,6 +187,39 @@ describe('runAcceptanceBarMigrationInDatabase', () => {
     `).resolves.toEqual([{ n: 1 }]);
   });
 
+  it('persists a slug cursor across partial pages without replaying the first plan', async () => {
+    await insertPlan('cursor-a', validContent('cursor-a'), 'draft');
+    await insertPlan('cursor-b', validContent('cursor-b'), 'draft');
+
+    const first = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      actorId: 'su-migration-test',
+      batchSize: 1,
+    });
+    expect(first).toMatchObject({ complete: false, nextCursor: 'cursor-a' });
+    expect(first.outcomes).toMatchObject([{ planSlug: 'cursor-a', status: 'applied' }]);
+
+    const second = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      actorId: 'su-migration-test',
+      batchSize: 1,
+      cursor: first.nextCursor,
+    });
+    expect(second).toMatchObject({ complete: true, nextCursor: null });
+    expect(second.outcomes).toMatchObject([{ planSlug: 'cursor-b', status: 'applied' }]);
+    await expect(db.sql`
+      SELECT plan_slug, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE plan_slug LIKE 'cursor-%'
+       ORDER BY plan_slug
+    `).resolves.toEqual([
+      expect.objectContaining({ plan_slug: 'cursor-a', acceptance_bar_set_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+      expect.objectContaining({ plan_slug: 'cursor-b', acceptance_bar_set_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    ]);
+  });
+
   it('rolls back one failed plan while committing a sibling and advancing the cursor', async () => {
     await insertPlan('a-valid', validContent('a-valid', 'ready'), 'ready');
     const invalid = validContent('b-invalid', 'ready').replace('| R-1 | P-001 | tree |', '');

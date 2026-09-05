@@ -29,6 +29,10 @@ describe('acceptance BAR cohort migration policy (P-010)', () => {
 
   it('legacy-backfills only from Requirements or an explicit live mapped criterion', () => {
     expect(classifyAcceptanceBarMigration(plan())).toMatchObject({ action: 'legacy-backfill' });
+    expect(classifyAcceptanceBarMigration(plan({ acceptanceBarCohort: 'post-epoch' }))).toMatchObject({
+      action: 'legacy-backfill',
+      cohort: 'legacy-backfilled',
+    });
     expect(classifyAcceptanceBarMigration(plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: true }))).toMatchObject({ action: 'legacy-backfill' });
     expect(classifyAcceptanceBarMigration(plan({ content: '', explicitLegacyCriterion: { model: 'x' }, hasLiveMapping: false }))).toMatchObject({ action: 'bar-backfill-required' });
   });
