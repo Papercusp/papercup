@@ -87,11 +87,32 @@ had silently assumed the per-id shape.</p>
 Here is the measurement that justifies it.</p>
 <p>A deterministic 20-item sample of the 218 guard-tier candidates (<code dir="auto">random.seed(20260810)</code>), judged
 against criteria fixed <em>before</em> judging:</p>
-<p>| verdict | n | reading |
-|---|---|---|
-| TRUE POSITIVE — citation is a guard for landed code implementing the item’s ask | 9 | correct to close |
-| FALSE POSITIVE — item genuinely not done | 8 | closing it would be wrong |
-| UNCLEAR — undecidable without disproportionate effort | 3 | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>verdict</th><th>n</th><th>reading</th></tr></thead><tbody><tr><td>TRUE POSITIVE — citation is a guard for landed code implementing the item’s ask</td><td>9</td><td>correct to close</td></tr><tr><td>FALSE POSITIVE — item genuinely not done</td><td>8</td><td>closing it would be wrong</td></tr><tr><td>UNCLEAR — undecidable without disproportionate effort</td><td>3</td><td></td></tr></tbody></table>
 <ul>
 <li><strong>Excluding UNCLEAR: 9/17 = 53%</strong>, 95% CI <strong>[31%, 74%]</strong></li>
 <li>Conservative (UNCLEAR as FP): 9/20 = 45%, CI [26%, 66%]</li>

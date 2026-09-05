@@ -80,11 +80,36 @@
 <p>Vite ties <code dir="auto">import.meta.env.DEV</code> / <code dir="auto">.PROD</code> to the <strong>command</strong> (<code dir="auto">vite</code> serve vs
 <code dir="auto">vite build</code>), while <code dir="auto">.MODE</code> follows <code dir="auto">--mode</code>. The desktop’s three run modes
 (see <a href="/internal/docs/desktop/dev-modes">Dev modes</a>) are:</p>
-<p>| Run mode | command | <code dir="auto">MODE</code> | <code dir="auto">DEV</code> |
-|---|---|---|---|
-| <code dir="auto">bin/desktop-dev</code> (HMR) | <code dir="auto">vite</code> (serve) | <code dir="auto">development</code> | <code dir="auto">true</code> |
-| <code dir="auto">bin/desktop-dev-nohmr</code> (rebuild-watch) | <code dir="auto">vite build --watch --mode development</code> | <code dir="auto">development</code> | <strong><code dir="auto">false</code></strong> |
-| shipped (<code dir="auto">tauri build</code>) | <code dir="auto">vite build</code> | <code dir="auto">production</code> | <code dir="auto">false</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Run mode</th><th>command</th><th><code dir="auto">MODE</code></th><th><code dir="auto">DEV</code></th></tr></thead><tbody><tr><td><code dir="auto">bin/desktop-dev</code> (HMR)</td><td><code dir="auto">vite</code> (serve)</td><td><code dir="auto">development</code></td><td><code dir="auto">true</code></td></tr><tr><td><code dir="auto">bin/desktop-dev-nohmr</code> (rebuild-watch)</td><td><code dir="auto">vite build --watch --mode development</code></td><td><code dir="auto">development</code></td><td><strong><code dir="auto">false</code></strong></td></tr><tr><td>shipped (<code dir="auto">tauri build</code>)</td><td><code dir="auto">vite build</code></td><td><code dir="auto">production</code></td><td><code dir="auto">false</code></td></tr></tbody></table>
 <p><code dir="auto">bin/desktop-dev-nohmr</code> is the <strong>default</strong> <code dir="auto">npm run dev</code> for the desktop, and it
 is a <code dir="auto">vite build</code> — so <code dir="auto">import.meta.env.DEV</code> is <code dir="auto">false</code> there. A <code dir="auto">DEV</code>-gated
 surface compiles away and <strong>never appears in the desktop you’re testing in</strong>,

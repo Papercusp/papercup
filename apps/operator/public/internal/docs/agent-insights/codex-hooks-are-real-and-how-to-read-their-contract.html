@@ -97,11 +97,32 @@ destroys the JSON nesting:</p>
 own <code dir="auto">hook_event_name</code> field is <strong>PascalCase</strong>. An adapter should accept both, or it
 will silently fail to map depending on where the caller got the name.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-shapes-that-matter">The shapes that matter</h3><a class="sl-anchor-link" href="#the-shapes-that-matter"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The shapes that matter”</span></a></div>
-<p>| | codex | Claude |
-|---|---|---|
-| turn-start event | <code dir="auto">UserPromptSubmit</code> | <code dir="auto">UserPromptSubmit</code> |
-| mid-turn event | <code dir="auto">PostToolUse</code> — <strong>per tool CALL</strong> | <code dir="auto">PostToolBatch</code> — per BATCH |
-| injection envelope | <code dir="auto">hookSpecificOutput { hookEventName, additionalContext }</code> | identical |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>codex</th><th>Claude</th></tr></thead><tbody><tr><td>turn-start event</td><td><code dir="auto">UserPromptSubmit</code></td><td><code dir="auto">UserPromptSubmit</code></td></tr><tr><td>mid-turn event</td><td><code dir="auto">PostToolUse</code> — <strong>per tool CALL</strong></td><td><code dir="auto">PostToolBatch</code> — per BATCH</td></tr><tr><td>injection envelope</td><td><code dir="auto">hookSpecificOutput { hookEventName, additionalContext }</code></td><td>identical</td></tr></tbody></table>
 <p><code dir="auto">UserPromptSubmit</code> input carries (all required): <code dir="auto">cwd</code>, <code dir="auto">hook_event_name</code>,
 <code dir="auto">model</code>, <code dir="auto">permission_mode</code>, <code dir="auto">prompt</code>, <code dir="auto">session_id</code>, <code dir="auto">transcript_path</code>, <code dir="auto">turn_id</code>.
 <code dir="auto">PostToolUse</code> adds <code dir="auto">tool_name</code>, <code dir="auto">tool_input</code>, <code dir="auto">tool_response</code>, <code dir="auto">tool_use_id</code>.</p>

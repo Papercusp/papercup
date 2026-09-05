@@ -282,11 +282,32 @@ a reload.</p>
 <li><code dir="auto">makeAjvResolver(jsonSchema)</code> — pre-registers <code dir="auto">ajv-formats</code> (so <code dir="auto">email</code>, <code dir="auto">uri</code>, <code dir="auto">date-time</code>, etc. resolve). Use with vanilla <code dir="auto">useForm</code>, not <code dir="auto">useFormWith</code>. Required for any form that consumes plugin-author JSON Schema (the per-plugin Config tab, <code dir="auto">/settings/plugins</code>).</li>
 </ul>
 <p><strong>When to use which schema dialect:</strong></p>
-<p>| Schema source | Resolver | Helper |
-|---|---|---|
-| Schema is yours to define (settings page, login, internal admin form) | <code dir="auto">zodResolver</code> | <code dir="auto">useFormWith(ZodSchema)</code> |
-| Schema is a Zod schema already imported from <code dir="auto">lib/validators.ts</code> (server-side) | <code dir="auto">zodResolver</code> | <code dir="auto">useFormWith(SharedZod)</code> — single source of truth, no client/server drift |
-| Schema is JSON Schema from a third party (plugin manifests in <code dir="auto">papercusp.json</code>) | <code dir="auto">ajvResolver</code> | <code dir="auto">useForm({ resolver: makeAjvResolver(schema) })</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Schema source</th><th>Resolver</th><th>Helper</th></tr></thead><tbody><tr><td>Schema is yours to define (settings page, login, internal admin form)</td><td><code dir="auto">zodResolver</code></td><td><code dir="auto">useFormWith(ZodSchema)</code></td></tr><tr><td>Schema is a Zod schema already imported from <code dir="auto">lib/validators.ts</code> (server-side)</td><td><code dir="auto">zodResolver</code></td><td><code dir="auto">useFormWith(SharedZod)</code> — single source of truth, no client/server drift</td></tr><tr><td>Schema is JSON Schema from a third party (plugin manifests in <code dir="auto">papercusp.json</code>)</td><td><code dir="auto">ajvResolver</code></td><td><code dir="auto">useForm({ resolver: makeAjvResolver(schema) })</code></td></tr></tbody></table>
 <p><strong>When NOT to use RHF:</strong></p>
 <ul>
 <li><strong>Per-field auto-save settings pages.</strong> Use <code dir="auto">useDebouncedSave</code> — see <a href="#form-patterns--picking-the-right-model">Form patterns above</a>.</li>
@@ -311,12 +332,37 @@ a reload.</p>
 <p><strong>GSAP is not part of the app UI stack.</strong> Do not add <code dir="auto">gsap</code> or <code dir="auto">@gsap/react</code> for operator UI. If an effect needs choreography, use <code dir="auto">motion</code>; if it is a simple open/close, use CSS; if it is list add/remove/reorder, use <code dir="auto">auto-animate</code>.</p>
 <p><strong>The “jump-gate” route warp is testing-only.</strong> <code dir="auto">RouteTransitionProvider.tsx</code> plays the warp overlay via the <strong>Web Animations API</strong> (transform/opacity only — GPU-composited; no gsap), but the app root mounts that provider only when <code dir="auto">FLAGS.TESTING</code> is on. Normal navigation is plain TanStack <code dir="auto">&#x3C;Link></code> without a route-transition overlay.</p>
 <p><strong>The rule of three</strong> (memorize this):</p>
-<p>| Need | Reach for | Why |
-|---|---|---|
-| Modal / popover / dropdown / tab open + close | <strong>CSS</strong> with <code dir="auto">[data-anim="pop"]</code> / <code dir="auto">[data-anim="fade"]</code> keyed off Radix <code dir="auto">data-state="open"</code> | Native compositor, zero JS cost, no library import. Tokens live in <code dir="auto">globals.css</code> (<code dir="auto">--ease-*</code>, <code dir="auto">--dur-*</code>). |
-| <strong>List item add / remove / reorder</strong> | <strong><code dir="auto">auto-animate</code></strong> | One-line <code dir="auto">useAutoAnimate()</code> ref. Don’t reach for <code dir="auto">motion.li</code> + <code dir="auto">AnimatePresence</code> — it’s more code, more re-renders, same visual result. |
-| Counter tweens, choreography, drag, <code dir="auto">layout</code> shifts, <code dir="auto">whileHover</code> / <code dir="auto">whileTap</code> | <strong><code dir="auto">motion</code></strong> | <code dir="auto">useMotionValue</code> + <code dir="auto">animate()</code> for counters; <code dir="auto">&#x3C;motion.div layout></code> for FLIP layout; gestures via <code dir="auto">&#x3C;motion.div drag></code>. |
-| The testing-only cross-route “jump-gate” warp (<code dir="auto">/</code> ⇄ <code dir="auto">/adv</code>) | <strong>WAAPI</strong> via <code dir="auto">RouteTransitionProvider</code>, mounted only behind <code dir="auto">FLAGS.TESTING</code> | A capture-phase click listener intercepts jump-gate anchors during testing; all normal navigation is plain TanStack <code dir="auto">&#x3C;Link></code> (instant). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Need</th><th>Reach for</th><th>Why</th></tr></thead><tbody><tr><td>Modal / popover / dropdown / tab open + close</td><td><strong>CSS</strong> with <code dir="auto">[data-anim="pop"]</code> / <code dir="auto">[data-anim="fade"]</code> keyed off Radix <code dir="auto">data-state="open"</code></td><td>Native compositor, zero JS cost, no library import. Tokens live in <code dir="auto">globals.css</code> (<code dir="auto">--ease-*</code>, <code dir="auto">--dur-*</code>).</td></tr><tr><td><strong>List item add / remove / reorder</strong></td><td><strong><code dir="auto">auto-animate</code></strong></td><td>One-line <code dir="auto">useAutoAnimate()</code> ref. Don’t reach for <code dir="auto">motion.li</code> + <code dir="auto">AnimatePresence</code> — it’s more code, more re-renders, same visual result.</td></tr><tr><td>Counter tweens, choreography, drag, <code dir="auto">layout</code> shifts, <code dir="auto">whileHover</code> / <code dir="auto">whileTap</code></td><td><strong><code dir="auto">motion</code></strong></td><td><code dir="auto">useMotionValue</code> + <code dir="auto">animate()</code> for counters; <code dir="auto">&#x3C;motion.div layout></code> for FLIP layout; gestures via <code dir="auto">&#x3C;motion.div drag></code>.</td></tr><tr><td>The testing-only cross-route “jump-gate” warp (<code dir="auto">/</code> ⇄ <code dir="auto">/adv</code>)</td><td><strong>WAAPI</strong> via <code dir="auto">RouteTransitionProvider</code>, mounted only behind <code dir="auto">FLAGS.TESTING</code></td><td>A capture-phase click listener intercepts jump-gate anchors during testing; all normal navigation is plain TanStack <code dir="auto">&#x3C;Link></code> (instant).</td></tr></tbody></table>
 <p><strong>Don’t use</strong> for app UI: <code dir="auto">gsap</code>, <code dir="auto">@gsap/react</code>, <code dir="auto">@theatre/core</code>, <code dir="auto">@react-spring/web</code>, <code dir="auto">popmotion</code>. They’re either overkill, abandoned, or duplicates of what <code dir="auto">motion</code> covers in our context.</p>
 <p><strong>RichGrid lists are NOT auto-animate targets.</strong> Any <code dir="auto">RichGrid</code>-backed virtualized list (e.g. <code dir="auto">apps/operator-vite/src/components/adv/AdvConversationsTab.tsx</code>, <code dir="auto">apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx</code>) uses <code dir="auto">useVirtualizer</code> — <code dir="auto">auto-animate</code> would fight virtualization (animating every scroll). Animations there should target row-level data changes (status pulse, color transition) not row mount/unmount.</p>
 <p><strong>Reduced motion:</strong> the data-state CSS animations all honor <code dir="auto">prefers-reduced-motion</code>. For <code dir="auto">motion</code> JS animations, wrap the dashboard in <code dir="auto">&#x3C;MotionConfig reducedMotion="user"></code>. Anything else needs an explicit <code dir="auto">useReducedMotion()</code> check.</p>

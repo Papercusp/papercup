@@ -117,11 +117,32 @@ dead weight, safe to trim.</li>
 <p><strong>Each leg is already correct by construction</strong>, because <code dir="auto">build-desktop-sidecar.sh</code>
 has <em>no cross-target mode</em> — <code dir="auto">target_os</code> / <code dir="auto">_bare_node_platform</code> come from <code dir="auto">uname -s</code>
 of the <strong>build host</strong>:</p>
-<p>| leg | sidecar built where | natives it needs |
-|---|---|---|
-| linux | this box | linux-x64 |
-| windows | <em>reuses linux’s bundle</em> | linux-x64 (runs under WSL) |
-| mac | on the mac VM (<code dir="auto">mac-vm-build.sh:194</code>) | darwin (its own host arch) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>sidecar built where</th><th>natives it needs</th></tr></thead><tbody><tr><td>linux</td><td>this box</td><td>linux-x64</td></tr><tr><td>windows</td><td><em>reuses linux’s bundle</em></td><td>linux-x64 (runs under WSL)</td></tr><tr><td>mac</td><td>on the mac VM (<code dir="auto">mac-vm-build.sh:194</code>)</td><td>darwin (its own host arch)</td></tr></tbody></table>
 <blockquote>
 <p>The mac build VM is <strong>Darwin x86_64</strong>, not arm64. A <code dir="auto">@img/sharp-darwin-arm64</code>
 cross-install is the wrong arch for it.</p>

@@ -90,12 +90,32 @@ bit-identical for gemma; exact-equal for harrier, both kinds. Adopting or
 dropping the sidecar mid-stream can never mix embedding spaces (see
 <code dir="auto">agent-insights/embedding-space-vs-dimension</code> for why that matters).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="activation--dark-by-default">Activation — dark by default</h2><a class="sl-anchor-link" href="#activation--dark-by-default"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Activation — dark by default”</span></a></div>
-<p>| env | effect |
-| --- | --- |
-| <code dir="auto">PAPERCUSP_EMBED_SIDECAR_URL</code> | Explicit sidecar base URL — <strong>wins over everything</strong>. This process embeds through it (e.g. fleet workers pointed at one host-owned sidecar). |
-| <code dir="auto">PAPERCUSP_EMBED_SIDECAR=1</code> | Per-host opt-in: the first process that needs an embed lazily <em>ensures</em> the host-local sidecar (adopt-or-spawn, below). |
-| <code dir="auto">PAPERCUSP_EMBED_SIDECAR_MODE=1</code> | This process <strong>is</strong> the sidecar (the packaged divert in <code dir="auto">serve.ts</code> / <code dir="auto">hono-host.ts</code>). Also disables the opt-in inside the sidecar itself — the recursion guard. |
-| <code dir="auto">PAPERCUSP_EMBED_SIDECAR_PORT</code> | Port override. Default <strong>3384</strong> (mnemonic: the 384-dim space it serves). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>env</th><th>effect</th></tr></thead><tbody><tr><td><code dir="auto">PAPERCUSP_EMBED_SIDECAR_URL</code></td><td>Explicit sidecar base URL — <strong>wins over everything</strong>. This process embeds through it (e.g. fleet workers pointed at one host-owned sidecar).</td></tr><tr><td><code dir="auto">PAPERCUSP_EMBED_SIDECAR=1</code></td><td>Per-host opt-in: the first process that needs an embed lazily <em>ensures</em> the host-local sidecar (adopt-or-spawn, below).</td></tr><tr><td><code dir="auto">PAPERCUSP_EMBED_SIDECAR_MODE=1</code></td><td>This process <strong>is</strong> the sidecar (the packaged divert in <code dir="auto">serve.ts</code> / <code dir="auto">hono-host.ts</code>). Also disables the opt-in inside the sidecar itself — the recursion guard.</td></tr><tr><td><code dir="auto">PAPERCUSP_EMBED_SIDECAR_PORT</code></td><td>Port override. Default <strong>3384</strong> (mnemonic: the 384-dim space it serves).</td></tr></tbody></table>
 <p>With neither URL nor opt-in set, <code dir="auto">resolveProcessSidecarUrl()</code> returns null and
 <code dir="auto">buildSidecarFirstEmbedder</code> degenerates to the plain in-process embedder with
 zero per-call overhead — byte-for-byte the pre-sidecar behavior. Since
@@ -189,14 +209,40 @@ ops, and (D-002) the exact same vectors from the fallback.</li>
 <code dir="auto">texts[]</code> amortization the single-text <code dir="auto">EmbedFn</code> seam can’t express.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="troubleshooting">Troubleshooting</h2><a class="sl-anchor-link" href="#troubleshooting"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Troubleshooting”</span></a></div>
-<p>| symptom | read |
-| --- | --- |
-| Port already answers when you expected to spawn | A sibling process owns it — that is the design. Adopt (automatic); don’t kill it. |
-| <code dir="auto">gave up auto-respawn</code> in logs | Circuit breaker tripped (5 crashes / 5 min). Embedding still works in-process (D-003). Fix the crash cause, then explicit respawn or restart the owning process. |
-| <code dir="auto">/healthz</code> slot shows <code dir="auto">failed</code> | That <code dir="auto">model:kind</code> build failed once; it retries on the next request — transient disk/download faults don’t brick the slot. |
-| Sidecar killed / down | Clients log one down-transition and continue in-process; expect ~30s cooldowns between reprobes. Safe by design. |
-| Packaged build boots a full host / EADDRINUSE loop | The <code dir="auto">PAPERCUSP_EMBED_SIDECAR_MODE=1</code> divert was missed — see the EI-8810 spawn belts above and <code dir="auto">agent-insights/esbuild-cli-self-exec-guard-kills-sidecar</code>. |
-| <code dir="auto">memory_timeout</code> on fresh workers under load | The exact symptom the sidecar removes — check the worker actually has <code dir="auto">PAPERCUSP_EMBED_SIDECAR_URL</code> or the opt-in env. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>symptom</th><th>read</th></tr></thead><tbody><tr><td>Port already answers when you expected to spawn</td><td>A sibling process owns it — that is the design. Adopt (automatic); don’t kill it.</td></tr><tr><td><code dir="auto">gave up auto-respawn</code> in logs</td><td>Circuit breaker tripped (5 crashes / 5 min). Embedding still works in-process (D-003). Fix the crash cause, then explicit respawn or restart the owning process.</td></tr><tr><td><code dir="auto">/healthz</code> slot shows <code dir="auto">failed</code></td><td>That <code dir="auto">model:kind</code> build failed once; it retries on the next request — transient disk/download faults don’t brick the slot.</td></tr><tr><td>Sidecar killed / down</td><td>Clients log one down-transition and continue in-process; expect ~30s cooldowns between reprobes. Safe by design.</td></tr><tr><td>Packaged build boots a full host / EADDRINUSE loop</td><td>The <code dir="auto">PAPERCUSP_EMBED_SIDECAR_MODE=1</code> divert was missed — see the EI-8810 spawn belts above and <code dir="auto">agent-insights/esbuild-cli-self-exec-guard-kills-sidecar</code>.</td></tr><tr><td><code dir="auto">memory_timeout</code> on fresh workers under load</td><td>The exact symptom the sidecar removes — check the worker actually has <code dir="auto">PAPERCUSP_EMBED_SIDECAR_URL</code> or the opt-in env.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="verifying-parity-the-live-proof-recipe">Verifying parity (the live proof recipe)</h2><a class="sl-anchor-link" href="#verifying-parity-the-live-proof-recipe"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verifying parity (the live proof recipe)”</span></a></div>
 <p>Embed the same text through the wire and in-process; assert <strong>exact</strong> float
 equality (not cosine ≈ 1): <code dir="auto">POST /embed {model, kind, texts:[t]}</code> vs

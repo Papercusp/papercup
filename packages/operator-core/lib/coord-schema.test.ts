@@ -20,6 +20,19 @@ const e = (over: Partial<CoordLineSource>): CoordLineSource => ({
   ...over,
 });
 
+/**
+ * A "now" one minute after the default fixture `ts`, i.e. inside
+ * MESSAGE_AGE_MARKER_MIN_MS, so the EI-20261012762389206 age marker stays
+ * silent and these cases keep asserting the suffix they are actually about.
+ *
+ * Tests that assert an exact line (or a fragment spanning the text→suffix
+ * boundary) must pass this: without it they read the real wall clock against a
+ * fixed 2026-06 fixture, so they were already time-dependent and would drift
+ * into an age marker on their own. Age-marker behaviour is covered directly in
+ * agent-tools/coordination/message-age.test.ts.
+ */
+const FIXTURE_NOW = Date.parse('2026-06-06T00:01:00.000Z');
+
 describe('glyphFor — lifecycle category > kind > default', () => {
   it('lifecycle category wins (kind=message + category=intent → intent glyph)', () => {
     expect(glyphFor({ kind: 'message', lifecycle: 'intent' })).toBe('>');
@@ -60,7 +73,7 @@ describe('renderInjection — positional [coord+N] block', () => {
     const out = renderInjection([
       e({ from: 'su-ab53332d-x', lifecycle: 'intent', summary: 'now working on: the registry' }),
       e({ from: 'su-9999aaaa-y', kind: 'escalation', summary: 'CI is red on main', ts: '2026-06-06T00:00:01.000Z' }),
-    ]);
+    ], { nowMs: FIXTURE_NOW });
     expect(out).toBe('[coord+2]\n> ab533 now working on: the registry\n^ 9999a CI is red on main');
     expect(out).not.toMatch(/coord:send/); // footer is in the prompt, not per-injection
     expect(out).not.toContain('from'); // no column header
@@ -416,6 +429,7 @@ describe('renderInjection — P-005 reply-quote hydration (related_msg_id, coord
   it('a reply with a hydrated related_msg_id gets the inline ⤷ re quote of the REFERENCED message', () => {
     const out = renderInjection([e({ summary: 'yes — drained 40 rows since 09:00', related_msg_id: 'm-orig' })], {
       relatedQuotes: quotes as never,
+      nowMs: FIXTURE_NOW,
     });
     expect(out).toContain(
       'yes — drained 40 rows since 09:00 ⤷ re msg m-orig (9999a → 4c85f, 2026-07-11T09:01Z): "is the Mac app actually draining post-restart?"',
@@ -499,6 +513,7 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
   it('a free-prose line citing a mapped id gets the inline ↪ status+title+checkpoint suffix', () => {
     const out = renderInjection([e({ summary: 'picking WI-4173 back up after the compaction' })], {
       bodyRefs: refs as never,
+      nowMs: FIXTURE_NOW,
     });
     expect(out).toContain(
       'picking WI-4173 back up after the compaction ↪ WI-4173 [feature/wip @4c85f]: "D: auto-detect ids ⌁ …wire into delivery render + tests"',
@@ -508,6 +523,7 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
   it('detection covers the BODY too (the shown summary line still gets the suffix)', () => {
     const out = renderInjection([e({ summary: 'status update', body: 'blocked on WI-4173 until render lands' })], {
       bodyRefs: refs as never,
+      nowMs: FIXTURE_NOW,
     });
     expect(out).toContain('status update ↪ WI-4173 [feature/wip @4c85f]');
   });

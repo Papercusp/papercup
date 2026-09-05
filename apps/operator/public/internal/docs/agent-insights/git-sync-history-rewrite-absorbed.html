@@ -97,11 +97,32 @@ pre-push hook, and <code dir="auto">staging</code> is swept by git-sync — see 
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-rewrite-shapes-run-git-sync-behavior">The three rewrite shapes (run-git-sync behavior)</h2><a class="sl-anchor-link" href="#the-three-rewrite-shapes-run-git-sync-behavior"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three rewrite shapes (run-git-sync behavior)”</span></a></div>
 <p><code dir="auto">run-git-sync.ts</code>’s <code dir="auto">syncOneRepo</code> does commit → fetch → <code dir="auto">merge --no-edit origin/&#x3C;branch></code> → push (with one non-FF re-fetch+re-merge retry). Against a
 rewritten origin that shares an ancestor with the peer:</p>
-<p>| Rewrite | Peer’s merge | Outcome |
-|---|---|---|
-| <strong>Rewind / drop a commit</strong> (reset back to an ancestor, force-push) | no-op (rewound tip is an ancestor) → FF push re-introduces the dropped commits | <code dir="auto">synced</code> — <strong>absorbed</strong>, dropped content reappears |
-| <strong>Conflicting rewrite</strong> (rewrite touches a file a peer also edited) | conflict | <code dir="auto">conflict</code> → ordinary escalation + merge-resolver (no loop) |
-| <strong>Unrelated history</strong> (orphan root force-push, no common ancestor) | <code dir="auto">git</code> refuses (“refusing to merge unrelated histories”) → a merge that failed with <strong>no conflicted paths</strong> | <code dir="auto">error</code> → the <strong>loud EI-18 <code dir="auto">git-sync-error</code> escalation</strong>, NOT a <code dir="auto">conflict</code> (so <strong>no merge-resolver is dispatched at an unresolvable history</strong>) and NOT a silent loop |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Rewrite</th><th>Peer’s merge</th><th>Outcome</th></tr></thead><tbody><tr><td><strong>Rewind / drop a commit</strong> (reset back to an ancestor, force-push)</td><td>no-op (rewound tip is an ancestor) → FF push re-introduces the dropped commits</td><td><code dir="auto">synced</code> — <strong>absorbed</strong>, dropped content reappears</td></tr><tr><td><strong>Conflicting rewrite</strong> (rewrite touches a file a peer also edited)</td><td>conflict</td><td><code dir="auto">conflict</code> → ordinary escalation + merge-resolver (no loop)</td></tr><tr><td><strong>Unrelated history</strong> (orphan root force-push, no common ancestor)</td><td><code dir="auto">git</code> refuses (“refusing to merge unrelated histories”) → a merge that failed with <strong>no conflicted paths</strong></td><td><code dir="auto">error</code> → the <strong>loud EI-18 <code dir="auto">git-sync-error</code> escalation</strong>, NOT a <code dir="auto">conflict</code> (so <strong>no merge-resolver is dispatched at an unresolvable history</strong>) and NOT a silent loop</td></tr></tbody></table>
 <p>The third row is the important guard: an unrelated-history rewrite is classified
 <code dir="auto">error</code>, not <code dir="auto">conflict</code>, by the “merge failed with no unmerged paths” check
 (<code dir="auto">run-git-sync.ts</code>) — so a human is alerted via the error escalation instead of a

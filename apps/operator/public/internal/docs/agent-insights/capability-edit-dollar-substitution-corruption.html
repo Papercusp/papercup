@@ -74,13 +74,36 @@
 <p><code dir="auto">capability:edit</code> performs its replacement with JS <code dir="auto">String.prototype.replace(old, newString)</code>.
 In that API the <strong>replacement string is not literal</strong> — these sequences are substitution
 patterns and get expanded:</p>
-<p>| in your <code dir="auto">new_string</code> | expands to |
-|---|---|
-| <code dir="auto">$&#x26;</code> | the matched text (your whole <code dir="auto">old_string</code>) |
-| <code dir="auto">$`</code> (dollar + backtick) | <strong>everything in the file BEFORE the match</strong> |
-| <code dir="auto">$'</code> (dollar + single quote) | <strong>everything in the file AFTER the match</strong> |
-| <code dir="auto">$1</code> … <code dir="auto">$9</code>, <code dir="auto">$&#x3C;name></code> | a capture group — there are none, so usually empty |
-| <code dir="auto">$$</code> | a single literal <code dir="auto">$</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>in your <code dir="auto">new_string</code></th><th>expands to</th></tr></thead><tbody><tr><td><code dir="auto">$&#x26;</code></td><td>the matched text (your whole <code dir="auto">old_string</code>)</td></tr><tr><td><code dir="auto">$`</code> (dollar + backtick)</td><td><strong>everything in the file BEFORE the match</strong></td></tr><tr><td><code dir="auto">$'</code> (dollar + single quote)</td><td><strong>everything in the file AFTER the match</strong></td></tr><tr><td><code dir="auto">$1</code> … <code dir="auto">$9</code>, <code dir="auto">$&#x3C;name></code></td><td>a capture group — there are none, so usually empty</td></tr><tr><td><code dir="auto">$$</code></td><td>a single literal <code dir="auto">$</code></td></tr></tbody></table>
 <p>Anything else after a <code dir="auto">$</code> (e.g. <code dir="auto">$(</code>, <code dir="auto">$VAR</code>, <code dir="auto">$HOME</code>) is left alone. So <code dir="auto">$(npm prefix)</code> in a
 test fixture is <strong>safe</strong>; a markdown code span like <code dir="auto">markers (`$` </code> <code dir="auto">``</code>~`)“ is <strong>not</strong> —
 it contains dollar-immediately-followed-by-backtick.</p>

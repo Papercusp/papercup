@@ -330,6 +330,32 @@ export function priorWorkHintFromRow(
 }
 
 /**
+ * EI-20284291276800931 — the repeated-deferral threshold.
+ *
+ * Measured over the live papercusp backlog on 2026-09-05: of 4,485 non-terminal, non-observation
+ * work-items, 123 (2.7%) already carry >= 3 distinct prior sessions, and the tail is long — WI-2944
+ * sits `open` and unheld after 36 distinct sessions, WI-212675 after 26. Three is where the
+ * population stops looking like ordinary hand-off churn and starts looking like a stall, and it is
+ * rare enough that the escalated wording below cannot decay into background noise.
+ */
+export const REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS = 3;
+
+/**
+ * Distinct sessions recorded against this item, excluding the current claimant (already removed
+ * upstream by {@link excludeCurrentClaimant}).
+ *
+ * `last_released_by` is UNIONED rather than added: it is an independent provenance column, so a
+ * legacy row can carry a releaser with an empty history, while a present-day row carries that same
+ * releaser inside the history too. Summing the two would double-count the common case and push
+ * ordinary two-session churn over the threshold.
+ */
+export function distinctPriorSessionCount(hint: ClaimTimePriorWorkHint): number {
+  const seen = new Set(hint.priorWorkers);
+  if (hint.lastReleasedBy) seen.add(hint.lastReleasedBy);
+  return seen.size;
+}
+
+/**
  * Render the hint as the warning an agent reads at claim time. Pure + exported so the guarantee is
  * directly testable and a future edit cannot silently weaken it — the same shape WI-5826 chose for
  * {@link terminalClaimWarning}, and for the same reason.
@@ -356,23 +382,62 @@ export function priorWorkWarning(hint: ClaimTimePriorWorkHint | null): string | 
 
   const detail = facts.length > 0 ? ` (${facts.join('; ')})` : '';
 
-  if (hint.hasCheckpoint === true) {
-    return (
-      `PRIOR WORK on this item${detail}. A checkpoint exists — read it (above) before starting; ` +
-      `this item is NOT fresh work. [P-001]`
-    );
-  }
+  const distinctSessions = distinctPriorSessionCount(hint);
+  const repeatedlyDeferred = distinctSessions >= REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS;
+
   // WI-6737: the checkpoint store could not be read. Say exactly that. The `false` branch below
   // is a claim about HISTORY ("nothing was ever written") and is only true when the read actually
   // ran; emitting it on a failed read manufactures certainty out of an outage — and it is the
   // most dangerous direction to be wrong in, because it tells the reader the row is safe to
   // rebuild from scratch.
+  //
+  // This branch is checked FIRST, and the EI-20284291276800931 escalation is APPENDED to it rather
+  // than replacing it. That guarantee outranks the deferral prompt in both directions: its
+  // instruction (do not rebuild, re-read once reachable) is the safe move during an outage, and the
+  // deferral prompt asks the reader to judge an acceptance criterion they were just unable to read.
   if (hint.hasCheckpoint === 'unknown') {
     return (
       `⚠ PRIOR WORK on this item${detail}. The checkpoint store could NOT BE READ, so whether a ` +
       `checkpoint exists is UNKNOWN — this is not the same as there being none, and must not be ` +
       `treated as such. Do NOT start rebuilding: re-read this item once the datastore is reachable ` +
-      `(work_items:get), and only then judge whether prior work needs redoing. [P-001/WI-6737]`
+      `(work_items:get), and only then judge whether prior work needs redoing. [P-001/WI-6737]` +
+      (repeatedlyDeferred
+        ? ` Note also that ${distinctSessions} distinct sessions are already recorded against this ` +
+          `item without finishing it — once the store is readable, judge the ACCEPTANCE CRITERION ` +
+          `itself, not only the checkpoint. [EI-20284291276800931]`
+        : '')
+    );
+  }
+
+  // EI-20284291276800931: an item that N sessions have picked up and put back down needs the
+  // OPPOSITE instruction from the one below. Each of those sessions read the checkpoint, re-derived
+  // that its stated blocker was still unmet, and deferred — which is cheap and feels correct every
+  // time, so a precisely-written blocker note strands an item HARDER than a vague one. Observed on
+  // WI-6404: the criterion named one of four callers of a shared seam, so it was over-specified,
+  // and the same property was verifiable through another caller the entire 11 days it sat open.
+  if (repeatedlyDeferred) {
+    const checkpointClause =
+      hint.hasCheckpoint === true
+        ? `A checkpoint exists — but READING IT IS NOT THE INSTRUCTION HERE: re-reading it, ` +
+          `confirming the blocker it names is still unmet, and putting the item back down is ` +
+          `precisely what stranded it.`
+        : `NO checkpoint was ever written, so read the source before building — but that alone ` +
+          `will not unstick this item.`;
+    return (
+      `⚠ REPEATEDLY DEFERRED: ${distinctSessions} distinct sessions are recorded against this ` +
+      `item${detail}, and it is still not finished. That is a fact about this row's own history, ` +
+      `not a report from any of them, so a confident checkpoint cannot talk it down. ` +
+      `${checkpointClause} FIRST judge the ACCEPTANCE CRITERION itself, before attempting the ` +
+      `work: is it satisfiable at all, and is it OVER-SPECIFIED relative to what this item ` +
+      `actually asserts? If it is over-specified, say so on the item and settle it against what it ` +
+      `actually asserts rather than deferring again. [EI-20284291276800931]`
+    );
+  }
+
+  if (hint.hasCheckpoint === true) {
+    return (
+      `PRIOR WORK on this item${detail}. A checkpoint exists — read it (above) before starting; ` +
+      `this item is NOT fresh work. [P-001]`
     );
   }
   return (

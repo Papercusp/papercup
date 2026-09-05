@@ -92,16 +92,48 @@ The MCP adapter, the <code dir="auto">dist/</code> → <code dir="auto">public/i
 </ul>
 <p>Per-page <code dir="auto">Accept: text/markdown</code> negotiation was originally dropped at the cutover and <strong>restored separately</strong>. <code dir="auto">starlight-llms-txt</code> only emits aggregate <code dir="auto">llms*.txt</code>; we restored the per-page channel by emitting <code dir="auto">&#x3C;slug>.md</code> twins from <code dir="auto">apps/operator-docs/scripts/emit-md-twins.ts</code> (runs after <code dir="auto">astro build</code>, uses <code dir="auto">@papercusp/docs-engine</code>’s <code dir="auto">renderMdxToMarkdown</code> + <code dir="auto">withPreamble</code>). The <strong>Hono host</strong> (<code dir="auto">apps/operator/bin/host-docs.ts</code>) rewrites <code dir="auto">Accept: text/markdown</code> on a bare slug to the static <code dir="auto">&#x3C;slug>.md</code> (this used to be <code dir="auto">proxy.ts</code> under Next). Agents can also use the <code dir="auto">docs:get</code> MCP tool (engine-side, not HTTP) or pull from <code dir="auto">/llms-full.txt</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-things-live-now">Where things live now</h2><a class="sl-anchor-link" href="#where-things-live-now"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where things live now”</span></a></div>
-<p>| Concern | Path |
-|---|---|
-| MDX source | <code dir="auto">apps/operator-docs/src/content/docs/&#x3C;section>/&#x3C;slug>.mdx</code> |
-| Astro config | <code dir="auto">apps/operator-docs/astro.config.mjs</code> |
-| Build output | <code dir="auto">apps/operator-docs/dist/</code> |
-| Served from | <code dir="auto">apps/operator/public/internal/docs/</code> (postbuild copy), via the Hono host <code dir="auto">apps/operator/bin/host-docs.ts</code> |
-| MCP docs adapter | <code dir="auto">packages/docs-engine/src/adapters/starlight.ts</code> |
-| Engineering adapter selector | <code dir="auto">packages/operator-core/lib/agent-tools/docs/_engineering-adapter.ts</code> |
-| Sidebar config | per-page frontmatter <code dir="auto">sidebar.order</code> (used to be <code dir="auto">meta.json</code>) |
-| MCP Resources | <code dir="auto">packages/operator-core/lib/agent-tools/docs/resource-{index,section}.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Path</th></tr></thead><tbody><tr><td>MDX source</td><td><code dir="auto">apps/operator-docs/src/content/docs/&#x3C;section>/&#x3C;slug>.mdx</code></td></tr><tr><td>Astro config</td><td><code dir="auto">apps/operator-docs/astro.config.mjs</code></td></tr><tr><td>Build output</td><td><code dir="auto">apps/operator-docs/dist/</code></td></tr><tr><td>Served from</td><td><code dir="auto">apps/operator/public/internal/docs/</code> (postbuild copy), via the Hono host <code dir="auto">apps/operator/bin/host-docs.ts</code></td></tr><tr><td>MCP docs adapter</td><td><code dir="auto">packages/docs-engine/src/adapters/starlight.ts</code></td></tr><tr><td>Engineering adapter selector</td><td><code dir="auto">packages/operator-core/lib/agent-tools/docs/_engineering-adapter.ts</code></td></tr><tr><td>Sidebar config</td><td>per-page frontmatter <code dir="auto">sidebar.order</code> (used to be <code dir="auto">meta.json</code>)</td></tr><tr><td>MCP Resources</td><td><code dir="auto">packages/operator-core/lib/agent-tools/docs/resource-{index,section}.ts</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="gotchas-to-know">Gotchas to know</h2><a class="sl-anchor-link" href="#gotchas-to-know"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Gotchas to know”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="1-buildformat-file-is-load-bearing">1. <code dir="auto">build.format: 'file'</code> is load-bearing</h3><a class="sl-anchor-link" href="#1-buildformat-file-is-load-bearing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1. build.format: 'file' is load-bearing”</span></a></div>
 <p>Starlight default is <code dir="auto">format: 'directory'</code> which emits <code dir="auto">dist/&#x3C;slug>/index.html</code>. We use <code dir="auto">format: 'file'</code> (set in <code dir="auto">astro.config.mjs</code>) which emits <code dir="auto">dist/&#x3C;slug>.html</code> instead. Why: serving the static files from <code dir="auto">public/</code> without <code dir="auto">format: 'file'</code> would need directory-index trailing-slash semantics. With <code dir="auto">.html</code> files at the explicit path, the host resolves a bare slug to <code dir="auto">&#x3C;slug>.html</code> directly. (Originally this was a single Next rewrite; now <code dir="auto">apps/operator/bin/host-docs.ts</code> does the bare-slug → <code dir="auto">.html</code> resolution.)</p>

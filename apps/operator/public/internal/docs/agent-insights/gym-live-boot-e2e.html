@@ -74,11 +74,32 @@
 <p>The gym has three live-boot runnables that provision an ephemeral gym PG
 (testcontainer), boot a <strong>real headless gym-operator</strong> from this checkout, run a
 cycle, and tear down. Each has a callable core + a thin CLI wrapper:</p>
-<p>| Callable | CLI | What it drives |
-| --- | --- | --- |
-| <code dir="auto">runOneAutoloopCycle</code> (<code dir="auto">autoloop-cycle.ts</code>) | <code dir="auto">gym-loop-run.ts</code> | the bespoke optimization loop |
-| <code dir="auto">runGymBlueprintCycle</code> (<code dir="auto">blueprint-cycle.ts</code>) | <code dir="auto">blueprint-cycle-run.ts</code> | the gym <strong>as a durable DBOS pipeline</strong> (spine walk) |
-| <code dir="auto">runGymWakeMode</code> (<code dir="auto">wake-mode.ts</code>) | <code dir="auto">wake-mode-run.ts</code> | the <strong>autonomous cron chain</strong> (routinesTick → blueprint-run → orchestrator sweep) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Callable</th><th>CLI</th><th>What it drives</th></tr></thead><tbody><tr><td><code dir="auto">runOneAutoloopCycle</code> (<code dir="auto">autoloop-cycle.ts</code>)</td><td><code dir="auto">gym-loop-run.ts</code></td><td>the bespoke optimization loop</td></tr><tr><td><code dir="auto">runGymBlueprintCycle</code> (<code dir="auto">blueprint-cycle.ts</code>)</td><td><code dir="auto">blueprint-cycle-run.ts</code></td><td>the gym <strong>as a durable DBOS pipeline</strong> (spine walk)</td></tr><tr><td><code dir="auto">runGymWakeMode</code> (<code dir="auto">wake-mode.ts</code>)</td><td><code dir="auto">wake-mode-run.ts</code></td><td>the <strong>autonomous cron chain</strong> (routinesTick → blueprint-run → orchestrator sweep)</td></tr></tbody></table>
 <p>In <strong>FAKE mode</strong> (<code dir="auto">fake: true</code>, default in the CLIs) they use <code dir="auto">fixtures/fake-*-agent.mjs</code></p>
 <ul>
 <li>deterministic fake judge/proposer — <strong>zero LLM spend</strong> — so they’re a real

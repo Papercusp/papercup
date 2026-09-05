@@ -95,14 +95,47 @@ target’s</strong> gym block — so a <code dir="auto">coding</code> target is 
 </li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-the-pieces-map-phase-d">How the pieces map (Phase D)</h2><a class="sl-anchor-link" href="#how-the-pieces-map-phase-d"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How the pieces map (Phase D)”</span></a></div>
-<p>| Concern | Where | Notes |
-|---|---|---|
-| The <code dir="auto">gym</code> blueprint | <code dir="auto">harness/blueprints/gym/blueprint.yaml</code> + role prompts at the package-level <code dir="auto">harness/prompts/{gym-director,task-generator,variant-runner,judge,proposer,committer}.md</code> (NOT a per-blueprint <code dir="auto">gym/prompts/</code> dir) | Validates clean (engine <code dir="auto">loadBuiltinBlueprint('gym')</code>). |
-| Re-exposed primitives | <code dir="auto">packages/operator-core/lib/gym/primitives.ts</code> | One import surface: the <strong>signal registry</strong> (<code dir="auto">resolveSignals</code>/<code dir="auto">evaluateSignals</code> over <code dir="auto">GYM_SIGNAL_REGISTRY</code>) + the <strong>rubric mapper</strong> (<code dir="auto">rubricFromBlueprintGym</code> → a concrete <code dir="auto">GymJudgeRubric</code>, falling back to <code dir="auto">GYM_JUDGE_RUBRIC_V1</code>) + re-exports of <code dir="auto">judgeGymRun</code>/<code dir="auto">runAbEvaluation</code>/<code dir="auto">collectTrace</code>. |
-| Gym tools | <code dir="auto">packages/operator-core/lib/agent-tools/gym/{judge,signals}.ts</code> | <code dir="auto">gym:judge</code> (frozen Opus judge, target’s rubric — testable inner <code dir="auto">runGymJudge</code>) + <code dir="auto">gym:signals</code> (resolve a target’s declared signals by name). The judge/proposer roles call these. <code dir="auto">gym:signals</code> also resolves <strong>drill-ground-truth signals</strong> (<code dir="auto">drillResolveRate</code> / <code dir="auto">drillTriageAccuracy</code> / <code dir="auto">drillMttsh</code>, FB-23/P-048) over red-queen drill rows (<code dir="auto">lib/red-queen/store.ts</code>) — pass <code dir="auto">drillOutcomes</code> explicitly, or set <code dir="auto">loadDrillOutcomes</code> to pull the live sandbox corpus from PG (<code dir="auto">drillSource</code> in the response reports which). |
-| A/B eval-matrix | <code dir="auto">packages/operator-core/lib/gym/ab-matrix.ts</code> | The matrix <code dir="auto">variants × tasks × repeats</code> as a <strong>Level-2 runtime DAG</strong> (cells = wave 0, all parallel; <code dir="auto">aggregate</code> = wave 1) — maps onto the planner’s wave + <code dir="auto">blocked_by</code> model. <code dir="auto">aggregateAbMatrix</code> / <code dir="auto">compareVariantsFromOutcomes</code> are the pure comparison/aggregation primitive (mean-based, excludes non-scored cells). |
-| collectTrace seam (D-015) | <code dir="auto">packages/operator-core/lib/gym/collect-strategies.ts</code> | <code dir="auto">collectTraceByStrategy('git-diff' \| 'work-item-output' \| &#x3C;custom>)</code> breaks the gym’s repo-coupling: <code dir="auto">git-diff</code> diffs the clone (coding); <code dir="auto">work-item-output</code> collects the work-item output + transcripts with <strong>NO git</strong> (research/gym). Wired into <code dir="auto">ab-runner-real.ts</code> <code dir="auto">collectAndDistill</code>, dispatching on the target’s <code dir="auto">gym.collectTrace</code>. |
-| Live-edit = commit→reproject (D-007/D-021) | <code dir="auto">packages/operator-core/lib/blueprint/commit-reproject{,-real}.ts</code> | An accepted edit writes the target’s <code dir="auto">.papercusp/blueprint.yaml</code> / <code dir="auto">.papercusp/prompts/&#x3C;role>.md</code>, <strong>commits it</strong> (the target’s own git tree), then <strong>reloads + re-projects</strong> via <code dir="auto">projectBlueprintToPg</code>. Order is the contract: file → commit → project (the cache is never ahead of the committed file). <code dir="auto">acceptProposalViaCommit</code> is the gym-accept path that replaces the ungated <code dir="auto">PUT /harness/:slug/prompts/:role</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Where</th><th>Notes</th></tr></thead><tbody><tr><td>The <code dir="auto">gym</code> blueprint</td><td><code dir="auto">harness/blueprints/gym/blueprint.yaml</code> + role prompts at the package-level <code dir="auto">harness/prompts/{gym-director,task-generator,variant-runner,judge,proposer,committer}.md</code> (NOT a per-blueprint <code dir="auto">gym/prompts/</code> dir)</td><td>Validates clean (engine <code dir="auto">loadBuiltinBlueprint('gym')</code>).</td></tr><tr><td>Re-exposed primitives</td><td><code dir="auto">packages/operator-core/lib/gym/primitives.ts</code></td><td>One import surface: the <strong>signal registry</strong> (<code dir="auto">resolveSignals</code>/<code dir="auto">evaluateSignals</code> over <code dir="auto">GYM_SIGNAL_REGISTRY</code>) + the <strong>rubric mapper</strong> (<code dir="auto">rubricFromBlueprintGym</code> → a concrete <code dir="auto">GymJudgeRubric</code>, falling back to <code dir="auto">GYM_JUDGE_RUBRIC_V1</code>) + re-exports of <code dir="auto">judgeGymRun</code>/<code dir="auto">runAbEvaluation</code>/<code dir="auto">collectTrace</code>.</td></tr><tr><td>Gym tools</td><td><code dir="auto">packages/operator-core/lib/agent-tools/gym/{judge,signals}.ts</code></td><td><code dir="auto">gym:judge</code> (frozen Opus judge, target’s rubric — testable inner <code dir="auto">runGymJudge</code>) + <code dir="auto">gym:signals</code> (resolve a target’s declared signals by name). The judge/proposer roles call these. <code dir="auto">gym:signals</code> also resolves <strong>drill-ground-truth signals</strong> (<code dir="auto">drillResolveRate</code> / <code dir="auto">drillTriageAccuracy</code> / <code dir="auto">drillMttsh</code>, FB-23/P-048) over red-queen drill rows (<code dir="auto">lib/red-queen/store.ts</code>) — pass <code dir="auto">drillOutcomes</code> explicitly, or set <code dir="auto">loadDrillOutcomes</code> to pull the live sandbox corpus from PG (<code dir="auto">drillSource</code> in the response reports which).</td></tr><tr><td>A/B eval-matrix</td><td><code dir="auto">packages/operator-core/lib/gym/ab-matrix.ts</code></td><td>The matrix <code dir="auto">variants × tasks × repeats</code> as a <strong>Level-2 runtime DAG</strong> (cells = wave 0, all parallel; <code dir="auto">aggregate</code> = wave 1) — maps onto the planner’s wave + <code dir="auto">blocked_by</code> model. <code dir="auto">aggregateAbMatrix</code> / <code dir="auto">compareVariantsFromOutcomes</code> are the pure comparison/aggregation primitive (mean-based, excludes non-scored cells).</td></tr><tr><td>collectTrace seam (D-015)</td><td><code dir="auto">packages/operator-core/lib/gym/collect-strategies.ts</code></td><td><code dir="auto">collectTraceByStrategy('git-diff' | 'work-item-output' | &#x3C;custom>)</code> breaks the gym’s repo-coupling: <code dir="auto">git-diff</code> diffs the clone (coding); <code dir="auto">work-item-output</code> collects the work-item output + transcripts with <strong>NO git</strong> (research/gym). Wired into <code dir="auto">ab-runner-real.ts</code> <code dir="auto">collectAndDistill</code>, dispatching on the target’s <code dir="auto">gym.collectTrace</code>.</td></tr><tr><td>Live-edit = commit→reproject (D-007/D-021)</td><td><code dir="auto">packages/operator-core/lib/blueprint/commit-reproject{,-real}.ts</code></td><td>An accepted edit writes the target’s <code dir="auto">.papercusp/blueprint.yaml</code> / <code dir="auto">.papercusp/prompts/&#x3C;role>.md</code>, <strong>commits it</strong> (the target’s own git tree), then <strong>reloads + re-projects</strong> via <code dir="auto">projectBlueprintToPg</code>. Order is the contract: file → commit → project (the cache is never ahead of the committed file). <code dir="auto">acceptProposalViaCommit</code> is the gym-accept path that replaces the ungated <code dir="auto">PUT /harness/:slug/prompts/:role</code>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="gym-extensions--harness-plugins-p-015">Gym extensions = harness plugins (P-015)</h2><a class="sl-anchor-link" href="#gym-extensions--harness-plugins-p-015"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Gym extensions = harness plugins (P-015)”</span></a></div>
 <p>Because the gym is now a blueprint, you do <strong>not</strong> extend it by editing core gym
 code. Two extension points:</p>

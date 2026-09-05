@@ -83,11 +83,32 @@ distribution path (plans: <code dir="auto">official-blueprints-cupboard-publish-
 composed resolver — <code dir="auto">operatorResolveExtends()</code>
 (<code dir="auto">packages/operator-core/lib/blueprint/installed-blueprints.ts</code>, wrapping
 <code dir="auto">makeComposedResolveExtends</code> from <code dir="auto">@papercusp/blueprint-distribution</code>):</p>
-<p>| Tier | Where | Wins over |
-|------|-------|-----------|
-| <strong>local</strong> | a project’s <code dir="auto">.papercusp/blueprints/&#x3C;id>/blueprint.yaml</code> (when a project context exists) | installed + built-in |
-| <strong>installed</strong> | <code dir="auto">~/.papercusp/blueprints/&#x3C;id>/blueprint.yaml</code> (Cupboard-installed) | built-in |
-| <strong>built-in</strong> | the bundled dir <code dir="auto">@papercusp/harness/blueprints/&#x3C;id>/</code> | — |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tier</th><th>Where</th><th>Wins over</th></tr></thead><tbody><tr><td><strong>local</strong></td><td>a project’s <code dir="auto">.papercusp/blueprints/&#x3C;id>/blueprint.yaml</code> (when a project context exists)</td><td>installed + built-in</td></tr><tr><td><strong>installed</strong></td><td><code dir="auto">~/.papercusp/blueprints/&#x3C;id>/blueprint.yaml</code> (Cupboard-installed)</td><td>built-in</td></tr><tr><td><strong>built-in</strong></td><td>the bundled dir <code dir="auto">@papercusp/harness/blueprints/&#x3C;id>/</code></td><td>—</td></tr></tbody></table>
 <p>First hit wins, so an installed copy of <code dir="auto">review</code> <strong>shadows</strong> the bundled
 <code dir="auto">review</code>. The authoring tools (<code dir="auto">blueprint:extend</code>, <code dir="auto">blueprint:validate</code>)
 resolve all three tiers — the old “parent must be a built-in” gating was an
@@ -234,16 +255,57 @@ success toast lists what’s installable).</p>
 operator proxies the Cupboard worker; the storefront’s kind tabs are
 URL-backed via nuqs <code dir="auto">?kind=</code>).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="source-map">Source map</h2><a class="sl-anchor-link" href="#source-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Source map”</span></a></div>
-<p>| Concern | Source |
-|---|---|
-| Composed resolver + installed dir | <code dir="auto">packages/operator-core/lib/blueprint/installed-blueprints.ts</code> |
-| Pure tiered resolver | <code dir="auto">libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts</code> |
-| Dep validator (pure) | <code dir="auto">libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts</code> |
-| Pack model (tool→provider) | <code dir="auto">libs/papercusp/packages/blueprint-distribution/src/pack-model.ts</code> |
-| Publish route | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts</code> |
-| Install route + core | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts</code>, <code dir="auto">lib/cupboard/install-blueprint-core.ts</code> |
-| Live pack catalog (host wiring) | <code dir="auto">packages/operator-core/lib/cupboard/pack-catalog.ts</code> |
-| Static CI dep guard | <code dir="auto">packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts</code> |
-| Authoring tools | <code dir="auto">packages/operator-core/lib/agent-tools/blueprint/{catalog,validate,extend,create,publish,_resolve}.ts</code> |
-| Official mirror sync + batch publish | <code dir="auto">scripts/publish-official-blueprints.mts</code> (<code dir="auto">sync</code> regenerates <a href="https://github.com/Papercusp/blueprints"><code dir="auto">Papercusp/blueprints</code></a> from the bundle; <code dir="auto">publish [--ids a,b] [--limit N]</code> runs the publish route in-process, respecting the 5/hr cap) |
-| Dep derivation aid | <code dir="auto">scripts/derive-blueprint-deps.mjs</code> (derives each blueprint’s tool list from its role personas — a review aid, not an auto-writer) |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/system/storage-policy.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Storage policy — Postgres by default</span> </span> </a> <a href="/internal/docs/system/credentials-encryption.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Credentials encryption (pgcrypto)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Source</th></tr></thead><tbody><tr><td>Composed resolver + installed dir</td><td><code dir="auto">packages/operator-core/lib/blueprint/installed-blueprints.ts</code></td></tr><tr><td>Pure tiered resolver</td><td><code dir="auto">libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts</code></td></tr><tr><td>Dep validator (pure)</td><td><code dir="auto">libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts</code></td></tr><tr><td>Pack model (tool→provider)</td><td><code dir="auto">libs/papercusp/packages/blueprint-distribution/src/pack-model.ts</code></td></tr><tr><td>Publish route</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts</code></td></tr><tr><td>Install route + core</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts</code>, <code dir="auto">lib/cupboard/install-blueprint-core.ts</code></td></tr><tr><td>Live pack catalog (host wiring)</td><td><code dir="auto">packages/operator-core/lib/cupboard/pack-catalog.ts</code></td></tr><tr><td>Static CI dep guard</td><td><code dir="auto">packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts</code></td></tr><tr><td>Authoring tools</td><td><code dir="auto">packages/operator-core/lib/agent-tools/blueprint/{catalog,validate,extend,create,publish,_resolve}.ts</code></td></tr><tr><td>Official mirror sync + batch publish</td><td><code dir="auto">scripts/publish-official-blueprints.mts</code> (<code dir="auto">sync</code> regenerates <a href="https://github.com/Papercusp/blueprints"><code dir="auto">Papercusp/blueprints</code></a> from the bundle; <code dir="auto">publish [--ids a,b] [--limit N]</code> runs the publish route in-process, respecting the 5/hr cap)</td></tr><tr><td>Dep derivation aid</td><td><code dir="auto">scripts/derive-blueprint-deps.mjs</code> (derives each blueprint’s tool list from its role personas — a review aid, not an auto-writer)</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/system/storage-policy.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Storage policy — Postgres by default</span> </span> </a> <a href="/internal/docs/system/credentials-encryption.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Credentials encryption (pgcrypto)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

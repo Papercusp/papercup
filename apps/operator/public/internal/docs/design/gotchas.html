@@ -124,13 +124,42 @@
 <p>Use <code dir="auto">&#x3C;Command.Group hidden={false}></code> to force-show, or check the <code dir="auto">[hidden]</code> attr in DevTools.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="performance-budget--whats-reasonable">Performance budget — what’s reasonable</h2><a class="sl-anchor-link" href="#performance-budget--whats-reasonable"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Performance budget — what’s reasonable”</span></a></div>
 <p>These are the numbers we measured after the original migration. Use them as floors; if your change makes any of these significantly worse, investigate.</p>
-<p>| Interaction | Dev mode | Production target |
-|---|---|---|
-| Cold page load (HTTP <code dir="auto">time_total</code>) | 0.87 – 1.21s | &#x3C; 200ms |
-| Inner tab switch (e.g., Inbox All → Threads) | ~150ms | ~50ms |
-| Command palette open (Dialog mount + cmdk wiring) | ~314ms | ~100ms |
-| Modal open/close cycle | ~100ms | ~30ms |
-| Memory after 10 modal open/close cycles | 0 KB heap growth | 0 KB heap growth |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Interaction</th><th>Dev mode</th><th>Production target</th></tr></thead><tbody><tr><td>Cold page load (HTTP <code dir="auto">time_total</code>)</td><td>0.87 – 1.21s</td><td>&#x3C; 200ms</td></tr><tr><td>Inner tab switch (e.g., Inbox All → Threads)</td><td>~150ms</td><td>~50ms</td></tr><tr><td>Command palette open (Dialog mount + cmdk wiring)</td><td>~314ms</td><td>~100ms</td></tr><tr><td>Modal open/close cycle</td><td>~100ms</td><td>~30ms</td></tr><tr><td>Memory after 10 modal open/close cycles</td><td>0 KB heap growth</td><td>0 KB heap growth</td></tr></tbody></table>
 <p>If you’re adding a new modal or a new heavy panel and tab switches start feeling sluggish (>300ms in dev), check:</p>
 <ol>
 <li>Are you mounting heavy children eagerly when the modal closes? Use lazy / dynamic imports or guard rendering with <code dir="auto">{open &#x26;&#x26; &#x3C;…/>}</code>.</li>
@@ -139,16 +168,48 @@
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="bundle-size-budget">Bundle-size budget</h2><a class="sl-anchor-link" href="#bundle-size-budget"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Bundle-size budget”</span></a></div>
 <p>The original migration added ~55 KB gzipped to the harness route’s JS payload. Library-by-library:</p>
-<p>| Library | Gzipped |
-|---|---|
-| <code dir="auto">@radix-ui/react-tooltip</code> | ~5 KB |
-| <code dir="auto">@radix-ui/react-dialog</code> | ~10 KB |
-| <code dir="auto">@radix-ui/react-tabs</code> | ~5 KB |
-| <code dir="auto">@radix-ui/react-select</code> | ~12 KB |
-| <code dir="auto">@radix-ui/react-checkbox</code> | ~3 KB |
-| <code dir="auto">@radix-ui/react-collapsible</code> | ~3 KB |
-| <code dir="auto">vaul</code> | ~6 KB |
-| <code dir="auto">cmdk</code> | ~10 KB |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Library</th><th>Gzipped</th></tr></thead><tbody><tr><td><code dir="auto">@radix-ui/react-tooltip</code></td><td>~5 KB</td></tr><tr><td><code dir="auto">@radix-ui/react-dialog</code></td><td>~10 KB</td></tr><tr><td><code dir="auto">@radix-ui/react-tabs</code></td><td>~5 KB</td></tr><tr><td><code dir="auto">@radix-ui/react-select</code></td><td>~12 KB</td></tr><tr><td><code dir="auto">@radix-ui/react-checkbox</code></td><td>~3 KB</td></tr><tr><td><code dir="auto">@radix-ui/react-collapsible</code></td><td>~3 KB</td></tr><tr><td><code dir="auto">vaul</code></td><td>~6 KB</td></tr><tr><td><code dir="auto">cmdk</code></td><td>~10 KB</td></tr></tbody></table>
 <p>If you find yourself reaching for a NEW library not in this list, ask first. Most cases the existing set covers — see the <a href="/internal/docs/design">decision matrix</a>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="per-field-settings-pages--dont-reach-for-rhf">Per-field-settings pages — don’t reach for RHF</h2><a class="sl-anchor-link" href="#per-field-settings-pages--dont-reach-for-rhf"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Per-field-settings pages — don’t reach for RHF”</span></a></div>
 <p>If you’re looking at <code dir="auto">/settings/voice</code>, <code dir="auto">/settings/backups</code>, or any other settings page where each control persists independently (no Submit button, no atomic “save the whole form” gesture), <strong>do not migrate it to <code dir="auto">useFormWith</code></strong>. That conflates the page’s model with what RHF was built for. Use <code dir="auto">useDebouncedSave(value, persist)</code> per field instead — full pattern is in <a href="/internal/docs/design/libraries#form-patterns--picking-the-right-model">libraries: Form patterns</a>.</p>

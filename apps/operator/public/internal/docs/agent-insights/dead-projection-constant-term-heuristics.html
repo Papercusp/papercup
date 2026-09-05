@@ -85,12 +85,37 @@ only one of them documented.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-nobody-noticed-for-so-long">Why nobody noticed for so long</h2><a class="sl-anchor-link" href="#why-nobody-noticed-for-so-long"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why nobody noticed for so long”</span></a></div>
 <p><strong>A dead signal does not fail. It stops discriminating.</strong> Every consumer kept running and
 returning plausible answers:</p>
-<p>| consumer | the term | what it silently became |
-|---|---|---|
-| <code dir="auto">coord:send</code> <code dir="auto">@file:&#x3C;path></code> | audience includes agents whose <code dir="auto">current_files</code> has the path | resolved to ZERO recipients while a peer verifiably held a lock (EI-18772330418885814) |
-| <code dir="auto">locks/enrich-busy</code> <code dir="auto">holder_focused</code> | <code dir="auto">p.currentFiles.includes(b.path)</code> | constant <strong>false</strong> ⇒ the <code dir="auto">holder_intent_diverged !== true</code> veto never fired ⇒ a live, actively-focused lock holder got advertised as “likely orphaned” |
-| <code dir="auto">fleet/place_batch</code> touch-set exclusion | peer lanes ∪ bee files | peer half always empty ⇒ conflict avoidance could not see other agents at all |
-| git-sync derived attribution | presence fill for the edit ledger | <code dir="auto">.filter(e => e.files.length > 0)</code> dropped every presence entry |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>consumer</th><th>the term</th><th>what it silently became</th></tr></thead><tbody><tr><td><code dir="auto">coord:send</code> <code dir="auto">@file:&#x3C;path></code></td><td>audience includes agents whose <code dir="auto">current_files</code> has the path</td><td>resolved to ZERO recipients while a peer verifiably held a lock (EI-18772330418885814)</td></tr><tr><td><code dir="auto">locks/enrich-busy</code> <code dir="auto">holder_focused</code></td><td><code dir="auto">p.currentFiles.includes(b.path)</code></td><td>constant <strong>false</strong> ⇒ the <code dir="auto">holder_intent_diverged !== true</code> veto never fired ⇒ a live, actively-focused lock holder got advertised as “likely orphaned”</td></tr><tr><td><code dir="auto">fleet/place_batch</code> touch-set exclusion</td><td>peer lanes ∪ bee files</td><td>peer half always empty ⇒ conflict avoidance could not see other agents at all</td></tr><tr><td>git-sync derived attribution</td><td>presence fill for the edit ledger</td><td><code dir="auto">.filter(e => e.files.length > 0)</code> dropped every presence entry</td></tr></tbody></table>
 <p>None of these throw. None show up in a test that mocks the projection — a fixture that
 hands <code dir="auto">currentFiles: ['a.ts']</code> to the consumer proves the consumer works <em>given data</em>,
 which was never the failing half.</p>

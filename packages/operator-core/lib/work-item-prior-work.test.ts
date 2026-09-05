@@ -13,8 +13,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   AUTHORSHIP_REVALIDATION_MIN_AGE_MS,
+  REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS,
   authorshipRevalidationHintFromRow,
   authorshipRevalidationWarning,
+  distinctPriorSessionCount,
   excludeCurrentClaimant,
   parseWorkedByHistory,
   priorWorkHintFromRow,
@@ -119,6 +121,67 @@ describe('priorWorkWarning', () => {
     // The weakest possible signal must still produce a warning — this is the row shape left by a
     // holder that died without ever releasing cleanly.
     expect(priorWorkWarning(hint({ attempts: 2 }))).toMatch(/PRIOR WORK/);
+  });
+});
+
+// EI-20284291276800931: the sub-threshold message tells the claimant to READ THE CHECKPOINT and
+// start. For an item several sessions have already picked up and put back down, that is the wrong
+// instruction — reading the checkpoint, re-confirming its stated blocker, and deferring is exactly
+// what each of them did. These pin the inversion, and pin that it cannot fire on ordinary churn.
+describe('repeated-deferral escalation (EI-20284291276800931)', () => {
+  const workers = (n: number) => Array.from({ length: n }, (_, i) => `su-w${i}`);
+
+  it('does NOT fire below the threshold — ordinary hand-off churn is completely unaffected', () => {
+    const w = priorWorkWarning(hint({ priorWorkers: workers(2), hasCheckpoint: true }));
+    expect(w).not.toMatch(/REPEATEDLY DEFERRED/);
+    expect(w).toMatch(/checkpoint exists/);
+  });
+
+  it('fires at the threshold and INVERTS the instruction away from "read the checkpoint"', () => {
+    const w = priorWorkWarning(hint({ priorWorkers: workers(3), hasCheckpoint: true }));
+    expect(w).toMatch(/REPEATEDLY DEFERRED/);
+    expect(w).toContain('3 distinct sessions');
+    expect(w).toMatch(/ACCEPTANCE CRITERION/);
+    expect(w).toMatch(/OVER-SPECIFIED/);
+    // The whole defect: the sub-threshold wording must NOT survive into this branch.
+    expect(w).not.toMatch(/read it \(above\) before starting/);
+  });
+
+  it('counts DISTINCT sessions, unioning last_released_by instead of adding it', () => {
+    // Legacy shape — a releaser recorded with an empty history is still a session.
+    expect(priorWorkWarning(hint({ priorWorkers: ['su-a', 'su-b'], lastReleasedBy: 'su-c' }))).toContain(
+      '3 distinct sessions',
+    );
+    // Present-day shape — the releaser is ALSO inside the history. Summing would report 4 here and
+    // push genuine two-session churn over the threshold, so the union is load-bearing, not tidiness.
+    expect(
+      priorWorkWarning(hint({ priorWorkers: ['su-a', 'su-b', 'su-c'], lastReleasedBy: 'su-c' })),
+    ).toContain('3 distinct sessions');
+    expect(distinctPriorSessionCount(hint({ priorWorkers: ['su-a', 'su-b'], lastReleasedBy: 'su-b' }))).toBe(2);
+  });
+
+  it('still names the missing checkpoint when there is none, without softening it', () => {
+    const w = priorWorkWarning(hint({ priorWorkers: workers(4), hasCheckpoint: false }));
+    expect(w).toMatch(/REPEATEDLY DEFERRED/);
+    expect(w).toMatch(/NO checkpoint was ever written/);
+  });
+
+  it("does NOT override the 'unknown' outage guarantee — WI-6737 outranks this prompt", () => {
+    // You cannot judge an acceptance criterion you were just unable to read, and "do not rebuild"
+    // is the safe move during an outage. The count is APPENDED, never substituted for it.
+    const w = priorWorkWarning(hint({ priorWorkers: workers(5), hasCheckpoint: 'unknown' }));
+    expect(w).toMatch(/Do NOT start rebuilding/i);
+    expect(w).toMatch(/could NOT BE READ/i);
+    expect(w).not.toMatch(/NO checkpoint was ever written/);
+    expect(w).toContain('5 distinct sessions');
+  });
+
+  it('drives the cutoff from the exported constant so wording and threshold cannot drift apart', () => {
+    expect(REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS).toBe(3);
+    const below = priorWorkWarning(hint({ priorWorkers: workers(REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS - 1) }));
+    const at = priorWorkWarning(hint({ priorWorkers: workers(REPEAT_DEFERRAL_MIN_DISTINCT_SESSIONS) }));
+    expect(below).not.toMatch(/REPEATEDLY DEFERRED/);
+    expect(at).toMatch(/REPEATEDLY DEFERRED/);
   });
 });
 

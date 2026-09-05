@@ -160,14 +160,40 @@ with <code dir="auto">papercusp_state_set</code>.</p></div> </aside>
 <p>Substrate auto-fills the field at fork time. Adopted from Heroku’s
 <a href="https://devcenter.heroku.com/articles/app-json-schema#env">app.json env generators</a>;
 same names so publishers transferring from Heroku recognize them.</p>
-<p>| Generator         | What it produces                             |
-|-------------------|----------------------------------------------|
-| <code dir="auto">secret-256</code>      | 32 random bytes, base64url                   |
-| <code dir="auto">secret-base64-256</code> | Same, explicit base64                      |
-| <code dir="auto">secret-hex-256</code>  | 32 random bytes, hex                         |
-| <code dir="auto">uuid</code>            | RFC 4122 v4 UUID                             |
-| <code dir="auto">random-name</code>     | Memorable two-word name (<code dir="auto">bold-meadow-7</code>)    |
-| <code dir="auto">slug-of:harness_slug</code> | The forking harness’s slug              |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Generator</th><th>What it produces</th></tr></thead><tbody><tr><td><code dir="auto">secret-256</code></td><td>32 random bytes, base64url</td></tr><tr><td><code dir="auto">secret-base64-256</code></td><td>Same, explicit base64</td></tr><tr><td><code dir="auto">secret-hex-256</code></td><td>32 random bytes, hex</td></tr><tr><td><code dir="auto">uuid</code></td><td>RFC 4122 v4 UUID</td></tr><tr><td><code dir="auto">random-name</code></td><td>Memorable two-word name (<code dir="auto">bold-meadow-7</code>)</td></tr><tr><td><code dir="auto">slug-of:harness_slug</code></td><td>The forking harness’s slug</td></tr></tbody></table>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="json"><code><div class="ec-line"><div class="code"><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">sessionSecret</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"secret"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"generator"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">secret-256</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"description"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">Session signing secret, auto-generated at fork.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="&#x22;sessionSecret&#x22;: {  &#x22;type&#x22;: &#x22;string&#x22;,  &#x22;secret&#x22;: true,  &#x22;generator&#x22;: &#x22;secret-256&#x22;,  &#x22;description&#x22;: &#x22;Session signing secret, auto-generated at fork.&#x22;}"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="uischema-block-sibling-to-configschema"><code dir="auto">uiSchema</code> block (sibling to <code dir="auto">configSchema</code>)</h3><a class="sl-anchor-link" href="#uischema-block-sibling-to-configschema"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “uiSchema block (sibling to configSchema)”</span></a></div>
 <p>rjsf-style hints. We don’t reinvent these — read
@@ -195,31 +221,98 @@ the values an output <code dir="auto">${OUTPUT_&#x3C;key>}</code> template sees 
 <em>same</em> script has <code dir="auto">export</code>ed into its own env; the helper does not
 auto-source <code dir="auto">state.json</code>.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercusp_--substrate"><code dir="auto">$PAPERCUSP_*</code> — substrate</h3><a class="sl-anchor-link" href="#papercusp_--substrate"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “$PAPERCUSP_* — substrate”</span></a></div>
-<p>| Variable                | What                                                 |
-|-------------------------|------------------------------------------------------|
-| <code dir="auto">$PAPERCUSP_CONFIG</code>     | Full plugin config as JSON (parse with jq if needed) |
-| <code dir="auto">$PAPERCUSP_HARNESS_SLUG</code> | The harness slug — useful as a default name        |
-| <code dir="auto">$PAPERCUSP_PLUGIN_NAME</code>| The plugin slug                                      |
-| <code dir="auto">$PAPERCUSP_PROJECT_DIR</code>| RW-mounted harness project dir (templates target)    |
-| <code dir="auto">$PAPERCUSP_PLUGIN_DIR</code> | RO-mounted plugin source dir                         |
-| <code dir="auto">$PAPERCUSP_SCRATCH_DIR</code>| RW-mounted scratch dir; also <code dir="auto">$HOME</code> and CWD         |
-| <code dir="auto">$PAPERCUSP_RUNTIME_LIB</code>| Path to lib.sh — source it for helpers               |
-| <code dir="auto">$PAPERCUSP_RECORD_FIFO</code>| Record-bridge file the helpers append to (see below) |
-| <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code>| Full <code dir="auto">state.json</code> — injected on <code dir="auto">teardown</code>/<code dir="auto">verify</code> only |
-| <code dir="auto">$PAPERCUSP_PROGRESS_FD</code>| fd the progress/warn/error markers write to (default 2) |
-| <code dir="auto">$PAPERCUSP_PHASE</code>      | One of <code dir="auto">setup</code> / <code dir="auto">teardown</code> / <code dir="auto">verify</code>               |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Variable</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">$PAPERCUSP_CONFIG</code></td><td>Full plugin config as JSON (parse with jq if needed)</td></tr><tr><td><code dir="auto">$PAPERCUSP_HARNESS_SLUG</code></td><td>The harness slug — useful as a default name</td></tr><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_NAME</code></td><td>The plugin slug</td></tr><tr><td><code dir="auto">$PAPERCUSP_PROJECT_DIR</code></td><td>RW-mounted harness project dir (templates target)</td></tr><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_DIR</code></td><td>RO-mounted plugin source dir</td></tr><tr><td><code dir="auto">$PAPERCUSP_SCRATCH_DIR</code></td><td>RW-mounted scratch dir; also <code dir="auto">$HOME</code> and CWD</td></tr><tr><td><code dir="auto">$PAPERCUSP_RUNTIME_LIB</code></td><td>Path to lib.sh — source it for helpers</td></tr><tr><td><code dir="auto">$PAPERCUSP_RECORD_FIFO</code></td><td>Record-bridge file the helpers append to (see below)</td></tr><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_STATE</code></td><td>Full <code dir="auto">state.json</code> — injected on <code dir="auto">teardown</code>/<code dir="auto">verify</code> only</td></tr><tr><td><code dir="auto">$PAPERCUSP_PROGRESS_FD</code></td><td>fd the progress/warn/error markers write to (default 2)</td></tr><tr><td><code dir="auto">$PAPERCUSP_PHASE</code></td><td>One of <code dir="auto">setup</code> / <code dir="auto">teardown</code> / <code dir="auto">verify</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="runtime-helpers-libsh">Runtime helpers (<code dir="auto">lib.sh</code>)</h2><a class="sl-anchor-link" href="#runtime-helpers-libsh"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Runtime helpers (lib.sh)”</span></a></div>
 <p>Source the helper library at the top of every script:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F">#!/usr/bin/env bash</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">set</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-euo</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">pipefail</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">.</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$PAPERCUSP_RUNTIME_LIB</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="#!/usr/bin/env bashset -euo pipefail. &#x22;$PAPERCUSP_RUNTIME_LIB&#x22;"><div></div></button></div></figure></div>
 <p>Then use:</p>
-<p>| Helper                                | Purpose                                                    |
-|---------------------------------------|------------------------------------------------------------|
-| <code dir="auto">papercusp_progress &#x3C;step> &#x3C;message></code> | Emit a structured progress event. UI shows progress bar.   |
-| <code dir="auto">papercusp_warn &#x3C;message></code>            | Surface a yellow warning indicator.                        |
-| <code dir="auto">papercusp_error &#x3C;message></code>           | Surface a red error indicator (script may continue).       |
-| <code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id> [&#x3C;json-meta>]</code> | Record a resource for teardown. Idempotent on <code dir="auto">(kind, externalId)</code> — re-recording the same resource collapses rather than duplicating. |
-| <code dir="auto">papercusp_state_set &#x3C;key> &#x3C;json-value></code> | Set a <code dir="auto">state.json</code> output. Becomes <code dir="auto">$OUTPUT_&#x3C;key></code>.     |
-| <code dir="auto">papercusp_render_templates</code>          | Walk <code dir="auto">$PAPERCUSP_PROJECT_DIR</code> for <code dir="auto">*.tmpl</code>, render each.  |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Helper</th><th>Purpose</th></tr></thead><tbody><tr><td><code dir="auto">papercusp_progress &#x3C;step> &#x3C;message></code></td><td>Emit a structured progress event. UI shows progress bar.</td></tr><tr><td><code dir="auto">papercusp_warn &#x3C;message></code></td><td>Surface a yellow warning indicator.</td></tr><tr><td><code dir="auto">papercusp_error &#x3C;message></code></td><td>Surface a red error indicator (script may continue).</td></tr><tr><td><code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id> [&#x3C;json-meta>]</code></td><td>Record a resource for teardown. Idempotent on <code dir="auto">(kind, externalId)</code> — re-recording the same resource collapses rather than duplicating.</td></tr><tr><td><code dir="auto">papercusp_state_set &#x3C;key> &#x3C;json-value></code></td><td>Set a <code dir="auto">state.json</code> output. Becomes <code dir="auto">$OUTPUT_&#x3C;key></code>.</td></tr><tr><td><code dir="auto">papercusp_render_templates</code></td><td>Walk <code dir="auto">$PAPERCUSP_PROJECT_DIR</code> for <code dir="auto">*.tmpl</code>, render each.</td></tr></tbody></table>
 <p>Resource kinds (<code dir="auto">cloudflare.d1.database</code>, <code dir="auto">aws.lambda.function</code>,
 <code dir="auto">github.repo</code>) are <strong>plugin-author vocabulary</strong>, not substrate-defined.
 Your <code dir="auto">teardown.sh</code> is the dispatcher that knows how to delete each kind.</p>
@@ -261,12 +354,37 @@ a locally-edited plugin from a directory is a documented concept, not an
 implemented install path — develop and test against your in-place copy
 (e.g. <code dir="auto">papercusp plugin verify</code>) until it lands.</p></div> </aside>
 <p>Available templates:</p>
-<p>| Template           | What it provisions                                | Use when…                                          |
-|--------------------|---------------------------------------------------|----------------------------------------------------|
-| <code dir="auto">cloudflare-stack</code> | Pages + Workers + D1 + R2 + KV (mega-plugin)      | Your harness deploys to Cloudflare                 |
-| <code dir="auto">cloudflare-pages</code> | Cloudflare Pages only (lighter reference)         | You only need a Pages site, not the full stack     |
-| <code dir="auto">github-repo</code>      | GitHub repo (single resource)                     | Your harness pushes code to GitHub                 |
-| <em>(more coming)</em>    | <em>aws-stack, fly-stack, render-stack, vercel-stack</em>| <em>As they ship</em>                                     |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Template</th><th>What it provisions</th><th>Use when…</th></tr></thead><tbody><tr><td><code dir="auto">cloudflare-stack</code></td><td>Pages + Workers + D1 + R2 + KV (mega-plugin)</td><td>Your harness deploys to Cloudflare</td></tr><tr><td><code dir="auto">cloudflare-pages</code></td><td>Cloudflare Pages only (lighter reference)</td><td>You only need a Pages site, not the full stack</td></tr><tr><td><code dir="auto">github-repo</code></td><td>GitHub repo (single resource)</td><td>Your harness pushes code to GitHub</td></tr><tr><td><em>(more coming)</em></td><td><em>aws-stack, fly-stack, render-stack, vercel-stack</em></td><td><em>As they ship</em></td></tr></tbody></table>
 <p>The <code dir="auto">cloudflare-stack</code> source is the most complete worked example —
 read its <a href="https://github.com/Papercusp/papercusp/blob/main/plugins/cloudflare-stack/provision/setup.sh">setup.sh</a>
 and <a href="https://github.com/Papercusp/papercusp/blob/main/plugins/cloudflare-stack/README.md">README</a>

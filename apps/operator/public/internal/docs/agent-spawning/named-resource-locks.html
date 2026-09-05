@@ -117,21 +117,75 @@ as the acquire) on first acquire, so an un-pre-registered harness slug can never
 silently no-op its sync forever. Names listed in <code dir="auto">trigger_config.extra_lock_resources</code>
 are <strong>never</strong> auto-registered — an unknown extra name makes the tick skip with a
 logged warning. Currently registered:</p>
-<p>| Resource | Enforcement | What it guards |
-|---|---|---|
-| <code dir="auto">dev-server</code> | <code dir="auto">enforced</code> | The operator dev server (<code dir="auto">:3070</code> Hono + <code dir="auto">:3055</code> Vite). Promoted advisory → enforced once the raw-Bash gate made <code dir="auto">systemctl restart papercup</code> matchable (P-016). |
-| <code dir="auto">db-schema</code> | <code dir="auto">checked</code> | The papercusp DB schema — migrations / destructive DDL. |
-| <code dir="auto">shop</code> | <code dir="auto">enforced</code> | The shop build + <code dir="auto">:4321</code> preview (stale-server e2e false-positives + concurrent dist clobbers). |
-| <code dir="auto">desktop-sidecar</code> | <code dir="auto">enforced</code> | The papercusp-desktop sidecar / embedded-pg bundle build (the recurring 0-byte-binary clobber). |
-| <code dir="auto">windows-vm-build:user@127.0.0.1:2223:papercup-build-release</code> | <code dir="auto">enforced</code> | The concrete Windows VM host + <code dir="auto">VM_BUILD_DIR</code>. The producer acquires it before mutation, records purpose + ETA, heartbeats, declares a latched release event, and verifies release on every exit/signal. |
-| <code dir="auto">libs-papercusp-submodule</code> | <code dir="auto">advisory</code> | The <code dir="auto">libs/papercusp</code> submodule commit + superproject pointer bump (+ push). |
-| <code dir="auto">git-sync</code> | <code dir="auto">advisory</code> | The git-sync auto-commit/push routine. <strong>Now per-harness:</strong> each harness’s <code dir="auto">system:git-sync</code> tick holds <code dir="auto">exclusive(git-sync:&#x3C;slug>)</code>. The unsuffixed <code dir="auto">git-sync</code> row is the legacy back-off name papercup still acquires via <code dir="auto">trigger_config.extra_lock_resources</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Resource</th><th>Enforcement</th><th>What it guards</th></tr></thead><tbody><tr><td><code dir="auto">dev-server</code></td><td><code dir="auto">enforced</code></td><td>The operator dev server (<code dir="auto">:3070</code> Hono + <code dir="auto">:3055</code> Vite). Promoted advisory → enforced once the raw-Bash gate made <code dir="auto">systemctl restart papercup</code> matchable (P-016).</td></tr><tr><td><code dir="auto">db-schema</code></td><td><code dir="auto">checked</code></td><td>The papercusp DB schema — migrations / destructive DDL.</td></tr><tr><td><code dir="auto">shop</code></td><td><code dir="auto">enforced</code></td><td>The shop build + <code dir="auto">:4321</code> preview (stale-server e2e false-positives + concurrent dist clobbers).</td></tr><tr><td><code dir="auto">desktop-sidecar</code></td><td><code dir="auto">enforced</code></td><td>The papercusp-desktop sidecar / embedded-pg bundle build (the recurring 0-byte-binary clobber).</td></tr><tr><td><code dir="auto">windows-vm-build:user@127.0.0.1:2223:papercup-build-release</code></td><td><code dir="auto">enforced</code></td><td>The concrete Windows VM host + <code dir="auto">VM_BUILD_DIR</code>. The producer acquires it before mutation, records purpose + ETA, heartbeats, declares a latched release event, and verifies release on every exit/signal.</td></tr><tr><td><code dir="auto">libs-papercusp-submodule</code></td><td><code dir="auto">advisory</code></td><td>The <code dir="auto">libs/papercusp</code> submodule commit + superproject pointer bump (+ push).</td></tr><tr><td><code dir="auto">git-sync</code></td><td><code dir="auto">advisory</code></td><td>The git-sync auto-commit/push routine. <strong>Now per-harness:</strong> each harness’s <code dir="auto">system:git-sync</code> tick holds <code dir="auto">exclusive(git-sync:&#x3C;slug>)</code>. The unsuffixed <code dir="auto">git-sync</code> row is the legacy back-off name papercup still acquires via <code dir="auto">trigger_config.extra_lock_resources</code>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-enforcement-dial-per-resource">The enforcement dial (per resource)</h2><a class="sl-anchor-link" href="#the-enforcement-dial-per-resource"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The enforcement dial (per resource)”</span></a></div>
-<p>| Level | What enforces it |
-|---|---|
-| <code dir="auto">advisory</code> | The rule (prompt) + the broadcast + <code dir="auto">locks:list</code> visibility. Honor-system. The level for <code dir="auto">libs-papercusp-submodule</code> + <code dir="auto">git-sync</code> (no hookable “I’m using it” action). |
-| <code dir="auto">checked</code> | A tool / <code dir="auto">locks:check_command</code> actively refuses while an exclusive is in flight (<code dir="auto">db-schema</code>). |
-| <code dir="auto">enforced</code> | A handler/producer that cannot run without the lock (see below), or the <code dir="auto">PreToolUse</code> Bash gate that hard-blocks a colliding raw command. <code dir="auto">dev-server</code>, <code dir="auto">shop</code>, <code dir="auto">desktop-sidecar</code>, and the Windows VM build target. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Level</th><th>What enforces it</th></tr></thead><tbody><tr><td><code dir="auto">advisory</code></td><td>The rule (prompt) + the broadcast + <code dir="auto">locks:list</code> visibility. Honor-system. The level for <code dir="auto">libs-papercusp-submodule</code> + <code dir="auto">git-sync</code> (no hookable “I’m using it” action).</td></tr><tr><td><code dir="auto">checked</code></td><td>A tool / <code dir="auto">locks:check_command</code> actively refuses while an exclusive is in flight (<code dir="auto">db-schema</code>).</td></tr><tr><td><code dir="auto">enforced</code></td><td>A handler/producer that cannot run without the lock (see below), or the <code dir="auto">PreToolUse</code> Bash gate that hard-blocks a colliding raw command. <code dir="auto">dev-server</code>, <code dir="auto">shop</code>, <code dir="auto">desktop-sidecar</code>, and the Windows VM build target.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="tools">Tools</h2><a class="sl-anchor-link" href="#tools"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Tools”</span></a></div>
 <ul>
 <li><code dir="auto">locks:acquire_resource { resource, mode, wait?: { max_drain_sec } }</code> /

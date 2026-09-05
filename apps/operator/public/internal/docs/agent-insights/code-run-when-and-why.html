@@ -107,23 +107,93 @@ script returns just the ranked summary:</p>
 several assistant turns), so the per-round-trip figure is <code dir="auto">run tokens ÷ turn_count</code> — the correct
 normalization flagged by su-1282a (B-TOK-ROLL). One tool round-trip ≈ one assistant turn.</p>
 <p><strong>Measured cost of one round-trip</strong> (572 runs, avg 7.8 turns/run; 82.6% of tokens are cache-read):</p>
-<p>| role        | ctx tokens / turn | $ / turn | avg turns / run |
-|-------------|------------------:|---------:|----------------:|
-| all roles   | ~45,950           | ~$0.124  | 7.8             |
-| mug       | ~44,710           | ~$0.120  | 7.2             |
-| cup         | ~93,350           | ~$0.118  | 19.4            |
-| overwatch   | ~40,050           | ~$0.199  | 6.2             |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>role</th><th align="right">ctx tokens / turn</th><th align="right">$ / turn</th><th align="right">avg turns / run</th></tr></thead><tbody><tr><td>all roles</td><td align="right">~45,950</td><td align="right">~$0.124</td><td align="right">7.8</td></tr><tr><td>mug</td><td align="right">~44,710</td><td align="right">~$0.120</td><td align="right">7.2</td></tr><tr><td>cup</td><td align="right">~93,350</td><td align="right">~$0.118</td><td align="right">19.4</td></tr><tr><td>overwatch</td><td align="right">~40,050</td><td align="right">~$0.199</td><td align="right">6.2</td></tr></tbody></table>
 <p><strong>Before/after for a flow of N tool calls</strong> — N round-trips (N inference calls, each re-reading the
 context) vs ONE <code dir="auto">code:run</code> (1 inference call; the N tool dispatches run in the runtime with no
 per-call inference):</p>
-<p>| flow                          | inference calls | ctx tokens         | $        |
-|-------------------------------|----------------:|-------------------:|---------:|
-| Exemplar 1 direct (1 list + 10 act, all-roles ~46k/turn) | 11 | ~506,000 | ~$1.36 |
-| Exemplar 1 as one <code dir="auto">code:run</code>  | <strong>1</strong>           | ~46,000            | ~$0.12   |
-| <strong>saved</strong>                     | <strong>−10 (~91%)</strong>  | <strong>~460,000 (~91%)</strong>| <strong>~$1.24</strong> |
-| Cup 20-step loop direct (~93k/turn) | 21        | ~1,950,000         | ~$2.47   |
-| Cup 20-step loop as one <code dir="auto">code:run</code>  | <strong>1</strong>     | ~93,000            | ~$0.12   |
-| <strong>saved</strong>                     | <strong>−20 (~95%)</strong>  | <strong>~1,857,000 (~95%)</strong> | <strong>~$2.35</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>flow</th><th align="right">inference calls</th><th align="right">ctx tokens</th><th align="right">$</th></tr></thead><tbody><tr><td>Exemplar 1 direct (1 list + 10 act, all-roles ~46k/turn)</td><td align="right">11</td><td align="right">~506,000</td><td align="right">~$1.36</td></tr><tr><td>Exemplar 1 as one <code dir="auto">code:run</code></td><td align="right"><strong>1</strong></td><td align="right">~46,000</td><td align="right">~$0.12</td></tr><tr><td><strong>saved</strong></td><td align="right"><strong>−10 (~91%)</strong></td><td align="right"><strong>~460,000 (~91%)</strong></td><td align="right"><strong>~$1.24</strong></td></tr><tr><td>Cup 20-step loop direct (~93k/turn)</td><td align="right">21</td><td align="right">~1,950,000</td><td align="right">~$2.47</td></tr><tr><td>Cup 20-step loop as one <code dir="auto">code:run</code></td><td align="right"><strong>1</strong></td><td align="right">~93,000</td><td align="right">~$0.12</td></tr><tr><td><strong>saved</strong></td><td align="right"><strong>−20 (~95%)</strong></td><td align="right"><strong>~1,857,000 (~95%)</strong></td><td align="right"><strong>~$2.35</strong></td></tr></tbody></table>
 <p>The win is largest exactly where contexts are biggest: <strong>cups average 19.4 turns/run at ~93k
 tokens/turn</strong>, and many of those turns are scriptable loops. Because 82.6% of the cost is cache-read
 of the re-loaded context, removing whole round-trips — not shrinking each one — is the lever.</p>

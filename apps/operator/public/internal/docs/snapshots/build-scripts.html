@@ -130,20 +130,90 @@ truth.</p></div> </aside>
 </div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"verify"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"path"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">provision/verify.sh</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"displayName"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">Check Lambda is healthy</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"timeoutSec"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#F78C6C;--1:#AA0982">30</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"intervalSec"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#F78C6C;--1:#AA0982">600</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="{  &#x22;kind&#x22;: &#x22;plugin&#x22;,  &#x22;name&#x22;: &#x22;@papercupai/aws-lambda&#x22;,  &#x22;version&#x22;: &#x22;0.1.0&#x22;,  &#x22;papercusp&#x22;: &#x22;^0.1.0&#x22;,  &#x22;capabilities&#x22;: [&#x22;http:fetch:lambda.us-east-1.amazonaws.com&#x22;, &#x22;...&#x22;],  &#x22;provision&#x22;: {    &#x22;platforms&#x22;: [&#x22;linux&#x22;, &#x22;darwin&#x22;],    &#x22;setup&#x22;: {      &#x22;path&#x22;: &#x22;provision/setup.sh&#x22;,      &#x22;displayName&#x22;: &#x22;Provision AWS Lambda + API Gateway&#x22;,      &#x22;description&#x22;: &#x22;Creates a Lambda function, an API Gateway HTTP API, and the IAM role binding them.&#x22;,      &#x22;allowedHosts&#x22;: [&#x22;lambda.us-east-1.amazonaws.com&#x22;, &#x22;execute-api.us-east-1.amazonaws.com&#x22;, &#x22;iam.amazonaws.com&#x22;],      &#x22;network&#x22;: &#x22;restrict&#x22;,      &#x22;timeoutSec&#x22;: 300,      &#x22;writesState&#x22;: true,      &#x22;requiresInteractive&#x22;: false    },    &#x22;teardown&#x22;: {      &#x22;path&#x22;: &#x22;provision/teardown.sh&#x22;,      &#x22;displayName&#x22;: &#x22;Tear down provisioned AWS resources&#x22;,      &#x22;timeoutSec&#x22;: 180    },    &#x22;verify&#x22;: {      &#x22;path&#x22;: &#x22;provision/verify.sh&#x22;,      &#x22;displayName&#x22;: &#x22;Check Lambda is healthy&#x22;,      &#x22;timeoutSec&#x22;: 30,      &#x22;intervalSec&#x22;: 600    }  }}"><div></div></button></div></figure></div>
 <p>Each script is <strong>part of the plugin’s signed tarball</strong> — its sha256 is included in the same signature manifest the marketplace already verifies for the plugin itself.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="field-reference">Field reference</h3><a class="sl-anchor-link" href="#field-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Field reference”</span></a></div>
-<p>| Field | Required | Default | Notes |
-|---|---|---|---|
-| <code dir="auto">platforms</code> | no | all | Substrate refuses to run on platforms outside this set; falls back to a clear “this plugin doesn’t support your OS” message. |
-| <code dir="auto">setup.path</code> | yes | — | Relative path inside the plugin tarball (the shipped SDK field is <code dir="auto">path</code>). Must be marked executable in the tarball. |
-| <code dir="auto">setup.displayName</code> | yes | — | Human label shown in the consent dialog. |
-| <code dir="auto">setup.description</code> | yes | — | One-paragraph explanation shown to the user before they approve. |
-| <code dir="auto">setup.allowedHosts</code> | yes for non-cloudProvider plugins | — | Outbound network restricted to this allowlist. Always blocked even when this list is empty: 169.254.169.254/32 + 169.254.0.0/16 (IMDS), 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7 (IPv6 ULA) — see <a href="#network-policy-floor">Network policy floor</a>. |
-| <code dir="auto">setup.cloudProvider</code> | yes for cloud-SDK plugins | — | Substrate-curated preset replacing the old <code dir="auto">network: "open"</code> mode. Shape: <code dir="auto">{ id: "aws" \| "gcp" \| "azure" \| "cloudflare", region: "us-east-1" \| ... \| "${cfg.region}" }</code>. Substrate templates region into the preset’s allowlist. Multi-region plugins use <code dir="auto">regions: [...]</code>. See <a href="#cloud-provider-presets">Cloud provider presets</a>. |
-| <code dir="auto">setup.timeoutSec</code> | no | 600 | Substrate kills the script if it exceeds this. Audit log records the timeout. |
-| <code dir="auto">setup.writesState</code> | no | false | Design-only (see the partial-implementation Aside). The <em>shipped</em> resource-tracking path is the <code dir="auto">record_resource</code> / <code dir="auto">state_set</code> helpers over <code dir="auto">$PAPERCUSP_RECORD_FIFO</code>; <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code> is read-only JSON content set for teardown/verify, not a writeable file. |
-| <code dir="auto">setup.requiresInteractive</code> | no | false | If false (the default and only V1-supported value), substrate refuses scripts that try to read from stdin or open browser windows mid-run. Forbidden in V1 — see <a href="#no-interactive-subprocesses">No interactive subprocesses</a>. |
-| <code dir="auto">teardown.path</code> | recommended | — | If absent, uninstalling the plugin shows “this plugin can’t auto-clean its resources; you’ll need to remove them manually.” |
-| <code dir="auto">verify.path</code> | recommended | — | Used for plugin health on operator boot. If absent, plugin health is inferred from action invocations. |
-| <code dir="auto">verify.intervalSec</code> | no | 600 | How often the substrate runs <code dir="auto">verify</code> opportunistically. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">platforms</code></td><td>no</td><td>all</td><td>Substrate refuses to run on platforms outside this set; falls back to a clear “this plugin doesn’t support your OS” message.</td></tr><tr><td><code dir="auto">setup.path</code></td><td>yes</td><td>—</td><td>Relative path inside the plugin tarball (the shipped SDK field is <code dir="auto">path</code>). Must be marked executable in the tarball.</td></tr><tr><td><code dir="auto">setup.displayName</code></td><td>yes</td><td>—</td><td>Human label shown in the consent dialog.</td></tr><tr><td><code dir="auto">setup.description</code></td><td>yes</td><td>—</td><td>One-paragraph explanation shown to the user before they approve.</td></tr><tr><td><code dir="auto">setup.allowedHosts</code></td><td>yes for non-cloudProvider plugins</td><td>—</td><td>Outbound network restricted to this allowlist. Always blocked even when this list is empty: 169.254.169.254/32 + 169.254.0.0/16 (IMDS), 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7 (IPv6 ULA) — see <a href="#network-policy-floor">Network policy floor</a>.</td></tr><tr><td><code dir="auto">setup.cloudProvider</code></td><td>yes for cloud-SDK plugins</td><td>—</td><td>Substrate-curated preset replacing the old <code dir="auto">network: "open"</code> mode. Shape: <code dir="auto">{ id: "aws" | "gcp" | "azure" | "cloudflare", region: "us-east-1" | ... | "${cfg.region}" }</code>. Substrate templates region into the preset’s allowlist. Multi-region plugins use <code dir="auto">regions: [...]</code>. See <a href="#cloud-provider-presets">Cloud provider presets</a>.</td></tr><tr><td><code dir="auto">setup.timeoutSec</code></td><td>no</td><td>600</td><td>Substrate kills the script if it exceeds this. Audit log records the timeout.</td></tr><tr><td><code dir="auto">setup.writesState</code></td><td>no</td><td>false</td><td>Design-only (see the partial-implementation Aside). The <em>shipped</em> resource-tracking path is the <code dir="auto">record_resource</code> / <code dir="auto">state_set</code> helpers over <code dir="auto">$PAPERCUSP_RECORD_FIFO</code>; <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code> is read-only JSON content set for teardown/verify, not a writeable file.</td></tr><tr><td><code dir="auto">setup.requiresInteractive</code></td><td>no</td><td>false</td><td>If false (the default and only V1-supported value), substrate refuses scripts that try to read from stdin or open browser windows mid-run. Forbidden in V1 — see <a href="#no-interactive-subprocesses">No interactive subprocesses</a>.</td></tr><tr><td><code dir="auto">teardown.path</code></td><td>recommended</td><td>—</td><td>If absent, uninstalling the plugin shows “this plugin can’t auto-clean its resources; you’ll need to remove them manually.”</td></tr><tr><td><code dir="auto">verify.path</code></td><td>recommended</td><td>—</td><td>Used for plugin health on operator boot. If absent, plugin health is inferred from action invocations.</td></tr><tr><td><code dir="auto">verify.intervalSec</code></td><td>no</td><td>600</td><td>How often the substrate runs <code dir="auto">verify</code> opportunistically.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="cost-estimate-field--explicitly-dropped-from-v1">Cost estimate field — explicitly dropped from V1</h3><a class="sl-anchor-link" href="#cost-estimate-field--explicitly-dropped-from-v1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cost estimate field — explicitly dropped from V1”</span></a></div>
 <p>A <code dir="auto">provision.setup.costEstimateAdvisory</code> field was proposed in earlier
 drafts of this spec. It has been <strong>removed</strong>. See
@@ -151,12 +221,32 @@ drafts of this spec. It has been <strong>removed</strong>. See
 <div class="sl-heading-wrapper level-h3"><h3 id="network-policy-floor">Network policy floor</h3><a class="sl-anchor-link" href="#network-policy-floor"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Network policy floor”</span></a></div>
 <p>Regardless of <code dir="auto">allowedHosts</code> or <code dir="auto">cloudProvider</code> declarations, the
 substrate hard-blocks outbound connections to:</p>
-<p>| CIDR | Why |
-|---|---|
-| <code dir="auto">169.254.169.254/32</code>, <code dir="auto">169.254.0.0/16</code> | Cloud metadata services (AWS IMDS, GCP, Azure) — exfiltrating instance role credentials |
-| <code dir="auto">127.0.0.0/8</code> | Loopback — pivoting to other host services (<code dir="auto">localhost:5432</code>, etc.) |
-| <code dir="auto">10.0.0.0/8</code>, <code dir="auto">172.16.0.0/12</code>, <code dir="auto">192.168.0.0/16</code> | RFC1918 — pivoting to internal infra |
-| <code dir="auto">fc00::/7</code> | IPv6 ULA (covers <code dir="auto">fc00::/8</code> + <code dir="auto">fd00::/8</code>) — pivoting to internal IPv6 infra |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>CIDR</th><th>Why</th></tr></thead><tbody><tr><td><code dir="auto">169.254.169.254/32</code>, <code dir="auto">169.254.0.0/16</code></td><td>Cloud metadata services (AWS IMDS, GCP, Azure) — exfiltrating instance role credentials</td></tr><tr><td><code dir="auto">127.0.0.0/8</code></td><td>Loopback — pivoting to other host services (<code dir="auto">localhost:5432</code>, etc.)</td></tr><tr><td><code dir="auto">10.0.0.0/8</code>, <code dir="auto">172.16.0.0/12</code>, <code dir="auto">192.168.0.0/16</code></td><td>RFC1918 — pivoting to internal infra</td></tr><tr><td><code dir="auto">fc00::/7</code></td><td>IPv6 ULA (covers <code dir="auto">fc00::/8</code> + <code dir="auto">fd00::/8</code>) — pivoting to internal IPv6 infra</td></tr></tbody></table>
 <p>Plugins that genuinely need to reach RFC1918 or loopback addresses
 (self-hosted database, internal Kubernetes API) must declare each one in
 <code dir="auto">allowedHosts</code> explicitly. The floor is non-negotiable in V1; even
@@ -201,31 +291,87 @@ event-stream and xz-utils are the canonical examples of signed packages
 becoming attack vectors.</p></div> </aside>
 <p>The substrate runs every provisioning script inside an OS-level sandbox by
 default:</p>
-<p>| Platform | Sandbox mechanism | Status |
-|---|---|---|
-| <strong>Linux</strong> | <code dir="auto">bwrap</code> (bubblewrap) — substrate <strong>bundles its own copy</strong> to avoid distro variance. Smoke-test at first install (<code dir="auto">bwrap --ro-bind / / --unshare-all true</code>); pass → sandbox available; fail → permanent <code dir="auto">sandbox_available: false</code> mark, signed-only mode for the substrate’s lifetime | V1 |
-| <strong>macOS</strong> | <code dir="auto">sandbox-exec</code> with a Papercusp-bundled <code dir="auto">.sb</code> profile (deprecated by Apple but functional; meaningful barrier against accidents) <strong>+ signed-only mode for unsigned-script refusal</strong>. No “louder banner” path on macOS — unsigned scripts are refused entirely | V1 |
-| <strong>macOS (V2)</strong> | Tauri sidecar with restricted entitlements declared in <code dir="auto">Info.plist</code> (no <code dir="auto">com.apple.security.network.client</code> unless <code dir="auto">cloudProvider</code> declared, no filesystem outside plugin-data, etc.). Defense-in-depth on top of sandbox-exec | V2 |
-| <strong>Windows</strong> | None in V1; signed-only mode required (same policy as macOS) | V2 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Platform</th><th>Sandbox mechanism</th><th>Status</th></tr></thead><tbody><tr><td><strong>Linux</strong></td><td><code dir="auto">bwrap</code> (bubblewrap) — substrate <strong>bundles its own copy</strong> to avoid distro variance. Smoke-test at first install (<code dir="auto">bwrap --ro-bind / / --unshare-all true</code>); pass → sandbox available; fail → permanent <code dir="auto">sandbox_available: false</code> mark, signed-only mode for the substrate’s lifetime</td><td>V1</td></tr><tr><td><strong>macOS</strong></td><td><code dir="auto">sandbox-exec</code> with a Papercusp-bundled <code dir="auto">.sb</code> profile (deprecated by Apple but functional; meaningful barrier against accidents) <strong>+ signed-only mode for unsigned-script refusal</strong>. No “louder banner” path on macOS — unsigned scripts are refused entirely</td><td>V1</td></tr><tr><td><strong>macOS (V2)</strong></td><td>Tauri sidecar with restricted entitlements declared in <code dir="auto">Info.plist</code> (no <code dir="auto">com.apple.security.network.client</code> unless <code dir="auto">cloudProvider</code> declared, no filesystem outside plugin-data, etc.). Defense-in-depth on top of sandbox-exec</td><td>V2</td></tr><tr><td><strong>Windows</strong></td><td>None in V1; signed-only mode required (same policy as macOS)</td><td>V2</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="bwrap-smoke-test-linux-install-flow">Bwrap smoke test (Linux install flow)</h3><a class="sl-anchor-link" href="#bwrap-smoke-test-linux-install-flow"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Bwrap smoke test (Linux install flow)”</span></a></div>
 <p>A bundled bwrap binary doesn’t help if the kernel disabled unprivileged
 user namespaces (Debian’s old default, RHEL hardened, some K8s node
 images). The substrate runs a smoke test at first install:</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="sh"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">bwrap</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--ro-bind</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">/</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">/</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--unshare-all</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">true</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="bwrap --ro-bind / / --unshare-all true"><div></div></button></div></figure></div>
-<p>| Smoke result | Substrate state |
-|---|---|
-| Exit 0 | <code dir="auto">sandbox_available: true</code> — normal flow |
-| Exit non-zero, EPERM, or namespaces unavailable | <code dir="auto">sandbox_available: false</code> permanently until next substrate upgrade re-runs the smoke test. Operator switches to <strong>signed-only mode</strong>: refuses unsigned scripts entirely; signed scripts run unsandboxed with explicit one-time per-host acknowledgement |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Smoke result</th><th>Substrate state</th></tr></thead><tbody><tr><td>Exit 0</td><td><code dir="auto">sandbox_available: true</code> — normal flow</td></tr><tr><td>Exit non-zero, EPERM, or namespaces unavailable</td><td><code dir="auto">sandbox_available: false</code> permanently until next substrate upgrade re-runs the smoke test. Operator switches to <strong>signed-only mode</strong>: refuses unsigned scripts entirely; signed scripts run unsandboxed with explicit one-time per-host acknowledgement</td></tr></tbody></table>
 <p>The mark is mechanical, not banner-spam at runtime. Failure is
 policy-driven (kernel policy), not transient — the right disposition is
 “refuse unsigned, accept signed with eyes open,” not “louder warning
 every run.”</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="sandbox-escape-hatches">Sandbox escape hatches</h3><a class="sl-anchor-link" href="#sandbox-escape-hatches"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Sandbox escape hatches”</span></a></div>
 <p>Two env-var escape hatches, both per-process only, neither persistent:</p>
-<p>| Env var | Purpose | Constraint |
-|---|---|---|
-| <code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code> | Test / CI hosts where bwrap isn’t available: skip the smoke probe entirely and run the script directly (<code dir="auto">active: false</code>, no sandbox) | For CI/test only. Doesn’t survive process restart. |
-| <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> | Run a script unsandboxed <em>when the bwrap smoke test fails</em> (non-standard kernel hardening) instead of the default fail-loud path | The runner records a <code dir="auto">sandbox-bypass</code> audit event each run. Doesn’t survive process restart. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Env var</th><th>Purpose</th><th>Constraint</th></tr></thead><tbody><tr><td><code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code></td><td>Test / CI hosts where bwrap isn’t available: skip the smoke probe entirely and run the script directly (<code dir="auto">active: false</code>, no sandbox)</td><td>For CI/test only. Doesn’t survive process restart.</td></tr><tr><td><code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code></td><td>Run a script unsandboxed <em>when the bwrap smoke test fails</em> (non-standard kernel hardening) instead of the default fail-loud path</td><td>The runner records a <code dir="auto">sandbox-bypass</code> audit event each run. Doesn’t survive process restart.</td></tr></tbody></table>
 <p>Neither is keyed on a script hash — they are coarse process-level opt-ins, not per-script grants. (Earlier drafts described <code dir="auto">PAPERCUSP_UNSANDBOX_SCRIPT=&#x3C;sha256></code> / <code dir="auto">PAPERCUSP_DEV_UNSIGNED=&#x3C;sha256></code> hash-keyed env vars; those were never implemented and do not exist in the runner.)</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="dev-install-flow-for-plugin-authors">Dev install flow for plugin authors</h3><a class="sl-anchor-link" href="#dev-install-flow-for-plugin-authors"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Dev install flow for plugin authors”</span></a></div>
 <p>Plugin authors iterating on their own <code dir="auto">setup.sh</code> need a path that doesn’t
@@ -249,12 +395,42 @@ them one with that flag. The marketplace flow stays signed-only.</p>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="what-signing-affects-and-what-it-doesnt">What signing affects (and what it doesn’t)</h3><a class="sl-anchor-link" href="#what-signing-affects-and-what-it-doesnt"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What signing affects (and what it doesn’t)”</span></a></div>
 <p>Signing changes only the consent-flow presentation — not the sandbox boundary:</p>
-<p>| Property | Signed (publisher trusted by user) | Signed (publisher not yet trusted) | Unsigned |
-|---|---|---|---|
-| Sandbox enforced? | <strong>Yes</strong> | <strong>Yes</strong> | <strong>Yes</strong> |
-| Consent-UI text | “Signed by <code dir="auto">@papercupai</code>. Last 5 versions trusted by you.” | “Signed by <code dir="auto">@papercupai</code>. First time you’ve seen this publisher.” | “Unsigned. The script’s source has not been verified by any publisher.” |
-| “Trust this publisher’s future scripts” toggle | Visible, unchecked default | Visible, unchecked default | Hidden |
-| Power-user unsandbox opt-out | Settings-page toggle, requires CLI confirmation | Settings-page toggle, requires CLI confirmation | Hidden behind the <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> env-var (logged as a <code dir="auto">sandbox-bypass</code> audit event; does not survive process restart) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Property</th><th>Signed (publisher trusted by user)</th><th>Signed (publisher not yet trusted)</th><th>Unsigned</th></tr></thead><tbody><tr><td>Sandbox enforced?</td><td><strong>Yes</strong></td><td><strong>Yes</strong></td><td><strong>Yes</strong></td></tr><tr><td>Consent-UI text</td><td>”Signed by <code dir="auto">@papercupai</code>. Last 5 versions trusted by you."</td><td>"Signed by <code dir="auto">@papercupai</code>. First time you’ve seen this publisher."</td><td>"Unsigned. The script’s source has not been verified by any publisher."</td></tr><tr><td>"Trust this publisher’s future scripts” toggle</td><td>Visible, unchecked default</td><td>Visible, unchecked default</td><td>Hidden</td></tr><tr><td>Power-user unsandbox opt-out</td><td>Settings-page toggle, requires CLI confirmation</td><td>Settings-page toggle, requires CLI confirmation</td><td>Hidden behind the <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> env-var (logged as a <code dir="auto">sandbox-bypass</code> audit event; does not survive process restart)</td></tr></tbody></table>
 <p>Convenience scales with trust. Isolation does not.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="static-analysis-warnings-design-only--not-yet-implemented">Static-analysis warnings (design-only — not yet implemented)</h3><a class="sl-anchor-link" href="#static-analysis-warnings-design-only--not-yet-implemented"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Static-analysis warnings (design-only — not yet implemented)”</span></a></div>
 <blockquote>
@@ -283,19 +459,60 @@ substrate displays alongside the warning (“the publisher acknowledged this
 pattern and explained why it’s safe”).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="runtime-contract">Runtime contract</h2><a class="sl-anchor-link" href="#runtime-contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Runtime contract”</span></a></div>
 <p>The substrate provides each script with a controlled environment:</p>
-<p>| Variable | Purpose |
-|---|---|
-| <code dir="auto">$PAPERCUSP_PLUGIN_DIR</code> | Absolute path to the plugin’s installed directory (read-only, even outside the sandbox) |
-| <code dir="auto">$PAPERCUSP_SCRATCH_DIR</code> | Per-(harness, plugin) read-write scratch dir. <strong>Also the script’s <code dir="auto">$HOME</code> and working directory</strong> (bwrap <code dir="auto">--chdir</code>). |
-| <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code> | JSON <strong>content</strong> of the current provision state, serialized into the env var (not a file path, not writeable). <strong>Only set for <code dir="auto">teardown</code> and <code dir="auto">verify</code></strong> — <code dir="auto">setup</code> doesn’t get it. Scripts read it as data, e.g. <code dir="auto">state="${PAPERCUSP_PLUGIN_STATE:-$(cat)}"</code> then <code dir="auto">jq</code>. |
-| <code dir="auto">$PAPERCUSP_PLUGIN_NAME</code> | The plugin slug the script is being run for. |
-| <code dir="auto">$PAPERCUSP_HARNESS_SLUG</code> | The harness slug the script is being run for. |
-| <code dir="auto">$PAPERCUSP_PHASE</code> | <code dir="auto">setup</code> | <code dir="auto">teardown</code> | <code dir="auto">verify</code>. |
-| <code dir="auto">$PAPERCUSP_PROJECT_DIR</code> | The harness’s project dir (only set when the harness has one; used by <code dir="auto">render_templates</code>). |
-| <code dir="auto">$PAPERCUSP_RUNTIME_LIB</code> | Absolute path to <code dir="auto">lib.sh</code> (the script sources this). |
-| <code dir="auto">$PAPERCUSP_RECORD_FIFO</code> | Path the <code dir="auto">record_resource</code> / <code dir="auto">state_set</code> helpers write to (see <a href="#helper-library-provisionlibsh">Helper library</a>). |
-| <code dir="auto">$PAPERCUSP_CONFIG</code> | The full plugin config as a JSON string. Parse with <code dir="auto">jq</code> (e.g. <code dir="auto">echo "$PAPERCUSP_CONFIG" \| jq -r '.region'</code>). |
-| <code dir="auto">$USER_VAR_&#x3C;UPPER_SNAKE></code> | Each <strong>top-level scalar</strong> config field, flattened: <code dir="auto">lowerCamel</code> → <code dir="auto">UPPER_SNAKE</code> (e.g. <code dir="auto">accountId</code> → <code dir="auto">$USER_VAR_ACCOUNT_ID</code>). Strings/numbers/booleans/null only — nested objects and arrays are skipped (read those from <code dir="auto">$PAPERCUSP_CONFIG</code>). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Variable</th><th>Purpose</th></tr></thead><tbody><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_DIR</code></td><td>Absolute path to the plugin’s installed directory (read-only, even outside the sandbox)</td></tr><tr><td><code dir="auto">$PAPERCUSP_SCRATCH_DIR</code></td><td>Per-(harness, plugin) read-write scratch dir. <strong>Also the script’s <code dir="auto">$HOME</code> and working directory</strong> (bwrap <code dir="auto">--chdir</code>).</td></tr><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_STATE</code></td><td>JSON <strong>content</strong> of the current provision state, serialized into the env var (not a file path, not writeable). <strong>Only set for <code dir="auto">teardown</code> and <code dir="auto">verify</code></strong> — <code dir="auto">setup</code> doesn’t get it. Scripts read it as data, e.g. <code dir="auto">state="${PAPERCUSP_PLUGIN_STATE:-$(cat)}"</code> then <code dir="auto">jq</code>.</td></tr><tr><td><code dir="auto">$PAPERCUSP_PLUGIN_NAME</code></td><td>The plugin slug the script is being run for.</td></tr><tr><td><code dir="auto">$PAPERCUSP_HARNESS_SLUG</code></td><td>The harness slug the script is being run for.</td></tr><tr><td><code dir="auto">$PAPERCUSP_PHASE</code></td><td><code dir="auto">setup</code> | <code dir="auto">teardown</code> | <code dir="auto">verify</code>.</td></tr><tr><td><code dir="auto">$PAPERCUSP_PROJECT_DIR</code></td><td>The harness’s project dir (only set when the harness has one; used by <code dir="auto">render_templates</code>).</td></tr><tr><td><code dir="auto">$PAPERCUSP_RUNTIME_LIB</code></td><td>Absolute path to <code dir="auto">lib.sh</code> (the script sources this).</td></tr><tr><td><code dir="auto">$PAPERCUSP_RECORD_FIFO</code></td><td>Path the <code dir="auto">record_resource</code> / <code dir="auto">state_set</code> helpers write to (see <a href="#helper-library-provisionlibsh">Helper library</a>).</td></tr><tr><td><code dir="auto">$PAPERCUSP_CONFIG</code></td><td>The full plugin config as a JSON string. Parse with <code dir="auto">jq</code> (e.g. <code dir="auto">echo "$PAPERCUSP_CONFIG" | jq -r '.region'</code>).</td></tr><tr><td><code dir="auto">$USER_VAR_&#x3C;UPPER_SNAKE></code></td><td>Each <strong>top-level scalar</strong> config field, flattened: <code dir="auto">lowerCamel</code> → <code dir="auto">UPPER_SNAKE</code> (e.g. <code dir="auto">accountId</code> → <code dir="auto">$USER_VAR_ACCOUNT_ID</code>). Strings/numbers/booleans/null only — nested objects and arrays are skipped (read those from <code dir="auto">$PAPERCUSP_CONFIG</code>).</td></tr></tbody></table>
 <p>There is <strong>no</strong> <code dir="auto">$PAPERCUSP_PLUGIN_DATA</code>, <code dir="auto">$PAPERCUSP_RUN_ID</code>, or
 <code dir="auto">$PAPERCUSP_CFG_*</code> in the provision sandbox env. The working directory and
 <code dir="auto">$HOME</code> are both <code dir="auto">$PAPERCUSP_SCRATCH_DIR</code>; the internal <code dir="auto">dbos-…</code> run id is
@@ -336,17 +553,58 @@ idempotency hashes plus <code dir="auto">createdResources</code> / <code dir="au
 “stored as <code dir="auto">&#x3C;path></code>” without leaking the PG implementation; nothing is
 persisted to that path.)</p>
 <p>The substrate compares <strong>three</strong> values against the current install:</p>
-<p>| Compared value | Source | Trigger |
-|---|---|---|
-| <code dir="auto">configHash</code> | sha256 of the structural projection of the current per-harness plugin-config | Mismatch → re-provision prompt |
-| <code dir="auto">scriptHash</code> | sha256 of the current plugin’s <code dir="auto">setup.path</code> file content | Mismatch → <strong>always</strong> re-provision prompt (script-hash changes can never be auto-applied) |
-| <code dir="auto">pluginVersion</code> | semver from the current plugin’s manifest | Mismatch → re-provision prompt unless <code dir="auto">skipReprovisionOnPatch: true</code> AND <strong>only the patch component changed</strong> (major <em>and</em> minor unchanged) AND <code dir="auto">scriptHash</code> matches. A minor bump is treated like a major bump (“to be safe”) and always re-prompts. |</p>
-<p>| State | Substrate behavior |
-|---|---|
-| All three match | Setup is “valid”; actions can run normally. |
-| <code dir="auto">configHash</code> differs | Plugin marked <code dir="auto">setup-stale</code>. Settings UI shows a “Re-provision needed” banner with a button: “Run teardown then setup”. Actions block with <code dir="auto">setup-required</code>. |
-| <code dir="auto">scriptHash</code> differs | <strong>Always re-provision prompt, regardless of <code dir="auto">skipReprovisionOnPatch</code>.</strong> A script-hash change implies the publisher (or attacker who compromised the publisher) shipped new provisioning logic — no auto-apply path exists. |
-| <code dir="auto">pluginVersion</code> differs (script-hash same, config-hash same) | Re-provision prompt by default. <code dir="auto">provision.setup.skipReprovisionOnPatch: true</code> exempts patch-only bumps when the script and config are unchanged. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Compared value</th><th>Source</th><th>Trigger</th></tr></thead><tbody><tr><td><code dir="auto">configHash</code></td><td>sha256 of the structural projection of the current per-harness plugin-config</td><td>Mismatch → re-provision prompt</td></tr><tr><td><code dir="auto">scriptHash</code></td><td>sha256 of the current plugin’s <code dir="auto">setup.path</code> file content</td><td>Mismatch → <strong>always</strong> re-provision prompt (script-hash changes can never be auto-applied)</td></tr><tr><td><code dir="auto">pluginVersion</code></td><td>semver from the current plugin’s manifest</td><td>Mismatch → re-provision prompt unless <code dir="auto">skipReprovisionOnPatch: true</code> AND <strong>only the patch component changed</strong> (major <em>and</em> minor unchanged) AND <code dir="auto">scriptHash</code> matches. A minor bump is treated like a major bump (“to be safe”) and always re-prompts.</td></tr></tbody></table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>State</th><th>Substrate behavior</th></tr></thead><tbody><tr><td>All three match</td><td>Setup is “valid”; actions can run normally.</td></tr><tr><td><code dir="auto">configHash</code> differs</td><td>Plugin marked <code dir="auto">setup-stale</code>. Settings UI shows a “Re-provision needed” banner with a button: “Run teardown then setup”. Actions block with <code dir="auto">setup-required</code>.</td></tr><tr><td><code dir="auto">scriptHash</code> differs</td><td><strong>Always re-provision prompt, regardless of <code dir="auto">skipReprovisionOnPatch</code>.</strong> A script-hash change implies the publisher (or attacker who compromised the publisher) shipped new provisioning logic — no auto-apply path exists.</td></tr><tr><td><code dir="auto">pluginVersion</code> differs (script-hash same, config-hash same)</td><td>Re-provision prompt by default. <code dir="auto">provision.setup.skipReprovisionOnPatch: true</code> exempts patch-only bumps when the script and config are unchanged.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="skipreprovisiononpatch-semantics"><code dir="auto">skipReprovisionOnPatch</code> semantics</h3><a class="sl-anchor-link" href="#skipreprovisiononpatch-semantics"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “skipReprovisionOnPatch semantics”</span></a></div>
 <p>The flag governs <strong><code dir="auto">pluginVersion</code> mismatches only, when both <code dir="auto">scriptHash</code>
 and <code dir="auto">configHash</code> are unchanged</strong>. It does NOT exempt script-hash changes
@@ -431,10 +689,24 @@ scripts handle the residual.</p>
 <p>V1 explicitly targets single-user dev/desktop. On first run, the
 substrate detects shared-host configurations and prompts a one-time
 acknowledgement banner:</p>
-<p>| Detection | Threshold |
-|---|---|
-| <strong>Active sessions</strong> (primary): <code dir="auto">who \| awk '{print $1}' \| sort -u \| wc -l > 1</code> | More than one logged-in user. Most reliable signal. |
-| <strong>Configured users</strong> (secondary): <code dir="auto">/etc/passwd</code> entries with <code dir="auto">1000 ≤ UID ≤ 60000</code> + a <code dir="auto">/home/&#x3C;name>/</code> home + a login shell from a fixed allowlist | Catches “host has multiple human users configured even if only one is logged in right now.” The 60000 upper bound excludes the <code dir="auto">nobody</code> / high system-service range. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Detection</th><th>Threshold</th></tr></thead><tbody><tr><td><strong>Active sessions</strong> (primary): <code dir="auto">who | awk '{print $1}' | sort -u | wc -l > 1</code></td><td>More than one logged-in user. Most reliable signal.</td></tr><tr><td><strong>Configured users</strong> (secondary): <code dir="auto">/etc/passwd</code> entries with <code dir="auto">1000 ≤ UID ≤ 60000</code> + a <code dir="auto">/home/&#x3C;name>/</code> home + a login shell from a fixed allowlist</td><td>Catches “host has multiple human users configured even if only one is logged in right now.” The 60000 upper bound excludes the <code dir="auto">nobody</code> / high system-service range.</td></tr></tbody></table>
 <p>Either trigger surfaces:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="text"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Papercusp V1 is designed for single-user dev/desktop hosts.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">This host appears to have multiple users (laptop is fine; shared</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">classroom / lab / CI servers are NOT the V1 target).</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">Continue on this shared host?  [ Yes — I understand ] [ Cancel ]</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="Papercusp V1 is designed for single-user dev/desktop hosts.This host appears to have multiple users (laptop is fine; sharedclassroom / lab / CI servers are NOT the V1 target).  Continue on this shared host?  [ Yes — I understand ] [ Cancel ]"><div></div></button></div></figure></div>
@@ -444,16 +716,48 @@ and the prompt doesn’t reappear unless the host’s user-count signature chang
 <p>Trust is granular at the <strong>(publisher, plugin)</strong> level — not per-publisher.
 A publisher who ships multiple plugins doesn’t get blanket trust on a new
 plugin just because the user approved a different one of theirs.</p>
-<p>| Event | Effect |
-|---|---|
-| User approves a script with sha <code dir="auto">X</code> from <code dir="auto">(publisher P, plugin G)</code> | Records <code dir="auto">{publisher: P, plugin: G, publisher_id: &#x3C;key fingerprint>, scriptHash: X, approvedAt: now}</code> in the substrate’s trust store |
-| User checks “trust future signed scripts from <code dir="auto">(P, G)</code>” | Records <code dir="auto">{publisher: P, plugin: G, publisher_id: &#x3C;fingerprint>, trustFuturePatches: true, since: now}</code>. <strong>Scoped to plugin G only</strong>, not all of P’s plugins. |
-| Substrate sees a future script from <code dir="auto">(P, G)</code> with sha <code dir="auto">Y ≠ X</code>, <code dir="auto">trustFuturePatches: true</code>, <strong>same <code dir="auto">publisher_id</code></strong>, <strong>same plugin name</strong> | Shows a shorter “trusted (publisher, plugin); one-click approve” prompt |
-| Substrate sees a script from <code dir="auto">(P, G)</code> with a <code dir="auto">publisher_id</code> differing from any prior trusted version | <strong>Treats as first encounter.</strong> All cached trust entries for <code dir="auto">(P, G)</code> cleared. Full consent flow runs. (See <a href="#ownership-transfer">Ownership transfer</a>.) |
-| Substrate sees a script from <code dir="auto">(P, NewPluginH)</code> where the user has <code dir="auto">trustFuturePatches: true</code> for <code dir="auto">(P, G)</code> only | Full consent flow runs. The trust toggle does not transfer across plugins from the same publisher. |
-| Marketplace quarantines or retracts any version of <code dir="auto">(P, G)</code> | All trust entries for <code dir="auto">(P, G)</code> cleared. Future encounters require fresh approval. |
-| Marketplace quarantines a <em>different</em> plugin <code dir="auto">(P, OtherPlugin)</code> | All trust entries for <code dir="auto">(P, OtherPlugin)</code> cleared. <strong>Trust on <code dir="auto">(P, G)</code> is preserved</strong> unless that plugin was also flagged. The pure-publisher-quarantine sledgehammer is reserved for evidence of publisher-key compromise. |
-| Marketplace publishes a publisher-key compromise advisory | All trust entries for any <code dir="auto">(P, *)</code> cleared. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Event</th><th>Effect</th></tr></thead><tbody><tr><td>User approves a script with sha <code dir="auto">X</code> from <code dir="auto">(publisher P, plugin G)</code></td><td>Records <code dir="auto">{publisher: P, plugin: G, publisher_id: &#x3C;key fingerprint>, scriptHash: X, approvedAt: now}</code> in the substrate’s trust store</td></tr><tr><td>User checks “trust future signed scripts from <code dir="auto">(P, G)</code>”</td><td>Records <code dir="auto">{publisher: P, plugin: G, publisher_id: &#x3C;fingerprint>, trustFuturePatches: true, since: now}</code>. <strong>Scoped to plugin G only</strong>, not all of P’s plugins.</td></tr><tr><td>Substrate sees a future script from <code dir="auto">(P, G)</code> with sha <code dir="auto">Y ≠ X</code>, <code dir="auto">trustFuturePatches: true</code>, <strong>same <code dir="auto">publisher_id</code></strong>, <strong>same plugin name</strong></td><td>Shows a shorter “trusted (publisher, plugin); one-click approve” prompt</td></tr><tr><td>Substrate sees a script from <code dir="auto">(P, G)</code> with a <code dir="auto">publisher_id</code> differing from any prior trusted version</td><td><strong>Treats as first encounter.</strong> All cached trust entries for <code dir="auto">(P, G)</code> cleared. Full consent flow runs. (See <a href="#ownership-transfer">Ownership transfer</a>.)</td></tr><tr><td>Substrate sees a script from <code dir="auto">(P, NewPluginH)</code> where the user has <code dir="auto">trustFuturePatches: true</code> for <code dir="auto">(P, G)</code> only</td><td>Full consent flow runs. The trust toggle does not transfer across plugins from the same publisher.</td></tr><tr><td>Marketplace quarantines or retracts any version of <code dir="auto">(P, G)</code></td><td>All trust entries for <code dir="auto">(P, G)</code> cleared. Future encounters require fresh approval.</td></tr><tr><td>Marketplace quarantines a <em>different</em> plugin <code dir="auto">(P, OtherPlugin)</code></td><td>All trust entries for <code dir="auto">(P, OtherPlugin)</code> cleared. <strong>Trust on <code dir="auto">(P, G)</code> is preserved</strong> unless that plugin was also flagged. The pure-publisher-quarantine sledgehammer is reserved for evidence of publisher-key compromise.</td></tr><tr><td>Marketplace publishes a publisher-key compromise advisory</td><td>All trust entries for any <code dir="auto">(P, *)</code> cleared.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="ownership-transfer">Ownership transfer</h3><a class="sl-anchor-link" href="#ownership-transfer"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Ownership transfer”</span></a></div>
 <p>Per-(publisher, plugin) trust is keyed on the <strong>publisher’s signing-key
 fingerprint</strong> as recorded in the marketplace’s per-version metadata. When
@@ -489,11 +793,28 @@ scripts” toggle is unchecked by default after every rotation event.</p>
 <p>If a publisher’s key is compromised (signaled by marketplace
 publishing a <code dir="auto">key-compromise</code> advisory, also countersigned by the
 marketplace’s infrastructure key):</p>
-<p>| Event | Effect |
-|---|---|
-| Marketplace publishes <code dir="auto">key-compromise</code> for fingerprint <code dir="auto">K</code> | Substrate refuses to verify any signature against <code dir="auto">K</code>. All trust entries for any plugin signed by <code dir="auto">K</code> flagged <code dir="auto">signing_key_compromised: true</code>. |
-| User invokes a plugin with a compromised signing key | Plugin actions and hooks blocked; settings UI shows compromise notice + “this plugin is unsafe to run; uninstall and switch to a different signing key” |
-| Publisher publishes new versions signed with a fresh, marketplace-attested key | Substrate accepts these as a new publisher_id; user re-approves on first encounter |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Event</th><th>Effect</th></tr></thead><tbody><tr><td>Marketplace publishes <code dir="auto">key-compromise</code> for fingerprint <code dir="auto">K</code></td><td>Substrate refuses to verify any signature against <code dir="auto">K</code>. All trust entries for any plugin signed by <code dir="auto">K</code> flagged <code dir="auto">signing_key_compromised: true</code>.</td></tr><tr><td>User invokes a plugin with a compromised signing key</td><td>Plugin actions and hooks blocked; settings UI shows compromise notice + “this plugin is unsafe to run; uninstall and switch to a different signing key”</td></tr><tr><td>Publisher publishes new versions signed with a fresh, marketplace-attested key</td><td>Substrate accepts these as a new publisher_id; user re-approves on first encounter</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="consent-flow">Consent flow</h2><a class="sl-anchor-link" href="#consent-flow"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Consent flow”</span></a></div>
 <p>When the user is about to fork a snapshot containing plugins with
 provisioning, or when they enable a plugin with <code dir="auto">provision.setup</code>, the
@@ -584,10 +905,33 @@ operator banner rather than running a script whose actions go unrecorded.</p>
 <p>The existing SDK provides a <code dir="auto">compute:exec:&#x3C;bin></code> capability for plugins
 that need to shell out from action handlers. Build scripts are a separate
 mechanism with different properties:</p>
-<p>| Surface | Capability-gated? | Sandbox? | Consent flow? | Lifecycle |
-|---|---|---|---|---|
-| <code dir="auto">compute:exec:&#x3C;bin></code> (action shell-out) | Yes — declared per-binary in the manifest, enforced at the DI proxy | Capability sandbox + bin allowlist | Granted at install time | Runs whenever the action is invoked |
-| <code dir="auto">provision.{setup, teardown, verify}</code> (build script) | No — declared as a <code dir="auto">provision</code> block, lifecycle-bound | OS-level sandbox (bwrap on Linux) | Per-script-hash approval at install / fork | Runs once at setup, once at teardown, periodically for verify |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Capability-gated?</th><th>Sandbox?</th><th>Consent flow?</th><th>Lifecycle</th></tr></thead><tbody><tr><td><code dir="auto">compute:exec:&#x3C;bin></code> (action shell-out)</td><td>Yes — declared per-binary in the manifest, enforced at the DI proxy</td><td>Capability sandbox + bin allowlist</td><td>Granted at install time</td><td>Runs whenever the action is invoked</td></tr><tr><td><code dir="auto">provision.{setup, teardown, verify}</code> (build script)</td><td>No — declared as a <code dir="auto">provision</code> block, lifecycle-bound</td><td>OS-level sandbox (bwrap on Linux)</td><td>Per-script-hash approval at install / fork</td><td>Runs once at setup, once at teardown, periodically for verify</td></tr></tbody></table>
 <p>Both coexist. A plugin can use <code dir="auto">compute:exec:git</code> for in-action git
 operations <em>and</em> <code dir="auto">provision.setup</code> for one-time AWS provisioning. The
 distinction:</p>
@@ -607,14 +951,40 @@ by the standard pattern:</p>
 </div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">papercusp_progress</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">step:iam-role</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">creating role </span><span style="--0:#C5E478;--1:#3B61B0">$ROLE_NAME</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">ROLE_ARN</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53">$(</span><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">iam</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">create-role</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">...</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">papercusp_record_resource</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">aws.iam.role</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$ROLE_ARN</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">papercusp_progress</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">step:lambda</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">creating function </span><span style="--0:#C5E478;--1:#3B61B0">$FN_NAME</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">FN_ARN</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53">$(</span><span style="--0:#82AAFF;--1:#3B61B0">aws</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lambda</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">create-function</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">...</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">papercusp_record_resource</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">aws.lambda.function</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$FN_ARN</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="#!/usr/bin/env bashset -euo pipefail. &#x22;$PAPERCUSP_RUNTIME_LIB&#x22;papercusp_progress &#x22;step:iam-role&#x22; &#x22;creating role $ROLE_NAME&#x22;ROLE_ARN=$(aws iam create-role ...)papercusp_record_resource &#x22;aws.iam.role&#x22; &#x22;$ROLE_ARN&#x22;papercusp_progress &#x22;step:lambda&#x22; &#x22;creating function $FN_NAME&#x22;FN_ARN=$(aws lambda create-function ...)papercusp_record_resource &#x22;aws.lambda.function&#x22; &#x22;$FN_ARN&#x22;"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="helpers-exposed-in-v1">Helpers exposed in V1</h3><a class="sl-anchor-link" href="#helpers-exposed-in-v1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Helpers exposed in V1”</span></a></div>
-<p>| Helper | Purpose |
-|---|---|
-| <code dir="auto">papercusp_progress &#x3C;step> &#x3C;message></code> | Emits a <code dir="auto">::papercusp::progress</code> marker. UI renders a structured progress bar. |
-| <code dir="auto">papercusp_warn &#x3C;message></code> | Emits a <code dir="auto">::papercusp::warn</code> marker. UI renders a yellow indicator. |
-| <code dir="auto">papercusp_error &#x3C;message></code> | Emits a <code dir="auto">::papercusp::error</code> marker. UI renders a red indicator (script may still continue or exit). |
-| <code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id> [&#x3C;meta-json>]</code> | Appends <code dir="auto">{kind, externalId, recordedAt, metadata?}</code> JSON to <code dir="auto">$PAPERCUSP_RECORD_FIFO</code> <em>immediately</em> (not at success). The substrate folds it into the provision-state <code dir="auto">createdResources</code>. Used for partial-failure rollback. |
-| <code dir="auto">papercusp_state_set &#x3C;key> &#x3C;value></code> | Sets a key in the provision-state <code dir="auto">outputs</code> object (same FIFO, <code dir="auto">{"$op":"state_set",...}</code>). |
-| <code dir="auto">papercusp_render_templates</code> | Walks <code dir="auto">$PAPERCUSP_PROJECT_DIR</code> for <code dir="auto">*.tmpl</code> files, renders each via <code dir="auto">envsubst</code> with the script’s exported env, writes the de-suffixed result, removes the <code dir="auto">.tmpl</code> source. Skips VCS/build dirs. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Helper</th><th>Purpose</th></tr></thead><tbody><tr><td><code dir="auto">papercusp_progress &#x3C;step> &#x3C;message></code></td><td>Emits a <code dir="auto">::papercusp::progress</code> marker. UI renders a structured progress bar.</td></tr><tr><td><code dir="auto">papercusp_warn &#x3C;message></code></td><td>Emits a <code dir="auto">::papercusp::warn</code> marker. UI renders a yellow indicator.</td></tr><tr><td><code dir="auto">papercusp_error &#x3C;message></code></td><td>Emits a <code dir="auto">::papercusp::error</code> marker. UI renders a red indicator (script may still continue or exit).</td></tr><tr><td><code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id> [&#x3C;meta-json>]</code></td><td>Appends <code dir="auto">{kind, externalId, recordedAt, metadata?}</code> JSON to <code dir="auto">$PAPERCUSP_RECORD_FIFO</code> <em>immediately</em> (not at success). The substrate folds it into the provision-state <code dir="auto">createdResources</code>. Used for partial-failure rollback.</td></tr><tr><td><code dir="auto">papercusp_state_set &#x3C;key> &#x3C;value></code></td><td>Sets a key in the provision-state <code dir="auto">outputs</code> object (same FIFO, <code dir="auto">{"$op":"state_set",...}</code>).</td></tr><tr><td><code dir="auto">papercusp_render_templates</code></td><td>Walks <code dir="auto">$PAPERCUSP_PROJECT_DIR</code> for <code dir="auto">*.tmpl</code> files, renders each via <code dir="auto">envsubst</code> with the script’s exported env, writes the de-suffixed result, removes the <code dir="auto">.tmpl</code> source. Skips VCS/build dirs.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="partial-failure-rollback-via-record_resource">Partial-failure rollback via <code dir="auto">record_resource</code></h3><a class="sl-anchor-link" href="#partial-failure-rollback-via-record_resource"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Partial-failure rollback via record_resource”</span></a></div>
 <p>Real provisioning scripts often create resources in dependency order.
 If step 3 of 5 fails, the substrate already knows about the 2 successful
@@ -659,12 +1029,32 @@ to control when setup fires:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="json"><code><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"provision"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"setup"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"path"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">provision/setup.sh</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"runAt"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">fork</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">          </span><span style="--0:#919F9F;--1:#5D6376">// "fork" (default) | "install" | "first-action"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="{  &#x22;provision&#x22;: {    &#x22;setup&#x22;: {      &#x22;path&#x22;: &#x22;provision/setup.sh&#x22;,      &#x22;runAt&#x22;: &#x22;fork&#x22;          // &#x22;fork&#x22; (default) | &#x22;install&#x22; | &#x22;first-action&#x22;    }  }}"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="behavior-per-surface-when-setup-hasnt-yet-run">Behavior per surface when setup hasn’t yet run</h3><a class="sl-anchor-link" href="#behavior-per-surface-when-setup-hasnt-yet-run"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Behavior per surface when setup hasn’t yet run”</span></a></div>
 <p>The <code dir="auto">setup-required</code> state affects every plugin surface, not just actions:</p>
-<p>| Surface | Behavior when setup hasn’t run |
-|---|---|
-| <strong>Action invocation</strong> | Substrate returns <code dir="auto">{ok: false, error: "setup-required", setupUrl: "..."}</code>. Matches existing capability-denied shape. UI shows a “this plugin needs initial setup” banner with a one-click button. No UI hang. |
-| <strong>Lifecycle hook fire</strong> (e.g., <code dir="auto">onMissionDone</code>) | Hook event is <strong>queued</strong> (FIFO, capped at 10 events per <code dir="auto">(plugin, harness)</code>). After setup completes within <code dir="auto">setupCompletionWindowMin: 30</code> (default), queued events replay in order. After 30 min or 10-event overflow, dropped events are written to the audit log. |
-| <strong>Routine fire</strong> (cron-style scheduled) | Same queue-and-replay as hooks, with the same 10-event cap. |
-| <strong>Incoming webhook</strong> | Substrate responds 503 to the webhook caller. <strong>Not queued</strong> — incoming webhooks shouldn’t accumulate, and the external caller can retry with their own backoff. Audit log records the rejection. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Behavior when setup hasn’t run</th></tr></thead><tbody><tr><td><strong>Action invocation</strong></td><td>Substrate returns <code dir="auto">{ok: false, error: "setup-required", setupUrl: "..."}</code>. Matches existing capability-denied shape. UI shows a “this plugin needs initial setup” banner with a one-click button. No UI hang.</td></tr><tr><td><strong>Lifecycle hook fire</strong> (e.g., <code dir="auto">onMissionDone</code>)</td><td>Hook event is <strong>queued</strong> (FIFO, capped at 10 events per <code dir="auto">(plugin, harness)</code>). After setup completes within <code dir="auto">setupCompletionWindowMin: 30</code> (default), queued events replay in order. After 30 min or 10-event overflow, dropped events are written to the audit log.</td></tr><tr><td><strong>Routine fire</strong> (cron-style scheduled)</td><td>Same queue-and-replay as hooks, with the same 10-event cap.</td></tr><tr><td><strong>Incoming webhook</strong></td><td>Substrate responds 503 to the webhook caller. <strong>Not queued</strong> — incoming webhooks shouldn’t accumulate, and the external caller can retry with their own backoff. Audit log records the rejection.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="queue-overflow-surfacing">Queue overflow surfacing</h3><a class="sl-anchor-link" href="#queue-overflow-surfacing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Queue overflow surfacing”</span></a></div>
 <p>The 10-event hook queue cap is a real ceiling. When events are dropped:</p>
 <ul>
@@ -709,15 +1099,44 @@ listing both:</p>
 host-activity surface in one place; substrate’s internal capability
 distinction stays as documented.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="whats-not-in-v1">What’s NOT in V1</h2><a class="sl-anchor-link" href="#whats-not-in-v1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What’s NOT in V1”</span></a></div>
-<p>| Item | Why deferred |
-|---|---|
-| <code dir="auto">provision.setup.costEstimateAdvisory</code> | The two reviewers correctly flagged this as theater: a number with no enforcement is worse than no number. <strong>V1.1</strong> adds <code dir="auto">provision.setup.budgetCap: { aws: { monthlyUsd: 5 } }</code> wired to AWS Budgets via a substrate helper (~150 LOC, AWS-only). When that lands, costs are <em>enforced</em>, not advertised. |
-| Layer-7 network proxy with TLS interception | V1 enforces network restrictions via the OS sandbox (bwrap blocks the syscall when a host is undeclared). V2 adds a layer-7 proxy with TLS interception for richer per-request observability. |
-| Encrypted-at-rest token storage | V1 target is single-user dev/desktop; encryption-at-rest matters for shared-host scenarios that aren’t the V1 target. |
-| <code dir="auto">runAt</code> scheduling | V1.1, per above. V1 always runs at install/fork. |
-| Interactive subprocess support | V2 may relax with a richer interactive-prompt protocol; V1 forbids. |
-| Per-cloud <code dir="auto">budgetCap</code> helpers beyond AWS | V2. AWS-Budgets ships in V1.1 as the dogfood; GCP/Azure/Cloudflare follow as plugin authors demand them. |
-| Marketplace moderation gate | The plan acknowledges this as a known gap (no review currently happens at publish time). A separate spec doc will cover the moderation layer. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Why deferred</th></tr></thead><tbody><tr><td><code dir="auto">provision.setup.costEstimateAdvisory</code></td><td>The two reviewers correctly flagged this as theater: a number with no enforcement is worse than no number. <strong>V1.1</strong> adds <code dir="auto">provision.setup.budgetCap: { aws: { monthlyUsd: 5 } }</code> wired to AWS Budgets via a substrate helper (~150 LOC, AWS-only). When that lands, costs are <em>enforced</em>, not advertised.</td></tr><tr><td>Layer-7 network proxy with TLS interception</td><td>V1 enforces network restrictions via the OS sandbox (bwrap blocks the syscall when a host is undeclared). V2 adds a layer-7 proxy with TLS interception for richer per-request observability.</td></tr><tr><td>Encrypted-at-rest token storage</td><td>V1 target is single-user dev/desktop; encryption-at-rest matters for shared-host scenarios that aren’t the V1 target.</td></tr><tr><td><code dir="auto">runAt</code> scheduling</td><td>V1.1, per above. V1 always runs at install/fork.</td></tr><tr><td>Interactive subprocess support</td><td>V2 may relax with a richer interactive-prompt protocol; V1 forbids.</td></tr><tr><td>Per-cloud <code dir="auto">budgetCap</code> helpers beyond AWS</td><td>V2. AWS-Budgets ships in V1.1 as the dogfood; GCP/Azure/Cloudflare follow as plugin authors demand them.</td></tr><tr><td>Marketplace moderation gate</td><td>The plan acknowledges this as a known gap (no review currently happens at publish time). A separate spec doc will cover the moderation layer.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="open-issues-moved-to-dedicated-review">Open issues moved to dedicated review</h2><a class="sl-anchor-link" href="#open-issues-moved-to-dedicated-review"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Open issues moved to dedicated review”</span></a></div>
 <p>The remaining design questions (cross-platform commitments, signing
 infrastructure rollout, multi-publisher trust accumulation) are in the

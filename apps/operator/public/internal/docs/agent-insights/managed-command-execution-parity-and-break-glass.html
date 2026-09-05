@@ -74,26 +74,140 @@
 <p>This document closes P-024’s command-tool inventory under D-012, D-013, D-016, D-022, and D-023. The target is one managed route: command execution goes through the server-side <code dir="auto">capability:*</code> family. Native client command tools stay available until parity is proved, steering and adoption telemetry ship, and the break-glass path below is implemented and tested. Codex <code dir="auto">functions.exec</code> and other script runtimes belong to P-025/D-017, not this command-only matrix.</p>
 <p>The compared client builds were probed on staging on 2026-08-22: Claude Code 2.1.240, Codex CLI 0.149.0, and OMP 17.3.5. The Papercusp column is the current staging implementation, not a planned ideal.</p>
 <div class="sl-heading-wrapper level-h1"><h1 id="live-disable-controls">Live disable controls</h1><a class="sl-anchor-link" href="#live-disable-controls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Live disable controls”</span></a></div>
-<p>| Client | Positive control | Negative control | Disable mechanism for managed agents |
-|---|---|---|---|
-| Claude Code 2.1.240 | <code dir="auto">--tools Bash --allowedTools Bash --permission-mode dontAsk</code> executed one Bash call and created an external marker. A background Bash run then completed the current client lifecycle: output read and kill succeeded, and the killed command did not create its delayed marker. | Adding <code dir="auto">--disallowedTools Bash</code> removed Bash and the marker stayed absent. Adding <code dir="auto">--disallowedTools "BashOutput KillShell"</code> let background Bash start but removed both lifecycle controls; the delayed marker appeared because it could not be killed. | Use both a narrow <code dir="auto">--tools</code> availability set and hard <code dir="auto">--disallowedTools</code> entries. Current aliases matter: the 2.1.240 binary maps legacy <code dir="auto">BashOutput</code> to canonical <code dir="auto">TaskOutput</code> and <code dir="auto">KillShell</code>/<code dir="auto">KillBash</code> to canonical <code dir="auto">TaskStop</code>. Carry legacy and canonical names in the deny set, exactly as the existing Task/Agent/Workflow rename guard carries both generations. Re-arm the deny flags on resume because launch flags do not persist automatically. |
-| Codex CLI 0.149.0 | <code dir="auto">codex exec --enable shell_tool --enable unified_exec</code> emitted a native <code dir="auto">command_execution</code> item for <code dir="auto">/bin/bash -c pwd</code>, exit 0, output <code dir="auto">/tmp</code>. | The same run with <code dir="auto">--disable shell_tool --enable unified_exec</code> exposed no command-execution item and answered <code dir="auto">BLOCKED</code>. This proves <code dir="auto">unified_exec</code> is a backend/PTY choice, not the availability switch. | Set <code dir="auto">features.shell_tool=false</code> (<code dir="auto">--disable shell_tool</code>) for managed launches and resumes. Do not use <code dir="auto">features.unified_exec=false</code> as a removal mechanism. The old <code dir="auto">invoke.ts</code> statement that Codex has no removal knob is stale for 0.149.0 and must not govern rollout. |
-| OMP 17.3.5 | In an isolated profile, <code dir="auto">--tools=bash --auto-approve</code> executed exactly one native Bash call and created an external marker. | In the same isolated profile, <code dir="auto">--no-tools</code> exposed no native Bash tool, produced no tool call, answered <code dir="auto">BLOCKED</code>, and left the marker absent. | Prefer the existing <code dir="auto">fleetOmpToolsArgs</code> allowlist, which retains read-only built-ins and removes <code dir="auto">bash</code>, <code dir="auto">python</code>, <code dir="auto">ssh</code>, mutation, fetch, browser, sub-spawn, and native question surfaces while leaving MCP capabilities available. <code dir="auto">--no-tools</code> is the total built-in cut. Defer only when an explicit operator-supplied tool policy is itself the recorded break-glass route. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Client</th><th>Positive control</th><th>Negative control</th><th>Disable mechanism for managed agents</th></tr></thead><tbody><tr><td>Claude Code 2.1.240</td><td><code dir="auto">--tools Bash --allowedTools Bash --permission-mode dontAsk</code> executed one Bash call and created an external marker. A background Bash run then completed the current client lifecycle: output read and kill succeeded, and the killed command did not create its delayed marker.</td><td>Adding <code dir="auto">--disallowedTools Bash</code> removed Bash and the marker stayed absent. Adding <code dir="auto">--disallowedTools "BashOutput KillShell"</code> let background Bash start but removed both lifecycle controls; the delayed marker appeared because it could not be killed.</td><td>Use both a narrow <code dir="auto">--tools</code> availability set and hard <code dir="auto">--disallowedTools</code> entries. Current aliases matter: the 2.1.240 binary maps legacy <code dir="auto">BashOutput</code> to canonical <code dir="auto">TaskOutput</code> and <code dir="auto">KillShell</code>/<code dir="auto">KillBash</code> to canonical <code dir="auto">TaskStop</code>. Carry legacy and canonical names in the deny set, exactly as the existing Task/Agent/Workflow rename guard carries both generations. Re-arm the deny flags on resume because launch flags do not persist automatically.</td></tr><tr><td>Codex CLI 0.149.0</td><td><code dir="auto">codex exec --enable shell_tool --enable unified_exec</code> emitted a native <code dir="auto">command_execution</code> item for <code dir="auto">/bin/bash -c pwd</code>, exit 0, output <code dir="auto">/tmp</code>.</td><td>The same run with <code dir="auto">--disable shell_tool --enable unified_exec</code> exposed no command-execution item and answered <code dir="auto">BLOCKED</code>. This proves <code dir="auto">unified_exec</code> is a backend/PTY choice, not the availability switch.</td><td>Set <code dir="auto">features.shell_tool=false</code> (<code dir="auto">--disable shell_tool</code>) for managed launches and resumes. Do not use <code dir="auto">features.unified_exec=false</code> as a removal mechanism. The old <code dir="auto">invoke.ts</code> statement that Codex has no removal knob is stale for 0.149.0 and must not govern rollout.</td></tr><tr><td>OMP 17.3.5</td><td>In an isolated profile, <code dir="auto">--tools=bash --auto-approve</code> executed exactly one native Bash call and created an external marker.</td><td>In the same isolated profile, <code dir="auto">--no-tools</code> exposed no native Bash tool, produced no tool call, answered <code dir="auto">BLOCKED</code>, and left the marker absent.</td><td>Prefer the existing <code dir="auto">fleetOmpToolsArgs</code> allowlist, which retains read-only built-ins and removes <code dir="auto">bash</code>, <code dir="auto">python</code>, <code dir="auto">ssh</code>, mutation, fetch, browser, sub-spawn, and native question surfaces while leaving MCP capabilities available. <code dir="auto">--no-tools</code> is the total built-in cut. Defer only when an explicit operator-supplied tool policy is itself the recorded break-glass route.</td></tr></tbody></table>
 <p>A managed OMP profile with the full Papercusp MCP catalog hit Gemini’s 512-function ceiling even under <code dir="auto">--no-tools</code>, because that flag removes built-ins but intentionally leaves MCP tools. The native-disable proof therefore used an isolated profile. The tool-count fault is tracked separately as EI-21186779946952865 and is not evidence against the native disable switch.</p>
 <div class="sl-heading-wrapper level-h1"><h1 id="command-parity-matrix">Command parity matrix</h1><a class="sl-anchor-link" href="#command-parity-matrix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Command parity matrix”</span></a></div>
-<p>| Property | Claude Code native Bash family | Codex native <code dir="auto">exec_command</code> family | OMP native <code dir="auto">bash</code> | Papercusp <code dir="auto">capability:bash</code> family | Disable-gate verdict |
-|---|---|---|---|---|---|
-| Working directory | Session cwd; commands can <code dir="auto">cd</code> inline. The native Bash schema does not expose the same explicit per-call cwd contract as the server tool. | Explicit <code dir="auto">workdir</code>; selectable login/non-login shell and shell binary. | Explicit <code dir="auto">cwd</code>; ACP terminal wrapping preserves the configured host shell semantics. | Explicit validated <code dir="auto">cwd</code>, with workspace resolution. | Functionally covered. Parity tests must distinguish intentional workspace confinement from arbitrary native cwd reach. |
-| Environment fidelity | Inherits the client launch environment; callers generally set values inline. The Claude sandbox can mask credentials and restrict egress. | No explicit env object in the current model-facing schema; it inherits according to the Codex shell environment policy and permits inline assignment. | Explicit <code dir="auto">env</code> overlay plus direnv preflight; caller values win. | Inherits a safe allowlist, scrubs DB and secret material, and exposes narrowly authorized encrypted integration bindings with redaction. | Covered by a safer contract, not byte-for-byte inheritance. Tests must prove required build/runtime variables survive and forbidden secrets do not. |
-| Foreground execution and streaming | Native interactive streaming in the client; print/stream-json exposes tool lifecycle events. | PTY or pipe chunks return from <code dir="auto">exec_command</code>; a running process yields a reusable session id. | <code dir="auto">onChunk</code> streaming, PTY option, persistent/one-shot shell backends. | Emits <code dir="auto">output</code> events while foreground execution runs and also returns structured code-mode results. | Covered. P-017 must test ordering, UTF-8 boundaries, stderr/stdout treatment, and abort while streaming. |
-| Background jobs | <code dir="auto">run_in_background</code> returns a shell/task handle. Current canonical lifecycle tools are <code dir="auto">TaskOutput</code> and <code dir="auto">TaskStop</code> (legacy <code dir="auto">BashOutput</code>/<code dir="auto">KillShell</code> aliases). | A long command returns <code dir="auto">session_id</code>; <code dir="auto">write_stdin</code> continues or polls the same process. | <code dir="auto">async:true</code> returns a job id and state; OMP can deliver completion as a later client follow-up. | Returns process-local <code dir="auto">bash_id</code>, durable <code dir="auto">task_id</code>, deadline, and a persisted spill-log path; <code dir="auto">bash_output</code> can reattach by durable task id. | Handle durability is stronger server-side, but automatic client re-invocation on completion is not yet universal. Native disable is blocked until a server event/wake contract proves that background completion resumes the managed turn without polling or losing ownership. |
-| Completion re-invocation | Proven live: a background completion produced a second result with <code dir="auto">origin.kind: task-notification</code>. | No completion-push contract exists in the current <code dir="auto">exec_command</code>/<code dir="auto">write_stdin</code> schema; the client must issue another read/write call. | Client-owned async follow-up delivery exists, but it is not the Papercusp engine wake contract and needs parity coverage. | Task ledger and logs preserve completion state, but <code dir="auto">capability:bash</code> alone does not promise to re-invoke every managed client. | Blocking parity gap. Reuse task-manager completion events and the engine wake/coord path; do not add per-client polling loops. |
-| Interrupt propagation | <code dir="auto">TaskStop</code>/legacy <code dir="auto">KillShell</code> stops a background shell; foreground cancellation is client-owned. | PTY sessions accept Ctrl-C through <code dir="auto">write_stdin</code>; there is no dedicated kill verb in the current native schema. | The executor accepts <code dir="auto">AbortSignal</code>, distinguishes timeout from user cancel, and owns process-tree cleanup across one-shot/PTY paths. | Request abort and wall clock propagate to the child. <code dir="auto">bash_kill</code> validates the handle, sends SIGTERM, then SIGKILL, and verifies termination. Task-manager control protects against PID reuse. | Covered in design; P-017 must prove whole-process-tree death, repeated kill idempotence, already-exited truthfulness, and carry/restart behavior. |
-| Timeouts | Per-call timeout plus client/session lifecycle; background jobs use client task management. | <code dir="auto">yield_time_ms</code> only controls when output is yielded; it is not a process deadline. A shell-level timeout or external cancellation is required. | Per-call timeout (300 seconds observed default), <code dir="auto">0</code> can disable; <code dir="auto">--max-time</code> caps the agent session. | Foreground timeout is clamped below the MCP transport deadline; background defaults to 4 hours and caps at 12 hours, with deadline in the returned handle. | Server contract is clearer. Parity tests must cover zero/omitted/over-cap values and timeout-vs-cancel classification. |
-| Output bounds and lossless recovery | Client-owned truncation/retention; native bytes never cross Papercusp’s result door. | <code dir="auto">max_output_tokens</code> bounds returned chunks and reports original token count; native bytes likewise bypass the result door. | Tracks total/output bytes and lines, minimizes/truncates, and can return an <code dir="auto">artifact://</code> id for the lossless capture. Native bytes bypass the result door. | Head+tail bounded foreground return, durable background log, and model-facing scratch spill/reference through <code dir="auto">result-door.ts</code>. | Functionally covered only for the server route. D-014 enforcement claims must exclude native bytes until native tools are disabled. |
-| Sandboxing | Claude’s launch-time sandbox can confine filesystem and egress; permission flags are a separate layer. | Session sandbox modes and approval policy are client-owned. | Native Bash exposes approval policy and PTY controls but no equivalent guaranteed operator-side containment boundary in this inventory. | <code dir="auto">exec-sandbox.ts</code> exists, prefers SRT, and has a bwrap fallback with read-only host view, writable bindings, credential masks, namespaces, and optional deny-all egress. It is currently default-off and fail-open when unavailable. | Blocking safety gap for a single-route claim. Rollout must either make the selected containment posture default-on and observable or state and test an explicitly accepted unconfined policy; merely selecting <code dir="auto">capability:bash</code> does not prove confinement. |
-| Permission UX and authorization | <code dir="auto">--tools</code> controls availability, <code dir="auto">--allowedTools</code> pre-approves, <code dir="auto">--permission-mode dontAsk</code> turns omission into a nonblocking denial, and <code dir="auto">--disallowedTools</code> hard-removes. | Session approval policy and sandbox mode mediate shell calls; removal is the separate <code dir="auto">shell_tool</code> feature switch. | <code dir="auto">always-ask</code>, <code dir="auto">write</code>, and <code dir="auto">yolo</code> approval modes; <code dir="auto">--tools</code>/<code dir="auto">--no-tools</code> control built-in visibility. | <code dir="auto">defineTool</code> role/effect checks and the live dispatch stack authorize every call; raw secrets are redacted. There is no client permission prompt for a denied server call. | Covered for unattended managed agents if teaching-deny text names the replacement tool and typed errors distinguish denied, unavailable, timed out, and operator-down states. |
-| PTY/session fidelity | Client-native background shell/session semantics. | First-class <code dir="auto">tty</code>, incremental <code dir="auto">write_stdin</code>, and chunked reads. | First-class <code dir="auto">pty</code>, persistent shell, ACP terminal wrapping, and cancellation. | The command family has background process handles but not yet the full persistent PTY create/write/resize/read/close parity surface. | Blocking parity gap owned by the capability PTY lane. Native disable waits for P-017 green tests over the complete server PTY family. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Property</th><th>Claude Code native Bash family</th><th>Codex native <code dir="auto">exec_command</code> family</th><th>OMP native <code dir="auto">bash</code></th><th>Papercusp <code dir="auto">capability:bash</code> family</th><th>Disable-gate verdict</th></tr></thead><tbody><tr><td>Working directory</td><td>Session cwd; commands can <code dir="auto">cd</code> inline. The native Bash schema does not expose the same explicit per-call cwd contract as the server tool.</td><td>Explicit <code dir="auto">workdir</code>; selectable login/non-login shell and shell binary.</td><td>Explicit <code dir="auto">cwd</code>; ACP terminal wrapping preserves the configured host shell semantics.</td><td>Explicit validated <code dir="auto">cwd</code>, with workspace resolution.</td><td>Functionally covered. Parity tests must distinguish intentional workspace confinement from arbitrary native cwd reach.</td></tr><tr><td>Environment fidelity</td><td>Inherits the client launch environment; callers generally set values inline. The Claude sandbox can mask credentials and restrict egress.</td><td>No explicit env object in the current model-facing schema; it inherits according to the Codex shell environment policy and permits inline assignment.</td><td>Explicit <code dir="auto">env</code> overlay plus direnv preflight; caller values win.</td><td>Inherits a safe allowlist, scrubs DB and secret material, and exposes narrowly authorized encrypted integration bindings with redaction.</td><td>Covered by a safer contract, not byte-for-byte inheritance. Tests must prove required build/runtime variables survive and forbidden secrets do not.</td></tr><tr><td>Foreground execution and streaming</td><td>Native interactive streaming in the client; print/stream-json exposes tool lifecycle events.</td><td>PTY or pipe chunks return from <code dir="auto">exec_command</code>; a running process yields a reusable session id.</td><td><code dir="auto">onChunk</code> streaming, PTY option, persistent/one-shot shell backends.</td><td>Emits <code dir="auto">output</code> events while foreground execution runs and also returns structured code-mode results.</td><td>Covered. P-017 must test ordering, UTF-8 boundaries, stderr/stdout treatment, and abort while streaming.</td></tr><tr><td>Background jobs</td><td><code dir="auto">run_in_background</code> returns a shell/task handle. Current canonical lifecycle tools are <code dir="auto">TaskOutput</code> and <code dir="auto">TaskStop</code> (legacy <code dir="auto">BashOutput</code>/<code dir="auto">KillShell</code> aliases).</td><td>A long command returns <code dir="auto">session_id</code>; <code dir="auto">write_stdin</code> continues or polls the same process.</td><td><code dir="auto">async:true</code> returns a job id and state; OMP can deliver completion as a later client follow-up.</td><td>Returns process-local <code dir="auto">bash_id</code>, durable <code dir="auto">task_id</code>, deadline, and a persisted spill-log path; <code dir="auto">bash_output</code> can reattach by durable task id.</td><td>Handle durability is stronger server-side, but automatic client re-invocation on completion is not yet universal. Native disable is blocked until a server event/wake contract proves that background completion resumes the managed turn without polling or losing ownership.</td></tr><tr><td>Completion re-invocation</td><td>Proven live: a background completion produced a second result with <code dir="auto">origin.kind: task-notification</code>.</td><td>No completion-push contract exists in the current <code dir="auto">exec_command</code>/<code dir="auto">write_stdin</code> schema; the client must issue another read/write call.</td><td>Client-owned async follow-up delivery exists, but it is not the Papercusp engine wake contract and needs parity coverage.</td><td>Task ledger and logs preserve completion state, but <code dir="auto">capability:bash</code> alone does not promise to re-invoke every managed client.</td><td>Blocking parity gap. Reuse task-manager completion events and the engine wake/coord path; do not add per-client polling loops.</td></tr><tr><td>Interrupt propagation</td><td><code dir="auto">TaskStop</code>/legacy <code dir="auto">KillShell</code> stops a background shell; foreground cancellation is client-owned.</td><td>PTY sessions accept Ctrl-C through <code dir="auto">write_stdin</code>; there is no dedicated kill verb in the current native schema.</td><td>The executor accepts <code dir="auto">AbortSignal</code>, distinguishes timeout from user cancel, and owns process-tree cleanup across one-shot/PTY paths.</td><td>Request abort and wall clock propagate to the child. <code dir="auto">bash_kill</code> validates the handle, sends SIGTERM, then SIGKILL, and verifies termination. Task-manager control protects against PID reuse.</td><td>Covered in design; P-017 must prove whole-process-tree death, repeated kill idempotence, already-exited truthfulness, and carry/restart behavior.</td></tr><tr><td>Timeouts</td><td>Per-call timeout plus client/session lifecycle; background jobs use client task management.</td><td><code dir="auto">yield_time_ms</code> only controls when output is yielded; it is not a process deadline. A shell-level timeout or external cancellation is required.</td><td>Per-call timeout (300 seconds observed default), <code dir="auto">0</code> can disable; <code dir="auto">--max-time</code> caps the agent session.</td><td>Foreground timeout is clamped below the MCP transport deadline; background defaults to 4 hours and caps at 12 hours, with deadline in the returned handle.</td><td>Server contract is clearer. Parity tests must cover zero/omitted/over-cap values and timeout-vs-cancel classification.</td></tr><tr><td>Output bounds and lossless recovery</td><td>Client-owned truncation/retention; native bytes never cross Papercusp’s result door.</td><td><code dir="auto">max_output_tokens</code> bounds returned chunks and reports original token count; native bytes likewise bypass the result door.</td><td>Tracks total/output bytes and lines, minimizes/truncates, and can return an <code dir="auto">artifact://</code> id for the lossless capture. Native bytes bypass the result door.</td><td>Head+tail bounded foreground return, durable background log, and model-facing scratch spill/reference through <code dir="auto">result-door.ts</code>.</td><td>Functionally covered only for the server route. D-014 enforcement claims must exclude native bytes until native tools are disabled.</td></tr><tr><td>Sandboxing</td><td>Claude’s launch-time sandbox can confine filesystem and egress; permission flags are a separate layer.</td><td>Session sandbox modes and approval policy are client-owned.</td><td>Native Bash exposes approval policy and PTY controls but no equivalent guaranteed operator-side containment boundary in this inventory.</td><td><code dir="auto">exec-sandbox.ts</code> exists, prefers SRT, and has a bwrap fallback with read-only host view, writable bindings, credential masks, namespaces, and optional deny-all egress. It is currently default-off and fail-open when unavailable.</td><td>Blocking safety gap for a single-route claim. Rollout must either make the selected containment posture default-on and observable or state and test an explicitly accepted unconfined policy; merely selecting <code dir="auto">capability:bash</code> does not prove confinement.</td></tr><tr><td>Permission UX and authorization</td><td><code dir="auto">--tools</code> controls availability, <code dir="auto">--allowedTools</code> pre-approves, <code dir="auto">--permission-mode dontAsk</code> turns omission into a nonblocking denial, and <code dir="auto">--disallowedTools</code> hard-removes.</td><td>Session approval policy and sandbox mode mediate shell calls; removal is the separate <code dir="auto">shell_tool</code> feature switch.</td><td><code dir="auto">always-ask</code>, <code dir="auto">write</code>, and <code dir="auto">yolo</code> approval modes; <code dir="auto">--tools</code>/<code dir="auto">--no-tools</code> control built-in visibility.</td><td><code dir="auto">defineTool</code> role/effect checks and the live dispatch stack authorize every call; raw secrets are redacted. There is no client permission prompt for a denied server call.</td><td>Covered for unattended managed agents if teaching-deny text names the replacement tool and typed errors distinguish denied, unavailable, timed out, and operator-down states.</td></tr><tr><td>PTY/session fidelity</td><td>Client-native background shell/session semantics.</td><td>First-class <code dir="auto">tty</code>, incremental <code dir="auto">write_stdin</code>, and chunked reads.</td><td>First-class <code dir="auto">pty</code>, persistent shell, ACP terminal wrapping, and cancellation.</td><td>The command family has background process handles but not yet the full persistent PTY create/write/resize/read/close parity surface.</td><td>Blocking parity gap owned by the capability PTY lane. Native disable waits for P-017 green tests over the complete server PTY family.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h1"><h1 id="required-parity-tests-before-native-disable">Required parity tests before native disable</h1><a class="sl-anchor-link" href="#required-parity-tests-before-native-disable"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Required parity tests before native disable”</span></a></div>
 <p>The native command tools remain enabled until an automated, client-neutral suite proves all of the following against the real server route:</p>
 <ol>

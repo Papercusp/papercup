@@ -101,13 +101,48 @@ fewer coordination failures than the <strong>same fleet with the Mug ablated</st
 its per-task floor matches or beats the provider’s native harness.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-five-measurement-layers">The five measurement layers</h2><a class="sl-anchor-link" href="#the-five-measurement-layers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The five measurement layers”</span></a></div>
-<p>| Layer | What it measures | Headline comparison | Instruments |
-|---|---|---|---|
-| <strong>L1 competence floor</strong> | Per-task resolve rate (pass@1) | Papercusp spine vs native harness / ablation / best-of-N | SWE-bench Pro, Terminal-Bench (external graders) |
-| <strong>L2 throughput</strong> | Wall-clock speedup, tasks/$, backlog-drain time, autonomy (% done with zero human gate) | <strong>Pot vs Mug-ablated fleet</strong> | Whole benchmark as a backlog; speedup is <em>our own measured</em> number (no public throughput benchmark exists) |
-| <strong>L3 value-capture</strong> | $ captured under a <strong>fixed budget</strong> | <strong>Pot vs Mug-ablated fleet</strong> | SWE-Lancer ($-weighted, built-in grading); UpBench <em>not currently runnable</em> (P-029) |
-| <strong>L4 coordination-quality</strong> | Duplication / coordination-breakdown / misalignment rates | Pot vs the published MAS baseline <strong>and</strong> vs other orchestrators | MAST failure taxonomy over rollout + coordination traces |
-| <strong>L5 long-horizon</strong> | Multi-step sequencing under one backlog | Pot vs Mug-ablated fleet | RoadmapBench, SWE-EVO |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>What it measures</th><th>Headline comparison</th><th>Instruments</th></tr></thead><tbody><tr><td><strong>L1 competence floor</strong></td><td>Per-task resolve rate (pass@1)</td><td>Papercusp spine vs native harness / ablation / best-of-N</td><td>SWE-bench Pro, Terminal-Bench (external graders)</td></tr><tr><td><strong>L2 throughput</strong></td><td>Wall-clock speedup, tasks/$, backlog-drain time, autonomy (% done with zero human gate)</td><td><strong>Pot vs Mug-ablated fleet</strong></td><td>Whole benchmark as a backlog; speedup is <em>our own measured</em> number (no public throughput benchmark exists)</td></tr><tr><td><strong>L3 value-capture</strong></td><td>$ captured under a <strong>fixed budget</strong></td><td><strong>Pot vs Mug-ablated fleet</strong></td><td>SWE-Lancer ($-weighted, built-in grading); UpBench <em>not currently runnable</em> (P-029)</td></tr><tr><td><strong>L4 coordination-quality</strong></td><td>Duplication / coordination-breakdown / misalignment rates</td><td>Pot vs the published MAS baseline <strong>and</strong> vs other orchestrators</td><td>MAST failure taxonomy over rollout + coordination traces</td></tr><tr><td><strong>L5 long-horizon</strong></td><td>Multi-step sequencing under one backlog</td><td>Pot vs Mug-ablated fleet</td><td>RoadmapBench, SWE-EVO</td></tr></tbody></table>
 <p>L2–L4 are the differentiated claims; <strong>L4 (coordination quality) is the most
 differentiated <em>and</em> most impartial</strong> Pot claim — see <a href="#l4-coordination-quality-the-mast-taxonomy">below</a>.
 The exact metric names, MAST scoring rubric, and value-capture mechanics are owned by
@@ -389,17 +424,52 @@ adapter is tractable (<code dir="auto">clawbench_v2</code>, lightest of the thre
 unaudited-license; <strong>defer the full 106-task headline run</strong> until upstream publishes the
 complete set + a redistribution license.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="fairness-traps-and-their-mitigations">Fairness traps and their mitigations</h2><a class="sl-anchor-link" href="#fairness-traps-and-their-mitigations"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Fairness traps and their mitigations”</span></a></div>
-<p>| Trap | Mitigation |
-|---|---|
-| <strong>Strawman baseline</strong> | L1: native harness (B) + ablation (A) elicited to best (METR). L2–L5: the Mug-ablated fleet + competitor orchestrators, each run to <em>their</em> best. |
-| <strong>Hidden compute advantage</strong> | Iso-budget (L1) + tasks/$ (L2) + value-under-fixed-budget (L3); coordination overhead counted in <em>our</em> <code dir="auto">tokens_total</code>. |
-| <strong>“Better plumbing” confound</strong> | Ablation (A) and the Mug-ablation baseline hold tools/workers/substrate identical, so any delta is purely orchestration / the Mug. |
-| <strong>No public fleet-throughput benchmark</strong> | Public tasks + external grader + the within-system Mug-ablation control + pre-registration (the honesty caveat above). |
-| <strong>Contamination / tune-to-test</strong> | Pre-registration + the gym↔report firewall (statically CI-proven) + fresh/live sets. |
-| <strong>Coordination not exercised</strong> | Long-horizon, decomposable backlog weighting. |
-| <strong>Coordination claims unfalsifiable</strong> | L4 uses the <em>published</em> MAST taxonomy + third-party MAS baseline, not a metric we invented. |
-| <strong>Flawed grader tests</strong> (the Verified lesson) | Hardened/augmented graders; Verified dropped as a headline. |
-| <strong>Noise</strong> | Multi-seed + confidence intervals; the same pass@k protocol on every arm. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Trap</th><th>Mitigation</th></tr></thead><tbody><tr><td><strong>Strawman baseline</strong></td><td>L1: native harness (B) + ablation (A) elicited to best (METR). L2–L5: the Mug-ablated fleet + competitor orchestrators, each run to <em>their</em> best.</td></tr><tr><td><strong>Hidden compute advantage</strong></td><td>Iso-budget (L1) + tasks/$ (L2) + value-under-fixed-budget (L3); coordination overhead counted in <em>our</em> <code dir="auto">tokens_total</code>.</td></tr><tr><td><strong>”Better plumbing” confound</strong></td><td>Ablation (A) and the Mug-ablation baseline hold tools/workers/substrate identical, so any delta is purely orchestration / the Mug.</td></tr><tr><td><strong>No public fleet-throughput benchmark</strong></td><td>Public tasks + external grader + the within-system Mug-ablation control + pre-registration (the honesty caveat above).</td></tr><tr><td><strong>Contamination / tune-to-test</strong></td><td>Pre-registration + the gym↔report firewall (statically CI-proven) + fresh/live sets.</td></tr><tr><td><strong>Coordination not exercised</strong></td><td>Long-horizon, decomposable backlog weighting.</td></tr><tr><td><strong>Coordination claims unfalsifiable</strong></td><td>L4 uses the <em>published</em> MAST taxonomy + third-party MAS baseline, not a metric we invented.</td></tr><tr><td><strong>Flawed grader tests</strong> (the Verified lesson)</td><td>Hardened/augmented graders; Verified dropped as a headline.</td></tr><tr><td><strong>Noise</strong></td><td>Multi-seed + confidence intervals; the same pass@k protocol on every arm.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-it-maps-onto-papercusp-machinery">How it maps onto Papercusp machinery</h2><a class="sl-anchor-link" href="#how-it-maps-onto-papercusp-machinery"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How it maps onto Papercusp machinery”</span></a></div>
 <ul>
 <li><strong>L1 per-task unit</strong> — <code dir="auto">external-bench</code> (<code dir="auto">extends: coding-factory</code>, overrides nothing =
@@ -448,25 +518,102 @@ is idempotent. <strong>All arms/runners emit through one function</strong> —
 (<code dir="auto">packages/operator-core/lib/external-bench/reproducibility/emit.ts</code>) — which writes
 the run-result row <strong>and</strong> the rollout card in one transaction, derives <code dir="auto">cost_usd</code> via
 <code dir="auto">priceRun()</code>, and fires <code dir="auto">notifySyncInvalidate('evals.runs', …)</code>.</p>
-<p>| field | source | meaning |
-|---|---|---|
-| <code dir="auto">rollout_id</code> / <code dir="auto">run_id</code> | emit | row PK / the run grouping |
-| <code dir="auto">prereg_hash</code> | runner | must match a <code dir="auto">benchmark_prereg</code> row (tune-to-test firewall) |
-| <code dir="auto">suite</code> | runner | <code dir="auto">swe-bench-pro</code> / <code dir="auto">terminal-bench</code> / … (= <code dir="auto">REPORT_ON_SUITES</code>) |
-| <code dir="auto">task_id</code> / <code dir="auto">seed</code> / <code dir="auto">modality</code> | runner | task, seed (≥3), <code dir="auto">diff</code> | <code dir="auto">in-container</code> |
-| <code dir="auto">arm</code> | runner | locked L1 vocab + fleet arms (see <a href="#the-arms">arms</a>) |
-| <code dir="auto">generation_status</code> | runner | <code dir="auto">completed</code> | <code dir="auto">error</code> | <code dir="auto">timeout</code> | <code dir="auto">budget_exhausted</code> |
-| <code dir="auto">resolved</code> (<strong>nullable</strong>) | grader | headline pass/fail; <code dir="auto">NULL</code> ⇒ infra, excluded from accuracy |
-| <code dir="auto">grader_status</code> | grader | <code dir="auto">passed</code> | <code dir="auto">failed</code> | <code dir="auto">error</code> | <code dir="auto">timeout</code> | <code dir="auto">skipped</code> |
-| <code dir="auto">grader_family</code> / <code dir="auto">grader_version</code> | grader | pinned grader identity (pre-registration) |
-| <code dir="auto">grader_error</code> | grader | infra failure, <strong>distinct</strong> from <code dir="auto">resolved=false</code> |
-| <code dir="auto">tokens_in</code> / <code dir="auto">tokens_out</code> / <code dir="auto">tokens_total</code> | runner | <code dir="auto">tokens_total</code> = <strong>sum over ALL roles / candidates + verifier</strong> |
-| <code dir="auto">tokens_cache_read</code> / <code dir="auto">tokens_cache_write</code> | runner | cache tokens (material to $ on Opus) |
-| <code dir="auto">cost_usd</code> / <code dir="auto">price_table_version</code> | derived | <code dir="auto">priceRun()</code> at emit; tokens canonical, $ re-derivable |
-| <code dir="auto">wall_clock_ms</code> / <code dir="auto">turns</code> | runner | generation wall-clock; agent turns |
-| <code dir="auto">budget_tokens</code> / <code dir="auto">capped</code> | runner | iso-budget cap (<strong>generation only</strong>) + whether it bound |
-| <code dir="auto">model_id</code> / <code dir="auto">harness_version</code> | runner | exact versions |
-| <code dir="auto">arm_meta</code> (jsonb) | runner | per-arm extras (best-of-N <code dir="auto">{n, candidates, verifier_tokens}</code>; fleet/coordination events for MAST) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>field</th><th>source</th><th>meaning</th></tr></thead><tbody><tr><td><code dir="auto">rollout_id</code> / <code dir="auto">run_id</code></td><td>emit</td><td>row PK / the run grouping</td></tr><tr><td><code dir="auto">prereg_hash</code></td><td>runner</td><td>must match a <code dir="auto">benchmark_prereg</code> row (tune-to-test firewall)</td></tr><tr><td><code dir="auto">suite</code></td><td>runner</td><td><code dir="auto">swe-bench-pro</code> / <code dir="auto">terminal-bench</code> / … (= <code dir="auto">REPORT_ON_SUITES</code>)</td></tr><tr><td><code dir="auto">task_id</code> / <code dir="auto">seed</code> / <code dir="auto">modality</code></td><td>runner</td><td>task, seed (≥3), <code dir="auto">diff</code> | <code dir="auto">in-container</code></td></tr><tr><td><code dir="auto">arm</code></td><td>runner</td><td>locked L1 vocab + fleet arms (see <a href="#the-arms">arms</a>)</td></tr><tr><td><code dir="auto">generation_status</code></td><td>runner</td><td><code dir="auto">completed</code> | <code dir="auto">error</code> | <code dir="auto">timeout</code> | <code dir="auto">budget_exhausted</code></td></tr><tr><td><code dir="auto">resolved</code> (<strong>nullable</strong>)</td><td>grader</td><td>headline pass/fail; <code dir="auto">NULL</code> ⇒ infra, excluded from accuracy</td></tr><tr><td><code dir="auto">grader_status</code></td><td>grader</td><td><code dir="auto">passed</code> | <code dir="auto">failed</code> | <code dir="auto">error</code> | <code dir="auto">timeout</code> | <code dir="auto">skipped</code></td></tr><tr><td><code dir="auto">grader_family</code> / <code dir="auto">grader_version</code></td><td>grader</td><td>pinned grader identity (pre-registration)</td></tr><tr><td><code dir="auto">grader_error</code></td><td>grader</td><td>infra failure, <strong>distinct</strong> from <code dir="auto">resolved=false</code></td></tr><tr><td><code dir="auto">tokens_in</code> / <code dir="auto">tokens_out</code> / <code dir="auto">tokens_total</code></td><td>runner</td><td><code dir="auto">tokens_total</code> = <strong>sum over ALL roles / candidates + verifier</strong></td></tr><tr><td><code dir="auto">tokens_cache_read</code> / <code dir="auto">tokens_cache_write</code></td><td>runner</td><td>cache tokens (material to $ on Opus)</td></tr><tr><td><code dir="auto">cost_usd</code> / <code dir="auto">price_table_version</code></td><td>derived</td><td><code dir="auto">priceRun()</code> at emit; tokens canonical, $ re-derivable</td></tr><tr><td><code dir="auto">wall_clock_ms</code> / <code dir="auto">turns</code></td><td>runner</td><td>generation wall-clock; agent turns</td></tr><tr><td><code dir="auto">budget_tokens</code> / <code dir="auto">capped</code></td><td>runner</td><td>iso-budget cap (<strong>generation only</strong>) + whether it bound</td></tr><tr><td><code dir="auto">model_id</code> / <code dir="auto">harness_version</code></td><td>runner</td><td>exact versions</td></tr><tr><td><code dir="auto">arm_meta</code> (jsonb)</td><td>runner</td><td>per-arm extras (best-of-N <code dir="auto">{n, candidates, verifier_tokens}</code>; fleet/coordination events for MAST)</td></tr></tbody></table>
 <aside aria-label="Schema is canonical &amp; locked — this doc tracks it" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>Schema is canonical &amp; locked — this doc tracks it </p>  <div class="starlight-aside__content"><p>The authoritative types live in <code dir="auto">@papercusp/bench-metrics</code> (<code dir="auto">TaskRunResult</code>, <code dir="auto">P-011</code> —
 <code dir="auto">libs/generic/bench-metrics/src/schema.ts</code>, re-exported from the package root) and
 <code dir="auto">packages/operator-core/lib/external-bench/reproducibility/</code> (the rollout + prereg

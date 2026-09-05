@@ -94,107 +94,441 @@ record (see the banner above).</p>
 <p>The first reviewer raised 18 items across top, mid, and lower tiers. We
 incorporated all of them in the revised plan with two non-trivial
 clarifications below.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>#1</strong> Idempotency contract is the load-bearing assumption and barely engineered | <strong>Accepted in V1.</strong> Done-marker now hashes <code dir="auto">(configHash, plugin-version)</code>. Manifest distinguishes structural fields (force re-provision) from operational fields (apply hot). Default is <strong>structural</strong> (round 2 refinement). | <a href="./build-scripts#idempotency-contract">build-scripts § Idempotency</a> |
-| <strong>#2</strong> Trust model is “the user reads the script source” — they won’t | <strong>Accepted in V1, fully redesigned in round 2.</strong> Sandbox-by-default for <em>all</em> scripts (signed or not). Default-deny outbound network. Static-analysis warnings on common destructive patterns. | <a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a> |
-| <strong>#3</strong> Phasing inversion — share-semantics should ship before OAuth | <strong>Accepted, deferred to V1.1.</strong> Phasing is PR ordering, not new code. Round 2 noted it can ship as ordering rather than blocking V1. | <a href="./open-questions#phase-ordering">open-questions § V1.1 ordering</a> |
-| <strong>#4</strong> Schema evolution + .shape.json is unsolved | <strong>Accepted in V1.</strong> Per-property <code dir="auto">aliases: ["oldName"]</code> array for renames; <code dir="auto">aliases: [null]</code> for removals. Walked from current installed plugin’s manifest. | <a href="./share-semantics#schema-evolution">share-semantics § Schema evolution</a> |
-| <strong>#5</strong> Secret-but-intentionally-shareable case missing | <strong>Accepted in V1.</strong> Field gets <code dir="auto">snapshotPolicy: "include" \| "strip" \| "warn-and-prompt"</code>, default <code dir="auto">strip</code>. Publish CLI requires <code dir="auto">--include-secrets</code> flag + per-secret confirmation when policy is <code dir="auto">include</code>. | <a href="./share-semantics#secret-policy">share-semantics § Secret policy</a> |
-| <strong>#6</strong> Cost estimates without enforcement = theater | <strong>Accepted, but radically. Dropped the field entirely from V1.</strong> Plugin authors document expected cost in their README. V1.1 adds a real <code dir="auto">provision.setup.budgetCap</code> field wired to AWS Budgets via a substrate helper (~150 LOC, AWS-only). When that lands, cost is <em>enforced</em>, not advertised. | <a href="./build-scripts#whats-not-in-v1">build-scripts § What’s NOT in V1</a> |
-| <strong>#7</strong> Concurrent / interrupted setup hand-waved | <strong>Accepted in V1.</strong> Per-(harness, plugin) lock file with PID + start timestamp. Stale-lock detection prompts user to run teardown before re-trying. | <a href="./build-scripts#recovery-contract">build-scripts § Recovery</a> |
-| <strong>#8</strong> OAuth refresh during operator-offline | <strong>Accepted in V1.</strong> Substrate ships <code dir="auto">ctx.oauth.token(field)</code> helper that pre-emptively refreshes if <code dir="auto">expires_at</code> is past or within 5 min, retries on 401-once. Plugins never think about expiry. | <a href="./oauth-integration#refresh-mechanics">oauth-integration § Refresh</a> |
-| <strong>#9</strong> Build scripts vs <code dir="auto">compute:exec:*</code> ambiguity | <strong>Accepted, deferred to V1.1 (docs only).</strong> Pick (b): <code dir="auto">compute:exec:&#x3C;bin></code> stays for in-action shell-outs (capability-gated, sandboxed). Build scripts are the lifecycle escape hatch (consent-gated, full host). Pure docs work. | <a href="./build-scripts#relationship-to-computeexec">build-scripts § Relationship to compute:exec</a> |
-| <strong>#10</strong> Pasted-PAT scope opacity | <strong>Accepted in V1 for GitHub.</strong> When user pastes a token, substrate hits the provider’s introspection endpoint (<code dir="auto">GET /applications/&#x3C;id>/token</code> for GitHub), refuses if granted scopes &#x3C; <code dir="auto">oauth.scopes</code>, warns if scopes are <em>more</em>. Other providers as their OAuth integrations land. | <a href="./oauth-integration#hybrid-mode-paste-or-connect">oauth-integration § Hybrid mode</a> |
-| <strong>Lower</strong> Audit log retention | <strong>Designed as</strong> 1-year retention with a 50MB per-(harness, plugin) cap and oldest-first eviction. <strong>Superseded in implementation:</strong> the shipped audit log is PG-backed (one row per event in <code dir="auto">harness_shared.provision_audit_log</code>) and does <strong>not</strong> cap, truncate, or evict — PG absorbs the volume. There is no 50MB cap and no 1-year retention; a future retention policy is described as a TODO (a scheduled <code dir="auto">DELETE</code>), not implemented. | <a href="./build-scripts#audit-logging">build-scripts § Audit logging</a> |
-| <strong>Lower</strong> Interactive subprocess ban | <strong>Accepted in V1.</strong> Manifest field <code dir="auto">provision.setup.requiresInteractive: false</code> is enforced; substrate refuses scripts that try to read from stdin or open browser windows mid-run. Document workarounds (env-var-only credentials). | <a href="./build-scripts#no-interactive-subprocesses">build-scripts § Interactive subprocesses</a> |
-| <strong>Lower</strong> <code dir="auto">runAt: "fork" \| "manual" \| "first-action"</code> | <strong>Accepted, deferred to V1.1.</strong> Useful but not load-bearing for safety. Round 2 pinned the synchronization contract (action returns <code dir="auto">setup-required</code> if invoked before first-action setup completes). | <a href="./build-scripts#run-timing-v11">build-scripts § Run timing (V1.1)</a> |
-| <strong>Lower</strong> Better dogfood — github-repo, not cloudflare-pages-hosted | <strong>Accepted, deferred to V1.1.</strong> The CF Worker dogfood was bigger than necessary; github-repo’s repo creation as a build script exercises the full stack (OAuth + share-semantics + provisioning) more economically. | <a href="./open-questions#v11-improves-the-system-can-ship-in-fast-follow">open-questions § V1.1</a> |
-| <strong>Lower</strong> Quarantine invalidates cached approvals | <strong>Accepted in V1.</strong> When any snapshot is quarantined or retracted, the substrate clears all per-publisher trust entries for its publisher, forcing re-approval on next encounter. | <a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a> |
-| <strong>Lower</strong> Marketplace moderation gap | <strong>Acknowledged in V1, deferred to a separate spec.</strong> The plan now explicitly notes the moderation gap rather than assuming a reviewer exists. | <a href="./index#what-this-plan-does-not-change">index § What this plan does NOT change</a> |
-| <strong>Lower</strong> Existing snapshot-model integration | <strong>Accepted in V1.</strong> Snapshot manifest gains <code dir="auto">requiresProvisioning: true</code> field; fork-time substrate uses it to gate the consent flow. Plugin versions are pinned at fork against marketplace tampering (already part of the spec; restated here). | <a href="./index#vision-forking-a-complex-snapshot">index § Vision</a> |
-| <strong>Copy-edit</strong> index.mdx Q1-Q6 vs open-questions.mdx mismatch | Resolved by removing the duplicate question list from the index. | <a href="./index">index</a> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>#1</strong> Idempotency contract is the load-bearing assumption and barely engineered</td><td><strong>Accepted in V1.</strong> Done-marker now hashes <code dir="auto">(configHash, plugin-version)</code>. Manifest distinguishes structural fields (force re-provision) from operational fields (apply hot). Default is <strong>structural</strong> (round 2 refinement).</td><td><a href="./build-scripts#idempotency-contract">build-scripts § Idempotency</a></td></tr><tr><td><strong>#2</strong> Trust model is “the user reads the script source” — they won’t</td><td><strong>Accepted in V1, fully redesigned in round 2.</strong> Sandbox-by-default for <em>all</em> scripts (signed or not). Default-deny outbound network. Static-analysis warnings on common destructive patterns.</td><td><a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a></td></tr><tr><td><strong>#3</strong> Phasing inversion — share-semantics should ship before OAuth</td><td><strong>Accepted, deferred to V1.1.</strong> Phasing is PR ordering, not new code. Round 2 noted it can ship as ordering rather than blocking V1.</td><td><a href="./open-questions#phase-ordering">open-questions § V1.1 ordering</a></td></tr><tr><td><strong>#4</strong> Schema evolution + .shape.json is unsolved</td><td><strong>Accepted in V1.</strong> Per-property <code dir="auto">aliases: ["oldName"]</code> array for renames; <code dir="auto">aliases: [null]</code> for removals. Walked from current installed plugin’s manifest.</td><td><a href="./share-semantics#schema-evolution">share-semantics § Schema evolution</a></td></tr><tr><td><strong>#5</strong> Secret-but-intentionally-shareable case missing</td><td><strong>Accepted in V1.</strong> Field gets <code dir="auto">snapshotPolicy: "include" | "strip" | "warn-and-prompt"</code>, default <code dir="auto">strip</code>. Publish CLI requires <code dir="auto">--include-secrets</code> flag + per-secret confirmation when policy is <code dir="auto">include</code>.</td><td><a href="./share-semantics#secret-policy">share-semantics § Secret policy</a></td></tr><tr><td><strong>#6</strong> Cost estimates without enforcement = theater</td><td><strong>Accepted, but radically. Dropped the field entirely from V1.</strong> Plugin authors document expected cost in their README. V1.1 adds a real <code dir="auto">provision.setup.budgetCap</code> field wired to AWS Budgets via a substrate helper (~150 LOC, AWS-only). When that lands, cost is <em>enforced</em>, not advertised.</td><td><a href="./build-scripts#whats-not-in-v1">build-scripts § What’s NOT in V1</a></td></tr><tr><td><strong>#7</strong> Concurrent / interrupted setup hand-waved</td><td><strong>Accepted in V1.</strong> Per-(harness, plugin) lock file with PID + start timestamp. Stale-lock detection prompts user to run teardown before re-trying.</td><td><a href="./build-scripts#recovery-contract">build-scripts § Recovery</a></td></tr><tr><td><strong>#8</strong> OAuth refresh during operator-offline</td><td><strong>Accepted in V1.</strong> Substrate ships <code dir="auto">ctx.oauth.token(field)</code> helper that pre-emptively refreshes if <code dir="auto">expires_at</code> is past or within 5 min, retries on 401-once. Plugins never think about expiry.</td><td><a href="./oauth-integration#refresh-mechanics">oauth-integration § Refresh</a></td></tr><tr><td><strong>#9</strong> Build scripts vs <code dir="auto">compute:exec:*</code> ambiguity</td><td><strong>Accepted, deferred to V1.1 (docs only).</strong> Pick (b): <code dir="auto">compute:exec:&#x3C;bin></code> stays for in-action shell-outs (capability-gated, sandboxed). Build scripts are the lifecycle escape hatch (consent-gated, full host). Pure docs work.</td><td><a href="./build-scripts#relationship-to-computeexec">build-scripts § Relationship to compute:exec</a></td></tr><tr><td><strong>#10</strong> Pasted-PAT scope opacity</td><td><strong>Accepted in V1 for GitHub.</strong> When user pastes a token, substrate hits the provider’s introspection endpoint (<code dir="auto">GET /applications/&#x3C;id>/token</code> for GitHub), refuses if granted scopes &#x3C; <code dir="auto">oauth.scopes</code>, warns if scopes are <em>more</em>. Other providers as their OAuth integrations land.</td><td><a href="./oauth-integration#hybrid-mode-paste-or-connect">oauth-integration § Hybrid mode</a></td></tr><tr><td><strong>Lower</strong> Audit log retention</td><td><strong>Designed as</strong> 1-year retention with a 50MB per-(harness, plugin) cap and oldest-first eviction. <strong>Superseded in implementation:</strong> the shipped audit log is PG-backed (one row per event in <code dir="auto">harness_shared.provision_audit_log</code>) and does <strong>not</strong> cap, truncate, or evict — PG absorbs the volume. There is no 50MB cap and no 1-year retention; a future retention policy is described as a TODO (a scheduled <code dir="auto">DELETE</code>), not implemented.</td><td><a href="./build-scripts#audit-logging">build-scripts § Audit logging</a></td></tr><tr><td><strong>Lower</strong> Interactive subprocess ban</td><td><strong>Accepted in V1.</strong> Manifest field <code dir="auto">provision.setup.requiresInteractive: false</code> is enforced; substrate refuses scripts that try to read from stdin or open browser windows mid-run. Document workarounds (env-var-only credentials).</td><td><a href="./build-scripts#no-interactive-subprocesses">build-scripts § Interactive subprocesses</a></td></tr><tr><td><strong>Lower</strong> <code dir="auto">runAt: "fork" | "manual" | "first-action"</code></td><td><strong>Accepted, deferred to V1.1.</strong> Useful but not load-bearing for safety. Round 2 pinned the synchronization contract (action returns <code dir="auto">setup-required</code> if invoked before first-action setup completes).</td><td><a href="./build-scripts#run-timing-v11">build-scripts § Run timing (V1.1)</a></td></tr><tr><td><strong>Lower</strong> Better dogfood — github-repo, not cloudflare-pages-hosted</td><td><strong>Accepted, deferred to V1.1.</strong> The CF Worker dogfood was bigger than necessary; github-repo’s repo creation as a build script exercises the full stack (OAuth + share-semantics + provisioning) more economically.</td><td><a href="./open-questions#v11-improves-the-system-can-ship-in-fast-follow">open-questions § V1.1</a></td></tr><tr><td><strong>Lower</strong> Quarantine invalidates cached approvals</td><td><strong>Accepted in V1.</strong> When any snapshot is quarantined or retracted, the substrate clears all per-publisher trust entries for its publisher, forcing re-approval on next encounter.</td><td><a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a></td></tr><tr><td><strong>Lower</strong> Marketplace moderation gap</td><td><strong>Acknowledged in V1, deferred to a separate spec.</strong> The plan now explicitly notes the moderation gap rather than assuming a reviewer exists.</td><td><a href="./index#what-this-plan-does-not-change">index § What this plan does NOT change</a></td></tr><tr><td><strong>Lower</strong> Existing snapshot-model integration</td><td><strong>Accepted in V1.</strong> Snapshot manifest gains <code dir="auto">requiresProvisioning: true</code> field; fork-time substrate uses it to gate the consent flow. Plugin versions are pinned at fork against marketplace tampering (already part of the spec; restated here).</td><td><a href="./index#vision-forking-a-complex-snapshot">index § Vision</a></td></tr><tr><td><strong>Copy-edit</strong> index.mdx Q1-Q6 vs open-questions.mdx mismatch</td><td>Resolved by removing the duplicate question list from the index.</td><td><a href="./index">index</a></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="round-2-2026-05-08">Round 2 (2026-05-08)</h2><a class="sl-anchor-link" href="#round-2-2026-05-08"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Round 2 (2026-05-08)”</span></a></div>
 <p>The second-round reviewer concurred with the round-1 inclusions but
 pushed back substantively on two points and refined four others. The
 substantive pushbacks are reflected in the plan; the refinements landed
 without further debate.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>A. Sandboxing-only-for-unsigned is a misapplication of signing</strong> | <strong>Fully conceded.</strong> event-stream and xz-utils were the right examples — <em>signed</em> code can be malicious. Signing proves provenance, not safety. Sandbox is now default for <em>all</em> scripts; signing affects only consent-UI presentation, the visibility of the “trust this publisher” toggle, and the friction of escaping the sandbox as a power-user opt-out. | <a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a> |
-| <strong>B. “Cost estimate with disclaimer” compromise is theater</strong> | <strong>Fully conceded.</strong> The compromise was the worst option — looks like a feature, behaves like a comment. Dropped the field from V1 entirely. V1.1 adds <code dir="auto">budgetCap</code> with a real AWS-Budgets helper. | <a href="./build-scripts#whats-not-in-v1">build-scripts § What’s NOT in V1</a> |
-| <strong>C. 30-day audit retention too short</strong> | <strong>Accepted at the time</strong> (1 year, 50MB per-(harness, plugin) cap, oldest-first eviction). <strong>Superseded:</strong> the implemented PG-backed log is uncapped — no cap, eviction, or fixed retention window. See Round 1 “Audit log retention” above. | <a href="./build-scripts#audit-logging">build-scripts § Audit logging</a> |
-| <strong>D. Aliases need to cover field removal, not just rename</strong> | <strong>Accepted.</strong> A <code dir="auto">null</code> entry in a property’s <code dir="auto">aliases</code> array declares “this field was removed; .shape.json entries referencing it are dropped silently on fork.” | <a href="./share-semantics#schema-evolution">share-semantics § Schema evolution</a> |
-| <strong>E. runAt: “first-action” needs synchronization contract</strong> | <strong>Accepted.</strong> Action invoked before first-action setup completes returns <code dir="auto">{ ok: false, error: "setup-required", setupUrl: ... }</code>. Matches existing capability-denied response shape. | <a href="./build-scripts#run-timing-v11">build-scripts § Run timing (V1.1)</a> |
-| <strong>F. “All 18 in V1” risks delaying a shippable V1</strong> | <strong>Accepted.</strong> Open-questions doc rewritten with explicit V1 / V1.1 / V2 split, justified per item by “what breaks publicly without this.” V1 line count target ~1,000–1,100 LOC; some items deferred to V1.1 (phasing, cost helper, runAt, dogfood swap, marketplace moderation, copy-edit). | <a href="./open-questions">open-questions</a> |
-| <strong>G. Structural-vs-operational default should be structural</strong> | <strong>Accepted.</strong> Default to structural — worst case is friction (re-provision prompt on a benign edit), not silent stale state. Plugin authors flag fields <code dir="auto">operational: true</code> to opt out. | <a href="./build-scripts#idempotency-contract">build-scripts § Idempotency</a> |
-| <strong>H. Process: revisions.mdx page</strong> | <strong>This page.</strong> Maps each review item to its resolution. | (this page) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>A. Sandboxing-only-for-unsigned is a misapplication of signing</strong></td><td><strong>Fully conceded.</strong> event-stream and xz-utils were the right examples — <em>signed</em> code can be malicious. Signing proves provenance, not safety. Sandbox is now default for <em>all</em> scripts; signing affects only consent-UI presentation, the visibility of the “trust this publisher” toggle, and the friction of escaping the sandbox as a power-user opt-out.</td><td><a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a></td></tr><tr><td><strong>B. “Cost estimate with disclaimer” compromise is theater</strong></td><td><strong>Fully conceded.</strong> The compromise was the worst option — looks like a feature, behaves like a comment. Dropped the field from V1 entirely. V1.1 adds <code dir="auto">budgetCap</code> with a real AWS-Budgets helper.</td><td><a href="./build-scripts#whats-not-in-v1">build-scripts § What’s NOT in V1</a></td></tr><tr><td><strong>C. 30-day audit retention too short</strong></td><td><strong>Accepted at the time</strong> (1 year, 50MB per-(harness, plugin) cap, oldest-first eviction). <strong>Superseded:</strong> the implemented PG-backed log is uncapped — no cap, eviction, or fixed retention window. See Round 1 “Audit log retention” above.</td><td><a href="./build-scripts#audit-logging">build-scripts § Audit logging</a></td></tr><tr><td><strong>D. Aliases need to cover field removal, not just rename</strong></td><td><strong>Accepted.</strong> A <code dir="auto">null</code> entry in a property’s <code dir="auto">aliases</code> array declares “this field was removed; .shape.json entries referencing it are dropped silently on fork.”</td><td><a href="./share-semantics#schema-evolution">share-semantics § Schema evolution</a></td></tr><tr><td><strong>E. runAt: “first-action” needs synchronization contract</strong></td><td><strong>Accepted.</strong> Action invoked before first-action setup completes returns <code dir="auto">{ ok: false, error: "setup-required", setupUrl: ... }</code>. Matches existing capability-denied response shape.</td><td><a href="./build-scripts#run-timing-v11">build-scripts § Run timing (V1.1)</a></td></tr><tr><td><strong>F. “All 18 in V1” risks delaying a shippable V1</strong></td><td><strong>Accepted.</strong> Open-questions doc rewritten with explicit V1 / V1.1 / V2 split, justified per item by “what breaks publicly without this.” V1 line count target ~1,000–1,100 LOC; some items deferred to V1.1 (phasing, cost helper, runAt, dogfood swap, marketplace moderation, copy-edit).</td><td><a href="./open-questions">open-questions</a></td></tr><tr><td><strong>G. Structural-vs-operational default should be structural</strong></td><td><strong>Accepted.</strong> Default to structural — worst case is friction (re-provision prompt on a benign edit), not silent stale state. Plugin authors flag fields <code dir="auto">operational: true</code> to opt out.</td><td><a href="./build-scripts#idempotency-contract">build-scripts § Idempotency</a></td></tr><tr><td><strong>H. Process: revisions.mdx page</strong></td><td><strong>This page.</strong> Maps each review item to its resolution.</td><td>(this page)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="items-rejected-after-review">Items rejected after review</h2><a class="sl-anchor-link" href="#items-rejected-after-review"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Items rejected after review”</span></a></div>
 <p>None across rounds 1–6. Every review item either landed in V1, deferred
 to V1.1 with reasoning, or shifted to V2 as a separate workstream.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="round-3">Round 3</h2><a class="sl-anchor-link" href="#round-3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Round 3”</span></a></div>
 <p>Round-3 reviewer raised 14 items across significant / medium / minor
 tiers. All accepted with concrete refinements.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>Significant 1.</strong> macOS sandbox is honestly nothing | <strong>Accepted with refinement.</strong> Use sandbox-exec on macOS as a real (deprecated, weak, but meaningful) boundary AND require signed scripts on macOS. No “unsigned with louder banner” path on macOS. | <a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a> |
-| <strong>Significant 2.</strong> Bwrap-absent fallback is a footgun | <strong>Accepted.</strong> Substrate bundles bwrap; install-time smoke test; permanent <code dir="auto">sandbox_available</code> mark on smoke failure. <strong>Note on the escape hatch:</strong> the page (and build-scripts) described a per-run, hash-bound <code dir="auto">PAPERCUSP_UNSANDBOX_SCRIPT=&#x3C;hash></code> env var. The implemented escapes are instead <strong>blanket toggles</strong>, not bound to a script hash: <code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code> (skip the smoke probe and run unsandboxed) and <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> (opt into running unsandboxed after a smoke-test failure). <code dir="auto">PAPERCUSP_UNSANDBOX_SCRIPT</code> does not exist in code. | <a href="./build-scripts#bwrap-smoke-test-linux-install-flow">build-scripts § Bwrap smoke test</a> |
-| <strong>Significant 3.</strong> <code dir="auto">network: "open"</code> defeats the network sandbox | <strong>Accepted; redesigned.</strong> <code dir="auto">network: "open"</code> replaced with <code dir="auto">cloudProvider: { id, region }</code> substrate-curated presets. IMDS + RFC1918 always blocked. | <a href="./build-scripts#network-policy-floor">build-scripts § Network policy floor</a> |
-| <strong>Significant 4.</strong> Idempotency hash misses scriptHash | <strong>Accepted in V1.</strong> done-marker compares <code dir="auto">(configHash, scriptHash, pluginVersion)</code>. <code dir="auto">skipReprovisionOnPatch</code> exempts <code dir="auto">pluginVersion</code> only — script-hash changes always force re-consent. <strong>Implementation detail:</strong> the exemption is <strong>patch-level only</strong>. <code dir="auto">decideReprovision</code> treats a minor bump the same as a major one (both force re-provision — “treat minor like major to be safe”), so <code dir="auto">skipReprovisionOnPatch</code> applies only to true patch-level (z) bumps where major and minor are unchanged. | <a href="./build-scripts#idempotency-contract">build-scripts § Idempotency contract</a> |
-| <strong>Significant 5.</strong> Marketplace moderation overconfidence | <strong>Accepted.</strong> V1 launch criterion reframed as “vetted-publisher alpha.” Public marketplace launch is V1.1+ gated on moderation layer. Vetted-publisher allowlist process documented (GitHub issue, public review, allowlist published). | <a href="./open-questions">open-questions</a> |
-| <strong>Significant 6.</strong> Trust granularity per-publisher too coarse | <strong>Accepted.</strong> Trust is per-(publisher, plugin), keyed on signing-key fingerprint. | <a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a> |
-| <strong>Medium 7.</strong> Skip-teardown silent cost leak | <strong>Accepted, deferred to V1.1.</strong> 7-day passive banner on operator home tile listing orphan resources. | <a href="./build-scripts#skip-teardown-banner-v11">build-scripts § Skip-teardown banner</a> |
-| <strong>Medium 8.</strong> POSIX/bash compat across platforms | <strong>Accepted, deferred to V1.1.</strong> Per-platform script paths (<code dir="auto">setup.path.linux</code> / <code dir="auto">.darwin</code>) optional + bashism linter at publish time. | <a href="./open-questions#v11-improves-the-system-ships-fast-follow">open-questions § V1.1</a> |
-| <strong>Medium 9.</strong> verify polling at scale | <strong>Accepted in V1.</strong> Visibility-aware: foreground-only by default, no periodic background polling unless explicitly opted in. | <a href="./build-scripts#verify-semantics">build-scripts § Verify</a> |
-| <strong>Medium 10.</strong> Multi-machine fork race | <strong>Designed as</strong> PG-based <code dir="auto">harness_shared.operator_claims</code> with advisory locks + heartbeat-renewed <code dir="auto">expires_at</code>, replacing file-based heartbeat. <strong>Superseded in implementation:</strong> this machinery was built and then removed in the DBOS-only cutover. The <code dir="auto">operator_claims</code> table was dropped (migration 112) and the advisory-lock + 30s heartbeat were deleted entirely. Concurrency is now serialized by the DBOS provision workflow’s <code dir="auto">deduplicationID</code>; a PENDING workflow holds its dedup slot for its whole lifetime with <strong>no heartbeat</strong> (see <code dir="auto">dbos-durable-flows-adoption-2026-06-02</code>). | <a href="./build-scripts#recovery-contract">build-scripts § Recovery</a> |
-| <strong>Minor 11.</strong> ctx.oauth.token() refresh storm | <strong>Accepted.</strong> Promise-cache so concurrent calls share the in-flight refresh. | <a href="./oauth-integration#concurrent-refresh-storm">oauth-integration § Concurrent refresh</a> |
-| <strong>Minor 12.</strong> OAuth single-tenancy V1.1 callout | <strong>Accepted.</strong> Promoted to V1.1 explicit line item. | <a href="./oauth-integration#multi-tenancy-callout-v11">oauth-integration § Multi-tenancy</a> |
-| <strong>Minor 13.</strong> Audit log fail-loud on encrypted volumes | <strong>Accepted in V1.</strong> Substrate refuses to run if audit dir unwriteable. | <a href="./build-scripts#fail-loud-on-encrypted-locked-volumes">build-scripts § Fail-loud</a> |
-| <strong>Minor 14.</strong> Round-1 references not externally visible | <strong>Accepted.</strong> Justifications rephrased to stand alone; round-X references kept for audit trail. | (this page) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>Significant 1.</strong> macOS sandbox is honestly nothing</td><td><strong>Accepted with refinement.</strong> Use sandbox-exec on macOS as a real (deprecated, weak, but meaningful) boundary AND require signed scripts on macOS. No “unsigned with louder banner” path on macOS.</td><td><a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing</a></td></tr><tr><td><strong>Significant 2.</strong> Bwrap-absent fallback is a footgun</td><td><strong>Accepted.</strong> Substrate bundles bwrap; install-time smoke test; permanent <code dir="auto">sandbox_available</code> mark on smoke failure. <strong>Note on the escape hatch:</strong> the page (and build-scripts) described a per-run, hash-bound <code dir="auto">PAPERCUSP_UNSANDBOX_SCRIPT=&#x3C;hash></code> env var. The implemented escapes are instead <strong>blanket toggles</strong>, not bound to a script hash: <code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code> (skip the smoke probe and run unsandboxed) and <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> (opt into running unsandboxed after a smoke-test failure). <code dir="auto">PAPERCUSP_UNSANDBOX_SCRIPT</code> does not exist in code.</td><td><a href="./build-scripts#bwrap-smoke-test-linux-install-flow">build-scripts § Bwrap smoke test</a></td></tr><tr><td><strong>Significant 3.</strong> <code dir="auto">network: "open"</code> defeats the network sandbox</td><td><strong>Accepted; redesigned.</strong> <code dir="auto">network: "open"</code> replaced with <code dir="auto">cloudProvider: { id, region }</code> substrate-curated presets. IMDS + RFC1918 always blocked.</td><td><a href="./build-scripts#network-policy-floor">build-scripts § Network policy floor</a></td></tr><tr><td><strong>Significant 4.</strong> Idempotency hash misses scriptHash</td><td><strong>Accepted in V1.</strong> done-marker compares <code dir="auto">(configHash, scriptHash, pluginVersion)</code>. <code dir="auto">skipReprovisionOnPatch</code> exempts <code dir="auto">pluginVersion</code> only — script-hash changes always force re-consent. <strong>Implementation detail:</strong> the exemption is <strong>patch-level only</strong>. <code dir="auto">decideReprovision</code> treats a minor bump the same as a major one (both force re-provision — “treat minor like major to be safe”), so <code dir="auto">skipReprovisionOnPatch</code> applies only to true patch-level (z) bumps where major and minor are unchanged.</td><td><a href="./build-scripts#idempotency-contract">build-scripts § Idempotency contract</a></td></tr><tr><td><strong>Significant 5.</strong> Marketplace moderation overconfidence</td><td><strong>Accepted.</strong> V1 launch criterion reframed as “vetted-publisher alpha.” Public marketplace launch is V1.1+ gated on moderation layer. Vetted-publisher allowlist process documented (GitHub issue, public review, allowlist published).</td><td><a href="./open-questions">open-questions</a></td></tr><tr><td><strong>Significant 6.</strong> Trust granularity per-publisher too coarse</td><td><strong>Accepted.</strong> Trust is per-(publisher, plugin), keyed on signing-key fingerprint.</td><td><a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a></td></tr><tr><td><strong>Medium 7.</strong> Skip-teardown silent cost leak</td><td><strong>Accepted, deferred to V1.1.</strong> 7-day passive banner on operator home tile listing orphan resources.</td><td><a href="./build-scripts#skip-teardown-banner-v11">build-scripts § Skip-teardown banner</a></td></tr><tr><td><strong>Medium 8.</strong> POSIX/bash compat across platforms</td><td><strong>Accepted, deferred to V1.1.</strong> Per-platform script paths (<code dir="auto">setup.path.linux</code> / <code dir="auto">.darwin</code>) optional + bashism linter at publish time.</td><td><a href="./open-questions#v11-improves-the-system-ships-fast-follow">open-questions § V1.1</a></td></tr><tr><td><strong>Medium 9.</strong> verify polling at scale</td><td><strong>Accepted in V1.</strong> Visibility-aware: foreground-only by default, no periodic background polling unless explicitly opted in.</td><td><a href="./build-scripts#verify-semantics">build-scripts § Verify</a></td></tr><tr><td><strong>Medium 10.</strong> Multi-machine fork race</td><td><strong>Designed as</strong> PG-based <code dir="auto">harness_shared.operator_claims</code> with advisory locks + heartbeat-renewed <code dir="auto">expires_at</code>, replacing file-based heartbeat. <strong>Superseded in implementation:</strong> this machinery was built and then removed in the DBOS-only cutover. The <code dir="auto">operator_claims</code> table was dropped (migration 112) and the advisory-lock + 30s heartbeat were deleted entirely. Concurrency is now serialized by the DBOS provision workflow’s <code dir="auto">deduplicationID</code>; a PENDING workflow holds its dedup slot for its whole lifetime with <strong>no heartbeat</strong> (see <code dir="auto">dbos-durable-flows-adoption-2026-06-02</code>).</td><td><a href="./build-scripts#recovery-contract">build-scripts § Recovery</a></td></tr><tr><td><strong>Minor 11.</strong> ctx.oauth.token() refresh storm</td><td><strong>Accepted.</strong> Promise-cache so concurrent calls share the in-flight refresh.</td><td><a href="./oauth-integration#concurrent-refresh-storm">oauth-integration § Concurrent refresh</a></td></tr><tr><td><strong>Minor 12.</strong> OAuth single-tenancy V1.1 callout</td><td><strong>Accepted.</strong> Promoted to V1.1 explicit line item.</td><td><a href="./oauth-integration#multi-tenancy-callout-v11">oauth-integration § Multi-tenancy</a></td></tr><tr><td><strong>Minor 13.</strong> Audit log fail-loud on encrypted volumes</td><td><strong>Accepted in V1.</strong> Substrate refuses to run if audit dir unwriteable.</td><td><a href="./build-scripts#fail-loud-on-encrypted-locked-volumes">build-scripts § Fail-loud</a></td></tr><tr><td><strong>Minor 14.</strong> Round-1 references not externally visible</td><td><strong>Accepted.</strong> Justifications rephrased to stand alone; round-X references kept for audit trail.</td><td>(this page)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="round-4">Round 4</h2><a class="sl-anchor-link" href="#round-4"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Round 4”</span></a></div>
 <p>Round-4 reviewer surfaced four substantive points + a process commitment.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>A.</strong> Bundle bwrap isn’t enough — needs install-time smoke test | <strong>Accepted.</strong> <code dir="auto">bwrap --ro-bind / / --unshare-all true</code> at first install; failure → permanent <code dir="auto">sandbox_available: false</code> mark + signed-only mode for substrate’s lifetime. | <a href="./build-scripts#bwrap-smoke-test-linux-install-flow">build-scripts § Bwrap smoke test</a> |
-| <strong>B.</strong> macOS signed-or-refuse needs per-run dev escape for plugin authors | <strong>Designed as</strong> a hash-bound <code dir="auto">PAPERCUSP_DEV_UNSIGNED=&#x3C;sha256></code> per-run env var (no persistence), used with <code dir="auto">papercusp plugin install --dev</code>. <strong>Superseded:</strong> that hash-bound var does not exist in code. The implemented unsandbox escapes are the blanket toggles <code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code> / <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> (see Round 3 item 2); neither is bound to a specific script sha256. | <a href="./build-scripts#per-run-unsandbox-escapes">build-scripts § Per-run unsandbox escapes</a> |
-| <strong>C.</strong> Per-(publisher, plugin) trust doesn’t cover ownership transfer | <strong>Accepted in V1.</strong> Trust keyed on <code dir="auto">publisher_id</code> (signing-key fingerprint); different fingerprint on new version triggers fresh consent. Closes xz-utils-in-miniature. | <a href="./build-scripts#ownership-transfer">build-scripts § Ownership transfer</a> |
-| <strong>D.</strong> Multi-machine fork race needs PG primitive, not file-based heartbeat | <strong>Designed as</strong> a PG-backed <code dir="auto">operator_claims</code> table with advisory lock + heartbeat-renewed <code dir="auto">expires_at</code>. <strong>Superseded:</strong> implemented, then removed in the DBOS-only cutover — see Round 3 item 10 above. The DBOS provision workflow’s <code dir="auto">deduplicationID</code> is now the cross-request mutex (no claims table, no heartbeat). | <a href="./build-scripts#recovery-contract">build-scripts § Recovery</a> |
-| <strong>Process.</strong> Vetted-publisher allowlist needs documented gate | <strong>Accepted in V1.</strong> Apply via GitHub issue at github.com/Papercusp/papercusp-publishers; reviewed within N business days; allowlist published; appeals via issue thread. | <a href="./open-questions#v1--gates-safe-to-release-to-a-vetted-publisher-alpha">open-questions § V1</a> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>A.</strong> Bundle bwrap isn’t enough — needs install-time smoke test</td><td><strong>Accepted.</strong> <code dir="auto">bwrap --ro-bind / / --unshare-all true</code> at first install; failure → permanent <code dir="auto">sandbox_available: false</code> mark + signed-only mode for substrate’s lifetime.</td><td><a href="./build-scripts#bwrap-smoke-test-linux-install-flow">build-scripts § Bwrap smoke test</a></td></tr><tr><td><strong>B.</strong> macOS signed-or-refuse needs per-run dev escape for plugin authors</td><td><strong>Designed as</strong> a hash-bound <code dir="auto">PAPERCUSP_DEV_UNSIGNED=&#x3C;sha256></code> per-run env var (no persistence), used with <code dir="auto">papercusp plugin install --dev</code>. <strong>Superseded:</strong> that hash-bound var does not exist in code. The implemented unsandbox escapes are the blanket toggles <code dir="auto">PAPERCUSP_DISABLE_SANDBOX=1</code> / <code dir="auto">PAPERCUSP_ALLOW_NO_SANDBOX=1</code> (see Round 3 item 2); neither is bound to a specific script sha256.</td><td><a href="./build-scripts#per-run-unsandbox-escapes">build-scripts § Per-run unsandbox escapes</a></td></tr><tr><td><strong>C.</strong> Per-(publisher, plugin) trust doesn’t cover ownership transfer</td><td><strong>Accepted in V1.</strong> Trust keyed on <code dir="auto">publisher_id</code> (signing-key fingerprint); different fingerprint on new version triggers fresh consent. Closes xz-utils-in-miniature.</td><td><a href="./build-scripts#ownership-transfer">build-scripts § Ownership transfer</a></td></tr><tr><td><strong>D.</strong> Multi-machine fork race needs PG primitive, not file-based heartbeat</td><td><strong>Designed as</strong> a PG-backed <code dir="auto">operator_claims</code> table with advisory lock + heartbeat-renewed <code dir="auto">expires_at</code>. <strong>Superseded:</strong> implemented, then removed in the DBOS-only cutover — see Round 3 item 10 above. The DBOS provision workflow’s <code dir="auto">deduplicationID</code> is now the cross-request mutex (no claims table, no heartbeat).</td><td><a href="./build-scripts#recovery-contract">build-scripts § Recovery</a></td></tr><tr><td><strong>Process.</strong> Vetted-publisher allowlist needs documented gate</td><td><strong>Accepted in V1.</strong> Apply via GitHub issue at github.com/Papercusp/papercusp-publishers; reviewed within N business days; allowlist published; appeals via issue thread.</td><td><a href="./open-questions#v1--gates-safe-to-release-to-a-vetted-publisher-alpha">open-questions § V1</a></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="round-5">Round 5</h2><a class="sl-anchor-link" href="#round-5"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Round 5”</span></a></div>
 <p>Round-5 reviewer raised 14 items + 2 nits + process callouts. All
 accepted with concrete refinements.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>Significant 1.</strong> macOS Tauri-sidecar consideration | <strong>Accepted as V2.</strong> V1 sandbox-exec + signed-only; V2 adds Tauri sidecar with restricted entitlements declared in <code dir="auto">Info.plist</code>. | <a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing table</a> |
-| <strong>Significant 2.</strong> Cloud presets need maintenance + region templating | <strong>Accepted.</strong> Bundled with substrate version + monthly signed update channel; <code dir="auto">${cfg.region}</code> templating from plugin config. | <a href="./build-scripts#cloud-provider-presets">build-scripts § Cloud provider presets</a> |
-| <strong>Significant 3.</strong> Trust UI text inconsistent — should say per-(publisher, plugin) | <strong>Accepted.</strong> Consent UI text explicitly scopes the “trust future” toggle to one specific (publisher, plugin) pair. | <a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a> |
-| <strong>Significant 4.</strong> <code dir="auto">skipReprovisionOnPatch</code> lets malicious patches slip through | <strong>Accepted.</strong> Flag governs <code dir="auto">pluginVersion</code> only. Script-hash changes ALWAYS force re-consent regardless of flag. | <a href="./build-scripts#skipreprovisiononpatch-semantics">build-scripts § skipReprovisionOnPatch semantics</a> |
-| <strong>Significant 5.</strong> Build-script failure rollback to plugin author | <strong>Accepted in V1.</strong> <code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id></code> helper that writes to state.json immediately; substrate offers automatic teardown of recorded resources on failure. | <a href="./build-scripts#helper-library-provisionlibsh">build-scripts § Helper library</a> |
-| <strong>Medium 6.</strong> Plugin-author signing key rotation/revocation | <strong>Accepted in V1.</strong> Rotation events must be marketplace-countersigned; key-compromise advisories clear all <code dir="auto">(publisher, *)</code> trust; new fingerprint = fresh consent. | <a href="./build-scripts#key-rotation">build-scripts § Key rotation</a> |
-| <strong>Medium 7.</strong> OAuth state-cookie collisions on concurrent flows | <strong>Wording bug fix.</strong> State is a URL parameter (HMAC + single-use nonce), not a cookie. Concurrent flows have independent state values. | <a href="./oauth-integration#state-design-url-parameter-not-cookie">oauth-integration § State design</a> |
-| <strong>Medium 8.</strong> runAt: first-action only describes actions, not hooks/routines/webhooks | <strong>Accepted in V1.</strong> Hooks/routines queue-and-replay (cap 10, persistent badge on overflow); webhooks 503 + audit. | <a href="./build-scripts#behavior-per-surface-when-setup-hasnt-yet-run">build-scripts § Behavior per surface</a> |
-| <strong>Medium 9.</strong> Single-user assumption load-bearing but unenforced | <strong>Accepted in V1.</strong> <code dir="auto">who</code>-based detection + secondary passwd-filter; one-time acknowledgement banner on shared-host detection. | <a href="./build-scripts#single-user-host-detection">build-scripts § Single-user host detection</a> |
-| <strong>Medium 10.</strong> Audit log 50 MB cap too low for terraform-class | <strong>Designed as</strong> a per-plugin <code dir="auto">auditLogCapMb</code> override surfaced in the consent dialog. <strong>Superseded:</strong> with the PG-backed uncapped log there is no cap to override. The <code dir="auto">auditLogCapMb</code> field still exists on the manifest type and is still threaded through the runner, but <code dir="auto">appendAudit</code> ignores it (kept for source compatibility); it has no effect. | <a href="./build-scripts#per-plugin-override">build-scripts § Per-plugin override</a> |
-| <strong>Minor 11.</strong> Fork-completion UX has 8 interactions | <strong>Accepted in V1.</strong> Batch by publisher: one consent for all <code dir="auto">@papercupai</code> scripts in fork with full inline summary; “approve all” first-class flow. | <a href="./index#vision-forking-a-complex-snapshot">index § Vision</a> |
-| <strong>Minor 12.</strong> Aliases will bit-rot — version pinning to the rescue | <strong>Accepted in V1, architectural simplification.</strong> <code dir="auto">versionPin: { mode: "exact" }</code> is the reproducible default (legacy <code dir="auto">pluginVersionPinned: true</code> maps to it); alias-walk only on explicit “fork against latest” opt-in. | <a href="./share-semantics#plugin-version-pinning-default-on">share-semantics § Plugin version pinning</a> |
-| <strong>Minor 13.</strong> <code dir="auto">shareable: false</code> accepts any string format | <strong>Accepted.</strong> JSON-Schema <code dir="auto">pattern</code> field by convention. | <a href="./share-semantics#format-validation-via-pattern">share-semantics § Format validation</a> |
-| <strong>Minor 14.</strong> compute:exec ↔ provision UX confusion | <strong>Accepted in V1.</strong> Single “host activity” tile on plugin settings showing both surfaces. | <a href="./build-scripts#plugin-host-activity-settings-tile-v1">build-scripts § Plugin host activity tile</a> |
-| <strong>Nit (LOC math).</strong> 1,500 LOC budget doesn’t add up | <strong>Accepted.</strong> V1 honest total raised to ~2,000–2,100 LOC; arctic adoption (subject to audit) trims ~150. | <a href="./open-questions">open-questions</a> |
-| <strong>Nit (tarball format).</strong> <code dir="auto">.shape.json</code> IS a format change, even if additive | <strong>Accepted.</strong> Doc explicitly acknowledges as additive format change with backward-compat. | <a href="./index#snapshot-tarball-format-change">index § Snapshot tarball format change</a> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>Significant 1.</strong> macOS Tauri-sidecar consideration</td><td><strong>Accepted as V2.</strong> V1 sandbox-exec + signed-only; V2 adds Tauri sidecar with restricted entitlements declared in <code dir="auto">Info.plist</code>.</td><td><a href="./build-scripts#sandboxing-and-the-trust-model">build-scripts § Sandboxing table</a></td></tr><tr><td><strong>Significant 2.</strong> Cloud presets need maintenance + region templating</td><td><strong>Accepted.</strong> Bundled with substrate version + monthly signed update channel; <code dir="auto">${cfg.region}</code> templating from plugin config.</td><td><a href="./build-scripts#cloud-provider-presets">build-scripts § Cloud provider presets</a></td></tr><tr><td><strong>Significant 3.</strong> Trust UI text inconsistent — should say per-(publisher, plugin)</td><td><strong>Accepted.</strong> Consent UI text explicitly scopes the “trust future” toggle to one specific (publisher, plugin) pair.</td><td><a href="./build-scripts#trust-lifecycle">build-scripts § Trust lifecycle</a></td></tr><tr><td><strong>Significant 4.</strong> <code dir="auto">skipReprovisionOnPatch</code> lets malicious patches slip through</td><td><strong>Accepted.</strong> Flag governs <code dir="auto">pluginVersion</code> only. Script-hash changes ALWAYS force re-consent regardless of flag.</td><td><a href="./build-scripts#skipreprovisiononpatch-semantics">build-scripts § skipReprovisionOnPatch semantics</a></td></tr><tr><td><strong>Significant 5.</strong> Build-script failure rollback to plugin author</td><td><strong>Accepted in V1.</strong> <code dir="auto">papercusp_record_resource &#x3C;kind> &#x3C;id></code> helper that writes to state.json immediately; substrate offers automatic teardown of recorded resources on failure.</td><td><a href="./build-scripts#helper-library-provisionlibsh">build-scripts § Helper library</a></td></tr><tr><td><strong>Medium 6.</strong> Plugin-author signing key rotation/revocation</td><td><strong>Accepted in V1.</strong> Rotation events must be marketplace-countersigned; key-compromise advisories clear all <code dir="auto">(publisher, *)</code> trust; new fingerprint = fresh consent.</td><td><a href="./build-scripts#key-rotation">build-scripts § Key rotation</a></td></tr><tr><td><strong>Medium 7.</strong> OAuth state-cookie collisions on concurrent flows</td><td><strong>Wording bug fix.</strong> State is a URL parameter (HMAC + single-use nonce), not a cookie. Concurrent flows have independent state values.</td><td><a href="./oauth-integration#state-design-url-parameter-not-cookie">oauth-integration § State design</a></td></tr><tr><td><strong>Medium 8.</strong> runAt: first-action only describes actions, not hooks/routines/webhooks</td><td><strong>Accepted in V1.</strong> Hooks/routines queue-and-replay (cap 10, persistent badge on overflow); webhooks 503 + audit.</td><td><a href="./build-scripts#behavior-per-surface-when-setup-hasnt-yet-run">build-scripts § Behavior per surface</a></td></tr><tr><td><strong>Medium 9.</strong> Single-user assumption load-bearing but unenforced</td><td><strong>Accepted in V1.</strong> <code dir="auto">who</code>-based detection + secondary passwd-filter; one-time acknowledgement banner on shared-host detection.</td><td><a href="./build-scripts#single-user-host-detection">build-scripts § Single-user host detection</a></td></tr><tr><td><strong>Medium 10.</strong> Audit log 50 MB cap too low for terraform-class</td><td><strong>Designed as</strong> a per-plugin <code dir="auto">auditLogCapMb</code> override surfaced in the consent dialog. <strong>Superseded:</strong> with the PG-backed uncapped log there is no cap to override. The <code dir="auto">auditLogCapMb</code> field still exists on the manifest type and is still threaded through the runner, but <code dir="auto">appendAudit</code> ignores it (kept for source compatibility); it has no effect.</td><td><a href="./build-scripts#per-plugin-override">build-scripts § Per-plugin override</a></td></tr><tr><td><strong>Minor 11.</strong> Fork-completion UX has 8 interactions</td><td><strong>Accepted in V1.</strong> Batch by publisher: one consent for all <code dir="auto">@papercupai</code> scripts in fork with full inline summary; “approve all” first-class flow.</td><td><a href="./index#vision-forking-a-complex-snapshot">index § Vision</a></td></tr><tr><td><strong>Minor 12.</strong> Aliases will bit-rot — version pinning to the rescue</td><td><strong>Accepted in V1, architectural simplification.</strong> <code dir="auto">versionPin: { mode: "exact" }</code> is the reproducible default (legacy <code dir="auto">pluginVersionPinned: true</code> maps to it); alias-walk only on explicit “fork against latest” opt-in.</td><td><a href="./share-semantics#plugin-version-pinning-default-on">share-semantics § Plugin version pinning</a></td></tr><tr><td><strong>Minor 13.</strong> <code dir="auto">shareable: false</code> accepts any string format</td><td><strong>Accepted.</strong> JSON-Schema <code dir="auto">pattern</code> field by convention.</td><td><a href="./share-semantics#format-validation-via-pattern">share-semantics § Format validation</a></td></tr><tr><td><strong>Minor 14.</strong> compute:exec ↔ provision UX confusion</td><td><strong>Accepted in V1.</strong> Single “host activity” tile on plugin settings showing both surfaces.</td><td><a href="./build-scripts#plugin-host-activity-settings-tile-v1">build-scripts § Plugin host activity tile</a></td></tr><tr><td><strong>Nit (LOC math).</strong> 1,500 LOC budget doesn’t add up</td><td><strong>Accepted.</strong> V1 honest total raised to ~2,000–2,100 LOC; arctic adoption (subject to audit) trims ~150.</td><td><a href="./open-questions">open-questions</a></td></tr><tr><td><strong>Nit (tarball format).</strong> <code dir="auto">.shape.json</code> IS a format change, even if additive</td><td><strong>Accepted.</strong> Doc explicitly acknowledges as additive format change with backward-compat.</td><td><a href="./index#snapshot-tarball-format-change">index § Snapshot tarball format change</a></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="round-6">Round 6</h2><a class="sl-anchor-link" href="#round-6"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Round 6”</span></a></div>
 <p>Round-6 reviewer surfaced eight follow-ups to round-5 + a process
 observation. All accepted with concrete specs.</p>
-<p>| Review item | Resolution | Section |
-|---|---|---|
-| <strong>1.</strong> macOS dev path needs a clearly-named escape | <strong>Accepted in V1.</strong> <code dir="auto">papercusp plugin install --dev /path/to/local</code> locally signs with per-machine ad-hoc key + sets <code dir="auto">dev: true</code> trust flag + consent UI text “Dev install — local machine only.” | <a href="./build-scripts#dev-install-flow-for-plugin-authors">build-scripts § Dev install flow</a> |
-| <strong>2.</strong> Cloud preset maintenance + region templating concrete | <strong>Accepted in V1.</strong> Substrate bundles preset + monthly fetch from <code dir="auto">presets.papercusp.io</code> signed with infrastructure key; <code dir="auto">${cfg.region}</code> substitution at runtime. Updates are additive-only; opt-out for offline installs. | <a href="./build-scripts#preset-maintenance">build-scripts § Preset maintenance</a> |
-| <strong>3.</strong> Teardown dispatcher contract: Path 1 explicit | <strong>Accepted in V1.</strong> Plugin’s <code dir="auto">teardown.sh</code> IS the dispatcher; receives <code dir="auto">state.json</code> via stdin or <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code>; switch on <code dir="auto">kind</code>. Substrate does NOT interpret resource kinds. | <a href="./build-scripts#teardown-contract-plugins-teardownsh-is-the-dispatcher">build-scripts § Teardown contract</a> |
-| <strong>4.</strong> Key rotation phishing surface | <strong>Accepted in V1.</strong> Rotation events must be countersigned by marketplace’s pinned infrastructure key; substrate refuses unsigned rotation events. | <a href="./build-scripts#key-rotation">build-scripts § Key rotation</a> |
-| <strong>5.</strong> OAuth state wording inconsistency | <strong>Wording bug fix.</strong> State is URL parameter end-to-end, no cookies anywhere; doc clarifies in dedicated section. | <a href="./oauth-integration#state-design-url-parameter-not-cookie">oauth-integration § State design</a> |
-| <strong>6.</strong> Queue overflow silent failure | <strong>Accepted in V1.</strong> Persistent badge on plugin settings tile lists dropped events + count; persists until user acknowledges. | <a href="./build-scripts#queue-overflow-surfacing">build-scripts § Queue overflow surfacing</a> |
-| <strong>7.</strong> Shared-host detection false-positives | <strong>Accepted in V1.</strong> Primary check: <code dir="auto">who \| sort -u \| wc -l > 1</code>. Secondary: passwd filter on UID <strong>in <code dir="auto">[1000, 60000]</code></strong> (the upper bound excludes the <code dir="auto">nobody</code>/systemd high-UID range, so it is not merely <code dir="auto">≥ 1000</code>) + a <code dir="auto">/home/&#x3C;name>/</code> home prefix + a valid login shell from a fixed allowlist. | <a href="./build-scripts#single-user-host-detection">build-scripts § Single-user host detection</a> |
-| <strong>8.</strong> pluginVersionPinned + security advisories | <strong>Accepted in V1.</strong> Marketplace catalog adds <code dir="auto">securityAdvisories</code> per-version; fork-time substrate prompts loudly with read/upgrade/pin choices when pinned version has open advisory ≥ moderate. | <a href="./share-semantics#security-advisories-at-fork-time">share-semantics § Security advisories</a> |
-| <strong>Process: arctic supply-chain audit</strong> | <strong>Accepted.</strong> Adopting arctic is gated on audit (dep graph, maintainer count, signing posture, Atlassian 3LO coverage, lockfile pinning). Roll-our-own is the fallback if arctic fails audit. | <a href="./oauth-integration#library-decision-arctic-vs-roll-our-own">oauth-integration § Library decision</a> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Review item</th><th>Resolution</th><th>Section</th></tr></thead><tbody><tr><td><strong>1.</strong> macOS dev path needs a clearly-named escape</td><td><strong>Accepted in V1.</strong> <code dir="auto">papercusp plugin install --dev /path/to/local</code> locally signs with per-machine ad-hoc key + sets <code dir="auto">dev: true</code> trust flag + consent UI text “Dev install — local machine only.”</td><td><a href="./build-scripts#dev-install-flow-for-plugin-authors">build-scripts § Dev install flow</a></td></tr><tr><td><strong>2.</strong> Cloud preset maintenance + region templating concrete</td><td><strong>Accepted in V1.</strong> Substrate bundles preset + monthly fetch from <code dir="auto">presets.papercusp.io</code> signed with infrastructure key; <code dir="auto">${cfg.region}</code> substitution at runtime. Updates are additive-only; opt-out for offline installs.</td><td><a href="./build-scripts#preset-maintenance">build-scripts § Preset maintenance</a></td></tr><tr><td><strong>3.</strong> Teardown dispatcher contract: Path 1 explicit</td><td><strong>Accepted in V1.</strong> Plugin’s <code dir="auto">teardown.sh</code> IS the dispatcher; receives <code dir="auto">state.json</code> via stdin or <code dir="auto">$PAPERCUSP_PLUGIN_STATE</code>; switch on <code dir="auto">kind</code>. Substrate does NOT interpret resource kinds.</td><td><a href="./build-scripts#teardown-contract-plugins-teardownsh-is-the-dispatcher">build-scripts § Teardown contract</a></td></tr><tr><td><strong>4.</strong> Key rotation phishing surface</td><td><strong>Accepted in V1.</strong> Rotation events must be countersigned by marketplace’s pinned infrastructure key; substrate refuses unsigned rotation events.</td><td><a href="./build-scripts#key-rotation">build-scripts § Key rotation</a></td></tr><tr><td><strong>5.</strong> OAuth state wording inconsistency</td><td><strong>Wording bug fix.</strong> State is URL parameter end-to-end, no cookies anywhere; doc clarifies in dedicated section.</td><td><a href="./oauth-integration#state-design-url-parameter-not-cookie">oauth-integration § State design</a></td></tr><tr><td><strong>6.</strong> Queue overflow silent failure</td><td><strong>Accepted in V1.</strong> Persistent badge on plugin settings tile lists dropped events + count; persists until user acknowledges.</td><td><a href="./build-scripts#queue-overflow-surfacing">build-scripts § Queue overflow surfacing</a></td></tr><tr><td><strong>7.</strong> Shared-host detection false-positives</td><td><strong>Accepted in V1.</strong> Primary check: <code dir="auto">who | sort -u | wc -l > 1</code>. Secondary: passwd filter on UID <strong>in <code dir="auto">[1000, 60000]</code></strong> (the upper bound excludes the <code dir="auto">nobody</code>/systemd high-UID range, so it is not merely <code dir="auto">≥ 1000</code>) + a <code dir="auto">/home/&#x3C;name>/</code> home prefix + a valid login shell from a fixed allowlist.</td><td><a href="./build-scripts#single-user-host-detection">build-scripts § Single-user host detection</a></td></tr><tr><td><strong>8.</strong> pluginVersionPinned + security advisories</td><td><strong>Accepted in V1.</strong> Marketplace catalog adds <code dir="auto">securityAdvisories</code> per-version; fork-time substrate prompts loudly with read/upgrade/pin choices when pinned version has open advisory ≥ moderate.</td><td><a href="./share-semantics#security-advisories-at-fork-time">share-semantics § Security advisories</a></td></tr><tr><td><strong>Process: arctic supply-chain audit</strong></td><td><strong>Accepted.</strong> Adopting arctic is gated on audit (dep graph, maintainer count, signing posture, Atlassian 3LO coverage, lockfile pinning). Roll-our-own is the fallback if arctic fails audit.</td><td><a href="./oauth-integration#library-decision-arctic-vs-roll-our-own">oauth-integration § Library decision</a></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="pattern-observations-across-rounds">Pattern observations across rounds</h2><a class="sl-anchor-link" href="#pattern-observations-across-rounds"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pattern observations across rounds”</span></a></div>
 <p>Every round added 3–6 substantive items that were genuine gaps. The
 gaps got smaller as rounds progressed:</p>

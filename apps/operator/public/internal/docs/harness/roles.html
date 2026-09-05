@@ -79,12 +79,32 @@ runtime source of truth for built-in role ids — tool <code dir="auto">roles:</
 quota keys, and <code dir="auto">byRole</code> guidance all key off it. The set is open: plugins
 contribute namespaced <code dir="auto">&#x3C;plugin>:&#x3C;role></code> ids at runtime.</p>
 <p>The built-ins, grouped as the file orders them:</p>
-<p>| Group | Roles |
-|---|---|
-| Pipeline | <code dir="auto">scoper</code> · <code dir="auto">architect</code> · <code dir="auto">worker</code> · <code dir="auto">validator</code> · <code dir="auto">reviewer</code> · <code dir="auto">debugger</code> · <code dir="auto">documenter</code> · <code dir="auto">curator</code> |
-| Chat surfaces | <code dir="auto">operator</code> · <code dir="auto">oracle</code> |
-| Pot | <code dir="auto">cup</code> (the generic “do this task” agent — no pipeline spine, no chunk requirement) · <code dir="auto">mug</code> (the Pot’s placement decider — the <code dir="auto">coding</code>/<code dir="auto">work</code> Pot blueprint’s <code dir="auto">spine.decider</code>; steer-don’t-dispatch placement) · <code dir="auto">overwatch</code> (read-everything system-health supervisor; nudge/observe/escalate only — its role envelope <strong>denies</strong> <code dir="auto">fs-write</code> + <code dir="auto">bash</code>) · <code dir="auto">planner</code> (interactive plan-authoring session) |
-| Cross-cutting | <code dir="auto">orchestrator</code> · <code dir="auto">promote</code> · <code dir="auto">security-reviewer</code> · <code dir="auto">infra-reviewer</code> · <code dir="auto">crosscheck</code> · <code dir="auto">ui-qa</code> · <code dir="auto">auditor</code> (read-only adversarial screen for remote-authored features) · <code dir="auto">merge-resolver</code> (git-sync conflict resolution) · <code dir="auto">content-fixer</code> (git-sync content-guard repairer — fixes quarantined files so they pass the content detector, leaves the tree clean, does <strong>not</strong> push) · <code dir="auto">release-manager</code> (deploy go/no-go) · <code dir="auto">release-fixer</code> (green-checkpoint gate fixer — reproduces a failing test, then fixes the code or quarantines a proven flake) · <code dir="auto">papercup</code> (read-mostly fleet watcher) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Group</th><th>Roles</th></tr></thead><tbody><tr><td>Pipeline</td><td><code dir="auto">scoper</code> · <code dir="auto">architect</code> · <code dir="auto">worker</code> · <code dir="auto">validator</code> · <code dir="auto">reviewer</code> · <code dir="auto">debugger</code> · <code dir="auto">documenter</code> · <code dir="auto">curator</code></td></tr><tr><td>Chat surfaces</td><td><code dir="auto">operator</code> · <code dir="auto">oracle</code></td></tr><tr><td>Pot</td><td><code dir="auto">cup</code> (the generic “do this task” agent — no pipeline spine, no chunk requirement) · <code dir="auto">mug</code> (the Pot’s placement decider — the <code dir="auto">coding</code>/<code dir="auto">work</code> Pot blueprint’s <code dir="auto">spine.decider</code>; steer-don’t-dispatch placement) · <code dir="auto">overwatch</code> (read-everything system-health supervisor; nudge/observe/escalate only — its role envelope <strong>denies</strong> <code dir="auto">fs-write</code> + <code dir="auto">bash</code>) · <code dir="auto">planner</code> (interactive plan-authoring session)</td></tr><tr><td>Cross-cutting</td><td><code dir="auto">orchestrator</code> · <code dir="auto">promote</code> · <code dir="auto">security-reviewer</code> · <code dir="auto">infra-reviewer</code> · <code dir="auto">crosscheck</code> · <code dir="auto">ui-qa</code> · <code dir="auto">auditor</code> (read-only adversarial screen for remote-authored features) · <code dir="auto">merge-resolver</code> (git-sync conflict resolution) · <code dir="auto">content-fixer</code> (git-sync content-guard repairer — fixes quarantined files so they pass the content detector, leaves the tree clean, does <strong>not</strong> push) · <code dir="auto">release-manager</code> (deploy go/no-go) · <code dir="auto">release-fixer</code> (green-checkpoint gate fixer — reproduces a failing test, then fixes the code or quarantines a proven flake) · <code dir="auto">papercup</code> (read-mostly fleet watcher)</td></tr></tbody></table>
 <p>Two adjacent ids that are <em>not</em> agent roles: <strong><code dir="auto">brain</code></strong>
 (<code dir="auto">BRAIN_PRINCIPAL_ROLE</code>) is an RBAC role on the operator’s own <em>principal</em> —
 “only the brain approves spawns” is enforced at the dispatch layer, never

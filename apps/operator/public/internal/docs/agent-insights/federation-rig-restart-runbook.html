@@ -408,18 +408,65 @@ running other live rigs.</li>
 cheaper than a reset when you just need one more witness run to fit inside the 30s window.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="quick-reference">Quick reference</h2><a class="sl-anchor-link" href="#quick-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Quick reference”</span></a></div>
-<p>| symptom                                                                 | do                                                                           |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| drive a live fed VM (stale <code dir="auto">/tmp/fed.sh</code> ports)                         | <code dir="auto">scripts/linux-test-vm/fed.sh &#x3C;a\|b> ports\|sql\|api\|mcp</code> (§7, WI-754)      |
-| crashed/timed-out run left debris                                       | <code dir="auto">bin/reap-orphans.sh</code> (§1)                                                   |
-| one known run’s <code dir="auto">$WORK</code> to clean                                        | <code dir="auto">bin/cleanup-run.sh &#x3C;WORK></code> (§1)                                             |
-| “API never came up” / wrong port                                        | now self-heals (WI-754, §3); read the dumped diagnostic                      |
-| stale <code dir="auto">Xvfb</code> on a smoke display                                         | <code dir="auto">pgrep -af 'Xvfb :…'</code> → <code dir="auto">kill &#x3C;pid></code> (§2)                                    |
-| wedged Linux VM                                                         | <code dir="auto">./vmctl reset</code> / <code dir="auto">down</code> / <code dir="auto">up &#x3C;name></code> (§4)                                  |
-| wedged Mac VM                                                           | QMP recovery, never pkill (§4)                                               |
-| re-run the scheduled gate                                               | <code dir="auto">bin/reap-orphans.sh</code> then <code dir="auto">bin/live-federation-gate.sh</code> (§5)                |
-| peer up but discovers/announces <strong>nothing</strong> (count:0, reachablePeers:0) | check <code dir="auto">gh auth status</code> FIRST → restore gh auth (§6, WI-757)                  |
-| loopback smoke gets 0 peer dials, only on a fleet shell                 | check calling shell for <code dir="auto">PAPERCUSP_DHT_HOST</code>/<code dir="auto">PAPERCUSP_DHT_BOOTSTRAP</code> (§6b) |
-| <code dir="auto">superuser_invalid_bearer</code> / <code dir="auto">no_owner_identity</code> with no reset/gh-wipe  | compare operator’s real <code dir="auto">HOME</code> (<code dir="auto">/proc/&#x3C;pid>/environ</code>) vs SSH login <code dir="auto">HOME</code> (§8, D-007) |
-| every harness hits substrate <code dir="auto">boot timeout after 30000ms</code>               | <code dir="auto">reap-orphans.sh</code> / <code dir="auto">vmctl reset</code>, never hand-kill PIDs (§9, D-008/D-009, WI-779) |
-| <strong>anything</strong>                                                            | <strong>never</strong> <code dir="auto">pkill -f &#x3C;rig></code> / <code dir="auto">rm -rf /tmp/&#x3C;rig>.*</code> (EI-1739)                 |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-25T04:20:13.000Z">Aug 25, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/federation-public-release-known-limitations.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Federation public-release: known limitations + release-criteria gate</span> </span> </a> <a href="/internal/docs/agent-insights/launch-blueprints.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Agent launches are declared blueprints — fire them with the launch-blueprint primitive</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>symptom</th><th>do</th></tr></thead><tbody><tr><td>drive a live fed VM (stale <code dir="auto">/tmp/fed.sh</code> ports)</td><td><code dir="auto">scripts/linux-test-vm/fed.sh &#x3C;a|b> ports|sql|api|mcp</code> (§7, WI-754)</td></tr><tr><td>crashed/timed-out run left debris</td><td><code dir="auto">bin/reap-orphans.sh</code> (§1)</td></tr><tr><td>one known run’s <code dir="auto">$WORK</code> to clean</td><td><code dir="auto">bin/cleanup-run.sh &#x3C;WORK></code> (§1)</td></tr><tr><td>“API never came up” / wrong port</td><td>now self-heals (WI-754, §3); read the dumped diagnostic</td></tr><tr><td>stale <code dir="auto">Xvfb</code> on a smoke display</td><td><code dir="auto">pgrep -af 'Xvfb :…'</code> → <code dir="auto">kill &#x3C;pid></code> (§2)</td></tr><tr><td>wedged Linux VM</td><td><code dir="auto">./vmctl reset</code> / <code dir="auto">down</code> / <code dir="auto">up &#x3C;name></code> (§4)</td></tr><tr><td>wedged Mac VM</td><td>QMP recovery, never pkill (§4)</td></tr><tr><td>re-run the scheduled gate</td><td><code dir="auto">bin/reap-orphans.sh</code> then <code dir="auto">bin/live-federation-gate.sh</code> (§5)</td></tr><tr><td>peer up but discovers/announces <strong>nothing</strong> (count:0, reachablePeers:0)</td><td>check <code dir="auto">gh auth status</code> FIRST → restore gh auth (§6, WI-757)</td></tr><tr><td>loopback smoke gets 0 peer dials, only on a fleet shell</td><td>check calling shell for <code dir="auto">PAPERCUSP_DHT_HOST</code>/<code dir="auto">PAPERCUSP_DHT_BOOTSTRAP</code> (§6b)</td></tr><tr><td><code dir="auto">superuser_invalid_bearer</code> / <code dir="auto">no_owner_identity</code> with no reset/gh-wipe</td><td>compare operator’s real <code dir="auto">HOME</code> (<code dir="auto">/proc/&#x3C;pid>/environ</code>) vs SSH login <code dir="auto">HOME</code> (§8, D-007)</td></tr><tr><td>every harness hits substrate <code dir="auto">boot timeout after 30000ms</code></td><td><code dir="auto">reap-orphans.sh</code> / <code dir="auto">vmctl reset</code>, never hand-kill PIDs (§9, D-008/D-009, WI-779)</td></tr><tr><td><strong>anything</strong></td><td><strong>never</strong> <code dir="auto">pkill -f &#x3C;rig></code> / <code dir="auto">rm -rf /tmp/&#x3C;rig>.*</code> (EI-1739)</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-25T04:20:13.000Z">Aug 25, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/federation-public-release-known-limitations.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Federation public-release: known limitations + release-criteria gate</span> </span> </a> <a href="/internal/docs/agent-insights/launch-blueprints.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Agent launches are declared blueprints — fire them with the launch-blueprint primitive</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

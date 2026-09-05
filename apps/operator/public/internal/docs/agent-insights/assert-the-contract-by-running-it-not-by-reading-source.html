@@ -91,12 +91,37 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="the-decision-procedure">The decision procedure</h2><a class="sl-anchor-link" href="#the-decision-procedure"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The decision procedure”</span></a></div>
 <p>Before reaching for a source-text regex, ask <strong>“is this path cheap to DRIVE?”</strong> — a question that is rarely asked, because the phrase “a full run needs a real repo tree and real test children” is usually true of the <em>expensive</em> path and gets generalised to all of them.</p>
 <p>Here it was false for exactly the paths that kept breaking. All three early-exit paths <code dir="auto">exit(0)</code> <strong>before</strong> spawning any test child:</p>
-<p>| path | how to reach it | cost |
-|---|---|---|
-| <code dir="auto">reason=no-affected-workspaces</code> | an unrouted path + <code dir="auto">--exclude</code> every workspace in play | — |
-| <code dir="auto">reason=no-test-script</code> | a routed path + <code dir="auto">--exclude</code> every workspace in play | — |
-| <code dir="auto">status=dry-run</code> | <code dir="auto">--dry</code> | — |
-| | <strong>all three combined</strong> | <strong>0.45s</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>how to reach it</th><th>cost</th></tr></thead><tbody><tr><td><code dir="auto">reason=no-affected-workspaces</code></td><td>an unrouted path + <code dir="auto">--exclude</code> every workspace in play</td><td>—</td></tr><tr><td><code dir="auto">reason=no-test-script</code></td><td>a routed path + <code dir="auto">--exclude</code> every workspace in play</td><td>—</td></tr><tr><td><code dir="auto">status=dry-run</code></td><td><code dir="auto">--dry</code></td><td>—</td></tr><tr><td></td><td><strong>all three combined</strong></td><td><strong>0.45s</strong></td></tr></tbody></table>
 <p>The assertions that keep breaking are often the cheapest ones to execute, because “emits X and exits early” is exactly the kind of path that has no expensive setup.</p>
 <p>Keep source-shape assertions only where driving the path is genuinely expensive (here: a real <em>failing</em> run needs real vitest children), and pin <strong>code tokens</strong> there — <code dir="auto">resultLine('failed')</code>, <code dir="auto">process.exit(1)</code> — never wording.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="derive-the-fixture-inputs-do-not-hardcode-them">Derive the fixture inputs; do not hardcode them</h2><a class="sl-anchor-link" href="#derive-the-fixture-inputs-do-not-hardcode-them"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Derive the fixture inputs; do not hardcode them”</span></a></div>
@@ -107,12 +132,32 @@
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="ts"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">expect</span><span style="--0:#D6DEEB;--1:#403F53">(</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">fields</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">reason</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#D6DEEB;--1:#403F53">`</span><span style="--0:#ECC48D;--1:#3B61B0">reached a different early-exit path than intended — either the marker contract changed, or this probe's --changed-paths/--exclude inputs went stale. Output:</span><span style="--0:#F78C6C;--1:#AA0982">\n</span><span style="--0:#E2817F;--1:#B23834">${</span><span style="--0:#D6DEEB;--1:#403F53">stdout</span><span style="--0:#E2817F;--1:#B23834">}</span><span style="--0:#D6DEEB;--1:#403F53">`</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">)</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#82AAFF;--1:#3B61B0">toBe</span><span style="--0:#D6DEEB;--1:#403F53">(c</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">reason</span><span style="--0:#D6DEEB;--1:#403F53">);</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="expect(  fields.reason,  &#x60;reached a different early-exit path than intended — either the marker contract changed, or this probe&#x27;s --changed-paths/--exclude inputs went stale. Output:\n${stdout}&#x60;,).toBe(c.reason);"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="do-not-build-the-obvious-guard-for-the-guard--measured">Do NOT build the obvious “guard for the guard” — measured</h2><a class="sl-anchor-link" href="#do-not-build-the-obvious-guard-for-the-guard--measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Do NOT build the obvious “guard for the guard” — measured”</span></a></div>
 <p>The tempting class fix is a lint banning human prose inside source-text assertions. <strong>Measure the population before encoding that rule.</strong> Across this repo:</p>
-<p>| | count |
-|---|---|
-| test files reading a file | 535 |
-| binding a var to <code dir="auto">readFileSync</code> | 240 |
-| with ≥1 assertion pinning 3+ consecutive prose words | <strong>22</strong> |
-| such assertions | <strong>57</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>count</th></tr></thead><tbody><tr><td>test files reading a file</td><td>535</td></tr><tr><td>binding a var to <code dir="auto">readFileSync</code></td><td>240</td></tr><tr><td>with ≥1 assertion pinning 3+ consecutive prose words</td><td><strong>22</strong></td></tr><tr><td>such assertions</td><td><strong>57</strong></td></tr></tbody></table>
 <p>Bounded — but reading the hits, <em>most pin prose that genuinely IS the contract</em>: a generated doc’s <code dir="auto">## heading</code>, a persona’s rule sentence, a projected prompt’s literal body. A lint on the pattern would fire mostly on <strong>correct</strong> assertions and would pressure people to loosen tests that should stay tight.</p>
 <p>The heuristic cannot separate contract-prose from decoration-prose — which is the same distinction the broken assertions could not make. A guard built on it inherits the defect it was meant to police.</p>
 <blockquote>
@@ -123,11 +168,32 @@
 <p>The script resolves its own root (<code dir="auto">resolve(dirname(fileURLToPath(import.meta.url)), '..')</code>), so a bare <code dir="auto">/tmp</code> copy resolves the wrong root and cannot run. Build a scratch root of <strong>symlinks</strong> instead — every repo entry linked, one real copy of the file under test — plus a test-only env seam pointing at it:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="ts"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">const </span><span style="--0:#82AAFF;--1:#3B61B0">AFFECTED_TESTS</span><span style="--0:#C792EA;--1:#8844AE"> = </span><span style="--0:#D6DEEB;--1:#403F53">process</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#FAF39F;--1:#111111">env</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#82AAFF;--1:#3B61B0">PAPERCUSP_AFFECTED_TESTS_SCRIPT</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C792EA;--1:#8844AE">?</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">resolve</span><span style="--0:#D6DEEB;--1:#403F53">(process</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#FAF39F;--1:#111111">env</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#82AAFF;--1:#3B61B0">PAPERCUSP_AFFECTED_TESTS_SCRIPT</span><span style="--0:#D6DEEB;--1:#403F53">)</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C792EA;--1:#8844AE">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">resolve</span><span style="--0:#D6DEEB;--1:#403F53">(</span><span style="--0:#82AAFF;--1:#3B61B0">REPO_ROOT</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">scripts/affected-tests.mjs</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">);</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT  ? resolve(process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT)  : resolve(REPO_ROOT, &#x27;scripts/affected-tests.mjs&#x27;);"><div></div></button></div></figure></div>
 <p>Then prove all three directions — and note that the <em>passing</em> row is the one that matters:</p>
-<p>| mutation | expected | observed |
-|---|---|---|
-| prose completely rewritten | <strong>PASS</strong> | ✅ 8/8 green |
-| marker emission deleted | FAIL | ✅ <code dir="auto">expected exactly one marker line, got: []</code> |
-| <code dir="auto">reason=</code> token renamed | FAIL | ✅ <code dir="auto">expected 'nothing-selected' to be 'no-affected-workspaces'</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>mutation</th><th>expected</th><th>observed</th></tr></thead><tbody><tr><td>prose completely rewritten</td><td><strong>PASS</strong></td><td>✅ 8/8 green</td></tr><tr><td>marker emission deleted</td><td>FAIL</td><td>✅ <code dir="auto">expected exactly one marker line, got: []</code></td></tr><tr><td><code dir="auto">reason=</code> token renamed</td><td>FAIL</td><td>✅ <code dir="auto">expected 'nothing-selected' to be 'no-affected-workspaces'</code></td></tr></tbody></table>
 <p>A falsifiability probe that only demonstrates failures has not shown the guard is <em>well-targeted</em> — only that it is sensitive. The row proving the guard <strong>ignores</strong> the change class that used to break it is what shows the fix actually landed.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="when-a-source-text-assertion-is-still-right">When a source-text assertion is still right</h2><a class="sl-anchor-link" href="#when-a-source-text-assertion-is-still-right"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “When a source-text assertion is still right”</span></a></div>
 <ul>

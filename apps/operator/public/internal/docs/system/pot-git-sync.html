@@ -101,14 +101,47 @@ which wraps the pure pipeline with locks, escalations, and resolver dispatch.</p
 site and by the action’s runtime gate, so seed time and run time can never
 disagree. <code dir="auto">gitSyncEligibility(entry)</code> is pure + sync over a registry snapshot;
 reasons in precedence order:</p>
-<p>| Reason | Entry shape | Why it never syncs |
-|---|---|---|
-| <code dir="auto">ephemeral_debris</code> | Slug matches the ephemeral/benchmark INSTANCE regex (xbench / <code dir="auto">xbq&#x3C;hash></code> / <code dir="auto">*instance*</code> / memcap / memrun / deleteme) | An ephemeral/benchmark instance harness — must never get a routine. <strong>Checked FIRST</strong>: it is a pure regex match (no IO) so a surviving routine fast-skips before any <code dir="auto">stat</code>. Added after INCIDENT 2026-06-18 (a benchmark fleet left ~170 torn-down per-task instance harnesses each carrying an ACTIVE git-sync routine; the per-tick churn saturated the <code dir="auto">:3070</code> event loop and took psu down). |
-| <code dir="auto">remote_hive_view</code> | <code dir="auto">remote_hive: true</code> | Joiner-side pot view — a non-repo dir under <code dir="auto">~/.papercusp/remote-pots</code> (checked before <code dir="auto">hive_home</code>: views are also <code dir="auto">kind: 'pot'</code>) |
-| <code dir="auto">hive_home</code> | <code dir="auto">harness_kind: 'pot'</code> <strong>and</strong> not <code dir="auto">self_repo</code> | The pot home is a non-repo state dir — <strong>except</strong> a pot that IS its own repo (the Option-B merge, papercup→papercusp 2026-06-20), marked <code dir="auto">self_repo</code> on the merged registry entry: that entry owns a checkout, is ELIGIBLE, and must be git-synced (else origin freezes). The verdict only fires when <code dir="auto">harness_kind === 'pot' &#x26;&#x26; !self_repo</code>. |
-| <code dir="auto">non_local_deployment</code> | <code dir="auto">deployment.target</code> present and ≠ <code dir="auto">'local'</code> | The checkout lives on a cloud frame, not this box’s filesystem |
-| <code dir="auto">no_path</code> | No registered path, or it vanished from disk | Nothing to sync |
-| <code dir="auto">not_a_git_repo</code> | Path exists but carries no <code dir="auto">.git</code> | Not a clone (<code dir="auto">.git</code> may be a dir or a worktree/submodule file) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Reason</th><th>Entry shape</th><th>Why it never syncs</th></tr></thead><tbody><tr><td><code dir="auto">ephemeral_debris</code></td><td>Slug matches the ephemeral/benchmark INSTANCE regex (xbench / <code dir="auto">xbq&#x3C;hash></code> / <code dir="auto">*instance*</code> / memcap / memrun / deleteme)</td><td>An ephemeral/benchmark instance harness — must never get a routine. <strong>Checked FIRST</strong>: it is a pure regex match (no IO) so a surviving routine fast-skips before any <code dir="auto">stat</code>. Added after INCIDENT 2026-06-18 (a benchmark fleet left ~170 torn-down per-task instance harnesses each carrying an ACTIVE git-sync routine; the per-tick churn saturated the <code dir="auto">:3070</code> event loop and took psu down).</td></tr><tr><td><code dir="auto">remote_hive_view</code></td><td><code dir="auto">remote_hive: true</code></td><td>Joiner-side pot view — a non-repo dir under <code dir="auto">~/.papercusp/remote-pots</code> (checked before <code dir="auto">hive_home</code>: views are also <code dir="auto">kind: 'pot'</code>)</td></tr><tr><td><code dir="auto">hive_home</code></td><td><code dir="auto">harness_kind: 'pot'</code> <strong>and</strong> not <code dir="auto">self_repo</code></td><td>The pot home is a non-repo state dir — <strong>except</strong> a pot that IS its own repo (the Option-B merge, papercup→papercusp 2026-06-20), marked <code dir="auto">self_repo</code> on the merged registry entry: that entry owns a checkout, is ELIGIBLE, and must be git-synced (else origin freezes). The verdict only fires when <code dir="auto">harness_kind === 'pot' &#x26;&#x26; !self_repo</code>.</td></tr><tr><td><code dir="auto">non_local_deployment</code></td><td><code dir="auto">deployment.target</code> present and ≠ <code dir="auto">'local'</code></td><td>The checkout lives on a cloud frame, not this box’s filesystem</td></tr><tr><td><code dir="auto">no_path</code></td><td>No registered path, or it vanished from disk</td><td>Nothing to sync</td></tr><tr><td><code dir="auto">not_a_git_repo</code></td><td>Path exists but carries no <code dir="auto">.git</code></td><td>Not a clone (<code dir="auto">.git</code> may be a dir or a worktree/submodule file)</td></tr></tbody></table>
 <p>The same verdict also runs as a <strong>runtime gate</strong> at the top of every tick
 (<code dir="auto">git-sync-action.ts</code>): a routine row whose target became ineligible no-ops
 with a logged reason and a <code dir="auto">last_status: 'skipped'</code> metadata patch instead of
@@ -127,14 +160,54 @@ push and default branch land on the from-repo double-seed ordering
 surfaces <code dir="auto">upgraded: true</code>. Anything human-touched — active flipped, cron
 retuned, any config deviation — is never clobbered, and joiner-side or
 coords-less re-seeds still report <code dir="auto">routine_exists</code>.</p>
-<p>| Producer | Site | Side | Cron jitter key |
-|---|---|---|---|
-| <code dir="auto">pot:create_from_repo</code> | <code dir="auto">agent-tools/pot/_create_from_repo.ts</code> (step 7.25, new-pot <strong>and</strong> into-pot paths) | creator | member slug |
-| <code dir="auto">pot:add-member</code> | <code dir="auto">agent-tools/pot/_add-member.ts</code> (both success paths — a re-add heals a missing row) | creator | member slug |
-| <code dir="auto">harness:create { pot }</code> | <code dir="auto">agent-tools/harness/create.ts</code> (step 5a) | creator | member slug |
-| Pot join | <code dir="auto">lib/harness/join-pot.ts</code> (<code dir="auto">joinHiveAsView</code> per-member loop) | joiner | <code dir="auto">&#x3C;slug>:&#x3C;workspaceId></code> |
-| Bare join link | <code dir="auto">endpoint-route/routes/harness/join-link.ts</code> (<code dir="auto">handleJoinLink</code>, after clone registration — EI-382) | joiner | <code dir="auto">&#x3C;slug>:&#x3C;workspaceId></code> |
-| Boot reconcile | <code dir="auto">git-sync-reconcile.ts</code>, fired once per process from <code dir="auto">lib/sync/hyperbee/boot-all.ts</code> | detected per member (incl. <code dir="auto">joined_via_link</code>) | slug, or salted when joiner-detected |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Producer</th><th>Site</th><th>Side</th><th>Cron jitter key</th></tr></thead><tbody><tr><td><code dir="auto">pot:create_from_repo</code></td><td><code dir="auto">agent-tools/pot/_create_from_repo.ts</code> (step 7.25, new-pot <strong>and</strong> into-pot paths)</td><td>creator</td><td>member slug</td></tr><tr><td><code dir="auto">pot:add-member</code></td><td><code dir="auto">agent-tools/pot/_add-member.ts</code> (both success paths — a re-add heals a missing row)</td><td>creator</td><td>member slug</td></tr><tr><td><code dir="auto">harness:create { pot }</code></td><td><code dir="auto">agent-tools/harness/create.ts</code> (step 5a)</td><td>creator</td><td>member slug</td></tr><tr><td>Pot join</td><td><code dir="auto">lib/harness/join-pot.ts</code> (<code dir="auto">joinHiveAsView</code> per-member loop)</td><td>joiner</td><td><code dir="auto">&#x3C;slug>:&#x3C;workspaceId></code></td></tr><tr><td>Bare join link</td><td><code dir="auto">endpoint-route/routes/harness/join-link.ts</code> (<code dir="auto">handleJoinLink</code>, after clone registration — EI-382)</td><td>joiner</td><td><code dir="auto">&#x3C;slug>:&#x3C;workspaceId></code></td></tr><tr><td>Boot reconcile</td><td><code dir="auto">git-sync-reconcile.ts</code>, fired once per process from <code dir="auto">lib/sync/hyperbee/boot-all.ts</code></td><td>detected per member (incl. <code dir="auto">joined_via_link</code>)</td><td>slug, or salted when joiner-detected</td></tr></tbody></table>
 <p>The boot reconcile is the <strong>backfill</strong>: it walks each workspace’s registry,
 visits each member (its filter is <code dir="auto">p.hive_slug || p.joined_via_link</code> — see the
 bare-link case below), detects joiner-side members by their home entry’s
@@ -189,13 +262,48 @@ split, or all-inactive) is still a trivial flip.</p>
 <p><code dir="auto">decideGitSyncPush</code> (<code dir="auto">decide-git-sync-push.ts</code>) is the one place that answers
 “should this seeded routine push?”. Rules in precedence order; the first match
 wins (reason tokens are stable, machine-greppable prefixes):</p>
-<p>| # | Condition | <code dir="auto">push</code> | Reason token |
-|---|---|---|---|
-| 1 | No upstream remote (no <code dir="auto">github_remote</code> coord) | <code dir="auto">false</code> | <code dir="auto">no_upstream_remote</code> |
-| 2 | Joiner-side clone | <code dir="auto">false</code> | <code dir="auto">joiner_side</code> |
-| 3 | GitHub <code dir="auto">permissions.push === false</code> | <code dir="auto">false</code> | <code dir="auto">github_permissions_push_false</code> |
-| 4 | GitHub <code dir="auto">permissions.push === true</code> | <code dir="auto">true</code> | <code dir="auto">github_permissions_push_true</code> |
-| 5 | Permission unknown (<code dir="auto">null</code>) | <code dir="auto">true</code> | <code dir="auto">permissions_unknown_optimistic</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Condition</th><th><code dir="auto">push</code></th><th>Reason token</th></tr></thead><tbody><tr><td>1</td><td>No upstream remote (no <code dir="auto">github_remote</code> coord)</td><td><code dir="auto">false</code></td><td><code dir="auto">no_upstream_remote</code></td></tr><tr><td>2</td><td>Joiner-side clone</td><td><code dir="auto">false</code></td><td><code dir="auto">joiner_side</code></td></tr><tr><td>3</td><td>GitHub <code dir="auto">permissions.push === false</code></td><td><code dir="auto">false</code></td><td><code dir="auto">github_permissions_push_false</code></td></tr><tr><td>4</td><td>GitHub <code dir="auto">permissions.push === true</code></td><td><code dir="auto">true</code></td><td><code dir="auto">github_permissions_push_true</code></td></tr><tr><td>5</td><td>Permission unknown (<code dir="auto">null</code>)</td><td><code dir="auto">true</code></td><td><code dir="auto">permissions_unknown_optimistic</code></td></tr></tbody></table>
 <p>The permissions signal comes from a best-effort probe
 (<code dir="auto">lib/harness/github-repo-permissions.ts</code>: authenticated
 <code dir="auto">GET /repos/{owner}/{repo}</code>, auth via the shared <code dir="auto">getOctokit()</code>/gh-token path;

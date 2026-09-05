@@ -101,11 +101,32 @@ cannot deliver the fix to its own brokenness has no way out but hands.</p>
 </blockquote>
 <p>Every silent failure in this release class is the same shape — something that
 <em>names</em> a value diverging from what actually <em>shipped</em>:</p>
-<p>| Labeled | Packed | Symptom |
-|---|---|---|
-| <code dir="auto">PAPERCUSP_RELEASE_HOST</code> set in release-local.sh | absent from the VM’s cargo env | updater says “up to date” forever |
-| <code dir="auto">latest.json</code> URL contains the filename | the space is unencoded, so the URL is unfetchable | download fails → “up to date” forever |
-| <code dir="auto">.gitignore</code> lists <code dir="auto">.papercusp/scratch/</code> | pattern is anchored, misses nested copies | agent scratch auto-committed and shipped |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Labeled</th><th>Packed</th><th>Symptom</th></tr></thead><tbody><tr><td><code dir="auto">PAPERCUSP_RELEASE_HOST</code> set in release-local.sh</td><td>absent from the VM’s cargo env</td><td>updater says “up to date” forever</td></tr><tr><td><code dir="auto">latest.json</code> URL contains the filename</td><td>the space is unencoded, so the URL is unfetchable</td><td>download fails → “up to date” forever</td></tr><tr><td><code dir="auto">.gitignore</code> lists <code dir="auto">.papercusp/scratch/</code></td><td>pattern is anchored, misses nested copies</td><td>agent scratch auto-committed and shipped</td></tr></tbody></table>
 <p>Note the same terminal symptom three times. <strong>204 is indistinguishable from a
 failed check</strong>, so <em>any</em> break in the update path presents identically.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-gate">The gate</h2><a class="sl-anchor-link" href="#the-gate"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The gate”</span></a></div>

@@ -76,11 +76,32 @@
 covers the blueprint side of the same dependency model.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-taxonomy-d-001">The taxonomy (D-001)</h2><a class="sl-anchor-link" href="#the-taxonomy-d-001"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The taxonomy (D-001)”</span></a></div>
 <p>One distribution concept, not three:</p>
-<p>| Concept | What it is | Distribution |
-|---|---|---|
-| <strong>Tool</strong> | the atomic capability + dependency unit (a <code dir="auto">defineTool</code> / manifest tool) | rides its providing unit; a <em>single tool</em> is the degenerate <strong>n=1 pack</strong> |
-| <strong>Pack</strong> | the distribution/marketplace unit — n≥1 tools, <strong>no runtime</strong> | installs in isolation (a code package into the operator registry) |
-| <strong>Plugin</strong> | a pack <strong>with a runtime</strong> (hooks / MCP server / daemon / WASM / UI / state) | installs as a unit; its tools ride it |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concept</th><th>What it is</th><th>Distribution</th></tr></thead><tbody><tr><td><strong>Tool</strong></td><td>the atomic capability + dependency unit (a <code dir="auto">defineTool</code> / manifest tool)</td><td>rides its providing unit; a <em>single tool</em> is the degenerate <strong>n=1 pack</strong></td></tr><tr><td><strong>Pack</strong></td><td>the distribution/marketplace unit — n≥1 tools, <strong>no runtime</strong></td><td>installs in isolation (a code package into the operator registry)</td></tr><tr><td><strong>Plugin</strong></td><td>a pack <strong>with a runtime</strong> (hooks / MCP server / daemon / WASM / UI / state)</td><td>installs as a unit; its tools ride it</td></tr></tbody></table>
 <p>So “single tool” and “plugin” are just <em>points</em> on the pack axis (n=1, and
 has-a-runtime). Dependencies are declared on <strong>tools</strong> (capabilities) and
 resolved to their providing pack/plugin/built-in (D-002) — needing one tool
@@ -271,13 +292,42 @@ needs ranked search, not a substring filter
 <p><code dir="auto">searchTools</code> (<code dir="auto">packages/operator-core/lib/cupboard/tools-search.ts</code>) is a pure,
 field-weighted relevance scorer over the resolved discovery entries. Each entry
 is matched on five fields, weighted so the right provider surfaces first:</p>
-<p>| Field | Weight | Why |
-|---|---|---|
-| tool name | 10 | an exact/prefix name hit is the strongest signal |
-| category (namespace) | 5 | <code dir="auto">coord</code> should surface every <code dir="auto">coord:*</code> tool |
-| capability gate | 4 | built-ins carry a <code dir="auto">capability</code> string (<code dir="auto">tasks:read</code>) |
-| providing unit name | 3 | “markdown-tools” finds <code dir="auto">md.render</code> |
-| description | 2 | the capability text — “pack a repo” finds <code dir="auto">repomix.pack</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Weight</th><th>Why</th></tr></thead><tbody><tr><td>tool name</td><td>10</td><td>an exact/prefix name hit is the strongest signal</td></tr><tr><td>category (namespace)</td><td>5</td><td><code dir="auto">coord</code> should surface every <code dir="auto">coord:*</code> tool</td></tr><tr><td>capability gate</td><td>4</td><td>built-ins carry a <code dir="auto">capability</code> string (<code dir="auto">tasks:read</code>)</td></tr><tr><td>providing unit name</td><td>3</td><td>”markdown-tools” finds <code dir="auto">md.render</code></td></tr><tr><td>description</td><td>2</td><td>the capability text — “pack a repo” finds <code dir="auto">repomix.pack</code></td></tr></tbody></table>
 <p>Search is <strong>OR across content query tokens</strong> — stopwords (<code dir="auto">a</code>, <code dir="auto">to</code>, <code dir="auto">the</code>, …)
 are dropped, and an entry matches if <em>at least one</em> remaining token hits some
 field, so a natural-language query (“send a message to a peer”) matches on its
@@ -311,23 +361,85 @@ narrow the result, and each row shows its capability description. All three are
 URL-backed (<code dir="auto">?q=</code> / <code dir="auto">?toolStatus=</code> / <code dir="auto">?cat=</code>, nuqs) so an agent can drive them
 via <code dir="auto">ui:dispatch</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="source-map">Source map</h2><a class="sl-anchor-link" href="#source-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Source map”</span></a></div>
-<p>| Concern | Source |
-|---|---|
-| Pure pack model + resolver | <code dir="auto">libs/papercusp/packages/blueprint-distribution/src/pack-model.ts</code> |
-| Live pack catalog (operator wiring) | <code dir="auto">packages/operator-core/lib/cupboard/pack-catalog.ts</code> |
-| Pack purity validation | <code dir="auto">packages/plugin-loader/src/index.ts</code> (<code dir="auto">validate</code>, <code dir="auto">runtimeDispatch</code>) |
-| Manifest schema (<code dir="auto">kind</code>, <code dir="auto">dependencies</code>) | <code dir="auto">packages/plugin-sdk/papercusp-plugin.schema.json</code> |
-| Install gate | <code dir="auto">packages/operator-core/lib/cupboard/install-plugin-core.ts</code> + <code dir="auto">…/routes/cupboard-install-plugin.ts</code> |
-| Install loop (pure) | <code dir="auto">packages/operator-core/lib/cupboard/resolve-and-install.ts</code> |
-| Install IO (shared seam) | <code dir="auto">packages/operator-core/lib/cupboard/install-io.ts</code> |
-| <code dir="auto">cupboard:install-deps</code> tool/route | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts</code> |
-| <code dir="auto">harness:create { autoInstallDeps }</code> | <code dir="auto">packages/operator-core/lib/agent-tools/harness/create.ts</code> |
-| End-to-end loop proof | <code dir="auto">packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts</code> |
-| Reference pack | <code dir="auto">libs/papercusp/plugins/example-tool-pack/</code> |
-| Dep validator (pure) | <code dir="auto">libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts</code> |
-| Worker schema + routes (<code dir="auto">provides_tools</code>, kind set) | <code dir="auto">apps/operator-public/migrations/006_pack_kind_provides_tools.sql</code> + <code dir="auto">apps/operator-public/migrations/008_learning_pack_kind_review_status.sql</code> + <code dir="auto">apps/operator-public/src/db.ts</code> (<code dir="auto">LISTING_KINDS</code>, <code dir="auto">normalizeListingKind</code>) + <code dir="auto">apps/operator-public/src/routes/listings.ts</code> |
-| Publish route (pack-aware) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts</code> |
-| Tools discovery (route + projection) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard.ts</code> (<code dir="auto">GET /cupboard/tools</code>) + <code dir="auto">packages/operator-core/lib/cupboard/tools-discovery.ts</code> |
-| Capability search (pure scorer) | <code dir="auto">packages/operator-core/lib/cupboard/tools-search.ts</code> (<code dir="auto">searchTools</code>, <code dir="auto">categoryOf</code>) |
-| “What provides X” resolver | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard.ts</code> (<code dir="auto">GET /cupboard/provides</code>) → <code dir="auto">buildToolProvenance</code> in <code dir="auto">tools-discovery.ts</code> |
-| Storefront UI (Packs tab + Tools view + discovery filters) | <code dir="auto">apps/operator/app/cupboard/CupboardClient.tsx</code> + <code dir="auto">apps/operator/app/cupboard/ToolsSection.tsx</code> |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-22T04:56:43.000Z">Aug 22, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/system/repo-conventions.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Repo conventions — the long form</span> </span> </a> <a href="/internal/docs/system/scout-loop.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The Scout loop — autonomous generative ideation</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Source</th></tr></thead><tbody><tr><td>Pure pack model + resolver</td><td><code dir="auto">libs/papercusp/packages/blueprint-distribution/src/pack-model.ts</code></td></tr><tr><td>Live pack catalog (operator wiring)</td><td><code dir="auto">packages/operator-core/lib/cupboard/pack-catalog.ts</code></td></tr><tr><td>Pack purity validation</td><td><code dir="auto">packages/plugin-loader/src/index.ts</code> (<code dir="auto">validate</code>, <code dir="auto">runtimeDispatch</code>)</td></tr><tr><td>Manifest schema (<code dir="auto">kind</code>, <code dir="auto">dependencies</code>)</td><td><code dir="auto">packages/plugin-sdk/papercusp-plugin.schema.json</code></td></tr><tr><td>Install gate</td><td><code dir="auto">packages/operator-core/lib/cupboard/install-plugin-core.ts</code> + <code dir="auto">…/routes/cupboard-install-plugin.ts</code></td></tr><tr><td>Install loop (pure)</td><td><code dir="auto">packages/operator-core/lib/cupboard/resolve-and-install.ts</code></td></tr><tr><td>Install IO (shared seam)</td><td><code dir="auto">packages/operator-core/lib/cupboard/install-io.ts</code></td></tr><tr><td><code dir="auto">cupboard:install-deps</code> tool/route</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-install-deps.ts</code></td></tr><tr><td><code dir="auto">harness:create { autoInstallDeps }</code></td><td><code dir="auto">packages/operator-core/lib/agent-tools/harness/create.ts</code></td></tr><tr><td>End-to-end loop proof</td><td><code dir="auto">packages/operator-core/lib/cupboard/resolve-and-install.e2e.test.ts</code></td></tr><tr><td>Reference pack</td><td><code dir="auto">libs/papercusp/plugins/example-tool-pack/</code></td></tr><tr><td>Dep validator (pure)</td><td><code dir="auto">libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts</code></td></tr><tr><td>Worker schema + routes (<code dir="auto">provides_tools</code>, kind set)</td><td><code dir="auto">apps/operator-public/migrations/006_pack_kind_provides_tools.sql</code> + <code dir="auto">apps/operator-public/migrations/008_learning_pack_kind_review_status.sql</code> + <code dir="auto">apps/operator-public/src/db.ts</code> (<code dir="auto">LISTING_KINDS</code>, <code dir="auto">normalizeListingKind</code>) + <code dir="auto">apps/operator-public/src/routes/listings.ts</code></td></tr><tr><td>Publish route (pack-aware)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts</code></td></tr><tr><td>Tools discovery (route + projection)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard.ts</code> (<code dir="auto">GET /cupboard/tools</code>) + <code dir="auto">packages/operator-core/lib/cupboard/tools-discovery.ts</code></td></tr><tr><td>Capability search (pure scorer)</td><td><code dir="auto">packages/operator-core/lib/cupboard/tools-search.ts</code> (<code dir="auto">searchTools</code>, <code dir="auto">categoryOf</code>)</td></tr><tr><td>“What provides X” resolver</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/cupboard.ts</code> (<code dir="auto">GET /cupboard/provides</code>) → <code dir="auto">buildToolProvenance</code> in <code dir="auto">tools-discovery.ts</code></td></tr><tr><td>Storefront UI (Packs tab + Tools view + discovery filters)</td><td><code dir="auto">apps/operator/app/cupboard/CupboardClient.tsx</code> + <code dir="auto">apps/operator/app/cupboard/ToolsSection.tsx</code></td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-22T04:56:43.000Z">Aug 22, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/system/repo-conventions.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Repo conventions — the long form</span> </span> </a> <a href="/internal/docs/system/scout-loop.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The Scout loop — autonomous generative ideation</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

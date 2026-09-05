@@ -111,13 +111,42 @@ matching begin ran</strong>, so it is safe to call on a SHARED render path (only
 context that began the interaction emits a measure). A stale start (a begin
 whose end never came) is discarded past <code dir="auto">STALE_START_MS</code>.</p>
 <p>Wired interactions (gesture → settle point):</p>
-<p>| interaction (<code dir="auto">PERF_INTERACTIONS</code> value) | begin (gesture) | end (settle) |
-| --- | --- | --- |
-| <code dir="auto">plan-popup-open</code> | PlansPane row click | PlanEditor Vditor body render |
-| <code dir="auto">command-palette-open</code> | GlobalCommandPalette open transition | CommandPalette (lazy chunk) mount |
-| <code dir="auto">inbox-list-settle</code> | InboxPane filter/facet click | virtualized list re-render |
-| <code dir="auto">conversation-thread-load</code> | ChatPanel chatId set | thread transcript first render |
-| <code dir="auto">harness-dock-open</code> | HarnessDock mount | dockview API bind (layout hydrated) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>interaction (<code dir="auto">PERF_INTERACTIONS</code> value)</th><th>begin (gesture)</th><th>end (settle)</th></tr></thead><tbody><tr><td><code dir="auto">plan-popup-open</code></td><td>PlansPane row click</td><td>PlanEditor Vditor body render</td></tr><tr><td><code dir="auto">command-palette-open</code></td><td>GlobalCommandPalette open transition</td><td>CommandPalette (lazy chunk) mount</td></tr><tr><td><code dir="auto">inbox-list-settle</code></td><td>InboxPane filter/facet click</td><td>virtualized list re-render</td></tr><tr><td><code dir="auto">conversation-thread-load</code></td><td>ChatPanel chatId set</td><td>thread transcript first render</td></tr><tr><td><code dir="auto">harness-dock-open</code></td><td>HarnessDock mount</td><td>dockview API bind (layout hydrated)</td></tr></tbody></table>
 <p>The vitals recorder (<code dir="auto">apps/operator/app/admin/testing/_lib/vitals-recorder.ts</code>)
 captures these as a <code dir="auto">measure</code> event kind, so the in-app suite and the wdio
 runner read one canonical source.</p>

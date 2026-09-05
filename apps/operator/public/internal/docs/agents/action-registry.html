@@ -124,30 +124,102 @@ are registered so in-flight EL agents keep working through the rename.</p></div>
 gestures, multi-step workflows in the registry. Deep-reasoning lives behind
 the <code dir="auto">delegate-chat</code> endpoint, not in the registry.</p>
 <p><strong>Decisions made through iteration</strong> (see §9 for the full log):</p>
-<p>| Decision | Resolution |
-|---|---|
-| Voice provider | <strong>ElevenLabs Conversational AI</strong> (primary) + OpenAI Realtime (manual fallback in settings) |
-| Voice underlying LLM | <strong>Claude Haiku 4.5</strong> via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports) |
-| Deep reasoning | <strong>agent CLI per-turn</strong> (<code dir="auto">claude -p</code> under <code dir="auto">AGENT_BACKEND=claude-code</code> — the deployed default — or <code dir="auto">omp -p</code> via its Meridian router; existing pattern from <code dir="auto">operator-scan</code>); persistent subprocess rejected |
-| Conversation memory | <code dir="auto">claude-sessions</code> table; voice picks via injected list; auto-archive at 24h idle |
-| Tool surface for voice | <strong>As built: 25 EL client tools</strong> — see §4 for the full list. (The plan’s “12 reflexive + 9 fast queries + claude-sessions list/get” did not match the shipped set; there is no <code dir="auto">panel.*</code> surface, and the session queries are <code dir="auto">delegates.list/get/search</code>.) |
-| Audit | Two tables: <code dir="auto">agent_actions</code> (full) + <code dir="auto">agent_queries</code> (sampled per-def) |
-| Aliases for renamed tools | <strong>As built: one alias kept.</strong> <code dir="auto">delegate_to_agent</code> is registered as a live alias of <code dir="auto">delegate_to_claude</code> (both stay live so in-flight EL agents keep working). The plan’s “None — hard cutover” was reversed for the delegate rename. |
-| Browser-routing | Tristate <code dir="auto">browser: 'required' \| 'optional' \| 'none'</code> per def |
-| Concurrency | Per-def <code dir="auto">concurrent: 'allow' \| 'queue' \| 'deny'</code> |
-| Workspace scoping | <code dir="auto">ctx.workspace</code>, never threaded through args |
-| Cross-process | Leader-bridge SSE pressure-tested in PR 1 |
-| Auto-fallback to OpenAI on ElevenLabs failure | <strong>Manual</strong> for v1. Auto-fallback rejected as premature complexity |
-| <code dir="auto">runMany</code> / batch tool calls | Deferred until concrete need |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Resolution</th></tr></thead><tbody><tr><td>Voice provider</td><td><strong>ElevenLabs Conversational AI</strong> (primary) + OpenAI Realtime (manual fallback in settings)</td></tr><tr><td>Voice underlying LLM</td><td><strong>Claude Haiku 4.5</strong> via ElevenLabs BYO LLM (fallback to whichever fast Anthropic/OpenAI model EL supports)</td></tr><tr><td>Deep reasoning</td><td><strong>agent CLI per-turn</strong> (<code dir="auto">claude -p</code> under <code dir="auto">AGENT_BACKEND=claude-code</code> — the deployed default — or <code dir="auto">omp -p</code> via its Meridian router; existing pattern from <code dir="auto">operator-scan</code>); persistent subprocess rejected</td></tr><tr><td>Conversation memory</td><td><code dir="auto">claude-sessions</code> table; voice picks via injected list; auto-archive at 24h idle</td></tr><tr><td>Tool surface for voice</td><td><strong>As built: 25 EL client tools</strong> — see §4 for the full list. (The plan’s “12 reflexive + 9 fast queries + claude-sessions list/get” did not match the shipped set; there is no <code dir="auto">panel.*</code> surface, and the session queries are <code dir="auto">delegates.list/get/search</code>.)</td></tr><tr><td>Audit</td><td>Two tables: <code dir="auto">agent_actions</code> (full) + <code dir="auto">agent_queries</code> (sampled per-def)</td></tr><tr><td>Aliases for renamed tools</td><td><strong>As built: one alias kept.</strong> <code dir="auto">delegate_to_agent</code> is registered as a live alias of <code dir="auto">delegate_to_claude</code> (both stay live so in-flight EL agents keep working). The plan’s “None — hard cutover” was reversed for the delegate rename.</td></tr><tr><td>Browser-routing</td><td>Tristate <code dir="auto">browser: 'required' | 'optional' | 'none'</code> per def</td></tr><tr><td>Concurrency</td><td>Per-def <code dir="auto">concurrent: 'allow' | 'queue' | 'deny'</code></td></tr><tr><td>Workspace scoping</td><td><code dir="auto">ctx.workspace</code>, never threaded through args</td></tr><tr><td>Cross-process</td><td>Leader-bridge SSE pressure-tested in PR 1</td></tr><tr><td>Auto-fallback to OpenAI on ElevenLabs failure</td><td><strong>Manual</strong> for v1. Auto-fallback rejected as premature complexity</td></tr><tr><td><code dir="auto">runMany</code> / batch tool calls</td><td>Deferred until concrete need</td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="0-the-architecture-in-one-diagram">§0. The architecture in one diagram</h2><a class="sl-anchor-link" href="#0-the-architecture-in-one-diagram"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§0. The architecture in one diagram”</span></a></div>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                    </span></span><span style="--0:#d6deeb;--1:#403f53">┌────────────────────────────────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                    </span></span><span style="--0:#d6deeb;--1:#403f53">│     User speaks / keys / clicks        │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                    </span></span><span style="--0:#d6deeb;--1:#403f53">└──────┬──────────────────────┬──────────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                           </span></span><span style="--0:#d6deeb;--1:#403f53">│                      │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">voice          │                      │  click / kbd / Pi cmd</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">▼                                     ▼</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌───────────────────┐                ┌────────────────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ ElevenLabs Conv AI│                │ Action Registry        │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ (transport shell) │                │  (in-process, typed)   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│                   │                │                        │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│                   │ ◀──tools──────▶│  Reflexive commands:   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • &#x3C;300ms latency  │                │   navigate, nav.*,     │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • best TTS        │                │   operator.scan,       │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • server-side     │                │   workspace.switch …   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│   state           │                │                        │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • barge-in        │                │  Fast queries:         │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└────────┬──────────┘                │   harness.status,      │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│                           │   chat.list, …         │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│ delegate_to_claude        └────────────────────────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│ (client tool, browser:'required';</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│  handler proxies to the SSE endpoint)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">▼</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌───────────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ GET /api/agent-   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ mcp/delegate-chat │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ (SSE shim →       │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│  operator:delegate)│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│                   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ spawn `claude -p` │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ (Sonnet/Opus)     │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ + full agent-mcp  │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ tool surface      │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│                   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • file reads      │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • multi-step plan │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • code analysis   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ • the heavy stuff │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└────────┬──────────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">▼ streams back as the tool's return value</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌───────────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ ElevenLabs voice  │ ◀── full Claude text</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ (Haiku)           │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ summarizes for    │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ voice + announces │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ "details in panel"│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└────────┬──────────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">            </span></span><span style="--0:#d6deeb;--1:#403f53">▼</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌───────────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ Operator panel    │ ◀── full Claude text written here</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ auto-opens (opt   │     for the eye path</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ -outable)         │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└───────────────────┘</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="                    ┌────────────────────────────────────────┐                    │     User speaks / keys / clicks        │                    └──────┬──────────────────────┬──────────┘                           │                      │            voice          │                      │  click / kbd / Pi cmd            ▼                                     ▼   ┌───────────────────┐                ┌────────────────────────┐   │ ElevenLabs Conv AI│                │ Action Registry        │   │ (transport shell) │                │  (in-process, typed)   │   │                   │                │                        │   │                   │ ◀──tools──────▶│  Reflexive commands:   │   │ • <300ms latency  │                │   navigate, nav.*,     │   │ • best TTS        │                │   operator.scan,       │   │ • server-side     │                │   workspace.switch …   │   │   state           │                │                        │   │ • barge-in        │                │  Fast queries:         │   └────────┬──────────┘                │   harness.status,      │            │                           │   chat.list, …         │            │ delegate_to_claude        └────────────────────────┘            │ (client tool, browser:&#x27;required&#x27;;            │  handler proxies to the SSE endpoint)            ▼   ┌───────────────────┐   │ GET /api/agent-   │   │ mcp/delegate-chat │   │ (SSE shim →       │   │  operator:delegate)│   │                   │   │ spawn &#x60;claude -p&#x60; │   │ (Sonnet/Opus)     │   │ + full agent-mcp  │   │ tool surface      │   │                   │   │ • file reads      │   │ • multi-step plan │   │ • code analysis   │   │ • the heavy stuff │   └────────┬──────────┘            │            ▼ streams back as the tool&#x27;s return value   ┌───────────────────┐   │ ElevenLabs voice  │ ◀── full Claude text   │ (Haiku)           │   │ summarizes for    │   │ voice + announces │   │ &#x22;details in panel&#x22;│   └────────┬──────────┘            │            ▼   ┌───────────────────┐   │ Operator panel    │ ◀── full Claude text written here   │ auto-opens (opt   │     for the eye path   │ -outable)         │   └───────────────────┘"><div></div></button></div></figure></div>
 <p>Three LLMs, three roles, three cost tiers:</p>
-<p>| Role | LLM | Cost | Why this one |
-|---|---|---|---|
-| <strong>Voice front-end</strong> (decide-to-delegate, summarize, route reflexive commands) | <strong>Claude Haiku</strong> (via ElevenLabs BYO LLM) | ~$0.001 per turn | Fast, cheap, plenty smart for routing decisions |
-| <strong>Voice audio</strong> (STT + TTS + conversation orchestration) | <strong>ElevenLabs Conv AI</strong> | ~$0.05-0.08/min | Best-in-class voice quality + server-side state |
-| <strong>Deep work</strong> (file reads, code analysis, planning) | <strong>Claude Sonnet/Opus</strong> | per-token | Most capable model only invoked when needed |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>LLM</th><th>Cost</th><th>Why this one</th></tr></thead><tbody><tr><td><strong>Voice front-end</strong> (decide-to-delegate, summarize, route reflexive commands)</td><td><strong>Claude Haiku</strong> (via ElevenLabs BYO LLM)</td><td>~$0.001 per turn</td><td>Fast, cheap, plenty smart for routing decisions</td></tr><tr><td><strong>Voice audio</strong> (STT + TTS + conversation orchestration)</td><td><strong>ElevenLabs Conv AI</strong></td><td>~$0.05-0.08/min</td><td>Best-in-class voice quality + server-side state</td></tr><tr><td><strong>Deep work</strong> (file reads, code analysis, planning)</td><td><strong>Claude Sonnet/Opus</strong></td><td>per-token</td><td>Most capable model only invoked when needed</td></tr></tbody></table>
 <p>This split exists because voice latency budget is ~300ms; Claude with full
 agent-mcp tools is multi-second. Don’t put the slow brain in the voice
 critical path. Don’t pay GPT-4o tier prices for routing decisions Haiku
@@ -229,11 +301,32 @@ A <code dir="auto">defs/index.ts</code> does the side-effect imports in a stable
 optionally re-exports a typed catalog (<code dir="auto">Commands.panel.toggle: CommandDef&#x3C;…></code>) for autocomplete.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="24-schema--tool-spec-translation">2.4 Schema → tool-spec translation</h3><a class="sl-anchor-link" href="#24-schema--tool-spec-translation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “2.4 Schema → tool-spec translation”</span></a></div>
 <p>Each shim converts <code dir="auto">def.schema</code> to the transport’s expected schema format:</p>
-<p>| Transport | Format | Library |
-|---|---|---|
-| <strong>ElevenLabs Conv AI</strong> (primary) | JSON Schema in EL agent-config envelope (URL/in-page handler ref + required flag) | <code dir="auto">zod-to-json-schema</code> + EL-specific wrapping |
-| MCP tools (Oracle, Pi) | JSON Schema | <code dir="auto">zod-to-json-schema</code> |
-| OpenAI Realtime tools (fallback) | SDK <code dir="auto">tool({...})</code> accepts Zod directly | none |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Transport</th><th>Format</th><th>Library</th></tr></thead><tbody><tr><td><strong>ElevenLabs Conv AI</strong> (primary)</td><td>JSON Schema in EL agent-config envelope (URL/in-page handler ref + required flag)</td><td><code dir="auto">zod-to-json-schema</code> + EL-specific wrapping</td></tr><tr><td>MCP tools (Oracle, Pi)</td><td>JSON Schema</td><td><code dir="auto">zod-to-json-schema</code></td></tr><tr><td>OpenAI Realtime tools (fallback)</td><td>SDK <code dir="auto">tool({...})</code> accepts Zod directly</td><td>none</td></tr></tbody></table>
 <p>Forbidden Zod constructs (don’t translate cleanly to JSON Schema or
 become invisible to the LLM):</p>
 <ul>
@@ -259,11 +352,44 @@ tristate and where the shim runs:</p>
 The old stdio shim was deleted 2026-05-09; Pi/omp now hit the same projected-tool
 dispatcher at the transport route (<code dir="auto">/api/[transport]/route.ts</code>) that every other
 caller uses — this registry plus the projected tool catalog supersede it.</p></div> </aside>
-<p>| Command class | Browser-only? | Where the handler lives | Same-process from Oracle? | From Operator? | From Pi? |
-|---|---|---|---|---|---|
-| Panel/nav/voice (<code dir="auto">panel.toggle</code>, <code dir="auto">navigate</code>) | <code dir="auto">'required'</code> | Browser-side handler in operator-shared-state / voice-mode | Yes (oracle-mcp lives in operator app, posts to leader-bridge) | Yes (in-page) | <strong>No</strong> — leader-bridge SSE round-trip |
-| Server actions (<code dir="auto">harness.start</code>, <code dir="auto">chat.dispatch</code>) | <code dir="auto">'optional'</code> or <code dir="auto">'none'</code> | Operator app server (HTTP) | Yes | Yes (HTTP from EL webhook) | Yes (HTTP) |
-| Queries (<code dir="auto">harness.status</code>, <code dir="auto">chat.list</code>) | <code dir="auto">'none'</code> | Operator app server / DB | Yes | Yes | Yes |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command class</th><th>Browser-only?</th><th>Where the handler lives</th><th>Same-process from Oracle?</th><th>From Operator?</th><th>From Pi?</th></tr></thead><tbody><tr><td>Panel/nav/voice (<code dir="auto">panel.toggle</code>, <code dir="auto">navigate</code>)</td><td><code dir="auto">'required'</code></td><td>Browser-side handler in operator-shared-state / voice-mode</td><td>Yes (oracle-mcp lives in operator app, posts to leader-bridge)</td><td>Yes (in-page)</td><td><strong>No</strong> — leader-bridge SSE round-trip</td></tr><tr><td>Server actions (<code dir="auto">harness.start</code>, <code dir="auto">chat.dispatch</code>)</td><td><code dir="auto">'optional'</code> or <code dir="auto">'none'</code></td><td>Operator app server (HTTP)</td><td>Yes</td><td>Yes (HTTP from EL webhook)</td><td>Yes (HTTP)</td></tr><tr><td>Queries (<code dir="auto">harness.status</code>, <code dir="auto">chat.list</code>)</td><td><code dir="auto">'none'</code></td><td>Operator app server / DB</td><td>Yes</td><td>Yes</td><td>Yes</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="32-workspace-scoping">3.2 Workspace scoping</h3><a class="sl-anchor-link" href="#32-workspace-scoping"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3.2 Workspace scoping”</span></a></div>
 <p>Per repo memory (<code dir="auto">workspace_scoping_boundary</code>), workspaces are
 <strong>filesystem-only</strong> — PG state is global with <code dir="auto">workspace</code> filter columns.
@@ -271,12 +397,32 @@ Every command/query handler that touches <code dir="auto">harness_shared.*</code
 on workspace, or it leaks.</p>
 <p>Workspace lives on <code dir="auto">ctx.workspace</code>. <strong>Never an LLM-visible arg.</strong> Each
 shim derives it:</p>
-<p>| Shim | How |
-|---|---|
-| Palette / shortcut | Current <code dir="auto">useWorkspace()</code> value at invoke time |
-| ElevenLabs Conv AI | Derived from the WebRTC client session’s bound workspace |
-| Oracle / OpenAI Realtime fallback | Derived from the browser session that holds the LLM connection |
-| Pi | <code dir="auto">PAPERCUSP_WORKSPACE</code> env var stamped on pty spawn |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Shim</th><th>How</th></tr></thead><tbody><tr><td>Palette / shortcut</td><td>Current <code dir="auto">useWorkspace()</code> value at invoke time</td></tr><tr><td>ElevenLabs Conv AI</td><td>Derived from the WebRTC client session’s bound workspace</td></tr><tr><td>Oracle / OpenAI Realtime fallback</td><td>Derived from the browser session that holds the LLM connection</td></tr><tr><td>Pi</td><td><code dir="auto">PAPERCUSP_WORKSPACE</code> env var stamped on pty spawn</td></tr></tbody></table>
 <p>CI test: load every registered def, mount against a mock workspace,
 assert no result references rows from a different workspace.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="33-multi-tab-session-arbitration">3.3 Multi-tab session arbitration</h3><a class="sl-anchor-link" href="#33-multi-tab-session-arbitration"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3.3 Multi-tab session arbitration”</span></a></div>
@@ -350,15 +496,52 @@ call <code dir="auto">delegate_to_claude</code> — don’t try to fake it from 
 data.”</li>
 </ol>
 <div class="sl-heading-wrapper level-h3"><h3 id="catalog--reflexive-commands-as-built">Catalog — reflexive commands (as built)</h3><a class="sl-anchor-link" href="#catalog--reflexive-commands-as-built"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Catalog — reflexive commands (as built)”</span></a></div>
-<p>| Command | What it does | Why voice gets it directly |
-|---|---|---|
-| <code dir="auto">navigate({path})</code> | Browser router push | “Take me to settings” — common, reflexive |
-| <code dir="auto">nav.*</code> (8 fixed targets) | Jump to harness / cupboard / settings / docs etc. | Named destinations, one tool each, palette-backed |
-| <code dir="auto">operator.scan({query?})</code> | Fire a workspace scan (the <code dir="auto">scan</code> launch blueprint). Findings land as work_items in the self-improvement backlog | “Scan the workspace” — same result the panel button gives |
-| <code dir="auto">operator.approve-pending({slug, capability?})</code> | Approve a pending capability for a harness | Single decision, same authority the user has via the panel |
-| <code dir="auto">voice.set-mode({mode})</code> | off / push-to-talk / always-on | User says “stop listening” — should not need to delegate |
-| <code dir="auto">workspace.switch({id})</code> | Switch workspace and reload | Common command, reflexive |
-| <code dir="auto">chat.open-pane({slug, chatId})</code> | Open an existing chat pane | Reflexive — comes after <code dir="auto">chat.list</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th><th>Why voice gets it directly</th></tr></thead><tbody><tr><td><code dir="auto">navigate({path})</code></td><td>Browser router push</td><td>”Take me to settings” — common, reflexive</td></tr><tr><td><code dir="auto">nav.*</code> (8 fixed targets)</td><td>Jump to harness / cupboard / settings / docs etc.</td><td>Named destinations, one tool each, palette-backed</td></tr><tr><td><code dir="auto">operator.scan({query?})</code></td><td>Fire a workspace scan (the <code dir="auto">scan</code> launch blueprint). Findings land as work_items in the self-improvement backlog</td><td>”Scan the workspace” — same result the panel button gives</td></tr><tr><td><code dir="auto">operator.approve-pending({slug, capability?})</code></td><td>Approve a pending capability for a harness</td><td>Single decision, same authority the user has via the panel</td></tr><tr><td><code dir="auto">voice.set-mode({mode})</code></td><td>off / push-to-talk / always-on</td><td>User says “stop listening” — should not need to delegate</td></tr><tr><td><code dir="auto">workspace.switch({id})</code></td><td>Switch workspace and reload</td><td>Common command, reflexive</td></tr><tr><td><code dir="auto">chat.open-pane({slug, chatId})</code></td><td>Open an existing chat pane</td><td>Reflexive — comes after <code dir="auto">chat.list</code></td></tr></tbody></table>
 <p><code dir="auto">agent.dispatch</code> / <code dir="auto">agent.follow-up</code> are also registered commands, but tagged for
 oracle + palette only (not the voice operator). They start / continue a role-scoped
 agent chat from ⌘K without paying the delegate-spawn cost; <code dir="auto">audit: 'full'</code>.</p>
@@ -366,29 +549,113 @@ agent chat from ⌘K without paying the delegate-spawn cost; <code dir="auto">au
 <p>These let voice answer questions reflexively, without delegating. <code dir="auto">slug</code> is
 <strong>required</strong> (<code dir="auto">z.string().min(1)</code>) on <code dir="auto">harness.status</code>, <code dir="auto">harness.list-features</code>,
 and <code dir="auto">chat.list</code> — it is not optional.</p>
-<p>| Query | Returns | Reason voice has it |
-|---|---|---|
-| <code dir="auto">harness.status({slug})</code> | alive/paused, iteration, last decision, feature counts | “Is the harness running?” — voice answers immediately |
-| <code dir="auto">harness.list-features({slug, status?, limit?})</code> | Feature queue rows (filterable by status; default 50, cap 200) | “What’s in the queue?” |
-| <code dir="auto">harness.list()</code> | Slugs + paths + state flags | “What harnesses do I have?” |
-| <code dir="auto">harness.health({slug})</code> | Fast snapshot: alive, escalated, feature-status counts | “Is sheets healthy?” — one call instead of status + escalations |
-| <code dir="auto">issues.list({slug?, limit?})</code> | Open issues / features needing human review (cross-harness if no slug) | “Any open issues?” / “what needs my approval?” |
-| <code dir="auto">escalations.get({slug})</code> | Active escalation + supervisor notes (if any) | “Any escalations?” / “what’s wrong with sheets?” |
-| <code dir="auto">pending-reviews.list({slug, limit?})</code> | Pending capability approvals / plan reviews | “Anything waiting on me?” — pair with <code dir="auto">operator.approve-pending</code> |
-| <code dir="auto">actions.recent({slug, limit?})</code> | Recent long-running user actions (replan, cleanup, snapshot) | “Did the cleanup finish?” |
-| <code dir="auto">notifications.recent({level?, limit?})</code> | Recent toast notifications across the app | “Any errors recently?” / “what’s the bell showing?” |
-| <code dir="auto">agents.across-workspace({slug?, limit?})</code> | Role-scoped agents with recent chat activity across the workspace | “Which agents are working in this workspace?” |
-| <code dir="auto">chat.list({slug, role?, limit?})</code> | Recent chats with id, role, title, last activity (default 20, cap 100) | “What chats do I have open?” |
-| <code dir="auto">workspace.list()</code> | All workspaces with current marker | “Which workspace am I on?” |
-| <code dir="auto">voice.prefs()</code> | Current voice prefs (mode, engines, wake word) | Voice can answer “what’s my wake word?” |
-| <code dir="auto">delegates.list({status?, limit?})</code> | Delegate (Claude-session) list for the workspace | Pick which session a delegation lands in |
-| <code dir="auto">delegates.get({id})</code> | Full metadata for one delegate session | Read a session’s recent context before resuming it |
-| <code dir="auto">delegates.search({query, limit?})</code> | Free-text search over delegate title/summary/kickoff | Find a related past delegate by topic |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Query</th><th>Returns</th><th>Reason voice has it</th></tr></thead><tbody><tr><td><code dir="auto">harness.status({slug})</code></td><td>alive/paused, iteration, last decision, feature counts</td><td>”Is the harness running?” — voice answers immediately</td></tr><tr><td><code dir="auto">harness.list-features({slug, status?, limit?})</code></td><td>Feature queue rows (filterable by status; default 50, cap 200)</td><td>“What’s in the queue?”</td></tr><tr><td><code dir="auto">harness.list()</code></td><td>Slugs + paths + state flags</td><td>”What harnesses do I have?”</td></tr><tr><td><code dir="auto">harness.health({slug})</code></td><td>Fast snapshot: alive, escalated, feature-status counts</td><td>”Is sheets healthy?” — one call instead of status + escalations</td></tr><tr><td><code dir="auto">issues.list({slug?, limit?})</code></td><td>Open issues / features needing human review (cross-harness if no slug)</td><td>“Any open issues?” / “what needs my approval?”</td></tr><tr><td><code dir="auto">escalations.get({slug})</code></td><td>Active escalation + supervisor notes (if any)</td><td>“Any escalations?” / “what’s wrong with sheets?”</td></tr><tr><td><code dir="auto">pending-reviews.list({slug, limit?})</code></td><td>Pending capability approvals / plan reviews</td><td>”Anything waiting on me?” — pair with <code dir="auto">operator.approve-pending</code></td></tr><tr><td><code dir="auto">actions.recent({slug, limit?})</code></td><td>Recent long-running user actions (replan, cleanup, snapshot)</td><td>“Did the cleanup finish?”</td></tr><tr><td><code dir="auto">notifications.recent({level?, limit?})</code></td><td>Recent toast notifications across the app</td><td>”Any errors recently?” / “what’s the bell showing?”</td></tr><tr><td><code dir="auto">agents.across-workspace({slug?, limit?})</code></td><td>Role-scoped agents with recent chat activity across the workspace</td><td>”Which agents are working in this workspace?”</td></tr><tr><td><code dir="auto">chat.list({slug, role?, limit?})</code></td><td>Recent chats with id, role, title, last activity (default 20, cap 100)</td><td>“What chats do I have open?”</td></tr><tr><td><code dir="auto">workspace.list()</code></td><td>All workspaces with current marker</td><td>”Which workspace am I on?”</td></tr><tr><td><code dir="auto">voice.prefs()</code></td><td>Current voice prefs (mode, engines, wake word)</td><td>Voice can answer “what’s my wake word?”</td></tr><tr><td><code dir="auto">delegates.list({status?, limit?})</code></td><td>Delegate (Claude-session) list for the workspace</td><td>Pick which session a delegation lands in</td></tr><tr><td><code dir="auto">delegates.get({id})</code></td><td>Full metadata for one delegate session</td><td>Read a session’s recent context before resuming it</td></tr><tr><td><code dir="auto">delegates.search({query, limit?})</code></td><td>Free-text search over delegate title/summary/kickoff</td><td>Find a related past delegate by topic</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="catalog--delegation-tool">Catalog — delegation tool</h3><a class="sl-anchor-link" href="#catalog--delegation-tool"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Catalog — delegation tool”</span></a></div>
 <p>Exactly one entry, special-cased (plus its <code dir="auto">delegate_to_agent</code> alias):</p>
-<p>| Tool | What it does |
-|---|---|
-| <code dir="auto">delegate_to_claude({task, context?, sessionId?, newSession?})</code> | Client tool tagged <code dir="auto">browser: 'required'</code>; its handler GETs <code dir="auto">/api/agent-mcp/delegate-chat?request=&#x3C;task></code> with <code dir="auto">accept: text/event-stream</code> and consumes the SSE stream. See §5 for the full sync-race / background-drain design. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code dir="auto">delegate_to_claude({task, context?, sessionId?, newSession?})</code></td><td>Client tool tagged <code dir="auto">browser: 'required'</code>; its handler GETs <code dir="auto">/api/agent-mcp/delegate-chat?request=&#x3C;task></code> with <code dir="auto">accept: text/event-stream</code> and consumes the SSE stream. See §5 for the full sync-race / background-drain design.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="whats-deliberately-not-in-voices-catalog">What’s deliberately NOT in voice’s catalog</h3><a class="sl-anchor-link" href="#whats-deliberately-not-in-voices-catalog"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What’s deliberately NOT in voice’s catalog”</span></a></div>
 <ul>
 <li><strong>No <code dir="auto">harness.read-spec</code> / <code dir="auto">harness.read-agent</code> / file reads.</strong> If the
@@ -736,39 +1003,133 @@ the session-registry (<code dir="auto">deliverToTab</code>) and audits the resul
 </ul></div> </aside>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="8-risks">§8. Risks</h2><a class="sl-anchor-link" href="#8-risks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§8. Risks”</span></a></div>
-<p>| Risk | Mitigation |
-|---|---|
-| Voice over-delegates (calls Claude for trivial things) | Prompt has explicit “do not delegate when…” checklist; iterate on real usage; track delegation-rate metric |
-| Voice under-delegates (tries to answer file/code questions from training) | Same; iterate on prompt; user-feedback button per response |
-| Two-phase tool return (<code dir="auto">thinking…</code> → <code dir="auto">complete</code>) surprises the model | Snapshot test on EL agent behavior with sequential tool returns; OpenAI fallback shim same test |
-| Panel auto-open is annoying | <code dir="auto">voicePanelAutoOpen: false</code> toggle in voice settings; default-on but easy to disable |
-| Two LLMs per delegation (Claude generates + Haiku summarizes) doubles cost | Haiku summarization is sub-$0.001 per delegation; Claude’s actual cost dwarfs it |
-| ElevenLabs as single point of vendor failure | Manual fallback to OpenAI Realtime in voice settings; both shims share registry surface so swap is config-only (§6.3) |
-| ElevenLabs Conv AI tool-calling latency higher than expected with non-OpenAI underlying LLM | Validate end-to-end <code dir="auto">delegate_to_claude</code> smoke test in PR 1 before depending on it |
-| ElevenLabs agent platform API quirks vs OpenAI Realtime SDK | Single-purpose shim isolates differences; underlying registry is provider-agnostic |
-| <code dir="auto">CommandResult.ok=false</code> not rendered usefully by EL agent | PR 1 includes a smoke test: handler returns <code dir="auto">{code:'no-active-session'}</code>, verify the agent says something coherent to the user instead of “tool error” |
-| Server-side EL agent state means “reset to fresh conversation” is an explicit API call, not a reconnect | Already needed for the “new conversation” voice command; same path |
-| Claude Haiku not on ElevenLabs allowed-LLM list at agent setup time | Fall back to whatever cheap+fast model EL supports; document the chosen fallback in voice prefs |
-| Multi-tab arbitration is wrong | Reuse existing voice-leader-election (tested). PR 1 includes integration test for headless leader-bridge flow |
-| Cross-process command latency | Same-process routing for ~70% of cases; SSE-bridged calls add ~50ms |
-| Registry becomes a god object | Hard rule: <code dir="auto">defs/</code> files per domain, ≤200 LoC each. Split when they grow |
-| Audit insert volume | Commands always logged; queries sampled by default; nightly prune; configurable retention |
-| Pi gains too much authority too fast | PR 7 is a deliberate review milestone; tag-per-command keeps the surface explicit |
-| Concurrent paperclip stomps during migration | Per memory: stage+commit in single shell command; touch one defs/ file per PR |
-| Concurrent runs corrupt state (<code dir="auto">harness.start</code> × 2) | <code dir="auto">concurrent: 'queue'/'deny'</code> per-def; serialized at the registry |
-| Import cycles between defs and registry | Strict import discipline (§2.3); CI test for cycles via <code dir="auto">madge</code> |
-| Prompt drift from registry | CI test asserts every tool name in the prompt files exists in the registry with the right <code dir="auto">agents:</code> tag |
-| Non-goals creep in (DOM clicker, free text) | <code dir="auto">CONTRIBUTING.md</code> next to <code dir="auto">defs/</code> lists rejection criteria; CI tripwire greps for <code dir="auto">document.querySelector</code> etc. in handlers. Not airtight — code review backstop |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Voice over-delegates (calls Claude for trivial things)</td><td>Prompt has explicit “do not delegate when…” checklist; iterate on real usage; track delegation-rate metric</td></tr><tr><td>Voice under-delegates (tries to answer file/code questions from training)</td><td>Same; iterate on prompt; user-feedback button per response</td></tr><tr><td>Two-phase tool return (<code dir="auto">thinking…</code> → <code dir="auto">complete</code>) surprises the model</td><td>Snapshot test on EL agent behavior with sequential tool returns; OpenAI fallback shim same test</td></tr><tr><td>Panel auto-open is annoying</td><td><code dir="auto">voicePanelAutoOpen: false</code> toggle in voice settings; default-on but easy to disable</td></tr><tr><td>Two LLMs per delegation (Claude generates + Haiku summarizes) doubles cost</td><td>Haiku summarization is sub-$0.001 per delegation; Claude’s actual cost dwarfs it</td></tr><tr><td>ElevenLabs as single point of vendor failure</td><td>Manual fallback to OpenAI Realtime in voice settings; both shims share registry surface so swap is config-only (§6.3)</td></tr><tr><td>ElevenLabs Conv AI tool-calling latency higher than expected with non-OpenAI underlying LLM</td><td>Validate end-to-end <code dir="auto">delegate_to_claude</code> smoke test in PR 1 before depending on it</td></tr><tr><td>ElevenLabs agent platform API quirks vs OpenAI Realtime SDK</td><td>Single-purpose shim isolates differences; underlying registry is provider-agnostic</td></tr><tr><td><code dir="auto">CommandResult.ok=false</code> not rendered usefully by EL agent</td><td>PR 1 includes a smoke test: handler returns <code dir="auto">{code:'no-active-session'}</code>, verify the agent says something coherent to the user instead of “tool error”</td></tr><tr><td>Server-side EL agent state means “reset to fresh conversation” is an explicit API call, not a reconnect</td><td>Already needed for the “new conversation” voice command; same path</td></tr><tr><td>Claude Haiku not on ElevenLabs allowed-LLM list at agent setup time</td><td>Fall back to whatever cheap+fast model EL supports; document the chosen fallback in voice prefs</td></tr><tr><td>Multi-tab arbitration is wrong</td><td>Reuse existing voice-leader-election (tested). PR 1 includes integration test for headless leader-bridge flow</td></tr><tr><td>Cross-process command latency</td><td>Same-process routing for ~70% of cases; SSE-bridged calls add ~50ms</td></tr><tr><td>Registry becomes a god object</td><td>Hard rule: <code dir="auto">defs/</code> files per domain, ≤200 LoC each. Split when they grow</td></tr><tr><td>Audit insert volume</td><td>Commands always logged; queries sampled by default; nightly prune; configurable retention</td></tr><tr><td>Pi gains too much authority too fast</td><td>PR 7 is a deliberate review milestone; tag-per-command keeps the surface explicit</td></tr><tr><td>Concurrent paperclip stomps during migration</td><td>Per memory: stage+commit in single shell command; touch one defs/ file per PR</td></tr><tr><td>Concurrent runs corrupt state (<code dir="auto">harness.start</code> × 2)</td><td><code dir="auto">concurrent: 'queue'/'deny'</code> per-def; serialized at the registry</td></tr><tr><td>Import cycles between defs and registry</td><td>Strict import discipline (§2.3); CI test for cycles via <code dir="auto">madge</code></td></tr><tr><td>Prompt drift from registry</td><td>CI test asserts every tool name in the prompt files exists in the registry with the right <code dir="auto">agents:</code> tag</td></tr><tr><td>Non-goals creep in (DOM clicker, free text)</td><td><code dir="auto">CONTRIBUTING.md</code> next to <code dir="auto">defs/</code> lists rejection criteria; CI tripwire greps for <code dir="auto">document.querySelector</code> etc. in handlers. Not airtight — code review backstop</td></tr></tbody></table>
 <p>All v2 risks (cross-process, multi-tab, prompt drift, import cycles)
 carry forward unchanged.</p>
 <p><strong>v4 new risks:</strong></p>
-<p>| Risk | Mitigation |
-|---|---|
-| ElevenLabs Conv AI tool-calling latency higher than expected when underlying LLM is non-OpenAI | Validate with end-to-end <code dir="auto">delegate_to_claude</code> smoke test in PR 1 before depending on it. Have OpenAI Realtime fallback wired |
-| ElevenLabs agent platform API quirks vs OpenAI Realtime SDK | Single-purpose shim isolates differences; underlying registry is provider-agnostic |
-| Server-side agent state means a “reset to fresh conversation” is now an explicit API call, not a reconnect | Already needed for the “new conversation” voice command; same path |
-| ElevenLabs is one more vendor in the stack | Acceptable. The voice quality + cost win is the reason; OpenAI fallback covers vendor risk |
-| Claude Haiku via ElevenLabs BYO needs ElevenLabs to support Haiku — verify it’s on the platform’s allowed-LLM list | Start with whatever they support that’s cheapest+fastest; switch later if Haiku goes unsupported |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>ElevenLabs Conv AI tool-calling latency higher than expected when underlying LLM is non-OpenAI</td><td>Validate with end-to-end <code dir="auto">delegate_to_claude</code> smoke test in PR 1 before depending on it. Have OpenAI Realtime fallback wired</td></tr><tr><td>ElevenLabs agent platform API quirks vs OpenAI Realtime SDK</td><td>Single-purpose shim isolates differences; underlying registry is provider-agnostic</td></tr><tr><td>Server-side agent state means a “reset to fresh conversation” is now an explicit API call, not a reconnect</td><td>Already needed for the “new conversation” voice command; same path</td></tr><tr><td>ElevenLabs is one more vendor in the stack</td><td>Acceptable. The voice quality + cost win is the reason; OpenAI fallback covers vendor risk</td></tr><tr><td>Claude Haiku via ElevenLabs BYO needs ElevenLabs to support Haiku — verify it’s on the platform’s allowed-LLM list</td><td>Start with whatever they support that’s cheapest+fastest; switch later if Haiku goes unsupported</td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="9-elevenlabs-conversational-ai-integration-shape">§9. ElevenLabs Conversational AI integration shape</h2><a class="sl-anchor-link" href="#9-elevenlabs-conversational-ai-integration-shape"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§9. ElevenLabs Conversational AI integration shape”</span></a></div>
 <aside aria-label="As-built: EL is a transport shell, not a BYO-LLM reasoner" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>As-built: EL is a transport shell, not a BYO-LLM reasoner </p>  <div class="starlight-aside__content"><p>This section’s central premise — that ElevenLabs runs Claude Haiku as a BYO LLM doing
@@ -831,14 +1192,47 @@ cacheable on the agent side once injected).</p>
 memory — claude-sessions persist across ElevenLabs conversations; ElevenLabs
 state persists within one conversation. Two layers, complementary.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="agent-state-lifecycle-in-our-app">Agent state lifecycle in our app</h3><a class="sl-anchor-link" href="#agent-state-lifecycle-in-our-app"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Agent state lifecycle in our app”</span></a></div>
-<p>| Voice user action | ElevenLabs side | Our DB |
-|---|---|---|
-| First time entering always-on mode in a workspace | Create conversation, store <code dir="auto">conversation_id</code> in voice-state | Inject claude-sessions list into agent context |
-| Voice mode toggled off | Connection dropped; agent state preserved server-side at EL | nothing |
-| Voice mode toggled back on within ~5min | Reconnect to same <code dir="auto">conversation_id</code>; agent state intact | Refresh claude-sessions list (might have new entries) |
-| User says “start a new conversation” | Discard <code dir="auto">conversation_id</code>, create a fresh one | New top-level voice context |
-| Workspace switched | Discard <code dir="auto">conversation_id</code>; new conversation per workspace | New claude-sessions list for new workspace |
-| 24h idle | EL conversation auto-closes; we discard <code dir="auto">conversation_id</code> | Archived state on our side |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Voice user action</th><th>ElevenLabs side</th><th>Our DB</th></tr></thead><tbody><tr><td>First time entering always-on mode in a workspace</td><td>Create conversation, store <code dir="auto">conversation_id</code> in voice-state</td><td>Inject claude-sessions list into agent context</td></tr><tr><td>Voice mode toggled off</td><td>Connection dropped; agent state preserved server-side at EL</td><td>nothing</td></tr><tr><td>Voice mode toggled back on within ~5min</td><td>Reconnect to same <code dir="auto">conversation_id</code>; agent state intact</td><td>Refresh claude-sessions list (might have new entries)</td></tr><tr><td>User says “start a new conversation”</td><td>Discard <code dir="auto">conversation_id</code>, create a fresh one</td><td>New top-level voice context</td></tr><tr><td>Workspace switched</td><td>Discard <code dir="auto">conversation_id</code>; new conversation per workspace</td><td>New claude-sessions list for new workspace</td></tr><tr><td>24h idle</td><td>EL conversation auto-closes; we discard <code dir="auto">conversation_id</code></td><td>Archived state on our side</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="why-the-byo-llm-choice-haiku-is-load-bearing">Why the BYO-LLM choice (Haiku) is load-bearing</h3><a class="sl-anchor-link" href="#why-the-byo-llm-choice-haiku-is-load-bearing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why the BYO-LLM choice (Haiku) is load-bearing”</span></a></div>
 <p>The voice agent’s reasoning duties are:</p>
 <ol>
@@ -870,44 +1264,204 @@ unchanged. That’s intentional: the architecture is provider-agnostic.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="10-decisions-log">§10. Decisions log</h2><a class="sl-anchor-link" href="#10-decisions-log"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§10. Decisions log”</span></a></div>
 <p>Settled questions and their resolutions, in resolution order:</p>
-<p>| # | Question | Resolution |
-|---|---|---|
-| 1 | Voice provider for v1 | <strong>ElevenLabs Conv AI</strong> primary; OpenAI Realtime kept as manual fallback |
-| 2 | Underlying LLM for voice routing | <strong>Claude Haiku 4.5</strong> via EL BYO LLM (fallback: cheapest+fastest model EL supports if Haiku unavailable) |
-| 3 | Voice-as-Claude (full agent) | Rejected — latency budget too tight; delegation pattern instead |
-| 4 | Auto-fallback EL→OpenAI on outage | Rejected — manual flip in voice settings is sufficient. Revisit if uptime issues materialize |
-| 5 | <code dir="auto">harness.scan</code> in voice catalog | Removed — voice is conversational front-end, not card-producer. Cards come from panel button or delegation |
-| 6 | Aliases for renamed tools | <em>Reversed as built:</em> one alias is kept — <code dir="auto">delegate_to_agent</code> is a live alias of <code dir="auto">delegate_to_claude</code> (both registered) so in-flight EL agents survive the rename |
-| 7 | Tool aliases for backward compatibility | <em>Reversed as built for the delegate rename — see #6.</em> The hard-cutover rule held everywhere else |
-| 8 | <code dir="auto">runMany</code>/batch tool calls | Deferred — <code dir="auto">request_id</code> foreign key allows future grouping; not needed day 1 |
-| 9 | Browser-only flag shape | Tristate <code dir="auto">'required' \| 'optional' \| 'none'</code> (not boolean) |
-| 10 | Concurrent runs of the same command | Per-def <code dir="auto">'allow' \| 'queue' \| 'deny'</code>; registry serializes per-id |
-| 11 | Workspace scoping mechanism | <code dir="auto">ctx.workspace</code>, never an LLM-visible arg |
-| 12 | Multi-tab arbitration | Reuse voice-leader-election; leader tab paired with EL conversation |
-| 13 | Cross-process pressure-test timing | PR 1 (not deferred) — adds 503-returning endpoint + leader-bridge skeleton |
-| 14 | Audit query inclusion | Two tables: <code dir="auto">agent_actions</code> (commands, full) + <code dir="auto">agent_queries</code> (sampled). Per-def policy <code dir="auto">'none' \| 'sample' \| 'full'</code> |
-| 15 | Audit retention | 30 days for actions, <strong>14 days</strong> for queries (env-tunable via <code dir="auto">ACTIONS_DAYS</code> / <code dir="auto">QUERIES_DAYS</code>; the plan said 7 days for queries — as built it’s 14, see <code dir="auto">prune-audit-tables.mjs</code>) |
-| 16 | Default query limits | <code dir="auto">chat.list</code> default 20 / cap 100; <code dir="auto">harness.list-features</code> default 50 / cap 200; <code dir="auto">harness.recent-suggestions</code> default 10 / cap 50 |
-| 17 | Conversation continuity for <code dir="auto">delegate_to_claude</code> | Voice picks via <code dir="auto">claude-sessions.list</code> injected into context; layered title (haiku) + summary (haiku) + 24h auto-archive |
-| 18 | Panel auto-open on delegation completion | On by default; toggle in voice settings under new “Output behavior” subsection |
-| 19 | Panel auto-open toggle location | <code dir="auto">/settings/voice</code> → Output behavior |
-| 20 | <code dir="auto">harness.last-scan</code> voice readout | Speak verbatim if ≤120 words; gist + panel for longer. <code dir="auto">voiceMaxSpokenWords: 120</code> voice pref, env-tunable |
-| 21 | Voice’s archive authority | Voice can archive a claude-session only when explicitly told (“archive that auth conversation”); never unilaterally |
-| 22 | Pi expansion timing | PR 7 deliberately separate; whitelist a small starting set (<code dir="auto">chat.dispatch</code>, <code dir="auto">harness.scan</code>) and expand |
-| 23 | Pi browser back-channel | Skeleton in PR 1 (returns 503); full wiring deferred to optional PR 8 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Question</th><th>Resolution</th></tr></thead><tbody><tr><td>1</td><td>Voice provider for v1</td><td><strong>ElevenLabs Conv AI</strong> primary; OpenAI Realtime kept as manual fallback</td></tr><tr><td>2</td><td>Underlying LLM for voice routing</td><td><strong>Claude Haiku 4.5</strong> via EL BYO LLM (fallback: cheapest+fastest model EL supports if Haiku unavailable)</td></tr><tr><td>3</td><td>Voice-as-Claude (full agent)</td><td>Rejected — latency budget too tight; delegation pattern instead</td></tr><tr><td>4</td><td>Auto-fallback EL→OpenAI on outage</td><td>Rejected — manual flip in voice settings is sufficient. Revisit if uptime issues materialize</td></tr><tr><td>5</td><td><code dir="auto">harness.scan</code> in voice catalog</td><td>Removed — voice is conversational front-end, not card-producer. Cards come from panel button or delegation</td></tr><tr><td>6</td><td>Aliases for renamed tools</td><td><em>Reversed as built:</em> one alias is kept — <code dir="auto">delegate_to_agent</code> is a live alias of <code dir="auto">delegate_to_claude</code> (both registered) so in-flight EL agents survive the rename</td></tr><tr><td>7</td><td>Tool aliases for backward compatibility</td><td><em>Reversed as built for the delegate rename — see #6.</em> The hard-cutover rule held everywhere else</td></tr><tr><td>8</td><td><code dir="auto">runMany</code>/batch tool calls</td><td>Deferred — <code dir="auto">request_id</code> foreign key allows future grouping; not needed day 1</td></tr><tr><td>9</td><td>Browser-only flag shape</td><td>Tristate <code dir="auto">'required' | 'optional' | 'none'</code> (not boolean)</td></tr><tr><td>10</td><td>Concurrent runs of the same command</td><td>Per-def <code dir="auto">'allow' | 'queue' | 'deny'</code>; registry serializes per-id</td></tr><tr><td>11</td><td>Workspace scoping mechanism</td><td><code dir="auto">ctx.workspace</code>, never an LLM-visible arg</td></tr><tr><td>12</td><td>Multi-tab arbitration</td><td>Reuse voice-leader-election; leader tab paired with EL conversation</td></tr><tr><td>13</td><td>Cross-process pressure-test timing</td><td>PR 1 (not deferred) — adds 503-returning endpoint + leader-bridge skeleton</td></tr><tr><td>14</td><td>Audit query inclusion</td><td>Two tables: <code dir="auto">agent_actions</code> (commands, full) + <code dir="auto">agent_queries</code> (sampled). Per-def policy <code dir="auto">'none' | 'sample' | 'full'</code></td></tr><tr><td>15</td><td>Audit retention</td><td>30 days for actions, <strong>14 days</strong> for queries (env-tunable via <code dir="auto">ACTIONS_DAYS</code> / <code dir="auto">QUERIES_DAYS</code>; the plan said 7 days for queries — as built it’s 14, see <code dir="auto">prune-audit-tables.mjs</code>)</td></tr><tr><td>16</td><td>Default query limits</td><td><code dir="auto">chat.list</code> default 20 / cap 100; <code dir="auto">harness.list-features</code> default 50 / cap 200; <code dir="auto">harness.recent-suggestions</code> default 10 / cap 50</td></tr><tr><td>17</td><td>Conversation continuity for <code dir="auto">delegate_to_claude</code></td><td>Voice picks via <code dir="auto">claude-sessions.list</code> injected into context; layered title (haiku) + summary (haiku) + 24h auto-archive</td></tr><tr><td>18</td><td>Panel auto-open on delegation completion</td><td>On by default; toggle in voice settings under new “Output behavior” subsection</td></tr><tr><td>19</td><td>Panel auto-open toggle location</td><td><code dir="auto">/settings/voice</code> → Output behavior</td></tr><tr><td>20</td><td><code dir="auto">harness.last-scan</code> voice readout</td><td>Speak verbatim if ≤120 words; gist + panel for longer. <code dir="auto">voiceMaxSpokenWords: 120</code> voice pref, env-tunable</td></tr><tr><td>21</td><td>Voice’s archive authority</td><td>Voice can archive a claude-session only when explicitly told (“archive that auth conversation”); never unilaterally</td></tr><tr><td>22</td><td>Pi expansion timing</td><td>PR 7 deliberately separate; whitelist a small starting set (<code dir="auto">chat.dispatch</code>, <code dir="auto">harness.scan</code>) and expand</td></tr><tr><td>23</td><td>Pi browser back-channel</td><td>Skeleton in PR 1 (returns 503); full wiring deferred to optional PR 8</td></tr></tbody></table>
 <p>No remaining open questions.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="11-shipping-order">§11. Shipping order</h2><a class="sl-anchor-link" href="#11-shipping-order"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§11. Shipping order”</span></a></div>
-<p>| PR | Title | Approx LoC | Outcome | Depends on |
-|---|---|---|---|---|
-| <strong>PR 0</strong> | ElevenLabs agent + credential setup | 0 (dashboard work) | Agent ID + EL API key in <code dir="auto">/settings/voice</code> | none |
-| <strong>PR 1</strong> | Registry + EL Conv AI integration + reflexive commands | ~1500 | Voice through ElevenLabs, registry foundation, panel.close works, leader-bridge pressure-tested | PR 0 |
-| <strong>PR 2</strong> | Fast queries + Pi/Oracle read-side unification | ~500 | Voice answers status questions reflexively; Pi + Oracle share queries via shims | PR 1 |
-| <strong>PR 3</strong> | <code dir="auto">delegate_to_claude</code> + claude-sessions | ~800 | Full delegation pattern works; auto-open panel; voice picks claude-sessions; conversational <code dir="auto">operator-chat</code> endpoint | PR 1 |
-| <strong>PR 4</strong> | Palette + shortcut shims | ~300 | ⌘K and shortcuts route through registry; audit log catches them | PR 1 |
-| <strong>PR 5</strong> | Operator’s existing Realtime tools migrate to registry (fallback shim) | ~300 | OpenAI Realtime fallback uses same registry surface as primary EL path | PR 1 |
-| <strong>PR 6</strong> | Pi gains server-side actions (selective) | ~400 | Pi can <code dir="auto">chat.dispatch</code>, <code dir="auto">harness.scan</code>, etc. — server-side commands only | PR 2 |
-| <strong>PR 7</strong> | (optional) Pi browser back-channel | ~400 | Pi can drive UI actions via leader-bridge | PR 1, PR 6 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>PR</th><th>Title</th><th>Approx LoC</th><th>Outcome</th><th>Depends on</th></tr></thead><tbody><tr><td><strong>PR 0</strong></td><td>ElevenLabs agent + credential setup</td><td>0 (dashboard work)</td><td>Agent ID + EL API key in <code dir="auto">/settings/voice</code></td><td>none</td></tr><tr><td><strong>PR 1</strong></td><td>Registry + EL Conv AI integration + reflexive commands</td><td>~1500</td><td>Voice through ElevenLabs, registry foundation, panel.close works, leader-bridge pressure-tested</td><td>PR 0</td></tr><tr><td><strong>PR 2</strong></td><td>Fast queries + Pi/Oracle read-side unification</td><td>~500</td><td>Voice answers status questions reflexively; Pi + Oracle share queries via shims</td><td>PR 1</td></tr><tr><td><strong>PR 3</strong></td><td><code dir="auto">delegate_to_claude</code> + claude-sessions</td><td>~800</td><td>Full delegation pattern works; auto-open panel; voice picks claude-sessions; conversational <code dir="auto">operator-chat</code> endpoint</td><td>PR 1</td></tr><tr><td><strong>PR 4</strong></td><td>Palette + shortcut shims</td><td>~300</td><td>⌘K and shortcuts route through registry; audit log catches them</td><td>PR 1</td></tr><tr><td><strong>PR 5</strong></td><td>Operator’s existing Realtime tools migrate to registry (fallback shim)</td><td>~300</td><td>OpenAI Realtime fallback uses same registry surface as primary EL path</td><td>PR 1</td></tr><tr><td><strong>PR 6</strong></td><td>Pi gains server-side actions (selective)</td><td>~400</td><td>Pi can <code dir="auto">chat.dispatch</code>, <code dir="auto">harness.scan</code>, etc. — server-side commands only</td><td>PR 2</td></tr><tr><td><strong>PR 7</strong></td><td>(optional) Pi browser back-channel</td><td>~400</td><td>Pi can drive UI actions via leader-bridge</td><td>PR 1, PR 6</td></tr></tbody></table>
 <p><strong>PR sequencing constraints:</strong></p>
 <ul>
 <li>PR 1 is the foundation. Everything else depends on it. Cannot parallelize.</li>

@@ -77,10 +77,27 @@ actually DO the thing we’re blocking?”). Attention goes to the identifier,
 because that’s the interesting part. <strong>The false positives live in the evidence
 predicate</strong>, because that’s where a cheap regex stands in for semantics.</p>
 <p>The interpreter-write guard has now produced the identical failure twice:</p>
-<p>| round | what it denied | evidence predicate at the time |
-| --- | --- | --- |
-| EI-18691482279179647 (fix) | its own read-only <code dir="auto">open(&#x3C;file>).read()</code> syntax check | <em>none</em> — any tree path in inline code |
-| EI-18692070370140239 | <code dir="auto">python3 -c 'import sys; sys.stdout.write("&#x3C;tree path>")'</code> — a script that only PRINTS | <code dir="auto">\bwrite\w*\s*\(</code> — matched <strong>any</strong> <code dir="auto">.write(</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>round</th><th>what it denied</th><th>evidence predicate at the time</th></tr></thead><tbody><tr><td>EI-18691482279179647 (fix)</td><td>its own read-only <code dir="auto">open(&#x3C;file>).read()</code> syntax check</td><td><em>none</em> — any tree path in inline code</td></tr><tr><td>EI-18692070370140239</td><td><code dir="auto">python3 -c 'import sys; sys.stdout.write("&#x3C;tree path>")'</code> — a script that only PRINTS</td><td><code dir="auto">\bwrite\w*\s*\(</code> — matched <strong>any</strong> <code dir="auto">.write(</code></td></tr></tbody></table>
 <p>Both rounds denied ordinary read-only work. Neither round was a path-matching
 bug. The first fix <em>added</em> an evidence predicate; the second fixed the
 predicate it added. If a third round appears, look here first.</p>

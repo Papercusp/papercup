@@ -100,11 +100,40 @@ the impure version had to spelunk through the daemon to figure out what state
 got read where.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="test-surface-ratio">Test surface ratio</h2><a class="sl-anchor-link" href="#test-surface-ratio"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Test surface ratio”</span></a></div>
 <p>Three concrete numbers from this session’s pr-host modules:</p>
-<p>| Module | LOC | Test LOC | Test count | Run time |
-|---|---|---|---|---|
-| <code dir="auto">auto-review-decision-types.ts</code> | 218 | 240 | 27 | 12ms |
-| <code dir="auto">retry-policy-types.ts</code> | 196 | 215 | 25 | 13ms |
-| <code dir="auto">harness-feature-pr-row-types.ts</code> | 232 | 247 | 25 | 12ms |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Module</th><th>LOC</th><th>Test LOC</th><th>Test count</th><th>Run time</th></tr></thead><tbody><tr><td><code dir="auto">auto-review-decision-types.ts</code></td><td>218</td><td>240</td><td>27</td><td>12ms</td></tr><tr><td><code dir="auto">retry-policy-types.ts</code></td><td>196</td><td>215</td><td>25</td><td>13ms</td></tr><tr><td><code dir="auto">harness-feature-pr-row-types.ts</code></td><td>232</td><td>247</td><td>25</td><td>12ms</td></tr></tbody></table>
 <p>For each, the test file is roughly the same size as the source file and runs in
 ~10ms. The daemon that consumes them needs <strong>integration tests</strong> but not
 <strong>unit tests</strong> — every interesting branch is already covered by the pure module

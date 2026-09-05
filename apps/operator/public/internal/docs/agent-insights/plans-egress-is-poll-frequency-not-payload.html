@@ -84,10 +84,27 @@ poll is gone. Three claims below are now FALSE and are flagged inline where they
 queries (<code dir="auto">sync-resolver/index.ts:3199</code> / <code dir="auto">:3274</code>), with <code dir="auto">notifySyncInvalidate</code> fired across the
 plan write path.</p>
 <p>Measured on the <strong>same</strong> <code dir="auto">transport='http'</code> population this page measured:</p>
-<p>| | this page (2026-06-23) | measured 2026-08-09 |
-|---|---|---|
-| <code dir="auto">plans:attention</code> | ~4 calls/sec (~187K/day) | <strong>2,806/24h = 0.032/sec</strong> |
-| <code dir="auto">plans:list</code> | ~4 calls/sec (~187K/day) | <strong>1,494/24h = 0.017/sec</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>this page (2026-06-23)</th><th>measured 2026-08-09</th></tr></thead><tbody><tr><td><code dir="auto">plans:attention</code></td><td>~4 calls/sec (~187K/day)</td><td><strong>2,806/24h = 0.032/sec</strong></td></tr><tr><td><code dir="auto">plans:list</code></td><td>~4 calls/sec (~187K/day)</td><td><strong>1,494/24h = 0.017/sec</strong></td></tr></tbody></table>
 <p>That is a <strong>~66–125× reduction</strong>, and one client (<code dir="auto">pc-admin-plans-ui</code>) is still ~99.9% / ~95% of
 each — the agents were never the load, exactly as this page said.</p>
 <p><strong>The method that settles poll-vs-push — use this, not a raw total.</strong> Compare the <strong>FLOOR in the
@@ -102,7 +119,7 @@ confound.</p>
 <li><strong>No debounce/coalesce on invalidation → refetch.</strong> ~3 <em>identical</em> calls per burst (161 bursts
 in 6h; all 292 calls in a 3h sample carry one arg shape, <code dir="auto">harness: "all"</code>, <code dir="auto">payloadTier: "full"</code>).
 Upper bound if perfectly coalesced: ~⅔ of ~2,800 calls/day.</li>
-<li>~~No drift-repair backstop on these two feeds.~~ <strong>WITHDRAWN — there IS one.</strong>
+<li><del>No drift-repair backstop on these two feeds.</del> <strong>WITHDRAWN — there IS one.</strong>
 <code dir="auto">HarnessSyncProvider</code> runs a <strong>180s</strong> drift-repair tick (<code dir="auto">DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000</code>,
 <code dir="auto">HarnessSyncProvider.tsx:57</code>, the default for <code dir="auto">ssePollIntervalMs</code> at <code dir="auto">:211</code>), which replaced a
 shared 5s <code dir="auto">pollIntervalMs</code>. That tick is the ~180s modal inter-call gap in the measurement

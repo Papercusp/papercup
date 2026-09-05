@@ -158,13 +158,48 @@
 <p><strong>What belongs in <code dir="auto">requires:</code>:</strong> <em>functional</em> preconditions — an arg/scope shape the handler can’t proceed without, a resumable resource that a corrective fire can fix (the reject/auto-correct/delete choice is D-006’s safety-vs-convenience judgment: auto-correct ergonomic preconditions visibly; reject ones the caller must fix; delete artificial ones instead of migrating them).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="safety-invariants-are-excluded-by-design-d-007">Safety invariants are EXCLUDED by design (D-007)</h3><a class="sl-anchor-link" href="#safety-invariants-are-excluded-by-design-d-007"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Safety invariants are EXCLUDED by design (D-007)”</span></a></div>
 <p><strong><code dir="auto">requires:</code> must never absorb a safety invariant.</strong> The rule (autoloop-pot-operator-rebuild D-007): <em>the operator proposes, the gate disposes</em> — an agent gets maximal agency <strong>inside</strong> a small set of hard, coded guardrails it cannot reason past. A safety gate in a declarative rule table is a safety gate an agent (or a rule edit) can weaken; these stay imperative, fail-closed, audited <strong>code</strong>. The inventory (verified 2026-06-05):</p>
-<p>| Gate | Where (imperative code) | Audit sink | Bypass |
-|---|---|---|---|
-| <strong>Don’t-deploy-on-red</strong> | <code dir="auto">apps/operator/lib/release/green-checkpoint.ts</code> (ready advances only on green) + <code dir="auto">deploy-cli.ts</code> (refuses un-green targets) | coord broadcast per checkpoint/deploy | <code dir="auto">--force</code> / <code dir="auto">--deploy-commit</code> — loudly audited (<code dir="auto">🚨 FORCED un-green deploy</code>) |
-| <strong>Protected-paths</strong> | <code dir="auto">packages/operator-core/lib/harness/improvements/policy.ts</code> <code dir="auto">classifyImprovement()</code> — glob patterns route protected surfaces to the human queue | tier decision in the improvements digest/queue | none (kind-graduation only widens <code dir="auto">auto</code> kinds, never the protected paths) |
-| <strong>Budget / quota caps</strong> | <code dir="auto">libs/papercusp/libs/db/src/budget-enforcement.ts</code> (row-locked atomic budget check, fail-closed) + <code dir="auto">orchestrator-loop.ts</code> <code dir="auto">SAFETY_CEILING</code> (hard constant; blueprint <code dir="auto">dispatch.safetyCeiling</code> may only tighten) + the quota gate (7) above | <code dir="auto">tool_invocations</code> (quota); <code dir="auto">BudgetExceededError</code> carries detail | quota: <code dir="auto">GateBypass.quota</code>; budget/ceiling: none |
-| <strong>Auth perimeter</strong> | gates 0–5 + 8 above (<code dir="auto">dispatch-stack.ts</code>, <code dir="auto">tryBuildSpawnContext</code>) | <code dir="auto">harness_shared.tool_authz_log</code> + <code dir="auto">spawn_sig_verification_failures</code> | per-gate <code dir="auto">GateBypass</code>, <code dir="auto">policy</code> bypass audited |
-| <strong>No-double-allocate</strong> | <code dir="auto">work-items.ts</code> atomic CAS (<code dir="auto">UPDATE … WHERE taken_by IS NULL</code>), <code dir="auto">orchestrator/feature-claim.ts</code> append-only claim log, <code dir="auto">authority/lock-authority.ts</code> | <code dir="auto">harness_shared.claim_audit</code> (won/lost/timeout/error) | none — atomic by construction |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Gate</th><th>Where (imperative code)</th><th>Audit sink</th><th>Bypass</th></tr></thead><tbody><tr><td><strong>Don’t-deploy-on-red</strong></td><td><code dir="auto">apps/operator/lib/release/green-checkpoint.ts</code> (ready advances only on green) + <code dir="auto">deploy-cli.ts</code> (refuses un-green targets)</td><td>coord broadcast per checkpoint/deploy</td><td><code dir="auto">--force</code> / <code dir="auto">--deploy-commit</code> — loudly audited (<code dir="auto">🚨 FORCED un-green deploy</code>)</td></tr><tr><td><strong>Protected-paths</strong></td><td><code dir="auto">packages/operator-core/lib/harness/improvements/policy.ts</code> <code dir="auto">classifyImprovement()</code> — glob patterns route protected surfaces to the human queue</td><td>tier decision in the improvements digest/queue</td><td>none (kind-graduation only widens <code dir="auto">auto</code> kinds, never the protected paths)</td></tr><tr><td><strong>Budget / quota caps</strong></td><td><code dir="auto">libs/papercusp/libs/db/src/budget-enforcement.ts</code> (row-locked atomic budget check, fail-closed) + <code dir="auto">orchestrator-loop.ts</code> <code dir="auto">SAFETY_CEILING</code> (hard constant; blueprint <code dir="auto">dispatch.safetyCeiling</code> may only tighten) + the quota gate (7) above</td><td><code dir="auto">tool_invocations</code> (quota); <code dir="auto">BudgetExceededError</code> carries detail</td><td>quota: <code dir="auto">GateBypass.quota</code>; budget/ceiling: none</td></tr><tr><td><strong>Auth perimeter</strong></td><td>gates 0–5 + 8 above (<code dir="auto">dispatch-stack.ts</code>, <code dir="auto">tryBuildSpawnContext</code>)</td><td><code dir="auto">harness_shared.tool_authz_log</code> + <code dir="auto">spawn_sig_verification_failures</code></td><td>per-gate <code dir="auto">GateBypass</code>, <code dir="auto">policy</code> bypass audited</td></tr><tr><td><strong>No-double-allocate</strong></td><td><code dir="auto">work-items.ts</code> atomic CAS (<code dir="auto">UPDATE … WHERE taken_by IS NULL</code>), <code dir="auto">orchestrator/feature-claim.ts</code> append-only claim log, <code dir="auto">authority/lock-authority.ts</code></td><td><code dir="auto">harness_shared.claim_audit</code> (won/lost/timeout/error)</td><td>none — atomic by construction</td></tr></tbody></table>
 <p>None of the five flows through <code dir="auto">@papercusp/rules</code>, the event-reaction tables, or <code dir="auto">requires:</code> — and that’s load-bearing, not an accident. When migrating a hardcoded guard to <code dir="auto">requires:</code> (or a reaction to <code dir="auto">emits:</code>), first ask: <em>is this gate’s failure mode harm?</em> If yes, it stays code.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-authorization-audit-trail">The authorization audit trail</h2><a class="sl-anchor-link" href="#the-authorization-audit-trail"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The authorization audit trail”</span></a></div>
 <p>Gates <strong>5</strong> (RBAC), <strong>8</strong> (authorize), and <strong>9</strong> (preconditions), plus every <code dir="auto">GateBypass.policy</code> bypass, emit an <code dir="auto">AuthAuditEvent</code> through the optional <code dir="auto">deps.auditAuth</code> sink. What each emits differs:</p>
@@ -181,23 +216,92 @@
 <p>HTTP status: 504. The <code dir="auto">tool_invocations</code> row records <code dir="auto">status='timeout'</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-whole-error-code--http-status-table">The whole error code → HTTP status table</h2><a class="sl-anchor-link" href="#the-whole-error-code--http-status-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The whole error code → HTTP status table”</span></a></div>
 <p>For HTTP transport, <code dir="auto">statusForErrorCode</code> in <code dir="auto">libs/generic/tooldef-http/src/http-projection.ts</code> maps:</p>
-<p>| Error code | HTTP | Source |
-|---|---|---|
-| <code dir="auto">ungated</code> | 403 | Default-deny on; tool declares no gate and isn’t <code dir="auto">public</code> |
-| <code dir="auto">unauthorized</code> | 401 | Built-in tool, no bearer / invalid bearer |
-| <code dir="auto">role_not_allowed</code> | 403 | Agent role not in the tool’s allowlist |
-| <code dir="auto">missing_capability</code> | 403 | Principal missing required capability |
-| <code dir="auto">capability_denied</code> | 500 (no explicit case; falls to default) | Capability-envelope gate denied (enforce mode). The missing 403-class case means this authz denial is currently surfaced as a 500 over HTTP |
-| <code dir="auto">missing_role</code> | 403 | Principal missing a required RBAC role (<code dir="auto">requireRoles</code>) |
-| <code dir="auto">harness_required</code> | 400 | <code dir="auto">harness:'required'</code> tool with no harness in scope |
-| <code dir="auto">quota_exceeded</code> | 429 | Window count ≥ limit |
-| <code dir="auto">authorization_denied</code> | 403 | The tool’s <code dir="auto">authorize</code> hook denied (or threw → fail-closed) |
-| <code dir="auto">precondition_failed</code> | 412 | A declarative <code dir="auto">requires:</code> precondition failed (after the auto-correct retry, when one was declared) |
-| <code dir="auto">invalid_input</code> | 400 | Function threw a typed input-validation error |
-| <code dir="auto">timeout</code> | 504 | AbortController fired before function returned |
-| <code dir="auto">unknown_tool</code> | 404 | No projection registered at this path/name |
-| <code dir="auto">method_not_allowed</code> | 405 | HTTP method not in <code dir="auto">expose.http.methods</code> |
-| anything else | 500 | Function threw an unhandled error → <code dir="auto">handler_error</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Error code</th><th>HTTP</th><th>Source</th></tr></thead><tbody><tr><td><code dir="auto">ungated</code></td><td>403</td><td>Default-deny on; tool declares no gate and isn’t <code dir="auto">public</code></td></tr><tr><td><code dir="auto">unauthorized</code></td><td>401</td><td>Built-in tool, no bearer / invalid bearer</td></tr><tr><td><code dir="auto">role_not_allowed</code></td><td>403</td><td>Agent role not in the tool’s allowlist</td></tr><tr><td><code dir="auto">missing_capability</code></td><td>403</td><td>Principal missing required capability</td></tr><tr><td><code dir="auto">capability_denied</code></td><td>500 (no explicit case; falls to default)</td><td>Capability-envelope gate denied (enforce mode). The missing 403-class case means this authz denial is currently surfaced as a 500 over HTTP</td></tr><tr><td><code dir="auto">missing_role</code></td><td>403</td><td>Principal missing a required RBAC role (<code dir="auto">requireRoles</code>)</td></tr><tr><td><code dir="auto">harness_required</code></td><td>400</td><td><code dir="auto">harness:'required'</code> tool with no harness in scope</td></tr><tr><td><code dir="auto">quota_exceeded</code></td><td>429</td><td>Window count ≥ limit</td></tr><tr><td><code dir="auto">authorization_denied</code></td><td>403</td><td>The tool’s <code dir="auto">authorize</code> hook denied (or threw → fail-closed)</td></tr><tr><td><code dir="auto">precondition_failed</code></td><td>412</td><td>A declarative <code dir="auto">requires:</code> precondition failed (after the auto-correct retry, when one was declared)</td></tr><tr><td><code dir="auto">invalid_input</code></td><td>400</td><td>Function threw a typed input-validation error</td></tr><tr><td><code dir="auto">timeout</code></td><td>504</td><td>AbortController fired before function returned</td></tr><tr><td><code dir="auto">unknown_tool</code></td><td>404</td><td>No projection registered at this path/name</td></tr><tr><td><code dir="auto">method_not_allowed</code></td><td>405</td><td>HTTP method not in <code dir="auto">expose.http.methods</code></td></tr><tr><td>anything else</td><td>500</td><td>Function threw an unhandled error → <code dir="auto">handler_error</code></td></tr></tbody></table>
 <p>For MCP transport, errors are returned as a normal <code dir="auto">tools/call</code> result with <code dir="auto">isError: true</code> and a <code dir="auto">content[].text</code> describing the error. There’s no JSON-RPC-level rejection — the MCP spec puts tool errors in the result envelope.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="a-worked-example">A worked example</h2><a class="sl-anchor-link" href="#a-worked-example"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “A worked example”</span></a></div>
 <p>Here’s what happens when a <code dir="auto">worker</code> tries to call <code dir="auto">firecrawl.scrape</code> with <code dir="auto">chunk=Q1</code> for the second time:</p>

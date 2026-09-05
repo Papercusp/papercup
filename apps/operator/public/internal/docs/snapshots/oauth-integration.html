@@ -106,12 +106,37 @@ populated by the substrate.</p>
 the field editable; users who want to paste a PAT can click “advanced” and
 do that. (See “Hybrid mode” below.)</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="field-reference">Field reference</h3><a class="sl-anchor-link" href="#field-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Field reference”</span></a></div>
-<p>| Field | Required | Notes |
-|---|---|---|
-| <code dir="auto">provider</code> | yes | Must be a substrate-registered provider. V1 supports <code dir="auto">github</code>. V2 adds <code dir="auto">slack</code>, <code dir="auto">linear</code>, <code dir="auto">notion</code>, <code dir="auto">jira</code>. |
-| <code dir="auto">scopes</code> | yes | Array of provider-specific scope strings. The substrate forwards these unchanged in the authorize URL. |
-| <code dir="auto">tokenType</code> | no | <code dir="auto">access</code> (default), <code dir="auto">refresh</code>, or <code dir="auto">both</code>. Determines what gets stored in the config. <code dir="auto">refresh</code> is required if the plugin needs to operate without re-auth for >24h. |
-| <code dir="auto">userInfoFields</code> | no | <em>(Design-only, not yet implemented.)</em> Optional list of extra fields to populate from the provider’s user-info endpoint, e.g. <code dir="auto">["login", "email"]</code> for GitHub, intended to write <code dir="auto">&#x3C;field>_user_&#x3C;key></code> into the plugin config. The callback does not currently fetch user info, and nothing reads the provider’s <code dir="auto">userInfoUrl</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Required</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">provider</code></td><td>yes</td><td>Must be a substrate-registered provider. V1 supports <code dir="auto">github</code>. V2 adds <code dir="auto">slack</code>, <code dir="auto">linear</code>, <code dir="auto">notion</code>, <code dir="auto">jira</code>.</td></tr><tr><td><code dir="auto">scopes</code></td><td>yes</td><td>Array of provider-specific scope strings. The substrate forwards these unchanged in the authorize URL.</td></tr><tr><td><code dir="auto">tokenType</code></td><td>no</td><td><code dir="auto">access</code> (default), <code dir="auto">refresh</code>, or <code dir="auto">both</code>. Determines what gets stored in the config. <code dir="auto">refresh</code> is required if the plugin needs to operate without re-auth for >24h.</td></tr><tr><td><code dir="auto">userInfoFields</code></td><td>no</td><td><em>(Design-only, not yet implemented.)</em> Optional list of extra fields to populate from the provider’s user-info endpoint, e.g. <code dir="auto">["login", "email"]</code> for GitHub, intended to write <code dir="auto">&#x3C;field>_user_&#x3C;key></code> into the plugin config. The callback does not currently fetch user info, and nothing reads the provider’s <code dir="auto">userInfoUrl</code>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="substrate-level-provider-config">Substrate-level provider config</h2><a class="sl-anchor-link" href="#substrate-level-provider-config"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Substrate-level provider config”</span></a></div>
 <p>Each provider is a one-time platform-owner registration. Config lives at:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="text"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">~/.papercusp/oauth-apps.json</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">"github": {</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"clientId": "Iv1.abc123",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"clientSecretFile": "/etc/papercusp/oauth/github-secret",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"authorizeUrl": "https://github.com/login/oauth/authorize",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"tokenUrl": "https://github.com/login/oauth/access_token",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"userInfoUrl": "https://api.github.com/user",</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">    </span></span><span style="--0:#d6deeb;--1:#403f53">"redirectUri": "http://localhost:3055/api/oauth/callback?provider=github"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="~/.papercusp/oauth-apps.json{  &#x22;github&#x22;: {    &#x22;clientId&#x22;: &#x22;Iv1.abc123&#x22;,    &#x22;clientSecretFile&#x22;: &#x22;/etc/papercusp/oauth/github-secret&#x22;,    &#x22;authorizeUrl&#x22;: &#x22;https://github.com/login/oauth/authorize&#x22;,    &#x22;tokenUrl&#x22;: &#x22;https://github.com/login/oauth/access_token&#x22;,    &#x22;userInfoUrl&#x22;: &#x22;https://api.github.com/user&#x22;,    &#x22;redirectUri&#x22;: &#x22;http://localhost:3055/api/oauth/callback?provider=github&#x22;  }}"><div></div></button></div></figure></div>
@@ -154,14 +179,54 @@ the same nonce resolve to exactly one winner, the rest get
 <code dir="auto">already-consumed</code>). An opportunistic sweep deletes expired rows once the
 table grows past ~1000.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="provider-matrix">Provider matrix</h2><a class="sl-anchor-link" href="#provider-matrix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Provider matrix”</span></a></div>
-<p>| Provider | OAuth available | Scopes for our plugins | Notes |
-|---|---|---|---|
-| GitHub | ✓ | <code dir="auto">repo</code> (private + public access), <code dir="auto">read:user</code> | OAuth App or fine-grained PAT both work; OAuth App is what the spec assumes. |
-| Slack | ✓ | <code dir="auto">incoming-webhook</code>, <code dir="auto">chat:write</code> | Each Slack workspace authorizes once. |
-| Linear | ✓ | <code dir="auto">read</code>, <code dir="auto">write</code> | Linear’s OAuth scopes are coarse. |
-| Notion | ✓ | (Notion uses public-integration mode, no scopes per se) | Slightly different flow — no <code dir="auto">scope</code> param, integration ID is the scope. |
-| Jira | ✓ | <code dir="auto">read:jira-work</code>, <code dir="auto">write:jira-work</code> | Atlassian’s OAuth 2.0 (3LO) flow; uses <code dir="auto">audience</code> param. |
-| Cloudflare | ✗ | — | CF doesn’t expose OAuth for API tokens. BYO token only. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Provider</th><th>OAuth available</th><th>Scopes for our plugins</th><th>Notes</th></tr></thead><tbody><tr><td>GitHub</td><td>✓</td><td><code dir="auto">repo</code> (private + public access), <code dir="auto">read:user</code></td><td>OAuth App or fine-grained PAT both work; OAuth App is what the spec assumes.</td></tr><tr><td>Slack</td><td>✓</td><td><code dir="auto">incoming-webhook</code>, <code dir="auto">chat:write</code></td><td>Each Slack workspace authorizes once.</td></tr><tr><td>Linear</td><td>✓</td><td><code dir="auto">read</code>, <code dir="auto">write</code></td><td>Linear’s OAuth scopes are coarse.</td></tr><tr><td>Notion</td><td>✓</td><td>(Notion uses public-integration mode, no scopes per se)</td><td>Slightly different flow — no <code dir="auto">scope</code> param, integration ID is the scope.</td></tr><tr><td>Jira</td><td>✓</td><td><code dir="auto">read:jira-work</code>, <code dir="auto">write:jira-work</code></td><td>Atlassian’s OAuth 2.0 (3LO) flow; uses <code dir="auto">audience</code> param.</td></tr><tr><td>Cloudflare</td><td>✗</td><td>—</td><td>CF doesn’t expose OAuth for API tokens. BYO token only.</td></tr></tbody></table>
 <p>V1 ships GitHub. V2 sweeps the rest in one PR after the V1 surface is
 proven.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="hybrid-mode-paste-or-connect">Hybrid mode (paste OR connect)</h2><a class="sl-anchor-link" href="#hybrid-mode-paste-or-connect"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Hybrid mode (paste OR connect)”</span></a></div>
@@ -174,20 +239,69 @@ Settings UI offers an “Advanced: paste token” expander:</p>
 <p>When the user pastes a token, the substrate hits the provider’s
 introspection endpoint to verify the granted scopes match what the
 plugin’s manifest requires:</p>
-<p>| Provider | Introspection endpoint | Notes |
-|---|---|---|
-| <strong>GitHub</strong> | <code dir="auto">GET /user</code> with a <code dir="auto">Bearer</code> token; read the <code dir="auto">X-OAuth-Scopes</code> response header. This works uniformly for OAuth-app tokens, classic PATs, and fine-grained PATs. | V1 |
-| Slack | <code dir="auto">auth.test</code> returns scopes in response headers | V2 |
-| Linear | GraphQL <code dir="auto">viewer { id }</code> errors with explicit scope-required messages | V2 |
-| Notion | <code dir="auto">/v1/users/me</code> echoes integration capabilities | V2 |
-| Jira | <code dir="auto">/rest/api/3/myself</code> + <code dir="auto">accessible-resources</code> | V2 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Provider</th><th>Introspection endpoint</th><th>Notes</th></tr></thead><tbody><tr><td><strong>GitHub</strong></td><td><code dir="auto">GET /user</code> with a <code dir="auto">Bearer</code> token; read the <code dir="auto">X-OAuth-Scopes</code> response header. This works uniformly for OAuth-app tokens, classic PATs, and fine-grained PATs.</td><td>V1</td></tr><tr><td>Slack</td><td><code dir="auto">auth.test</code> returns scopes in response headers</td><td>V2</td></tr><tr><td>Linear</td><td>GraphQL <code dir="auto">viewer { id }</code> errors with explicit scope-required messages</td><td>V2</td></tr><tr><td>Notion</td><td><code dir="auto">/v1/users/me</code> echoes integration capabilities</td><td>V2</td></tr><tr><td>Jira</td><td><code dir="auto">/rest/api/3/myself</code> + <code dir="auto">accessible-resources</code></td><td>V2</td></tr></tbody></table>
 <p>Verification rules:</p>
-<p>| Granted scopes | Substrate behavior |
-|---|---|
-| Exactly the requested set | Accepted silently |
-| Superset of requested (more permissions than needed) | Accepted with a warning toast: “this token has more scopes than the plugin needs; consider creating a more narrowly-scoped one” |
-| Subset of requested (missing required scopes) | <strong>Rejected.</strong> Toast names the missing scopes. User regenerates and re-pastes. |
-| Token doesn’t belong to this OAuth app’s client_id | Rejected for OAuth-app PATs. Allowed for fine-grained PATs (no client_id binding exists). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Granted scopes</th><th>Substrate behavior</th></tr></thead><tbody><tr><td>Exactly the requested set</td><td>Accepted silently</td></tr><tr><td>Superset of requested (more permissions than needed)</td><td>Accepted with a warning toast: “this token has more scopes than the plugin needs; consider creating a more narrowly-scoped one”</td></tr><tr><td>Subset of requested (missing required scopes)</td><td><strong>Rejected.</strong> Toast names the missing scopes. User regenerates and re-pastes.</td></tr><tr><td>Token doesn’t belong to this OAuth app’s client_id</td><td>Rejected for OAuth-app PATs. Allowed for fine-grained PATs (no client_id binding exists).</td></tr></tbody></table>
 <p>A provider with no introspection endpoint is a special case: the substrate
 accepts the pasted token <strong>unverified</strong> and the response carries
 <code dir="auto">outcome: 'no-introspection'</code>. Only providers that implement <code dir="auto">introspect()</code>
@@ -273,14 +387,47 @@ action handlers can also detect this state by checking
 <p>Either way, the plugin’s own data on the provider side is preserved; only
 papercusp’s authorization is gone.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="implementation">Implementation</h2><a class="sl-anchor-link" href="#implementation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Implementation”</span></a></div>
-<p>| Surface | Change | LOC |
-|---|---|---|
-| <code dir="auto">@papercusp/plugin-sdk</code> | <code dir="auto">oauth</code> field on the property schema + <code dir="auto">PluginOAuthRequirement[]</code> manifest entries. | ~15 |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/start.ts</code> | Generate state, redirect to provider authorize URL. | ~60 |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts</code> | Exchange code, write access token (+ optional <code dir="auto">_refresh</code>/<code dir="auto">_expires_at</code>, and <code dir="auto">_expired: false</code>) to plugin config. Does <em>not</em> fetch user info — the <code dir="auto">userInfoFields</code> manifest feature is unimplemented. | ~100 |
-| <code dir="auto">packages/operator-core/lib/oauth/{providers,token,state,storage-fs}.ts</code> | Provider registry (GitHub), token-exchange + <code dir="auto">ctx.oauth.token()</code> refresh logic, HMAC state, fs-backed token storage. | ~120 |
-| <code dir="auto">apps/operator/app/settings/plugins/page.tsx</code> | Render Connect button when <code dir="auto">oauth</code> is declared on a field. | ~50 |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/verify-paste.ts</code> | Hybrid mode — introspect a pasted PAT’s scopes against the plugin’s required scopes. | ~40 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Change</th><th>LOC</th></tr></thead><tbody><tr><td><code dir="auto">@papercusp/plugin-sdk</code></td><td><code dir="auto">oauth</code> field on the property schema + <code dir="auto">PluginOAuthRequirement[]</code> manifest entries.</td><td>~15</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/start.ts</code></td><td>Generate state, redirect to provider authorize URL.</td><td>~60</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/callback.ts</code></td><td>Exchange code, write access token (+ optional <code dir="auto">_refresh</code>/<code dir="auto">_expires_at</code>, and <code dir="auto">_expired: false</code>) to plugin config. Does <em>not</em> fetch user info — the <code dir="auto">userInfoFields</code> manifest feature is unimplemented.</td><td>~100</td></tr><tr><td><code dir="auto">packages/operator-core/lib/oauth/{providers,token,state,storage-fs}.ts</code></td><td>Provider registry (GitHub), token-exchange + <code dir="auto">ctx.oauth.token()</code> refresh logic, HMAC state, fs-backed token storage.</td><td>~120</td></tr><tr><td><code dir="auto">apps/operator/app/settings/plugins/page.tsx</code></td><td>Render Connect button when <code dir="auto">oauth</code> is declared on a field.</td><td>~50</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/oauth/verify-paste.ts</code></td><td>Hybrid mode — introspect a pasted PAT’s scopes against the plugin’s required scopes.</td><td>~40</td></tr></tbody></table>
 <p>Total: <strong>~385 lines.</strong> Slightly bigger than the share-semantics work,
 slightly smaller than build-scripts. (Implemented: <code dir="auto">ctx.oauth.token()</code>
 lives in <code dir="auto">packages/operator-core/lib/oauth/token.ts</code>, wired from
@@ -309,14 +456,40 @@ user.</p>
 provider library) to save ~150 LOC of provider-specific token-exchange
 boilerplate. <strong>This is now gated on a supply-chain audit</strong>, given the
 plan as a whole is about supply-chain hygiene:</p>
-<p>| Audit step | What’s checked |
-|---|---|
-| Direct deps | How many top-level deps does arctic add? Are they widely-used or boutique? |
-| Transitive deps | Total dep tree size; flag any dep with single-maintainer status or unsigned releases |
-| Maintainer count | How many active maintainers? Single-maintainer libraries are higher xz-utils-precedent risk |
-| Signing posture | Does <code dir="auto">arctic</code> publish signed npm releases? Provenance attestations? |
-| Coverage | Does arctic cover Atlassian 3LO including the <code dir="auto">audience</code> parameter quirk? |
-| Lock posture | Pin the exact arctic version + record sha256 in substrate’s lockfile; explicit re-audit on every version bump |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Audit step</th><th>What’s checked</th></tr></thead><tbody><tr><td>Direct deps</td><td>How many top-level deps does arctic add? Are they widely-used or boutique?</td></tr><tr><td>Transitive deps</td><td>Total dep tree size; flag any dep with single-maintainer status or unsigned releases</td></tr><tr><td>Maintainer count</td><td>How many active maintainers? Single-maintainer libraries are higher xz-utils-precedent risk</td></tr><tr><td>Signing posture</td><td>Does <code dir="auto">arctic</code> publish signed npm releases? Provenance attestations?</td></tr><tr><td>Coverage</td><td>Does arctic cover Atlassian 3LO including the <code dir="auto">audience</code> parameter quirk?</td></tr><tr><td>Lock posture</td><td>Pin the exact arctic version + record sha256 in substrate’s lockfile; explicit re-audit on every version bump</td></tr></tbody></table>
 <p>Outcomes:</p>
 <ul>
 <li><strong>Arctic passes audit</strong> → adopt with audit recorded as a <code dir="auto">LIBRARY_AUDIT.md</code> entry. V1 OAuth ships with arctic. Total OAuth surface ~250 LOC (was 385).</li>

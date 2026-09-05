@@ -93,10 +93,27 @@ EI-18759622667757826. The guard was disarmed exactly when it was needed.</p></di
 <p>A negative assertion on a static literal is vacuous when the literal appears <strong>nowhere the
 system could emit it</strong> — not in any tracked non-test file, and not anywhere in its own test
 file (where a fixture would put it). Two verdicts:</p>
-<p>| verdict | meaning | gates? |
-|---|---|---|
-| <strong>DRIFTED</strong> | A long contiguous fragment of the literal <strong>is</strong> in the source. The guarded string still exists; the guard is pinned to its OLD wording. Dead guard, live emitter. | <strong>yes</strong> |
-| <strong>ORPHANED</strong> | Nothing resembling the literal exists anywhere. Usually a deliberate “this phrasing is gone for good” ratchet — legitimate and stable, since the historical string never changes. | no |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>verdict</th><th>meaning</th><th>gates?</th></tr></thead><tbody><tr><td><strong>DRIFTED</strong></td><td>A long contiguous fragment of the literal <strong>is</strong> in the source. The guarded string still exists; the guard is pinned to its OLD wording. Dead guard, live emitter.</td><td><strong>yes</strong></td></tr><tr><td><strong>ORPHANED</strong></td><td>Nothing resembling the literal exists anywhere. Usually a deliberate “this phrasing is gone for good” ratchet — legitimate and stable, since the historical string never changes.</td><td>no</td></tr></tbody></table>
 <p>Deliberate exception? <code dir="auto">// vacuous-negative-ok: &#x3C;reason></code> on the line or in the comment
 block above it. That is an improvement in itself: it turns an invisible always-passes into
 a documented intentional ratchet.</p>

@@ -74,11 +74,32 @@
 very different recoverability, very different rates, and — the trap this page
 exists for — <strong>neither is recorded in <code dir="auto">tool_invocations</code>.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-two-stages-are-not-the-same-thing">The two stages are not the same thing</h2><a class="sl-anchor-link" href="#the-two-stages-are-not-the-same-thing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The two stages are not the same thing”</span></a></div>
-<p>| | payload-tier forced hard ceiling | result-door spill |
-|---|---|---|
-| threshold | 30,000 chars (<code dir="auto">PAYLOAD_TIER_HARD_CEILING_CHARS</code>) | ~1500 tokens per result |
-| recoverable? | <strong>No</strong> — content is dropped in memory | <strong>Yes</strong> — full result written to scratch |
-| rate (measured 2026-08-02) | 939 fires / 7 days (~134/day) | 68,649 spills / 24h |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>payload-tier forced hard ceiling</th><th>result-door spill</th></tr></thead><tbody><tr><td>threshold</td><td>30,000 chars (<code dir="auto">PAYLOAD_TIER_HARD_CEILING_CHARS</code>)</td><td>~1500 tokens per result</td></tr><tr><td>recoverable?</td><td><strong>No</strong> — content is dropped in memory</td><td><strong>Yes</strong> — full result written to scratch</td></tr><tr><td>rate (measured 2026-08-02)</td><td>939 fires / 7 days (~134/day)</td><td>68,649 spills / 24h</td></tr></tbody></table>
 <p>The lossy stage runs <strong>before</strong> the lossless one, so the door can only preserve
 what already survived — <code dir="auto">result-door.ts:159-166</code> says so in its own comment.
 That ordering is real. What it is <em>not</em> is expensive: the irrecoverable stage
@@ -109,18 +130,67 @@ direct census:</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">find</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">~/.papercusp/scratch</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">result-door-*.md</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">wc</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-l</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># by tool</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">find</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">~/.papercusp/scratch/&#x3C;workspace></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">result-door-*.md</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">sed</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">s|.*/scratch/&#x3C;workspace>/||; s|/.*||</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">sort</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">uniq</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-c</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">sort</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-rn</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="find ~/.papercusp/scratch -name &#x27;result-door-*.md&#x27; | wc -lfind ~/.papercusp/scratch/<workspace> -name &#x27;result-door-*.md&#x27; \  | sed &#x27;s|.*/scratch/<workspace>/||; s|/.*||&#x27; | sort | uniq -c | sort -rn"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="measured-distribution-2026-08-02">Measured distribution (2026-08-02)</h2><a class="sl-anchor-link" href="#measured-distribution-2026-08-02"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Measured distribution (2026-08-02)”</span></a></div>
 <p>Forced hard-ceiling fires by tool, 7 days, <code dir="auto">papercup-dev-api</code> (staging: 0):</p>
-<p>| tool | fires | re-callable? |
-|---|---|---|
-| <code dir="auto">coord:orient</code> | 648 (69%) | yes — cheap wake bootstrap |
-| <code dir="auto">work_items:observe</code> | 106 | yes |
-| <code dir="auto">plans:get</code> | 54 | yes |
-| <code dir="auto">work_items:get</code> | 38 | yes |
-| <code dir="auto">work_items:list</code> | 33 | yes |
-| <code dir="auto">coord:presence</code> | 13 | yes |
-| <code dir="auto">work_items:claim</code> | 11 | <strong>no — side-effecting</strong> |
-| <code dir="auto">facts:list</code> | 8 | yes |
-| <code dir="auto">fleet:assignments</code> | 6 | yes |
-| <code dir="auto">plans:items</code> | 5 | yes |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>tool</th><th>fires</th><th>re-callable?</th></tr></thead><tbody><tr><td><code dir="auto">coord:orient</code></td><td>648 (69%)</td><td>yes — cheap wake bootstrap</td></tr><tr><td><code dir="auto">work_items:observe</code></td><td>106</td><td>yes</td></tr><tr><td><code dir="auto">plans:get</code></td><td>54</td><td>yes</td></tr><tr><td><code dir="auto">work_items:get</code></td><td>38</td><td>yes</td></tr><tr><td><code dir="auto">work_items:list</code></td><td>33</td><td>yes</td></tr><tr><td><code dir="auto">coord:presence</code></td><td>13</td><td>yes</td></tr><tr><td><code dir="auto">work_items:claim</code></td><td>11</td><td><strong>no — side-effecting</strong></td></tr><tr><td><code dir="auto">facts:list</code></td><td>8</td><td>yes</td></tr><tr><td><code dir="auto">fleet:assignments</code></td><td>6</td><td>yes</td></tr><tr><td><code dir="auto">plans:items</code></td><td>5</td><td>yes</td></tr></tbody></table>
 <p>Only 1.2% of fires are on a side-effecting call. For everything else,
 re-calling with <code dir="auto">payloadTier:'full'</code> is already the correct and cheapest
 recovery — which is why building a raw-payload mirror to invert the ladder was
@@ -139,13 +209,36 @@ of a write-only telemetry call that nobody reads.</p>
 <p>Volume is the easy half. The question that decides whether spill-and-reference
 is a solved problem is whether agents actually page what the door wrote for
 them. Measured 2026-08-02 over a 36h window (<code dir="auto">workspace_id='papercusp-workspace'</code>):</p>
-<p>| | count |
-|---|---|
-| spills produced | 80,048 |
-| …of which hook/standing tools nobody can page (<code dir="auto">activity:report</code>, <code dir="auto">facts:list</code>, <code dir="auto">locks:check_command</code>) | 75,633 (94.5%) |
-| <strong>agent-facing denominator</strong> | <strong>4,415</strong> |
-| distinct spills actually read | ~195, by 45 distinct agents, 59 with an explicit <code dir="auto">offset</code>/<code dir="auto">limit</code> |
-| <code dir="auto">payloadTier:'full'</code> re-calls (the pay-twice route) | 157, by 22 agents, across 12 tools |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>count</th></tr></thead><tbody><tr><td>spills produced</td><td>80,048</td></tr><tr><td>…of which hook/standing tools nobody can page (<code dir="auto">activity:report</code>, <code dir="auto">facts:list</code>, <code dir="auto">locks:check_command</code>)</td><td>75,633 (94.5%)</td></tr><tr><td><strong>agent-facing denominator</strong></td><td><strong>4,415</strong></td></tr><tr><td>distinct spills actually read</td><td>~195, by 45 distinct agents, 59 with an explicit <code dir="auto">offset</code>/<code dir="auto">limit</code></td></tr><tr><td><code dir="auto">payloadTier:'full'</code> re-calls (the pay-twice route)</td><td>157, by 22 agents, across 12 tools</td></tr></tbody></table>
 <p><strong>~4.4% of agent-facing spills are ever paged; ~92% are abandoned outright —
 and agents re-run the tool at full tier almost as often as they page a copy
 already sitting on disk.</strong></p>
@@ -203,12 +296,42 @@ wide line among normal ones; it is the serialized JSON result on a single line.
 A 512-column cap applied there would not make a wide line harmless — it would
 truncate every result to 512 characters.</p>
 <p>The cap only means anything where output is genuinely line-oriented text:</p>
-<p>| surface | lines >512 | bytes beyond col 512 | max line |
-|---|---|---|---|
-| <code dir="auto">capability:bash</code> | 1.0% | 28.4% | 13,741 |
-| <code dir="auto">logs:read</code> | 0.6% | 46.0% | 23,787 |
-| <code dir="auto">sessions:read</code> | 26.5% | 47.4% | 1,625 |
-| <code dir="auto">capability:read</code> | 0.1% | 1.8% | 2,051 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>surface</th><th>lines >512</th><th>bytes beyond col 512</th><th>max line</th></tr></thead><tbody><tr><td><code dir="auto">capability:bash</code></td><td>1.0%</td><td>28.4%</td><td>13,741</td></tr><tr><td><code dir="auto">logs:read</code></td><td>0.6%</td><td>46.0%</td><td>23,787</td></tr><tr><td><code dir="auto">sessions:read</code></td><td>26.5%</td><td>47.4%</td><td>1,625</td></tr><tr><td><code dir="auto">capability:read</code></td><td>0.1%</td><td>1.8%</td><td>2,051</td></tr></tbody></table>
 <p>On <code dir="auto">capability:bash</code> and <code dir="auto">logs:read</code> the OMP pattern is real — ~1% of lines
 carry 28–46% of the bytes. But those surfaces produced 29 and 4 spill files
 respectively against <code dir="auto">activity:report</code>’s 64,326, so a cap there is correct and
@@ -219,11 +342,32 @@ system. Check the line/record structure before porting a mechanism that assumes
 one.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="which-truncation-is-machine-readable">Which truncation is machine-readable</h2><a class="sl-anchor-link" href="#which-truncation-is-machine-readable"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Which truncation is machine-readable”</span></a></div>
 <p>Three distinct truncation paths reach an agent, and they differ:</p>
-<p>| path | signal | recoverable by paging the spill? |
-|---|---|---|
-| payload-tier projection | <strong>structured</strong> — <code dir="auto">_meta.payloadProjection</code> (<code dir="auto">serialize-result.ts:241</code>) | no |
-| result-door own cut | <strong>structured</strong> — <code dir="auto">_meta.resultDoor</code> | yes |
-| tool’s own field cutoff | prose only — regex-detected <code dir="auto">"*_truncated": true</code> | no |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>signal</th><th>recoverable by paging the spill?</th></tr></thead><tbody><tr><td>payload-tier projection</td><td><strong>structured</strong> — <code dir="auto">_meta.payloadProjection</code> (<code dir="auto">serialize-result.ts:241</code>)</td><td>no</td></tr><tr><td>result-door own cut</td><td><strong>structured</strong> — <code dir="auto">_meta.resultDoor</code></td><td>yes</td></tr><tr><td>tool’s own field cutoff</td><td>prose only — regex-detected <code dir="auto">"*_truncated": true</code></td><td>no</td></tr></tbody></table>
 <p>The door already branched structurally on the upstream <code dir="auto">payloadProjection</code>
 marker (<code dir="auto">result-door.ts:181</code>) while announcing <strong>its own</strong> cut only in the
 <code dir="auto">[result-door: …]</code> prose footer — so the highest-frequency truncation path on
@@ -245,18 +389,72 @@ was willing to build.</p>
 <p>Measured 2026-08-03 over 6 days of raw transcript JSONL (590 files, 266,544
 lines, 0 unparseable), <strong>~49.4M estimated tokens into context</strong>; per session
 p50 76,446 · p90 127,312 · max 2.75M:</p>
-<p>| source | est. tokens | share |
-|---|---:|---:|
-| <code dir="auto">tool_result</code> | 30,277,398 | <strong>61.3%</strong> |
-| <code dir="auto">tool_use</code> (the ARGS we send) | 12,547,035 | <strong>25.4%</strong> |
-| <code dir="auto">text</code> (user + assistant prose) | 3,490,285 | 7.07% |
-| <code dir="auto">thinking</code> | 3,078,506 | 6.23% |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>source</th><th align="right">est. tokens</th><th align="right">share</th></tr></thead><tbody><tr><td><code dir="auto">tool_result</code></td><td align="right">30,277,398</td><td align="right"><strong>61.3%</strong></td></tr><tr><td><code dir="auto">tool_use</code> (the ARGS we send)</td><td align="right">12,547,035</td><td align="right"><strong>25.4%</strong></td></tr><tr><td><code dir="auto">text</code> (user + assistant prose)</td><td align="right">3,490,285</td><td align="right">7.07%</td></tr><tr><td><code dir="auto">thinking</code></td><td align="right">3,078,506</td><td align="right">6.23%</td></tr></tbody></table>
 <p>And inside <code dir="auto">tool_result</code>, two <strong>client-side</strong> tools dominate:</p>
-<p>| tool | calls | est. result tokens | share of <code dir="auto">tool_result</code> | avg chars |
-|---|---:|---:|---:|---:|
-| <code dir="auto">Read</code> | 5,397 | 11,949,446 | <strong>39.47%</strong> | 8,856 |
-| <code dir="auto">Bash</code> | 23,837 | 7,490,553 | <strong>24.74%</strong> | 1,257 |
-| largest MCP tool (<code dir="auto">tools:invoke</code>) | 1,714 | 984,345 | 3.25% | 2,297 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>tool</th><th align="right">calls</th><th align="right">est. result tokens</th><th align="right">share of <code dir="auto">tool_result</code></th><th align="right">avg chars</th></tr></thead><tbody><tr><td><code dir="auto">Read</code></td><td align="right">5,397</td><td align="right">11,949,446</td><td align="right"><strong>39.47%</strong></td><td align="right">8,856</td></tr><tr><td><code dir="auto">Bash</code></td><td align="right">23,837</td><td align="right">7,490,553</td><td align="right"><strong>24.74%</strong></td><td align="right">1,257</td></tr><tr><td>largest MCP tool (<code dir="auto">tools:invoke</code>)</td><td align="right">1,714</td><td align="right">984,345</td><td align="right">3.25%</td><td align="right">2,297</td></tr></tbody></table>
 <p><code dir="auto">Read</code> + <code dir="auto">Bash</code> = <strong>64.2%</strong> of all <code dir="auto">tool_result</code> tokens — larger than every
 papercusp MCP tool combined (~36%). The payload-tier ceiling, the result door,
 <code dir="auto">projection</code> and the spill store run on <strong>none</strong> of it. Two consequences worth
@@ -297,13 +495,36 @@ returns the whole array and a non-matching <code dir="auto">grep</code> returns 
 which reads exactly like a filter that worked. Only <code dir="auto">pick</code> reduces it. The old
 constant led with <code dir="auto">pipe</code> on five out of six doored results.</p>
 <p>The part worth generalising is the <em>cost</em> discipline, not the wording:</p>
-<p>| | chars |
-|---|---:|
-| retired constant | 420 |
-| first replacement, as written | <strong>570</strong> |
-| over the same 6d corpus | <strong>+376,173 chars ≈ +94,043 est. tokens, +34.5%</strong> |
-| after trimming, JSON variant | 356 |
-| net over the same corpus | <strong>−135,018 chars ≈ −33,754 est. tokens, −12.4%</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th align="right">chars</th></tr></thead><tbody><tr><td>retired constant</td><td align="right">420</td></tr><tr><td>first replacement, as written</td><td align="right"><strong>570</strong></td></tr><tr><td>over the same 6d corpus</td><td align="right"><strong>+376,173 chars ≈ +94,043 est. tokens, +34.5%</strong></td></tr><tr><td>after trimming, JSON variant</td><td align="right">356</td></tr><tr><td>net over the same corpus</td><td align="right"><strong>−135,018 chars ≈ −33,754 est. tokens, −12.4%</strong></td></tr></tbody></table>
 <p>The first cut was authored with a plausible argument for why it must be smaller
 (it dropped an irrelevant operator list) and was recorded as “context cost went
 down” in a plan decision <em>before anyone measured it</em>. It was 34.5% bigger. Any

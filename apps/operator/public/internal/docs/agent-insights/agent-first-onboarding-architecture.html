@@ -100,26 +100,107 @@ if the runner script is missing or exits abnormally. Not-ready features
 endpoint filters them out server-side, and the fallback prompt is told to skip
 them.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="component-map-follow-one-first-run-through-it">Component map (follow one first-run through it)</h2><a class="sl-anchor-link" href="#component-map-follow-one-first-run-through-it"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Component map (follow one first-run through it)”</span></a></div>
-<p>| Step | Component | Where |
-|---|---|---|
-| Routing | <code dir="auto">firstRunTarget()</code> in the root route — unfinished wizard state → <code dir="auto">/onboarding</code> when <code dir="auto">FLAGS.ONBOARDING_AGENT_FIRST</code> (default ON), else <code dir="auto">/setup</code> | <code dir="auto">apps/operator-vite/src/routes/index.tsx</code> |
-| Surface | <code dir="auto">OnboardingConsole</code> — full-window <code dir="auto">InlinePtyTerminal</code> running the concierge; non-Tauri/browser → fallback card to <code dir="auto">/setup?force=1</code> | <code dir="auto">apps/operator/app/_components/OnboardingConsole.tsx</code> |
-| Spawn spec | <code dir="auto">onboardConcierge</code> SpawnSpec | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts</code> |
-| Concierge | <code dir="auto">onboard-launcher.mjs</code> — renders chat, runs SpawnSpecs, re-polls; NO stage logic client-side | <code dir="auto">apps/operator/scripts/onboard-launcher.mjs</code> |
-| Stage machine | <code dir="auto">resolveStage()</code> — PURE fn over a detection snapshot; done/pick/install/login/embeddings/handoff | <code dir="auto">packages/operator-core/lib/onboarding/stage-resolver.ts</code> |
-| Status endpoint | <code dir="auto">GET /api/desktop/onboarding-status?chosen&#x26;forcePick&#x26;embeddingsSkipped&#x26;tutorial</code> → <code dir="auto">{ snapshot, stage, labels }</code> | <code dir="auto">…/endpoint-route/routes/desktop/onboarding-status.ts</code> |
-| Handoff | at handoff the concierge launches the <strong>deterministic runner</strong> (<code dir="auto">node tutorial-runner.mjs --agent=&#x3C;a> --operator-url=…</code>); falls back to <code dir="auto">psu --no-picker --agent=&#x3C;a> --no-plan --launch-context=…</code> (<code dir="auto">buildHandoffArgs</code>) only if the runner is missing / exits abnormally | same launcher |
-| Deterministic runner | <code dir="auto">tutorial-runner.mjs</code> — scripted walk: prints each Brief verbatim, <code dir="auto">[1]/[2]/[m]/[f]</code> with NO LLM, checkpoints, narrates the finale, graduates; one-shots the agent ONLY for a free-form question | <code dir="auto">apps/operator/scripts/tutorial-runner.mjs</code> |
-| Tutorial payload | <code dir="auto">GET /api/desktop/tutorial-script?tutorial=</code> — ordered pack sections + chapters + saved progress + GUI tour + flag-filtered optional-setup + resolved <code dir="auto">agentBinaries</code> | <code dir="auto">…/routes/desktop/tutorial-script.ts</code> |
-| Preview gating | not-ready items (telemetry, mobile pairing, auto-update) filtered unless <code dir="auto">FLAGS.ONBOARDING_PREVIEW_FEATURES</code> (default OFF, dark <code dir="auto">incomplete</code>) is on | <code dir="auto">…/lib/onboarding/optional-setup-items.ts</code> |
-| Runner Q&#x26;A | free-form input → one-shot <code dir="auto">claude -p</code> / <code dir="auto">codex exec</code> grounded in the section; failure → doc pointer | <code dir="auto">tutorial-runner.mjs</code> (<code dir="auto">buildQaCommand</code>/<code dir="auto">buildQaPrompt</code>) |
-| Tutor brief | <code dir="auto">GET /api/desktop/onboarding-launch-context?agent&#x26;mode=first-run|tutorial</code> renders the tutor prompt to a file | <code dir="auto">…/routes/desktop/onboarding-launch-context.ts</code> |
-| Tutor prompt | <code dir="auto">onboarding-tutor.md</code> + token splice (<code dir="auto">{{PACK_INDEX}}</code>, <code dir="auto">{{GUI_TAB_TOUR}}</code>, setup snapshot, OS, agent…) | <code dir="auto">apps/operator/prompts/onboarding-tutor.md</code> + <code dir="auto">…/lib/onboarding/launch-context.ts</code> |
-| Content pack | <code dir="auto">apps/operator/prompts/tutorial/&#x3C;ch>/&#x3C;nn>-&#x3C;slug>.md</code> (frontmatter <code dir="auto">id/chapter/order/title/docSlugs</code>, <code dir="auto">## Brief</code> + <code dir="auto">## Details</code>) + loader/registry | <code dir="auto">packages/operator-core/lib/onboarding/</code> |
-| GUI finale | <code dir="auto">GUI_TAB_TOUR</code> mirrors <code dir="auto">ADV_TABS</code> — tutor drives tabs via <code dir="auto">ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}</code> | <code dir="auto">…/lib/onboarding/gui-tab-tour.ts</code> |
-| Re-entry | <code dir="auto">papercusp tutorial</code> / desktop icon → <code dir="auto">onboard-launcher --tutorial</code> → the unified Tutorial|Setup shell, opening on the <strong>Setup tab</strong> (owner 2026-07-06: “the setup page should be the first thing, not the tutorial” — <code dir="auto">defaultTab</code> returns <code dir="auto">setup</code> for <code dir="auto">--tutorial</code> even on a set-up box; the tour is one Tab away). <code dir="auto">papercusp setup</code> AND <code dir="auto">papercusp tutorial</code> both route STRAIGHT to the shell now (the old concierge→runner double-layer is dropped — it jumped past setup on a machine with an agent already installed); only the auto first-boot <code dir="auto">papercusp onboard</code> (no flags) still runs the linear concierge. | launcher + <code dir="auto">…/lib/desktop-install/papercusp-files.ts</code> |
-| Graduation | tutor calls <code dir="auto">setup:complete</code> → <code dir="auto">finished_at</code>; all stages re-derive statelessly (resumable by construction) | <code dir="auto">setup:*</code> tools |
-| Wizard fallback | Settings → Advanced → “Setup Wizard (classic)” + <code dir="auto">/setup?force=1</code> | <code dir="auto">apps/operator/app/settings/layout.tsx</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Component</th><th>Where</th></tr></thead><tbody><tr><td>Routing</td><td><code dir="auto">firstRunTarget()</code> in the root route — unfinished wizard state → <code dir="auto">/onboarding</code> when <code dir="auto">FLAGS.ONBOARDING_AGENT_FIRST</code> (default ON), else <code dir="auto">/setup</code></td><td><code dir="auto">apps/operator-vite/src/routes/index.tsx</code></td></tr><tr><td>Surface</td><td><code dir="auto">OnboardingConsole</code> — full-window <code dir="auto">InlinePtyTerminal</code> running the concierge; non-Tauri/browser → fallback card to <code dir="auto">/setup?force=1</code></td><td><code dir="auto">apps/operator/app/_components/OnboardingConsole.tsx</code></td></tr><tr><td>Spawn spec</td><td><code dir="auto">onboardConcierge</code> SpawnSpec</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts</code></td></tr><tr><td>Concierge</td><td><code dir="auto">onboard-launcher.mjs</code> — renders chat, runs SpawnSpecs, re-polls; NO stage logic client-side</td><td><code dir="auto">apps/operator/scripts/onboard-launcher.mjs</code></td></tr><tr><td>Stage machine</td><td><code dir="auto">resolveStage()</code> — PURE fn over a detection snapshot; done/pick/install/login/embeddings/handoff</td><td><code dir="auto">packages/operator-core/lib/onboarding/stage-resolver.ts</code></td></tr><tr><td>Status endpoint</td><td><code dir="auto">GET /api/desktop/onboarding-status?chosen&#x26;forcePick&#x26;embeddingsSkipped&#x26;tutorial</code> → <code dir="auto">{ snapshot, stage, labels }</code></td><td><code dir="auto">…/endpoint-route/routes/desktop/onboarding-status.ts</code></td></tr><tr><td>Handoff</td><td>at handoff the concierge launches the <strong>deterministic runner</strong> (<code dir="auto">node tutorial-runner.mjs --agent=&#x3C;a> --operator-url=…</code>); falls back to <code dir="auto">psu --no-picker --agent=&#x3C;a> --no-plan --launch-context=…</code> (<code dir="auto">buildHandoffArgs</code>) only if the runner is missing / exits abnormally</td><td>same launcher</td></tr><tr><td>Deterministic runner</td><td><code dir="auto">tutorial-runner.mjs</code> — scripted walk: prints each Brief verbatim, <code dir="auto">[1]/[2]/[m]/[f]</code> with NO LLM, checkpoints, narrates the finale, graduates; one-shots the agent ONLY for a free-form question</td><td><code dir="auto">apps/operator/scripts/tutorial-runner.mjs</code></td></tr><tr><td>Tutorial payload</td><td><code dir="auto">GET /api/desktop/tutorial-script?tutorial=</code> — ordered pack sections + chapters + saved progress + GUI tour + flag-filtered optional-setup + resolved <code dir="auto">agentBinaries</code></td><td><code dir="auto">…/routes/desktop/tutorial-script.ts</code></td></tr><tr><td>Preview gating</td><td>not-ready items (telemetry, mobile pairing, auto-update) filtered unless <code dir="auto">FLAGS.ONBOARDING_PREVIEW_FEATURES</code> (default OFF, dark <code dir="auto">incomplete</code>) is on</td><td><code dir="auto">…/lib/onboarding/optional-setup-items.ts</code></td></tr><tr><td>Runner Q&#x26;A</td><td>free-form input → one-shot <code dir="auto">claude -p</code> / <code dir="auto">codex exec</code> grounded in the section; failure → doc pointer</td><td><code dir="auto">tutorial-runner.mjs</code> (<code dir="auto">buildQaCommand</code>/<code dir="auto">buildQaPrompt</code>)</td></tr><tr><td>Tutor brief</td><td>`GET /api/desktop/onboarding-launch-context?agent&#x26;mode=first-run</td><td>tutorial` renders the tutor prompt to a file</td></tr><tr><td>Tutor prompt</td><td><code dir="auto">onboarding-tutor.md</code> + token splice (<code dir="auto">{{PACK_INDEX}}</code>, <code dir="auto">{{GUI_TAB_TOUR}}</code>, setup snapshot, OS, agent…)</td><td><code dir="auto">apps/operator/prompts/onboarding-tutor.md</code> + <code dir="auto">…/lib/onboarding/launch-context.ts</code></td></tr><tr><td>Content pack</td><td><code dir="auto">apps/operator/prompts/tutorial/&#x3C;ch>/&#x3C;nn>-&#x3C;slug>.md</code> (frontmatter <code dir="auto">id/chapter/order/title/docSlugs</code>, <code dir="auto">## Brief</code> + <code dir="auto">## Details</code>) + loader/registry</td><td><code dir="auto">packages/operator-core/lib/onboarding/</code></td></tr><tr><td>GUI finale</td><td><code dir="auto">GUI_TAB_TOUR</code> mirrors <code dir="auto">ADV_TABS</code> — tutor drives tabs via <code dir="auto">ui:dispatch {intent:'set_url', args:{path:'/adv', params:{tab}}}</code></td><td><code dir="auto">…/lib/onboarding/gui-tab-tour.ts</code></td></tr><tr><td>Re-entry</td><td><code dir="auto">papercusp tutorial</code> / desktop icon → <code dir="auto">onboard-launcher --tutorial</code> → the unified Tutorial|Setup shell, opening on the <strong>Setup tab</strong> (owner 2026-07-06: “the setup page should be the first thing, not the tutorial” — <code dir="auto">defaultTab</code> returns <code dir="auto">setup</code> for <code dir="auto">--tutorial</code> even on a set-up box; the tour is one Tab away). <code dir="auto">papercusp setup</code> AND <code dir="auto">papercusp tutorial</code> both route STRAIGHT to the shell now (the old concierge→runner double-layer is dropped — it jumped past setup on a machine with an agent already installed); only the auto first-boot <code dir="auto">papercusp onboard</code> (no flags) still runs the linear concierge.</td><td>launcher + <code dir="auto">…/lib/desktop-install/papercusp-files.ts</code></td></tr><tr><td>Graduation</td><td>tutor calls <code dir="auto">setup:complete</code> → <code dir="auto">finished_at</code>; all stages re-derive statelessly (resumable by construction)</td><td><code dir="auto">setup:*</code> tools</td></tr><tr><td>Wizard fallback</td><td>Settings → Advanced → “Setup Wizard (classic)” + <code dir="auto">/setup?force=1</code></td><td><code dir="auto">apps/operator/app/settings/layout.tsx</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="test-coverage--where-to-add-yours">Test coverage — where to add yours</h2><a class="sl-anchor-link" href="#test-coverage--where-to-add-yours"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Test coverage — where to add yours”</span></a></div>
 <ul>
 <li><strong>Stage machine</strong>: unit tests beside <code dir="auto">stage-resolver.ts</code>.</li>

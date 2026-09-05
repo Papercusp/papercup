@@ -86,13 +86,42 @@ validated through the same gate before the run row exists.</p>
 <p>Prefer a human doing it? <code dir="auto">/admin/plans</code> renders the declared schema as a form, marks
 the required fields, flags the missing ones, and shows this refusal verbatim.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-each-code-means">What each code means</h2><a class="sl-anchor-link" href="#what-each-code-means"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What each code means”</span></a></div>
-<p>| code | meaning | what fixes it |
-|---|---|---|
-| <code dir="auto">missing_required</code> | a declared-required field was not supplied | supply it (<code dir="auto">missing</code> names them) |
-| <code dir="auto">invalid_data</code> | supplied values violate the schema | fix the values; <code dir="auto">issues</code> has the ajv/zod detail |
-| <code dir="auto">bad_schema</code> | the plan’s <code dir="auto">input_schema</code> will not compile | re-declare it via <code dir="auto">plans:set-input-schema</code>, which validates at declare time |
-| <code dir="auto">unknown_template</code> | <code dir="auto">template:</code> names a type with no registered schema | fix the frontmatter; <code dir="auto">known</code> lists the registered types |
-| <code dir="auto">schema_conflict</code> | the plan declares BOTH <code dir="auto">template:</code> and <code dir="auto">input_schema</code> | clear one — which governs is otherwise undefined |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>code</th><th>meaning</th><th>what fixes it</th></tr></thead><tbody><tr><td><code dir="auto">missing_required</code></td><td>a declared-required field was not supplied</td><td>supply it (<code dir="auto">missing</code> names them)</td></tr><tr><td><code dir="auto">invalid_data</code></td><td>supplied values violate the schema</td><td>fix the values; <code dir="auto">issues</code> has the ajv/zod detail</td></tr><tr><td><code dir="auto">bad_schema</code></td><td>the plan’s <code dir="auto">input_schema</code> will not compile</td><td>re-declare it via <code dir="auto">plans:set-input-schema</code>, which validates at declare time</td></tr><tr><td><code dir="auto">unknown_template</code></td><td><code dir="auto">template:</code> names a type with no registered schema</td><td>fix the frontmatter; <code dir="auto">known</code> lists the registered types</td></tr><tr><td><code dir="auto">schema_conflict</code></td><td>the plan declares BOTH <code dir="auto">template:</code> and <code dir="auto">input_schema</code></td><td>clear one — which governs is otherwise undefined</td></tr></tbody></table>
 <p><code dir="auto">bad_schema</code> and <code dir="auto">unknown_template</code> <strong>fail closed</strong>: a schema that cannot be checked
 refuses the start rather than allowing it unchecked.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="trap-1--the-refusal-arrives-as-a-200-not-an-http-error">Trap 1 — the refusal arrives as a 200, not an HTTP error</h2><a class="sl-anchor-link" href="#trap-1--the-refusal-arrives-as-a-200-not-an-http-error"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Trap 1 — the refusal arrives as a 200, not an HTTP error”</span></a></div>

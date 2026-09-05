@@ -121,12 +121,32 @@ existing file (disk wins); PG <code dir="auto">mtime</code> strings are coerced 
 <code dir="auto">utimes</code> (F6 — the silent-catch had been eating mtime restore on every real
 rematerialize).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-replaced-each-disk-read">What replaced each disk read</h2><a class="sl-anchor-link" href="#what-replaced-each-disk-read"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What replaced each disk read”</span></a></div>
-<p>| Need | Surface |
-|---|---|
-| Resume an ended session (<code dir="auto">claude --resume</code> / <code dir="auto">codex resume</code>) | <code dir="auto">wake-executor.ts</code> rematerializes-on-miss from the archive (byte-exact, mtimes restored) |
-| Read a dead session’s turns | <code dir="auto">sessions:read</code> falls through to <code dir="auto">readArchivedSessionTurns</code> (<code dir="auto">session-archive-read.ts</code>) — same cap+redaction as the index |
-| iq-battery bee trace after a run | <code dir="auto">bee-instance.ts</code> loadTranscript falls through to <code dir="auto">session_archives</code> keyed by <code dir="auto">owner = spawnId</code> |
-| Search content | <code dir="auto">sessions:search</code> stays INDEX-bounded by design (blobs are not a search index) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Need</th><th>Surface</th></tr></thead><tbody><tr><td>Resume an ended session (<code dir="auto">claude --resume</code> / <code dir="auto">codex resume</code>)</td><td><code dir="auto">wake-executor.ts</code> rematerializes-on-miss from the archive (byte-exact, mtimes restored)</td></tr><tr><td>Read a dead session’s turns</td><td><code dir="auto">sessions:read</code> falls through to <code dir="auto">readArchivedSessionTurns</code> (<code dir="auto">session-archive-read.ts</code>) — same cap+redaction as the index</td></tr><tr><td>iq-battery bee trace after a run</td><td><code dir="auto">bee-instance.ts</code> loadTranscript falls through to <code dir="auto">session_archives</code> keyed by <code dir="auto">owner = spawnId</code></td></tr><tr><td>Search content</td><td><code dir="auto">sessions:search</code> stays INDEX-bounded by design (blobs are not a search index)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="gc-is-code-owned-now">GC is code-owned now</h2><a class="sl-anchor-link" href="#gc-is-code-owned-now"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “GC is code-owned now”</span></a></div>
 <p>The seeded <code dir="auto">session-dir-gc</code> routine was <strong>never armed</strong> — the root cause of
 the 17k accumulation. The cadence is now a DBOS periodic workflow

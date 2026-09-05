@@ -74,11 +74,32 @@
 <p>Writing an object into a <code dir="auto">jsonb</code> column behaves differently depending on which
 postgres-js client runs the query — and each “obvious” form is broken on
 exactly one of them:</p>
-<p>| param form | live <code dir="auto">getOrgPg()</code> client | default <code dir="auto">postgres()</code> client (testcontainers) |
-| --- | --- | --- |
-| <code dir="auto">${obj}</code> or <code dir="auto">${sql.json(obj)}</code> | <strong>THROWS</strong> <code dir="auto">The "string" argument must be of type string … Received an instance of Object</code> | ✅ stores an object |
-| <code dir="auto">${JSON.stringify(obj)}::jsonb</code> | ✅ stores an object | <strong>double-encodes</strong> — <code dir="auto">jsonb_typeof</code> = <code dir="auto">'string'</code>, reads back as a JS string |
-| <code dir="auto">${JSON.stringify(obj)}::text::jsonb</code> | ✅ object | ✅ object |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>param form</th><th>live <code dir="auto">getOrgPg()</code> client</th><th>default <code dir="auto">postgres()</code> client (testcontainers)</th></tr></thead><tbody><tr><td><code dir="auto">${obj}</code> or <code dir="auto">${sql.json(obj)}</code></td><td><strong>THROWS</strong> <code dir="auto">The "string" argument must be of type string … Received an instance of Object</code></td><td>✅ stores an object</td></tr><tr><td><code dir="auto">${JSON.stringify(obj)}::jsonb</code></td><td>✅ stores an object</td><td><strong>double-encodes</strong> — <code dir="auto">jsonb_typeof</code> = <code dir="auto">'string'</code>, reads back as a JS string</td></tr><tr><td><code dir="auto">${JSON.stringify(obj)}::text::jsonb</code></td><td>✅ object</td><td>✅ object</td></tr></tbody></table>
 <p>So an integration-green write can fail (or silently double-encode) live, and a
 live-green write can corrupt rows under the test container — the same
 integration-green ≠ live-green class as

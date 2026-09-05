@@ -91,13 +91,42 @@ use <code dir="auto">fleet:launch-on-plan</code></strong>), <code dir="auto">fle
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-it-differs-from-the-orchestrators-run-loop">How it differs from the orchestrator’s run loop</h2><a class="sl-anchor-link" href="#how-it-differs-from-the-orchestrators-run-loop"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How it differs from the orchestrator’s run loop”</span></a></div>
 <p>The table below contrasts the spawn primitive with the orchestrator’s old sequential run loop. That run loop (<code dir="auto">runMainLoop</code> / <code dir="auto">main-loop.ts</code>) is <strong>retired</strong> — moved to <code dir="auto">libs/papercusp/_retired/orchestrator-run-loop/</code> — so the left column is a historical reference, not a live counterpart. The contrast is still the right way to understand what the spawn primitive is <em>for</em>.</p>
-<p>| | Retired run loop | spawn primitive |
-|---|---|---|
-| Driver | <code dir="auto">runMainLoop</code> decision-turn → invoke | A <code dir="auto">cup:spawn</code> tool call from any allowlisted coord role |
-| Sync? | Sequential (one role at a time) | Parallel (multiple spawns concurrent, up to the fleet concurrency ceiling) |
-| Duration cap | Per-role timeout in <code dir="auto">invoke()</code> | Same per-spawn (<code dir="auto">PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS</code>, default 2,700,000ms / 45min) — but parent doesn’t wait |
-| Context | Walked an in-memory decisions batch, computed next verb | Caller passes <code dir="auto">role</code> + <code dir="auto">feature</code> + <code dir="auto">chunk</code> directly |
-| Telemetry | in-memory decisions batch + <code dir="auto">tool_invocations</code> | <code dir="auto">spawned_agents</code> (durable nursery) + <code dir="auto">tool_invocations</code> (with <code dir="auto">parent_spawn_id</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Retired run loop</th><th>spawn primitive</th></tr></thead><tbody><tr><td>Driver</td><td><code dir="auto">runMainLoop</code> decision-turn → invoke</td><td>A <code dir="auto">cup:spawn</code> tool call from any allowlisted coord role</td></tr><tr><td>Sync?</td><td>Sequential (one role at a time)</td><td>Parallel (multiple spawns concurrent, up to the fleet concurrency ceiling)</td></tr><tr><td>Duration cap</td><td>Per-role timeout in <code dir="auto">invoke()</code></td><td>Same per-spawn (<code dir="auto">PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS</code>, default 2,700,000ms / 45min) — but parent doesn’t wait</td></tr><tr><td>Context</td><td>Walked an in-memory decisions batch, computed next verb</td><td>Caller passes <code dir="auto">role</code> + <code dir="auto">feature</code> + <code dir="auto">chunk</code> directly</td></tr><tr><td>Telemetry</td><td>in-memory decisions batch + <code dir="auto">tool_invocations</code></td><td><code dir="auto">spawned_agents</code> (durable nursery) + <code dir="auto">tool_invocations</code> (with <code dir="auto">parent_spawn_id</code>)</td></tr></tbody></table>
 <p>The orchestrator still owns the canonical “what should this harness do next” decision. <code dir="auto">cup:spawn</code> is the lower-level primitive an agent reaches for when it knows what it wants to launch and just needs to launch it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-you-read-about-how-it-works">Where you read about how it works</h2><a class="sl-anchor-link" href="#where-you-read-about-how-it-works"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where you read about how it works”</span></a></div>
 <ul>
@@ -108,14 +137,49 @@ use <code dir="auto">fleet:launch-on-plan</code></strong>), <code dir="auto">fle
 <li><a href="/internal/docs/agent-spawning/limits">Limits</a> — what the spawn primitive doesn’t do, what’s deferred</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-it-lives-in-code">Where it lives in code</h2><a class="sl-anchor-link" href="#where-it-lives-in-code"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where it lives in code”</span></a></div>
-<p>| Component | File |
-|---|---|
-| Spawn engine (the one chokepoint for all three launch paths — chat <code dir="auto">&#x3C;spawn></code>, <code dir="auto">cup:spawn</code>, <code dir="auto">place_batch</code>; its guards — role admission, brief-substitution refusal, ceiling admission, idempotency dedupe — apply uniformly) | <code dir="auto">packages/operator-core/lib/fleet/operator-spawn.ts</code> |
-| <code dir="auto">cup:spawn</code> / <code dir="auto">fleet:tree</code> / <code dir="auto">fleet:cancel</code> tools | <code dir="auto">packages/operator-core/lib/agent-tools/fleet/{spawn,tree,cancel}.ts</code> |
-| Durable nursery read/write (<code dir="auto">recordSpawn</code>, <code dir="auto">finishSpawn</code>, <code dir="auto">getSubtree</code>) | <code dir="auto">packages/operator-core/lib/fleet/{spawn-tree,pg-stores}.ts</code> |
-| Background child invoke (subprocess + SIGTERM/SIGKILL) | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-runner.ts:spawnInvokeOnce</code> |
-| Wake-parent-on-child-death | <code dir="auto">packages/operator-core/lib/fleet/parent-wake.ts</code> |
-| Orphan reclaim + heartbeat (concurrency ceiling) | <code dir="auto">packages/operator-core/lib/fleet/spawn-reclaim.ts</code> |
-| <code dir="auto">spawned_agents</code> table + spawn-tree view (DDL) | <code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (+ migrations <code dir="auto">146-fleet-supervision.sql</code>, <code dir="auto">174-spawned-agents-heartbeat-reclaim.sql</code>) |
-| Per-spawn params (parse) | <code dir="auto">packages/agent-mcp/src/spawn-context.ts:parseRequestContext</code> (MCP-transport URL parser); the HTTP transport has its own <code dir="auto">buildHttpSpawnContext</code> in <code dir="auto">libs/generic/tooldef-http/src/http-projection.ts</code> (re-exported via <code dir="auto">packages/agent-mcp/src/index.ts</code>) — same per-spawn params, two independent implementations |
-| <code dir="auto">.mcp.json</code> writer + HMAC signing | <code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-mcp.ts</code> + <code dir="auto">packages/operator-core/lib/spawn-signing.ts</code> |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:38.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agents/session-modes.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Session modes — AUTO, COLD AUTO, IDEATE, DRAIN, GRADE</span> </span> </a> <a href="/internal/docs/agent-spawning/lifecycle.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Lifecycle</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Component</th><th>File</th></tr></thead><tbody><tr><td>Spawn engine (the one chokepoint for all three launch paths — chat <code dir="auto">&#x3C;spawn></code>, <code dir="auto">cup:spawn</code>, <code dir="auto">place_batch</code>; its guards — role admission, brief-substitution refusal, ceiling admission, idempotency dedupe — apply uniformly)</td><td><code dir="auto">packages/operator-core/lib/fleet/operator-spawn.ts</code></td></tr><tr><td><code dir="auto">cup:spawn</code> / <code dir="auto">fleet:tree</code> / <code dir="auto">fleet:cancel</code> tools</td><td><code dir="auto">packages/operator-core/lib/agent-tools/fleet/{spawn,tree,cancel}.ts</code></td></tr><tr><td>Durable nursery read/write (<code dir="auto">recordSpawn</code>, <code dir="auto">finishSpawn</code>, <code dir="auto">getSubtree</code>)</td><td><code dir="auto">packages/operator-core/lib/fleet/{spawn-tree,pg-stores}.ts</code></td></tr><tr><td>Background child invoke (subprocess + SIGTERM/SIGKILL)</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-runner.ts:spawnInvokeOnce</code></td></tr><tr><td>Wake-parent-on-child-death</td><td><code dir="auto">packages/operator-core/lib/fleet/parent-wake.ts</code></td></tr><tr><td>Orphan reclaim + heartbeat (concurrency ceiling)</td><td><code dir="auto">packages/operator-core/lib/fleet/spawn-reclaim.ts</code></td></tr><tr><td><code dir="auto">spawned_agents</code> table + spawn-tree view (DDL)</td><td><code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (+ migrations <code dir="auto">146-fleet-supervision.sql</code>, <code dir="auto">174-spawned-agents-heartbeat-reclaim.sql</code>)</td></tr><tr><td>Per-spawn params (parse)</td><td><code dir="auto">packages/agent-mcp/src/spawn-context.ts:parseRequestContext</code> (MCP-transport URL parser); the HTTP transport has its own <code dir="auto">buildHttpSpawnContext</code> in <code dir="auto">libs/generic/tooldef-http/src/http-projection.ts</code> (re-exported via <code dir="auto">packages/agent-mcp/src/index.ts</code>) — same per-spawn params, two independent implementations</td></tr><tr><td><code dir="auto">.mcp.json</code> writer + HMAC signing</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-mcp.ts</code> + <code dir="auto">packages/operator-core/lib/spawn-signing.ts</code></td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:38.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agents/session-modes.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Session modes — AUTO, COLD AUTO, IDEATE, DRAIN, GRADE</span> </span> </a> <a href="/internal/docs/agent-spawning/lifecycle.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Lifecycle</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

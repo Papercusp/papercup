@@ -145,11 +145,32 @@ approval; the audit log preserves what ran.</p>
 <p>This plan is split across two complementary mechanisms. They’re orthogonal —
 either could ship without the other — but together they’re what unlocks
 shareable arbitrary infrastructure.</p>
-<p>| Part | What it does | Read more |
-|---|---|---|
-| <strong>Build scripts</strong> | Plugins declare <code dir="auto">provision.{setup,teardown,verify}</code> scripts that the substrate runs on the host with full visibility, capturing output and tracking created resources for cleanup. | <a href="./build-scripts">Build scripts</a> |
-| <strong>Share semantics</strong> | Plugins flag each <code dir="auto">configSchema</code> field as <code dir="auto">secret</code> (credential, stripped on snapshot) / <code dir="auto">shareable: false</code> (publisher-specific identifier, stripped) / default (config that travels with the snapshot). | <a href="./share-semantics">Share semantics</a> |
-| <strong>OAuth integration</strong> | The substrate provides a generic OAuth helper so plugins can mark a credential field as <code dir="auto">oauth: { provider, scopes }</code> and users get a “Connect” button instead of a paste field. | <a href="./oauth-integration">OAuth integration</a> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Part</th><th>What it does</th><th>Read more</th></tr></thead><tbody><tr><td><strong>Build scripts</strong></td><td>Plugins declare <code dir="auto">provision.{setup,teardown,verify}</code> scripts that the substrate runs on the host with full visibility, capturing output and tracking created resources for cleanup.</td><td><a href="./build-scripts">Build scripts</a></td></tr><tr><td><strong>Share semantics</strong></td><td>Plugins flag each <code dir="auto">configSchema</code> field as <code dir="auto">secret</code> (credential, stripped on snapshot) / <code dir="auto">shareable: false</code> (publisher-specific identifier, stripped) / default (config that travels with the snapshot).</td><td><a href="./share-semantics">Share semantics</a></td></tr><tr><td><strong>OAuth integration</strong></td><td>The substrate provides a generic OAuth helper so plugins can mark a credential field as <code dir="auto">oauth: { provider, scopes }</code> and users get a “Connect” button instead of a paste field.</td><td><a href="./oauth-integration">OAuth integration</a></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="implementation-status">Implementation status</h2><a class="sl-anchor-link" href="#implementation-status"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Implementation status”</span></a></div>
 <p>The two-part proposal above is <strong>largely shipped</strong>. What landed, where it lives,
 and which proposed fields stayed design-only:</p>
@@ -214,13 +235,48 @@ for reproducible clones.</li>
 <li><strong>Marketplace moderation</strong> — the current marketplace publish flow has no human-review gate. Any service-token holder can publish. Build scripts make this gap more consequential (an unsigned script from an unverified publisher is now a code-execution vector, not just a misbehaving REST integration). The mitigations in this plan — sandbox-by-default, consent dialog, static-analysis warnings, quarantine-invalidates-trust — are designed assuming the marketplace ships <em>without</em> moderation initially. A separate spec doc covering a moderation/review layer is forthcoming and is <strong>not</strong> part of this plan.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="high-level-phasing">High-level phasing</h2><a class="sl-anchor-link" href="#high-level-phasing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “High-level phasing”</span></a></div>
-<p>| Phase | Scope | Approx LOC | Sequencing |
-|---|---|---|---|
-| <strong>V1 (share-semantics + OAuth)</strong> | Per-field share flags (<code dir="auto">secret</code> / <code dir="auto">shareable</code> / <code dir="auto">snapshotPolicy</code>) + snapshot-export filtering + schema-evolution aliases (rename + removal) + plugin-version pinning + security-advisory consultation. Plus OAuth substrate, GitHub provider, <code dir="auto">ctx.oauth.token()</code> helper with concurrent-refresh Promise cache, paste-PAT scope verification. | ~600 | Single PR. The two were originally split A → B but ship together because OAuth-acquired tokens depend on the <code dir="auto">secret</code> flag for snapshot stripping. |
-| <strong>V1 (build-scripts)</strong> | Build-script lifecycle: SDK types, provision-runner service, OS-level sandboxing (bwrap-bundled with smoke test on Linux; sandbox-exec + signed-only on macOS), <code dir="auto">papercusp_record_resource</code> helper, audit logging with per-plugin cap override, PG-based recovery contract, idempotency with scriptHash + configHash + pluginVersion, consent flow, fork-time review UI, cloudProvider presets, network-policy floor (IMDS/RFC1918), trust per-(publisher, plugin) with ownership-transfer + key-rotation handling, hook queue-and-replay, single-user-host detection. | ~1,400–1,500 | After share-semantics + OAuth. |
-| <strong>V1.1</strong> | github-repo dogfood (re-implement repo creation as build script), <code dir="auto">runAt</code> scheduling for hooks/routines/webhooks, <code dir="auto">budgetCap</code> + AWS-Budgets helper, <code dir="auto">compute:exec:*</code> vs build-scripts docs, plugin “host activity” tile, skip-teardown banner, marketplace moderation layer (separate spec). | ~500 | Fast-follow once V1 has shipped to a vetted-publisher alpha and a real plugin author has used it. |
-| <strong>V1.1+</strong> | cloudflare-pages-via-github mode, additional OAuth providers (Slack/Linear/Notion/Jira), per-tenant OAuth multi-tenancy. | ~300 per provider | Demand-driven. |
-| <strong>V2</strong> | macOS Tauri-sidecar with restricted entitlements, layer-7 network-policy proxy with TLS interception, encrypted-at-rest token storage, per-cloud <code dir="auto">budgetCap</code> helpers (GCP/Azure/Cloudflare), Windows sandboxing. | TBD | Separate workstreams. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Phase</th><th>Scope</th><th>Approx LOC</th><th>Sequencing</th></tr></thead><tbody><tr><td><strong>V1 (share-semantics + OAuth)</strong></td><td>Per-field share flags (<code dir="auto">secret</code> / <code dir="auto">shareable</code> / <code dir="auto">snapshotPolicy</code>) + snapshot-export filtering + schema-evolution aliases (rename + removal) + plugin-version pinning + security-advisory consultation. Plus OAuth substrate, GitHub provider, <code dir="auto">ctx.oauth.token()</code> helper with concurrent-refresh Promise cache, paste-PAT scope verification.</td><td>~600</td><td>Single PR. The two were originally split A → B but ship together because OAuth-acquired tokens depend on the <code dir="auto">secret</code> flag for snapshot stripping.</td></tr><tr><td><strong>V1 (build-scripts)</strong></td><td>Build-script lifecycle: SDK types, provision-runner service, OS-level sandboxing (bwrap-bundled with smoke test on Linux; sandbox-exec + signed-only on macOS), <code dir="auto">papercusp_record_resource</code> helper, audit logging with per-plugin cap override, PG-based recovery contract, idempotency with scriptHash + configHash + pluginVersion, consent flow, fork-time review UI, cloudProvider presets, network-policy floor (IMDS/RFC1918), trust per-(publisher, plugin) with ownership-transfer + key-rotation handling, hook queue-and-replay, single-user-host detection.</td><td>~1,400–1,500</td><td>After share-semantics + OAuth.</td></tr><tr><td><strong>V1.1</strong></td><td>github-repo dogfood (re-implement repo creation as build script), <code dir="auto">runAt</code> scheduling for hooks/routines/webhooks, <code dir="auto">budgetCap</code> + AWS-Budgets helper, <code dir="auto">compute:exec:*</code> vs build-scripts docs, plugin “host activity” tile, skip-teardown banner, marketplace moderation layer (separate spec).</td><td>~500</td><td>Fast-follow once V1 has shipped to a vetted-publisher alpha and a real plugin author has used it.</td></tr><tr><td><strong>V1.1+</strong></td><td>cloudflare-pages-via-github mode, additional OAuth providers (Slack/Linear/Notion/Jira), per-tenant OAuth multi-tenancy.</td><td>~300 per provider</td><td>Demand-driven.</td></tr><tr><td><strong>V2</strong></td><td>macOS Tauri-sidecar with restricted entitlements, layer-7 network-policy proxy with TLS interception, encrypted-at-rest token storage, per-cloud <code dir="auto">budgetCap</code> helpers (GCP/Azure/Cloudflare), Windows sandboxing.</td><td>TBD</td><td>Separate workstreams.</td></tr></tbody></table>
 <p>V1 LOC honest total: <strong>~2,000–2,100 LOC</strong> across substrate + UI. The
 earlier “~1,500 LOC” estimate was sloppy math; this version reflects
 each subsystem’s real footprint after rounds 3–6 added defensive

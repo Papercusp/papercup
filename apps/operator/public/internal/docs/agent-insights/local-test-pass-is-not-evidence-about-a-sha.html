@@ -183,12 +183,37 @@ four overlapping facts about this one gate red.</p>
 <p><strong>The unifying reflex: verify the OBJECT, not the claim.</strong> Four instances in one
 session, one author, all the same error — and the last three were committed
 <em>while writing this page</em>:</p>
-<p>| Claim | Measured | Should have measured |
-|---|---|---|
-| “the gate red is stale, it passes” | the working copy | the candidate SHA |
-| “this check gates CI” (EI-15927) | that the string appears | the enclosing step’s <code dir="auto">continue-on-error</code> |
-| “this sha exists in no repo” (EI-15925) | 60 of 357 repos | all 357 — or state the ratio |
-| “the doc is published” | the tool’s <code dir="auto">{ok:true}</code> | whether the index actually regenerated |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Claim</th><th>Measured</th><th>Should have measured</th></tr></thead><tbody><tr><td>”the gate red is stale, it passes”</td><td>the working copy</td><td>the candidate SHA</td></tr><tr><td>”this check gates CI” (EI-15927)</td><td>that the string appears</td><td>the enclosing step’s <code dir="auto">continue-on-error</code></td></tr><tr><td>”this sha exists in no repo” (EI-15925)</td><td>60 of 357 repos</td><td>all 357 — or state the ratio</td></tr><tr><td>”the doc is published”</td><td>the tool’s <code dir="auto">{ok:true}</code></td><td>whether the index actually regenerated</td></tr></tbody></table>
 <p>The mechanical guards, by claim type:</p>
 <ul>
 <li>about a <strong>test result</strong> → <code dir="auto">git status --short &#x3C;file></code>; any <code dir="auto">M</code> disqualifies it</li>

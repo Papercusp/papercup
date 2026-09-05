@@ -212,22 +212,56 @@ and re-syncs PG. It runs on a fresh checkout, after a direct CLI run
 that bypassed the operator API, or whenever you suspect drift.</p>
 <div class="expressive-code"><figure class="frame has-title not-content"><figcaption class="header"><span class="title">scripts/backfill-plugin-enables.mjs</span></figcaption><pre data-language="js"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5D6376">// Same logic as mirrorHarness, run for every harness directory.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5D6376">// Idempotent: re-running on already-synced data is a no-op.</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="// Same logic as mirrorHarness, run for every harness directory.// Idempotent: re-running on already-synced data is a no-op."><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="when-to-pick-this-pattern-over-pg-canonical">When to pick this pattern over PG-canonical</h3><a class="sl-anchor-link" href="#when-to-pick-this-pattern-over-pg-canonical"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “When to pick this pattern over PG-canonical”</span></a></div>
-<p>| Pick PG-canonical (Recipe 1-2) when | Pick PG-mirror (this) when |
-|---|---|
-| You own every writer | A third-party process or runtime path writes the JSON and you can’t change it |
-| The data has no on-disk consumer | A loader reads the JSON file at runtime by path |
-| Atomicity of write matters | The JSON is the operational source of truth and PG is a query-side index |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pick PG-canonical (Recipe 1-2) when</th><th>Pick PG-mirror (this) when</th></tr></thead><tbody><tr><td>You own every writer</td><td>A third-party process or runtime path writes the JSON and you can’t change it</td></tr><tr><td>The data has no on-disk consumer</td><td>A loader reads the JSON file at runtime by path</td></tr><tr><td>Atomicity of write matters</td><td>The JSON is the operational source of truth and PG is a query-side index</td></tr></tbody></table>
 <p>Reference implementations:</p>
 <ul>
 <li><code dir="auto">packages/operator-core/lib/plugin-enables-pg.ts</code> (papercusp CLI is the writer)</li>
 <li><code dir="auto">packages/operator-core/lib/plugin-configs-pg.ts</code> (substrate plugin loader reads JSON at runtime)</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="recipe-10-where-to-put-a-new-panel">Recipe 10: Where to put a new panel</h2><a class="sl-anchor-link" href="#recipe-10-where-to-put-a-new-panel"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Recipe 10: Where to put a new panel”</span></a></div>
-<p>| Panel scope | Location |
-|---|---|
-| Tabular data for one harness, shown in the harness dashboard | <code dir="auto">apps/operator/app/harness/&#x3C;Name>Panel.tsx</code> |
-| Dock panel in the per-harness workbench | A <code dir="auto">Real&#x3C;Name>Panel.tsx</code> under <code dir="auto">apps/operator/app/harness/dock/</code>, registered with <code dir="auto">panelRegistry.register('data:&#x3C;name>', Real&#x3C;Name>Panel)</code> in <code dir="auto">dock/sample-panels.tsx</code> (see <code dir="auto">RealFeaturesPanel.tsx</code> / <code dir="auto">RealIssuesPanel.tsx</code> for the shape) |
-| Cross-harness panel (global view) | <code dir="auto">apps/operator/app/&#x3C;route>/&#x3C;Name>Panel.tsx</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Panel scope</th><th>Location</th></tr></thead><tbody><tr><td>Tabular data for one harness, shown in the harness dashboard</td><td><code dir="auto">apps/operator/app/harness/&#x3C;Name>Panel.tsx</code></td></tr><tr><td>Dock panel in the per-harness workbench</td><td>A <code dir="auto">Real&#x3C;Name>Panel.tsx</code> under <code dir="auto">apps/operator/app/harness/dock/</code>, registered with <code dir="auto">panelRegistry.register('data:&#x3C;name>', Real&#x3C;Name>Panel)</code> in <code dir="auto">dock/sample-panels.tsx</code> (see <code dir="auto">RealFeaturesPanel.tsx</code> / <code dir="auto">RealIssuesPanel.tsx</code> for the shape)</td></tr><tr><td>Cross-harness panel (global view)</td><td><code dir="auto">apps/operator/app/&#x3C;route>/&#x3C;Name>Panel.tsx</code></td></tr></tbody></table>
 <p>The live <code dir="auto">apps/operator</code> harness UI is dock-based
 (<code dir="auto">apps/operator/app/harness/[slug]/HarnessDockShell.tsx</code>); wire a new panel in
 as a dock panel rather than into a monolithic tab switcher. There is no

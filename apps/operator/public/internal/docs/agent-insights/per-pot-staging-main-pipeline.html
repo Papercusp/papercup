@@ -77,10 +77,27 @@
 <code dir="auto">per-pot-git-and-release-gate-2026-06-29</code> generalizes this to <strong>every coding pot</strong> —
 but the key insight is that <strong>git plays two different roles</strong>, and only one of them is the
 gate:</p>
-<p>| Role | Mechanism | Who gets it |
-|---|---|---|
-| <strong>A. Repo as versioned backup</strong> | git-sync → <code dir="auto">staging</code> (leg 1) | any pot with a repo (incl. non-coding homes that keep file artifacts) |
-| <strong>B. Repo as CI/CD</strong> | green-checkpoint FF <code dir="auto">staging</code>→<code dir="auto">main</code> (leg 2) + auto-deploy (leg 3) | <strong>coding pots only</strong> — there is no suite to gate a brainstorm canvas on |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>Mechanism</th><th>Who gets it</th></tr></thead><tbody><tr><td><strong>A. Repo as versioned backup</strong></td><td>git-sync → <code dir="auto">staging</code> (leg 1)</td><td>any pot with a repo (incl. non-coding homes that keep file artifacts)</td></tr><tr><td><strong>B. Repo as CI/CD</strong></td><td>green-checkpoint FF <code dir="auto">staging</code>→<code dir="auto">main</code> (leg 2) + auto-deploy (leg 3)</td><td><strong>coding pots only</strong> — there is no suite to gate a brainstorm canvas on</td></tr></tbody></table>
 <p>So “bring the pipeline to all pots” means <strong>leg 2 for coding pots</strong>, leaning on leg 1
 (already per-harness). Leg 3 (auto-deploy) stays opt-in (<code dir="auto">releaseGate.deploy</code>) and is
 currently <strong>deferred</strong> — the systemd unit + health probe are operator-home-specific.</p>

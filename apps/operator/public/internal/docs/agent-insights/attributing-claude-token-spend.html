@@ -133,13 +133,54 @@ alive on mtime; costs nothing.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-it-actually-was">What it actually was</h2><a class="sl-anchor-link" href="#what-it-actually-was"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What it actually was”</span></a></div>
 <p>An autonomous cron system running 24/7, ~<strong>$1,250/7d</strong>:</p>
-<p>| Role | Model | Turns/7d | Cache-read | 7d cost |
-|---|---|---|---|---|
-| <code dir="auto">worker</code> | opus | 2,262 | 871M | <strong>$706.69</strong> |
-| <code dir="auto">kettle</code> | sonnet | 1,323 | 76M | $148.16 |
-| <code dir="auto">mug</code> | opus | 702 | 53M | $138.60 |
-| <code dir="auto">release-fixer</code> | opus | 905 | 94M | $109.82 |
-| <code dir="auto">gym</code> + <code dir="auto">scout</code> | mixed | — | — | ~$30 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>Model</th><th>Turns/7d</th><th>Cache-read</th><th>7d cost</th></tr></thead><tbody><tr><td><code dir="auto">worker</code></td><td>opus</td><td>2,262</td><td>871M</td><td><strong>$706.69</strong></td></tr><tr><td><code dir="auto">kettle</code></td><td>sonnet</td><td>1,323</td><td>76M</td><td>$148.16</td></tr><tr><td><code dir="auto">mug</code></td><td>opus</td><td>702</td><td>53M</td><td>$138.60</td></tr><tr><td><code dir="auto">release-fixer</code></td><td>opus</td><td>905</td><td>94M</td><td>$109.82</td></tr><tr><td><code dir="auto">gym</code> + <code dir="auto">scout</code></td><td>mixed</td><td>—</td><td>—</td><td>~$30</td></tr></tbody></table>
 <p>Driven by <code dir="auto">system:wake-brain</code> (every 30 min — the dominant line),
 <code dir="auto">system:blueprint-run</code> (16 installs, hourly), <code dir="auto">system:gym-cycle</code> (2×/hour),
 <code dir="auto">system:improvement-implement</code> (30 min), <code dir="auto">system:improvement-watchdog</code> (15 min).</p>

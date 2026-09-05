@@ -97,25 +97,71 @@ measurement that would kill it.</li>
 <p>A finding against an unnamed version cannot be re-checked when the thing upgrades, so
 both reads are pinned:</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="opencode">opencode</h3><a class="sl-anchor-link" href="#opencode"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “opencode”</span></a></div>
-<p>| | |
-|---|---|
-| Package | dpkg <code dir="auto">open-code</code> <strong>1.4.0</strong> amd64, installed 2026-04-07 |
-| Binaries | <code dir="auto">/usr/bin/opencode-cli</code> (167,297,307 B, Bun-compiled ELF, BuildID sha1 <code dir="auto">7336da5387ce01a05b890cdc77fe6287dde90d9c</code>) · <code dir="auto">/usr/bin/OpenCode</code> (34,501,672 B, desktop shell) |
-| Reported version | <code dir="auto">opencode-cli --version</code> → <code dir="auto">1.4.0</code> |
-| Source on disk | <strong>None.</strong> The binary embeds a bundle but not its <code dir="auto">packages/opencode/src</code> module paths. |
-| Source actually read | upstream <code dir="auto">github.com/sst/opencode</code> tag <strong>v1.4.0</strong> = commit <strong><code dir="auto">98325dcdc6a566de6b7ab42cc87af544bed3658d</code></strong>, shallow-cloned to <code dir="auto">/tmp/oc-src</code> |
-| Runtime dirs observed | <code dir="auto">~/.local/share/opencode/tool-output/</code> (the spill dir — present, empty) · <code dir="auto">~/.config/opencode/opencode.json</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Package</td><td>dpkg <code dir="auto">open-code</code> <strong>1.4.0</strong> amd64, installed 2026-04-07</td></tr><tr><td>Binaries</td><td><code dir="auto">/usr/bin/opencode-cli</code> (167,297,307 B, Bun-compiled ELF, BuildID sha1 <code dir="auto">7336da5387ce01a05b890cdc77fe6287dde90d9c</code>) · <code dir="auto">/usr/bin/OpenCode</code> (34,501,672 B, desktop shell)</td></tr><tr><td>Reported version</td><td><code dir="auto">opencode-cli --version</code> → <code dir="auto">1.4.0</code></td></tr><tr><td>Source on disk</td><td><strong>None.</strong> The binary embeds a bundle but not its <code dir="auto">packages/opencode/src</code> module paths.</td></tr><tr><td>Source actually read</td><td>upstream <code dir="auto">github.com/sst/opencode</code> tag <strong>v1.4.0</strong> = commit <strong><code dir="auto">98325dcdc6a566de6b7ab42cc87af544bed3658d</code></strong>, shallow-cloned to <code dir="auto">/tmp/oc-src</code></td></tr><tr><td>Runtime dirs observed</td><td><code dir="auto">~/.local/share/opencode/tool-output/</code> (the spill dir — present, empty) · <code dir="auto">~/.config/opencode/opencode.json</code></td></tr></tbody></table>
 <p>Also on the box but <strong>not</strong> the installed CLI: npm <code dir="auto">opencode-ai@1.2.27</code> under
 <code dir="auto">~/.nvm/versions/node/v22.21.1/lib/node_modules/opencode-ai</code> and an <code dir="auto">~/.npm/_npx</code> cache
 copy. Both are launcher shims for an older version; nothing below is cited against them.</p>
 <p>All opencode citations below are relative to <strong><code dir="auto">packages/opencode/src/</code></strong>.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="omp">OMP</h3><a class="sl-anchor-link" href="#omp"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “OMP”</span></a></div>
-<p>| | |
-|---|---|
-| Package | <code dir="auto">@oh-my-pi/pi-coding-agent</code> <strong>17.0.7</strong> |
-| Install | <code dir="auto">~/node_modules/@oh-my-pi/pi-coding-agent</code>, bin <code dir="auto">~/.bun/bin/omp</code> → <code dir="auto">dist/cli.js</code> (12,788,331 B, minified) |
-| Source on disk | <strong>Yes — the package ships its full TypeScript <code dir="auto">src/</code>.</strong> Citations are against the installed files directly, not a clone. |
-| Upstream | <code dir="auto">github.com/can1357/oh-my-pi</code>, directory <code dir="auto">packages/coding-agent</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th></th></tr></thead><tbody><tr><td>Package</td><td><code dir="auto">@oh-my-pi/pi-coding-agent</code> <strong>17.0.7</strong></td></tr><tr><td>Install</td><td><code dir="auto">~/node_modules/@oh-my-pi/pi-coding-agent</code>, bin <code dir="auto">~/.bun/bin/omp</code> → <code dir="auto">dist/cli.js</code> (12,788,331 B, minified)</td></tr><tr><td>Source on disk</td><td><strong>Yes — the package ships its full TypeScript <code dir="auto">src/</code>.</strong> Citations are against the installed files directly, not a clone.</td></tr><tr><td>Upstream</td><td><code dir="auto">github.com/can1357/oh-my-pi</code>, directory <code dir="auto">packages/coding-agent</code></td></tr></tbody></table>
 <p>Sibling <code dir="auto">@oh-my-pi/*</code> packages that also ship source: <code dir="auto">pi-agent-core</code>, <code dir="auto">pi-ai</code>,
 <code dir="auto">pi-utils</code>, <code dir="auto">pi-wire</code>, <code dir="auto">snapcompact</code>, <code dir="auto">hashline</code>, <code dir="auto">pi-catalog</code>, <code dir="auto">pi-mnemopi</code>,
 <code dir="auto">omp-stats</code>.</p>
@@ -124,15 +170,52 @@ copy. Both are launcher shims for an older version; nothing below is cited again
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-recalled-table-adjudicated">The recalled table, adjudicated</h2><a class="sl-anchor-link" href="#the-recalled-table-adjudicated"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The recalled table, adjudicated”</span></a></div>
 <p>Every cell of the hypothesis table, with a verdict:</p>
-<p>| recalled claim | verdict | what is actually there |
-|---|---|---|
-| opencode: batch tool calls in a script — <code dir="auto">code-mode.ts</code>, “confined orchestration script with access to connected MCP tools” | <strong>STRUCK — and its origin identified</strong> | No file matching <code dir="auto">*code-mode*</code> exists anywhere in the v1.4.0 tree, and the phrase “confined orchestration script” appears in no <code dir="auto">.ts</code>/<code dir="auto">.txt</code>/<code dir="auto">.md</code> file. The tree’s only “Code Mode” is <strong>Cloudflare’s</strong>, in a test fixture (<code dir="auto">test/fixture/skills/agents-sdk/SKILL.md:152</code>). See <strong>O11</strong> — the cell appears to be another vendor’s feature attributed to opencode. |
-| opencode: output caps 1 MB + explicit <code dir="auto">truncated</code> / <code dir="auto">timeout</code> flags | <strong>PARTLY STRUCK</strong> | The cap is <strong>2000 lines AND 50 KB</strong> (<code dir="auto">tool/truncate.ts:17-18</code>). No 1 MB constant exists on the tool-output path. The <code dir="auto">truncated</code> flag is real (<code dir="auto">tool/tool.ts:92</code>). A <code dir="auto">timeout</code> <em>flag</em> is not — bash emits a timeout <em>message</em> (<code dir="auto">tool/bash.ts:410</code>). |
-| opencode: spill full output, reference by id — <strong>”—” (absent)</strong> | <strong>STRUCK — the opposite is true</strong> | opencode writes the full untruncated output to <code dir="auto">~/.local/share/opencode/tool-output/&#x3C;ToolID></code> and hands the model that id-named path (<code dir="auto">tool/truncate.ts:104-107</code>), with a 7-day retention sweep. |
-| opencode: subagent as context firewall — <code dir="auto">Task</code>, mandated in the system prompt | <strong>CONFIRMED, over-stated</strong> | The <code dir="auto">Task</code> firewall is real and precise (see M6). The <em>mandate</em> is <strong>Anthropic-prompt-only</strong> — see P-003 below. |
-| OMP: output caps 3000 lines / 50 KB / 512 columns | <strong>CONFIRMED, wrong file</strong> | Exactly right numerically (<code dir="auto">session/streaming-output.ts:10-12</code>). The table attributed them to <code dir="auto">output-meta.ts</code>; they are not there. |
-| OMP: <code dir="auto">output-meta.ts</code> (~825 lines), <code dir="auto">formatFullOutput…</code> | <strong>CONFIRMED</strong> | <code dir="auto">tools/output-meta.ts</code> is <strong>825 lines</strong>; <code dir="auto">formatFullOutputReference(artifactId)</code> is at <code dir="auto">:391</code>. It is the metadata <em>builder</em>, not the cap definition. |
-| OMP: <code dir="auto">task.ts</code> + <code dir="auto">vibe-spawn</code>/<code dir="auto">send</code>/<code dir="auto">wait</code>/<code dir="auto">kill</code>/<code dir="auto">list</code>, async task contracts + summary prompts | <strong>CONFIRMED, two corrections</strong> | The tool names use <strong>underscores</strong>: <code dir="auto">VIBE_TOOL_NAMES = ["vibe_spawn","vibe_send","vibe_wait","vibe_kill","vibe_list"]</code> (<code dir="auto">tools/vibe.ts:50</code>). And <strong>vibe is not the context firewall</strong> — it drives <em>external CLI worker sessions</em> (<code dir="auto">tools/vibe.ts:4-5</code>). The firewall is the <code dir="auto">task</code> subsystem (<code dir="auto">src/task/</code>, 25 files). There is no single <code dir="auto">task.ts</code> under <code dir="auto">src/</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>recalled claim</th><th>verdict</th><th>what is actually there</th></tr></thead><tbody><tr><td>opencode: batch tool calls in a script — <code dir="auto">code-mode.ts</code>, “confined orchestration script with access to connected MCP tools”</td><td><strong>STRUCK — and its origin identified</strong></td><td>No file matching <code dir="auto">*code-mode*</code> exists anywhere in the v1.4.0 tree, and the phrase “confined orchestration script” appears in no <code dir="auto">.ts</code>/<code dir="auto">.txt</code>/<code dir="auto">.md</code> file. The tree’s only “Code Mode” is <strong>Cloudflare’s</strong>, in a test fixture (<code dir="auto">test/fixture/skills/agents-sdk/SKILL.md:152</code>). See <strong>O11</strong> — the cell appears to be another vendor’s feature attributed to opencode.</td></tr><tr><td>opencode: output caps 1 MB + explicit <code dir="auto">truncated</code> / <code dir="auto">timeout</code> flags</td><td><strong>PARTLY STRUCK</strong></td><td>The cap is <strong>2000 lines AND 50 KB</strong> (<code dir="auto">tool/truncate.ts:17-18</code>). No 1 MB constant exists on the tool-output path. The <code dir="auto">truncated</code> flag is real (<code dir="auto">tool/tool.ts:92</code>). A <code dir="auto">timeout</code> <em>flag</em> is not — bash emits a timeout <em>message</em> (<code dir="auto">tool/bash.ts:410</code>).</td></tr><tr><td>opencode: spill full output, reference by id — <strong>”—” (absent)</strong></td><td><strong>STRUCK — the opposite is true</strong></td><td>opencode writes the full untruncated output to <code dir="auto">~/.local/share/opencode/tool-output/&#x3C;ToolID></code> and hands the model that id-named path (<code dir="auto">tool/truncate.ts:104-107</code>), with a 7-day retention sweep.</td></tr><tr><td>opencode: subagent as context firewall — <code dir="auto">Task</code>, mandated in the system prompt</td><td><strong>CONFIRMED, over-stated</strong></td><td>The <code dir="auto">Task</code> firewall is real and precise (see M6). The <em>mandate</em> is <strong>Anthropic-prompt-only</strong> — see P-003 below.</td></tr><tr><td>OMP: output caps 3000 lines / 50 KB / 512 columns</td><td><strong>CONFIRMED, wrong file</strong></td><td>Exactly right numerically (<code dir="auto">session/streaming-output.ts:10-12</code>). The table attributed them to <code dir="auto">output-meta.ts</code>; they are not there.</td></tr><tr><td>OMP: <code dir="auto">output-meta.ts</code> (~825 lines), <code dir="auto">formatFullOutput…</code></td><td><strong>CONFIRMED</strong></td><td><code dir="auto">tools/output-meta.ts</code> is <strong>825 lines</strong>; <code dir="auto">formatFullOutputReference(artifactId)</code> is at <code dir="auto">:391</code>. It is the metadata <em>builder</em>, not the cap definition.</td></tr><tr><td>OMP: <code dir="auto">task.ts</code> + <code dir="auto">vibe-spawn</code>/<code dir="auto">send</code>/<code dir="auto">wait</code>/<code dir="auto">kill</code>/<code dir="auto">list</code>, async task contracts + summary prompts</td><td><strong>CONFIRMED, two corrections</strong></td><td>The tool names use <strong>underscores</strong>: <code dir="auto">VIBE_TOOL_NAMES = ["vibe_spawn","vibe_send","vibe_wait","vibe_kill","vibe_list"]</code> (<code dir="auto">tools/vibe.ts:50</code>). And <strong>vibe is not the context firewall</strong> — it drives <em>external CLI worker sessions</em> (<code dir="auto">tools/vibe.ts:4-5</code>). The firewall is the <code dir="auto">task</code> subsystem (<code dir="auto">src/task/</code>, 25 files). There is no single <code dir="auto">task.ts</code> under <code dir="auto">src/</code>.</td></tr></tbody></table>
 <p><strong>Six mechanisms the table missed entirely</strong> are documented below: opencode’s
 tool-result <em>pruning</em> (M5, distinct from compaction), opencode’s overflow arithmetic
 (M3), OMP’s context <strong>shake</strong> (O4), OMP’s <strong>snapcompact</strong> bitmap-image compaction
@@ -183,11 +266,32 @@ toolset outranks any prompt, doc, or brief — including this one.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="opencode--the-mechanisms">opencode — the mechanisms</h2><a class="sl-anchor-link" href="#opencode--the-mechanisms"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “opencode — the mechanisms”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="m1--universal-tool-output-truncation-with-on-disk-spill">M1 · Universal tool-output truncation with on-disk spill</h3><a class="sl-anchor-link" href="#m1--universal-tool-output-truncation-with-on-disk-spill"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “M1 · Universal tool-output truncation with on-disk spill”</span></a></div>
 <p><code dir="auto">tool/truncate.ts</code> is the whole thing, and it is short.</p>
-<p>| constant | value | line |
-|---|---|---|
-| <code dir="auto">MAX_LINES</code> | <code dir="auto">2000</code> | <code dir="auto">:17</code> |
-| <code dir="auto">MAX_BYTES</code> | <code dir="auto">50 * 1024</code> (51,200 B) | <code dir="auto">:18</code> |
-| <code dir="auto">RETENTION</code> | <code dir="auto">Duration.days(7)</code> | <code dir="auto">:15</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>constant</th><th>value</th><th>line</th></tr></thead><tbody><tr><td><code dir="auto">MAX_LINES</code></td><td><code dir="auto">2000</code></td><td><code dir="auto">:17</code></td></tr><tr><td><code dir="auto">MAX_BYTES</code></td><td><code dir="auto">50 * 1024</code> (51,200 B)</td><td><code dir="auto">:18</code></td></tr><tr><td><code dir="auto">RETENTION</code></td><td><code dir="auto">Duration.days(7)</code></td><td><code dir="auto">:15</code></td></tr></tbody></table>
 <ul>
 <li>Output passes through <strong>unchanged only when it satisfies both caps</strong> — <code dir="auto">lines.length &#x3C;= maxLines &#x26;&#x26; totalBytes &#x3C;= maxBytes</code> (<code dir="auto">:70-72</code>). It is an AND, so a 10-line 60 KB blob truncates.</li>
 <li>Slicing is <code dir="auto">head</code> by default, <code dir="auto">tail</code> optionally (<code dir="auto">:26-28</code>, <code dir="auto">:66</code>, <code dir="auto">:79-99</code>); the byte budget is charged per line including its newline.</li>
@@ -229,11 +333,32 @@ seam <code dir="auto">grep</code>, <code dir="auto">glob</code> and <code dir="a
 <div class="sl-heading-wrapper level-h3"><h3 id="m5--prune--evicting-old-tool-result-bodies-without-summarizing">M5 · Prune — evicting old tool-result bodies <strong>without</strong> summarizing</h3><a class="sl-anchor-link" href="#m5--prune--evicting-old-tool-result-bodies-without-summarizing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “M5 · Prune — evicting old tool-result bodies without summarizing”</span></a></div>
 <p>This is a mechanism the recalled table did not have, and it is cheaper than M4 because
 it involves no model call at all.</p>
-<p>| constant | value | line |
-|---|---|---|
-| <code dir="auto">PRUNE_MINIMUM</code> | <code dir="auto">20_000</code> | <code dir="auto">:35</code> |
-| <code dir="auto">PRUNE_PROTECT</code> | <code dir="auto">40_000</code> | <code dir="auto">:36</code> |
-| <code dir="auto">PRUNE_PROTECTED_TOOLS</code> | <code dir="auto">["skill"]</code> | <code dir="auto">:37</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>constant</th><th>value</th><th>line</th></tr></thead><tbody><tr><td><code dir="auto">PRUNE_MINIMUM</code></td><td><code dir="auto">20_000</code></td><td><code dir="auto">:35</code></td></tr><tr><td><code dir="auto">PRUNE_PROTECT</code></td><td><code dir="auto">40_000</code></td><td><code dir="auto">:36</code></td></tr><tr><td><code dir="auto">PRUNE_PROTECTED_TOOLS</code></td><td><code dir="auto">["skill"]</code></td><td><code dir="auto">:37</code></td></tr></tbody></table>
 <p>The source comment states the intent exactly (<code dir="auto">:91-92</code>): <em>“goes backwards through parts
 until there are PRUNE_PROTECT tokens worth of tool calls, then erases output of older
 tool calls to free context space”</em>.</p>
@@ -354,13 +479,42 @@ line, not to the output-cap family.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="omp--the-mechanisms">OMP — the mechanisms</h2><a class="sl-anchor-link" href="#omp--the-mechanisms"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “OMP — the mechanisms”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="o1--output-caps--confirmed-numbers-corrected-location">O1 · Output caps — confirmed numbers, corrected location</h3><a class="sl-anchor-link" href="#o1--output-caps--confirmed-numbers-corrected-location"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “O1 · Output caps — confirmed numbers, corrected location”</span></a></div>
 <p><code dir="auto">session/streaming-output.ts</code>:</p>
-<p>| constant | value | line |
-|---|---|---|
-| <code dir="auto">DEFAULT_MAX_LINES</code> | <code dir="auto">3000</code> | <code dir="auto">:10</code> |
-| <code dir="auto">DEFAULT_MAX_BYTES</code> | <code dir="auto">50 * 1024</code> | <code dir="auto">:11</code> |
-| <code dir="auto">DEFAULT_MAX_COLUMN</code> | <code dir="auto">512</code> — <em>“Max chars per grep match line”</em> | <code dir="auto">:12</code> |
-| <code dir="auto">ARTIFACT_DEFAULT_MAX_BYTES</code> | <code dir="auto">0</code> — <strong><code dir="auto">0</code> means unbounded</strong> | <code dir="auto">:20</code> |
-| <code dir="auto">ARTIFACT_DEFAULT_HEAD_BYTES</code> | <code dir="auto">3 * 1024 * 1024</code> (3 MiB) | <code dir="auto">:22</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>constant</th><th>value</th><th>line</th></tr></thead><tbody><tr><td><code dir="auto">DEFAULT_MAX_LINES</code></td><td><code dir="auto">3000</code></td><td><code dir="auto">:10</code></td></tr><tr><td><code dir="auto">DEFAULT_MAX_BYTES</code></td><td><code dir="auto">50 * 1024</code></td><td><code dir="auto">:11</code></td></tr><tr><td><code dir="auto">DEFAULT_MAX_COLUMN</code></td><td><code dir="auto">512</code> — <em>“Max chars per grep match line”</em></td><td><code dir="auto">:12</code></td></tr><tr><td><code dir="auto">ARTIFACT_DEFAULT_MAX_BYTES</code></td><td><code dir="auto">0</code> — <strong><code dir="auto">0</code> means unbounded</strong></td><td><code dir="auto">:20</code></td></tr><tr><td><code dir="auto">ARTIFACT_DEFAULT_HEAD_BYTES</code></td><td><code dir="auto">3 * 1024 * 1024</code> (3 MiB)</td><td><code dir="auto">:22</code></td></tr></tbody></table>
 <p>The recalled numbers were right; the recalled file was not — <code dir="auto">tools/output-meta.ts</code> is the
 metadata <em>builder</em> (825 lines, as recalled), and the caps live in <code dir="auto">streaming-output.ts</code>.</p>
 <p>The <strong>third dimension is the interesting one</strong>: <code dir="auto">DEFAULT_MAX_COLUMN = 512</code> caps
@@ -468,11 +622,28 @@ opencode’s tells it neither.</p>
 <code dir="auto">modes/controllers/command-controller.ts:1256</code>) <strong>and automatically</strong> — see O6.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="o5--compaction-modes-including-bitmap-image-archival">O5 · Compaction modes, including bitmap-image archival</h3><a class="sl-anchor-link" href="#o5--compaction-modes-including-bitmap-image-archival"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “O5 · Compaction modes, including bitmap-image archival”</span></a></div>
 <p><code dir="auto">session/compact-modes.ts:47-65</code> defines three:</p>
-<p>| mode | description (verbatim from source) |
-|---|---|
-| <code dir="auto">soft</code> | <em>“Summarize locally with the active model (skip remote endpoints)”</em> |
-| <code dir="auto">remote</code> | <em>“Summarize via the remote endpoint / provider-native compaction”</em> |
-| <code dir="auto">snapcompact</code> | <em>“Archive history onto dense bitmap images the model reads back (<strong>no LLM call</strong>)”</em> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>mode</th><th>description (verbatim from source)</th></tr></thead><tbody><tr><td><code dir="auto">soft</code></td><td><em>”Summarize locally with the active model (skip remote endpoints)“</em></td></tr><tr><td><code dir="auto">remote</code></td><td><em>”Summarize via the remote endpoint / provider-native compaction”</em></td></tr><tr><td><code dir="auto">snapcompact</code></td><td><em>”Archive history onto dense bitmap images the model reads back (<strong>no LLM call</strong>)”</em></td></tr></tbody></table>
 <p><strong><code dir="auto">snapcompact</code> is the outlier and the table missed it.</strong> It converts history into dense
 bitmap images the model reads back through vision, so compaction costs <strong>no summarization
 model call</strong> at all. Implementation is <code dir="auto">session/snapcompact-inline.ts</code> (frames capped by
@@ -599,13 +770,36 @@ meaningful. Reading this set as “the cap coverage” is what produced the wron
 <p><strong>Layer 2 — the context boundary, universal.</strong> <code dir="auto">spillLargeResultToArtifact</code>
 (<code dir="auto">tools/output-meta.ts:650</code>) runs inside <code dir="auto">wrappedExecute</code> (<code dir="auto">:770-798</code>), which is installed by
 <code dir="auto">wrapToolWithMetaNotice</code> (<code dir="auto">:805</code>). Every registration path in the codebase wraps:</p>
-<p>| path | site |
-|---|---|
-| built-in tools | <code dir="auto">tools/index.ts:595</code> — <code dir="auto">createTools</code> maps <strong>every</strong> <code dir="auto">BUILTIN_TOOLS</code> entry; <code dir="auto">:634</code>, <code dir="auto">:640</code> catch the two late-added xdev transport tools |
-| vibe (ephemeral) tools | <code dir="auto">session/agent-session.ts:7195</code>, via <code dir="auto">#wrapRuntimeTool</code> <code dir="auto">:7171</code> |
-| MCP tools | <code dir="auto">agent-session.ts:7786</code> |
-| RPC-host tools | <code dir="auto">agent-session.ts:7837</code> |
-| SDK goal/write, CLI read | <code dir="auto">sdk.ts:2377</code>, <code dir="auto">:2412</code>; <code dir="auto">cli/read-cli.ts:37</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>site</th></tr></thead><tbody><tr><td>built-in tools</td><td><code dir="auto">tools/index.ts:595</code> — <code dir="auto">createTools</code> maps <strong>every</strong> <code dir="auto">BUILTIN_TOOLS</code> entry; <code dir="auto">:634</code>, <code dir="auto">:640</code> catch the two late-added xdev transport tools</td></tr><tr><td>vibe (ephemeral) tools</td><td><code dir="auto">session/agent-session.ts:7195</code>, via <code dir="auto">#wrapRuntimeTool</code> <code dir="auto">:7171</code></td></tr><tr><td>MCP tools</td><td><code dir="auto">agent-session.ts:7786</code></td></tr><tr><td>RPC-host tools</td><td><code dir="auto">agent-session.ts:7837</code></td></tr><tr><td>SDK goal/write, CLI read</td><td><code dir="auto">sdk.ts:2377</code>, <code dir="auto">:2412</code>; <code dir="auto">cli/read-cli.ts:37</code></td></tr></tbody></table>
 <p>Extension tools compose <em>outside</em> it — <code dir="auto">ExtensionToolWrapper</code> wraps the already-wrapped tool
 (<code dir="auto">:7173</code>, <code dir="auto">:7788</code>, <code dir="auto">:7839</code>) — so the cap still runs. There is no bypass: the saved original,
 <code dir="auto">kUnwrappedExecute</code>, is referenced only within <code dir="auto">output-meta.ts</code> (<code dir="auto">:603</code>, <code dir="auto">:770</code>, <code dir="auto">:777</code>, <code dir="auto">:806</code>,
@@ -645,53 +839,288 @@ layer (<code dir="auto">dropImages()</code>, O4), not at the tool boundary.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="side-by-side-every-cell-cited-or-struck">Side-by-side, every cell cited or struck</h2><a class="sl-anchor-link" href="#side-by-side-every-cell-cited-or-struck"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Side-by-side, every cell cited or struck”</span></a></div>
 <p>No “us” column, by design.</p>
-<p>| mechanism | opencode 1.4.0 | OMP 17.0.7 | confidence |
-|---|---|---|---|
-| <strong>Line cap on tool output</strong> | 2000 — <code dir="auto">tool/truncate.ts:17</code> | 3000 — <code dir="auto">session/streaming-output.ts:10</code> | High |
-| <strong>Byte cap on tool output</strong> | 50 KB — <code dir="auto">truncate.ts:18</code> | 50 KB — <code dir="auto">streaming-output.ts:11</code> | High |
-| <strong>Per-line/column cap</strong> | only within tools: <code dir="auto">read.ts:17</code> (2000 ch), <code dir="auto">grep.ts:130-132</code> | global at the sink: <code dir="auto">DEFAULT_MAX_COLUMN = 512</code> — <code dir="auto">streaming-output.ts:12</code>, applied <code dir="auto">:870-873</code> | High |
-| <strong>Cap combination</strong> | AND — both must pass — <code dir="auto">truncate.ts:70</code> | per-dimension, tracked separately in <code dir="auto">TruncationMeta</code> — <code dir="auto">output-meta.ts:26-28</code> | High |
-| <strong>Truncation directions</strong> | head, tail — <code dir="auto">truncate.ts:27</code> | head, tail, <strong>middle</strong> — <code dir="auto">output-meta.ts:28</code>, <code dir="auto">:19</code> | High |
-| <strong>Applied universally?</strong> | <strong>Yes</strong> — every tool result via <code dir="auto">tool/tool.ts:86</code>; opt-out at <code dir="auto">:83-85</code> | <strong>Yes, at the registration boundary</strong> — <code dir="auto">wrapToolWithMetaNotice</code> → <code dir="auto">spillLargeResultToArtifact</code>, <code dir="auto">output-meta.ts:783</code>, <code dir="auto">:650</code>; every registration path wraps (built-in <code dir="auto">tools/index.ts:595</code>, MCP <code dir="auto">agent-session.ts:7786</code>, RPC-host <code dir="auto">:7837</code>, vibe <code dir="auto">:7195</code>). Text blocks only; three exemptions — see <strong>O9</strong> | High |
-| <strong>Full output spilled to disk</strong> | <strong>Yes</strong> — <code dir="auto">truncate.ts:104-107</code> | <strong>Yes</strong> — <code dir="auto">session/artifacts.ts:101-119</code> | High |
-| <strong>Spill identifier</strong> | monotonic <code dir="auto">ToolID</code> as filename — <code dir="auto">truncate.ts:104</code> | sequential int per session, <code dir="auto">&#x3C;id>.&#x3C;tool>.log</code> — <code dir="auto">artifacts.ts:104</code> | High |
-| <strong>Spill addressed as</strong> | a filesystem path in the hint text — <code dir="auto">truncate.ts:110-111</code> | a URL scheme <code dir="auto">artifact://&#x3C;id></code> — <code dir="auto">sdk.ts:1577</code>, <code dir="auto">streaming-output.ts:631</code> | High |
-| <strong>Sub-range fetch of a spill</strong> | not as a spill feature; generic <code dir="auto">Read</code> offset/limit — <code dir="auto">truncate.ts:111</code> | <strong>yes, selector grammar</strong> <code dir="auto">artifact://5:1-50</code>, <code dir="auto">artifact://3:raw:-100</code>, <code dir="auto">artifact://5:conflicts:1-1</code> — <code dir="auto">path-utils.ts:376</code>, <code dir="auto">:401</code>, <code dir="auto">read.ts:822</code> | High |
-| <strong>Spill ID space across subagents</strong> | per-session dirs, no shared id space found | <strong>shared parent+subagent id space</strong> — <code dir="auto">artifacts.ts:34-36</code>, <code dir="auto">session-manager.ts:1347-1349</code> | High |
-| <strong>Spill expiry</strong> | <strong>7 days</strong>, hourly sweep — <code dir="auto">truncate.ts:15</code>, <code dir="auto">:51-61</code>, <code dir="auto">:123-131</code> | <strong>none</strong> — <code dir="auto">artifacts.ts</code> has no retention path (153 lines, full surface read) | High |
-| <strong>Spill written when</strong> | after the fact, on overflow — <code dir="auto">truncate.ts:106-107</code> | <strong>streaming, raw/pre-cap</strong> — <code dir="auto">streaming-output.ts:877-880</code> | High |
-| <strong>Model told the caps</strong> | yes — bash description interpolates them, <code dir="auto">bash.ts:469-470</code> | via <code dir="auto">LimitsMeta</code> in the output envelope — <code dir="auto">output-meta.ts:68</code> | High / Medium |
-| <strong>Overflow trigger</strong> | absolute tokens vs <code dir="auto">model.limit.input - reserved</code>, <code dir="auto">reserved = min(20k, maxOutput)</code> — <code dir="auto">overflow.ts:6</code>, <code dir="auto">:16-21</code> | budget-reserve vs context window — <code dir="auto">agent-session.ts:13673-13683</code> | High / Medium |
-| <strong>Cache tokens count toward window</strong> | <strong>yes</strong> — <code dir="auto">overflow.ts:14</code> | <strong>yes</strong> — <code dir="auto">totalTokens \|\| input+output+cacheRead+cacheWrite</code>, <em>minus</em> provider-side orchestration tokens (billable, but never replay into the prefix) — <code dir="auto">pi-agent-core/src/compaction/compaction.ts:215-222</code> | High |
-| <strong>Compaction</strong> | dedicated <code dir="auto">"compaction"</code> agent, plugin-replaceable prompt — <code dir="auto">compaction.ts:179</code>, <code dir="auto">:183-185</code>, <code dir="auto">:219</code> | three modes: <code dir="auto">soft</code>, <code dir="auto">remote</code>, <strong><code dir="auto">snapcompact</code></strong> — <code dir="auto">compact-modes.ts:47-65</code> | High |
-| <strong>Compaction without an LLM call</strong> | none found | <strong><code dir="auto">snapcompact</code></strong> — bitmap images read back by vision — <code dir="auto">compact-modes.ts:58-63</code> | High |
-| <strong>Evict tool results without summarizing</strong> | <strong>prune</strong> — <code dir="auto">compaction.ts:35-37</code>, <code dir="auto">:93-139</code> | <strong>shake(“elide”)</strong> — <code dir="auto">agent-session.ts:10833-10882</code> | High |
-| <strong>…protection band</strong> | newest 40k tokens of tool output + last 2 user turns — <code dir="auto">compaction.ts:36</code>, <code dir="auto">:111</code> | <strong><code dir="auto">protectTokens: 16_000</code></strong> on the auto path (<code dir="auto">0</code> on manual <code dir="auto">/shake</code>) — <code dir="auto">pi-agent-core/src/compaction/shake.ts:46-59</code> | High |
-| <strong>…hysteresis</strong> | only fires if >20k tokens would be freed — <code dir="auto">compaction.ts:35</code>, <code dir="auto">:130</code> | <strong><code dir="auto">minSavings: 4_000</code></strong> on the auto path (<code dir="auto">0</code> on manual <code dir="auto">/shake</code>) — <code dir="auto">shake.ts:46-59</code> | High |
-| <strong>…cache-aware history mutation</strong> | none found | <strong>yes</strong> — prune refuses to mutate any entry whose message-suffix exceeds the warm-cache window (<code dir="auto">8_000</code>), because editing inside the sent prefix re-writes the whole suffix at <code dir="auto">cacheWrite</code> price — <code dir="auto">pi-agent-core/src/compaction/pruning.ts:44-51</code>, <code dir="auto">:349-357</code>, threshold at <code dir="auto">agent-session.ts:792</code> | Medium / High |
-| <strong>…what the model sees after</strong> | <code dir="auto">"[Old tool result content cleared]"</code> — <code dir="auto">message-v2.ts:718</code> | <code dir="auto">"[shaken ~N tokens — recover: artifact://&#x3C;id> (region N)]"</code> — <code dir="auto">agent-session.ts:10886</code> | High |
-| <strong>…recoverable by the model?</strong> | <strong>No</strong> in-context pointer (the spilled copy may exist for ≤7d, unlinked) | <strong>Yes</strong>, by design — the placeholder carries the recovery URL | High |
-| <strong>Image/attachment dropping</strong> | attachments dropped with pruned parts — <code dir="auto">message-v2.ts:719</code>; <code dir="auto">stripMedia</code> option | <code dir="auto">dropImages()</code> / <code dir="auto">/shake images</code> — <code dir="auto">agent-session.ts:10834-10836</code> | High |
-| <strong>Tiered reduction ladder</strong> | none found — prune and compact are separate paths | <strong>yes</strong> — <code dir="auto">#rescueCompactionDeadEnd</code>, elide → dropImages, recoverable first — <code dir="auto">agent-session.ts:13685-13760</code> | Medium / High |
-| <strong>Subagent context firewall</strong> | <code dir="auto">task</code> — child session, only last text part returns — <code dir="auto">task.ts:65</code>, <code dir="auto">:136-144</code> | <code dir="auto">task</code> subsystem (<code dir="auto">src/task/</code>, 25 files); result template <code dir="auto">prompts/tools/task-summary.md</code> | High |
-| <strong>…parent-visible result</strong> | <code dir="auto">task_id</code> + <code dir="auto">&#x3C;task_result></code> + last text part, then capped by M1 — <code dir="auto">task.ts:138-144</code> | <code dir="auto">&#x3C;task-result></code> + <code dir="auto">&#x3C;meta lines size/></code> + <code dir="auto">&#x3C;preview full-output="agent://id"></code> — <code dir="auto">task-summary.md:1-14</code> | High |
-| <strong>…parent told the discarded size</strong> | <strong>no</strong> | <strong>yes</strong> — <code dir="auto">&#x3C;meta lines size /></code>, <code dir="auto">task-summary.md:2</code> | High |
-| <strong>…subagent result itself spilled</strong> | no (truncated by M1, spilled as any tool output) | <strong>yes</strong>, <code dir="auto">agent://&#x3C;id></code> — <code dir="auto">task-summary.md:7</code> | High |
-| <strong>…recursion depth</strong> | 1 by default — <code dir="auto">task</code> denied in child — <code dir="auto">task.ts:78-86</code>, <code dir="auto">:130</code> | <strong>2</strong> by default — <code dir="auto">settings.get("task.maxRecursionDepth") ?? 2</code>, <code dir="auto">task/structured-subagent.ts:211</code>, gated by <code dir="auto">canSpawnAtDepth</code> <code dir="auto">:212</code> | High |
-| <strong>…resumable</strong> | yes, <code dir="auto">task_id</code> — <code dir="auto">task.ts:29-34</code>, <code dir="auto">:60-62</code> | yes, <code dir="auto">hub send</code> / <code dir="auto">agent://&#x3C;id></code> / <code dir="auto">history://&#x3C;id></code> — <code dir="auto">task-async-contract.md</code> | High |
-| <strong>…subagent output caps</strong> | inherits 2000 lines / 50 KB (M1) | <code dir="auto">MAX_OUTPUT_BYTES=500_000</code>, <code dir="auto">MAX_OUTPUT_LINES=5000</code>, env-overridable — <code dir="auto">task/types.ts:53</code>, <code dir="auto">:56</code> | High |
-| <strong>…async / no-poll contract</strong> | synchronous <code dir="auto">await SessionPrompt.prompt</code> — <code dir="auto">task.ts:120</code> | explicit push contract, ~5 min job-id memory — <code dir="auto">task-async-contract.md</code> | High |
-| <strong>…“done” ≠ verified warning</strong> | none found | <strong>explicit</strong> — <em>“<code dir="auto">completed</code> means the subagent yielded successfully, not that claimed artifacts were verified”</em> | High |
-| <strong>Prompt-mandated firewall use</strong> | yes but <strong>Anthropic-prompt-only</strong> for the hard form — <code dir="auto">anthropic.txt:86</code>; soft form in 3 prompts | not located in the prompts read | High / Low |
-| <strong>Prompt caching</strong> | ≤4 breakpoints, first 2 system + last 2 messages — <code dir="auto">transform.ts:192-215</code> | <strong>≤4 too</strong>, but budgeted not positional: counts breakpoints already present (tools+system+messages), then last system block, then walks <em>back</em> from the message tail — <code dir="auto">pi-ai/src/providers/anthropic.ts:3001-3047</code>, <code dir="auto">:3128-3147</code> | High |
-| <strong>…cache TTL</strong> | not read | <strong>1h by default</strong> for OAuth <em>and</em> API keys where supported, because “agent sessions routinely idle past 5 minutes waiting on background jobs” — <code dir="auto">anthropic.ts:440-462</code>; longest-TTL-first ordering enforced at <code dir="auto">:3049-3061</code> | — / High |
-| <strong>External CLI worker fan-out</strong> | none found | <code dir="auto">vibe_spawn/send/wait/kill/list</code> — <code dir="auto">tools/vibe.ts:50</code> | Medium / High |
-| <strong>“Code mode” / script-batched tool calls</strong> | <strong>STRUCK — does not exist at v1.4.0.</strong> Tree’s only “Code Mode” is Cloudflare’s, in a test fixture — <code dir="auto">test/fixture/skills/agents-sdk/SKILL.md:152</code>; no script/exec tool in <code dir="auto">tool/registry.ts:1-26</code>. See <strong>O11</strong> | not searched | High / — |
-| <strong>Skill deferral</strong> (instruction bodies out of the system prompt) | <strong>yes</strong> — description lists <code dir="auto">- **name**: description</code> only, <code dir="auto">Skill.fmt(list,{verbose:false})</code> <code dir="auto">tool/skill.ts:32</code> + <code dir="auto">skill/index.ts:258-263</code>; body loads on call <code dir="auto">:79-91</code> | <strong>yes</strong> — skills addressed by a <code dir="auto">skill://</code> internal URL scheme, <code dir="auto">pi-coding-agent/src/internal-urls/skill-protocol.ts</code>, <code dir="auto">compaction/tool-protection.ts:12</code> | High |
-| <strong>…loaded skill content protected from eviction</strong> | <strong>no</strong> — prune clears on <code dir="auto">part.state.time.compacted</code> alone, with no per-tool exemption — <code dir="auto">message-v2.ts:718</code> | <strong>yes</strong> — <code dir="auto">protectedTools: ["skill", isSkillReadToolResult]</code> on both shake and prune — <code dir="auto">compaction/shake.ts:49</code>, <code dir="auto">:57</code>, <code dir="auto">compaction/pruning.ts:57</code>, matcher at <code dir="auto">tool-protection.ts:38-39</code> | High |
-| <strong>…bundled-resource file list</strong> | <strong>sampled, capped at 10</strong>, and the model is told so — <code dir="auto">tool/skill.ts:56</code>, <code dir="auto">:69-70</code>, <code dir="auto">:86</code> | not searched | High / — |
-| <strong>Model-settable context budget</strong> | <strong>yes, uniquely</strong> — <code dir="auto">codesearch</code> <code dir="auto">tokensNum</code> <code dir="auto">.min(1000).max(50000).default(5000)</code> — <code dir="auto">tool/codesearch.ts:44-51</code>. Every other opencode cap is a fixed constant | none found — but on a <strong>single grep</strong> for <code dir="auto">tokensNum</code>/token-count param descriptions; per this doc’s own package-boundary lesson, treat as not-established | High / <strong>Low</strong> |
-| <strong>Child-session cost in parent’s displayed total</strong> | <strong>no</strong> — total reduces over one session’s own messages, <code dir="auto">app/src/components/session/session-context-metrics.ts:51</code>; children excluded from roots and counters, <code dir="auto">global-sync/session-trim.ts</code>, <code dir="auto">event-reducer.ts</code>; <code dir="auto">tool/task.ts</code> never mentions cost/tokens/usage | not determined | High / — |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>mechanism</th><th>opencode 1.4.0</th><th>OMP 17.0.7</th><th>confidence</th></tr></thead><tbody><tr><td><strong>Line cap on tool output</strong></td><td>2000 — <code dir="auto">tool/truncate.ts:17</code></td><td>3000 — <code dir="auto">session/streaming-output.ts:10</code></td><td>High</td></tr><tr><td><strong>Byte cap on tool output</strong></td><td>50 KB — <code dir="auto">truncate.ts:18</code></td><td>50 KB — <code dir="auto">streaming-output.ts:11</code></td><td>High</td></tr><tr><td><strong>Per-line/column cap</strong></td><td>only within tools: <code dir="auto">read.ts:17</code> (2000 ch), <code dir="auto">grep.ts:130-132</code></td><td>global at the sink: <code dir="auto">DEFAULT_MAX_COLUMN = 512</code> — <code dir="auto">streaming-output.ts:12</code>, applied <code dir="auto">:870-873</code></td><td>High</td></tr><tr><td><strong>Cap combination</strong></td><td>AND — both must pass — <code dir="auto">truncate.ts:70</code></td><td>per-dimension, tracked separately in <code dir="auto">TruncationMeta</code> — <code dir="auto">output-meta.ts:26-28</code></td><td>High</td></tr><tr><td><strong>Truncation directions</strong></td><td>head, tail — <code dir="auto">truncate.ts:27</code></td><td>head, tail, <strong>middle</strong> — <code dir="auto">output-meta.ts:28</code>, <code dir="auto">:19</code></td><td>High</td></tr><tr><td><strong>Applied universally?</strong></td><td><strong>Yes</strong> — every tool result via <code dir="auto">tool/tool.ts:86</code>; opt-out at <code dir="auto">:83-85</code></td><td><strong>Yes, at the registration boundary</strong> — <code dir="auto">wrapToolWithMetaNotice</code> → <code dir="auto">spillLargeResultToArtifact</code>, <code dir="auto">output-meta.ts:783</code>, <code dir="auto">:650</code>; every registration path wraps (built-in <code dir="auto">tools/index.ts:595</code>, MCP <code dir="auto">agent-session.ts:7786</code>, RPC-host <code dir="auto">:7837</code>, vibe <code dir="auto">:7195</code>). Text blocks only; three exemptions — see <strong>O9</strong></td><td>High</td></tr><tr><td><strong>Full output spilled to disk</strong></td><td><strong>Yes</strong> — <code dir="auto">truncate.ts:104-107</code></td><td><strong>Yes</strong> — <code dir="auto">session/artifacts.ts:101-119</code></td><td>High</td></tr><tr><td><strong>Spill identifier</strong></td><td>monotonic <code dir="auto">ToolID</code> as filename — <code dir="auto">truncate.ts:104</code></td><td>sequential int per session, <code dir="auto">&#x3C;id>.&#x3C;tool>.log</code> — <code dir="auto">artifacts.ts:104</code></td><td>High</td></tr><tr><td><strong>Spill addressed as</strong></td><td>a filesystem path in the hint text — <code dir="auto">truncate.ts:110-111</code></td><td>a URL scheme <code dir="auto">artifact://&#x3C;id></code> — <code dir="auto">sdk.ts:1577</code>, <code dir="auto">streaming-output.ts:631</code></td><td>High</td></tr><tr><td><strong>Sub-range fetch of a spill</strong></td><td>not as a spill feature; generic <code dir="auto">Read</code> offset/limit — <code dir="auto">truncate.ts:111</code></td><td><strong>yes, selector grammar</strong> <code dir="auto">artifact://5:1-50</code>, <code dir="auto">artifact://3:raw:-100</code>, <code dir="auto">artifact://5:conflicts:1-1</code> — <code dir="auto">path-utils.ts:376</code>, <code dir="auto">:401</code>, <code dir="auto">read.ts:822</code></td><td>High</td></tr><tr><td><strong>Spill ID space across subagents</strong></td><td>per-session dirs, no shared id space found</td><td><strong>shared parent+subagent id space</strong> — <code dir="auto">artifacts.ts:34-36</code>, <code dir="auto">session-manager.ts:1347-1349</code></td><td>High</td></tr><tr><td><strong>Spill expiry</strong></td><td><strong>7 days</strong>, hourly sweep — <code dir="auto">truncate.ts:15</code>, <code dir="auto">:51-61</code>, <code dir="auto">:123-131</code></td><td><strong>none</strong> — <code dir="auto">artifacts.ts</code> has no retention path (153 lines, full surface read)</td><td>High</td></tr><tr><td><strong>Spill written when</strong></td><td>after the fact, on overflow — <code dir="auto">truncate.ts:106-107</code></td><td><strong>streaming, raw/pre-cap</strong> — <code dir="auto">streaming-output.ts:877-880</code></td><td>High</td></tr><tr><td><strong>Model told the caps</strong></td><td>yes — bash description interpolates them, <code dir="auto">bash.ts:469-470</code></td><td>via <code dir="auto">LimitsMeta</code> in the output envelope — <code dir="auto">output-meta.ts:68</code></td><td>High / Medium</td></tr><tr><td><strong>Overflow trigger</strong></td><td>absolute tokens vs <code dir="auto">model.limit.input - reserved</code>, <code dir="auto">reserved = min(20k, maxOutput)</code> — <code dir="auto">overflow.ts:6</code>, <code dir="auto">:16-21</code></td><td>budget-reserve vs context window — <code dir="auto">agent-session.ts:13673-13683</code></td><td>High / Medium</td></tr><tr><td><strong>Cache tokens count toward window</strong></td><td><strong>yes</strong> — <code dir="auto">overflow.ts:14</code></td><td><strong>yes</strong> — <code dir="auto">totalTokens || input+output+cacheRead+cacheWrite</code>, <em>minus</em> provider-side orchestration tokens (billable, but never replay into the prefix) — <code dir="auto">pi-agent-core/src/compaction/compaction.ts:215-222</code></td><td>High</td></tr><tr><td><strong>Compaction</strong></td><td>dedicated <code dir="auto">"compaction"</code> agent, plugin-replaceable prompt — <code dir="auto">compaction.ts:179</code>, <code dir="auto">:183-185</code>, <code dir="auto">:219</code></td><td>three modes: <code dir="auto">soft</code>, <code dir="auto">remote</code>, <strong><code dir="auto">snapcompact</code></strong> — <code dir="auto">compact-modes.ts:47-65</code></td><td>High</td></tr><tr><td><strong>Compaction without an LLM call</strong></td><td>none found</td><td><strong><code dir="auto">snapcompact</code></strong> — bitmap images read back by vision — <code dir="auto">compact-modes.ts:58-63</code></td><td>High</td></tr><tr><td><strong>Evict tool results without summarizing</strong></td><td><strong>prune</strong> — <code dir="auto">compaction.ts:35-37</code>, <code dir="auto">:93-139</code></td><td><strong>shake(“elide”)</strong> — <code dir="auto">agent-session.ts:10833-10882</code></td><td>High</td></tr><tr><td><strong>…protection band</strong></td><td>newest 40k tokens of tool output + last 2 user turns — <code dir="auto">compaction.ts:36</code>, <code dir="auto">:111</code></td><td><strong><code dir="auto">protectTokens: 16_000</code></strong> on the auto path (<code dir="auto">0</code> on manual <code dir="auto">/shake</code>) — <code dir="auto">pi-agent-core/src/compaction/shake.ts:46-59</code></td><td>High</td></tr><tr><td><strong>…hysteresis</strong></td><td>only fires if >20k tokens would be freed — <code dir="auto">compaction.ts:35</code>, <code dir="auto">:130</code></td><td><strong><code dir="auto">minSavings: 4_000</code></strong> on the auto path (<code dir="auto">0</code> on manual <code dir="auto">/shake</code>) — <code dir="auto">shake.ts:46-59</code></td><td>High</td></tr><tr><td><strong>…cache-aware history mutation</strong></td><td>none found</td><td><strong>yes</strong> — prune refuses to mutate any entry whose message-suffix exceeds the warm-cache window (<code dir="auto">8_000</code>), because editing inside the sent prefix re-writes the whole suffix at <code dir="auto">cacheWrite</code> price — <code dir="auto">pi-agent-core/src/compaction/pruning.ts:44-51</code>, <code dir="auto">:349-357</code>, threshold at <code dir="auto">agent-session.ts:792</code></td><td>Medium / High</td></tr><tr><td><strong>…what the model sees after</strong></td><td><code dir="auto">"[Old tool result content cleared]"</code> — <code dir="auto">message-v2.ts:718</code></td><td><code dir="auto">"[shaken ~N tokens — recover: artifact://&#x3C;id> (region N)]"</code> — <code dir="auto">agent-session.ts:10886</code></td><td>High</td></tr><tr><td><strong>…recoverable by the model?</strong></td><td><strong>No</strong> in-context pointer (the spilled copy may exist for ≤7d, unlinked)</td><td><strong>Yes</strong>, by design — the placeholder carries the recovery URL</td><td>High</td></tr><tr><td><strong>Image/attachment dropping</strong></td><td>attachments dropped with pruned parts — <code dir="auto">message-v2.ts:719</code>; <code dir="auto">stripMedia</code> option</td><td><code dir="auto">dropImages()</code> / <code dir="auto">/shake images</code> — <code dir="auto">agent-session.ts:10834-10836</code></td><td>High</td></tr><tr><td><strong>Tiered reduction ladder</strong></td><td>none found — prune and compact are separate paths</td><td><strong>yes</strong> — <code dir="auto">#rescueCompactionDeadEnd</code>, elide → dropImages, recoverable first — <code dir="auto">agent-session.ts:13685-13760</code></td><td>Medium / High</td></tr><tr><td><strong>Subagent context firewall</strong></td><td><code dir="auto">task</code> — child session, only last text part returns — <code dir="auto">task.ts:65</code>, <code dir="auto">:136-144</code></td><td><code dir="auto">task</code> subsystem (<code dir="auto">src/task/</code>, 25 files); result template <code dir="auto">prompts/tools/task-summary.md</code></td><td>High</td></tr><tr><td><strong>…parent-visible result</strong></td><td><code dir="auto">task_id</code> + <code dir="auto">&#x3C;task_result></code> + last text part, then capped by M1 — <code dir="auto">task.ts:138-144</code></td><td><code dir="auto">&#x3C;task-result></code> + <code dir="auto">&#x3C;meta lines size/></code> + <code dir="auto">&#x3C;preview full-output="agent://id"></code> — <code dir="auto">task-summary.md:1-14</code></td><td>High</td></tr><tr><td><strong>…parent told the discarded size</strong></td><td><strong>no</strong></td><td><strong>yes</strong> — <code dir="auto">&#x3C;meta lines size /></code>, <code dir="auto">task-summary.md:2</code></td><td>High</td></tr><tr><td><strong>…subagent result itself spilled</strong></td><td>no (truncated by M1, spilled as any tool output)</td><td><strong>yes</strong>, <code dir="auto">agent://&#x3C;id></code> — <code dir="auto">task-summary.md:7</code></td><td>High</td></tr><tr><td><strong>…recursion depth</strong></td><td>1 by default — <code dir="auto">task</code> denied in child — <code dir="auto">task.ts:78-86</code>, <code dir="auto">:130</code></td><td><strong>2</strong> by default — <code dir="auto">settings.get("task.maxRecursionDepth") ?? 2</code>, <code dir="auto">task/structured-subagent.ts:211</code>, gated by <code dir="auto">canSpawnAtDepth</code> <code dir="auto">:212</code></td><td>High</td></tr><tr><td><strong>…resumable</strong></td><td>yes, <code dir="auto">task_id</code> — <code dir="auto">task.ts:29-34</code>, <code dir="auto">:60-62</code></td><td>yes, <code dir="auto">hub send</code> / <code dir="auto">agent://&#x3C;id></code> / <code dir="auto">history://&#x3C;id></code> — <code dir="auto">task-async-contract.md</code></td><td>High</td></tr><tr><td><strong>…subagent output caps</strong></td><td>inherits 2000 lines / 50 KB (M1)</td><td><code dir="auto">MAX_OUTPUT_BYTES=500_000</code>, <code dir="auto">MAX_OUTPUT_LINES=5000</code>, env-overridable — <code dir="auto">task/types.ts:53</code>, <code dir="auto">:56</code></td><td>High</td></tr><tr><td><strong>…async / no-poll contract</strong></td><td>synchronous <code dir="auto">await SessionPrompt.prompt</code> — <code dir="auto">task.ts:120</code></td><td>explicit push contract, ~5 min job-id memory — <code dir="auto">task-async-contract.md</code></td><td>High</td></tr><tr><td><strong>…“done” ≠ verified warning</strong></td><td>none found</td><td><strong>explicit</strong> — <em>“<code dir="auto">completed</code> means the subagent yielded successfully, not that claimed artifacts were verified”</em></td><td>High</td></tr><tr><td><strong>Prompt-mandated firewall use</strong></td><td>yes but <strong>Anthropic-prompt-only</strong> for the hard form — <code dir="auto">anthropic.txt:86</code>; soft form in 3 prompts</td><td>not located in the prompts read</td><td>High / Low</td></tr><tr><td><strong>Prompt caching</strong></td><td>≤4 breakpoints, first 2 system + last 2 messages — <code dir="auto">transform.ts:192-215</code></td><td><strong>≤4 too</strong>, but budgeted not positional: counts breakpoints already present (tools+system+messages), then last system block, then walks <em>back</em> from the message tail — <code dir="auto">pi-ai/src/providers/anthropic.ts:3001-3047</code>, <code dir="auto">:3128-3147</code></td><td>High</td></tr><tr><td><strong>…cache TTL</strong></td><td>not read</td><td><strong>1h by default</strong> for OAuth <em>and</em> API keys where supported, because “agent sessions routinely idle past 5 minutes waiting on background jobs” — <code dir="auto">anthropic.ts:440-462</code>; longest-TTL-first ordering enforced at <code dir="auto">:3049-3061</code></td><td>— / High</td></tr><tr><td><strong>External CLI worker fan-out</strong></td><td>none found</td><td><code dir="auto">vibe_spawn/send/wait/kill/list</code> — <code dir="auto">tools/vibe.ts:50</code></td><td>Medium / High</td></tr><tr><td><strong>”Code mode” / script-batched tool calls</strong></td><td><strong>STRUCK — does not exist at v1.4.0.</strong> Tree’s only “Code Mode” is Cloudflare’s, in a test fixture — <code dir="auto">test/fixture/skills/agents-sdk/SKILL.md:152</code>; no script/exec tool in <code dir="auto">tool/registry.ts:1-26</code>. See <strong>O11</strong></td><td>not searched</td><td>High / —</td></tr><tr><td><strong>Skill deferral</strong> (instruction bodies out of the system prompt)</td><td><strong>yes</strong> — description lists <code dir="auto">- **name**: description</code> only, <code dir="auto">Skill.fmt(list,{verbose:false})</code> <code dir="auto">tool/skill.ts:32</code> + <code dir="auto">skill/index.ts:258-263</code>; body loads on call <code dir="auto">:79-91</code></td><td><strong>yes</strong> — skills addressed by a <code dir="auto">skill://</code> internal URL scheme, <code dir="auto">pi-coding-agent/src/internal-urls/skill-protocol.ts</code>, <code dir="auto">compaction/tool-protection.ts:12</code></td><td>High</td></tr><tr><td><strong>…loaded skill content protected from eviction</strong></td><td><strong>no</strong> — prune clears on <code dir="auto">part.state.time.compacted</code> alone, with no per-tool exemption — <code dir="auto">message-v2.ts:718</code></td><td><strong>yes</strong> — <code dir="auto">protectedTools: ["skill", isSkillReadToolResult]</code> on both shake and prune — <code dir="auto">compaction/shake.ts:49</code>, <code dir="auto">:57</code>, <code dir="auto">compaction/pruning.ts:57</code>, matcher at <code dir="auto">tool-protection.ts:38-39</code></td><td>High</td></tr><tr><td><strong>…bundled-resource file list</strong></td><td><strong>sampled, capped at 10</strong>, and the model is told so — <code dir="auto">tool/skill.ts:56</code>, <code dir="auto">:69-70</code>, <code dir="auto">:86</code></td><td>not searched</td><td>High / —</td></tr><tr><td><strong>Model-settable context budget</strong></td><td><strong>yes, uniquely</strong> — <code dir="auto">codesearch</code> <code dir="auto">tokensNum</code> <code dir="auto">.min(1000).max(50000).default(5000)</code> — <code dir="auto">tool/codesearch.ts:44-51</code>. Every other opencode cap is a fixed constant</td><td>none found — but on a <strong>single grep</strong> for <code dir="auto">tokensNum</code>/token-count param descriptions; per this doc’s own package-boundary lesson, treat as not-established</td><td>High / <strong>Low</strong></td></tr><tr><td><strong>Child-session cost in parent’s displayed total</strong></td><td><strong>no</strong> — total reduces over one session’s own messages, <code dir="auto">app/src/components/session/session-context-metrics.ts:51</code>; children excluded from roots and counters, <code dir="auto">global-sync/session-trim.ts</code>, <code dir="auto">event-reducer.ts</code>; <code dir="auto">tool/task.ts</code> never mentions cost/tokens/usage</td><td>not determined</td><td>High / —</td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="could-not-determine">Could not determine</h2><a class="sl-anchor-link" href="#could-not-determine"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Could not determine”</span></a></div>
 <p>Recording these explicitly, because an honest gap is worth more than a plausible cell.</p>
@@ -770,14 +1199,47 @@ different vendor). <strong>A gap recorded as “not searched” is not evidence 
 direction</strong>, and the cheapest way to find out remains running the search rather than reasoning
 about whether it is worth running.</p>
 <p>What closed, and where it actually lived:</p>
-<p>| gap | answer | package |
-|---|---|---|
-| Shake config values | auto: <code dir="auto">protectTokens 16_000</code>, <code dir="auto">minSavings 4_000</code>, <code dir="auto">fenceMinTokens 400</code>; manual <code dir="auto">/shake</code>: both <code dir="auto">0</code> — <code dir="auto">compaction/shake.ts:46-59</code> | <code dir="auto">pi-agent-core</code> |
-| Compaction thresholds | <code dir="auto">shouldCompact</code> is <code dir="auto">contextTokens > threshold</code> (<code dir="auto">compaction.ts:294-298</code>); fixed <code dir="auto">thresholdTokens</code> beats percentage (<code dir="auto">:319-325</code>); 15% proportional reserve fallback (<code dir="auto">:282-288</code>) | <code dir="auto">pi-agent-core</code> |
-| Subagent recursion depth | <strong>2</strong> by default — <code dir="auto">task/structured-subagent.ts:211</code> (not <code dir="auto">spawn-policy.ts</code>) | <code dir="auto">pi-coding-agent</code> |
-| Prompt-caching strategy | 4-breakpoint <em>budget</em>, 1h default retention, TTL-ordering normalized — see <strong>O8</strong> | <code dir="auto">pi-ai</code> |
-| Cache tokens vs overflow | <strong>yes</strong>, they count — minus provider-side orchestration tokens — <code dir="auto">compaction.ts:215-222</code> | <code dir="auto">pi-agent-core</code> |
-| Cap universality | <strong>universal at the registration boundary</strong> — <code dir="auto">wrapToolWithMetaNotice</code>, <code dir="auto">output-meta.ts:805</code>; see <strong>O9</strong> | <code dir="auto">pi-coding-agent</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>gap</th><th>answer</th><th>package</th></tr></thead><tbody><tr><td>Shake config values</td><td>auto: <code dir="auto">protectTokens 16_000</code>, <code dir="auto">minSavings 4_000</code>, <code dir="auto">fenceMinTokens 400</code>; manual <code dir="auto">/shake</code>: both <code dir="auto">0</code> — <code dir="auto">compaction/shake.ts:46-59</code></td><td><code dir="auto">pi-agent-core</code></td></tr><tr><td>Compaction thresholds</td><td><code dir="auto">shouldCompact</code> is <code dir="auto">contextTokens > threshold</code> (<code dir="auto">compaction.ts:294-298</code>); fixed <code dir="auto">thresholdTokens</code> beats percentage (<code dir="auto">:319-325</code>); 15% proportional reserve fallback (<code dir="auto">:282-288</code>)</td><td><code dir="auto">pi-agent-core</code></td></tr><tr><td>Subagent recursion depth</td><td><strong>2</strong> by default — <code dir="auto">task/structured-subagent.ts:211</code> (not <code dir="auto">spawn-policy.ts</code>)</td><td><code dir="auto">pi-coding-agent</code></td></tr><tr><td>Prompt-caching strategy</td><td>4-breakpoint <em>budget</em>, 1h default retention, TTL-ordering normalized — see <strong>O8</strong></td><td><code dir="auto">pi-ai</code></td></tr><tr><td>Cache tokens vs overflow</td><td><strong>yes</strong>, they count — minus provider-side orchestration tokens — <code dir="auto">compaction.ts:215-222</code></td><td><code dir="auto">pi-agent-core</code></td></tr><tr><td>Cap universality</td><td><strong>universal at the registration boundary</strong> — <code dir="auto">wrapToolWithMetaNotice</code>, <code dir="auto">output-meta.ts:805</code>; see <strong>O9</strong></td><td><code dir="auto">pi-coding-agent</code></td></tr></tbody></table>
 <p><strong>Three</strong> of these did not merely fill a blank — they <strong>corrected cells that were already filled
 wrongly</strong>, and the three share a shape worth naming.</p>
 <p>Two were the shake cells. OMP’s hysteresis and protection band were recorded as <em>none found</em> and
@@ -868,22 +1330,87 @@ not outstanding.</p>
 <strong><code dir="auto">agent-context-firewall-and-output-spill-2026-08-02</code></strong> (the plan that ran the
 measurements); decisions on the reconciling plan are written out in full. <code dir="auto">D-0NN</code> ids are
 only meaningful with their plan — two plans both have a <code dir="auto">D-005</code>.</p>
-<p>| # | Verdict | Authority |
-|---|---|---|
-| 1 | <strong>DONE</strong> 2026-08-08 | <code dir="auto">payload-tier.ts</code> omission markers now carry size + the <code dir="auto">payloadTier:'full'</code> recovery pointer (WI-36048) |
-| 2 | <strong>SHIPPED</strong>; remainder <strong>REJECTED on measurement</strong> 2026-08-08 | Taught once in standing context, generated from <code dir="auto">computeTurnDoors</code> — <code dir="auto">agent-context-firewall…</code> D-009. Sited there, not in the tool descriptions, precisely because of the prompt-weight budget this item named as its own killer. The <em>per-tool cap interpolation</em> remainder is now closed by D-021: <strong>there is no per-tool cap to interpolate</strong> — <code dir="auto">result-door.ts:57</code>/<code dir="auto">:246</code> resolve <code dir="auto">resultEach</code> per RECIPIENT SESSION, never per tool — and a static description naming a session-dependent number would be <em>wrong</em>, not merely costly. Cost confirms it independently: 724 tools, p50 793 / p90 1371 / <strong>p99 1491 / max 1498</strong> against a 1500 budget; +120 chars on every tool newly breaches the budget on <strong>66</strong> and the hard cap on <strong>14</strong> (WI-36767) |
-| 3 | <strong>ADOPTED as a rule</strong> 2026-08-08 | <code dir="auto">opencode-omp-borrow-finish-2026-08-08</code> D-019 (with items 11 + 12) |
-| 4 | <strong>DEAD — do not port</strong> | D-006: the 89.5% headline was a definitional artifact of the spill-file shape |
-| 5 | <strong>DEAD — do not build</strong> | D-005 + EI-19384431482006940: the path it rescues is ~134 cheap re-callable reads/day against 68,649 recoverable spills/24h |
-| 6 | <strong>DEAD — measured, not argued</strong> | D-018: fan-out costs <strong>1.27×</strong> the exploration it absorbs, priced in billed usage over 795 transcripts / 495 sessions. This also <strong>closes the “Could not determine” gap</strong> listed above for opencode subagent spawn cost — that question has now been answered on our own corpus, which is the number that actually governs the decision |
-| 7 | Never approved | Precondition unchecked (we have no in-session history-eviction pass) |
-| 8 | <strong>REJECTED on measurement</strong> 2026-08-08 | D-020. Head-keep is correct in <strong>all three</strong> live door populations, and middle elision would actively make two <em>worse</em>. <code dir="auto">result-door</code> is deliberately priority-ordered head-first — that IS the WI-5656 fix (<code dir="auto">orient.ts</code> ranks <code dir="auto">self</code>+<code dir="auto">recovery</code> first, pinned by <code dir="auto">orient-recovery-door-priority.test.ts</code>), so eliding the middle would cut mid-priority legs while preserving the lowest-priority tail; <code dir="auto">ambient-push</code> sorts most-urgent-first, same inversion; the wake <code dir="auto">injection-door</code> already spills its tail behind a pointer. <strong>General rule:</strong> elision only pays where the tail is <em>both</em> load-bearing <em>and</em> unrecoverable — here it is never both, so the lever is REORDERING (what WI-5656 actually used), not a smarter cut. Byproduct: the <code dir="auto">ambient-push-door</code> <code dir="auto">lossless</code> registration was resting on a reason that was false on two counts — corrected, with a bound test + non-vacuity control (WI-36683); its structural fix is WI-36688 |
-| 9 | Never approved — <strong>but a CONFIRMED DEFECT, now fixed</strong> 2026-08-08 | <code dir="auto">result-door.ts</code> returned the full uncapped result when the spill write failed. WI-36047 |
-| 10 | <strong>MEASURED, then scoped down — DONE</strong> 2026-08-08 | <code dir="auto">result-door.ts</code> caps text only, so an image-heavy result takes the identity fast-path untouched — the shape is real, but <strong>exposure is ZERO</strong>: <code dir="auto">computer:*</code>, the only image-emitting tool, has never been invoked (0 rows against a denominator of 1,116,788 rows / 302 tools in 14d, sanity-checked before trusting the empty). So no speculative cap was built — only the SILENCE was removed: <code dir="auto">nonTextChars</code> in <code dir="auto">_meta</code> plus a fast-path notice when non-text exceeds the door budget. WI-36613 |
-| 11 | <strong>Already satisfied</strong> | <code dir="auto">compaction-usage.ts</code> estimates from transcript bytes and never anchors on provider-reported usage |
-| 12 | <strong>Precondition holds</strong> | We shape at result-creation, ahead of the cache, not behind it |
-| 13 | <strong>DONE</strong> 2026-08-08 | Landed as <em>runtime-rendered</em> text, not prompt text — <code dir="auto">renderCompletion</code> (<code dir="auto">coord-lifecycle/render.ts</code>), the notification the PARENT reads, so it costs <strong>zero</strong> prompt weight (item 2’s killer) and can be CONDITIONAL: said only when true, so it never becomes boilerplate readers skip. A completion recording neither <code dir="auto">tests</code> nor <code dir="auto">verifiedHow</code> is now marked <strong>UNVERIFIED</strong> in the headline plus a terse body clause. Uncovered and fixed en route: <code dir="auto">renderCompletion</code> was violating its own D-006 information-preservation invariant by dropping <code dir="auto">verifiedHow</code> <em>and</em> <code dir="auto">filesChanged</code>, and the test asserting that invariant passed <strong>vacuously</strong> because its fixture never set either field. WI-36726 |
-| 14 | <strong>Parked</strong> | Tier 4. We hold an independent negative: OMP’s image-archival compaction was the root cause of ornith-35b’s context overflow on 2026-07-13 (a text-only model cannot read a bitmap back) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Verdict</th><th>Authority</th></tr></thead><tbody><tr><td>1</td><td><strong>DONE</strong> 2026-08-08</td><td><code dir="auto">payload-tier.ts</code> omission markers now carry size + the <code dir="auto">payloadTier:'full'</code> recovery pointer (WI-36048)</td></tr><tr><td>2</td><td><strong>SHIPPED</strong>; remainder <strong>REJECTED on measurement</strong> 2026-08-08</td><td>Taught once in standing context, generated from <code dir="auto">computeTurnDoors</code> — <code dir="auto">agent-context-firewall…</code> D-009. Sited there, not in the tool descriptions, precisely because of the prompt-weight budget this item named as its own killer. The <em>per-tool cap interpolation</em> remainder is now closed by D-021: <strong>there is no per-tool cap to interpolate</strong> — <code dir="auto">result-door.ts:57</code>/<code dir="auto">:246</code> resolve <code dir="auto">resultEach</code> per RECIPIENT SESSION, never per tool — and a static description naming a session-dependent number would be <em>wrong</em>, not merely costly. Cost confirms it independently: 724 tools, p50 793 / p90 1371 / <strong>p99 1491 / max 1498</strong> against a 1500 budget; +120 chars on every tool newly breaches the budget on <strong>66</strong> and the hard cap on <strong>14</strong> (WI-36767)</td></tr><tr><td>3</td><td><strong>ADOPTED as a rule</strong> 2026-08-08</td><td><code dir="auto">opencode-omp-borrow-finish-2026-08-08</code> D-019 (with items 11 + 12)</td></tr><tr><td>4</td><td><strong>DEAD — do not port</strong></td><td>D-006: the 89.5% headline was a definitional artifact of the spill-file shape</td></tr><tr><td>5</td><td><strong>DEAD — do not build</strong></td><td>D-005 + EI-19384431482006940: the path it rescues is ~134 cheap re-callable reads/day against 68,649 recoverable spills/24h</td></tr><tr><td>6</td><td><strong>DEAD — measured, not argued</strong></td><td>D-018: fan-out costs <strong>1.27×</strong> the exploration it absorbs, priced in billed usage over 795 transcripts / 495 sessions. This also <strong>closes the “Could not determine” gap</strong> listed above for opencode subagent spawn cost — that question has now been answered on our own corpus, which is the number that actually governs the decision</td></tr><tr><td>7</td><td>Never approved</td><td>Precondition unchecked (we have no in-session history-eviction pass)</td></tr><tr><td>8</td><td><strong>REJECTED on measurement</strong> 2026-08-08</td><td>D-020. Head-keep is correct in <strong>all three</strong> live door populations, and middle elision would actively make two <em>worse</em>. <code dir="auto">result-door</code> is deliberately priority-ordered head-first — that IS the WI-5656 fix (<code dir="auto">orient.ts</code> ranks <code dir="auto">self</code>+<code dir="auto">recovery</code> first, pinned by <code dir="auto">orient-recovery-door-priority.test.ts</code>), so eliding the middle would cut mid-priority legs while preserving the lowest-priority tail; <code dir="auto">ambient-push</code> sorts most-urgent-first, same inversion; the wake <code dir="auto">injection-door</code> already spills its tail behind a pointer. <strong>General rule:</strong> elision only pays where the tail is <em>both</em> load-bearing <em>and</em> unrecoverable — here it is never both, so the lever is REORDERING (what WI-5656 actually used), not a smarter cut. Byproduct: the <code dir="auto">ambient-push-door</code> <code dir="auto">lossless</code> registration was resting on a reason that was false on two counts — corrected, with a bound test + non-vacuity control (WI-36683); its structural fix is WI-36688</td></tr><tr><td>9</td><td>Never approved — <strong>but a CONFIRMED DEFECT, now fixed</strong> 2026-08-08</td><td><code dir="auto">result-door.ts</code> returned the full uncapped result when the spill write failed. WI-36047</td></tr><tr><td>10</td><td><strong>MEASURED, then scoped down — DONE</strong> 2026-08-08</td><td><code dir="auto">result-door.ts</code> caps text only, so an image-heavy result takes the identity fast-path untouched — the shape is real, but <strong>exposure is ZERO</strong>: <code dir="auto">computer:*</code>, the only image-emitting tool, has never been invoked (0 rows against a denominator of 1,116,788 rows / 302 tools in 14d, sanity-checked before trusting the empty). So no speculative cap was built — only the SILENCE was removed: <code dir="auto">nonTextChars</code> in <code dir="auto">_meta</code> plus a fast-path notice when non-text exceeds the door budget. WI-36613</td></tr><tr><td>11</td><td><strong>Already satisfied</strong></td><td><code dir="auto">compaction-usage.ts</code> estimates from transcript bytes and never anchors on provider-reported usage</td></tr><tr><td>12</td><td><strong>Precondition holds</strong></td><td>We shape at result-creation, ahead of the cache, not behind it</td></tr><tr><td>13</td><td><strong>DONE</strong> 2026-08-08</td><td>Landed as <em>runtime-rendered</em> text, not prompt text — <code dir="auto">renderCompletion</code> (<code dir="auto">coord-lifecycle/render.ts</code>), the notification the PARENT reads, so it costs <strong>zero</strong> prompt weight (item 2’s killer) and can be CONDITIONAL: said only when true, so it never becomes boilerplate readers skip. A completion recording neither <code dir="auto">tests</code> nor <code dir="auto">verifiedHow</code> is now marked <strong>UNVERIFIED</strong> in the headline plus a terse body clause. Uncovered and fixed en route: <code dir="auto">renderCompletion</code> was violating its own D-006 information-preservation invariant by dropping <code dir="auto">verifiedHow</code> <em>and</em> <code dir="auto">filesChanged</code>, and the test asserting that invariant passed <strong>vacuously</strong> because its fixture never set either field. WI-36726</td></tr><tr><td>14</td><td><strong>Parked</strong></td><td>Tier 4. We hold an independent negative: OMP’s image-archival compaction was the root cause of ornith-35b’s context overflow on 2026-07-13 (a text-only model cannot read a bitmap back)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="tier-1--cheap-and-id-do-them-now">Tier 1 — cheap, and I’d do them now</h3><a class="sl-anchor-link" href="#tier-1--cheap-and-id-do-them-now"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Tier 1 — cheap, and I’d do them now”</span></a></div>
 <p>Prompt-level or single-function changes. None needs a measurement to justify.</p>
 <div class="sl-heading-wrapper level-h4"><h4 id="1-make-the-eviction-placeholder-self-describing--omp--o4">1. Make the eviction placeholder self-describing — <em>OMP · O4</em></h4><a class="sl-anchor-link" href="#1-make-the-eviction-placeholder-self-describing--omp--o4"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1. Make the eviction placeholder self-describing — OMP · O4”</span></a></div>

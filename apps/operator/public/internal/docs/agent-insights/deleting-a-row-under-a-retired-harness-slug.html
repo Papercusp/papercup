@@ -95,11 +95,28 @@ the 14 rows the same migration had just correctly moved in.</p>
 <p>Check for <code dir="auto">AFTER DELETE</code> capture triggers on every table you touch:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="sql"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">SELECT</span><span style="--0:#D6DEEB;--1:#403F53"> tgname, pg_get_triggerdef(</span><span style="--0:#C792EA;--1:#8844AE">oid</span><span style="--0:#D6DEEB;--1:#403F53">) </span><span style="--0:#C792EA;--1:#8844AE">LIKE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">%DELETE%</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">AS</span><span style="--0:#D6DEEB;--1:#403F53"> fires_on_delete</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">FROM</span><span style="--0:#D6DEEB;--1:#403F53"> pg_trigger</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">WHERE</span><span style="--0:#D6DEEB;--1:#403F53"> tgrelid </span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">harness_shared.&#x3C;table></span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">::regclass</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C792EA;--1:#8844AE">AND</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">NOT</span><span style="--0:#D6DEEB;--1:#403F53"> tgisinternal </span><span style="--0:#C792EA;--1:#8844AE">AND</span><span style="--0:#D6DEEB;--1:#403F53"> tgname </span><span style="--0:#C792EA;--1:#8844AE">LIKE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">%capture%</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="SELECT tgname, pg_get_triggerdef(oid) LIKE &#x27;%DELETE%&#x27; AS fires_on_deleteFROM pg_triggerWHERE tgrelid = &#x27;harness_shared.<table>&#x27;::regclass  AND NOT tgisinternal AND tgname LIKE &#x27;%capture%&#x27;;"><div></div></button></div></figure></div>
 <p>As of this writing, in the plan family:</p>
-<p>| table | capture fires on DELETE? |
-|---|---|
-| <code dir="auto">harness_plans</code> | <strong>yes — the trap</strong> |
-| <code dir="auto">harness_plan_parts</code> | no (INSERT/UPDATE only) |
-| <code dir="auto">plan_revisions</code> | no capture trigger at all |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>table</th><th>capture fires on DELETE?</th></tr></thead><tbody><tr><td><code dir="auto">harness_plans</code></td><td><strong>yes — the trap</strong></td></tr><tr><td><code dir="auto">harness_plan_parts</code></td><td>no (INSERT/UPDATE only)</td></tr><tr><td><code dir="auto">plan_revisions</code></td><td>no capture trigger at all</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-safe-pattern">The safe pattern</h2><a class="sl-anchor-link" href="#the-safe-pattern"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The safe pattern”</span></a></div>
 <p><code dir="auto">harness_admin</code> owns these tables and runs migrations, so it can gate the trigger. A local
 residue cleanup is <strong>not</strong> a content deletion to federate, so turning the capture off is the

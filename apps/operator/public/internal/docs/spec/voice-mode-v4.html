@@ -81,10 +81,30 @@ thinking.</p>
 <code dir="auto">lib/voice-*</code> split-brain path.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-two-live-voice-paths">The two live voice paths</h2><a class="sl-anchor-link" href="#the-two-live-voice-paths"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The two live voice paths”</span></a></div>
 <p>There are two distinct runtime modes:</p>
-<p>| Path | When it runs | Where STT/TTS happen | Who is the brain |
-|---|---|---|---|
-| <strong>Local browser voice mode</strong> | <code dir="auto">fullAgentEngine === 'off'</code> | Browser + local/cloud adapters selected in prefs | The local dispatch path in <code dir="auto">voice-mode.ts</code> / <code dir="auto">VoiceAppBridge.tsx</code> |
-| <strong>Hosted full-agent session</strong> | <code dir="auto">fullAgentEngine !== 'off'</code> | Operator voice host + attached desktop/TUI/mobile clients | <strong>The Papercup pane</strong> (relayed through the host) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>When it runs</th><th>Where STT/TTS happen</th><th>Who is the brain</th></tr></thead><tbody><tr><td><strong>Local browser voice mode</strong></td><td><code dir="auto">fullAgentEngine === 'off'</code></td><td>Browser + local/cloud adapters selected in prefs</td><td>The local dispatch path in <code dir="auto">voice-mode.ts</code> / <code dir="auto">VoiceAppBridge.tsx</code></td></tr><tr><td><strong>Hosted full-agent session</strong></td><td><code dir="auto">fullAgentEngine !== 'off'</code></td><td>Operator voice host + attached desktop/TUI/mobile clients</td><td><strong>The Papercup pane</strong> (relayed through the host)</td></tr></tbody></table>
 <p>The second path is now the dominant one. It is what powers the shared desktop +
 TUI voice session, the Herald/Papercup voice, and the deep-delegation answer
 loop.</p>
@@ -177,11 +197,32 @@ bus</li>
 <p>The unified voice pipeline also introduced a separate lane for answers that need
 real investigation.</p>
 <p>There are now three kinds of “voice action”:</p>
-<p>| User intent | Mechanism | Result |
-|---|---|---|
-| Ask for an immediate answer | Papercup answers directly | Spoken + written in the same pane/session |
-| Ask for buildable work | <code dir="auto">&#x3C;handoff_to_mug></code> | Work item for the Mug to place |
-| Ask for sustained analysis | <code dir="auto">&#x3C;delegate_deep></code> / <code dir="auto">voice:delegate_deep</code> | Background deep-analysis worker returns <code dir="auto">[deep-answer WI-NNN] …</code> into the same pane |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>User intent</th><th>Mechanism</th><th>Result</th></tr></thead><tbody><tr><td>Ask for an immediate answer</td><td>Papercup answers directly</td><td>Spoken + written in the same pane/session</td></tr><tr><td>Ask for buildable work</td><td><code dir="auto">&#x3C;handoff_to_mug></code></td><td>Work item for the Mug to place</td></tr><tr><td>Ask for sustained analysis</td><td><code dir="auto">&#x3C;delegate_deep></code> / <code dir="auto">voice:delegate_deep</code></td><td>Background deep-analysis worker returns <code dir="auto">[deep-answer WI-NNN] …</code> into the same pane</td></tr></tbody></table>
 <p>The deep lane is implemented by:</p>
 <ul>
 <li><code dir="auto">packages/operator-core/lib/agent-tools/voice/delegate-deep.ts</code></li>

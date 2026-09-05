@@ -135,13 +135,42 @@ a CLI child’s lifecycle hook, a wake delivered by <code dir="auto">papercup-bg
 <div class="sl-heading-wrapper level-h2"><h2 id="why-415-other-module-scoped-maps-are-not-415-bugs">Why ~415 other module-scoped Maps are not 415 bugs</h2><a class="sl-anchor-link" href="#why-415-other-module-scoped-maps-are-not-415-bugs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why ~415 other module-scoped Maps are not 415 bugs”</span></a></div>
 <p><code dir="auto">operator-core/lib</code> has ~415 module-scoped <code dir="auto">Map</code>/<code dir="auto">Set</code> declarations. Most are fine, and it matters
 to say <em>why</em>, or this insight turns into a witch-hunt:</p>
-<p>| shape | miss behavior | verdict |
-|---|---|---|
-| <strong>cache</strong> (<code dir="auto">hivePolicyCache</code>, <code dir="auto">tenantScopeCache</code>, …) | recompute | fine — correct, just slower |
-| <strong>registry populated at import</strong> (<code dir="auto">CELLS</code>, <code dir="auto">REGISTRY</code>, <code dir="auto">DIRECT_ELIGIBLE</code>) | n/a — every worker builds the same one | fine |
-| <strong>event-handler <code dir="auto">Set</code></strong> (<code dir="auto">coord-inbox-bus</code>, <code dir="auto">agent-activity-bus</code>) | n/a — intra-process by construction | fine |
-| <strong>dedup / in-flight guard</strong> (<code dir="auto">sweepInFlight</code>, <code dir="auto">seedInFlight</code>) | duplicate work | <strong>degraded</strong> — usually tolerable, worth knowing |
-| <strong>cross-request handshake</strong> (<code dir="auto">carry-respawn-marker</code>) | silently different behavior | <strong>broken</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>shape</th><th>miss behavior</th><th>verdict</th></tr></thead><tbody><tr><td><strong>cache</strong> (<code dir="auto">hivePolicyCache</code>, <code dir="auto">tenantScopeCache</code>, …)</td><td>recompute</td><td>fine — correct, just slower</td></tr><tr><td><strong>registry populated at import</strong> (<code dir="auto">CELLS</code>, <code dir="auto">REGISTRY</code>, <code dir="auto">DIRECT_ELIGIBLE</code>)</td><td>n/a — every worker builds the same one</td><td>fine</td></tr><tr><td><strong>event-handler <code dir="auto">Set</code></strong> (<code dir="auto">coord-inbox-bus</code>, <code dir="auto">agent-activity-bus</code>)</td><td>n/a — intra-process by construction</td><td>fine</td></tr><tr><td><strong>dedup / in-flight guard</strong> (<code dir="auto">sweepInFlight</code>, <code dir="auto">seedInFlight</code>)</td><td>duplicate work</td><td><strong>degraded</strong> — usually tolerable, worth knowing</td></tr><tr><td><strong>cross-request handshake</strong> (<code dir="auto">carry-respawn-marker</code>)</td><td>silently different behavior</td><td><strong>broken</strong></td></tr></tbody></table>
 <p>The dangerous shape is narrow and nameable: <strong>state whose ABSENCE is read as a decision.</strong> A cache
 miss recomputes the same answer; a handshake miss takes the <em>other</em> branch and nothing errors.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-fix-shape">The fix shape</h2><a class="sl-anchor-link" href="#the-fix-shape"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The fix shape”</span></a></div>

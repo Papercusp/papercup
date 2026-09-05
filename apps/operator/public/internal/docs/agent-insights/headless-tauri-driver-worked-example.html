@@ -119,10 +119,24 @@ the cycle isn’t a one-shot fluke — the second pass (<code dir="auto">/adv?ta
 needs, and it is already scriptable per-surface: swap the <code dir="auto">navigate</code> target and the <code dir="auto">--text</code>/
 <code dir="auto">--eval</code>/<code dir="auto">--selector</code> assertions for whatever the surface under test actually renders.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-is--is-not-isolated-read-before-you-clicktypeinvoke-anything">What is / is NOT isolated (read before you click/type/invoke anything)</h2><a class="sl-anchor-link" href="#what-is--is-not-isolated-read-before-you-clicktypeinvoke-anything"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What is / is NOT isolated (read before you click/type/invoke anything)”</span></a></div>
-<p>| | isolated? |
-|---|---|
-| X display, devUrl port, pty port, sidecar process, SPA module bundle | ✅ yes |
-| Postgres <code dir="auto">DATABASE_URL</code> / <code dir="auto">PAPERCUSP_WORKSPACE</code> / WebView profile+localStorage | ❌ <strong>NO</strong> — shared live state by default |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>isolated?</th></tr></thead><tbody><tr><td>X display, devUrl port, pty port, sidecar process, SPA module bundle</td><td>✅ yes</td></tr><tr><td>Postgres <code dir="auto">DATABASE_URL</code> / <code dir="auto">PAPERCUSP_WORKSPACE</code> / WebView profile+localStorage</td><td>❌ <strong>NO</strong> — shared live state by default</td></tr></tbody></table>
 <p><strong>Every write you make in this window is a REAL write to live state</strong> (a Mug-steering click here
 wakes the real Mug and burns real tokens; a routine toggle here really toggles it, git-sync
 included). Reads are safe as-is. For genuine write-path isolation, pass

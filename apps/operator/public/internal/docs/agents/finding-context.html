@@ -79,15 +79,52 @@
 <li><strong>No harness and no project-docs root</strong> → the Papercusp framework engineering reference, <strong>but only for papercusp-su callers</strong> (the audience of this page). A non-SU caller in this case gets a <code dir="auto">no_docs_source</code> error rather than the engineering reference.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="decision-table">Decision table</h2><a class="sl-anchor-link" href="#decision-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Decision table”</span></a></div>
-<p>| Question | Reach for | Notes |
-|---|---|---|
-| “What’s documented for what I’m working on?” (SPEC, plans, architecture) | <code dir="auto">docs:outline</code> → <code dir="auto">docs:get</code> | Outline is cached per run. Resolves your harness’s docs, your project’s docs (when <code dir="auto">PAPERCUSP_PROJECT_DOCS_ROOT</code> is set), or the engineering reference. For long pages, refine with <code dir="auto">docs:get { slugs: [slug], heading: 'anchor-id' }</code>. |
-| Same question, but a keyword you have in mind | <code dir="auto">docs:search</code> | Use when the section name is non-obvious. |
-| “What’s the current state of this harness?” | <code dir="auto">harness:status</code>, <code dir="auto">harness:list_features</code>, <code dir="auto">harness:pending_reviews</code>, <code dir="auto">harness:escalation</code> | Runtime state — features, open reviews, escalations. |
-| “What’s the history of this feature?” | <code dir="auto">features:history</code> | Long-running feature state across turns. |
-| “What did we decide about X in chat / escalation?” | Exact phrase or keyword → <code dir="auto">search:fulltext</code>; paraphrased concept → <code dir="auto">search:semantic</code> | PG-stored prose recall over four surfaces — chats (turns), escalations, brainstorms, and decisions. <code dir="auto">search:semantic</code> defaults to <code dir="auto">mode=hybrid</code> (RRF fusion of BM25 + embeddings) and degrades gracefully to BM25 alone when embeddings aren’t populated. |
-| “What <code dir="auto">[[name]]</code> references this thing?” | <code dir="auto">wiki:backlinks</code> | Cross-references inside the harness. |
-| “What tools are available to me?” | <code dir="auto">agent_tools:list</code> | The catalog — describes every tool you can call. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Question</th><th>Reach for</th><th>Notes</th></tr></thead><tbody><tr><td>”What’s documented for what I’m working on?” (SPEC, plans, architecture)</td><td><code dir="auto">docs:outline</code> → <code dir="auto">docs:get</code></td><td>Outline is cached per run. Resolves your harness’s docs, your project’s docs (when <code dir="auto">PAPERCUSP_PROJECT_DOCS_ROOT</code> is set), or the engineering reference. For long pages, refine with <code dir="auto">docs:get { slugs: [slug], heading: 'anchor-id' }</code>.</td></tr><tr><td>Same question, but a keyword you have in mind</td><td><code dir="auto">docs:search</code></td><td>Use when the section name is non-obvious.</td></tr><tr><td>”What’s the current state of this harness?”</td><td><code dir="auto">harness:status</code>, <code dir="auto">harness:list_features</code>, <code dir="auto">harness:pending_reviews</code>, <code dir="auto">harness:escalation</code></td><td>Runtime state — features, open reviews, escalations.</td></tr><tr><td>”What’s the history of this feature?”</td><td><code dir="auto">features:history</code></td><td>Long-running feature state across turns.</td></tr><tr><td>”What did we decide about X in chat / escalation?”</td><td>Exact phrase or keyword → <code dir="auto">search:fulltext</code>; paraphrased concept → <code dir="auto">search:semantic</code></td><td>PG-stored prose recall over four surfaces — chats (turns), escalations, brainstorms, and decisions. <code dir="auto">search:semantic</code> defaults to <code dir="auto">mode=hybrid</code> (RRF fusion of BM25 + embeddings) and degrades gracefully to BM25 alone when embeddings aren’t populated.</td></tr><tr><td>”What <code dir="auto">[[name]]</code> references this thing?”</td><td><code dir="auto">wiki:backlinks</code></td><td>Cross-references inside the harness.</td></tr><tr><td>”What tools are available to me?”</td><td><code dir="auto">agent_tools:list</code></td><td>The catalog — describes every tool you can call.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="order-of-operations">Order of operations</h2><a class="sl-anchor-link" href="#order-of-operations"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Order of operations”</span></a></div>
 <p>For any task that needs context:</p>
 <ol>

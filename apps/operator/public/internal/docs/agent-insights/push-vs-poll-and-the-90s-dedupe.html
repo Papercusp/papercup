@@ -97,12 +97,37 @@ high-frequency source fires a <code dir="auto">pg_notify</code> <strong>per chan
 anti-pattern (see <code dir="auto">/internal/docs/performance</code>).</p>
 <p>So neither form streams a fast-changing value well.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-classification">The classification</h2><a class="sl-anchor-link" href="#the-classification"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The classification”</span></a></div>
-<p>| Data shape | Example | Mechanism |
-|---|---|---|
-| <strong>Event-driven</strong> (changes on a discrete write, events typically >90 s apart) | schedule edit, plan edit, a pot announce/withdraw, a Mug wake, a spawn outcome flip | <strong>PUSH</strong> — bridge the table or <code dir="auto">notifySyncInvalidate</code> on the write. The dedupe rarely bites; the first event delivers promptly. |
-| <strong>Continuous live gauge</strong> (changes every request / sub-second) | fleet rate usage% / in-flight, a live bench-run progress counter | <strong>POLL</strong> (bounded). The 90 s dedupe would make it feel dead; a per-change notify is a storm. A dedicated non-deduped SSE channel is the only push that beats polling here — usually disproportionate. |
-| <strong>System / external probe</strong> (no backing PG-table write at all) | OS process list, <code dir="auto">pg_stat_activity</code>, git worktree state, kopia/drizzle-studio external processes | <strong>POLL</strong>. There is nothing to trigger on — the state changes without a PG write. |
-| <strong>Editor draft</strong> | a Vditor/markdown editor’s source | <strong>GUARDED one-shot</strong> — a live re-fire mid-edit clobbers the draft. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Data shape</th><th>Example</th><th>Mechanism</th></tr></thead><tbody><tr><td><strong>Event-driven</strong> (changes on a discrete write, events typically >90 s apart)</td><td>schedule edit, plan edit, a pot announce/withdraw, a Mug wake, a spawn outcome flip</td><td><strong>PUSH</strong> — bridge the table or <code dir="auto">notifySyncInvalidate</code> on the write. The dedupe rarely bites; the first event delivers promptly.</td></tr><tr><td><strong>Continuous live gauge</strong> (changes every request / sub-second)</td><td>fleet rate usage% / in-flight, a live bench-run progress counter</td><td><strong>POLL</strong> (bounded). The 90 s dedupe would make it feel dead; a per-change notify is a storm. A dedicated non-deduped SSE channel is the only push that beats polling here — usually disproportionate.</td></tr><tr><td><strong>System / external probe</strong> (no backing PG-table write at all)</td><td>OS process list, <code dir="auto">pg_stat_activity</code>, git worktree state, kopia/drizzle-studio external processes</td><td><strong>POLL</strong>. There is nothing to trigger on — the state changes without a PG write.</td></tr><tr><td><strong>Editor draft</strong></td><td>a Vditor/markdown editor’s source</td><td><strong>GUARDED one-shot</strong> — a live re-fire mid-edit clobbers the draft.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-this-bit-data-sync-push-completion-2026-06-23">How this bit <code dir="auto">data-sync-push-completion-2026-06-23</code></h2><a class="sl-anchor-link" href="#how-this-bit-data-sync-push-completion-2026-06-23"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How this bit data-sync-push-completion-2026-06-23”</span></a></div>
 <p>The audit listed ~40 polls to “migrate to push.” On inspection ~⅓ were
 continuous gauges (<code dir="auto">FleetRateControl</code>, <code dir="auto">AdvEvalsTab</code> bench-live), system probes

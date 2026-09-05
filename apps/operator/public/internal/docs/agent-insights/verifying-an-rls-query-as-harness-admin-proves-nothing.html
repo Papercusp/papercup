@@ -75,10 +75,27 @@
 <code dir="auto">psql</code> against the admin URL. It returns exactly the rows you expect. You ship it.</p>
 <p>That verification is worthless for any table with RLS, because <strong>the two roles disagree and
 the disagreement is silent</strong>:</p>
-<p>| role | <code dir="auto">rolbypassrls</code> | sees RLS-protected rows? |
-|---|---|---|
-| <code dir="auto">harness_admin</code> (what <code dir="auto">dev:pg_query</code> / the admin URL use) | <strong>true</strong> | always |
-| <code dir="auto">harness_app</code> (the operator’s app path) | <strong>false</strong> | only with <code dir="auto">app.workspace_id</code> set |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>role</th><th><code dir="auto">rolbypassrls</code></th><th>sees RLS-protected rows?</th></tr></thead><tbody><tr><td><code dir="auto">harness_admin</code> (what <code dir="auto">dev:pg_query</code> / the admin URL use)</td><td><strong>true</strong></td><td>always</td></tr><tr><td><code dir="auto">harness_app</code> (the operator’s app path)</td><td><strong>false</strong></td><td>only with <code dir="auto">app.workspace_id</code> set</td></tr></tbody></table>
 <p>Measured 2026-08-03 on <code dir="auto">harness_shared.coord_event_log</code>, policy
 <code dir="auto">coord_event_log_workspace_isolation</code> → <code dir="auto">workspace_id = current_setting('app.workspace_id', true)</code>:</p>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">as harness_admin                              -> rows (RLS bypassed entirely)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">as harness_app, no app.workspace_id           -> 0 rows</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">as harness_app, SET app.workspace_id='…'      -> 11,768 rows</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="as harness_admin                              -> rows (RLS bypassed entirely)as harness_app, no app.workspace_id           -> 0 rowsas harness_app, SET app.workspace_id=&#x27;…&#x27;      -> 11,768 rows"><div></div></button></div></figure></div>

@@ -98,12 +98,37 @@ merely mislabel it — it implied a tuning surface that is not present.</p>
 <p>A recall complaint (“theory” scoring 2/9 at recall@30) generated four independent fix
 directions. <strong>All four were measured and all four were dead</strong>, and in hindsight every one
 of them was refuted by the paragraph above:</p>
-<p>| direction tried | measured outcome | why it was doomed |
-|---|---|---|
-| <strong>Length normalisation</strong> | on-topic turns average 2499 chars vs 2670 overall — no length skew to correct | there is no length term in the score to begin with |
-| <strong>A wider rerank pool</strong> | 13.5s at 45ms/pair — cost-prohibitive | a wider pool re-ranks more <em>ties</em>; the input ordering carries no signal to widen |
-| <strong>Stage B re-rank</strong> | recall 0.333 → 0.333, exactly unchanged | same reason — reordering a tied set |
-| <strong>Other built-in PG rankers</strong> | <code dir="auto">ts_rank_cd</code> is cover density; <code dir="auto">ts_rank</code> differs but is still not BM25 | no built-in PG ranker implements BM25 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>direction tried</th><th>measured outcome</th><th>why it was doomed</th></tr></thead><tbody><tr><td><strong>Length normalisation</strong></td><td>on-topic turns average 2499 chars vs 2670 overall — no length skew to correct</td><td>there is no length term in the score to begin with</td></tr><tr><td><strong>A wider rerank pool</strong></td><td>13.5s at 45ms/pair — cost-prohibitive</td><td>a wider pool re-ranks more <em>ties</em>; the input ordering carries no signal to widen</td></tr><tr><td><strong>Stage B re-rank</strong></td><td>recall 0.333 → 0.333, exactly unchanged</td><td>same reason — reordering a tied set</td></tr><tr><td><strong>Other built-in PG rankers</strong></td><td><code dir="auto">ts_rank_cd</code> is cover density; <code dir="auto">ts_rank</code> differs but is still not BM25</td><td>no built-in PG ranker implements BM25</td></tr></tbody></table>
 <p>The transferable point is not “these four ideas were bad.” Each is a sensible thing to try
 against a lexical ranker. <strong>They were refuted by a property of the ranker that nobody had
 read</strong> — and the ranker’s <em>name</em> actively pointed away from reading it. A day of measurement

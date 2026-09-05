@@ -135,10 +135,24 @@ privilege.</li>
 This is routine, sanctioned behaviour — which is precisely why a client deny cannot be load-bearing.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="provenance--read-this-before-you-cite-the-doc">Provenance — read this before you cite the doc</h2><a class="sl-anchor-link" href="#provenance--read-this-before-you-cite-the-doc"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Provenance — read this before you cite the doc”</span></a></div>
 <p>The two halves of the claim rest on <strong>different</strong> evidence, and the distinction is worth keeping:</p>
-<p>| claim | evidence |
-|---|---|
-| A deny <strong>does</strong> bite an MCP tool (namespace removal), and <code dir="auto">tools:invoke</code> <strong>bypasses</strong> it | Two controlled probes on fresh psu su sessions, 2026-07-28, with same-server controls (<code dir="auto">docs_search</code> not denied ran fine; siblings <code dir="auto">facts_assert</code>/<code dir="auto">facts_retract</code> seeded). Denied <code dir="auto">facts_list</code> was then executed via <code dir="auto">tools:invoke</code>, returning 25 real workspace facts — the only pushback in the chain was <code dir="auto">facts:list</code>’s own Zod validator rejecting <code dir="auto">{}</code>, which proves the call had already reached the tool body. Ruling: D-075 on plan <code dir="auto">agent-state-plane-verification-2026-07-27</code>. |
-| A deny is indistinguishable from never-seeded, and the hatch works in one call | Re-observed first-person 2026-08-30 (the <code dir="auto">locks:queue</code> example above) — but that is the <strong>unseeded</strong> half. It corroborates the signature collision and the hatch; it does not independently re-measure the denied half. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>claim</th><th>evidence</th></tr></thead><tbody><tr><td>A deny <strong>does</strong> bite an MCP tool (namespace removal), and <code dir="auto">tools:invoke</code> <strong>bypasses</strong> it</td><td>Two controlled probes on fresh psu su sessions, 2026-07-28, with same-server controls (<code dir="auto">docs_search</code> not denied ran fine; siblings <code dir="auto">facts_assert</code>/<code dir="auto">facts_retract</code> seeded). Denied <code dir="auto">facts_list</code> was then executed via <code dir="auto">tools:invoke</code>, returning 25 real workspace facts — the only pushback in the chain was <code dir="auto">facts:list</code>’s own Zod validator rejecting <code dir="auto">{}</code>, which proves the call had already reached the tool body. Ruling: D-075 on plan <code dir="auto">agent-state-plane-verification-2026-07-27</code>.</td></tr><tr><td>A deny is indistinguishable from never-seeded, and the hatch works in one call</td><td>Re-observed first-person 2026-08-30 (the <code dir="auto">locks:queue</code> example above) — but that is the <strong>unseeded</strong> half. It corroborates the signature collision and the hatch; it does not independently re-measure the denied half.</td></tr></tbody></table>
 <p>Nobody has re-run the controlled deny probe since 2026-07-28. If you need that half fresh, it
 requires launching a psu session with <code dir="auto">--disallowedTools=mcp__papercusp-su__&#x3C;verb></code> plus a
 same-group sibling control, per trap (b).</p>

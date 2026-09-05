@@ -74,23 +74,72 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="the-one-idea">The one idea</h2><a class="sl-anchor-link" href="#the-one-idea"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The one idea”</span></a></div>
 <p><strong>Joining a fleet is not working.</strong> Before this plan, a member that registered presence counted as a worker. Now readiness is an <em>attested</em> verdict with four independent stages, and every downstream surface reads that verdict rather than re-deriving its own.</p>
 <p><code dir="auto">FreshLaunchWorkerAttestation</code> (<code dir="auto">packages/operator-core/lib/agent-launch-core.ts</code>) carries:</p>
-<p>| stage | satisfied when |
-|---|---|
-| <code dir="auto">agentCall</code> | the owner emitted a successful agent-origin tool call |
-| <code dir="auto">durableWake</code> | a durable wake source is registered (loop or exact event) |
-| <code dir="auto">schedulerPull</code> | <code dir="auto">scheduler:get_next</code> was actually called |
-| <code dir="auto">disposition</code> | a <strong>typed</strong> outcome: <code dir="auto">claimed{workItemId}</code> | <code dir="auto">no-claim{reason}</code> | <code dir="auto">missing</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>stage</th><th>satisfied when</th></tr></thead><tbody><tr><td><code dir="auto">agentCall</code></td><td>the owner emitted a successful agent-origin tool call</td></tr><tr><td><code dir="auto">durableWake</code></td><td>a durable wake source is registered (loop or exact event)</td></tr><tr><td><code dir="auto">schedulerPull</code></td><td><code dir="auto">scheduler:get_next</code> was actually called</td></tr><tr><td><code dir="auto">disposition</code></td><td>a <strong>typed</strong> outcome: <code dir="auto">claimed{workItemId}</code> | <code dir="auto">no-claim{reason}</code> | <code dir="auto">missing</code></td></tr></tbody></table>
 <p><code dir="auto">ready</code> requires every stage, and <code dir="auto">probeFreshLaunchSessions</code> gates on <code dir="auto">session.workerAttestation.ready</code>. A member that joined and did nothing else can never read ready — that property is code, not convention.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="keep-the-four-truths-separate-d-002">Keep the four truths separate (D-002)</h2><a class="sl-anchor-link" href="#keep-the-four-truths-separate-d-002"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Keep the four truths separate (D-002)”</span></a></div>
 <p>Process liveness, wakeability, claim progress, and completion authority are four distinct truths. <strong>No heartbeat or generic status token may substitute for another.</strong> In particular <code dir="auto">heartbeatFresh</code> (and any residual <code dir="auto">alive</code> boolean) is raw process-keepalive freshness — a warm-dead session reads <code dir="auto">heartbeatFresh: true</code> with <code dir="auto">sessionState: 'ended'</code>. <code dir="auto">sessionState</code> is the liveness verdict, derived by one shared oracle behind every presence surface.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="which-surface-answers-which-question">Which surface answers which question</h2><a class="sl-anchor-link" href="#which-surface-answers-which-question"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Which surface answers which question”</span></a></div>
-<p>| you want to know | read | not |
-|---|---|---|
-| is this member actually working | <code dir="auto">fleet:leader-brief</code> → member <code dir="auto">workerAttestation</code> | presence alone, or <code dir="auto">heartbeatFresh</code> |
-| why a launch failed, per stage | the launch transaction’s <code dir="auto">workerAttestations[]</code> | the process table |
-| a bounded evidence export across every canonical writer | <code dir="auto">fleet:audit</code> | a hand-written join over the writers |
-| cross-epoch campaign measurement | <code dir="auto">fleet:leader-brief</code> → <code dir="auto">campaign</code> (<code dir="auto">fleet-campaign.ts</code>) | a hand-rolled utilization metric |
-| headcount / prune decisions | the <code dir="auto">fleet-headcount-action</code> routine | counting rows yourself |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>you want to know</th><th>read</th><th>not</th></tr></thead><tbody><tr><td>is this member actually working</td><td><code dir="auto">fleet:leader-brief</code> → member <code dir="auto">workerAttestation</code></td><td>presence alone, or <code dir="auto">heartbeatFresh</code></td></tr><tr><td>why a launch failed, per stage</td><td>the launch transaction’s <code dir="auto">workerAttestations[]</code></td><td>the process table</td></tr><tr><td>a bounded evidence export across every canonical writer</td><td><code dir="auto">fleet:audit</code></td><td>a hand-written join over the writers</td></tr><tr><td>cross-epoch campaign measurement</td><td><code dir="auto">fleet:leader-brief</code> → <code dir="auto">campaign</code> (<code dir="auto">fleet-campaign.ts</code>)</td><td>a hand-rolled utilization metric</td></tr><tr><td>headcount / prune decisions</td><td>the <code dir="auto">fleet-headcount-action</code> routine</td><td>counting rows yourself</td></tr></tbody></table>
 <p><code dir="auto">fleet:audit</code> is deliberately a <strong>composition</strong> over canonical writers, not another audit store. Every leg names the writer it read. A leg that fails comes back <code dir="auto">available: false</code> with the <em>actual</em> rejection, never a manufactured zero and never a label synthesised from the writer’s name — read the <code dir="auto">reason</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="alerts">Alerts</h2><a class="sl-anchor-link" href="#alerts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Alerts”</span></a></div>
 <p>Lifecycle alerting rides on the existing leader-brief alert set. The binding convention: <strong>every <code dir="auto">compute*Alert</code> returns <code dir="auto">{ reason, falsifier }</code>, never a bare <code dir="auto">{ reason }</code></strong> — an alert must carry the observation that would prove it wrong. <code dir="auto">auditAlertReturnTypes</code> scans for bare returns and <code dir="auto">alert-falsifier-reality.test.ts</code> fails the build on one. When you add a lifecycle alert, give it a falsifier or it will not merge.</p>

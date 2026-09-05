@@ -105,14 +105,47 @@
 <p>When you migrate a route, you’re really doing two things: (a) writing the function in this shape, (b) deleting the legacy route. The MCP-callable part is automatic.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-six-known-tool-shapes">The six known tool shapes</h2><a class="sl-anchor-link" href="#the-six-known-tool-shapes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The six known tool shapes”</span></a></div>
 <p>After the foundation pivot we shipped four plugins to validate the model. The fifth (MCP-proxy) shipped in the revive-plugin-system arc (2026-06-04) as the GitNexus bridge. The sixth (interactive-card) was originally a render-only emergent pattern but consolidated into a first-class framework primitive (<code dir="auto">ctx.askUser</code>) in the bespoke-card-improvements arc (2026-05-13). Each shape stresses a different corner:</p>
-<p>| Shape | Example | What it stresses |
-|---|---|---|
-| Subprocess single-tool | <code dir="auto">repomix.pack</code> | <code dir="auto">ctx.spawn</code>, capability <code dir="auto">compute:exec:*</code>, large output to scratch dir |
-| HTTP fetch with optional secret | <code dir="auto">fetch_plus.fetch_clean</code> | <code dir="auto">ctx.secret</code> returning null, capability <code dir="auto">http:fetch:&#x3C;host></code> |
-| Subprocess multi-tool | <code dir="auto">code2prompt.diff</code> + <code dir="auto">code2prompt.pack</code> | Two tools sharing a manifest, dynamic templates |
-| HTTP fetch with required secret | <code dir="auto">firecrawl.scrape</code> + <code dir="auto">extract</code> + <code dir="auto">map</code> | Three tools sharing a manifest, <code dir="auto">secrets:read:&#x3C;NAME></code>, JSON-schema-driven extraction |
-| <strong>MCP-proxy plugin</strong> | <code dir="auto">gitnexus-bridge</code> (GitNexus wrapper) | Forwards to an external MCP server. Implements <code dir="auto">getDynamicTools()</code> so the proxy enumerates the child’s <code dir="auto">tools/list</code> at register time instead of hard-coding. May set <code dir="auto">discoveryTimeoutMs</code> (default ~10s; gitnexus uses 30s) because a cold child-process probe can exceed the default budget; the plugin host caps the whole discovery sweep at 60s, tools registered before the cap stay live, and a slow probe drains errors into plugin-host status. |
-| <strong>Interactive card</strong> | <code dir="auto">chat:ask_choice</code> | Tool calls <code dir="auto">ctx.askUser(spec)</code> and blocks until the user submits/declines/cancels. The card travels on the <strong>state channel</strong> (<code dir="auto">state-snapshot</code> SSE), not the per-tool event ring buffer — so reconnect-resilient by construction. Handler returns the user’s response value, not echoed args. See <a href="./ask-user.mdx">ctx.askUser</a>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Shape</th><th>Example</th><th>What it stresses</th></tr></thead><tbody><tr><td>Subprocess single-tool</td><td><code dir="auto">repomix.pack</code></td><td><code dir="auto">ctx.spawn</code>, capability <code dir="auto">compute:exec:*</code>, large output to scratch dir</td></tr><tr><td>HTTP fetch with optional secret</td><td><code dir="auto">fetch_plus.fetch_clean</code></td><td><code dir="auto">ctx.secret</code> returning null, capability <code dir="auto">http:fetch:&#x3C;host></code></td></tr><tr><td>Subprocess multi-tool</td><td><code dir="auto">code2prompt.diff</code> + <code dir="auto">code2prompt.pack</code></td><td>Two tools sharing a manifest, dynamic templates</td></tr><tr><td>HTTP fetch with required secret</td><td><code dir="auto">firecrawl.scrape</code> + <code dir="auto">extract</code> + <code dir="auto">map</code></td><td>Three tools sharing a manifest, <code dir="auto">secrets:read:&#x3C;NAME></code>, JSON-schema-driven extraction</td></tr><tr><td><strong>MCP-proxy plugin</strong></td><td><code dir="auto">gitnexus-bridge</code> (GitNexus wrapper)</td><td>Forwards to an external MCP server. Implements <code dir="auto">getDynamicTools()</code> so the proxy enumerates the child’s <code dir="auto">tools/list</code> at register time instead of hard-coding. May set <code dir="auto">discoveryTimeoutMs</code> (default ~10s; gitnexus uses 30s) because a cold child-process probe can exceed the default budget; the plugin host caps the whole discovery sweep at 60s, tools registered before the cap stay live, and a slow probe drains errors into plugin-host status.</td></tr><tr><td><strong>Interactive card</strong></td><td><code dir="auto">chat:ask_choice</code></td><td>Tool calls <code dir="auto">ctx.askUser(spec)</code> and blocks until the user submits/declines/cancels. The card travels on the <strong>state channel</strong> (<code dir="auto">state-snapshot</code> SSE), not the per-tool event ring buffer — so reconnect-resilient by construction. Handler returns the user’s response value, not echoed args. See <a href="./ask-user.mdx">ctx.askUser</a>.</td></tr></tbody></table>
 <p>If your work doesn’t fit one of those shapes, stop and discuss before inventing a seventh. See <a href="/internal/docs/endpoint-system/operations#when-to-stop-and-ask">Operations → When to stop and ask</a>.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="interactive-card-conventions">Interactive-card conventions</h3><a class="sl-anchor-link" href="#interactive-card-conventions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Interactive-card conventions”</span></a></div>
 <p>For tools that pause execution to ask the user something via the chat sidebar:</p>

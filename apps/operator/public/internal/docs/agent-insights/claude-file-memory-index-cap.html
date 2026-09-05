@@ -130,11 +130,40 @@ hit this state (113 durables → 26.3 KB > 24.4 KB).</p></div> </aside>
 <p>The bench’s index-cap probe (<code dir="auto">packages/operator-core/lib/memory/bench/index-cap-cli.ts</code>,
 pure FS — temp-dir stores seeded through the seam) recorded, with the
 simulation pinned <strong>exactly</strong> to the real script’s dry-run output:</p>
-<p>| store size | indexed | index KB | indexed % | behavior |
-| --- | --- | --- | --- | --- |
-| 114 (real corpus) | 113 | 26.3 | 99.1% | over BOTH caps → projector aborts; index stale |
-| 1,000 | 113 | 26.3 | 11.3% | 887 would-be-archived; durables still over hard cap → abort |
-| 10,000 | 113 | 26.3 | 1.1% | 9,887 would-be-archived; abort |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>store size</th><th>indexed</th><th>index KB</th><th>indexed %</th><th>behavior</th></tr></thead><tbody><tr><td>114 (real corpus)</td><td>113</td><td>26.3</td><td>99.1%</td><td>over BOTH caps → projector aborts; index stale</td></tr><tr><td>1,000</td><td>113</td><td>26.3</td><td>11.3%</td><td>887 would-be-archived; durables still over hard cap → abort</td></tr><tr><td>10,000</td><td>113</td><td>26.3</td><td>1.1%</td><td>9,887 would-be-archived; abort</td></tr></tbody></table>
 <p>i.e. the file backend’s <em>session-start reach</em> is bounded at roughly
 <strong>~115–200 entries regardless of store size</strong> (whatever fits ~20 KB of
 one-line hooks), and on an all-durable store the index stops updating

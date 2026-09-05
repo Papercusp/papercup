@@ -88,11 +88,28 @@ were the screening module and its test.</p>
 <p>A closed loop, and the failure is invisible by inspection: the false positives are
 shaped exactly like the true ones — a real file, a real citation, a real match.</p>
 <p>Three quieter versions of the same class, all measured:</p>
-<p>| what was found | what it actually was |
-|---|---|
-| <code dir="auto">.papercusp/memory/raw.md</code> | an agent memory dump — WI-2497’s <em>only</em> evidence |
-| <code dir="auto">scratchpad/lexicon-audit-2026-07-09/REPORT.md</code> | a month-old audit writeup — WI-2890’s <em>only</em> evidence |
-| <code dir="auto">public/internal/docs/**</code>, <code dir="auto">llms-full.txt</code> | generated doc copies, which also inflate file counts |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>what was found</th><th>what it actually was</th></tr></thead><tbody><tr><td><code dir="auto">.papercusp/memory/raw.md</code></td><td>an agent memory dump — WI-2497’s <em>only</em> evidence</td></tr><tr><td><code dir="auto">scratchpad/lexicon-audit-2026-07-09/REPORT.md</code></td><td>a month-old audit writeup — WI-2890’s <em>only</em> evidence</td></tr><tr><td><code dir="auto">public/internal/docs/**</code>, <code dir="auto">llms-full.txt</code></td><td>generated doc copies, which also inflate file counts</td></tr></tbody></table>
 <p><strong>The rule: an idea DISCUSSED in prose is not an idea BUILT.</strong> Filter to paths that are
 admissible as evidence of implementation, and exclude the screening surface itself.
 Keep the exclusion surgical — blanket-excluding <code dir="auto">lib/scout/</code> would have hidden genuine
@@ -313,13 +330,48 @@ known-good pair</strong>, never chosen for looking reasonable.</p>
 <p>The section above measured one leg. Running the same check on every leg turned a
 one-off result into the design conclusion of the whole screen. Measured over the
 186-item cohort (<code dir="auto">EI-%</code>, open, <code dir="auto">lane IS NULL</code>, filed 07-04 to 07-17):</p>
-<p>| leg | what it rests on | reach | can it carry a verdict? |
-|---|---|---|---|
-| self-id (evidence-path filtered) | a source file CITES the item’s id | <strong>17 = 9.1%</strong> | yes — strongest |
-| asserted-ref, prior-art sense | the author CITES another item | <strong>125 = 67%</strong> | yes — weaker |
-| asserted-ref, intra-cohort sense | the author cites a SIBLING | <strong>61 = 33%</strong> | collapse only |
-| plan-slug | slug/idea token overlap | <strong>≈100%</strong> | no — ranks only |
-| plan items to file paths | a plan item names a path | 73% of plans, ≈7.8 paths each | no — ranks only |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>what it rests on</th><th>reach</th><th>can it carry a verdict?</th></tr></thead><tbody><tr><td>self-id (evidence-path filtered)</td><td>a source file CITES the item’s id</td><td><strong>17 = 9.1%</strong></td><td>yes — strongest</td></tr><tr><td>asserted-ref, prior-art sense</td><td>the author CITES another item</td><td><strong>125 = 67%</strong></td><td>yes — weaker</td></tr><tr><td>asserted-ref, intra-cohort sense</td><td>the author cites a SIBLING</td><td><strong>61 = 33%</strong></td><td>collapse only</td></tr><tr><td>plan-slug</td><td>slug/idea token overlap</td><td><strong>≈100%</strong></td><td>no — ranks only</td></tr><tr><td>plan items to file paths</td><td>a plan item names a path</td><td>73% of plans, ≈7.8 paths each</td><td>no — ranks only</td></tr></tbody></table>
 <p>Two things fall out, and the second is the load-bearing one.</p>
 <p><strong>Reach and trustworthiness are inversely related.</strong> The most trustworthy leg reaches
 about 9% of items; the leg that reaches everything carries no authority at all. No

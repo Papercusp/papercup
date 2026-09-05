@@ -106,19 +106,61 @@ just a shorter list.</strong></li>
 <p>That second one matters: <strong>no git-plumbing workaround exists inside those trees.</strong> Do
 not spend time looking for one.</p>
 <p>Measured, healthy tree vs gate tree:</p>
-<p>| | staging | gate checkout |
-|---|---|---|
-| <code dir="auto">ls-files</code> plain | 20,099 | 20,098 |
-| <code dir="auto">ls-files --recurse-submodules</code> | <strong>25,554</strong> | <strong>20,060</strong> (recursion <em>subtracts</em> gitlinks) |
-| submodules scanned | 38 / 39 | <strong>0 / 36</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>staging</th><th>gate checkout</th></tr></thead><tbody><tr><td><code dir="auto">ls-files</code> plain</td><td>20,099</td><td>20,098</td></tr><tr><td><code dir="auto">ls-files --recurse-submodules</code></td><td><strong>25,554</strong></td><td><strong>20,060</strong> (recursion <em>subtracts</em> gitlinks)</td></tr><tr><td>submodules scanned</td><td>38 / 39</td><td><strong>0 / 36</strong></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-rule-presence-based-assertions-are-safe-absence-based-ones-are-not">The rule: presence-based assertions are safe, absence-based ones are not</h2><a class="sl-anchor-link" href="#the-rule-presence-based-assertions-are-safe-absence-based-ones-are-not"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The rule: presence-based assertions are safe, absence-based ones are not”</span></a></div>
 <p>This is the transferable part. <code dir="auto">child-output-guard</code> has three assertions and only one
 broke:</p>
-<p>| assertion | reasons from | under a blind enumerator |
-|---|---|---|
-| no NEW file introduces a chunk-unsafe accumulator | <strong>presence</strong> — fires on a file it read | safe (silently weaker, never wrong) |
-| no baselined file GROWS more accumulators | <strong>presence</strong> | safe |
-| the baseline is not looser than reality | <strong>absence</strong> — <code dir="auto">found.get(f) ?? 0</code> | <strong>turns “not scanned” into “fixed”</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>assertion</th><th>reasons from</th><th>under a blind enumerator</th></tr></thead><tbody><tr><td>no NEW file introduces a chunk-unsafe accumulator</td><td><strong>presence</strong> — fires on a file it read</td><td>safe (silently weaker, never wrong)</td></tr><tr><td>no baselined file GROWS more accumulators</td><td><strong>presence</strong></td><td>safe</td></tr><tr><td>the baseline is not looser than reality</td><td><strong>absence</strong> — <code dir="auto">found.get(f) ?? 0</code></td><td><strong>turns “not scanned” into “fixed”</strong></td></tr></tbody></table>
 <p>A blind enumerator manufactures absence. So any guard that concludes something <em>from
 not finding a thing</em> must first establish it <strong>looked</strong>. Concretely:</p>
 <ul>

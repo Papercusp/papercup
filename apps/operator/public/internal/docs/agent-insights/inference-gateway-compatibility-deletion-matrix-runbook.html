@@ -77,14 +77,47 @@
 <p>The practical consequence: if you arrive here because a number looks like a cap, the answer is almost certainly that it is a floor, a guaranteed share, a readback, or a bound on a different subject — and the group’s <code dir="auto">dispositionEvidence</code> tells you which, with the probe that would prove you right. Re-run the probe before concluding you have found a live ceiling.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="terminal-dispositions">Terminal dispositions</h2><a class="sl-anchor-link" href="#terminal-dispositions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Terminal dispositions”</span></a></div>
 <p><code dir="auto">CapacityCompatibilityDisposition</code> has exactly one non-terminal member. A family sitting on it means a gate is still pending, and <code dir="auto">validateInferenceGatewayCapacityCompatibilityGroups()</code> reports it:</p>
-<p>| Disposition | Terminal | Means |
-| --- | --- | --- |
-| <code dir="auto">remove-after-gate</code> | NO | A focused gate has not run yet. The validator reports this as <code dir="auto">compatibility-non-terminal:&#x3C;id></code>. |
-| <code dir="auto">removed</code> | yes | Every binding writer in the family is deleted from the tree. <code dir="auto">writerIds</code> is empty. |
-| <code dir="auto">readback-only</code> | yes | The value is computed and REPORTED but never applied. |
-| <code dir="auto">feedback-only</code> | yes | The value survives as controller feedback or bootstrap state, never as a maximum. |
-| <code dir="auto">retain-semantic-safety</code> | yes | Deliberately retained for a protocol or safety reason that is not productive capacity. |
-| <code dir="auto">retain-measured-physical-contract</code> | yes | Retained because an engine reports a matching physical partition. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Disposition</th><th>Terminal</th><th>Means</th></tr></thead><tbody><tr><td><code dir="auto">remove-after-gate</code></td><td>NO</td><td>A focused gate has not run yet. The validator reports this as <code dir="auto">compatibility-non-terminal:&#x3C;id></code>.</td></tr><tr><td><code dir="auto">removed</code></td><td>yes</td><td>Every binding writer in the family is deleted from the tree. <code dir="auto">writerIds</code> is empty.</td></tr><tr><td><code dir="auto">readback-only</code></td><td>yes</td><td>The value is computed and REPORTED but never applied.</td></tr><tr><td><code dir="auto">feedback-only</code></td><td>yes</td><td>The value survives as controller feedback or bootstrap state, never as a maximum.</td></tr><tr><td><code dir="auto">retain-semantic-safety</code></td><td>yes</td><td>Deliberately retained for a protocol or safety reason that is not productive capacity.</td></tr><tr><td><code dir="auto">retain-measured-physical-contract</code></td><td>yes</td><td>Retained because an engine reports a matching physical partition.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="every-terminal-disposition-carries-evidence">Every terminal disposition carries evidence</h2><a class="sl-anchor-link" href="#every-terminal-disposition-carries-evidence"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Every terminal disposition carries evidence”</span></a></div>
 <p>A disposition is a claim about live behaviour that no static check can prove, so it is recorded WITH its measurement rather than asserted as prose. <code dir="auto">dispositionEvidence</code> is REQUIRED on every terminal family:</p>
 <ul>
@@ -111,20 +144,77 @@
 <li>Consumers: update the exact docs/runbook, API/tool route, and durable state/read-model paths listed in the matrix. Do not infer meaning from a field name alone.</li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="field-family-matrix">Field-family matrix</h2><a class="sl-anchor-link" href="#field-family-matrix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Field-family matrix”</span></a></div>
-<p>| Family | Terminal disposition | What the evidence establishes |
-| --- | --- | --- |
-| PAPERCUSP_GATEWAY_CONCURRENCY / Claude default | readback-only | Zero live reads; a present value is warned on. The live window is learned, not seeded. |
-| Cold-lane admission seed | feedback-only | The seed is 8; live windows reached 503 and 231. A ceiling cannot be exceeded. |
-| PAPERCUSP_GATEWAY_CODEX_CONCURRENCY / account scaling | removed | Every Codex-specific writer is deleted; the group is kept so the legacy names stay greppable. |
-| MAX_QUEUED / resident queue | retain-semantic-safety | Uncapped sentinel with the spool active; the 256 is a memory bound on the un-spooled path. |
-| Per-account/min-admission | readback-only | One consumer, the diagnostics readback. Applied admission ran 18x the recommendation. |
-| AIMD floor/cap/tuning | feedback-only | What remains is a FLOOR of 4; each cap is the controller’s own learned high-water mark. |
-| Priority reserve/map/shares | retain-semantic-safety | Shares do not cap (borrowing); the reserve is an interactive-lane guarantee under D-007. |
-| Provider floors/global rate gate | feedback-only | globalCap is Infinity; the baked numbers are cold-start floors a header supersedes. |
-| Operator rate-limit cap/provider bounds | readback-only | Only RATE_LIMIT_SANITY_BOUND remains, validating operator input three orders of magnitude away. |
-| Resource-profile limits | feedback-only | Governs agent SPAWN, not gateway admission. |
-| Local-backend maxConcurrent/parallel slots | retain-measured-physical-contract | The registered value equals the engine’s provisioned slot count. |
-| UI/API/state readbacks | readback-only | Every published capacity number travels with its binding term. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Family</th><th>Terminal disposition</th><th>What the evidence establishes</th></tr></thead><tbody><tr><td>PAPERCUSP_GATEWAY_CONCURRENCY / Claude default</td><td>readback-only</td><td>Zero live reads; a present value is warned on. The live window is learned, not seeded.</td></tr><tr><td>Cold-lane admission seed</td><td>feedback-only</td><td>The seed is 8; live windows reached 503 and 231. A ceiling cannot be exceeded.</td></tr><tr><td>PAPERCUSP_GATEWAY_CODEX_CONCURRENCY / account scaling</td><td>removed</td><td>Every Codex-specific writer is deleted; the group is kept so the legacy names stay greppable.</td></tr><tr><td>MAX_QUEUED / resident queue</td><td>retain-semantic-safety</td><td>Uncapped sentinel with the spool active; the 256 is a memory bound on the un-spooled path.</td></tr><tr><td>Per-account/min-admission</td><td>readback-only</td><td>One consumer, the diagnostics readback. Applied admission ran 18x the recommendation.</td></tr><tr><td>AIMD floor/cap/tuning</td><td>feedback-only</td><td>What remains is a FLOOR of 4; each cap is the controller’s own learned high-water mark.</td></tr><tr><td>Priority reserve/map/shares</td><td>retain-semantic-safety</td><td>Shares do not cap (borrowing); the reserve is an interactive-lane guarantee under D-007.</td></tr><tr><td>Provider floors/global rate gate</td><td>feedback-only</td><td>globalCap is Infinity; the baked numbers are cold-start floors a header supersedes.</td></tr><tr><td>Operator rate-limit cap/provider bounds</td><td>readback-only</td><td>Only RATE_LIMIT_SANITY_BOUND remains, validating operator input three orders of magnitude away.</td></tr><tr><td>Resource-profile limits</td><td>feedback-only</td><td>Governs agent SPAWN, not gateway admission.</td></tr><tr><td>Local-backend maxConcurrent/parallel slots</td><td>retain-measured-physical-contract</td><td>The registered value equals the engine’s provisioned slot count.</td></tr><tr><td>UI/API/state readbacks</td><td>readback-only</td><td>Every published capacity number travels with its binding term.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="verification">Verification</h2><a class="sl-anchor-link" href="#verification"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verification”</span></a></div>
 <p>Run the focused tests:</p>
 <p>npm —workspace @papercusp/operator-core test — lib/inference-gateway/capacity-inventory.test.ts lib/inference-gateway/capacity-compatibility.test.ts</p>

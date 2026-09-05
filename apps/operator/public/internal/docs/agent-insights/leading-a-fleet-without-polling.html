@@ -90,14 +90,47 @@ missed — see <em>Why the heartbeat stays</em> below.</p>
 <p>On each wake: <code dir="auto">fleet:leader-brief</code> to SEE the fleet, act, re-register the await, end the
 turn. The brief is how you look at the fleet; it is not how you watch it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-each-key-buys-you">What each key buys you</h2><a class="sl-anchor-link" href="#what-each-key-buys-you"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What each key buys you”</span></a></div>
-<p>| key | you are woken when | replaces |
-|---|---|---|
-| <code dir="auto">fleet:member-dead:&#x3C;slug></code> | a member reaches a CONFIRMED-dead verdict | polling the brief for liveness |
-| <code dir="auto">fleet:context-critical:&#x3C;slug></code> | a member crosses into critical context pressure | polling every member’s <code dir="auto">contextPressure</code> |
-| <code dir="auto">fleet:claim-released:&#x3C;slug></code> | a member’s claim returns to the pool | polling <code dir="auto">fleet:assignments</code> for a dropped claim |
-| <code dir="auto">fleet:item-completed:&#x3C;slug></code> | a member settles an item | polling the brief for burn-down delta |
-| <code dir="auto">work-item:claimable</code> + <code dir="auto">payload_filter {plan}</code> | work exists for an idle member | the idle re-poll of <code dir="auto">scheduler:get_next</code> |
-| <code dir="auto">fleet:drained:&#x3C;slug></code> | every claimable lane is done | polling to know when to <code dir="auto">loop:end</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>key</th><th>you are woken when</th><th>replaces</th></tr></thead><tbody><tr><td><code dir="auto">fleet:member-dead:&#x3C;slug></code></td><td>a member reaches a CONFIRMED-dead verdict</td><td>polling the brief for liveness</td></tr><tr><td><code dir="auto">fleet:context-critical:&#x3C;slug></code></td><td>a member crosses into critical context pressure</td><td>polling every member’s <code dir="auto">contextPressure</code></td></tr><tr><td><code dir="auto">fleet:claim-released:&#x3C;slug></code></td><td>a member’s claim returns to the pool</td><td>polling <code dir="auto">fleet:assignments</code> for a dropped claim</td></tr><tr><td><code dir="auto">fleet:item-completed:&#x3C;slug></code></td><td>a member settles an item</td><td>polling the brief for burn-down delta</td></tr><tr><td><code dir="auto">work-item:claimable</code> + <code dir="auto">payload_filter {plan}</code></td><td>work exists for an idle member</td><td>the idle re-poll of <code dir="auto">scheduler:get_next</code></td></tr><tr><td><code dir="auto">fleet:drained:&#x3C;slug></code></td><td>every claimable lane is done</td><td>polling to know when to <code dir="auto">loop:end</code></td></tr></tbody></table>
 <p><code dir="auto">fleet:context-critical</code> pairs directly with <code dir="auto">fleet:require-checkpoint { member, itemId }</code>:
 you are woken <em>before</em> the member compacts, while forcing a checkpoint still helps.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-distinction-that-makes-this-work--and-that-fooled-me-first">The distinction that makes this work — and that fooled me first</h2><a class="sl-anchor-link" href="#the-distinction-that-makes-this-work--and-that-fooled-me-first"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The distinction that makes this work — and that fooled me first”</span></a></div>

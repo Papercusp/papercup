@@ -93,11 +93,36 @@ restart. The database looks settled; the only symptom is a probe asserting
 <code dir="auto">origin='remote'</code> mysteriously failing on a row that plainly arrived.</p>
 <p>That invisibility is why WI-6210 survived four gate runs and three wrong diagnoses.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="it-has-happened-three-times">It has happened three times</h2><a class="sl-anchor-link" href="#it-has-happened-three-times"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “It has happened three times”</span></a></div>
-<p>| # | column | table | fixed by |
-|---|---|---|---|
-| 1 | <code dir="auto">_search</code> | harness_plans, work_items, engineer_issues | mig 214/517 |
-| 2 | <code dir="auto">fed_key</code> | <code dir="auto">plan_item_assignments</code> | mig 653 |
-| 3 | <code dir="auto">offer_fed_key</code> | <code dir="auto">p2p_work_offers</code> | mig 681 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>column</th><th>table</th><th>fixed by</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">_search</code></td><td>harness_plans, work_items, engineer_issues</td><td>mig 214/517</td></tr><tr><td>2</td><td><code dir="auto">fed_key</code></td><td><code dir="auto">plan_item_assignments</code></td><td>mig 653</td></tr><tr><td>3</td><td><code dir="auto">offer_fed_key</code></td><td><code dir="auto">p2p_work_offers</code></td><td>mig 681</td></tr></tbody></table>
 <p>Each of the first two was fixed by <strong>adding one more column name to the mask</strong>. Migration
 653 even asserted, “verified by grep across every CDC table’s DDL”, that its column was the
 last one — the grep matched the literal <code dir="auto">fed_key</code>, and the next occurrence was named

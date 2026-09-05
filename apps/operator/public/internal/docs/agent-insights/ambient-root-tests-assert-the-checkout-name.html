@@ -81,10 +81,30 @@ exercise the TERMINAL fallback deleted <code dir="auto">PAPERCUSP_WORKSPACE_ROOT
 candidate 3 resolved the <strong>live shared tree</strong>, a real repo, and the resolver never reached
 the fallback being asserted:</p>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">expect(fileLockCoordinationDomain()).toBe(lockCoordinationDomain())</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="expect(fileLockCoordinationDomain()).toBe(lockCoordinationDomain())"><div></div></button></div></figure></div>
-<p>| where the suite runs | left side | right side | verdict |
-| --- | --- | --- | --- |
-| <code dir="auto">…/papercusp</code> (shared tree) | <code dir="auto">…/papercusp</code> | <code dir="auto">…/papercusp</code> | PASS — by coincidence |
-| <code dir="auto">…/papercusp-checkpoint</code> (the gate) | <code dir="auto">…/papercusp</code> | <code dir="auto">…/papercusp-checkpoint</code> | <strong>FAIL</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>where the suite runs</th><th>left side</th><th>right side</th><th>verdict</th></tr></thead><tbody><tr><td><code dir="auto">…/papercusp</code> (shared tree)</td><td><code dir="auto">…/papercusp</code></td><td><code dir="auto">…/papercusp</code></td><td>PASS — by coincidence</td></tr><tr><td><code dir="auto">…/papercusp-checkpoint</code> (the gate)</td><td><code dir="auto">…/papercusp</code></td><td><code dir="auto">…/papercusp-checkpoint</code></td><td><strong>FAIL</strong></td></tr></tbody></table>
 <p>It red-pinned green-checkpoint and held <code dir="auto">main</code> 243 commits behind staging. The resolver was
 CORRECT throughout — that split is exactly what WI-38252 built. Only the fixture was wrong.</p>
 <p><strong>The fix is one line of intent: PIN, don’t delete.</strong></p>

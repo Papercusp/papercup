@@ -224,12 +224,60 @@ async function loadMdx(): Promise<{ compile: MdxCompile; remarkGfm: unknown }> {
   return { compile: _compile, remarkGfm: _remarkGfm };
 }
 
+/** Normalise whatever the MDX core threw into our flat `{ line, col, reason }`. */
+function normaliseCompileError(err: unknown): MdxCompileError {
+  const e = err as { place?: { start?: { line?: number; column?: number } } | { line?: number; column?: number }; line?: number; column?: number; reason?: string; message?: string };
+  const start = (e?.place && 'start' in e.place ? e.place.start : e?.place) ?? {};
+  const line = e?.line ?? (start as { line?: number }).line ?? null;
+  const col = e?.column ?? (start as { column?: number }).column ?? null;
+  const reason = (e?.reason ?? e?.message ?? String(err)).split('\n')[0];
+  return { line, col, reason };
+}
+
+/** Compile once under an explicit remark plugin set. `null` ⇒ it compiled. */
+async function compileUnder(
+  compile: MdxCompile,
+  body: string,
+  remarkPlugins: unknown[],
+): Promise<MdxCompileError | null> {
+  try {
+    await compile(body, { format: 'mdx', remarkPlugins });
+    return null;
+  } catch (err) {
+    return normaliseCompileError(err);
+  }
+}
+
 /**
  * Pure detector: compile one .mdx with the MDX core. Returns `null` when it
  * compiles, or `{ line, col, reason }` on a syntax error. Never throws on a
  * compile error (it is caught + returned); a failure to LOAD the MDX core
  * propagates so the caller can decide (the git-sync guard treats a loader throw
  * as "can't check — don't block").
+ *
+ * ── Why TWO compiles, with and without remark-gfm (EI-22415725782521670) ──────
+ * This detector exists so a doc that `astro build` refuses can never be WRITTEN
+ * (docs:author refuses), committed (git-sync guard), or merged (lint:mdx). It
+ * only does that job if it is at least as strict as the real build. It was not.
+ *
+ * `@astrojs/mdx` adds remark-gfm under `if (mdxOptions.gfm)` — a TRUTHINESS
+ * check, not the `!== false` it uses for smartypants — so an unset/undefined
+ * `gfm` silently drops the GFM table extension. GFM tables change how a row's
+ * inline code spans are parsed, so a doc can be valid WITH the extension and a
+ * hard parse error WITHOUT it. Measured 2026-09-05: system/lifecycle.mdx built
+ * for weeks, then failed fleet-wide with
+ *   [@mdx-js/rollup] Expected a closing tag for `<ArchitectChat>` (168:118-168:133)
+ * — a signature this detector reproduces EXACTLY with no gfm and not at all with
+ * it. `npm run docs:rebuild` was broken for every agent, and this detector — the
+ * documented single source of truth for "is this .mdx valid" — reported it clean.
+ *
+ * So compile under BOTH plugin sets and reject content that fails EITHER: a
+ * conservative superset that does not depend on guessing which configuration the
+ * build resolved today. Content that parses only under one of them is a latent
+ * fleet-wide build break, so rejecting it is the point, not a false positive.
+ * Cost is one extra compile; the whole 965-doc corpus re-scans in ~8s. Measured
+ * over that corpus at the time of the change: ZERO docs fail only-without-gfm,
+ * so this added no false positives to anything that exists.
  */
 export async function findMdxCompileError(fileName: string, text: string): Promise<MdxCompileError | null> {
   // astro parses the YAML frontmatter BEFORE it compiles the MDX body, so a
@@ -239,15 +287,27 @@ export async function findMdxCompileError(fileName: string, text: string): Promi
   if (fmErr) return fmErr;
 
   const { compile, remarkGfm } = await loadMdx();
-  try {
-    await compile(blankFrontmatter(text), { format: 'mdx', remarkPlugins: [remarkGfm] });
-    return null;
-  } catch (err) {
-    const e = err as { place?: { start?: { line?: number; column?: number } } | { line?: number; column?: number }; line?: number; column?: number; reason?: string; message?: string };
-    const start = (e?.place && 'start' in e.place ? e.place.start : e?.place) ?? {};
-    const line = e?.line ?? (start as { line?: number }).line ?? null;
-    const col = e?.column ?? (start as { column?: number }).column ?? null;
-    const reason = (e?.reason ?? e?.message ?? String(err)).split('\n')[0];
-    return { line, col, reason };
+  const body = blankFrontmatter(text);
+
+  // With gfm: the pipeline astro resolves when `markdown.gfm` is truthy.
+  const withGfm = await compileUnder(compile, body, [remarkGfm]);
+  if (withGfm) return withGfm;
+
+  // Without gfm: the pipeline astro ACTUALLY resolved for the EI-22415725782521670
+  // build red. A failure only here means the doc is one config change away from
+  // wedging the fleet-wide docs build, so say that rather than emit a bare parse
+  // error the reader will (correctly) note astro currently builds fine.
+  const withoutGfm = await compileUnder(compile, body, []);
+  if (withoutGfm) {
+    return {
+      ...withoutGfm,
+      reason:
+        `${withoutGfm.reason} — parses ONLY with the GFM table extension active, ` +
+        'which the astro MDX pipeline does not guarantee (it adds remark-gfm on a ' +
+        'truthiness check). Rewrite the construct so it parses either way; the ' +
+        'usual cause is backslash-escaped backticks inside an inline code span in ' +
+        'a table cell, which leak into the next line (EI-22415725782521670).',
+    };
   }
+  return null;
 }

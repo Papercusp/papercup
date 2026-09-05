@@ -137,12 +137,37 @@ the seed and is clamped to <code dir="auto">[1, 64]</code> (<code dir="auto">RAT
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="sql"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">SELECT</span><span style="--0:#D6DEEB;--1:#403F53"> output_tail</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">FROM</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">harness_shared</span><span style="--0:#D6DEEB;--1:#403F53">.</span><span style="--0:#82AAFF;--1:#3B61B0">spawned_agents</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">WHERE</span><span style="--0:#D6DEEB;--1:#403F53"> spawn_id </span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">s-1778408605532-16080170</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="SELECT output_tailFROM harness_shared.spawned_agentsWHERE spawn_id = &#x27;s-1778408605532-16080170&#x27;;"><div></div></button></div></figure></div>
 <p>Returns the last 2 KB of the child’s stdout. Truncated by design — the full stream lives in the orchestrator’s per-spawn <code dir="auto">.jsonl</code> log file.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-you-cannot-see-yet">What you cannot see (yet)</h2><a class="sl-anchor-link" href="#what-you-cannot-see-yet"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What you cannot see (yet)”</span></a></div>
-<p>| Thing | Why | When |
-|---|---|---|
-| The child agent’s full stdout | We only persist the last 2 KB | Read the per-spawn <code dir="auto">.jsonl</code> directly: <code dir="auto">&#x3C;projectDir>/.papercusp/logs/&#x3C;runId>.jsonl</code> |
-| Per-spawn token cost | Not persisted on <code dir="auto">spawned_agents</code> | Available in <code dir="auto">harness_shared.agent_runs_consolidated</code> joined by <code dir="auto">runId</code> |
-| Cancellation reason | Plugin-side cancel just sets <code dir="auto">status='cancelled'</code> | Acceptable today; future enhancement |
-| Cross-restart cancel — did the OS process actually die? | We have no way to confirm | The <code dir="auto">reaped</code> status flags this honestly |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Thing</th><th>Why</th><th>When</th></tr></thead><tbody><tr><td>The child agent’s full stdout</td><td>We only persist the last 2 KB</td><td>Read the per-spawn <code dir="auto">.jsonl</code> directly: <code dir="auto">&#x3C;projectDir>/.papercusp/logs/&#x3C;runId>.jsonl</code></td></tr><tr><td>Per-spawn token cost</td><td>Not persisted on <code dir="auto">spawned_agents</code></td><td>Available in <code dir="auto">harness_shared.agent_runs_consolidated</code> joined by <code dir="auto">runId</code></td></tr><tr><td>Cancellation reason</td><td>Plugin-side cancel just sets <code dir="auto">status='cancelled'</code></td><td>Acceptable today; future enhancement</td></tr><tr><td>Cross-restart cancel — did the OS process actually die?</td><td>We have no way to confirm</td><td>The <code dir="auto">reaped</code> status flags this honestly</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="built-in-tools-for-agents">Built-in tools for agents</h2><a class="sl-anchor-link" href="#built-in-tools-for-agents"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Built-in tools for agents”</span></a></div>
 <p>Agents themselves can read the same telemetry — useful when an architect wants to know whether to spawn another worker (would it exceed cap?) or wants to summarize what it’s already done.</p>
 <ul>

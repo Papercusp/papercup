@@ -84,11 +84,32 @@ binary+argv); spawned by <code dir="auto">spawnShell()</code> in <code dir="auto
 2026-06-23 (WI-608) after end-to-end validation; the plan is
 <code dir="auto">agent-capability-confinement-2026-06-13</code> (P-022 / D-008 / P-033).</p>
 <p>Three modes, picked at spawn time, all <strong>FAIL-OPEN</strong>:</p>
-<p>| mode | when | confines |
-|---|---|---|
-| <code dir="auto">srt</code> (preferred) | <code dir="auto">srt</code> on PATH + bwrap works | fs (cwd-writable, ro root) + credential masking + <strong>domain-allowlist egress</strong> (its socat proxy + own netns) — full parity with native Bash |
-| <code dir="auto">bwrap</code> (fallback) | bwrap works, srt absent | fs + credential masking; egress shared (or <code dir="auto">--unshare-net</code> via the deny-all knob) |
-| <code dir="auto">raw</code> | flag OFF <strong>or</strong> bwrap can’t sandbox here | nothing (today’s behavior) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>mode</th><th>when</th><th>confines</th></tr></thead><tbody><tr><td><code dir="auto">srt</code> (preferred)</td><td><code dir="auto">srt</code> on PATH + bwrap works</td><td>fs (cwd-writable, ro root) + credential masking + <strong>domain-allowlist egress</strong> (its socat proxy + own netns) — full parity with native Bash</td></tr><tr><td><code dir="auto">bwrap</code> (fallback)</td><td>bwrap works, srt absent</td><td>fs + credential masking; egress shared (or <code dir="auto">--unshare-net</code> via the deny-all knob)</td></tr><tr><td><code dir="auto">raw</code></td><td>flag OFF <strong>or</strong> bwrap can’t sandbox here</td><td>nothing (today’s behavior)</td></tr></tbody></table>
 <p><strong>FAIL-OPEN</strong> (<code dir="auto">capabilityBwrapWorks()</code> returns false, or a flag-IO error)
 means the command runs unwrapped rather than failing — so arming this can never
 brick a host without a working bwrap. (Contrast the <em>fleet</em> sandbox, which is

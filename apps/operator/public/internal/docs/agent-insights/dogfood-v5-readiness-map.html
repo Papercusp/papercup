@@ -86,142 +86,587 @@ registered in <code dir="auto">packages/operator-core/lib/endpoint-route/routes/
 <code dir="auto">instrumentation-node.ts</code> boot-wiring rows are <strong>retired</strong> (the Next.js
 instrumentation hook is gone) — see the Phase-5a note below.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="phase-5a--substrate-boot">Phase 5a — Substrate boot</h2><a class="sl-anchor-link" href="#phase-5a--substrate-boot"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 5a — Substrate boot”</span></a></div>
-<p>| Status | What | Where |
-| ------ | ---- | ----- |
-| Wired (always-on) | Boot wiring | <code dir="auto">apps/operator/bin/host-bootstrap.ts</code> (was <code dir="auto">instrumentation-node.ts</code>, retired) |
-| Wired | Boot composer | <code dir="auto">lib/sync/hyperbee/boot.ts</code> |
-| Wired | Boot orchestrator (idempotent map, inflight races) | <code dir="auto">lib/sync/hyperbee/boot-all.ts</code> |
-| Wired | Status enumerator | <code dir="auto">listBootedHandles</code> in <code dir="auto">boot-all.ts</code> |
-| Wired | Boot-history tracker (event timeline, FIFO 200-entry) | <code dir="auto">lib/sync/hyperbee/boot-history.ts</code> |
-| Wired | Admin status endpoint | <code dir="auto">GET /api/admin/dogfood-substrate-status</code> |
-| Wired | Admin boot-history endpoint | <code dir="auto">GET /api/admin/dogfood-substrate-boot-history</code> |
-| Wired | Pure-UI status pill | <code dir="auto">app/harness/insights/SubstrateStatusBadge.tsx</code> |
-| Wired | Polling client | <code dir="auto">app/harness/insights/SubstrateStatusBadgeClient.tsx</code> |
-| Wired | Boot-history table | <code dir="auto">app/harness/insights/BootHistoryTable.tsx</code> |
-| Wired | Boot-history table client | <code dir="auto">app/harness/insights/BootHistoryTableClient.tsx</code> |
-| Wired | Admin diagnostic page (3 indicators + main table + boot-history) | <code dir="auto">app/admin/dogfood-substrate/page.tsx</code> |
-| Wired | Combined health verdict | <code dir="auto">lib/sync/hyperbee/health.ts</code> |
-| Wired | Workspace summary aggregator (worst-verdict + counts) | <code dir="auto">lib/sync/hyperbee/summary.ts</code> |
-| Wired | Health endpoint (returns summary + harnesses) | <code dir="auto">GET /api/admin/dogfood-substrate-health</code> |
-| Wired | Health pill | <code dir="auto">app/harness/insights/SubstrateHealthPill.tsx</code> |
-| Wired | Health pill client | <code dir="auto">app/harness/insights/SubstrateHealthPillClient.tsx</code> |
-| Wired | Workspace summary card | <code dir="auto">app/harness/insights/SubstrateSummaryCard.tsx</code> |
-| Wired | Workspace summary card client | <code dir="auto">app/harness/insights/SubstrateSummaryCardClient.tsx</code> |
-| Wired | CLI verdict formatter (pure logic) | <code dir="auto">lib/sync/hyperbee/format-cli.ts</code> |
-| Wired | CLI script | <code dir="auto">scripts/substrate-status.ts</code> (<code dir="auto">npm run substrate:status</code>) |
-| Wired | In-process composer (non-HTTP callers) | <code dir="auto">lib/sync/hyperbee/in-process-status.ts</code> |
-| Gated | Real boot succeeds | only with flag on + valid workspace |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Wired (always-on)</td><td>Boot wiring</td><td><code dir="auto">apps/operator/bin/host-bootstrap.ts</code> (was <code dir="auto">instrumentation-node.ts</code>, retired)</td></tr><tr><td>Wired</td><td>Boot composer</td><td><code dir="auto">lib/sync/hyperbee/boot.ts</code></td></tr><tr><td>Wired</td><td>Boot orchestrator (idempotent map, inflight races)</td><td><code dir="auto">lib/sync/hyperbee/boot-all.ts</code></td></tr><tr><td>Wired</td><td>Status enumerator</td><td><code dir="auto">listBootedHandles</code> in <code dir="auto">boot-all.ts</code></td></tr><tr><td>Wired</td><td>Boot-history tracker (event timeline, FIFO 200-entry)</td><td><code dir="auto">lib/sync/hyperbee/boot-history.ts</code></td></tr><tr><td>Wired</td><td>Admin status endpoint</td><td><code dir="auto">GET /api/admin/dogfood-substrate-status</code></td></tr><tr><td>Wired</td><td>Admin boot-history endpoint</td><td><code dir="auto">GET /api/admin/dogfood-substrate-boot-history</code></td></tr><tr><td>Wired</td><td>Pure-UI status pill</td><td><code dir="auto">app/harness/insights/SubstrateStatusBadge.tsx</code></td></tr><tr><td>Wired</td><td>Polling client</td><td><code dir="auto">app/harness/insights/SubstrateStatusBadgeClient.tsx</code></td></tr><tr><td>Wired</td><td>Boot-history table</td><td><code dir="auto">app/harness/insights/BootHistoryTable.tsx</code></td></tr><tr><td>Wired</td><td>Boot-history table client</td><td><code dir="auto">app/harness/insights/BootHistoryTableClient.tsx</code></td></tr><tr><td>Wired</td><td>Admin diagnostic page (3 indicators + main table + boot-history)</td><td><code dir="auto">app/admin/dogfood-substrate/page.tsx</code></td></tr><tr><td>Wired</td><td>Combined health verdict</td><td><code dir="auto">lib/sync/hyperbee/health.ts</code></td></tr><tr><td>Wired</td><td>Workspace summary aggregator (worst-verdict + counts)</td><td><code dir="auto">lib/sync/hyperbee/summary.ts</code></td></tr><tr><td>Wired</td><td>Health endpoint (returns summary + harnesses)</td><td><code dir="auto">GET /api/admin/dogfood-substrate-health</code></td></tr><tr><td>Wired</td><td>Health pill</td><td><code dir="auto">app/harness/insights/SubstrateHealthPill.tsx</code></td></tr><tr><td>Wired</td><td>Health pill client</td><td><code dir="auto">app/harness/insights/SubstrateHealthPillClient.tsx</code></td></tr><tr><td>Wired</td><td>Workspace summary card</td><td><code dir="auto">app/harness/insights/SubstrateSummaryCard.tsx</code></td></tr><tr><td>Wired</td><td>Workspace summary card client</td><td><code dir="auto">app/harness/insights/SubstrateSummaryCardClient.tsx</code></td></tr><tr><td>Wired</td><td>CLI verdict formatter (pure logic)</td><td><code dir="auto">lib/sync/hyperbee/format-cli.ts</code></td></tr><tr><td>Wired</td><td>CLI script</td><td><code dir="auto">scripts/substrate-status.ts</code> (<code dir="auto">npm run substrate:status</code>)</td></tr><tr><td>Wired</td><td>In-process composer (non-HTTP callers)</td><td><code dir="auto">lib/sync/hyperbee/in-process-status.ts</code></td></tr><tr><td>Gated</td><td>Real boot succeeds</td><td>only with flag on + valid workspace</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="phase-5b--hyperbee-ui-integration">Phase 5b — Hyperbee UI integration</h2><a class="sl-anchor-link" href="#phase-5b--hyperbee-ui-integration"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 5b — Hyperbee UI integration”</span></a></div>
-<p>| Status | What | Where |
-| ------ | ---- | ----- |
-| Wired | Bootstrap-progress tracker (pure logic) | <code dir="auto">lib/sync/hyperbee/bootstrap-progress.ts</code> |
-| Wired | Bootstrap-progress poller | <code dir="auto">lib/sync/hyperbee/bootstrap-progress-poller.ts</code> |
-| Wired (in boot.ts) | Poller start/stop lifecycle | <code dir="auto">boot.ts</code> <code dir="auto">startBootstrapProgressPoller</code> |
-| Wired | Bootstrap-progress endpoint | <code dir="auto">GET /api/harness/:slug/bootstrap-progress</code> |
-| Wired | Bootstrap-progress indicator | <code dir="auto">app/harness/insights/BootstrapProgressIndicator.tsx</code> |
-| Wired | Bootstrap-progress indicator client | <code dir="auto">app/harness/insights/BootstrapProgressIndicatorClient.tsx</code> |
-| Gated | Real merge counts > 0 | only with flag on AND active substrate ops |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Wired</td><td>Bootstrap-progress tracker (pure logic)</td><td><code dir="auto">lib/sync/hyperbee/bootstrap-progress.ts</code></td></tr><tr><td>Wired</td><td>Bootstrap-progress poller</td><td><code dir="auto">lib/sync/hyperbee/bootstrap-progress-poller.ts</code></td></tr><tr><td>Wired (in boot.ts)</td><td>Poller start/stop lifecycle</td><td><code dir="auto">boot.ts</code> <code dir="auto">startBootstrapProgressPoller</code></td></tr><tr><td>Wired</td><td>Bootstrap-progress endpoint</td><td><code dir="auto">GET /api/harness/:slug/bootstrap-progress</code></td></tr><tr><td>Wired</td><td>Bootstrap-progress indicator</td><td><code dir="auto">app/harness/insights/BootstrapProgressIndicator.tsx</code></td></tr><tr><td>Wired</td><td>Bootstrap-progress indicator client</td><td><code dir="auto">app/harness/insights/BootstrapProgressIndicatorClient.tsx</code></td></tr><tr><td>Gated</td><td>Real merge counts > 0</td><td>only with flag on AND active substrate ops</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="phase-6--distributed-claim">Phase 6 — Distributed claim</h2><a class="sl-anchor-link" href="#phase-6--distributed-claim"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 6 — Distributed claim”</span></a></div>
-<p>| Status | What | Where |
-| ------ | ---- | ----- |
-| Wired | Claim-handle adapter (substrate → orchestrator) | <code dir="auto">lib/orchestrator/claim-handle-adapter.ts</code> |
-| Wired | Claim handle lookup | <code dir="auto">lib/orchestrator/get-claim-handle.ts</code> |
-| Wired | Distributed-claim wrapper | <code dir="auto">lib/orchestrator/distributed-claim.ts</code> |
-| Wired | Strategy decision helper | <code dir="auto">lib/orchestrator/get-claim-strategy.ts</code> |
-| Wired | Claim audit reader | <code dir="auto">lib/orchestrator/load-claim-attempts.ts</code> |
-| Wired | Claim-attempts endpoint | <code dir="auto">GET /api/harness/:slug/claim-attempts</code> |
-| Wired | Claim attempt stats pill | <code dir="auto">app/harness/insights/ClaimAttemptStatsPill.tsx</code> |
-| Wired | Claim attempt stats pill client | <code dir="auto">app/harness/insights/ClaimAttemptStatsPillClient.tsx</code> |
-| User-driven | Production orchestrator wiring | swap <code dir="auto">claim_feature</code> for <code dir="auto">if (getClaimStrategy() === 'distributed') { ... }</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Wired</td><td>Claim-handle adapter (substrate → orchestrator)</td><td><code dir="auto">lib/orchestrator/claim-handle-adapter.ts</code></td></tr><tr><td>Wired</td><td>Claim handle lookup</td><td><code dir="auto">lib/orchestrator/get-claim-handle.ts</code></td></tr><tr><td>Wired</td><td>Distributed-claim wrapper</td><td><code dir="auto">lib/orchestrator/distributed-claim.ts</code></td></tr><tr><td>Wired</td><td>Strategy decision helper</td><td><code dir="auto">lib/orchestrator/get-claim-strategy.ts</code></td></tr><tr><td>Wired</td><td>Claim audit reader</td><td><code dir="auto">lib/orchestrator/load-claim-attempts.ts</code></td></tr><tr><td>Wired</td><td>Claim-attempts endpoint</td><td><code dir="auto">GET /api/harness/:slug/claim-attempts</code></td></tr><tr><td>Wired</td><td>Claim attempt stats pill</td><td><code dir="auto">app/harness/insights/ClaimAttemptStatsPill.tsx</code></td></tr><tr><td>Wired</td><td>Claim attempt stats pill client</td><td><code dir="auto">app/harness/insights/ClaimAttemptStatsPillClient.tsx</code></td></tr><tr><td>User-driven</td><td>Production orchestrator wiring</td><td>swap <code dir="auto">claim_feature</code> for <code dir="auto">if (getClaimStrategy() === 'distributed') { ... }</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="phase-8--sidebar-insights-profile">Phase 8 — Sidebar, Insights, Profile</h2><a class="sl-anchor-link" href="#phase-8--sidebar-insights-profile"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 8 — Sidebar, Insights, Profile”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="visual-primitives">Visual primitives</h3><a class="sl-anchor-link" href="#visual-primitives"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Visual primitives”</span></a></div>
-<p>| Item | File | Tests |
-| ---- | ---- | ----- |
-| P-069a <code dir="auto">ClaimStatusBadge</code> | <code dir="auto">app/_components/ClaimStatusBadge.tsx</code> | shipped |
-| <code dir="auto">BindingStatusBadge</code> | <code dir="auto">app/_components/BindingStatusBadge.tsx</code> | shipped |
-| P-071 <code dir="auto">ContributorBadge</code>+Row | <code dir="auto">app/_components/ContributorBadge.tsx</code> | shipped |
-| P-069b <code dir="auto">SettingsBanner</code> | <code dir="auto">app/harness/SettingsBanner.tsx</code> | 8 |
-| P-069c <code dir="auto">ExistingBindingAlert</code> | <code dir="auto">app/harness/ExistingBindingAlert.tsx</code> | 9 |
-| P-069d <code dir="auto">ProvisionalOwnerExplainer</code> | <code dir="auto">app/_components/ProvisionalOwnerExplainer.tsx</code> | 8 |
-| P-069e <code dir="auto">ClaimCTA</code> | <code dir="auto">app/harness/ClaimCTA.tsx</code> | 10 |
-| P-049 <code dir="auto">PrReviewerSettings</code> modal | <code dir="auto">app/harness/PrReviewerSettings.tsx</code> | 14 |
-| P-049 trigger | <code dir="auto">app/harness/PrReviewerSettingsTrigger.tsx</code> | 6 |
-| P-048 <code dir="auto">ContributorsTab</code> | <code dir="auto">app/harness/ContributorsTab.tsx</code> + <code dir="auto">ContributorRow.tsx</code> | 13 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>File</th><th>Tests</th></tr></thead><tbody><tr><td>P-069a <code dir="auto">ClaimStatusBadge</code></td><td><code dir="auto">app/_components/ClaimStatusBadge.tsx</code></td><td>shipped</td></tr><tr><td><code dir="auto">BindingStatusBadge</code></td><td><code dir="auto">app/_components/BindingStatusBadge.tsx</code></td><td>shipped</td></tr><tr><td>P-071 <code dir="auto">ContributorBadge</code>+Row</td><td><code dir="auto">app/_components/ContributorBadge.tsx</code></td><td>shipped</td></tr><tr><td>P-069b <code dir="auto">SettingsBanner</code></td><td><code dir="auto">app/harness/SettingsBanner.tsx</code></td><td>8</td></tr><tr><td>P-069c <code dir="auto">ExistingBindingAlert</code></td><td><code dir="auto">app/harness/ExistingBindingAlert.tsx</code></td><td>9</td></tr><tr><td>P-069d <code dir="auto">ProvisionalOwnerExplainer</code></td><td><code dir="auto">app/_components/ProvisionalOwnerExplainer.tsx</code></td><td>8</td></tr><tr><td>P-069e <code dir="auto">ClaimCTA</code></td><td><code dir="auto">app/harness/ClaimCTA.tsx</code></td><td>10</td></tr><tr><td>P-049 <code dir="auto">PrReviewerSettings</code> modal</td><td><code dir="auto">app/harness/PrReviewerSettings.tsx</code></td><td>14</td></tr><tr><td>P-049 trigger</td><td><code dir="auto">app/harness/PrReviewerSettingsTrigger.tsx</code></td><td>6</td></tr><tr><td>P-048 <code dir="auto">ContributorsTab</code></td><td><code dir="auto">app/harness/ContributorsTab.tsx</code> + <code dir="auto">ContributorRow.tsx</code></td><td>13</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="insights-tab--pure-ui">Insights tab — pure UI</h3><a class="sl-anchor-link" href="#insights-tab--pure-ui"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Insights tab — pure UI”</span></a></div>
-<p>| Card | File | Tests |
-| ---- | ---- | ----- |
-| P-073a <code dir="auto">ProjectCard</code> | <code dir="auto">app/harness/insights/ProjectCard.tsx</code> | 8 |
-| P-073b <code dir="auto">ActivityFeedCard</code> | <code dir="auto">app/harness/insights/ActivityFeedCard.tsx</code> | 10 |
-| P-073c <code dir="auto">PeopleCard</code> | <code dir="auto">app/harness/insights/PeopleCard.tsx</code> | 10 |
-| P-073d <code dir="auto">YourPlaceCard</code> | <code dir="auto">app/harness/insights/YourPlaceCard.tsx</code> | 10 |
-| P-073e <code dir="auto">HowItWorksHereCard</code> | <code dir="auto">app/harness/insights/HowItWorksHereCard.tsx</code> | 11 |
-| P-073f <code dir="auto">SpendCard</code> (Tier D) | <code dir="auto">app/harness/insights/SpendCard.tsx</code> | 10 |
-| P-073 <code dir="auto">InsightsTab</code> assembly | <code dir="auto">app/harness/insights/InsightsTab.tsx</code> | 1 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Card</th><th>File</th><th>Tests</th></tr></thead><tbody><tr><td>P-073a <code dir="auto">ProjectCard</code></td><td><code dir="auto">app/harness/insights/ProjectCard.tsx</code></td><td>8</td></tr><tr><td>P-073b <code dir="auto">ActivityFeedCard</code></td><td><code dir="auto">app/harness/insights/ActivityFeedCard.tsx</code></td><td>10</td></tr><tr><td>P-073c <code dir="auto">PeopleCard</code></td><td><code dir="auto">app/harness/insights/PeopleCard.tsx</code></td><td>10</td></tr><tr><td>P-073d <code dir="auto">YourPlaceCard</code></td><td><code dir="auto">app/harness/insights/YourPlaceCard.tsx</code></td><td>10</td></tr><tr><td>P-073e <code dir="auto">HowItWorksHereCard</code></td><td><code dir="auto">app/harness/insights/HowItWorksHereCard.tsx</code></td><td>11</td></tr><tr><td>P-073f <code dir="auto">SpendCard</code> (Tier D)</td><td><code dir="auto">app/harness/insights/SpendCard.tsx</code></td><td>10</td></tr><tr><td>P-073 <code dir="auto">InsightsTab</code> assembly</td><td><code dir="auto">app/harness/insights/InsightsTab.tsx</code></td><td>1</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="insights-tab--data-layer">Insights tab — data layer</h3><a class="sl-anchor-link" href="#insights-tab--data-layer"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Insights tab — data layer”</span></a></div>
-<p>| Loader | File | Tests |
-| ------ | ---- | ----- |
-| Activity | <code dir="auto">lib/harness-activity/load.ts</code> | 9 |
-| People | <code dir="auto">lib/harness-insights/load-people.ts</code> | 7 |
-| YourPlace | <code dir="auto">lib/harness-insights/load-your-place.ts</code> | 7 |
-| Spend | <code dir="auto">lib/harness-insights/load-spend.ts</code> | 6 |
-| All-in-one composer | <code dir="auto">lib/harness-insights/load-all.ts</code> | 5 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Loader</th><th>File</th><th>Tests</th></tr></thead><tbody><tr><td>Activity</td><td><code dir="auto">lib/harness-activity/load.ts</code></td><td>9</td></tr><tr><td>People</td><td><code dir="auto">lib/harness-insights/load-people.ts</code></td><td>7</td></tr><tr><td>YourPlace</td><td><code dir="auto">lib/harness-insights/load-your-place.ts</code></td><td>7</td></tr><tr><td>Spend</td><td><code dir="auto">lib/harness-insights/load-spend.ts</code></td><td>6</td></tr><tr><td>All-in-one composer</td><td><code dir="auto">lib/harness-insights/load-all.ts</code></td><td>5</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="insights-tab--routes--pages--clients">Insights tab — routes + pages + clients</h3><a class="sl-anchor-link" href="#insights-tab--routes--pages--clients"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Insights tab — routes + pages + clients”</span></a></div>
-<p>| Surface | Path |
-| ------- | ---- |
-| JSON | <code dir="auto">GET /api/harness/:slug/insights</code> |
-| JSON | <code dir="auto">GET /api/harness/:slug/activity</code> |
-| SSR | <code dir="auto">/harness/:slug/insights</code> |
-| Client wrapper | <code dir="auto">app/harness/insights/InsightsTabClient.tsx</code> (6 tests) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Path</th></tr></thead><tbody><tr><td>JSON</td><td><code dir="auto">GET /api/harness/:slug/insights</code></td></tr><tr><td>JSON</td><td><code dir="auto">GET /api/harness/:slug/activity</code></td></tr><tr><td>SSR</td><td><code dir="auto">/harness/:slug/insights</code></td></tr><tr><td>Client wrapper</td><td><code dir="auto">app/harness/insights/InsightsTabClient.tsx</code> (6 tests)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-8-p-074--first-visit-gate-end-to-end">Phase 8 P-074 — first-visit gate (end-to-end)</h3><a class="sl-anchor-link" href="#phase-8-p-074--first-visit-gate-end-to-end"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 8 P-074 — first-visit gate (end-to-end)”</span></a></div>
-<p>| Item | Where |
-| ---- | ----- |
-| Helpers | <code dir="auto">lib/harness-insights/first-visit.ts</code> (10 tests) |
-| Endpoints | <code dir="auto">GET/POST /api/harness/:slug/insights-first-visit</code> |
-| Client gate | <code dir="auto">app/harness/insights/InsightsFirstVisitGate.tsx</code> (7 tests) |
-| SSR mark-on-visit | <code dir="auto">/insights/page.tsx</code> calls <code dir="auto">markInsightsSeen</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Where</th></tr></thead><tbody><tr><td>Helpers</td><td><code dir="auto">lib/harness-insights/first-visit.ts</code> (10 tests)</td></tr><tr><td>Endpoints</td><td><code dir="auto">GET/POST /api/harness/:slug/insights-first-visit</code></td></tr><tr><td>Client gate</td><td><code dir="auto">app/harness/insights/InsightsFirstVisitGate.tsx</code> (7 tests)</td></tr><tr><td>SSR mark-on-visit</td><td><code dir="auto">/insights/page.tsx</code> calls <code dir="auto">markInsightsSeen</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-8-p-072--user-profile-real-data">Phase 8 P-072 — user profile (real data)</h3><a class="sl-anchor-link" href="#phase-8-p-072--user-profile-real-data"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 8 P-072 — user profile (real data)”</span></a></div>
-<p>| Item | Where |
-| ---- | ----- |
-| PG loader (header + per-harness + claimed + privacy filter) | <code dir="auto">lib/user-profile/load.ts</code> (10 tests) |
-| Cross-harness recent activity loader | <code dir="auto">lib/user-profile/load-activity.ts</code> (7 tests) |
-| Canonical SSR page | <code dir="auto">app/users/github/[id]/page.tsx</code> |
-| Username redirect | <code dir="auto">app/users/[login]/page.tsx</code> |
-| JSON endpoint | <code dir="auto">GET /api/users/github/:id</code> |
-| Marketplace <code dir="auto">publishedBy</code> link → Papercusp profile | <code dir="auto">app/marketplace/[slug]/page.tsx</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Where</th></tr></thead><tbody><tr><td>PG loader (header + per-harness + claimed + privacy filter)</td><td><code dir="auto">lib/user-profile/load.ts</code> (10 tests)</td></tr><tr><td>Cross-harness recent activity loader</td><td><code dir="auto">lib/user-profile/load-activity.ts</code> (7 tests)</td></tr><tr><td>Canonical SSR page</td><td><code dir="auto">app/users/github/[id]/page.tsx</code></td></tr><tr><td>Username redirect</td><td><code dir="auto">app/users/[login]/page.tsx</code></td></tr><tr><td>JSON endpoint</td><td><code dir="auto">GET /api/users/github/:id</code></td></tr><tr><td>Marketplace <code dir="auto">publishedBy</code> link → Papercusp profile</td><td><code dir="auto">app/marketplace/[slug]/page.tsx</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="chrome-composers">Chrome composers</h2><a class="sl-anchor-link" href="#chrome-composers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Chrome composers”</span></a></div>
-<p>| Component | What it bundles |
-| --------- | --------------- |
-| <code dir="auto">HarnessChromeHeaderBadges</code> | <code dir="auto">SubstrateStatusBadgeClient</code> + <code dir="auto">SubstrateHealthPillClient</code> + <code dir="auto">BootstrapProgressIndicatorClient</code> + (opt-in) <code dir="auto">ClaimAttemptStatsPillClient</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Component</th><th>What it bundles</th></tr></thead><tbody><tr><td><code dir="auto">HarnessChromeHeaderBadges</code></td><td><code dir="auto">SubstrateStatusBadgeClient</code> + <code dir="auto">SubstrateHealthPillClient</code> + <code dir="auto">BootstrapProgressIndicatorClient</code> + (opt-in) <code dir="auto">ClaimAttemptStatsPillClient</code></td></tr></tbody></table>
 <p>Drop into the harness chrome header for the full substrate view. Each
 child toggleable via <code dir="auto">hideSubstrateBadge</code> / <code dir="auto">hideHealthPill</code> /
 <code dir="auto">hideBootstrapProgress</code> / <code dir="auto">hideClaimStats</code> (default true).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="pure-ui--client-wrapper-symmetry">Pure-UI ↔ client wrapper symmetry</h2><a class="sl-anchor-link" href="#pure-ui--client-wrapper-symmetry"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pure-UI ↔ client wrapper symmetry”</span></a></div>
 <p>Every dogfood pure-UI component now has a self-fetching client wrapper:</p>
-<p>| Pure UI | Client |
-| ------- | ------ |
-| <code dir="auto">SubstrateStatusBadge</code> | <code dir="auto">SubstrateStatusBadgeClient</code> |
-| <code dir="auto">SubstrateHealthPill</code> | <code dir="auto">SubstrateHealthPillClient</code> |
-| <code dir="auto">BootstrapProgressIndicator</code> | <code dir="auto">BootstrapProgressIndicatorClient</code> |
-| <code dir="auto">SubstrateSummaryCard</code> | <code dir="auto">SubstrateSummaryCardClient</code> |
-| <code dir="auto">BootHistoryTable</code> | <code dir="auto">BootHistoryTableClient</code> |
-| <code dir="auto">ClaimAttemptStatsPill</code> | <code dir="auto">ClaimAttemptStatsPillClient</code> |
-| <code dir="auto">InsightsTab</code> | <code dir="auto">InsightsTabClient</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pure UI</th><th>Client</th></tr></thead><tbody><tr><td><code dir="auto">SubstrateStatusBadge</code></td><td><code dir="auto">SubstrateStatusBadgeClient</code></td></tr><tr><td><code dir="auto">SubstrateHealthPill</code></td><td><code dir="auto">SubstrateHealthPillClient</code></td></tr><tr><td><code dir="auto">BootstrapProgressIndicator</code></td><td><code dir="auto">BootstrapProgressIndicatorClient</code></td></tr><tr><td><code dir="auto">SubstrateSummaryCard</code></td><td><code dir="auto">SubstrateSummaryCardClient</code></td></tr><tr><td><code dir="auto">BootHistoryTable</code></td><td><code dir="auto">BootHistoryTableClient</code></td></tr><tr><td><code dir="auto">ClaimAttemptStatsPill</code></td><td><code dir="auto">ClaimAttemptStatsPillClient</code></td></tr><tr><td><code dir="auto">InsightsTab</code></td><td><code dir="auto">InsightsTabClient</code></td></tr></tbody></table>
 <p>Any consumer drops a surface into any client-rendered context with
 zero data-fetch boilerplate.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="pure-logic-primitives-always-live-not-gated">Pure-logic primitives (always live, not gated)</h2><a class="sl-anchor-link" href="#pure-logic-primitives-always-live-not-gated"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pure-logic primitives (always live, not gated)”</span></a></div>
-<p>| Helper | Where |
-| ------ | ----- |
-| <code dir="auto">assessHarnessSubstrateHealth</code> | <code dir="auto">lib/sync/hyperbee/health.ts</code> |
-| <code dir="auto">summariseWorkspaceSubstrate</code> | <code dir="auto">lib/sync/hyperbee/summary.ts</code> |
-| <code dir="auto">attemptDistributedClaim</code> | <code dir="auto">lib/orchestrator/distributed-claim.ts</code> |
-| <code dir="auto">getClaimStrategy</code> | <code dir="auto">lib/orchestrator/get-claim-strategy.ts</code> |
-| <code dir="auto">recordBootEvent</code> / <code dir="auto">listBootHistory</code> | <code dir="auto">lib/sync/hyperbee/boot-history.ts</code> |
-| <code dir="auto">recordMergedOps</code> / <code dir="auto">getBootstrapProgress</code> | <code dir="auto">lib/sync/hyperbee/bootstrap-progress.ts</code> |
-| <code dir="auto">formatSubstrateStatus</code> (CLI verdict formatter) | <code dir="auto">lib/sync/hyperbee/format-cli.ts</code> |
-| <code dir="auto">loadUserProfile</code> + <code dir="auto">loadUserRecentActivity</code> | <code dir="auto">lib/user-profile/</code> |
-| <code dir="auto">loadHarnessInsights</code> | <code dir="auto">lib/harness-insights/load-all.ts</code> |
-| <code dir="auto">loadHarnessActivity</code> | <code dir="auto">lib/harness-activity/load.ts</code> |
-| <code dir="auto">loadRecentClaimAttempts</code> + <code dir="auto">loadClaimAttemptStats</code> | <code dir="auto">lib/orchestrator/load-claim-attempts.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Helper</th><th>Where</th></tr></thead><tbody><tr><td><code dir="auto">assessHarnessSubstrateHealth</code></td><td><code dir="auto">lib/sync/hyperbee/health.ts</code></td></tr><tr><td><code dir="auto">summariseWorkspaceSubstrate</code></td><td><code dir="auto">lib/sync/hyperbee/summary.ts</code></td></tr><tr><td><code dir="auto">attemptDistributedClaim</code></td><td><code dir="auto">lib/orchestrator/distributed-claim.ts</code></td></tr><tr><td><code dir="auto">getClaimStrategy</code></td><td><code dir="auto">lib/orchestrator/get-claim-strategy.ts</code></td></tr><tr><td><code dir="auto">recordBootEvent</code> / <code dir="auto">listBootHistory</code></td><td><code dir="auto">lib/sync/hyperbee/boot-history.ts</code></td></tr><tr><td><code dir="auto">recordMergedOps</code> / <code dir="auto">getBootstrapProgress</code></td><td><code dir="auto">lib/sync/hyperbee/bootstrap-progress.ts</code></td></tr><tr><td><code dir="auto">formatSubstrateStatus</code> (CLI verdict formatter)</td><td><code dir="auto">lib/sync/hyperbee/format-cli.ts</code></td></tr><tr><td><code dir="auto">loadUserProfile</code> + <code dir="auto">loadUserRecentActivity</code></td><td><code dir="auto">lib/user-profile/</code></td></tr><tr><td><code dir="auto">loadHarnessInsights</code></td><td><code dir="auto">lib/harness-insights/load-all.ts</code></td></tr><tr><td><code dir="auto">loadHarnessActivity</code></td><td><code dir="auto">lib/harness-activity/load.ts</code></td></tr><tr><td><code dir="auto">loadRecentClaimAttempts</code> + <code dir="auto">loadClaimAttemptStats</code></td><td><code dir="auto">lib/orchestrator/load-claim-attempts.ts</code></td></tr></tbody></table>
 <p>Every loader takes an injectable <code dir="auto">runQuery</code> so tests fake PG. Every
 loader is defensive against missing tables (returns empty / zero
 shape rather than throwing). Test seams (<code dir="auto">_setNowForTests</code>,

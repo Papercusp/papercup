@@ -85,6 +85,24 @@ export default defineConfig({
   site: 'http://localhost:3070',
   base: '/internal/docs',
   build: { format: 'file' },
+  // ── gfm MUST be explicit — do not delete this as redundant (WI-2145678) ──────
+  // Astro 6 made `markdown.gfm` an OPTIONAL key with NO schema default
+  // (astro/dist/core/config/schemas/base.js: `gfm: z.boolean().optional()`),
+  // because `unified()` supplies the real default for the .md pipeline. But
+  // `@astrojs/mdx` resolves `gfm: options.gfm ?? defaults.gfm` → undefined and
+  // then adds the plugin under `if (mdxOptions.gfm)` — a TRUTHINESS check, not
+  // the `!== false` it uses for smartypants on the very next line. So for .mdx
+  // (which is this entire corpus) GFM silently defaulted OFF on the astro 6
+  // upgrade. Two things broke, and neither announced itself:
+  //   1. Every pipe table rendered as raw text — 365 source docs author one, and
+  //      the built mirror went from tables=2 to tables=0 on system/repo-conventions
+  //      between 2026-09-02 and 2026-09-05. The BUILD STAYED GREEN throughout.
+  //   2. Losing the table extension changes how a row's inline code spans parse,
+  //      which turned system/lifecycle.mdx into a hard `astro build` failure and
+  //      wedged `npm run docs:rebuild` fleet-wide (EI-22415725782521670).
+  // Verify a change here against the BUILT HTML (`grep -c '<table'` on a page
+  // whose source has a pipe table), never against the build exit code.
+  markdown: { gfm: true },
   // Renamed pages keep their old URL alive. A doc's path is a REFERENCE — agents
   // cite it, humans bookmark it, and prior transcripts/memory rows hold it — so a
   // rename that just moves the file turns every one of those into a 404 with no

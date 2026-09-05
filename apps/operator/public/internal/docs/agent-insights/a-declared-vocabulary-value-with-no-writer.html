@@ -120,10 +120,27 @@ not evidence it broke. That rule has to survive the new dimension.</p>
 learns to look per-port, every client has a turn-start port with zero baseline. If a
 missing baseline meant <code dir="auto">regressed</code>, the fix would have paged for every client on its own
 first tick, with a confidently wrong cause.</p>
-<p>| port state | verdict | pageable |
-|---|---|---|
-| baseline, then silent | <code dir="auto">regressed</code> | <strong>yes</strong> — a real outage |
-| no baseline, silent | <code dir="auto">never-observed</code> | no — a known gap, visible in the panel |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>port state</th><th>verdict</th><th>pageable</th></tr></thead><tbody><tr><td>baseline, then silent</td><td><code dir="auto">regressed</code></td><td><strong>yes</strong> — a real outage</td></tr><tr><td>no baseline, silent</td><td><code dir="auto">never-observed</code></td><td>no — a known gap, visible in the panel</td></tr></tbody></table>
 <p>The client-level verdict then rolls up as the <strong>worst</strong> of its ports, which is what lets one
 dead port move the panel at all. And the summary must <strong>name the port</strong> — a bare
 <code dir="auto">claude stopped delivering context</code> while claude’s mid-turn is healthy points the reader at

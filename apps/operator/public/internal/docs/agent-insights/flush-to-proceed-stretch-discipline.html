@@ -108,23 +108,87 @@
 <li><strong>Size units by coherence, not by what fits a turn.</strong> A unit is what you can finish <em>and verify</em> together. Keep coupled work in one unit and <strong>checkpoint mid-unit</strong> rather than splitting it across a boundary that would strand half-done state.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="thresholds-as-shipped">Thresholds (as shipped)</h2><a class="sl-anchor-link" href="#thresholds-as-shipped"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Thresholds (as shipped)”</span></a></div>
-<p>| Constant | Value | Where | Meaning |
-|---|---|---|---|
-| <code dir="auto">CONTINUATION_CEILING_PCT</code> | <strong>60</strong> | <code dir="auto">continuation-gate.ts</code> | Above this context %, settle rather than continue. |
-| <code dir="auto">FLUSH_GATE_PCT</code> | <strong>75</strong> | <code dir="auto">inbox-flush-gate.ts</code> | At/above this %, <code dir="auto">coord:inbox</code> names any held claim with a stale checkpoint. |
-| <code dir="auto">FLUSH_STALE_MS</code> | <strong>10 min</strong> | <code dir="auto">inbox-flush-gate.ts</code> | A checkpoint older than this (or absent) is “stale”. |
-| <code dir="auto">COMPACTION_HINT_PCT</code> | <strong>85</strong> | <code dir="auto">inbox-context-usage.ts</code> | Pre-existing compaction affordance. |
-| <code dir="auto">OWNER_PRESENCE_FRESH_MS</code> | <strong>20 min</strong> | <code dir="auto">power-user-sessions.ts</code> | Auth-session recency that counts as “owner present”. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Constant</th><th>Value</th><th>Where</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">CONTINUATION_CEILING_PCT</code></td><td><strong>60</strong></td><td><code dir="auto">continuation-gate.ts</code></td><td>Above this context %, settle rather than continue.</td></tr><tr><td><code dir="auto">FLUSH_GATE_PCT</code></td><td><strong>75</strong></td><td><code dir="auto">inbox-flush-gate.ts</code></td><td>At/above this %, <code dir="auto">coord:inbox</code> names any held claim with a stale checkpoint.</td></tr><tr><td><code dir="auto">FLUSH_STALE_MS</code></td><td><strong>10 min</strong></td><td><code dir="auto">inbox-flush-gate.ts</code></td><td>A checkpoint older than this (or absent) is “stale”.</td></tr><tr><td><code dir="auto">COMPACTION_HINT_PCT</code></td><td><strong>85</strong></td><td><code dir="auto">inbox-context-usage.ts</code></td><td>Pre-existing compaction affordance.</td></tr><tr><td><code dir="auto">OWNER_PRESENCE_FRESH_MS</code></td><td><strong>20 min</strong></td><td><code dir="auto">power-user-sessions.ts</code></td><td>Auth-session recency that counts as “owner present”.</td></tr></tbody></table>
 <p>The ordering is deliberate: <strong>60 &#x3C; 75 &#x3C; 85</strong> — you are nudged to <em>settle</em> (60) well before you are nudged to <em>flush</em> (75), which is itself below the <em>compaction</em> hint (85). By the time compaction is near, a disciplined session has already flushed.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-landed-mechanical-enforcement--phase-2">What landed (mechanical enforcement — Phase 2)</h2><a class="sl-anchor-link" href="#what-landed-mechanical-enforcement--phase-2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What landed (mechanical enforcement — Phase 2)”</span></a></div>
 <p>The judgment layer (rules 2–3) is only safe to grant because two mechanical backstops bound its failure mode: the flush gate makes it impossible to run hot without flushing, and the stale-checkpoint surface makes unflushed work visibly risky. <strong>Ship order matters: the backstops (P-002/P-003) land before the persona grants back-to-back continuation (P-007).</strong> <em>(D-002.)</em></p>
-<p>| Item | Shipped | Decision |
-|---|---|---|
-| <strong>P-002</strong> flush-freshness gate | <code dir="auto">contextUsagePct</code> (shared %) + <code dir="auto">inbox-flush-gate.ts</code> (<code dir="auto">classifyStaleClaims</code> / <code dir="auto">renderFlushGateLine</code>) + <code dir="auto">listActiveClaimFreshnessForOwner</code> (joins <code dir="auto">work_item_claims</code> → <code dir="auto">carry_notes</code> checkpoints), wired into <code dir="auto">coord:inbox</code> behind the 75% gate. | <strong>D-004</strong>: injection-strength v1; the hard mutating-tool PreToolUse block is a deferred v2 (needs a deadlock-exemption design). |
-| <strong>P-003</strong> stale-checkpoint surface | The compaction-compliance watchdog names an over-limit session’s stale-checkpoint claims in its warning + an <code dir="auto">unflushedClaims</code> result field. | <strong>D-008</strong>: <strong>surface, not seize</strong> — force-reclaiming a live peer’s claim on a staleness heuristic races the holder (same harm class as EI-24). Auto-reclaim deliberately not built. |
-| <strong>P-004</strong> <code dir="auto">ownerPresent</code> bit | <code dir="auto">readOwnerPresence</code> over <code dir="auto">power_user_sessions</code> (fresh non-revoked human auth session), folded into <code dir="auto">coord:orient</code>’s result via the IO-free <code dir="auto">composeOrient</code>. | <strong>D-007</strong>: the wake-payload leg is delivered via <strong>wake-time orient</strong>, not a fire-engine edit (presence is live only at fire time; a prompt-baked bit would be stale). |
-| <strong>P-005</strong> loop continuation | <code dir="auto">loop:arm { continuation: 'settle' \| 'gated' }</code> (persisted like <code dir="auto">carry</code>); a <code dir="auto">GATED_LOOP_WAKE_ADDENDUM</code>; the pure <code dir="auto">continuation-gate.ts</code> returned by <code dir="auto">loop:checkpoint</code>. | <strong>D-006</strong>: policy + gate-read + prompt shipped; runtime <strong>interval-auto-stretch is deferred</strong> (keeps the loop fire lane untouched). |
-| <strong>P-006</strong> completion lint | A <strong>soft</strong> <code dir="auto">verificationWarning</code> on <code dir="auto">work_items:complete</code> when a completion has neither <code dir="auto">tests</code> nor <code dir="auto">deferred</code>. | <strong>D-005</strong>: soft, not hard-reject — EI-24 (“a finished completion is normalised, never lost”) is the load-bearing invariant of that file; a hard reject would be the one place that drops finished work. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Shipped</th><th>Decision</th></tr></thead><tbody><tr><td><strong>P-002</strong> flush-freshness gate</td><td><code dir="auto">contextUsagePct</code> (shared %) + <code dir="auto">inbox-flush-gate.ts</code> (<code dir="auto">classifyStaleClaims</code> / <code dir="auto">renderFlushGateLine</code>) + <code dir="auto">listActiveClaimFreshnessForOwner</code> (joins <code dir="auto">work_item_claims</code> → <code dir="auto">carry_notes</code> checkpoints), wired into <code dir="auto">coord:inbox</code> behind the 75% gate.</td><td><strong>D-004</strong>: injection-strength v1; the hard mutating-tool PreToolUse block is a deferred v2 (needs a deadlock-exemption design).</td></tr><tr><td><strong>P-003</strong> stale-checkpoint surface</td><td>The compaction-compliance watchdog names an over-limit session’s stale-checkpoint claims in its warning + an <code dir="auto">unflushedClaims</code> result field.</td><td><strong>D-008</strong>: <strong>surface, not seize</strong> — force-reclaiming a live peer’s claim on a staleness heuristic races the holder (same harm class as EI-24). Auto-reclaim deliberately not built.</td></tr><tr><td><strong>P-004</strong> <code dir="auto">ownerPresent</code> bit</td><td><code dir="auto">readOwnerPresence</code> over <code dir="auto">power_user_sessions</code> (fresh non-revoked human auth session), folded into <code dir="auto">coord:orient</code>’s result via the IO-free <code dir="auto">composeOrient</code>.</td><td><strong>D-007</strong>: the wake-payload leg is delivered via <strong>wake-time orient</strong>, not a fire-engine edit (presence is live only at fire time; a prompt-baked bit would be stale).</td></tr><tr><td><strong>P-005</strong> loop continuation</td><td><code dir="auto">loop:arm { continuation: 'settle' | 'gated' }</code> (persisted like <code dir="auto">carry</code>); a <code dir="auto">GATED_LOOP_WAKE_ADDENDUM</code>; the pure <code dir="auto">continuation-gate.ts</code> returned by <code dir="auto">loop:checkpoint</code>.</td><td><strong>D-006</strong>: policy + gate-read + prompt shipped; runtime <strong>interval-auto-stretch is deferred</strong> (keeps the loop fire lane untouched).</td></tr><tr><td><strong>P-006</strong> completion lint</td><td>A <strong>soft</strong> <code dir="auto">verificationWarning</code> on <code dir="auto">work_items:complete</code> when a completion has neither <code dir="auto">tests</code> nor <code dir="auto">deferred</code>.</td><td><strong>D-005</strong>: soft, not hard-reject — EI-24 (“a finished completion is normalised, never lost”) is the load-bearing invariant of that file; a hard reject would be the one place that drops finished work.</td></tr></tbody></table>
 <p>Every scoping deviation from the plan’s literal text is recorded as a decision (D-004…D-008) so the <em>why</em> survives — each honours an existing codebase invariant rather than overriding it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-the-rules-live-and-how-theyre-measured">Where the rules live, and how they’re measured</h2><a class="sl-anchor-link" href="#where-the-rules-live-and-how-theyre-measured"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where the rules live, and how they’re measured”</span></a></div>
 <ul>

@@ -3,9 +3,11 @@
  * Postgres (tool.handler called directly; withWorkspace bound to the testcontainer).
  *
  * Behaviors a fake-sql unit test can't prove:
- *  - pause flips op_status to 'paused' ONLY for a STARTED plan — the
- *    `AND op_status IS NOT NULL` guard means a never-started plan (null op_status)
- *    matches 0 rows and returns { notStarted: true } WITHOUT writing 'paused';
+ *  - pause flips op_status to 'paused' ONLY for a plan ON the axis — the
+ *    `AND op_status IN ('started','paused')` guard means a never-started plan
+ *    (null op_status) matches 0 rows and returns { notStarted: true } WITHOUT
+ *    writing 'paused';
+ *  - it does NOT re-enter the retired axis from the 'done' EXIT (WI-38301);
  *  - it is scoped to args.slug.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -80,6 +82,7 @@ beforeEach(async () => {
   await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status) VALUES
     (${SEED_WS}, 'web', 'started-plan', 'started'),
     (${SEED_WS}, 'web', 'never-started', NULL),
+    (${SEED_WS}, 'web', 'retired-plan', 'done'),
     (${SEED_WS}, 'web', 'sibling', 'started')`;
   // Same-named row in the ambient/wrong tenant — the row a gen-2 regression would hit.
   await rootSql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status) VALUES
@@ -96,7 +99,20 @@ describe('plans:pause handler (PG)', () => {
   it('a never-started plan (null op_status) returns notStarted and is NOT written', async () => {
     const res = await call('never-started');
     expect(res.data.results[0]).toMatchObject({ notStarted: true });
-    expect(await statusOf('never-started')).toBeNull(); // still null — the op_status IS NOT NULL guard held
+    expect(await statusOf('never-started')).toBeNull(); // still null — the on-axis guard held
+  });
+
+  // WI-38301 / D-055. The guard used to be `op_status IS NOT NULL`, and 'done' —
+  // the value clearStartedForTerminalPlan writes to take a plan OFF the retired
+  // axis — is not null. So pause moved a retired plan 'done' → 'paused', i.e. back
+  // onto a value `reservedPlanLaneExclusionSql` RESERVES, with no way off: the only
+  // re-entry verb (plans:start) is gated by P-047, so those items were reserved
+  // permanently for a dispatcher that cannot run. The failure is silent in both
+  // directions — the write "succeeds" and the items simply stop being claimable.
+  it('does NOT re-enter the axis from the done EXIT — a retired plan stays done', async () => {
+    const res = await call('retired-plan');
+    expect(res.data.results[0]).toMatchObject({ notStarted: true });
+    expect(await statusOf('retired-plan')).toBe('done'); // NOT 'paused'
   });
 
   it('is scoped to args.slug — a sibling started plan is untouched', async () => {

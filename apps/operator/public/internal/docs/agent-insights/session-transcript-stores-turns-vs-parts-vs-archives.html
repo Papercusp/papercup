@@ -76,11 +76,36 @@ copies of each other. Picking the wrong one is the recurring mistake here —
 more than once, and the answer is that until 2026-07-28 the DB genuinely did
 not have the data the pane needed.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-stores">The three stores</h2><a class="sl-anchor-link" href="#the-three-stores"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three stores”</span></a></div>
-<p>| store | contains | window | indexed for |
-|---|---|---|---|
-| <code dir="auto">harness_shared.session_turns</code> | <strong>text turns only</strong> — user + assistant text parts, 8k/turn, secret-scrubbed | 45 d | RECALL: gin tsv + hnsw embedding |
-| <code dir="auto">harness_shared.session_turn_parts</code> | <strong>every renderable part</strong> — text, <code dir="auto">tool_use</code>, <code dir="auto">tool_result</code>, thinking, 2k/part | 14 d | RENDER: PK + prune index, nothing else |
-| <code dir="auto">harness_shared.session_archives</code> | <strong>byte-faithful</strong> compressed copy of the source file | archive-at-death, sha-verified | nothing — it is a blob store |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>store</th><th>contains</th><th>window</th><th>indexed for</th></tr></thead><tbody><tr><td><code dir="auto">harness_shared.session_turns</code></td><td><strong>text turns only</strong> — user + assistant text parts, 8k/turn, secret-scrubbed</td><td>45 d</td><td>RECALL: gin tsv + hnsw embedding</td></tr><tr><td><code dir="auto">harness_shared.session_turn_parts</code></td><td><strong>every renderable part</strong> — text, <code dir="auto">tool_use</code>, <code dir="auto">tool_result</code>, thinking, 2k/part</td><td>14 d</td><td>RENDER: PK + prune index, nothing else</td></tr><tr><td><code dir="auto">harness_shared.session_archives</code></td><td><strong>byte-faithful</strong> compressed copy of the source file</td><td>archive-at-death, sha-verified</td><td>nothing — it is a blob store</td></tr></tbody></table>
 <p>Plus the source of truth we do not control: Claude Code writes
 <code dir="auto">~/.claude/projects/&#x3C;cwd-slug>/&#x3C;session-id>.jsonl</code> natively, Codex writes
 rollout files. There is no setting that makes a CLI persist turns to Postgres

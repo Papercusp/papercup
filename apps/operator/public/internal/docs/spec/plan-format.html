@@ -173,12 +173,32 @@ lifecycle</em>; importance says <em>how much it matters</em>. It is written as a
 <code dir="auto">importance:</code> keyword on the item line and parsed glyph-agnostically,
 exactly like <code dir="auto">blocked-by:</code>:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="markdown"><code><div class="ec-line"><div class="code"><span style="--0:#D9F5DD;--1:#111111">-</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#C5E478;--0fw:bold;--1:#3B61B0;--1fw:bold">P-030</span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">`needs-human`</span><span style="--0:#D6DEEB;--1:#403F53"> Sign off before the production ship. importance: urgent</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D9F5DD;--1:#111111">-</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#C5E478;--0fw:bold;--1:#3B61B0;--1fw:bold">P-031</span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">`todo`</span><span style="--0:#D6DEEB;--1:#403F53"> Tidy the dead feature flag. importance: low</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D9F5DD;--1:#111111">-</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#C5E478;--0fw:bold;--1:#3B61B0;--1fw:bold">P-032</span><span style="--0:#C5E478;--1:#3B61B0">**</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">`todo`</span><span style="--0:#D6DEEB;--1:#403F53"> Wire the new endpoint.</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="- **P-030** &#x60;needs-human&#x60; Sign off before the production ship. importance: urgent- **P-031** &#x60;todo&#x60; Tidy the dead feature flag. importance: low- **P-032** &#x60;todo&#x60; Wire the new endpoint."><div></div></button></div></figure></div>
-<p>| Level | Meaning |
-|---|---|
-| <code dir="auto">urgent</code> | Progress is fully blocked, <strong>or</strong> acting without a human risks harm (repeated failures, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt the human now. |
-| <code dir="auto">high</code> | A real decision is needed and this thread is paused until it’s answered, but other work proceeds and nothing is at risk. Should be seen today. |
-| <code dir="auto">normal</code> | <strong>Default.</strong> A decision/approval or task is needed; nothing is stuck and it fits the normal cadence. |
-| <code dir="auto">low</code> | Informational, or there is a safe default and the agent will proceed with it if unanswered. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Level</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">urgent</code></td><td>Progress is fully blocked, <strong>or</strong> acting without a human risks harm (repeated failures, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt the human now.</td></tr><tr><td><code dir="auto">high</code></td><td>A real decision is needed and this thread is paused until it’s answered, but other work proceeds and nothing is at risk. Should be seen today.</td></tr><tr><td><code dir="auto">normal</code></td><td><strong>Default.</strong> A decision/approval or task is needed; nothing is stuck and it fits the normal cadence.</td></tr><tr><td><code dir="auto">low</code></td><td>Informational, or there is a safe default and the agent will proceed with it if unanswered.</td></tr></tbody></table>
 <p>Rules:</p>
 <ul>
 <li><strong>Default is <code dir="auto">normal</code></strong> — omit the keyword for a normal item. The
@@ -197,14 +217,40 @@ defaulting by reflex — see the agent prompts (and the rubric in
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="status-vocabulary">Status vocabulary</h2><a class="sl-anchor-link" href="#status-vocabulary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Status vocabulary”</span></a></div>
 <p>Six tokens. One is <em>computed</em>.</p>
-<p>| Token | Meaning |
-|---|---|
-| <code dir="auto">todo</code> | Not started. Default for new items. |
-| <code dir="auto">wip</code> | In progress. The active item. Use <code dir="auto">locks:acquire</code> on the plan file before flipping to <code dir="auto">wip</code>. |
-| <code dir="auto">blocked</code> | <strong>External</strong> blocker only — upstream PR, vendor response, awaiting a release, etc. <em>Not</em> used for items waiting on other plan items. |
-| <code dir="auto">needs-human</code> | A human decision/approval/clarification is required. Surfaces in <code dir="auto">plans:items \{ needsHuman: true \}</code>. <strong>The orchestrator cannot emit DONE while any started plan has an open <code dir="auto">needs-human</code> item.</strong> |
-| <code dir="auto">done</code> | Completed and verified. |
-| <code dir="auto">dropped</code> | Decided not to do. Keep the line; record the reason in a <code dir="auto">D-NNN</code> decision. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Token</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">todo</code></td><td>Not started. Default for new items.</td></tr><tr><td><code dir="auto">wip</code></td><td>In progress. The active item. Use <code dir="auto">locks:acquire</code> on the plan file before flipping to <code dir="auto">wip</code>.</td></tr><tr><td><code dir="auto">blocked</code></td><td><strong>External</strong> blocker only — upstream PR, vendor response, awaiting a release, etc. <em>Not</em> used for items waiting on other plan items.</td></tr><tr><td><code dir="auto">needs-human</code></td><td>A human decision/approval/clarification is required. Surfaces in <code dir="auto">plans:items \{ needsHuman: true \}</code>. <strong>The orchestrator cannot emit DONE while any started plan has an open <code dir="auto">needs-human</code> item.</strong></td></tr><tr><td><code dir="auto">done</code></td><td>Completed and verified.</td></tr><tr><td><code dir="auto">dropped</code></td><td>Decided not to do. Keep the line; record the reason in a <code dir="auto">D-NNN</code> decision.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="computed-blocked">Computed-blocked</h3><a class="sl-anchor-link" href="#computed-blocked"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Computed-blocked”</span></a></div>
 <p>An item with <code dir="auto">blocked-by: P-NNN</code> has <em>effective</em> status <code dir="auto">blocked</code>
 iff any <code dir="auto">P-NNN</code> referenced is not yet <em>resolved</em>. A blocker is

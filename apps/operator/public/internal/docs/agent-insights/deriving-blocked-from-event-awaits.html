@@ -86,11 +86,32 @@ for the life of the session. It is the rendezvous a <code dir="auto">coord:send<
 against.</p>
 <p>It means <strong>“I am reachable by a wake”</strong> — the <em>opposite</em> of blocked.</p>
 <p>Measured on the dev box, 2026-07-25:</p>
-<p>| open awaits (not fired, not cancelled, not superseded) | rows | distinct agents |
-| --- | --- | --- |
-| <code dir="auto">coord:inbox-wake:*</code> | 126 | 126 |
-| <code dir="auto">work-item:*</code> | 10 | 8 |
-| <code dir="auto">gate-first-green</code>, <code dir="auto">composed-root</code>, <code dir="auto">critical-bug-wave-complete</code> | 3 | 3 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>open awaits (not fired, not cancelled, not superseded)</th><th>rows</th><th>distinct agents</th></tr></thead><tbody><tr><td><code dir="auto">coord:inbox-wake:*</code></td><td>126</td><td>126</td></tr><tr><td><code dir="auto">work-item:*</code></td><td>10</td><td>8</td></tr><tr><td><code dir="auto">gate-first-green</code>, <code dir="auto">composed-root</code>, <code dir="auto">critical-bug-wave-complete</code></td><td>3</td><td>3</td></tr></tbody></table>
 <p>A naive “has an open await ⇒ blocked” put <strong>89 of 96</strong> su sessions in the
 Blocked column. That does not merely add noise — it <strong>destroys the column</strong>, because
 a signal that fires for nearly everyone distinguishes no one. The Blocked column

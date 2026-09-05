@@ -83,11 +83,32 @@
 </ol>
 <p><code dir="auto">tools:invoke</code> is a router, not a privilege bypass: the target call runs through the same projected dispatch and policy checks as a direct call. The compact MCP initialize instructions provide a capability map so an agent can know what category to search without loading every schema.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="per-client-behavior">Per-client behavior</h2><a class="sl-anchor-link" href="#per-client-behavior"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Per-client behavior”</span></a></div>
-<p>| Client | Launch surface | Long-tail path |
-|---|---|---|
-| <strong>OMP</strong> | The per-session config advertises the core seed directly and disables OMP’s second discovery gate for that small set. | <code dir="auto">tools:find</code> grows the server surface; OMP honors <code dir="auto">list_changed</code> and can call surfaced wrappers. <code dir="auto">tools:invoke</code> remains available. |
-| <strong>Codex</strong> | Always starts from the trimmed seed. There is no supported full-catalog opt-out: the old full surface exceeded the code-mode IPC frame limit. | Use <code dir="auto">tools:find</code> for the live name/schema and <code dir="auto">tools:invoke</code> for guaranteed dispatch. A refreshed native wrapper is an optimization, not an acceptance dependency. |
-| <strong>Claude</strong> | <code dir="auto">PAPERCUSP_TOOLS</code> seeds the same trimmed spine. Native ToolSearch stays enabled to defer the seed’s schemas, but Claude no longer receives the whole Papercusp catalog’s names and descriptions up front. | Use Papercusp <code dir="auto">tools:find</code> and <code dir="auto">tools:invoke</code> for the long tail. Do not depend on Claude refreshing an existing wrapper after <code dir="auto">list_changed</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Client</th><th>Launch surface</th><th>Long-tail path</th></tr></thead><tbody><tr><td><strong>OMP</strong></td><td>The per-session config advertises the core seed directly and disables OMP’s second discovery gate for that small set.</td><td><code dir="auto">tools:find</code> grows the server surface; OMP honors <code dir="auto">list_changed</code> and can call surfaced wrappers. <code dir="auto">tools:invoke</code> remains available.</td></tr><tr><td><strong>Codex</strong></td><td>Always starts from the trimmed seed. There is no supported full-catalog opt-out: the old full surface exceeded the code-mode IPC frame limit.</td><td>Use <code dir="auto">tools:find</code> for the live name/schema and <code dir="auto">tools:invoke</code> for guaranteed dispatch. A refreshed native wrapper is an optimization, not an acceptance dependency.</td></tr><tr><td><strong>Claude</strong></td><td><code dir="auto">PAPERCUSP_TOOLS</code> seeds the same trimmed spine. Native ToolSearch stays enabled to defer the seed’s schemas, but Claude no longer receives the whole Papercusp catalog’s names and descriptions up front.</td><td>Use Papercusp <code dir="auto">tools:find</code> and <code dir="auto">tools:invoke</code> for the long tail. Do not depend on Claude refreshing an existing wrapper after <code dir="auto">list_changed</code>.</td></tr></tbody></table>
 <p>This is deliberately heterogeneous at the client edge and uniform at the contract boundary: every launch is effectively trimmed, and every client can still reach the complete authorized catalog.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="legacy-full-compatibility">Legacy <code dir="auto">full</code> compatibility</h2><a class="sl-anchor-link" href="#legacy-full-compatibility"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Legacy full compatibility”</span></a></div>
 <ul>

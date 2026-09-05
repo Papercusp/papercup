@@ -102,13 +102,48 @@ closed</strong> (mug-brief-cache-assembly B-01/P-012, see Consequence below):
 <code dir="auto">adv_sessions</code> row) and routes even that path through the same fresh pot
 launch.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-wake-paths-all-fresh--the-last-exception-closed-by-p-012">The wake paths (ALL fresh — the last exception closed by P-012)</h2><a class="sl-anchor-link" href="#the-wake-paths-all-fresh--the-last-exception-closed-by-p-012"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The wake paths (ALL fresh — the last exception closed by P-012)”</span></a></div>
-<p>| Path | Trigger | Mechanism | Session |
-|---|---|---|---|
-| Time wake | <code dir="auto">pot:declare-wake {inSeconds}</code> | <code dir="auto">pot-wake</code> routine → DBOS routinesTick → <code dir="auto">system:blueprint-run</code> → <code dir="auto">fireLaunchBlueprint('pot')</code> → <code dir="auto">POST /harness/:slug/invoke?bpkind=pot</code> | <strong>FRESH</strong> |
-| Event wake | <code dir="auto">pot:declare-wake {events}</code> | reaction rule → <code dir="auto">pot:wake</code> tool → <code dir="auto">fireLaunchBlueprint('pot')</code> → same invoke route | <strong>FRESH</strong> |
-| Watchdog recovery | turn-end / boot / 30s tick (<code dir="auto">hive/watchdog.ts armFallbackHiveWake</code>) | <code dir="auto">declareHiveTimeWake</code> → same routine | <strong>FRESH</strong> |
-| Manual / user | <code dir="auto">pot:wake</code> | <code dir="auto">fireLaunchBlueprint('pot')</code> → same invoke route | <strong>FRESH</strong> |
-| Inbox / await | <code dir="auto">coord:send {wake:true}</code> to her owner id, or her own <code dir="auto">events:await</code> | await pump → <code dir="auto">wake-executor.ts executeWake</code> → detects the <code dir="auto">hive ·</code> label (<code dir="auto">hiveInstallSlugFromLabel</code>) → <code dir="auto">defaultFireHiveWake</code> → <code dir="auto">fireLaunchBlueprint('pot')</code> | <strong>FRESH</strong> (closed exception — was <code dir="auto">--resume</code> before P-012 landed) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>Trigger</th><th>Mechanism</th><th>Session</th></tr></thead><tbody><tr><td>Time wake</td><td><code dir="auto">pot:declare-wake {inSeconds}</code></td><td><code dir="auto">pot-wake</code> routine → DBOS routinesTick → <code dir="auto">system:blueprint-run</code> → <code dir="auto">fireLaunchBlueprint('pot')</code> → <code dir="auto">POST /harness/:slug/invoke?bpkind=pot</code></td><td><strong>FRESH</strong></td></tr><tr><td>Event wake</td><td><code dir="auto">pot:declare-wake {events}</code></td><td>reaction rule → <code dir="auto">pot:wake</code> tool → <code dir="auto">fireLaunchBlueprint('pot')</code> → same invoke route</td><td><strong>FRESH</strong></td></tr><tr><td>Watchdog recovery</td><td>turn-end / boot / 30s tick (<code dir="auto">hive/watchdog.ts armFallbackHiveWake</code>)</td><td><code dir="auto">declareHiveTimeWake</code> → same routine</td><td><strong>FRESH</strong></td></tr><tr><td>Manual / user</td><td><code dir="auto">pot:wake</code></td><td><code dir="auto">fireLaunchBlueprint('pot')</code> → same invoke route</td><td><strong>FRESH</strong></td></tr><tr><td>Inbox / await</td><td><code dir="auto">coord:send {wake:true}</code> to her owner id, or her own <code dir="auto">events:await</code></td><td>await pump → <code dir="auto">wake-executor.ts executeWake</code> → detects the <code dir="auto">hive ·</code> label (<code dir="auto">hiveInstallSlugFromLabel</code>) → <code dir="auto">defaultFireHiveWake</code> → <code dir="auto">fireLaunchBlueprint('pot')</code></td><td><strong>FRESH</strong> (closed exception — was <code dir="auto">--resume</code> before P-012 landed)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="where-fresh-is-decided">Where “fresh” is decided</h3><a class="sl-anchor-link" href="#where-fresh-is-decided"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where “fresh” is decided”</span></a></div>
 <p><code dir="auto">packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts</code> (the
 <code dir="auto">/invoke?bpkind=pot</code> route): mints <code dir="auto">nativeSessionId = randomUUID()</code> <strong>fresh on

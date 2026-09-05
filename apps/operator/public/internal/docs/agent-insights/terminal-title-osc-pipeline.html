@@ -128,11 +128,32 @@ writer would leave no title at all. (The installer likewise refuses to clobber a
 <code dir="auto">statusLine</code>; the two refusals must agree.)</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="pc_ttypy-ships-on-three-paths--miss-one-and-the-bug-returns-invisibly"><code dir="auto">pc_tty.py</code> ships on three paths — miss one and the bug returns invisibly</h2><a class="sl-anchor-link" href="#pc_ttypy-ships-on-three-paths--miss-one-and-the-bug-returns-invisibly"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “pc_tty.py ships on three paths — miss one and the bug returns invisibly”</span></a></div>
 <p>It is <code dir="auto">import</code>ed off the hooks’ own dirname, so it must land <strong>beside</strong> them everywhere:</p>
-<p>| path | how it copies | the trap |
-| --- | --- | --- |
-| <code dir="auto">apps/operator/scripts/install-standalone-mcp.sh</code> | explicit <code dir="auto">cp</code> per file | a new file is simply forgotten |
-| <code dir="auto">papercusp-desktop/bin/build-desktop-sidecar.sh</code> | <code dir="auto">cp -a .../*.sh</code> | <strong>the glob drops <code dir="auto">.py</code></strong> — every packaged Mac/Windows app |
-| <code dir="auto">packages/operator-core/lib/desktop-install/papercusp-files.ts</code> | <code dir="auto">CC_HOOK_FILES</code> allowlist | absent ⇒ never installed; also install it <code dir="auto">0644</code> (a lib, not a hook) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>how it copies</th><th>the trap</th></tr></thead><tbody><tr><td><code dir="auto">apps/operator/scripts/install-standalone-mcp.sh</code></td><td>explicit <code dir="auto">cp</code> per file</td><td>a new file is simply forgotten</td></tr><tr><td><code dir="auto">papercusp-desktop/bin/build-desktop-sidecar.sh</code></td><td><code dir="auto">cp -a .../*.sh</code></td><td><strong>the glob drops <code dir="auto">.py</code></strong> — every packaged Mac/Windows app</td></tr><tr><td><code dir="auto">packages/operator-core/lib/desktop-install/papercusp-files.ts</code></td><td><code dir="auto">CC_HOOK_FILES</code> allowlist</td><td>absent ⇒ never installed; also install it <code dir="auto">0644</code> (a lib, not a hook)</td></tr></tbody></table>
 <p>A hook that lands without the lib it imports raises <code dir="auto">ImportError</code>, <strong>fails open</strong>, and silently
 stops setting the title. That is the same shape as EI-8191 (“blank bottom statusline”).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="testing-this">Testing this</h2><a class="sl-anchor-link" href="#testing-this"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Testing this”</span></a></div>

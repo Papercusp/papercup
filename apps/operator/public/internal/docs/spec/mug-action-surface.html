@@ -116,11 +116,32 @@ propose→ratify, never auto.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-axes">The three axes</h2><a class="sl-anchor-link" href="#the-three-axes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three axes”</span></a></div>
 <p>The gate composes three <strong>orthogonal</strong> axes (D-002), never one scalar:</p>
-<p>| Axis | Owns | Module |
-| --- | --- | --- |
-| <strong>risk tier</strong> | likelihood-of-error — the earned dial | <code dir="auto">harness/improvements/policy.ts</code> |
-| <strong>reversibility</strong> | blast radius — a hard floor (<code dir="auto">unknown</code>→irreversible) | <code dir="auto">harness/improvements/reversibility.ts</code> (B-02) |
-| <strong>authority</strong> | the owner’s by right — a categorical override | B-01 schema |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Axis</th><th>Owns</th><th>Module</th></tr></thead><tbody><tr><td><strong>risk tier</strong></td><td>likelihood-of-error — the earned dial</td><td><code dir="auto">harness/improvements/policy.ts</code></td></tr><tr><td><strong>reversibility</strong></td><td>blast radius — a hard floor (<code dir="auto">unknown</code>→irreversible)</td><td><code dir="auto">harness/improvements/reversibility.ts</code> (B-02)</td></tr><tr><td><strong>authority</strong></td><td>the owner’s by right — a categorical override</td><td>B-01 schema</td></tr></tbody></table>
 <p>The <strong>category</strong> (this page) is the <em>primary</em> control axis (D-003): the owner sets
 a per-category risk <strong>ceiling</strong> (category = row, risk tier = slider). Gating
 function (D-004):</p>
@@ -135,22 +156,87 @@ above verbatim (<code dir="auto">decider.ts</code>).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-14-categories-d-009--d-017">The 14 categories (D-009 + D-017)</h2><a class="sl-anchor-link" href="#the-14-categories-d-009--d-017"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The 14 categories (D-009 + D-017)”</span></a></div>
 <p>The partition. <strong>PROTECTED</strong> = ceiling locked at zero by default and cannot
 graduate (D-005); accessible as propose→ratify, never auto.</p>
-<p>| Category | Covers | Default posture |
-| --- | --- | --- |
-| <strong>inbox-triage</strong> | tier / downgrade / dismiss / resolve inbox items | early-autonomy |
-| <strong>escalations</strong> | resolve escalations; answer <code dir="auto">ctx.askUser</code> cards + the owner-decision-queue | mixed |
-| <strong>plan-governance</strong> | ratify <code dir="auto">needs-human</code> items &#x26; milestone gates; ratify <code dir="auto">D-NNN</code>; set status / Now; promote plan → features | mixed |
-| <strong>work-prioritization</strong> | set work-item priority / importance; reorder the backlog; steer claims | early-autonomy |
-| <strong>ideation-intake</strong> | grade Scout ideas; triage / promote improvements &#x26; issues | low-risk |
-| <strong>implementation</strong> | approve / dispatch auto-implement code changes | risk-graded |
-| <strong>review-merge</strong> | approve reviews; approve merges | risk-graded |
-| <strong>release-deploy</strong> | approve deploys / releases / promotion to green | <strong>PROTECTED</strong> |
-| <strong>spend-budget</strong> | approve spend, budgets, account scaling | <strong>PROTECTED</strong> |
-| <strong>agent-lifecycle</strong> | spawn / cancel / drain agents; model-tier; fleet admission | risk-graded |
-| <strong>credentials-auth</strong> | register / approve credentials; auth-affecting flags | <strong>PROTECTED</strong> |
-| <strong>knowledge-curation</strong> | memory approve / forget; docs &#x26; insights publish; knowledge-pack / blueprint publish | low-risk |
-| <strong>schedule-arm</strong> | arm / disarm a scheduled plan’s recurrence (start/stop autonomous runs) — distinct from system-control’s SYSTEM loops | risk-graded |
-| <strong>system-control</strong> | arm / disarm loops; flag flips; routines; the learning loop itself | <strong>PROTECTED</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Category</th><th>Covers</th><th>Default posture</th></tr></thead><tbody><tr><td><strong>inbox-triage</strong></td><td>tier / downgrade / dismiss / resolve inbox items</td><td>early-autonomy</td></tr><tr><td><strong>escalations</strong></td><td>resolve escalations; answer <code dir="auto">ctx.askUser</code> cards + the owner-decision-queue</td><td>mixed</td></tr><tr><td><strong>plan-governance</strong></td><td>ratify <code dir="auto">needs-human</code> items &#x26; milestone gates; ratify <code dir="auto">D-NNN</code>; set status / Now; promote plan → features</td><td>mixed</td></tr><tr><td><strong>work-prioritization</strong></td><td>set work-item priority / importance; reorder the backlog; steer claims</td><td>early-autonomy</td></tr><tr><td><strong>ideation-intake</strong></td><td>grade Scout ideas; triage / promote improvements &#x26; issues</td><td>low-risk</td></tr><tr><td><strong>implementation</strong></td><td>approve / dispatch auto-implement code changes</td><td>risk-graded</td></tr><tr><td><strong>review-merge</strong></td><td>approve reviews; approve merges</td><td>risk-graded</td></tr><tr><td><strong>release-deploy</strong></td><td>approve deploys / releases / promotion to green</td><td><strong>PROTECTED</strong></td></tr><tr><td><strong>spend-budget</strong></td><td>approve spend, budgets, account scaling</td><td><strong>PROTECTED</strong></td></tr><tr><td><strong>agent-lifecycle</strong></td><td>spawn / cancel / drain agents; model-tier; fleet admission</td><td>risk-graded</td></tr><tr><td><strong>credentials-auth</strong></td><td>register / approve credentials; auth-affecting flags</td><td><strong>PROTECTED</strong></td></tr><tr><td><strong>knowledge-curation</strong></td><td>memory approve / forget; docs &#x26; insights publish; knowledge-pack / blueprint publish</td><td>low-risk</td></tr><tr><td><strong>schedule-arm</strong></td><td>arm / disarm a scheduled plan’s recurrence (start/stop autonomous runs) — distinct from system-control’s SYSTEM loops</td><td>risk-graded</td></tr><tr><td><strong>system-control</strong></td><td>arm / disarm loops; flag flips; routines; the learning loop itself</td><td><strong>PROTECTED</strong></td></tr></tbody></table>
 <p><code dir="auto">schedule-arm</code> is <strong>non-protected</strong> (graduatable per plan risk), deliberately <em>not</em>
 a reuse of the PROTECTED <code dir="auto">system-control</code> category — a user plan’s schedule is
 lower-stakes than a SYSTEM loop, and arming must be able to graduate per D-010
@@ -162,14 +248,47 @@ plan-governance.</p>
 <strong>wrong, and dangerously so</strong>. The capability is a coarse RBAC bucket; many
 distinct governance actions across different categories and posture levels share
 one capability. Under <code dir="auto">harness:write</code> <strong>alone</strong>:</p>
-<p>| Tool (verb) | Category | Posture |
-| --- | --- | --- |
-| <code dir="auto">deploy:harness</code> | release-deploy | <strong>PROTECTED</strong> |
-| <code dir="auto">accounts:scale_out</code> | spend-budget | <strong>PROTECTED</strong> |
-| <code dir="auto">accounts:register</code> | credentials-auth | <strong>PROTECTED</strong> |
-| <code dir="auto">pot:create</code> | agent-lifecycle | risk-graded |
-| <code dir="auto">scout:grade-idea</code> | ideation-intake | low-risk |
-| <code dir="auto">knowledge_packs:publish</code> | knowledge-curation | low-risk |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool (verb)</th><th>Category</th><th>Posture</th></tr></thead><tbody><tr><td><code dir="auto">deploy:harness</code></td><td>release-deploy</td><td><strong>PROTECTED</strong></td></tr><tr><td><code dir="auto">accounts:scale_out</code></td><td>spend-budget</td><td><strong>PROTECTED</strong></td></tr><tr><td><code dir="auto">accounts:register</code></td><td>credentials-auth</td><td><strong>PROTECTED</strong></td></tr><tr><td><code dir="auto">pot:create</code></td><td>agent-lifecycle</td><td>risk-graded</td></tr><tr><td><code dir="auto">scout:grade-idea</code></td><td>ideation-intake</td><td>low-risk</td></tr><tr><td><code dir="auto">knowledge_packs:publish</code></td><td>knowledge-curation</td><td>low-risk</td></tr></tbody></table>
 <p>Keying on <code dir="auto">capability</code> would collapse a low-risk grade and a PROTECTED deploy to
 the same category — exactly the confident-but-catastrophic ≡ shaky-but-trivial
 collapse D-002 forbids. So the map matches the stable MCP <strong>tool name</strong>
@@ -196,55 +315,396 @@ row; several rows carry additional verbs in code (e.g. <code dir="auto">escalati
 also <code dir="auto">deploy:pot</code> / <code dir="auto">deploy:teardown_hive</code>; <code dir="auto">system.backup</code> also
 <code dir="auto">backup:snapshot_create</code> / <code dir="auto">backup:promote</code>). The canonical full verb set per row
 lives in <code dir="auto">action-surface.ts</code>.</p>
-<p>| Action | Category | Rev. | Authority | Mug verb(s) | Coverage |
-| --- | --- | --- | --- | --- | --- |
-| Tier / downgrade an inbox item | inbox-triage | rev | system | <code dir="auto">inbox:triage</code> | covered |
-| Dismiss / resolve an inbox message | inbox-triage | rev | system | — (<code dir="auto">messages:dismiss</code> retired 2026-07-26, WI-6097) | <strong>uncovered</strong> |
-| Resolve an escalation | escalations | rev | system | <code dir="auto">coord:resolve</code> | covered |
-| Answer an agent question | escalations | rev | system | <code dir="auto">conversations:answer</code> | covered |
-| Answer a <code dir="auto">ctx.askUser</code> card | escalations | rev | owner | <code dir="auto">coord:resolve</code>, <code dir="auto">coord:escalations</code> | covered |
-| Ask another pot / request work | escalations | rev | system | <code dir="auto">pot:ask</code>, <code dir="auto">pot:request_work</code> | covered |
-| Ratify a <code dir="auto">needs-human</code> plan item | plan-governance | rev | owner | <code dir="auto">plans:set-status</code> | covered |
-| Ratify a <code dir="auto">D-NNN</code> decision | plan-governance | rev | owner | <code dir="auto">plans:add-decision</code>, <code dir="auto">plans:ratify-decision</code> | covered |
-| Set plan status / Now / priority | plan-governance | rev | system | <code dir="auto">plans:set-plan-status</code>, <code dir="auto">plans:set-now</code> | covered |
-| Promote plan → features / waves | plan-governance | rev | system | <code dir="auto">plans:promote</code> | covered |
-| Convert plan item → work-item | plan-governance | rev | system | <code dir="auto">plan_items:convert</code> | covered |
-| Set work-item priority / importance | work-prioritization | rev | system | <code dir="auto">work_items:set_priority</code> | covered |
-| Reorder the backlog | work-prioritization | rev | system | <code dir="auto">work_items:reorder</code> | covered |
-| Set / steer work-item state | work-prioritization | rev | system | <code dir="auto">work_items:set_state</code> | covered |
-| Grade a Scout idea | ideation-intake | rev | system | <code dir="auto">scout:grade-idea</code> | covered |
-| Triage / resolve an improvement | ideation-intake | rev | system | <code dir="auto">improvements:triage</code> | covered |
-| Triage / promote an issue | ideation-intake | rev | system | <code dir="auto">issues:promote</code> | covered |
-| Promote a conversation → tracked work | ideation-intake | rev | system | <code dir="auto">conversations:promote</code> | covered |
-| Approve / dispatch auto-implement | implementation | rev | system | <code dir="auto">improvements:set-auto-policy</code> | covered |
-| Judge a gym candidate | review-merge | rev | system | <code dir="auto">gym:judge</code> | covered |
-| Record a design reviewer verdict | review-merge | rev | system | <code dir="auto">design-phase:record_review</code> | covered |
-| Approve a code review / merge | review-merge | rev | system | <code dir="auto">review:approve</code>, <code dir="auto">merge:approve</code> | covered |
-| Approve / run a deploy | release-deploy | <strong>irrev</strong> | owner | <code dir="auto">deploy:harness</code> | covered |
-| Tear down a deploy target | release-deploy | <strong>irrev</strong> | owner | <code dir="auto">deploy:teardown</code> | covered |
-| Promote staging → green | release-deploy | <strong>irrev</strong> | owner | — (automation) | partial |
-| Approve spend / set a budget | spend-budget | <strong>irrev</strong> | owner | <code dir="auto">operator:budget</code> | covered |
-| Scale out accounts | spend-budget | <strong>irrev</strong> | owner | <code dir="auto">accounts:scale_out</code> | covered |
-| Spawn an agent | agent-lifecycle | rev | system | <code dir="auto">cup:spawn</code> | covered |
-| Cancel / drain an agent | agent-lifecycle | rev | system | <code dir="auto">fleet:cancel</code>, <code dir="auto">fleet:drain</code> | covered |
-| Admit / supervise / govern the fleet | agent-lifecycle | rev | system | <code dir="auto">fleet:admit</code>, <code dir="auto">fleet:governor</code> | covered |
-| Create / start / pause / dissolve a pot | agent-lifecycle | rev | system | <code dir="auto">pot:create</code>, <code dir="auto">pot:start</code> | covered |
-| Approve a new subagent | agent-lifecycle | rev | system | <code dir="auto">new_subagent:approve</code> | covered |
-| Choose the model tier for a spawn | agent-lifecycle | rev | system | <code dir="auto">cup:spawn</code> (param) | partial |
-| Register / remove a credential account | credentials-auth | <strong>irrev</strong> | owner | <code dir="auto">accounts:register</code> | covered |
-| Grant cross-pot authorization | credentials-auth | rev | owner | <code dir="auto">pot:cross_grant</code> | covered |
-| Flip an auth-affecting flag | credentials-auth | rev | owner | <code dir="auto">flags:set</code> | partial |
-| Trust / un-trust a GitHub author for auto-run | credentials-auth | rev | owner | <code dir="auto">trust:add</code>, <code dir="auto">trust:remove</code> | covered |
-| Approve / forget / update a memory | knowledge-curation | rev | system | <code dir="auto">memory:remember</code>, <code dir="auto">memory:forget</code> | covered |
-| Publish / install a knowledge pack | knowledge-curation | rev | system | <code dir="auto">knowledge_packs:publish</code> | covered |
-| Author / extend a blueprint | knowledge-curation | rev | system | <code dir="auto">blueprint:create</code>, <code dir="auto">blueprint:extend</code> | covered |
-| Publish documentation | knowledge-curation | rev | system | <code dir="auto">docs:write</code> | covered |
-| Arm / disarm a scheduled plan | schedule-arm | rev | system | <code dir="auto">plans:arm-schedule</code>, <code dir="auto">plans:disarm-schedule</code> | covered |
-| Arm / disarm the loop | system-control | rev | owner | <code dir="auto">autoloop:control</code> | covered |
-| Flip a feature flag | system-control | rev | owner | <code dir="auto">flags:set</code> | covered |
-| Activate / pause a routine | system-control | rev | owner | <code dir="auto">routines:write</code> | covered |
-| Snapshot / restore / rollback state | system-control | <strong>irrev</strong> | owner | <code dir="auto">backup:restore</code>, <code dir="auto">backup:rollback</code> | covered |
-| Kill a runaway process | system-control | <strong>irrev</strong> | owner | <code dir="auto">processes:kill</code> | covered |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Action</th><th>Category</th><th>Rev.</th><th>Authority</th><th>Mug verb(s)</th><th>Coverage</th></tr></thead><tbody><tr><td>Tier / downgrade an inbox item</td><td>inbox-triage</td><td>rev</td><td>system</td><td><code dir="auto">inbox:triage</code></td><td>covered</td></tr><tr><td>Dismiss / resolve an inbox message</td><td>inbox-triage</td><td>rev</td><td>system</td><td>— (<code dir="auto">messages:dismiss</code> retired 2026-07-26, WI-6097)</td><td><strong>uncovered</strong></td></tr><tr><td>Resolve an escalation</td><td>escalations</td><td>rev</td><td>system</td><td><code dir="auto">coord:resolve</code></td><td>covered</td></tr><tr><td>Answer an agent question</td><td>escalations</td><td>rev</td><td>system</td><td><code dir="auto">conversations:answer</code></td><td>covered</td></tr><tr><td>Answer a <code dir="auto">ctx.askUser</code> card</td><td>escalations</td><td>rev</td><td>owner</td><td><code dir="auto">coord:resolve</code>, <code dir="auto">coord:escalations</code></td><td>covered</td></tr><tr><td>Ask another pot / request work</td><td>escalations</td><td>rev</td><td>system</td><td><code dir="auto">pot:ask</code>, <code dir="auto">pot:request_work</code></td><td>covered</td></tr><tr><td>Ratify a <code dir="auto">needs-human</code> plan item</td><td>plan-governance</td><td>rev</td><td>owner</td><td><code dir="auto">plans:set-status</code></td><td>covered</td></tr><tr><td>Ratify a <code dir="auto">D-NNN</code> decision</td><td>plan-governance</td><td>rev</td><td>owner</td><td><code dir="auto">plans:add-decision</code>, <code dir="auto">plans:ratify-decision</code></td><td>covered</td></tr><tr><td>Set plan status / Now / priority</td><td>plan-governance</td><td>rev</td><td>system</td><td><code dir="auto">plans:set-plan-status</code>, <code dir="auto">plans:set-now</code></td><td>covered</td></tr><tr><td>Promote plan → features / waves</td><td>plan-governance</td><td>rev</td><td>system</td><td><code dir="auto">plans:promote</code></td><td>covered</td></tr><tr><td>Convert plan item → work-item</td><td>plan-governance</td><td>rev</td><td>system</td><td><code dir="auto">plan_items:convert</code></td><td>covered</td></tr><tr><td>Set work-item priority / importance</td><td>work-prioritization</td><td>rev</td><td>system</td><td><code dir="auto">work_items:set_priority</code></td><td>covered</td></tr><tr><td>Reorder the backlog</td><td>work-prioritization</td><td>rev</td><td>system</td><td><code dir="auto">work_items:reorder</code></td><td>covered</td></tr><tr><td>Set / steer work-item state</td><td>work-prioritization</td><td>rev</td><td>system</td><td><code dir="auto">work_items:set_state</code></td><td>covered</td></tr><tr><td>Grade a Scout idea</td><td>ideation-intake</td><td>rev</td><td>system</td><td><code dir="auto">scout:grade-idea</code></td><td>covered</td></tr><tr><td>Triage / resolve an improvement</td><td>ideation-intake</td><td>rev</td><td>system</td><td><code dir="auto">improvements:triage</code></td><td>covered</td></tr><tr><td>Triage / promote an issue</td><td>ideation-intake</td><td>rev</td><td>system</td><td><code dir="auto">issues:promote</code></td><td>covered</td></tr><tr><td>Promote a conversation → tracked work</td><td>ideation-intake</td><td>rev</td><td>system</td><td><code dir="auto">conversations:promote</code></td><td>covered</td></tr><tr><td>Approve / dispatch auto-implement</td><td>implementation</td><td>rev</td><td>system</td><td><code dir="auto">improvements:set-auto-policy</code></td><td>covered</td></tr><tr><td>Judge a gym candidate</td><td>review-merge</td><td>rev</td><td>system</td><td><code dir="auto">gym:judge</code></td><td>covered</td></tr><tr><td>Record a design reviewer verdict</td><td>review-merge</td><td>rev</td><td>system</td><td><code dir="auto">design-phase:record_review</code></td><td>covered</td></tr><tr><td>Approve a code review / merge</td><td>review-merge</td><td>rev</td><td>system</td><td><code dir="auto">review:approve</code>, <code dir="auto">merge:approve</code></td><td>covered</td></tr><tr><td>Approve / run a deploy</td><td>release-deploy</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">deploy:harness</code></td><td>covered</td></tr><tr><td>Tear down a deploy target</td><td>release-deploy</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">deploy:teardown</code></td><td>covered</td></tr><tr><td>Promote staging → green</td><td>release-deploy</td><td><strong>irrev</strong></td><td>owner</td><td>— (automation)</td><td>partial</td></tr><tr><td>Approve spend / set a budget</td><td>spend-budget</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">operator:budget</code></td><td>covered</td></tr><tr><td>Scale out accounts</td><td>spend-budget</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">accounts:scale_out</code></td><td>covered</td></tr><tr><td>Spawn an agent</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">cup:spawn</code></td><td>covered</td></tr><tr><td>Cancel / drain an agent</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">fleet:cancel</code>, <code dir="auto">fleet:drain</code></td><td>covered</td></tr><tr><td>Admit / supervise / govern the fleet</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">fleet:admit</code>, <code dir="auto">fleet:governor</code></td><td>covered</td></tr><tr><td>Create / start / pause / dissolve a pot</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">pot:create</code>, <code dir="auto">pot:start</code></td><td>covered</td></tr><tr><td>Approve a new subagent</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">new_subagent:approve</code></td><td>covered</td></tr><tr><td>Choose the model tier for a spawn</td><td>agent-lifecycle</td><td>rev</td><td>system</td><td><code dir="auto">cup:spawn</code> (param)</td><td>partial</td></tr><tr><td>Register / remove a credential account</td><td>credentials-auth</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">accounts:register</code></td><td>covered</td></tr><tr><td>Grant cross-pot authorization</td><td>credentials-auth</td><td>rev</td><td>owner</td><td><code dir="auto">pot:cross_grant</code></td><td>covered</td></tr><tr><td>Flip an auth-affecting flag</td><td>credentials-auth</td><td>rev</td><td>owner</td><td><code dir="auto">flags:set</code></td><td>partial</td></tr><tr><td>Trust / un-trust a GitHub author for auto-run</td><td>credentials-auth</td><td>rev</td><td>owner</td><td><code dir="auto">trust:add</code>, <code dir="auto">trust:remove</code></td><td>covered</td></tr><tr><td>Approve / forget / update a memory</td><td>knowledge-curation</td><td>rev</td><td>system</td><td><code dir="auto">memory:remember</code>, <code dir="auto">memory:forget</code></td><td>covered</td></tr><tr><td>Publish / install a knowledge pack</td><td>knowledge-curation</td><td>rev</td><td>system</td><td><code dir="auto">knowledge_packs:publish</code></td><td>covered</td></tr><tr><td>Author / extend a blueprint</td><td>knowledge-curation</td><td>rev</td><td>system</td><td><code dir="auto">blueprint:create</code>, <code dir="auto">blueprint:extend</code></td><td>covered</td></tr><tr><td>Publish documentation</td><td>knowledge-curation</td><td>rev</td><td>system</td><td><code dir="auto">docs:write</code></td><td>covered</td></tr><tr><td>Arm / disarm a scheduled plan</td><td>schedule-arm</td><td>rev</td><td>system</td><td><code dir="auto">plans:arm-schedule</code>, <code dir="auto">plans:disarm-schedule</code></td><td>covered</td></tr><tr><td>Arm / disarm the loop</td><td>system-control</td><td>rev</td><td>owner</td><td><code dir="auto">autoloop:control</code></td><td>covered</td></tr><tr><td>Flip a feature flag</td><td>system-control</td><td>rev</td><td>owner</td><td><code dir="auto">flags:set</code></td><td>covered</td></tr><tr><td>Activate / pause a routine</td><td>system-control</td><td>rev</td><td>owner</td><td><code dir="auto">routines:write</code></td><td>covered</td></tr><tr><td>Snapshot / restore / rollback state</td><td>system-control</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">backup:restore</code>, <code dir="auto">backup:rollback</code></td><td>covered</td></tr><tr><td>Kill a runaway process</td><td>system-control</td><td><strong>irrev</strong></td><td>owner</td><td><code dir="auto">processes:kill</code></td><td>covered</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="coverage-gaps-p-016">Coverage gaps (P-016)</h2><a class="sl-anchor-link" href="#coverage-gaps-p-016"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Coverage gaps (P-016)”</span></a></div>
 <p>For every action the audit found, a Mug-accessible verb should exist. The
 genuine <strong>gap</strong> (human-only, no Mug verb) and the notable <strong>partials</strong> are filed

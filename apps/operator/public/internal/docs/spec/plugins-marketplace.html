@@ -106,30 +106,139 @@ plugins from app shells.</p>
 <p>Papercusp needs the same split. Templates are recipes; plugins are horizontal
 capabilities that any template can pull in.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="141-templates-vs-plugins--the-ontological-split">14.1 Templates vs plugins — the ontological split</h2><a class="sl-anchor-link" href="#141-templates-vs-plugins--the-ontological-split"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “14.1 Templates vs plugins — the ontological split”</span></a></div>
-<p>| | <strong>Harness template</strong> | <strong>Plugin</strong> |
-|---|---|---|
-| What it is | Recipe for spinning up a harness | Horizontal capability any harness can use |
-| Cardinality | 1 template → N harness instances | 1 plugin install → mounted into N harness instances |
-| Install scope | Per-instance (each <code dir="auto">papercusp run</code> produces a fresh instance) | Per-machine (installed globally; enabled per harness instance) |
-| Examples | papercup-coding, papercup-org, “research-org”, “habit-tracker” | cloudflare-pages, vscode-server, slack-notifier, gemini-narrator |
-| Composition | One template per harness | Multiple plugins per harness instance |
-| Manifest field | <code dir="auto">kind: 'template'</code> | <code dir="auto">kind: 'plugin'</code> (the default) |
-| Closest analog | WordPress <em>themes</em>; npm-create-* | WordPress <em>plugins</em>; VS Code <em>extensions</em> |
-| Lifecycle hook | <code dir="auto">papercusp run</code> — instantiates a harness from the template | Substrate boot — discovers + mounts global-plugins for active harnesses |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th><strong>Harness template</strong></th><th><strong>Plugin</strong></th></tr></thead><tbody><tr><td>What it is</td><td>Recipe for spinning up a harness</td><td>Horizontal capability any harness can use</td></tr><tr><td>Cardinality</td><td>1 template → N harness instances</td><td>1 plugin install → mounted into N harness instances</td></tr><tr><td>Install scope</td><td>Per-instance (each <code dir="auto">papercusp run</code> produces a fresh instance)</td><td>Per-machine (installed globally; enabled per harness instance)</td></tr><tr><td>Examples</td><td>papercup-coding, papercup-org, “research-org”, “habit-tracker”</td><td>cloudflare-pages, vscode-server, slack-notifier, gemini-narrator</td></tr><tr><td>Composition</td><td>One template per harness</td><td>Multiple plugins per harness instance</td></tr><tr><td>Manifest field</td><td><code dir="auto">kind: 'template'</code></td><td><code dir="auto">kind: 'plugin'</code> (the default)</td></tr><tr><td>Closest analog</td><td>WordPress <em>themes</em>; npm-create-*</td><td>WordPress <em>plugins</em>; VS Code <em>extensions</em></td></tr><tr><td>Lifecycle hook</td><td><code dir="auto">papercusp run</code> — instantiates a harness from the template</td><td>Substrate boot — discovers + mounts global-plugins for active harnesses</td></tr></tbody></table>
 <p>Both share the marketplace pipeline (catalog, signing, retraction, namespaces,
 reviews, SBOMs, authors, webhooks). They diverge only in the runtime model:
 templates produce instances; plugins extend instances.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="142-research-summary--8-plugin-systems-studied">14.2 Research summary — 8 plugin systems studied</h2><a class="sl-anchor-link" href="#142-research-summary--8-plugin-systems-studied"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “14.2 Research summary — 8 plugin systems studied”</span></a></div>
-<p>| System | Sandbox | Capability model | Distribution | Hook system | Composition |
-|---|---|---|---|---|---|
-| <strong>VS Code</strong> | Out-of-process extension host + iframe webviews | Manifest <code dir="auto">activationEvents</code> + <code dir="auto">contributes</code>; ~30 surfaces | Bespoke marketplace, ~50k extensions | Typed event API (<code dir="auto">vscode.workspace.onDidChange*</code>) | <code dir="auto">extensionDependencies</code> |
-| <strong>WordPress</strong> | None | None (full host privileges) | Bespoke + npm-style; 60k+ plugins | <code dir="auto">add_action</code> / <code dir="auto">add_filter</code> priority numbers | Hook-priority composition |
-| <strong>Backstage</strong> | None | DI container <code dir="auto">ApiRef</code> typed services | npm packages, build-time | React context + DI | Plugins ship npm packages with peer-deps |
-| <strong>Figma</strong> | iframe + UI iframe + manifest network allowlist | Strongest of survey: manifest declares network domains; iframe enforces | Bespoke marketplace | postMessage RPC | Limited |
-| <strong>Obsidian</strong> | None (full Node + DOM) | All-or-nothing at install (cautionary tale) | Bespoke “community plugins” | Vault events + Plugin API | Plugins commonly conflict |
-| <strong>Slack apps</strong> | Hosted webhook | OAuth scopes (coarse) | App directory | Event subscriptions | None |
-| <strong>Astro / Vite</strong> | None (build-time) | None | npm | Build hooks | Linear pipeline |
-| <strong>Probot / Hubot</strong> | Hosted GitHub App / chat bot | Coarse permissions | npm scaffolding | Webhook events | Each app independent |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>System</th><th>Sandbox</th><th>Capability model</th><th>Distribution</th><th>Hook system</th><th>Composition</th></tr></thead><tbody><tr><td><strong>VS Code</strong></td><td>Out-of-process extension host + iframe webviews</td><td>Manifest <code dir="auto">activationEvents</code> + <code dir="auto">contributes</code>; ~30 surfaces</td><td>Bespoke marketplace, ~50k extensions</td><td>Typed event API (<code dir="auto">vscode.workspace.onDidChange*</code>)</td><td><code dir="auto">extensionDependencies</code></td></tr><tr><td><strong>WordPress</strong></td><td>None</td><td>None (full host privileges)</td><td>Bespoke + npm-style; 60k+ plugins</td><td><code dir="auto">add_action</code> / <code dir="auto">add_filter</code> priority numbers</td><td>Hook-priority composition</td></tr><tr><td><strong>Backstage</strong></td><td>None</td><td>DI container <code dir="auto">ApiRef</code> typed services</td><td>npm packages, build-time</td><td>React context + DI</td><td>Plugins ship npm packages with peer-deps</td></tr><tr><td><strong>Figma</strong></td><td>iframe + UI iframe + manifest network allowlist</td><td>Strongest of survey: manifest declares network domains; iframe enforces</td><td>Bespoke marketplace</td><td>postMessage RPC</td><td>Limited</td></tr><tr><td><strong>Obsidian</strong></td><td>None (full Node + DOM)</td><td>All-or-nothing at install (cautionary tale)</td><td>Bespoke “community plugins”</td><td>Vault events + Plugin API</td><td>Plugins commonly conflict</td></tr><tr><td><strong>Slack apps</strong></td><td>Hosted webhook</td><td>OAuth scopes (coarse)</td><td>App directory</td><td>Event subscriptions</td><td>None</td></tr><tr><td><strong>Astro / Vite</strong></td><td>None (build-time)</td><td>None</td><td>npm</td><td>Build hooks</td><td>Linear pipeline</td></tr><tr><td><strong>Probot / Hubot</strong></td><td>Hosted GitHub App / chat bot</td><td>Coarse permissions</td><td>npm scaffolding</td><td>Webhook events</td><td>Each app independent</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-two-failure-modes-to-avoid">The two failure modes to avoid</h3><a class="sl-anchor-link" href="#the-two-failure-modes-to-avoid"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The two failure modes to avoid”</span></a></div>
 <ol>
 <li><strong>Obsidian / WordPress’s “no sandbox”</strong> — host trivially exploitable by malicious or buggy plugin. Both retroactively bolted on capability prompts.</li>
@@ -232,13 +341,36 @@ rule from §10.5. A plugin claiming <code dir="auto">ui:dashboard-tab:foo</code>
 named <code dir="auto">foo</code>; mounting <code dir="auto">bar</code> requires a separate <code dir="auto">ui:dashboard-tab:bar</code>
 capability.</p>
 <p>This makes the consent prompt name what’s actually being claimed:</p>
-<p>| Capability | What it grants |
-|---|---|
-| <code dir="auto">ui:dashboard-tab:&#x3C;id></code> | One tab in the dashboard tab strip |
-| <code dir="auto">ui:sidebar-item:&#x3C;id></code> | One sidebar entry in the harness chrome |
-| <code dir="auto">ui:harness-action:&#x3C;id></code> | One action surface (button, menu item) |
-| <code dir="auto">ui:harness-route:&#x3C;slug></code> | One full-route mount under <code dir="auto">/harness/&#x3C;slug></code> |
-| <code dir="auto">ui:plugin-config-panel</code> | Override the auto-generated config form (see §14.3.7) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Capability</th><th>What it grants</th></tr></thead><tbody><tr><td><code dir="auto">ui:dashboard-tab:&#x3C;id></code></td><td>One tab in the dashboard tab strip</td></tr><tr><td><code dir="auto">ui:sidebar-item:&#x3C;id></code></td><td>One sidebar entry in the harness chrome</td></tr><tr><td><code dir="auto">ui:harness-action:&#x3C;id></code></td><td>One action surface (button, menu item)</td></tr><tr><td><code dir="auto">ui:harness-route:&#x3C;slug></code></td><td>One full-route mount under <code dir="auto">/harness/&#x3C;slug></code></td></tr><tr><td><code dir="auto">ui:plugin-config-panel</code></td><td>Override the auto-generated config form (see §14.3.7)</td></tr></tbody></table>
 <p>The previous coarse <code dir="auto">ui:dashboard-tab</code> (no id) was <em>proposed</em> for removal here.
 In the shipped SDK, the coarse no-id forms (<code dir="auto">ui:dashboard-tab</code>, <code dir="auto">ui:sidebar-item</code>,
 <code dir="auto">ui:harness-route</code>, <code dir="auto">ui:tui-pane</code>) are what landed — the per-id capability
@@ -349,16 +481,66 @@ or extract to a plugin?</p>
 <p>The principle: <strong>a tab is core if every harness — coding, research-org,
 content-pipeline, marketing-bot, anything — would benefit from it</strong>. A tab is
 a plugin if it’s specific to one template family or external integration.</p>
-<p>| Tab | Today’s content | Recommended | Rationale |
-|---|---|---|---|
-| <strong>dashboard</strong> | Feature queue, agents, logs, issues — the main canvas | <strong>CORE</strong> | This IS the harness UI. Every harness has features+agents+logs. Plugins contribute INTO it via <code dir="auto">dashboardTabs</code>/<code dir="auto">sidebarItems</code>. If this were a plugin, harnesses with no plugins would have nothing to show. |
-| <strong>summary</strong> | High-level changelog of what’s been built | <strong>CORE</strong> | Generic across all templates. A research-org harness wants “what got researched”; a content-pipeline wants “what got published”; coding wants “what features shipped”. Same primitive. |
-| <strong>insights</strong> | Features count, cost, tokens, iterations | <strong>CORE</strong> | Universal harness metrics. Every harness pays for tokens; every harness has iterations. |
-| <strong>config</strong> | Per-instance configuration | <strong>CORE</strong> | Every harness needs config. Plugins contribute their own config sections via <code dir="auto">configSchema</code>. |
-| <strong>proposals</strong> | AI-generated scope expansion suggestions for the SPEC.md | <strong>CORE for v1</strong>, defer extraction | See §14.6 — proposals isn’t a UI tab extraction, it’s an authorization-model question. |
-| <strong>docs</strong> | iframe of project docs (fumadocs on :4325) | <strong>PLUGIN</strong> (<code dir="auto">@papercupai/fumadocs</code>) | Optional integration with an external docs server. Templates that don’t generate docs shouldn’t see this tab. |
-| <strong>vscode</strong> | iframe of code-server on the project dir | <strong>RETIRED plugin</strong> (was <code dir="auto">@papercupai/vscode-server</code>) | Retired 2026-07-07 with the bundled code-server surface. Keep this as historical context for why IDE tabs belong outside core. |
-| <strong>pi</strong> | iframe of the pi (omp) interactive coding agent | <strong>PLUGIN</strong> (<code dir="auto">@papercupai/pi-companion</code>) | Pi is one specific external tool. Would be like baking “ChatGPT side panel” into Slack. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tab</th><th>Today’s content</th><th>Recommended</th><th>Rationale</th></tr></thead><tbody><tr><td><strong>dashboard</strong></td><td>Feature queue, agents, logs, issues — the main canvas</td><td><strong>CORE</strong></td><td>This IS the harness UI. Every harness has features+agents+logs. Plugins contribute INTO it via <code dir="auto">dashboardTabs</code>/<code dir="auto">sidebarItems</code>. If this were a plugin, harnesses with no plugins would have nothing to show.</td></tr><tr><td><strong>summary</strong></td><td>High-level changelog of what’s been built</td><td><strong>CORE</strong></td><td>Generic across all templates. A research-org harness wants “what got researched”; a content-pipeline wants “what got published”; coding wants “what features shipped”. Same primitive.</td></tr><tr><td><strong>insights</strong></td><td>Features count, cost, tokens, iterations</td><td><strong>CORE</strong></td><td>Universal harness metrics. Every harness pays for tokens; every harness has iterations.</td></tr><tr><td><strong>config</strong></td><td>Per-instance configuration</td><td><strong>CORE</strong></td><td>Every harness needs config. Plugins contribute their own config sections via <code dir="auto">configSchema</code>.</td></tr><tr><td><strong>proposals</strong></td><td>AI-generated scope expansion suggestions for the SPEC.md</td><td><strong>CORE for v1</strong>, defer extraction</td><td>See §14.6 — proposals isn’t a UI tab extraction, it’s an authorization-model question.</td></tr><tr><td><strong>docs</strong></td><td>iframe of project docs (fumadocs on :4325)</td><td><strong>PLUGIN</strong> (<code dir="auto">@papercupai/fumadocs</code>)</td><td>Optional integration with an external docs server. Templates that don’t generate docs shouldn’t see this tab.</td></tr><tr><td><strong>vscode</strong></td><td>iframe of code-server on the project dir</td><td><strong>RETIRED plugin</strong> (was <code dir="auto">@papercupai/vscode-server</code>)</td><td>Retired 2026-07-07 with the bundled code-server surface. Keep this as historical context for why IDE tabs belong outside core.</td></tr><tr><td><strong>pi</strong></td><td>iframe of the pi (omp) interactive coding agent</td><td><strong>PLUGIN</strong> (<code dir="auto">@papercupai/pi-companion</code>)</td><td>Pi is one specific external tool. Would be like baking “ChatGPT side panel” into Slack.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="where-this-proposal-disagrees-with-the-maintainers-initial-take">Where this proposal disagrees with the maintainer’s initial take</h3><a class="sl-anchor-link" href="#where-this-proposal-disagrees-with-the-maintainers-initial-take"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where this proposal disagrees with the maintainer’s initial take”</span></a></div>
 <p>The maintainer suggested:</p>
 <ul>
@@ -396,12 +578,47 @@ component in <code dir="auto">apps/papercusp/app/harness/</code>. Each plugin ex
 <li>Add to <code dir="auto">papercup-coding</code>’s <code dir="auto">recommends:</code> so existing users get it on install</li>
 </ol>
 <p>Per-tab effort estimate (post-Phase-P2):</p>
-<p>| Tab → Plugin | Lines | Capabilities | Est | Status |
-|---|---|---|---|---|
-| <code dir="auto">vscode</code> → <code dir="auto">@papercupai/vscode-server</code> | ~10 (iframe) | <code dir="auto">ui:harness-tab:vscode</code> + config <code dir="auto">code_server_url</code> | 30 min | <strong>Retired 2026-07-07</strong> |
-| <code dir="auto">docs</code> → <code dir="auto">@papercupai/fumadocs</code> | ~10 (iframe) | <code dir="auto">ui:harness-tab:docs</code> + config <code dir="auto">docs_url</code> | 30 min | P7 |
-| <code dir="auto">pi</code> → <code dir="auto">@papercupai/pi-companion</code> | ~150 (PiPanel) | <code dir="auto">ui:harness-tab:pi</code> + typed-services for child-process needs | 1.5h | P7 |
-| <code dir="auto">proposals</code> → <code dir="auto">@papercupai/scope-proposals</code> | substrate-protocol change | New: plugin authorization to mutate harness-canonical state | DEFERRED to v1.5 | See note |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tab → Plugin</th><th>Lines</th><th>Capabilities</th><th>Est</th><th>Status</th></tr></thead><tbody><tr><td><code dir="auto">vscode</code> → <code dir="auto">@papercupai/vscode-server</code></td><td>~10 (iframe)</td><td><code dir="auto">ui:harness-tab:vscode</code> + config <code dir="auto">code_server_url</code></td><td>30 min</td><td><strong>Retired 2026-07-07</strong></td></tr><tr><td><code dir="auto">docs</code> → <code dir="auto">@papercupai/fumadocs</code></td><td>~10 (iframe)</td><td><code dir="auto">ui:harness-tab:docs</code> + config <code dir="auto">docs_url</code></td><td>30 min</td><td>P7</td></tr><tr><td><code dir="auto">pi</code> → <code dir="auto">@papercupai/pi-companion</code></td><td>~150 (PiPanel)</td><td><code dir="auto">ui:harness-tab:pi</code> + typed-services for child-process needs</td><td>1.5h</td><td>P7</td></tr><tr><td><code dir="auto">proposals</code> → <code dir="auto">@papercupai/scope-proposals</code></td><td>substrate-protocol change</td><td>New: plugin authorization to mutate harness-canonical state</td><td>DEFERRED to v1.5</td><td>See note</td></tr></tbody></table>
 <p><strong>Why proposals is deferred to v1.5</strong>: proposals isn’t a UI panel extraction.
 The blocker is <strong>the write side</strong> — today <code dir="auto">apply_proposal_to_spec</code> is
 substrate code mutating substrate-canonical state (SPEC.md, the goals tree).
@@ -637,11 +854,32 @@ declaration and existing server actions don’t get rewritten — the loader
 resolves to the right execution path based on what’s in the manifest.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="1496-lockfile-retraction-interaction">14.9.6 Lockfile retraction interaction</h3><a class="sl-anchor-link" href="#1496-lockfile-retraction-interaction"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “14.9.6 Lockfile retraction interaction”</span></a></div>
 <p>Three retraction states map to three lockfile behaviors:</p>
-<p>| State | Author intent | Lockfile reaction |
-|---|---|---|
-| <code dir="auto">deprecated</code> | “still works, prefer X going forward” | Warn at <code dir="auto">papercusp run</code>, proceed normally |
-| <code dir="auto">withdrawn</code> | “I removed this, but please don’t break grandfathered installs” | Warn loud at <code dir="auto">papercusp run</code>, require <code dir="auto">--allow-withdrawn</code> flag to actually run |
-| <code dir="auto">quarantined</code> | “this version is actively unsafe — security issue or supply-chain compromise” | Refuse to run, force <code dir="auto">papercusp upgrade-pin &#x3C;plugin></code> to bump to next non-retracted version |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>State</th><th>Author intent</th><th>Lockfile reaction</th></tr></thead><tbody><tr><td><code dir="auto">deprecated</code></td><td>”still works, prefer X going forward”</td><td>Warn at <code dir="auto">papercusp run</code>, proceed normally</td></tr><tr><td><code dir="auto">withdrawn</code></td><td>”I removed this, but please don’t break grandfathered installs”</td><td>Warn loud at <code dir="auto">papercusp run</code>, require <code dir="auto">--allow-withdrawn</code> flag to actually run</td></tr><tr><td><code dir="auto">quarantined</code></td><td>”this version is actively unsafe — security issue or supply-chain compromise”</td><td>Refuse to run, force <code dir="auto">papercusp upgrade-pin &#x3C;plugin></code> to bump to next non-retracted version</td></tr></tbody></table>
 <p>Same rules apply to <code dir="auto">recommends</code> entries: a recommends pointing at a
 quarantined plugin is <strong>stripped from the suggestion UI entirely</strong> (not shown
 with a warning).</p>
@@ -683,15 +921,64 @@ manifest levels:</p>
 The retraction-aware install flow (§14.9.6) applies uniformly to all plugins
 in the closure.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="1411-where-this-slots-into-existing-artifacts">14.11 Where this slots into existing artifacts</h2><a class="sl-anchor-link" href="#1411-where-this-slots-into-existing-artifacts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “14.11 Where this slots into existing artifacts”</span></a></div>
-<p>| File | Change | Status |
-|---|---|---|
-| <code dir="auto">apps/papercusp/content/docs/spec/vocabulary.mdx</code> | Add Template + Plugin definitions | ✅ shipped |
-| <code dir="auto">apps/papercusp/content/docs/spec/plugins-marketplace.mdx</code> (this page) | Full design doc | ✅ shipped (round 2) |
-| <code dir="auto">apps/papercusp/content/docs/spec/plugins.mdx</code> | Add <code dir="auto">kind</code> discriminator, link to this page | open |
-| <code dir="auto">apps/papercusp/content/docs/spec/distribution.mdx</code> | Add §11.15 plugin install flow | open |
-| <code dir="auto">apps/papercusp/content/docs/spec/meta.json</code> | Register this page in sidebar | ✅ shipped |
-| <code dir="auto">packages/papercusp-plugin-sdk/src/index.ts</code> | Add <code dir="auto">ActionDefinition</code>, <code dir="auto">kind</code>, <code dir="auto">requires</code>, <code dir="auto">recommends</code>, <code dir="auto">uiSchema</code> | open (Phase P2) |
-| <code dir="auto">libs/papercusp-marketplace/sql/007-package-kind.sql</code> | DB migration | open (Phase P1) |
-| <code dir="auto">libs/papercusp-marketplace/seeds/papercupai/vscode-server/</code> | First reference plugin (pilot) | retired 2026-07-07 |
-| <code dir="auto">libs/papercusp-marketplace/seeds/papercupai/cloudflare-pages/</code> | Reference server-runtime plugin | open (Phase P6) |
-| <code dir="auto">apps/papercusp/content/docs/implementation/plugins.mdx</code> | New “Plugin marketplace impl status” page | open (parallel to marketplace.mdx) |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/spec/distribution.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">11. Distribution</span> </span> </a> <a href="/internal/docs/spec/project-sharing.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">15. Snapshots — share working harness state via marketplace (v1.2)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File</th><th>Change</th><th>Status</th></tr></thead><tbody><tr><td><code dir="auto">apps/papercusp/content/docs/spec/vocabulary.mdx</code></td><td>Add Template + Plugin definitions</td><td>✅ shipped</td></tr><tr><td><code dir="auto">apps/papercusp/content/docs/spec/plugins-marketplace.mdx</code> (this page)</td><td>Full design doc</td><td>✅ shipped (round 2)</td></tr><tr><td><code dir="auto">apps/papercusp/content/docs/spec/plugins.mdx</code></td><td>Add <code dir="auto">kind</code> discriminator, link to this page</td><td>open</td></tr><tr><td><code dir="auto">apps/papercusp/content/docs/spec/distribution.mdx</code></td><td>Add §11.15 plugin install flow</td><td>open</td></tr><tr><td><code dir="auto">apps/papercusp/content/docs/spec/meta.json</code></td><td>Register this page in sidebar</td><td>✅ shipped</td></tr><tr><td><code dir="auto">packages/papercusp-plugin-sdk/src/index.ts</code></td><td>Add <code dir="auto">ActionDefinition</code>, <code dir="auto">kind</code>, <code dir="auto">requires</code>, <code dir="auto">recommends</code>, <code dir="auto">uiSchema</code></td><td>open (Phase P2)</td></tr><tr><td><code dir="auto">libs/papercusp-marketplace/sql/007-package-kind.sql</code></td><td>DB migration</td><td>open (Phase P1)</td></tr><tr><td><code dir="auto">libs/papercusp-marketplace/seeds/papercupai/vscode-server/</code></td><td>First reference plugin (pilot)</td><td>retired 2026-07-07</td></tr><tr><td><code dir="auto">libs/papercusp-marketplace/seeds/papercupai/cloudflare-pages/</code></td><td>Reference server-runtime plugin</td><td>open (Phase P6)</td></tr><tr><td><code dir="auto">apps/papercusp/content/docs/implementation/plugins.mdx</code></td><td>New “Plugin marketplace impl status” page</td><td>open (parallel to marketplace.mdx)</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/spec/distribution.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">11. Distribution</span> </span> </a> <a href="/internal/docs/spec/project-sharing.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">15. Snapshots — share working harness state via marketplace (v1.2)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

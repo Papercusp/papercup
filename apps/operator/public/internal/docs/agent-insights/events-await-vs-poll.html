@@ -96,15 +96,52 @@ turn</strong>. You are re-invoked when it fires (or at the deadline).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="prefer-the-named-sugar-verbs">Prefer the named sugar verbs</h2><a class="sl-anchor-link" href="#prefer-the-named-sugar-verbs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Prefer the named sugar verbs”</span></a></div>
 <p>For the common waits there’s a thin named verb that <strong>builds the key for you</strong>
 (sourced from the same catalog — the single source of truth):</p>
-<p>| Want to wait for… | Sugar verb | Resolves to |
-| --- | --- | --- |
-| my sha live on <code dir="auto">:3070</code> | <code dir="auto">deploy:await { sha? }</code> | <code dir="auto">release:deployed:&#x3C;sha></code> (+ <code dir="auto">release:deploy-failed</code>) |
-| the green gate’s verdict | <code dir="auto">checkpoint:await</code> | <code dir="auto">release:green</code> (+ <code dir="auto">green-checkpoint:red</code>) |
-| a work item to change / settle | <code dir="auto">work-item:await { id, state? }</code> | <code dir="auto">work-item:status:&#x3C;id></code> (or <code dir="auto">:done</code> / <code dir="auto">:blocked</code> / …) |
-| a service to recover | <code dir="auto">service:await-up { name }</code> | <code dir="auto">service:up:&#x3C;name></code> |
-| my edit committed | <code dir="auto">git-sync:await { sha? }</code> | <code dir="auto">git-sync:committed:&#x3C;sha></code> |
-| a plan item done | <code dir="auto">plan-item:await { slug, id }</code> | <code dir="auto">plan-item:done:&#x3C;slug>:&#x3C;id></code> |
-| my fleet to drain (then loop:end) | <code dir="auto">fleet:await-drained { slug }</code> | <code dir="auto">fleet:drained:&#x3C;slug></code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Want to wait for…</th><th>Sugar verb</th><th>Resolves to</th></tr></thead><tbody><tr><td>my sha live on <code dir="auto">:3070</code></td><td><code dir="auto">deploy:await { sha? }</code></td><td><code dir="auto">release:deployed:&#x3C;sha></code> (+ <code dir="auto">release:deploy-failed</code>)</td></tr><tr><td>the green gate’s verdict</td><td><code dir="auto">checkpoint:await</code></td><td><code dir="auto">release:green</code> (+ <code dir="auto">green-checkpoint:red</code>)</td></tr><tr><td>a work item to change / settle</td><td><code dir="auto">work-item:await { id, state? }</code></td><td><code dir="auto">work-item:status:&#x3C;id></code> (or <code dir="auto">:done</code> / <code dir="auto">:blocked</code> / …)</td></tr><tr><td>a service to recover</td><td><code dir="auto">service:await-up { name }</code></td><td><code dir="auto">service:up:&#x3C;name></code></td></tr><tr><td>my edit committed</td><td><code dir="auto">git-sync:await { sha? }</code></td><td><code dir="auto">git-sync:committed:&#x3C;sha></code></td></tr><tr><td>a plan item done</td><td><code dir="auto">plan-item:await { slug, id }</code></td><td><code dir="auto">plan-item:done:&#x3C;slug>:&#x3C;id></code></td></tr><tr><td>my fleet to drain (then loop:end)</td><td><code dir="auto">fleet:await-drained { slug }</code></td><td><code dir="auto">fleet:drained:&#x3C;slug></code></td></tr></tbody></table>
 <p>The dual-outcome verbs (<code dir="auto">deploy:await</code>, <code dir="auto">checkpoint:await</code>) arm awaits on <strong>both</strong>
 the success and failure keys — mutually exclusive, so you wake exactly once,
 either way. These are ~convenience wrappers over <code dir="auto">events:await</code>, <strong>not</strong> a second

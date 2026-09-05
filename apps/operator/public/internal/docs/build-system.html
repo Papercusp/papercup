@@ -86,13 +86,48 @@ compat layer under <code dir="auto">@/lib/router-compat/*</code> — <code dir="
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-the-build-system-means-here">What “the build system” means here</h2><a class="sl-anchor-link" href="#what-the-build-system-means-here"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What “the build system” means here”</span></a></div>
 <p>Three different things are bundled by three different commands:</p>
-<p>| Artifact | What it is | Built by | Path |
-|---|---|---|---|
-| <strong>Linux <code dir="auto">.deb</code> / <code dir="auto">.rpm</code></strong> | Tauri desktop installer for Linux | <code dir="auto">bin/build-desktop-sidecar.sh</code> then <code dir="auto">npm run build</code> (<code dir="auto">= tauri build</code>) in <code dir="auto">papercusp-desktop/</code> (runs locally on the dev host) | <code dir="auto">papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}/</code> |
-| <strong>macOS <code dir="auto">.dmg</code></strong> | Tauri desktop installer for macOS — a <strong>universal</strong> binary (x86_64 + arm64), built with <code dir="auto">tauri build --target universal-apple-darwin</code>; artifact is <code dir="auto">Papercusp_*_universal.dmg</code> | Same flow (via <code dir="auto">bin/mac-vm-build.sh</code>), but executed <strong>inside the macOS VM</strong> over SSH | <code dir="auto">~/papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/</code> on the Mac VM (the tree is rsynced into <code dir="auto">~/papercup-build-mac</code>), then <code dir="auto">scp</code>’d back |
-| <strong>Windows <code dir="auto">.msi</code> + NSIS <code dir="auto">.exe</code></strong> | Tauri desktop installer for Windows | Same, executed <strong>inside the Windows VM</strong> (via <code dir="auto">win-build.ps1</code>) | <code dir="auto">C:\Users\User\papercupai\papercusp-desktop\src-tauri\target\release\bundle\{msi,nsis}\</code> on the Win VM, then <code dir="auto">scp</code>’d back |
-| <strong><code dir="auto">:3070</code> Hono host</strong> | Production Hono host (<code dir="auto">apps/operator/bin/hono-host.ts</code>) serving the built Vite SPA + the <code dir="auto">/api</code> surface + <code dir="auto">/internal/docs</code> (the testing surface) | <code dir="auto">bin/prod</code> in the <code dir="auto">papercup/</code> repo | built <code dir="auto">apps/operator-vite/dist/</code> (served by the Hono host) |
-| <strong><code dir="auto">:3055</code> Vite dev server</strong> | The Vite dev server (<code dir="auto">@papercusp/operator-vite</code>, TanStack-Router SPA) used by <code dir="auto">tauri dev</code> AND served directly in the browser for fast iteration | <code dir="auto">bin/dev</code> in the <code dir="auto">papercup/</code> repo (papercup-dev systemd user unit) | live, no artifact |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Artifact</th><th>What it is</th><th>Built by</th><th>Path</th></tr></thead><tbody><tr><td><strong>Linux <code dir="auto">.deb</code> / <code dir="auto">.rpm</code></strong></td><td>Tauri desktop installer for Linux</td><td><code dir="auto">bin/build-desktop-sidecar.sh</code> then <code dir="auto">npm run build</code> (<code dir="auto">= tauri build</code>) in <code dir="auto">papercusp-desktop/</code> (runs locally on the dev host)</td><td><code dir="auto">papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}/</code></td></tr><tr><td><strong>macOS <code dir="auto">.dmg</code></strong></td><td>Tauri desktop installer for macOS — a <strong>universal</strong> binary (x86_64 + arm64), built with <code dir="auto">tauri build --target universal-apple-darwin</code>; artifact is <code dir="auto">Papercusp_*_universal.dmg</code></td><td>Same flow (via <code dir="auto">bin/mac-vm-build.sh</code>), but executed <strong>inside the macOS VM</strong> over SSH</td><td><code dir="auto">~/papercup-build-mac/papercup/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/</code> on the Mac VM (the tree is rsynced into <code dir="auto">~/papercup-build-mac</code>), then <code dir="auto">scp</code>’d back</td></tr><tr><td><strong>Windows <code dir="auto">.msi</code> + NSIS <code dir="auto">.exe</code></strong></td><td>Tauri desktop installer for Windows</td><td>Same, executed <strong>inside the Windows VM</strong> (via <code dir="auto">win-build.ps1</code>)</td><td><code dir="auto">C:\Users\User\papercupai\papercusp-desktop\src-tauri\target\release\bundle\{msi,nsis}\</code> on the Win VM, then <code dir="auto">scp</code>’d back</td></tr><tr><td><strong><code dir="auto">:3070</code> Hono host</strong></td><td>Production Hono host (<code dir="auto">apps/operator/bin/hono-host.ts</code>) serving the built Vite SPA + the <code dir="auto">/api</code> surface + <code dir="auto">/internal/docs</code> (the testing surface)</td><td><code dir="auto">bin/prod</code> in the <code dir="auto">papercup/</code> repo</td><td>built <code dir="auto">apps/operator-vite/dist/</code> (served by the Hono host)</td></tr><tr><td><strong><code dir="auto">:3055</code> Vite dev server</strong></td><td>The Vite dev server (<code dir="auto">@papercusp/operator-vite</code>, TanStack-Router SPA) used by <code dir="auto">tauri dev</code> AND served directly in the browser for fast iteration</td><td><code dir="auto">bin/dev</code> in the <code dir="auto">papercup/</code> repo (papercup-dev systemd user unit)</td><td>live, no artifact</td></tr></tbody></table>
 <p>Production Tauri builds are real binaries (~700MB Linux, ~440MB Mac, ~375MB Windows). They contain a bundled Node.js runtime (v24) plus a single esbuild-bundled <code dir="auto">serve.mjs</code> sidecar that <strong>itself</strong> owns embedded Postgres (start + migrations + the <code dir="auto">embedded-pg.json</code> discovery file) and the Hono operator host. The sidecar also vendors a fuller set of runtime binaries and packages: the GitHub CLI (<code dir="auto">gh</code>), the <code dir="auto">@rynfar/meridian</code> host (with <code dir="auto">claude-code</code> deferred to first launch), the <code dir="auto">harness</code> + <code dir="auto">@papercusp/orchestrator</code> + <code dir="auto">papercusp-mcp-server</code> packages, the <code dir="auto">papercup</code> CLI shim, <code dir="auto">pgvector</code> (copied into the embedded-PG tree), and — on Windows only — MinGit-busybox. The Pi/omp CLI and code-server panel are no longer bundled; they resolve from local installs or retired surfaces instead. See the <a href="/internal/docs/build-system/architecture">Architecture</a> page for the full bundle inventory. They do <strong>not</strong> depend on <code dir="auto">:3055</code> at runtime.</p>
 <p>Embedded Postgres is the <strong>only</strong> desktop database — the legacy <code dir="auto">pglite-server</code> (removed 2026-06-01) and <code dir="auto">zero-cache-server</code> (removed SP1 C5, 2026-06-06) fallbacks are no longer bundled, so a failed embedded-PG must fail loud rather than silently degrade. <code dir="auto">pgvector</code> is bundled into the embedded-PG tree and is <strong>required</strong>: the baseline schema creates vector-typed columns, so a fresh-DB boot of a bundle without it dies fatally (<code dir="auto">type "public.vector" does not exist</code>). The sidecar build hard-errors (<code dir="auto">exit 1</code>) on Linux/macOS if <code dir="auto">pgvector</code> is missing.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-single-entry-point-admin">The single entry point: <code dir="auto">/admin</code></h2><a class="sl-anchor-link" href="#the-single-entry-point-admin"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The single entry point: /admin”</span></a></div>

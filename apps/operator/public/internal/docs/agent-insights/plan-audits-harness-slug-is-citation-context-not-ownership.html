@@ -88,10 +88,27 @@ repo, not the Hive home — so the two values routinely disagree.</p>
 rows</strong> against a real, canonical audit — no error, no warning, just an absent <code dir="auto">latestAudit</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-this-is-easy-to-get-wrong">Why this is easy to get wrong</h2><a class="sl-anchor-link" href="#why-this-is-easy-to-get-wrong"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why this is easy to get wrong”</span></a></div>
 <p>Two genuinely different concepts happen to share one column name:</p>
-<p>| concept | what it identifies | who reads it |
-|---|---|---|
-| plan ownership | the plan’s Hive-home slug (<code dir="auto">resolvePlanScope</code>’s collapsed value) | <code dir="auto">harness_plans.harness_slug</code> — the plan’s real PK component |
-| audit citation-context | which repo the auditor’s citations resolve against | <code dir="auto">plan_audits.harness_slug</code> — read by <code dir="auto">repoCitationContextForHarness</code> at ship time |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>concept</th><th>what it identifies</th><th>who reads it</th></tr></thead><tbody><tr><td>plan ownership</td><td>the plan’s Hive-home slug (<code dir="auto">resolvePlanScope</code>’s collapsed value)</td><td><code dir="auto">harness_plans.harness_slug</code> — the plan’s real PK component</td></tr><tr><td>audit citation-context</td><td>which repo the auditor’s citations resolve against</td><td><code dir="auto">plan_audits.harness_slug</code> — read by <code dir="auto">repoCitationContextForHarness</code> at ship time</td></tr></tbody></table>
 <p><code dir="auto">resolvePlanScope</code>’s doc comment (and <code dir="auto">resolvePlanWriteScope</code>’s three documented
 generations of the <em>writer</em> version of this mistake) primed the intuition that “a
 plan-adjacent <code dir="auto">harnessSlug</code> field should be Hive-collapsed.” That intuition is correct for

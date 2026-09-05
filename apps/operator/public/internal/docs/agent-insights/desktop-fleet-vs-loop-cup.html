@@ -96,17 +96,92 @@ VISIBLE desktop su members — and, with <code dir="auto">headless: true</code>,
 <strong><code dir="auto">cup:spawn</code></strong> = ⛔ RETIRED (was: a background worker in the mug↔cup autonomous loop).</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="decision-table">Decision table</h2><a class="sl-anchor-link" href="#decision-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Decision table”</span></a></div>
-<p>| Your goal | Tool | Visibility | Substrate | Capability | Who drives |
-|---|---|---|---|---|---|
-| Open N visible terminals on the owner’s desktop to work a plan, now | <strong><code dir="auto">fleet:launch-on-plan</code></strong> | VISIBLE desktop windows | psu su sessions (<code dir="auto">capability:terminal</code>) | full su collaborator (edit/tools/coord) | you become the fleet <strong>leader</strong>; members auto-start on the plan |
-| Register a named fleet (no windows yet) so you can hand a plan to it later | <strong><code dir="auto">fleet:create</code></strong> | none (registry row only) | durable <code dir="auto">agent_fleets</code> row | — | leader = creator |
-| Work a plan in the background, no windows | <strong><code dir="auto">fleet:launch-on-plan { headless: true }</code></strong> | none (logs to a file the leader tails) | psu su sessions | full su collaborator | you become the leader; members auto-start on the plan |
-| ~~Place ONE background worker on ranked work / a claim-spec~~ | ⛔ ~~<code dir="auto">cup:spawn</code>~~ <strong>RETIRED — REFUSES</strong> | — | ~~mug↔cup autonomous loop~~ | — | ~~the Mug~~ — no Mug exists. Use the headless-fleet row above |
-| ~~Place MANY background cups in one shot~~ | ⛔ ~~<code dir="auto">fleet:place_batch</code>~~ <strong>RETIRED — REFUSES</strong> | — | ~~mug↔cup autonomous loop~~ | — | ~~the Mug~~ — use <code dir="auto">fleet:launch-on-plan { count, headless: true }</code> |
-| Put an agent on an <strong>ad-hoc brief</strong> (work that is not a plan) | <strong><code dir="auto">capability:launch-agent { brief }</code></strong> | VISIBLE (or <code dir="auto">headless</code>) | psu su session | full su collaborator | you; it starts on the brief |
-| Bring a <strong>DEAD</strong> agent back mid-thread, context intact | <strong><code dir="auto">capability:launch-agent { resume: { agentId }, brief }</code></strong> | VISIBLE (or <code dir="auto">headless</code>) | psu resume of its native session | same agent, same coord identity | you |
-| <strong>Branch</strong> a LIVE agent’s thread without disturbing it | <strong><code dir="auto">capability:launch-agent { resume: { agentId }, fork: true, brief }</code></strong> | VISIBLE (or <code dir="auto">headless</code>) | psu fork | a NEW identity (unaddressable until it boots) | you |
-| Just a plain worker window (no fleet, no plan, no brief) | <strong><code dir="auto">capability:terminal</code></strong> | VISIBLE desktop window | psu session | su collaborator | you |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Your goal</th><th>Tool</th><th>Visibility</th><th>Substrate</th><th>Capability</th><th>Who drives</th></tr></thead><tbody><tr><td>Open N visible terminals on the owner’s desktop to work a plan, now</td><td><strong><code dir="auto">fleet:launch-on-plan</code></strong></td><td>VISIBLE desktop windows</td><td>psu su sessions (<code dir="auto">capability:terminal</code>)</td><td>full su collaborator (edit/tools/coord)</td><td>you become the fleet <strong>leader</strong>; members auto-start on the plan</td></tr><tr><td>Register a named fleet (no windows yet) so you can hand a plan to it later</td><td><strong><code dir="auto">fleet:create</code></strong></td><td>none (registry row only)</td><td>durable <code dir="auto">agent_fleets</code> row</td><td>—</td><td>leader = creator</td></tr><tr><td>Work a plan in the background, no windows</td><td><strong><code dir="auto">fleet:launch-on-plan { headless: true }</code></strong></td><td>none (logs to a file the leader tails)</td><td>psu su sessions</td><td>full su collaborator</td><td>you become the leader; members auto-start on the plan</td></tr><tr><td><del>Place ONE background worker on ranked work / a claim-spec</del></td><td>⛔ <del><code dir="auto">cup:spawn</code></del> <strong>RETIRED — REFUSES</strong></td><td>—</td><td><del>mug↔cup autonomous loop</del></td><td>—</td><td><del>the Mug</del> — no Mug exists. Use the headless-fleet row above</td></tr><tr><td><del>Place MANY background cups in one shot</del></td><td>⛔ <del><code dir="auto">fleet:place_batch</code></del> <strong>RETIRED — REFUSES</strong></td><td>—</td><td><del>mug↔cup autonomous loop</del></td><td>—</td><td><del>the Mug</del> — use <code dir="auto">fleet:launch-on-plan { count, headless: true }</code></td></tr><tr><td>Put an agent on an <strong>ad-hoc brief</strong> (work that is not a plan)</td><td><strong><code dir="auto">capability:launch-agent { brief }</code></strong></td><td>VISIBLE (or <code dir="auto">headless</code>)</td><td>psu su session</td><td>full su collaborator</td><td>you; it starts on the brief</td></tr><tr><td>Bring a <strong>DEAD</strong> agent back mid-thread, context intact</td><td><strong><code dir="auto">capability:launch-agent { resume: { agentId }, brief }</code></strong></td><td>VISIBLE (or <code dir="auto">headless</code>)</td><td>psu resume of its native session</td><td>same agent, same coord identity</td><td>you</td></tr><tr><td><strong>Branch</strong> a LIVE agent’s thread without disturbing it</td><td><strong><code dir="auto">capability:launch-agent { resume: { agentId }, fork: true, brief }</code></strong></td><td>VISIBLE (or <code dir="auto">headless</code>)</td><td>psu fork</td><td>a NEW identity (unaddressable until it boots)</td><td>you</td></tr><tr><td>Just a plain worker window (no fleet, no plan, no brief)</td><td><strong><code dir="auto">capability:terminal</code></strong></td><td>VISIBLE desktop window</td><td>psu session</td><td>su collaborator</td><td>you</td></tr></tbody></table>
 <blockquote>
 <p><strong>Naming note (historical).</strong> The retired tool was <code dir="auto">fleet:spawn</code>, then <code dir="auto">bee:spawn</code>, then
 <code dir="auto">cup:spawn</code>; the workers were “bees”, then “cups”. The <code dir="auto">beeCount</code> / <code dir="auto">runningBees</code> fields

@@ -102,10 +102,33 @@ the current system.</p></div> </aside>
 <p>The marketplace is the public-facing component of Papercusp described in <a href="/internal/docs/spec/distribution">§11 Distribution</a>. This page tracks what’s actually shipped vs. what’s still spec’d-only.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="two-surfaces-often-confused">Two surfaces, often confused</h2><a class="sl-anchor-link" href="#two-surfaces-often-confused"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Two surfaces, often confused”</span></a></div>
 <p>There are <strong>two distinct user-facing apps</strong> in this project, both legitimate, both needed. They serve different audiences:</p>
-<p>| Surface | URL | Source | Audience | Purpose |
-|---|---|---|---|---|
-| <strong>Substrate operator dashboard</strong> | http://localhost:3055 | <code dir="auto">libs/papercusp/apps/web/</code> (in <a href="https://github.com/Papercusp/papercusp">Papercusp/papercusp</a> submodule) | Anyone running their own Papercusp install | Manage local API keys, browse the catalog with installed-state, view harness state, sign in for publishing |
-| <strong>Public marketplace</strong> | https://papercuspai.com | <code dir="auto">../papercusp-registry/apps/marketplace-site/</code> (in <a href="https://github.com/Papercusp/papercusp-registry">Papercusp/papercusp-registry</a> submodule) | Anyone on the internet discovering Papercusp | Browse the catalog read-only, read docs, see featured packages, get install instructions |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>URL</th><th>Source</th><th>Audience</th><th>Purpose</th></tr></thead><tbody><tr><td><strong>Substrate operator dashboard</strong></td><td><a href="http://localhost:3055">http://localhost:3055</a></td><td><code dir="auto">libs/papercusp/apps/web/</code> (in <a href="https://github.com/Papercusp/papercusp">Papercusp/papercusp</a> submodule)</td><td>Anyone running their own Papercusp install</td><td>Manage local API keys, browse the catalog with installed-state, view harness state, sign in for publishing</td></tr><tr><td><strong>Public marketplace</strong></td><td><a href="https://papercuspai.com">https://papercuspai.com</a></td><td><code dir="auto">../papercusp-registry/apps/marketplace-site/</code> (in <a href="https://github.com/Papercusp/papercusp-registry">Papercusp/papercusp-registry</a> submodule)</td><td>Anyone on the internet discovering Papercusp</td><td>Browse the catalog read-only, read docs, see featured packages, get install instructions</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="why-both-exist-not-a-duplicate-not-a-stale-link-mistake">Why both exist (not a duplicate, not a stale-link mistake)</h3><a class="sl-anchor-link" href="#why-both-exist-not-a-duplicate-not-a-stale-link-mistake"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why both exist (not a duplicate, not a stale-link mistake)”</span></a></div>
 <ul>
 <li>
@@ -117,29 +140,111 @@ the current system.</p></div> </aside>
 </ul>
 <p>The substrate UI and public site share the same data source (<code dir="auto">api.papercuspai.com</code>) but render different concerns. <strong>Not a stale duplicate.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="live-urls">Live URLs</h2><a class="sl-anchor-link" href="#live-urls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Live URLs”</span></a></div>
-<p>| URL | What | Status |
-|---|---|---|
-| https://papercuspai.com/ | Marketplace landing page (CF Pages, static Next.js) | ✅ Live |
-| https://papercuspai.com/marketplace/ | Catalog grid + client-side search | ✅ Live |
-| https://papercuspai.com/marketplace/[slug]/ | Package detail page (manifest, README, install command, versions) | ✅ Live |
-| https://papercuspai.com/docs/ | Quickstart docs (placeholder) | ✅ Live |
-| https://api.papercuspai.com/healthz | Liveness probe | ✅ Live |
-| https://api.papercuspai.com/catalog | Full catalog JSON | ✅ Live |
-| https://api.papercuspai.com/catalog/:slug | Per-package detail | ✅ Live |
-| https://api.papercuspai.com/catalog/:slug/:version | Per-version detail (manifest + README) | ✅ Live |
-| https://api.papercuspai.com/download/:slug/:version | Tarball stream | ✅ Live |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>URL</th><th>What</th><th>Status</th></tr></thead><tbody><tr><td><a href="https://papercuspai.com/">https://papercuspai.com/</a></td><td>Marketplace landing page (CF Pages, static Next.js)</td><td>✅ Live</td></tr><tr><td><a href="https://papercuspai.com/marketplace/">https://papercuspai.com/marketplace/</a></td><td>Catalog grid + client-side search</td><td>✅ Live</td></tr><tr><td><a href="https://papercuspai.com/marketplace/%5Bslug%5D/">https://papercuspai.com/marketplace/[slug]/</a></td><td>Package detail page (manifest, README, install command, versions)</td><td>✅ Live</td></tr><tr><td><a href="https://papercuspai.com/docs/">https://papercuspai.com/docs/</a></td><td>Quickstart docs (placeholder)</td><td>✅ Live</td></tr><tr><td><a href="https://api.papercuspai.com/healthz">https://api.papercuspai.com/healthz</a></td><td>Liveness probe</td><td>✅ Live</td></tr><tr><td><a href="https://api.papercuspai.com/catalog">https://api.papercuspai.com/catalog</a></td><td>Full catalog JSON</td><td>✅ Live</td></tr><tr><td><a href="https://api.papercuspai.com/catalog/:slug">https://api.papercuspai.com/catalog/:slug</a></td><td>Per-package detail</td><td>✅ Live</td></tr><tr><td><a href="https://api.papercuspai.com/catalog/:slug/:version">https://api.papercuspai.com/catalog/:slug/:version</a></td><td>Per-version detail (manifest + README)</td><td>✅ Live</td></tr><tr><td><a href="https://api.papercuspai.com/download/:slug/:version">https://api.papercuspai.com/download/:slug/:version</a></td><td>Tarball stream</td><td>✅ Live</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="architecture-current-state">Architecture (current state)</h2><a class="sl-anchor-link" href="#architecture-current-state"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Architecture (current state)”</span></a></div>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">papercuspai.com  (Cloudflare Pages — static Next.js export)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ runtime fetch (CORS-allowed origin)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">▼</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">api.papercuspai.com  (Cloudflare Tunnel — public ingress)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ tunnel → cloudflared (token mode)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│   tunnel UUID c53515b3-edfe-4e99-813b-e3916ae9d02c (papercupai-api)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">▼</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">http://localhost:3057  (marketplace-api — Hono on Node)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│   ../papercusp-registry/apps/marketplace-api/</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│ filesystem read</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">▼</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">~/.papercusp/marketplace-storage/&#x3C;slug>/&#x3C;version>/</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">├── papercusp.json          (manifest)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">├── README.md               (rendered on detail page)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└── &#x3C;slug>-&#x3C;version>.tar.gz (the install)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="papercuspai.com  (Cloudflare Pages — static Next.js export)   │   │ runtime fetch (CORS-allowed origin)   ▼api.papercuspai.com  (Cloudflare Tunnel — public ingress)   │   │ tunnel → cloudflared (token mode)   │   tunnel UUID c53515b3-edfe-4e99-813b-e3916ae9d02c (papercupai-api)   ▼http://localhost:3057  (marketplace-api — Hono on Node)   │   ../papercusp-registry/apps/marketplace-api/   │   │ filesystem read   ▼~/.papercusp/marketplace-storage/<slug>/<version>/   ├── papercusp.json          (manifest)   ├── README.md               (rendered on detail page)   └── <slug>-<version>.tar.gz (the install)"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-shipped">What shipped</h2><a class="sl-anchor-link" href="#what-shipped"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What shipped”</span></a></div>
-<p>| Component | Path | Notes |
-|---|---|---|
-| Marketplace site | <code dir="auto">../papercusp-registry/apps/marketplace-site/</code> | Next.js 16 + React 19 static export. Routes: <code dir="auto">/</code>, <code dir="auto">/marketplace/</code>, <code dir="auto">/marketplace/[slug]/</code>, <code dir="auto">/docs/</code>. |
-| Marketplace API | <code dir="auto">../papercusp-registry/apps/marketplace-api/</code> | Hono on Node, 2.3k-line server.ts. CORS allowlist for <code dir="auto">papercuspai.com</code>, <code dir="auto">www.papercuspai.com</code>, <code dir="auto">*.pages.dev</code>, <code dir="auto">localhost:3060</code>, <code dir="auto">localhost:3050</code>, <code dir="auto">192.168.40.216:3060</code>. |
-| CF Pages project | <code dir="auto">papercuspai</code> (account <code dir="auto">f896982ea2f6d507e4f29eeecbd26e94</code>) | Custom domain <code dir="auto">papercuspai.com</code> attached. Deployed via <code dir="auto">wrangler pages deploy ./out --project-name papercuspai --branch main</code>. |
-| CF Tunnel ingress | <code dir="auto">api.papercuspai.com</code> → <code dir="auto">localhost:3057</code> | Routed through existing <code dir="auto">papercupai-api</code> tunnel; managed via Zero Trust dashboard. |
-| Build pattern | Two-base env split | <code dir="auto">BUILD_API_BASE=http://localhost:3057</code> for <code dir="auto">generateStaticParams</code>; <code dir="auto">NEXT_PUBLIC_API_BASE=https://api.papercuspai.com</code> for client bundle runtime fetches. |
-| Process supervision | <code dir="auto">~/.config/systemd/user/marketplace-api.service</code> | systemd —user transient unit; auto-restart on failure; logs at <code dir="auto">~/.papercusp/logs/marketplace-api.log</code>. |
-| Sample packages | <code dir="auto">papercup-coding@0.1.0</code>, <code dir="auto">papercup-org@0.1.0</code> (stub) | Filesystem-backed at <code dir="auto">~/.papercusp/marketplace-storage/</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Component</th><th>Path</th><th>Notes</th></tr></thead><tbody><tr><td>Marketplace site</td><td><code dir="auto">../papercusp-registry/apps/marketplace-site/</code></td><td>Next.js 16 + React 19 static export. Routes: <code dir="auto">/</code>, <code dir="auto">/marketplace/</code>, <code dir="auto">/marketplace/[slug]/</code>, <code dir="auto">/docs/</code>.</td></tr><tr><td>Marketplace API</td><td><code dir="auto">../papercusp-registry/apps/marketplace-api/</code></td><td>Hono on Node, 2.3k-line server.ts. CORS allowlist for <code dir="auto">papercuspai.com</code>, <code dir="auto">www.papercuspai.com</code>, <code dir="auto">*.pages.dev</code>, <code dir="auto">localhost:3060</code>, <code dir="auto">localhost:3050</code>, <code dir="auto">192.168.40.216:3060</code>.</td></tr><tr><td>CF Pages project</td><td><code dir="auto">papercuspai</code> (account <code dir="auto">f896982ea2f6d507e4f29eeecbd26e94</code>)</td><td>Custom domain <code dir="auto">papercuspai.com</code> attached. Deployed via <code dir="auto">wrangler pages deploy ./out --project-name papercuspai --branch main</code>.</td></tr><tr><td>CF Tunnel ingress</td><td><code dir="auto">api.papercuspai.com</code> → <code dir="auto">localhost:3057</code></td><td>Routed through existing <code dir="auto">papercupai-api</code> tunnel; managed via Zero Trust dashboard.</td></tr><tr><td>Build pattern</td><td>Two-base env split</td><td><code dir="auto">BUILD_API_BASE=http://localhost:3057</code> for <code dir="auto">generateStaticParams</code>; <code dir="auto">NEXT_PUBLIC_API_BASE=https://api.papercuspai.com</code> for client bundle runtime fetches.</td></tr><tr><td>Process supervision</td><td><code dir="auto">~/.config/systemd/user/marketplace-api.service</code></td><td>systemd —user transient unit; auto-restart on failure; logs at <code dir="auto">~/.papercusp/logs/marketplace-api.log</code>.</td></tr><tr><td>Sample packages</td><td><code dir="auto">papercup-coding@0.1.0</code>, <code dir="auto">papercup-org@0.1.0</code> (stub)</td><td>Filesystem-backed at <code dir="auto">~/.papercusp/marketplace-storage/</code>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="endpoints-implemented-in-marketplace-api">Endpoints implemented in marketplace-api</h3><a class="sl-anchor-link" href="#endpoints-implemented-in-marketplace-api"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Endpoints implemented in marketplace-api”</span></a></div>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="typescript"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">GET</span><span style="--0:#D6DEEB;--1:#403F53">    </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">healthz                          → </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">ok</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">GET</span><span style="--0:#D6DEEB;--1:#403F53">    </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">catalog                          → { catalog: [{</span><span style="--0:#7FDBCA;--1:#096E72">...</span><span style="--0:#D6DEEB;--1:#403F53">manifest, versions[]}], storageRoot }</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">GET    /catalog/:slug                    → { slug, versions, latest: manifest }</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">GET</span><span style="--0:#D6DEEB;--1:#403F53">    </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">catalog</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:slug</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:version           → { slug, version, manifest, readme }</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">GET</span><span style="--0:#D6DEEB;--1:#403F53">    </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">download</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:slug</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:version          → tarball </span><span style="--0:#82AAFF;--1:#3B61B0">stream</span><span style="--0:#D6DEEB;--1:#403F53"> (application</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">gzip)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">POST</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">publish</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:slug</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:version           → multipart </span><span style="--0:#82AAFF;--1:#3B61B0">upload</span><span style="--0:#D6DEEB;--1:#403F53"> (manifest </span><span style="--0:#C792EA;--1:#8844AE">+</span><span style="--0:#D6DEEB;--1:#403F53"> tarball </span><span style="--0:#C792EA;--1:#8844AE">+</span><span style="--0:#D6DEEB;--1:#403F53"> readme)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">DELETE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">catalog</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:slug</span><span style="--0:#C792EA;--1:#8844AE">/</span><span style="--0:#D6DEEB;--1:#403F53">:version           → </span><span style="--0:#82AAFF;--1:#3B61B0">unpublish</span><span style="--0:#D6DEEB;--1:#403F53"> (dev</span><span style="--0:#C792EA;--1:#8844AE">-</span><span style="--0:#D6DEEB;--1:#403F53">only)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="GET    /healthz                          → &#x22;ok&#x22;GET    /catalog                          → { catalog: [{...manifest, versions[]}], storageRoot }GET    /catalog/:slug                    → { slug, versions, latest: manifest }GET    /catalog/:slug/:version           → { slug, version, manifest, readme }GET    /download/:slug/:version          → tarball stream (application/gzip)POST   /publish/:slug/:version           → multipart upload (manifest + tarball + readme)DELETE /catalog/:slug/:version           → unpublish (dev-only)"><div></div></button></div></figure></div>
 <p>POST <code dir="auto">/publish</code> is currently in <strong>open</strong> mode (no auth). It supports a PAT-auth mode via <code dir="auto">PAPERCUSP_MARKETPLACE_AUTH=pat</code> that verifies the Authorization header against the GitHub user API and records the verified login as <code dir="auto">publishedBy</code>.</p>
@@ -346,7 +451,7 @@ the current system.</p></div> </aside>
 </ul>
 </li>
 </ul>
-<p><strong>Verified end-to-end</strong> at https://api.papercuspai.com/v1/authors/avi (200) + http://localhost:3060/authors/avi/ + reviews showing on /marketplace/signed-test/.</p>
+<p><strong>Verified end-to-end</strong> at <a href="https://api.papercuspai.com/v1/authors/avi">https://api.papercuspai.com/v1/authors/avi</a> (200) + <a href="http://localhost:3060/authors/avi/">http://localhost:3060/authors/avi/</a> + reviews showing on /marketplace/signed-test/.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-m9--stats--popularity--shipped--popularity-surface">Phase M9 — Stats + popularity ✅ SHIPPED + popularity surface</h3><a class="sl-anchor-link" href="#phase-m9--stats--popularity--shipped--popularity-surface"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase M9 — Stats + popularity ✅ SHIPPED + popularity surface”</span></a></div>
 <p><strong>Status:</strong> Live with download counters + popularity surface on the homepage.</p>
 <p><strong>What shipped:</strong></p>
@@ -493,24 +598,89 @@ the current system.</p></div> </aside>
 </ul>
 </li>
 </ul>
-<p><strong>Verified end-to-end:</strong> seeded an SBOM for <code dir="auto">signed-test@0.1.0</code> (lodash@4.17.20 + minimist@1.2.5 components) → osv.dev returned 6 GHSAs (5 lodash + 1 minimist) → all persisted, summary aggregated, exposed at https://api.papercuspai.com/v1/packages/signed-test/0.1.0/sbom + /vulnerabilities.</p>
+<p><strong>Verified end-to-end:</strong> seeded an SBOM for <code dir="auto">signed-test@0.1.0</code> (lodash@4.17.20 + minimist@1.2.5 components) → osv.dev returned 6 GHSAs (5 lodash + 1 minimist) → all persisted, summary aggregated, exposed at <a href="https://api.papercuspai.com/v1/packages/signed-test/0.1.0/sbom">https://api.papercuspai.com/v1/packages/signed-test/0.1.0/sbom</a> + /vulnerabilities.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="whats-still-missing--quick-reference">What’s still missing — quick reference</h2><a class="sl-anchor-link" href="#whats-still-missing--quick-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What’s still missing — quick reference”</span></a></div>
-<p>| Concern | Status | Phase |
-|---|---|---|
-| Anyone can publish under any name | ✅ <strong>Shipped 2026-04-27</strong> | M1 |
-| Tarballs on local FS (single point of failure) | ⚠ Local; <strong>Postgres metadata mirror live 2026-04-27</strong> | M2 + M2.5 |
-| No tarball signing | ✅ <strong>Shipped 2026-04-27</strong> | M3 |
-| No server-side search | ✅ <strong>Shipped 2026-04-27</strong> | M4 |
-| No update / uninstall CLI | ✅ <strong>Shipped 2026-04-27</strong> | M5 |
-| No retraction mechanism | ✅ <strong>Shipped 2026-04-27</strong> | M6 |
-| Detail page minimal | ✅ <strong>Shipped 2026-04-27</strong> | M7 |
-| No author profiles, no reviews | ❌ Missing | M8 |
-| No download stats / popularity | ✅ <strong>Shipped 2026-04-27</strong> | M9 |
-| No size / bandwidth quotas | ✅ <strong>Shipped 2026-04-27</strong> | M10 |
-| No catalog webhooks | ✅ <strong>Shipped 2026-04-27</strong> | M11 |
-| No vendored / offline install | ✅ <strong>Shipped 2026-04-27</strong> | M12 |
-| No multi-registry resolution | ✅ <strong>Shipped 2026-04-27</strong> | M13 |
-| No SBOM attestation / CVE scanning | ❌ Missing | M14 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Status</th><th>Phase</th></tr></thead><tbody><tr><td>Anyone can publish under any name</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M1</td></tr><tr><td>Tarballs on local FS (single point of failure)</td><td>⚠ Local; <strong>Postgres metadata mirror live 2026-04-27</strong></td><td>M2 + M2.5</td></tr><tr><td>No tarball signing</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M3</td></tr><tr><td>No server-side search</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M4</td></tr><tr><td>No update / uninstall CLI</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M5</td></tr><tr><td>No retraction mechanism</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M6</td></tr><tr><td>Detail page minimal</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M7</td></tr><tr><td>No author profiles, no reviews</td><td>❌ Missing</td><td>M8</td></tr><tr><td>No download stats / popularity</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M9</td></tr><tr><td>No size / bandwidth quotas</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M10</td></tr><tr><td>No catalog webhooks</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M11</td></tr><tr><td>No vendored / offline install</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M12</td></tr><tr><td>No multi-registry resolution</td><td>✅ <strong>Shipped 2026-04-27</strong></td><td>M13</td></tr><tr><td>No SBOM attestation / CVE scanning</td><td>❌ Missing</td><td>M14</td></tr></tbody></table>
 <blockquote>
 <p><strong>2026-04-27</strong> — marketplace extracted into its own private repo at <a href="https://github.com/Papercusp/papercusp-registry">Papercusp/papercusp-registry</a>. Substrate (<a href="https://github.com/Papercusp/papercusp">Papercusp/papercusp</a>) keeps the open-source self-hostable runtime; marketplace stays operator-only with OAuth secrets, signing keys, sessions DB. The internal reference app now has both as sibling submodules at <code dir="auto">libs/papercusp/</code> and <code dir="auto">../papercusp-registry/</code>.</p>
 </blockquote>
@@ -883,12 +1053,37 @@ It’s started automatically alongside <code dir="auto">bin/dev</code> and survi
 </li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="final-estimate-after-rounds-1-4">Final estimate (after rounds 1-4)</h2><a class="sl-anchor-link" href="#final-estimate-after-rounds-1-4"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Final estimate (after rounds 1-4)”</span></a></div>
-<p>| Round | What shipped | Cumulative time |
-|---|---|---|
-| Round 1 | M3 (signing) + M10 (quotas) + M13 (multi-registry) | ~6-9h |
-| Round 2 | M2.5 (Postgres metadata) + M5 (update/uninstall) + M7 (detail UX) | ~12-17h |
-| Round 3 | M6 (retraction) + M9 (stats) + M4 (search) | ~17-22h |
-| Round 4 | Marketplace extraction + M1 (auth) + M11 (webhooks) + M12 (vendored) | ~28-37h |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Round</th><th>What shipped</th><th>Cumulative time</th></tr></thead><tbody><tr><td>Round 1</td><td>M3 (signing) + M10 (quotas) + M13 (multi-registry)</td><td>~6-9h</td></tr><tr><td>Round 2</td><td>M2.5 (Postgres metadata) + M5 (update/uninstall) + M7 (detail UX)</td><td>~12-17h</td></tr><tr><td>Round 3</td><td>M6 (retraction) + M9 (stats) + M4 (search)</td><td>~17-22h</td></tr><tr><td>Round 4</td><td>Marketplace extraction + M1 (auth) + M11 (webhooks) + M12 (vendored)</td><td>~28-37h</td></tr></tbody></table>
 <p><strong>Remaining</strong>: ~13-17h</p>
 <ul>
 <li>M2 (R2 backing): 3-4h, blocked on CF token</li>

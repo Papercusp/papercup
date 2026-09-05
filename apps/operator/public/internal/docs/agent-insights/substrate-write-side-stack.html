@@ -112,14 +112,40 @@ the project’s house style.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="substrate-off-behavior-contract">Substrate-off behavior contract</h2><a class="sl-anchor-link" href="#substrate-off-behavior-contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Substrate-off behavior contract”</span></a></div>
 <p>Every layer must handle “substrate not booted” cleanly:</p>
-<p>| Layer            | substrate-off shape                            |
-|------------------|------------------------------------------------|
-| Write helper     | Caller’s problem — helper assumes handle.      |
-| HTTP write POST  | <code dir="auto">{ok: false, reason: 'substrate-off'}</code> 200.    |
-| Client wrapper   | Reverts optimistic flip on <code dir="auto">ok: false</code>.        |
-| PG read          | <code dir="auto">{}</code> when projection table doesn’t exist.      |
-| Read hook        | <code dir="auto">loaded: true</code> with empty map.                 |
-| Avatar cluster   | Renders em-dash for empty members.             |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>substrate-off shape</th></tr></thead><tbody><tr><td>Write helper</td><td>Caller’s problem — helper assumes handle.</td></tr><tr><td>HTTP write POST</td><td><code dir="auto">{ok: false, reason: 'substrate-off'}</code> 200.</td></tr><tr><td>Client wrapper</td><td>Reverts optimistic flip on <code dir="auto">ok: false</code>.</td></tr><tr><td>PG read</td><td><code dir="auto">{}</code> when projection table doesn’t exist.</td></tr><tr><td>Read hook</td><td><code dir="auto">loaded: true</code> with empty map.</td></tr><tr><td>Avatar cluster</td><td>Renders em-dash for empty members.</td></tr></tbody></table>
 <p>The point: a flag-flip toggles the entire stack alive without route
 changes. The UI shows ”—” before flip, real data after.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="worked-example--feature_queue">Worked example — feature_queue</h2><a class="sl-anchor-link" href="#worked-example--feature_queue"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Worked example — feature_queue”</span></a></div>

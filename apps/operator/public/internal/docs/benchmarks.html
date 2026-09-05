@@ -108,13 +108,42 @@ floor matches or beats the provider’s native harness.</em></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-five-measurement-layers">The five measurement layers</h2><a class="sl-anchor-link" href="#the-five-measurement-layers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The five measurement layers”</span></a></div>
 <p>The per-task build wave is the <strong>L1 competence floor</strong> and the atomic unit the fleet
 places; Phase 5 adds the fleet layers on top.</p>
-<p>| Layer | Measures | Headline comparison |
-|---|---|---|
-| <strong>L1 competence</strong> | Per-task resolve rate (pass@1) | Papercusp spine vs native harness / ablation / best-of-N |
-| <strong>L2 throughput</strong> | Wall-clock speedup, tasks/$, drain time, autonomy | <strong>Pot vs Mug-ablated fleet</strong> |
-| <strong>L3 value-capture</strong> | $ captured under a fixed budget | <strong>Pot vs Mug-ablated fleet</strong> |
-| <strong>L4 coordination-quality</strong> | Duplication / breakdown / misalignment rates | Pot vs published MAS baseline + other orchestrators |
-| <strong>L5 long-horizon</strong> | Multi-step sequencing | Pot vs Mug-ablated fleet |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Measures</th><th>Headline comparison</th></tr></thead><tbody><tr><td><strong>L1 competence</strong></td><td>Per-task resolve rate (pass@1)</td><td>Papercusp spine vs native harness / ablation / best-of-N</td></tr><tr><td><strong>L2 throughput</strong></td><td>Wall-clock speedup, tasks/$, drain time, autonomy</td><td><strong>Pot vs Mug-ablated fleet</strong></td></tr><tr><td><strong>L3 value-capture</strong></td><td>$ captured under a fixed budget</td><td><strong>Pot vs Mug-ablated fleet</strong></td></tr><tr><td><strong>L4 coordination-quality</strong></td><td>Duplication / breakdown / misalignment rates</td><td>Pot vs published MAS baseline + other orchestrators</td></tr><tr><td><strong>L5 long-horizon</strong></td><td>Multi-step sequencing</td><td>Pot vs Mug-ablated fleet</td></tr></tbody></table>
 <p>L4 (coordination quality, via the third-party <strong>MAST</strong> taxonomy) is the most
 differentiated <em>and</em> most impartial Pot claim.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="impartiality-commitments-non-negotiable">Impartiality commitments (non-negotiable)</h2><a class="sl-anchor-link" href="#impartiality-commitments-non-negotiable"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Impartiality commitments (non-negotiable)”</span></a></div>
@@ -140,16 +169,66 @@ Mug-ablation delta is the honest, un-spinnable measure of what the Mug adds — 
 every cited third-party number (the MAST baseline, any prior-art figure) is
 re-confirmed verbatim against its source before publishing (D-011).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-suite-at-a-glance">The suite at a glance</h2><a class="sl-anchor-link" href="#the-suite-at-a-glance"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The suite at a glance”</span></a></div>
-<p>| Tier | Benchmark | Why | Grader |
-|---|---|---|---|
-| Contamination-resistant core | <strong>SWE-bench Pro</strong> (public split) | What OpenAI now points to; polyglot | M1 offline diff-batch |
-| Execution / DevOps core | <strong>Terminal-Bench 2.0</strong> | Real shells in real containers | M2 online in-container |
-| Value-capture (L3) | <strong>SWE-Lancer</strong> | $-weighted real freelance tasks, automated E2E grading | M1 ($-graded) |
-| Long-horizon (L5) | <strong>SWE-EVO</strong>, <strong>RoadmapBench</strong> | Multi-file, decomposable | M1 |
-| Freshness (contamination lever) | <strong>SWE-rebench</strong>, <strong>SWE-bench-Live</strong> | Auto-mined post-cutoff issues | M1 |
-| Coordination-quality (L4) | <strong>MAST</strong> taxonomy | Third-party-defined coordination-failure rubric | Re-implemented LLM-judge |
-| Harness-isolation (air cover) | <strong>Harness-Bench</strong> | Cite methodology now; full run deferred | M2 (local sandbox) |
-| Footnote only | SWE-bench Verified, HumanEval/MBPP, LiveCodeBench | Retired / saturated / model-level (D-006) | — |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tier</th><th>Benchmark</th><th>Why</th><th>Grader</th></tr></thead><tbody><tr><td>Contamination-resistant core</td><td><strong>SWE-bench Pro</strong> (public split)</td><td>What OpenAI now points to; polyglot</td><td>M1 offline diff-batch</td></tr><tr><td>Execution / DevOps core</td><td><strong>Terminal-Bench 2.0</strong></td><td>Real shells in real containers</td><td>M2 online in-container</td></tr><tr><td>Value-capture (L3)</td><td><strong>SWE-Lancer</strong></td><td>$-weighted real freelance tasks, automated E2E grading</td><td>M1 ($-graded)</td></tr><tr><td>Long-horizon (L5)</td><td><strong>SWE-EVO</strong>, <strong>RoadmapBench</strong></td><td>Multi-file, decomposable</td><td>M1</td></tr><tr><td>Freshness (contamination lever)</td><td><strong>SWE-rebench</strong>, <strong>SWE-bench-Live</strong></td><td>Auto-mined post-cutoff issues</td><td>M1</td></tr><tr><td>Coordination-quality (L4)</td><td><strong>MAST</strong> taxonomy</td><td>Third-party-defined coordination-failure rubric</td><td>Re-implemented LLM-judge</td></tr><tr><td>Harness-isolation (air cover)</td><td><strong>Harness-Bench</strong></td><td>Cite methodology now; full run deferred</td><td>M2 (local sandbox)</td></tr><tr><td>Footnote only</td><td>SWE-bench Verified, HumanEval/MBPP, LiveCodeBench</td><td>Retired / saturated / model-level (D-006)</td><td>—</td></tr></tbody></table>
 <p>The first families (D-003) are <strong>SWE-bench Pro + Terminal-Bench 2.0</strong> as the core, plus
 one long-horizon set. UpBench is cited as economic framing only — it is proprietary +
 human-graded, so <strong>not runnable</strong> (D-011).</p>

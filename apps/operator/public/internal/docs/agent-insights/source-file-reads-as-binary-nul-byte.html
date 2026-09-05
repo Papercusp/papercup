@@ -79,13 +79,42 @@ of a hunk.</p>
 corruption — no language here needs one.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-this-class-is-dangerous">Why this class is dangerous</h2><a class="sl-anchor-link" href="#why-this-class-is-dangerous"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why this class is dangerous”</span></a></div>
 <p>A NUL defeats <strong>every</strong> check we normally rely on, and fails <strong>silently</strong> at each:</p>
-<p>| Layer | What it does | Why it misses |
-|---|---|---|
-| Code review | renders as nothing | <code dir="auto">'\0all'</code> looks identical to <code dir="auto">' all'</code> |
-| <code dir="auto">grep</code> / <code dir="auto">git grep</code> | reclassifies the file binary, suppresses line matches | an audit sweep skates straight past the file |
-| <code dir="auto">git diff</code> | “Binary files differ” | no reviewable hunk |
-| <code dir="auto">tsc</code> | passes | a NUL is a <em>legal</em> character inside a string literal |
-| Unit tests | pass | only if no test covers the affected path |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>What it does</th><th>Why it misses</th></tr></thead><tbody><tr><td>Code review</td><td>renders as nothing</td><td><code dir="auto">'\0all'</code> looks identical to <code dir="auto">' all'</code></td></tr><tr><td><code dir="auto">grep</code> / <code dir="auto">git grep</code></td><td>reclassifies the file binary, suppresses line matches</td><td>an audit sweep skates straight past the file</td></tr><tr><td><code dir="auto">git diff</code></td><td>”Binary files differ”</td><td>no reviewable hunk</td></tr><tr><td><code dir="auto">tsc</code></td><td>passes</td><td>a NUL is a <em>legal</em> character inside a string literal</td></tr><tr><td>Unit tests</td><td>pass</td><td>only if no test covers the affected path</td></tr></tbody></table>
 <p>So the damage lands <strong>at runtime only</strong>. Nothing goes red; behaviour just quietly stops
 being what the code appears to say.</p>
 <blockquote>

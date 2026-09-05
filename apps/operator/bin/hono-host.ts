@@ -484,11 +484,11 @@ function startRequestServers(): void {
     // PAPERCUSP_MEMORY_PROACTIVE_GC_MB overrides the threshold.
     const proactiveGcOff = process.env.PAPERCUSP_MEMORY_PROACTIVE_GC === '0';
     startMemoryWatchdog({
-      rssLimitMb: limitMb,
+      limitMb,
       proactiveGcMb: proactiveGcOff
         ? 0
         : resolveMemoryWatchdogProactiveGcMb(process.env),
-      onTrip: ({ rssMb }) => {
+      onTrip: ({ rssMb, swapMb, committedMb }) => {
         // INVOCATION_ID = running under systemd (Restart=always). The tauri-dev
         // OWN-PORT operator is instead supervised by dev-operator-ifneeded.sh's
         // restart loop (WI-3042) — name the actual supervisor so a recycle in
@@ -497,8 +497,12 @@ function startRequestServers(): void {
           ? 'systemd will restart'
           : 'expecting the spawning wrapper (dev-operator-ifneeded.sh restart loop) to restart';
         console.warn(
-          `[memory-watchdog] RSS high-water mark tripped — draining + recycling host (${supervisor})`,
-          { rssMb, rssLimitMb: limitMb },
+          `[memory-watchdog] committed-memory high-water mark tripped — draining + recycling host (${supervisor})`,
+          // committedMb (VmRSS + VmSwap) is what tripped, and it is the only figure
+          // to reason about here: under fleet load this box swaps, so rssMb alone
+          // understates the process's real demand by 13-40% (WI-2145659). Both are
+          // logged so a reader can see the split rather than infer it.
+          { committedMb, rssMb, swapMb, limitMb },
         );
         // Drain in-flight HTTP before exit; the helper hard-exits after 8s if
         // the drain hangs. EI-9649: SKIP the P2P substrate teardown on a memory
@@ -534,7 +538,11 @@ function startRequestServers(): void {
           // this same wording (WI-5434 chased a phantom RSS leak for hours
           // because a SIGTERM-triggered recycle logged as "a memory-watchdog
           // recycle" too).
-          reason: `a memory-watchdog RSS recycle (${rssMb}MB >= ${limitMb}MB limit)`,
+          // Quote COMMITTED against the limit — they are the two sides of the
+          // comparison that actually tripped. The old wording paired rssMb with
+          // limitMb, which under swap renders a false inequality ("1779MB >=
+          // 3200MB limit") in the one log line a reader trusts most (WI-2145659).
+          reason: `a memory-watchdog committed-memory recycle (${committedMb}MB = ${rssMb}MB rss + ${swapMb}MB swap >= ${limitMb}MB limit)`,
         });
       },
     });

@@ -263,22 +263,81 @@ the slug column). Both write <code dir="auto">substrate_outbox(workspace_id, har
 so there is no operator-scope/NULL federation path by construction.</p>
 <p><strong>Capture-ALL</strong> (echo-guard only — no scope gate; <code dir="auto">harness_slug</code> is always set on these
 tables and rides as the demux tag):</p>
-<p>| Table | keycol | trigger anchors |
-|---|---|---|
-| <code dir="auto">harness_features_consolidated</code> | <code dir="auto">feature_id</code> | baseline:5353/5357; re-stated 108/114/181 |
-| <code dir="auto">harness_issues_consolidated</code> | <code dir="auto">issue_id</code> | baseline:5355/5359; re-stated 108/114/181 |
-| <code dir="auto">contributor_usage_events</code> | <code dir="auto">event_id</code> | 108:22, 114:24/27 |
-| <code dir="auto">harness_plans</code> | <code dir="auto">plan_slug</code> | 125:34/39 |
-| <code dir="auto">plan_item_assignments</code> | <code dir="auto">fed_key</code> (<code dir="auto">&#x3C;plan>:&#x3C;item></code>) | 145:33/38 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Table</th><th>keycol</th><th>trigger anchors</th></tr></thead><tbody><tr><td><code dir="auto">harness_features_consolidated</code></td><td><code dir="auto">feature_id</code></td><td>baseline:5353/5357; re-stated 108/114/181</td></tr><tr><td><code dir="auto">harness_issues_consolidated</code></td><td><code dir="auto">issue_id</code></td><td>baseline:5355/5359; re-stated 108/114/181</td></tr><tr><td><code dir="auto">contributor_usage_events</code></td><td><code dir="auto">event_id</code></td><td>108:22, 114:24/27</td></tr><tr><td><code dir="auto">harness_plans</code></td><td><code dir="auto">plan_slug</code></td><td>125:34/39</td></tr><tr><td><code dir="auto">plan_item_assignments</code></td><td><code dir="auto">fed_key</code> (<code dir="auto">&#x3C;plan>:&#x3C;item></code>)</td><td>145:33/38</td></tr></tbody></table>
 <p><strong>WHEN-gated coord</strong> (gate <code dir="auto">harness_slug IS NOT NULL</code> → operator-scope rows stay local;
 this is the load-bearing demux — do <strong>not</strong> widen it to a NULL/operator path; that was
 the rejected <code dir="auto">fleet-federation-reanchor</code> P-010 lean):</p>
-<p>| Table | keycol | WHEN gate | anchors |
-|---|---|---|---|
-| <code dir="auto">coord_conversations</code> | <code dir="auto">id</code> | <code dir="auto">scope='harness' AND harness_slug NOT NULL AND origin=local</code> | 144:63/70/79 |
-| <code dir="auto">coord_threads</code> | <code dir="auto">thread_id</code> | <code dir="auto">harness_slug NOT NULL AND origin=local</code> | 149:73/79/85 |
-| <code dir="auto">coord_thread_posts</code> | <code dir="auto">post_msg_id</code> | + <code dir="auto">post_msg_id NOT NULL</code> | 149:96/103/110 |
-| <code dir="auto">coord_event_log</code> | <code dir="auto">msg_id</code> | + <code dir="auto">surface IN (messages,handoffs,escalations) AND notify_kind IS NULL</code> | 150:78/87/96 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Table</th><th>keycol</th><th>WHEN gate</th><th>anchors</th></tr></thead><tbody><tr><td><code dir="auto">coord_conversations</code></td><td><code dir="auto">id</code></td><td><code dir="auto">scope='harness' AND harness_slug NOT NULL AND origin=local</code></td><td>144:63/70/79</td></tr><tr><td><code dir="auto">coord_threads</code></td><td><code dir="auto">thread_id</code></td><td><code dir="auto">harness_slug NOT NULL AND origin=local</code></td><td>149:73/79/85</td></tr><tr><td><code dir="auto">coord_thread_posts</code></td><td><code dir="auto">post_msg_id</code></td><td>+ <code dir="auto">post_msg_id NOT NULL</code></td><td>149:96/103/110</td></tr><tr><td><code dir="auto">coord_event_log</code></td><td><code dir="auto">msg_id</code></td><td>+ <code dir="auto">surface IN (messages,handoffs,escalations) AND notify_kind IS NULL</code></td><td>150:78/87/96</td></tr></tbody></table>
 <p>The partial fed-unique indexes carry the same <code dir="auto">WHERE harness_slug IS NOT NULL</code> guard:
 <code dir="auto">coord_event_log_fed_uq</code> (150:71), <code dir="auto">coord_threads_fed_uq</code> (149:62),
 <code dir="auto">coord_thread_posts_fed_uq</code> (149:66), <code dir="auto">coord_conversations</code> (144).</p>
@@ -310,14 +369,47 @@ resolved at boot (<code dir="auto">resolveHiveSwarmBinding</code>), <strong>not<
 <p>The scope-key parameter is named <code dir="auto">harnessSlug</code> but is <strong>polymorphic</strong> — post-P-009 it
 carries a pot slug too (<code dir="auto">lock-authority.ts:426</code> — “the transport field is named
 harnessSlug”). The harness path and its Pot twin coexist:</p>
-<p>| File | harness-scope | Pot-scope twin |
-|---|---|---|
-| <code dir="auto">lock-authority.ts</code> | <code dir="auto">lockAuthorityFor</code> :281, <code dir="auto">routeToAuthority</code> :367, <code dir="auto">queryPresenceRows</code>(harness_slug) :131 | <code dir="auto">lockAuthorityForHive</code>, <code dir="auto">routeToAuthorityForHive</code> :411, <code dir="auto">queryPresenceRowsForHive</code>(hive_slug) :167 — shared core <code dir="auto">selectAuthorityFromRows</code> :212 |
-| <code dir="auto">remote-peers-cache.ts</code> | <code dir="auto">hasRemotePeers</code> :43 | <code dir="auto">hasRemoteHivePeers</code> :56 (key <code dir="auto">pot:&#x3C;slug></code>) |
-| <code dir="auto">file-lock-routing.ts</code> | <code dir="auto">DomainToHarnessSlug</code> :49 | <code dir="auto">HarnessToHiveSlug</code> :53 → <code dir="auto">routeFileLockOp</code> picks <code dir="auto">{kind:pot\|harness}</code> :133-151 |
-| <code dir="auto">authority-op-registry.ts</code> | <code dir="auto">AuthorityRpcEnvelope.harnessSlug</code> (interface actually named <code dir="auto">AuthorityRpcEnvelope</code>, not <code dir="auto">AuthorityOpEnvelope</code>) :28, <code dir="auto">verifyIsAuthority</code> opt :100, gated call :155/158 | same envelope; scope key carries either |
-| <code dir="auto">hardened-authority.ts</code> | <code dir="auto">resolveHardenedAuthority(harnessSlug)</code> :83, fetch/load/save :52-55 | generic — reused for pot |
-| <code dir="auto">peer-rpc-transport.ts</code> | <code dir="auto">PeerRpcRequest.harnessSlug</code> :28; <code dir="auto">http-peer-rpc-transport.ts</code> serializes <code dir="auto">{harnessSlug,…}</code> :91 | wire field carries the scope key |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File</th><th>harness-scope</th><th>Pot-scope twin</th></tr></thead><tbody><tr><td><code dir="auto">lock-authority.ts</code></td><td><code dir="auto">lockAuthorityFor</code> :281, <code dir="auto">routeToAuthority</code> :367, <code dir="auto">queryPresenceRows</code>(harness_slug) :131</td><td><code dir="auto">lockAuthorityForHive</code>, <code dir="auto">routeToAuthorityForHive</code> :411, <code dir="auto">queryPresenceRowsForHive</code>(hive_slug) :167 — shared core <code dir="auto">selectAuthorityFromRows</code> :212</td></tr><tr><td><code dir="auto">remote-peers-cache.ts</code></td><td><code dir="auto">hasRemotePeers</code> :43</td><td><code dir="auto">hasRemoteHivePeers</code> :56 (key <code dir="auto">pot:&#x3C;slug></code>)</td></tr><tr><td><code dir="auto">file-lock-routing.ts</code></td><td><code dir="auto">DomainToHarnessSlug</code> :49</td><td><code dir="auto">HarnessToHiveSlug</code> :53 → <code dir="auto">routeFileLockOp</code> picks <code dir="auto">{kind:pot|harness}</code> :133-151</td></tr><tr><td><code dir="auto">authority-op-registry.ts</code></td><td><code dir="auto">AuthorityRpcEnvelope.harnessSlug</code> (interface actually named <code dir="auto">AuthorityRpcEnvelope</code>, not <code dir="auto">AuthorityOpEnvelope</code>) :28, <code dir="auto">verifyIsAuthority</code> opt :100, gated call :155/158</td><td>same envelope; scope key carries either</td></tr><tr><td><code dir="auto">hardened-authority.ts</code></td><td><code dir="auto">resolveHardenedAuthority(harnessSlug)</code> :83, fetch/load/save :52-55</td><td>generic — reused for pot</td></tr><tr><td><code dir="auto">peer-rpc-transport.ts</code></td><td><code dir="auto">PeerRpcRequest.harnessSlug</code> :28; <code dir="auto">http-peer-rpc-transport.ts</code> serializes <code dir="auto">{harnessSlug,…}</code> :91</td><td>wire field carries the scope key</td></tr></tbody></table>
 <p><strong>Both Track-B cutovers are now LANDED</strong> (fed-reanchor P-060, 2026-06-08 — both single-box
 no-ops by construction; cross-Swarm proof stays the owner-gated 2-machine run):</p>
 <ul>
@@ -334,14 +426,40 @@ described an env gate with code-default-off, both stale — corrected by P-024).
 <p>Legacy plan-item claims still append LWW-advisory to the own log
 (<code dir="auto">orchestrator/distributed-claim.ts</code>) — distinct seam, unchanged.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="key-files">Key files</h2><a class="sl-anchor-link" href="#key-files"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Key files”</span></a></div>
-<p>| Concern | File |
-|---|---|
-| Pot identity (keypair → topic) | <code dir="auto">lib/identity/hive-keypair.ts</code>, <code dir="auto">lib/sync/hyperbee/derive-swarm-topic.ts</code> |
-| Topic re-key / membership resolve | <code dir="auto">lib/hive-federation.ts</code> |
-| Per-Pot admission union | <code dir="auto">lib/sync/hyperbee/boot.ts</code>, <code dir="auto">lib/hive-membership-store.ts</code> |
-| Presence publisher (Track A) | <code dir="auto">lib/sync/hyperbee/wire-presence.ts</code>, <code dir="auto">presence-announce.ts</code> |
-| Lock authority (Track B) | <code dir="auto">lib/authority/lock-authority.ts</code>, <code dir="auto">lib/authority/file-lock-routing.ts</code> |
-| Membership producers | <code dir="auto">agent-tools/hive/_add-member.ts</code>, <code dir="auto">agent-tools/harness/create-hive-membership.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>File</th></tr></thead><tbody><tr><td>Pot identity (keypair → topic)</td><td><code dir="auto">lib/identity/hive-keypair.ts</code>, <code dir="auto">lib/sync/hyperbee/derive-swarm-topic.ts</code></td></tr><tr><td>Topic re-key / membership resolve</td><td><code dir="auto">lib/hive-federation.ts</code></td></tr><tr><td>Per-Pot admission union</td><td><code dir="auto">lib/sync/hyperbee/boot.ts</code>, <code dir="auto">lib/hive-membership-store.ts</code></td></tr><tr><td>Presence publisher (Track A)</td><td><code dir="auto">lib/sync/hyperbee/wire-presence.ts</code>, <code dir="auto">presence-announce.ts</code></td></tr><tr><td>Lock authority (Track B)</td><td><code dir="auto">lib/authority/lock-authority.ts</code>, <code dir="auto">lib/authority/file-lock-routing.ts</code></td></tr><tr><td>Membership producers</td><td><code dir="auto">agent-tools/hive/_add-member.ts</code>, <code dir="auto">agent-tools/harness/create-hive-membership.ts</code></td></tr></tbody></table>
 <blockquote>
 <p>Note (2026-07): the underlying files/functions/types still use the internal
 <code dir="auto">hive-*</code>/<code dir="auto">Hive</code> naming (<code dir="auto">lib/hive-federation.ts</code>, <code dir="auto">SwarmBinding.kind:'hive'</code>,

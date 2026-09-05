@@ -92,13 +92,42 @@ the window (e.g. 3h vs 168h) to localize <em>when</em> a burst happened.</p>
 <code dir="auto">status</code> is one of <code dir="auto">ok | error | role-not-allowed | timeout</code>.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="classify-before-you-fix">Classify before you fix</h3><a class="sl-anchor-link" href="#classify-before-you-fix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Classify before you fix”</span></a></div>
 <p>In a 2026-05-31 audit, ~234 errors / 7 days bucketed as (most → least):</p>
-<p>| Bucket | Signature | What it is |
-|---|---|---|
-| <strong>Bad arg shape</strong> | <code dir="auto">invalid_args: …</code> (surfaces as <code dir="auto">handler_error</code>/HTTP 500, <em>not</em> 400 — the Zod throw is inside the projected fn) | Caller sent the wrong arg shape. Not a backend fault. |
-| <strong>Missing harness scope</strong> | <code dir="auto">No harness in scope</code> / <code dir="auto">resolveHarnessPlansDir: no harness in ctx</code> | A harness-scoped tool called without the <code dir="auto">harness</code> arg. |
-| <strong>Missing bearer/workspace auth</strong> | <code dir="auto">built-in tool "X" requires authenticated request (bearer + workspace tx)</code>; <code dir="auto">Principal "loopback" lacks capability "…"</code> | A principal-gated built-in invoked without a principal/tx, or a principal whose caps don’t include the one required. See <a href="/internal/docs/agent-insights/tooldef-authorization-model">tooldef-authorization-model</a>. |
-| <strong>Timeout</strong> | <code dir="auto">status='timeout'</code>, <code dir="auto">duration_ms ≈ 60000</code> | Usually <code dir="auto">chat:ask_choice</code> — the user never answered the card. Not a bug. |
-| <strong>Real bug</strong> | <code dir="auto">permission denied for table …</code>, <code dir="auto">column "…" does not exist</code>, <code dir="auto">spawn npx ENOENT</code>, <code dir="auto">features_import_failed:404</code> | The small genuine set. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Bucket</th><th>Signature</th><th>What it is</th></tr></thead><tbody><tr><td><strong>Bad arg shape</strong></td><td><code dir="auto">invalid_args: …</code> (surfaces as <code dir="auto">handler_error</code>/HTTP 500, <em>not</em> 400 — the Zod throw is inside the projected fn)</td><td>Caller sent the wrong arg shape. Not a backend fault.</td></tr><tr><td><strong>Missing harness scope</strong></td><td><code dir="auto">No harness in scope</code> / <code dir="auto">resolveHarnessPlansDir: no harness in ctx</code></td><td>A harness-scoped tool called without the <code dir="auto">harness</code> arg.</td></tr><tr><td><strong>Missing bearer/workspace auth</strong></td><td><code dir="auto">built-in tool "X" requires authenticated request (bearer + workspace tx)</code>; <code dir="auto">Principal "loopback" lacks capability "…"</code></td><td>A principal-gated built-in invoked without a principal/tx, or a principal whose caps don’t include the one required. See <a href="/internal/docs/agent-insights/tooldef-authorization-model">tooldef-authorization-model</a>.</td></tr><tr><td><strong>Timeout</strong></td><td><code dir="auto">status='timeout'</code>, <code dir="auto">duration_ms ≈ 60000</code></td><td>Usually <code dir="auto">chat:ask_choice</code> — the user never answered the card. Not a bug.</td></tr><tr><td><strong>Real bug</strong></td><td><code dir="auto">permission denied for table …</code>, <code dir="auto">column "…" does not exist</code>, <code dir="auto">spawn npx ENOENT</code>, <code dir="auto">features_import_failed:404</code></td><td>The small genuine set.</td></tr></tbody></table>
 <p>The lesson: most “failures” are caller-side (bad args, missing scope) or a
 specific auth-wiring gap — <strong>not</strong> a backend that fell over. <code dir="auto">p50≈0–1ms</code> with
 100% error rate ⇒ an instant throw (validation/auth gate), not a crash.</p>

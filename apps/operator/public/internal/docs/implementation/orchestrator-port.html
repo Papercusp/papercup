@@ -95,26 +95,126 @@ historical and no longer accurate.</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-it-lives">Where it lives</h2><a class="sl-anchor-link" href="#where-it-lives"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where it lives”</span></a></div>
 <p>New package <code dir="auto">@papercusp/orchestrator</code> at <code dir="auto">libs/papercusp/packages/orchestrator/</code> (in the <code dir="auto">papercupai/papercusp</code> submodule). Feature-flagged via <code dir="auto">PAPERCUSP_USE_TS_ORCHESTRATOR=1</code> — currently opt-in. The CLI entry <code dir="auto">bin/run.ts</code> handles the flag and falls through to bash for any decision branch the TS port doesn’t yet cover.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="stage-table">Stage table</h2><a class="sl-anchor-link" href="#stage-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Stage table”</span></a></div>
-<p>| Stage | Status | Tests | Notes |
-|---|---|---|---|
-| 0. Skeleton (config / state / log / paths) | ✅ | 19 | <code dir="auto">readConfig</code> + dotted-path <code dir="auto">configGet</code>, <code dir="auto">readFeatures</code> + <code dir="auto">setFeatureStatus</code>, <code dir="auto">createLogger</code>, <code dir="auto">resolvePaths</code> / <code dir="auto">resolveEnv</code> |
-| 1a. Prompt resolution | ✅ | 26 | 4-tier lookup: <code dir="auto">prompts/$phase/departments/$dept/$role.md</code> → <code dir="auto">prompts/$phase/$role.md</code> → <code dir="auto">prompts/department/$role.md</code> → <code dir="auto">prompts/$role.md</code> |
-| 1b. Full <code dir="auto">invoke()</code> spawn | ✅ | 54 | spawn claude, capture stream-json + plain-text, <code dir="auto">extractResult</code>, EPIPE-safe; per-role model + prompt override + timeout from <code dir="auto">config.json</code> |
-| 2a. <code dir="auto">parseDecision()</code> | ✅ | 65 | handles markdown emphasis, code fences, multiple-verb tail-wins, <code dir="auto">NEXT_WORKER_CEO_MODE</code> longest-prefix |
-| 2b. Main loop + checkpoint gate | ✅ | 76 | iteration cadence, <code dir="auto">primaryRole</code> resolution, dispatch, max-iterations exit 5, DONE/IDLE/ESCALATE/CHECKPOINT |
-| 2c. NEXT_WORKER + NEXT_VALIDATOR | ✅ | 80 | sequential path; debugger threshold pre-check; <code dir="auto">setFeatureStatus in_progress</code> |
-| 2c+. 7 trivial branches | ✅ | 85 | NEXT_TESTER / NEXT_SECURITY / GENERATE_TESTS / NEXT_MONITOR / CONVERTED / FEATURE_FREEZE / RUN_TESTS |
-| 3. Branch-iso + worktree subsystem | ✅ | 89 | <code dir="auto">git.ts</code> wrapper; <code dir="auto">branchIsoPreWorker</code> / <code dir="auto">PostWorker</code> / <code dir="auto">PreValidator</code> / <code dir="auto">PostValidator</code> with on-pass merge / keep / pr; <code dir="auto">worktreeReset</code> |
-| 4a. User hooks | ✅ | 95 | <code dir="auto">runHook</code> fires <code dir="auto">.papercusp/hooks/&#x3C;name>.sh</code> at pre/post-worker, pre/post-validator, on-smoke-pass/fail, on-escalate, on-checkpoint-fired |
-| 4b. NEXT_ARCHITECT (PATCH/REVIEW) | ✅ | 99 | parses architect verdict line; PATCH → <code dir="auto">setFeatureStatus todo + resetAttempts</code>; REVIEW → blocked + <code dir="auto">notify review-pending</code> |
-| 4c. Terminal-verb polish | ✅ | 100 | ESCALATE exit code 3 (was 9, fixed), runs curator before exit; CHECKPOINT writes file body; READY_FOR_PROD writes flag; IDLE 30s sleep with sleepFn override |
-| 4d. NEXT_HARNESS (cross-harness) | ✅ | 100 | POST <code dir="auto">localhost:3001/api/harness/&#x3C;slug>/invoke?role=&#x3C;role></code>; on failure walks <code dir="auto">~/.restart-harness-projects.json</code> and recurses bash run.sh with <code dir="auto">MAX_ITERATIONS=1</code> |
-| 4e. NEXT_WORKER_CEO_MODE + action-block executor | ✅ | 111 | <code dir="auto">extractActionsBlock</code> parses <code dir="auto">```actions [...] ```</code> fenced JSON; <code dir="auto">processActionsBlock</code> POSTs each action to <code dir="auto">/api/org/admin/execute-action</code> with 30s per-action timeout |
-| 5b. Pre-loop scoper + plan-reviewer + post-planner checkpoints | ✅ | 137 | fresh-mission scoper invoke, plan-review verdict-reject exits 7 with <code dir="auto">escalation.md</code>; <code dir="auto">ensure-docs.sh</code>; auto post-planner checkpoints with papercup; worktree prune |
-| 5c. Cost cap + log prune + state snapshot | ✅ | 132 (interim) | <strong>Cutover blocker:</strong> <code dir="auto">sumJsonlCost</code> across <code dir="auto">.jsonl</code> files; <code dir="auto">evaluateCostCap</code> with soft-warn threshold + papercup + autoPause SIGSTOP; <code dir="auto">pruneLogs</code> drops oldest beyond <code dir="auto">logRetention</code>; <code dir="auto">snapshotState</code> into <code dir="auto">snapshots/&#x3C;ts>-iter-NNN/</code> |
-| 5d. <code dir="auto">fire_plugin_hook</code> (afterDone) | ✅ | 144 | 3-tier plugin discovery; spawns <code dir="auto">papercusp-fire-hook</code> CLI per plugin; <code dir="auto">afterDone</code> wired into DONE handler before <code dir="auto">notify_event done</code> |
-| <strong>5a. Parallel-lane + competition mode</strong> | ✅ | <strong>161</strong> | <code dir="auto">lanes.ts</code> with in-process Promise-based lane pool (replaces bash’s PID tracking). <code dir="auto">handleNextWorker</code> routes between competition / lane / sequential. <code dir="auto">handleNextValidator</code> drains lanes before validator + parses <code dir="auto">COMPETITION_WINNER</code> verdict, merges winner branch, drops loser worktrees |
-| <strong>SQL feature import</strong> | ⏳ Outstanding (low priority) | — | The bash <code dir="auto">features.json</code> → Postgres <code dir="auto">harness_&#x3C;slug>.harness_features</code> import. Observability layer; not required for cutover. Bash continues to do this on the bash path. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Stage</th><th>Status</th><th>Tests</th><th>Notes</th></tr></thead><tbody><tr><td>0. Skeleton (config / state / log / paths)</td><td>✅</td><td>19</td><td><code dir="auto">readConfig</code> + dotted-path <code dir="auto">configGet</code>, <code dir="auto">readFeatures</code> + <code dir="auto">setFeatureStatus</code>, <code dir="auto">createLogger</code>, <code dir="auto">resolvePaths</code> / <code dir="auto">resolveEnv</code></td></tr><tr><td>1a. Prompt resolution</td><td>✅</td><td>26</td><td>4-tier lookup: <code dir="auto">prompts/$phase/departments/$dept/$role.md</code> → <code dir="auto">prompts/$phase/$role.md</code> → <code dir="auto">prompts/department/$role.md</code> → <code dir="auto">prompts/$role.md</code></td></tr><tr><td>1b. Full <code dir="auto">invoke()</code> spawn</td><td>✅</td><td>54</td><td>spawn claude, capture stream-json + plain-text, <code dir="auto">extractResult</code>, EPIPE-safe; per-role model + prompt override + timeout from <code dir="auto">config.json</code></td></tr><tr><td>2a. <code dir="auto">parseDecision()</code></td><td>✅</td><td>65</td><td>handles markdown emphasis, code fences, multiple-verb tail-wins, <code dir="auto">NEXT_WORKER_CEO_MODE</code> longest-prefix</td></tr><tr><td>2b. Main loop + checkpoint gate</td><td>✅</td><td>76</td><td>iteration cadence, <code dir="auto">primaryRole</code> resolution, dispatch, max-iterations exit 5, DONE/IDLE/ESCALATE/CHECKPOINT</td></tr><tr><td>2c. NEXT_WORKER + NEXT_VALIDATOR</td><td>✅</td><td>80</td><td>sequential path; debugger threshold pre-check; <code dir="auto">setFeatureStatus in_progress</code></td></tr><tr><td>2c+. 7 trivial branches</td><td>✅</td><td>85</td><td>NEXT_TESTER / NEXT_SECURITY / GENERATE_TESTS / NEXT_MONITOR / CONVERTED / FEATURE_FREEZE / RUN_TESTS</td></tr><tr><td>3. Branch-iso + worktree subsystem</td><td>✅</td><td>89</td><td><code dir="auto">git.ts</code> wrapper; <code dir="auto">branchIsoPreWorker</code> / <code dir="auto">PostWorker</code> / <code dir="auto">PreValidator</code> / <code dir="auto">PostValidator</code> with on-pass merge / keep / pr; <code dir="auto">worktreeReset</code></td></tr><tr><td>4a. User hooks</td><td>✅</td><td>95</td><td><code dir="auto">runHook</code> fires <code dir="auto">.papercusp/hooks/&#x3C;name>.sh</code> at pre/post-worker, pre/post-validator, on-smoke-pass/fail, on-escalate, on-checkpoint-fired</td></tr><tr><td>4b. NEXT_ARCHITECT (PATCH/REVIEW)</td><td>✅</td><td>99</td><td>parses architect verdict line; PATCH → <code dir="auto">setFeatureStatus todo + resetAttempts</code>; REVIEW → blocked + <code dir="auto">notify review-pending</code></td></tr><tr><td>4c. Terminal-verb polish</td><td>✅</td><td>100</td><td>ESCALATE exit code 3 (was 9, fixed), runs curator before exit; CHECKPOINT writes file body; READY_FOR_PROD writes flag; IDLE 30s sleep with sleepFn override</td></tr><tr><td>4d. NEXT_HARNESS (cross-harness)</td><td>✅</td><td>100</td><td>POST <code dir="auto">localhost:3001/api/harness/&#x3C;slug>/invoke?role=&#x3C;role></code>; on failure walks <code dir="auto">~/.restart-harness-projects.json</code> and recurses bash run.sh with <code dir="auto">MAX_ITERATIONS=1</code></td></tr><tr><td>4e. NEXT_WORKER_CEO_MODE + action-block executor</td><td>✅</td><td>111</td><td><code dir="auto">extractActionsBlock</code> parses <code dir="auto">```actions [...] ```</code> fenced JSON; <code dir="auto">processActionsBlock</code> POSTs each action to <code dir="auto">/api/org/admin/execute-action</code> with 30s per-action timeout</td></tr><tr><td>5b. Pre-loop scoper + plan-reviewer + post-planner checkpoints</td><td>✅</td><td>137</td><td>fresh-mission scoper invoke, plan-review verdict-reject exits 7 with <code dir="auto">escalation.md</code>; <code dir="auto">ensure-docs.sh</code>; auto post-planner checkpoints with papercup; worktree prune</td></tr><tr><td>5c. Cost cap + log prune + state snapshot</td><td>✅</td><td>132 (interim)</td><td><strong>Cutover blocker:</strong> <code dir="auto">sumJsonlCost</code> across <code dir="auto">.jsonl</code> files; <code dir="auto">evaluateCostCap</code> with soft-warn threshold + papercup + autoPause SIGSTOP; <code dir="auto">pruneLogs</code> drops oldest beyond <code dir="auto">logRetention</code>; <code dir="auto">snapshotState</code> into <code dir="auto">snapshots/&#x3C;ts>-iter-NNN/</code></td></tr><tr><td>5d. <code dir="auto">fire_plugin_hook</code> (afterDone)</td><td>✅</td><td>144</td><td>3-tier plugin discovery; spawns <code dir="auto">papercusp-fire-hook</code> CLI per plugin; <code dir="auto">afterDone</code> wired into DONE handler before <code dir="auto">notify_event done</code></td></tr><tr><td><strong>5a. Parallel-lane + competition mode</strong></td><td>✅</td><td><strong>161</strong></td><td><code dir="auto">lanes.ts</code> with in-process Promise-based lane pool (replaces bash’s PID tracking). <code dir="auto">handleNextWorker</code> routes between competition / lane / sequential. <code dir="auto">handleNextValidator</code> drains lanes before validator + parses <code dir="auto">COMPETITION_WINNER</code> verdict, merges winner branch, drops loser worktrees</td></tr><tr><td><strong>SQL feature import</strong></td><td>⏳ Outstanding (low priority)</td><td>—</td><td>The bash <code dir="auto">features.json</code> → Postgres <code dir="auto">harness_&#x3C;slug>.harness_features</code> import. Observability layer; not required for cutover. Bash continues to do this on the bash path.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="branch--tag-state">Branch + tag state</h2><a class="sl-anchor-link" href="#branch--tag-state"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Branch + tag state”</span></a></div>
 <ul>
 <li><strong>Branch:</strong> <code dir="auto">feat/desktop-app</code> on <code dir="auto">papercupai/papercup</code>, currently at <code dir="auto">4e4103ea</code> (top commit: <em>chore: bump libs/papercusp — orchestrator Stage 5d</em>)</li>

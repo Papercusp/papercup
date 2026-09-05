@@ -85,16 +85,57 @@ superseded and should not be followed.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="1-the-routing-contract--question-class-decides-the-backend">1. The routing contract — question class decides the backend</h2><a class="sl-anchor-link" href="#1-the-routing-contract--question-class-decides-the-backend"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1. The routing contract — question class decides the backend”</span></a></div>
 <p>Each row is a <em>question class</em>, not a preference. Picking by habit rather than by
 question is what the contract exists to stop.</p>
-<p>| the question                                 | the authority                                                | not                                                                                |
-| -------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| definition, references, type truth           | <code dir="auto">lsp:query</code> — real compiler semantics                        | a grep for the declaration: it cannot resolve shadowing or re-exports              |
-| who CALLS this symbol                        | <code dir="auto">graph:query { op:'callers' }</code>                               | <code dir="auto">gitnexus.impact { direction:'callers' }</code> — silently answers <strong>callees</strong>, see §3.6 |
-| call chains, impact radius, topology         | <code dir="auto">gitnexus.context</code> / <code dir="auto">gitnexus.impact</code> (dot form, not colon) | <code dir="auto">gitnexus.query</code> — see §3.1                                                        |
-| structural code patterns (shape, not text)   | the ast-grep facade                                          | a regex that approximates an AST                                                   |
-| an exact keyword or phrase                   | <code dir="auto">search:fulltext</code>                                            | <code dir="auto">ILIKE '%…%'</code>                                                                      |
-| a paraphrased concept                        | <code dir="auto">search:semantic</code>                                            | keyword search that misses the wording                                             |
-| exhaustive exact-text sweep                  | plain <code dir="auto">rg</code> / <code dir="auto">grep</code> — still the right tool                   | a graph query, which is indexed and can lag                                        |
-| packaging evidence for a reviewer or a model | <code dir="auto">code:pack</code> — strictly POST-retrieval                        | a raw packer binary; it skips the pinned version and the secret rails              |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>the question</th><th>the authority</th><th>not</th></tr></thead><tbody><tr><td>definition, references, type truth</td><td><code dir="auto">lsp:query</code> — real compiler semantics</td><td>a grep for the declaration: it cannot resolve shadowing or re-exports</td></tr><tr><td>who CALLS this symbol</td><td><code dir="auto">graph:query { op:'callers' }</code></td><td><code dir="auto">gitnexus.impact { direction:'callers' }</code> — silently answers <strong>callees</strong>, see §3.6</td></tr><tr><td>call chains, impact radius, topology</td><td><code dir="auto">gitnexus.context</code> / <code dir="auto">gitnexus.impact</code> (dot form, not colon)</td><td><code dir="auto">gitnexus.query</code> — see §3.1</td></tr><tr><td>structural code patterns (shape, not text)</td><td>the ast-grep facade</td><td>a regex that approximates an AST</td></tr><tr><td>an exact keyword or phrase</td><td><code dir="auto">search:fulltext</code></td><td><code dir="auto">ILIKE '%…%'</code></td></tr><tr><td>a paraphrased concept</td><td><code dir="auto">search:semantic</code></td><td>keyword search that misses the wording</td></tr><tr><td>exhaustive exact-text sweep</td><td>plain <code dir="auto">rg</code> / <code dir="auto">grep</code> — still the right tool</td><td>a graph query, which is indexed and can lag</td></tr><tr><td>packaging evidence for a reviewer or a model</td><td><code dir="auto">code:pack</code> — strictly POST-retrieval</td><td>a raw packer binary; it skips the pinned version and the secret rails</td></tr></tbody></table>
 <p><strong>Curated code-intelligence tools are namespaced by PLANE, never by vendor</strong>
 (D-058): the curated facade is <code dir="auto">graph:query</code>, not <code dir="auto">gitnexus:query</code>. The dotted
 <code dir="auto">gitnexus.*</code> names above are the raw <em>plugin</em> surface, which is a different thing
@@ -106,14 +147,47 @@ first-call mistake.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="2-what-is-installed-and-where">2. What is installed, and where</h2><a class="sl-anchor-link" href="#2-what-is-installed-and-where"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “2. What is installed, and where”</span></a></div>
 <p>Exact versions, read from the live install and recorded in full in D-048
 (gitnexus re-confirmed at 1.6.9 on 2026-09-03):</p>
-<p>| backend                                     | version                     | location                                                               |
-| ------------------------------------------- | --------------------------- | ---------------------------------------------------------------------- |
-| typescript-language-server                  | 6.0.0                       | <code dir="auto">~/.papercusp/vendor/lsp</code>                                              |
-| tsserver (via transitive <code dir="auto">@typescript/old</code>) | stock typescript 6.0.3      | <code dir="auto">~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js</code> |
-| rust-analyzer                               | 1.97.1 (8bab26f 2026-07-14) | rustup component, <code dir="auto">stable-x86_64-unknown-linux-gnu</code>                    |
-| gitnexus                                    | 1.6.9                       | <code dir="auto">~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus</code>              |
-| repomix                                     | 1.18.0                      | <code dir="auto">~/.papercusp/vendor/repomix</code>                                          |
-| code2prompt                                 | 4.2.0                       | <code dir="auto">~/.papercusp/vendor/code2prompt</code>                                      |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>backend</th><th>version</th><th>location</th></tr></thead><tbody><tr><td>typescript-language-server</td><td>6.0.0</td><td><code dir="auto">~/.papercusp/vendor/lsp</code></td></tr><tr><td>tsserver (via transitive <code dir="auto">@typescript/old</code>)</td><td>stock typescript 6.0.3</td><td><code dir="auto">~/.papercusp/vendor/lsp/node_modules/@typescript/old/lib/tsserver.js</code></td></tr><tr><td>rust-analyzer</td><td>1.97.1 (8bab26f 2026-07-14)</td><td>rustup component, <code dir="auto">stable-x86_64-unknown-linux-gnu</code></td></tr><tr><td>gitnexus</td><td>1.6.9</td><td><code dir="auto">~/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus</code></td></tr><tr><td>repomix</td><td>1.18.0</td><td><code dir="auto">~/.papercusp/vendor/repomix</code></td></tr><tr><td>code2prompt</td><td>4.2.0</td><td><code dir="auto">~/.papercusp/vendor/code2prompt</code></td></tr></tbody></table>
 <p>Three things about this table bite people:</p>
 <p><strong>The two TypeScript versions are both correct.</strong> The vendored <code dir="auto">typescript</code>
 dependency is <code dir="auto">@typescript/typescript6@6.0.2</code>, which ships <strong>no</strong> <code dir="auto">tsserver.js</code>.
@@ -207,11 +281,32 @@ still advertising 17 working tools.</strong> Nothing reported itself as broken.<
 <p><strong>Cause.</strong> A SIGKILLed <code dir="auto">gitnexus analyze</code> leaves the on-disk index in a
 crash-inconsistent state. Every read-only open then replays a pending WAL and
 segfaults. There are three distinct residue shapes, and the state space matters:</p>
-<p>| residue kind      | on disk                                      | how it got there                                           |
-| ----------------- | -------------------------------------------- | ---------------------------------------------------------- |
-| <code dir="auto">orphan-shadow</code>   | shadow present, <strong>no</strong> database              | killed BEFORE promoting the shadow                         |
-| <code dir="auto">orphan-wal</code>      | database + pending <code dir="auto">lbug.wal</code>, <strong>no</strong> shadow | killed AFTER promoting                                     |
-| <code dir="auto">dead-shadow-wal</code> | database + an EMPTY, stale shadow            | killed mid-build (the 20-minute timeout does exactly this) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>residue kind</th><th>on disk</th><th>how it got there</th></tr></thead><tbody><tr><td><code dir="auto">orphan-shadow</code></td><td>shadow present, <strong>no</strong> database</td><td>killed BEFORE promoting the shadow</td></tr><tr><td><code dir="auto">orphan-wal</code></td><td>database + pending <code dir="auto">lbug.wal</code>, <strong>no</strong> shadow</td><td>killed AFTER promoting</td></tr><tr><td><code dir="auto">dead-shadow-wal</code></td><td>database + an EMPTY, stale shadow</td><td>killed mid-build (the 20-minute timeout does exactly this)</td></tr></tbody></table>
 <p><strong>Recovery is now AUTOMATIC — do not hand-delete anything.</strong> <code dir="auto">cleanCrashResidue()</code>
 runs as a preflight on every <code dir="auto">gitnexus-reindex</code> tick <em>and</em> fires immediately after
 a timeout kill, so reads stay answerable instead of segfaulting until the next
@@ -243,10 +338,27 @@ EMPTY stderr as a <em>finding</em> (“abrupt or native crash”) rather than om
 section — an absent explanation and an absent section used to look identical.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="5-performance-you-should-expect">5. Performance you should expect</h2><a class="sl-anchor-link" href="#5-performance-you-should-expect"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “5. Performance you should expect”</span></a></div>
 <p>Measured at HEAD, two runs:</p>
-<p>|                  | TypeScript        | rust-analyzer       |
-| ---------------- | ----------------- | ------------------- |
-| cold start       | 3,917ms / 3,418ms | 10,760ms / 11,322ms |
-| steady-state RSS | 66.7 MB           | 2,817 MB            |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>TypeScript</th><th>rust-analyzer</th></tr></thead><tbody><tr><td>cold start</td><td>3,917ms / 3,418ms</td><td>10,760ms / 11,322ms</td></tr><tr><td>steady-state RSS</td><td>66.7 MB</td><td>2,817 MB</td></tr></tbody></table>
 <p>The rust cold start exceeds the nominal budget. That is an <strong>accounted, bounded</strong>
 exceedance rather than a regression, and it is deliberately not pinned in both
 directions because it drifts ~562ms run to run (D-046).</p>

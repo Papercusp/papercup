@@ -85,12 +85,37 @@ WI-4419: owner-name tags must use the nameless <code dir="auto">[owner …]</cod
 <code dir="auto">packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts</code>). Until revision 17 it still
 told you to gather instruments for a subsystem that no longer runs. Rubric revision 17
 dropped those criteria and revision 18 ratified it:</p>
-<p>| removed criterion | instrument | why |
-| --- | --- | --- |
-| <code dir="auto">placement-throughput</code> | <code dir="auto">pot-throughput-ticks</code> | <code dir="auto">harness_shared.pot_placements</code> has 0 rows since 2026-07-19 |
-| <code dir="auto">cup-execution-health</code> | <code dir="auto">mug-dispatched-cup-spawns</code> | <code dir="auto">spawned_agents child_role='cup'</code> stopped 2026-08-17 |
-| <code dir="auto">kettle-supervision-health</code> | <code dir="auto">kettle-autoloop-state</code> | the Kettle no longer supervises |
-| <code dir="auto">e2e-loop-closure</code> | <code dir="auto">e2e-traversal-trace</code> | its traversal is placement → cup → kettle → blender; three of four hops are gone |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>removed criterion</th><th>instrument</th><th>why</th></tr></thead><tbody><tr><td><code dir="auto">placement-throughput</code></td><td><code dir="auto">pot-throughput-ticks</code></td><td><code dir="auto">harness_shared.pot_placements</code> has 0 rows since 2026-07-19</td></tr><tr><td><code dir="auto">cup-execution-health</code></td><td><code dir="auto">mug-dispatched-cup-spawns</code></td><td><code dir="auto">spawned_agents child_role='cup'</code> stopped 2026-08-17</td></tr><tr><td><code dir="auto">kettle-supervision-health</code></td><td><code dir="auto">kettle-autoloop-state</code></td><td>the Kettle no longer supervises</td></tr><tr><td><code dir="auto">e2e-loop-closure</code></td><td><code dir="auto">e2e-traversal-trace</code></td><td>its traversal is placement → cup → kettle → blender; three of four hops are gone</td></tr></tbody></table>
 <p><strong>Why removal and not an <code dir="auto">unknown</code> rating.</strong> The roll-up below makes <code dir="auto">unknown</code> a NO-GO,
 so a criterion that can never be rated above <code dir="auto">unknown</code> does not merely add noise — it pins
 the gate at NO-GO forever. That is the standard already set one level up in

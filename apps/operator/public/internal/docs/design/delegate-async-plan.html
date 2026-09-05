@@ -228,12 +228,32 @@ ack and assert the agent speaks the result then.</p>
 </li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="risk-register">Risk register</h2><a class="sl-anchor-link" href="#risk-register"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Risk register”</span></a></div>
-<p>| Risk | Mitigation |
-|---|---|
-| In-process Map of active EL sessions doesn’t survive server restart | Sessions are per-tab anyway; restart loses the conv ref. Result still hits the panel; agent just won’t speak about it. Acceptable. |
-| Contextual updates land mid-sentence and confuse the agent | EL queues them until end-of-turn. Tested, documented in their SDK. |
-| Persona drift — agent could ad-lib the summary before the contextual update arrives | Suite scenario for it; el-tools-check + drift gate stays strict. |
-| Cost: extra Haiku call per delegate for the one-sentence summary | &#x3C;$0.001 per call. Probably noise. Could fall back to a regex-extracted first-line if budget gets touchy. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>In-process Map of active EL sessions doesn’t survive server restart</td><td>Sessions are per-tab anyway; restart loses the conv ref. Result still hits the panel; agent just won’t speak about it. Acceptable.</td></tr><tr><td>Contextual updates land mid-sentence and confuse the agent</td><td>EL queues them until end-of-turn. Tested, documented in their SDK.</td></tr><tr><td>Persona drift — agent could ad-lib the summary before the contextual update arrives</td><td>Suite scenario for it; el-tools-check + drift gate stays strict.</td></tr><tr><td>Cost: extra Haiku call per delegate for the one-sentence summary</td><td>&#x3C;$0.001 per call. Probably noise. Could fall back to a regex-extracted first-line if budget gets touchy.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-were-not-doing-in-this-refactor">What we’re NOT doing in this refactor</h2><a class="sl-anchor-link" href="#what-were-not-doing-in-this-refactor"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What we’re NOT doing in this refactor”</span></a></div>
 <ul>
 <li><strong>Multi-tab sessionId routing.</strong> If the user has two tabs both

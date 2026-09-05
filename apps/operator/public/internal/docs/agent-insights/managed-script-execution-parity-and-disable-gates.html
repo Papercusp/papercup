@@ -73,23 +73,99 @@
 </script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">Managed script execution parity and native disable gates</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <div class="sl-heading-wrapper level-h1"><h1 id="scope-and-target">Scope and target</h1><a class="sl-anchor-link" href="#scope-and-target"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Scope and target”</span></a></div>
 <p>This closes P-025 under D-013/D-017 and extends <a href="/internal/docs/agent-insights/managed-command-execution-parity-and-break-glass">the command parity matrix</a> to model-facing script engines. <code dir="auto">code:run</code> is the primary managed engine; Codex <code dir="auto">functions.exec</code> is only a direct-call compatibility door. Native script engines remain enabled until P-017 proves the gates below, steering and telemetry ship, and the local break glass is tested. The 2026-08-22 inventory covers Claude Code 2.1.240, Codex CLI 0.149.0, OMP 17.3.5, and current Papercusp staging.</p>
 <div class="sl-heading-wrapper level-h1"><h1 id="native-inventory-and-disable-controls">Native inventory and disable controls</h1><a class="sl-anchor-link" href="#native-inventory-and-disable-controls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Native inventory and disable controls”</span></a></div>
-<p>| Client | Surface and evidence | Managed disable |
-|---|---|---|
-| Claude Code 2.1.240 | No general model-facing script runtime beyond Bash/PowerShell. Exact searches of the official exhaustive tools reference found no CodeExecution, <code dir="auto">functions.exec</code>, or Python isolate; the same method found Bash as a positive control. Hooks are host automation, not a model-facing script engine. | No additional D-017 switch on this build. Keep the P-024 Bash-family deny and repeat this positive-control census on every supported-version change. |
-| Codex CLI 0.149.0 | <code dir="auto">functions.exec</code> is a client-supplied sealed V8 isolate. Crossed live probes showed it executes with <code dir="auto">code_mode_host=true</code> even when <code dir="auto">code_mode=false</code> and <code dir="auto">shell_tool=false</code>; with <code dir="auto">code_mode_host=false</code> the visible call fails closed with “code-mode host is disabled.” | Set <code dir="auto">features.code_mode_host=false</code> on every managed launch/resume. <code dir="auto">features.code_mode</code> is not the availability gate. Disable <code dir="auto">shell_tool</code> separately under D-016. The visible denial must teach <code dir="auto">code:run</code>. |
-| OMP 17.3.5 | Native <code dir="auto">eval</code> supplies persistent Python, JS/Bun, Ruby, and Julia kernels (Python/JS default on, Ruby/Julia opt-in). The built-in registry contains <code dir="auto">eval</code>, constructs <code dir="auto">EvalTool</code>, and has no recipe/runner tool; the known eval hit is the positive control for that bounded absence census. Papercusp <code dir="auto">recipes:*</code> are server MCP surfaces. | Omit <code dir="auto">eval</code> from the explicit <code dir="auto">--tools</code> allowlist. <code dir="auto">--no-tools</code> is the total native cut. Do not disable only <code dir="auto">eval.js</code>: Python remains on by default. All-backends-off is defense in depth, not the primary launch contract. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Client</th><th>Surface and evidence</th><th>Managed disable</th></tr></thead><tbody><tr><td>Claude Code 2.1.240</td><td>No general model-facing script runtime beyond Bash/PowerShell. Exact searches of the official exhaustive tools reference found no CodeExecution, <code dir="auto">functions.exec</code>, or Python isolate; the same method found Bash as a positive control. Hooks are host automation, not a model-facing script engine.</td><td>No additional D-017 switch on this build. Keep the P-024 Bash-family deny and repeat this positive-control census on every supported-version change.</td></tr><tr><td>Codex CLI 0.149.0</td><td><code dir="auto">functions.exec</code> is a client-supplied sealed V8 isolate. Crossed live probes showed it executes with <code dir="auto">code_mode_host=true</code> even when <code dir="auto">code_mode=false</code> and <code dir="auto">shell_tool=false</code>; with <code dir="auto">code_mode_host=false</code> the visible call fails closed with “code-mode host is disabled.”</td><td>Set <code dir="auto">features.code_mode_host=false</code> on every managed launch/resume. <code dir="auto">features.code_mode</code> is not the availability gate. Disable <code dir="auto">shell_tool</code> separately under D-016. The visible denial must teach <code dir="auto">code:run</code>.</td></tr><tr><td>OMP 17.3.5</td><td>Native <code dir="auto">eval</code> supplies persistent Python, JS/Bun, Ruby, and Julia kernels (Python/JS default on, Ruby/Julia opt-in). The built-in registry contains <code dir="auto">eval</code>, constructs <code dir="auto">EvalTool</code>, and has no recipe/runner tool; the known eval hit is the positive control for that bounded absence census. Papercusp <code dir="auto">recipes:*</code> are server MCP surfaces.</td><td>Omit <code dir="auto">eval</code> from the explicit <code dir="auto">--tools</code> allowlist. <code dir="auto">--no-tools</code> is the total native cut. Do not disable only <code dir="auto">eval.js</code>: Python remains on by default. All-backends-off is defense in depth, not the primary launch contract.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h1"><h1 id="script-parity-matrix">Script parity matrix</h1><a class="sl-anchor-link" href="#script-parity-matrix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Script parity matrix”</span></a></div>
-<p>| Property | Codex <code dir="auto">functions.exec</code> | OMP <code dir="auto">eval</code> | Papercusp <code dir="auto">code:run</code> and P-017 gate |
-|---|---|---|---|
-| Runtime/state | Fresh sealed V8 evaluation; <code dir="auto">process</code> is undefined. <code dir="auto">store</code>/<code dir="auto">load</code> carries serializable values across calls in one session. Unawaited promises are discarded. | Persistent per-language kernels with reset; top-level await in Python/JS and Bun globals in JS. | Foreground JS/TS in a worker-thread <code dir="auto">node:vm</code>; only the authored result returns. Durable reuse belongs to <code dir="auto">recipes:*</code>, not hidden VM state. Prove isolation, explicit inputs/revision, replay, carry/restart, and no host module/env/filesystem/network escape. |
-| Nested authorization | Calls the client-provided nested tool set; native calls and bytes can remain outside Papercusp. | <code dir="auto">tool.&#x3C;name></code> resolves the live session registry and executes the tool with the cell AbortSignal; it can reach native or MCP tools under OMP policy. | Role-scoped facade, recursive <code dir="auto">code:run</code> excluded, every call re-enters the projected dispatcher. Prove current schema/effect/role/capability authorization, stale-binding denial, and no authority broadening; P-005 owns the detailed contract. |
-| Parallel fan-out | Ordinary promises and <code dir="auto">Promise.all</code>/allSettled. | <code dir="auto">parallel</code> and staged <code dir="auto">pipeline</code> use a pool capped by <code dir="auto">task.maxConcurrency</code>; all workers settle before the lowest-index error propagates. | Promise fan-out works; unknown refs fail at the call site and child semantic/bulk failures are recorded. Prove bounded concurrency, stable order, all-settled isolation, mixed reads/writes, telemetry, and no orphans. |
-| Cancellation/timeout | Outer cancellation is client-owned; no documented per-child signal API. Dropping an unawaited promise is not rollback. | One AbortSignal reaches kernel and bridged tools. JS force-kills synchronous loops; all backends classify abort vs timeout. Critical isolated-agent cleanup defers kernel unwind without withholding cancel from delegated work. | Parent cancel and deadline abort nested dispatches, then terminate the worker; write outcomes remain executed/rejected/uncertain. Test cancel before/during dispatch, sync-loop kill, no survivor, timeout classification, and truthful uncertain writes. |
-| Multimodal | <code dir="auto">text</code>, <code dir="auto">image</code>, <code dir="auto">audio</code>, and <code dir="auto">generatedImage</code> emit blocks. | <code dir="auto">display</code> emits JSON, markdown/status, and images; no native audio emitter was found. OutputSink bounds/spills stdout. | Explicit final <code dir="auto">{summary, media}</code> emits validated image/audio; intermediate media never leaks. Test MIME/base64, multiple-block order, malformed media, bounds/spills, and summary preservation. |
-| PTY/session | Can call native <code dir="auto">exec_command</code>/<code dir="auto">write_stdin</code> while enabled, or projected capability tools. The isolate owns no PTY. | The generic bridge can invoke native Bash PTY/async or MCP capabilities; ownership remains with the called tool. | Full durable server PTY create/write/resize/read/close is a P-011 prerequisite. Test lifecycle, carry/restart reattach, cleanup, permission denial, cancel, and zero native fallback. |
-| Background hand-off | A nested command may yield a native session id, but the isolate has no durable job lifecycle and discards unawaited promises. | <code dir="auto">agent(..., handle=true)</code> still awaits completion, then returns an <code dir="auto">agent://</code> reference. “Background via local://” is cooperative file hand-off, not a detached eval job. Async Bash can return its own handle, but eval has no scheduler/wake contract. | <code dir="auto">code:run</code> has no background mode. Blocking gate: durable job id; persisted script/recipe revision, authority and inputs; task-manager ownership; completion event; exactly-once managed-turn wake; carry/operator-restart reattach; kill/expiry; replay-safe terminal truth. |
-| Errors/retries | Authored try/catch/retry; no automatic transaction or retry guarantee. | Bridge throws and structured <code dir="auto">hasError</code>; parallel settles the wave then throws the lowest-index failure; kernel reset is explicit. | Distinguishes thrown, semantic, bulk-partial, rejected-write, and uncertain-write outcomes. Test deterministic attribution, typed teaching, idempotency-gated retry, and no duplicate mutation after lost/late result. |
-| Output bounds | Client-owned caps; values/native bytes retained inside the isolate bypass Papercusp’s result door. | Client OutputSink tracks bytes/lines and artifact spills; still client-owned. | Only authored summary plus explicit media re-enters context; intermediate bytes are measured and result-door references handle spill. Test aggregate accounting, stable/re-authorizable references, selective expansion, and honest native-byte exclusion. P-002 measures the budget. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Property</th><th>Codex <code dir="auto">functions.exec</code></th><th>OMP <code dir="auto">eval</code></th><th>Papercusp <code dir="auto">code:run</code> and P-017 gate</th></tr></thead><tbody><tr><td>Runtime/state</td><td>Fresh sealed V8 evaluation; <code dir="auto">process</code> is undefined. <code dir="auto">store</code>/<code dir="auto">load</code> carries serializable values across calls in one session. Unawaited promises are discarded.</td><td>Persistent per-language kernels with reset; top-level await in Python/JS and Bun globals in JS.</td><td>Foreground JS/TS in a worker-thread <code dir="auto">node:vm</code>; only the authored result returns. Durable reuse belongs to <code dir="auto">recipes:*</code>, not hidden VM state. Prove isolation, explicit inputs/revision, replay, carry/restart, and no host module/env/filesystem/network escape.</td></tr><tr><td>Nested authorization</td><td>Calls the client-provided nested tool set; native calls and bytes can remain outside Papercusp.</td><td><code dir="auto">tool.&#x3C;name></code> resolves the live session registry and executes the tool with the cell AbortSignal; it can reach native or MCP tools under OMP policy.</td><td>Role-scoped facade, recursive <code dir="auto">code:run</code> excluded, every call re-enters the projected dispatcher. Prove current schema/effect/role/capability authorization, stale-binding denial, and no authority broadening; P-005 owns the detailed contract.</td></tr><tr><td>Parallel fan-out</td><td>Ordinary promises and <code dir="auto">Promise.all</code>/allSettled.</td><td><code dir="auto">parallel</code> and staged <code dir="auto">pipeline</code> use a pool capped by <code dir="auto">task.maxConcurrency</code>; all workers settle before the lowest-index error propagates.</td><td>Promise fan-out works; unknown refs fail at the call site and child semantic/bulk failures are recorded. Prove bounded concurrency, stable order, all-settled isolation, mixed reads/writes, telemetry, and no orphans.</td></tr><tr><td>Cancellation/timeout</td><td>Outer cancellation is client-owned; no documented per-child signal API. Dropping an unawaited promise is not rollback.</td><td>One AbortSignal reaches kernel and bridged tools. JS force-kills synchronous loops; all backends classify abort vs timeout. Critical isolated-agent cleanup defers kernel unwind without withholding cancel from delegated work.</td><td>Parent cancel and deadline abort nested dispatches, then terminate the worker; write outcomes remain executed/rejected/uncertain. Test cancel before/during dispatch, sync-loop kill, no survivor, timeout classification, and truthful uncertain writes.</td></tr><tr><td>Multimodal</td><td><code dir="auto">text</code>, <code dir="auto">image</code>, <code dir="auto">audio</code>, and <code dir="auto">generatedImage</code> emit blocks.</td><td><code dir="auto">display</code> emits JSON, markdown/status, and images; no native audio emitter was found. OutputSink bounds/spills stdout.</td><td>Explicit final <code dir="auto">{summary, media}</code> emits validated image/audio; intermediate media never leaks. Test MIME/base64, multiple-block order, malformed media, bounds/spills, and summary preservation.</td></tr><tr><td>PTY/session</td><td>Can call native <code dir="auto">exec_command</code>/<code dir="auto">write_stdin</code> while enabled, or projected capability tools. The isolate owns no PTY.</td><td>The generic bridge can invoke native Bash PTY/async or MCP capabilities; ownership remains with the called tool.</td><td>Full durable server PTY create/write/resize/read/close is a P-011 prerequisite. Test lifecycle, carry/restart reattach, cleanup, permission denial, cancel, and zero native fallback.</td></tr><tr><td>Background hand-off</td><td>A nested command may yield a native session id, but the isolate has no durable job lifecycle and discards unawaited promises.</td><td><code dir="auto">agent(..., handle=true)</code> still awaits completion, then returns an <code dir="auto">agent://</code> reference. “Background via local://” is cooperative file hand-off, not a detached eval job. Async Bash can return its own handle, but eval has no scheduler/wake contract.</td><td><code dir="auto">code:run</code> has no background mode. Blocking gate: durable job id; persisted script/recipe revision, authority and inputs; task-manager ownership; completion event; exactly-once managed-turn wake; carry/operator-restart reattach; kill/expiry; replay-safe terminal truth.</td></tr><tr><td>Errors/retries</td><td>Authored try/catch/retry; no automatic transaction or retry guarantee.</td><td>Bridge throws and structured <code dir="auto">hasError</code>; parallel settles the wave then throws the lowest-index failure; kernel reset is explicit.</td><td>Distinguishes thrown, semantic, bulk-partial, rejected-write, and uncertain-write outcomes. Test deterministic attribution, typed teaching, idempotency-gated retry, and no duplicate mutation after lost/late result.</td></tr><tr><td>Output bounds</td><td>Client-owned caps; values/native bytes retained inside the isolate bypass Papercusp’s result door.</td><td>Client OutputSink tracks bytes/lines and artifact spills; still client-owned.</td><td>Only authored summary plus explicit media re-enters context; intermediate bytes are measured and result-door references handle spill. Test aggregate accounting, stable/re-authorizable references, selective expansion, and honest native-byte exclusion. P-002 measures the budget.</td></tr></tbody></table>
 <p>Claude has no separate column because this build has no distinct native script engine; command-backed script behavior is P-024/D-016.</p>
 <div class="sl-heading-wrapper level-h1"><h1 id="p-017-parity-test-checklist">P-017 parity-test checklist</h1><a class="sl-anchor-link" href="#p-017-parity-test-checklist"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “P-017 parity-test checklist”</span></a></div>
 <p>D-017 may disable native script execution only after one automated, client-neutral suite proves:</p>

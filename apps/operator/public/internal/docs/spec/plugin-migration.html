@@ -81,11 +81,32 @@ range via the <code dir="auto">papercusp</code> field in their manifest:</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="bump-rules">Bump rules</h2><a class="sl-anchor-link" href="#bump-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Bump rules”</span></a></div>
 <p>The runtime version follows semver, with one twist for the leading-zero
 caret semantics every plugin uses today (<code dir="auto">^0.1.0</code> → <code dir="auto">>=0.1.0 &#x3C;0.2.0</code>).</p>
-<p>| Bump  | When                                                               | Plugin author response                  |
-|-------|--------------------------------------------------------------------|-----------------------------------------|
-| patch | Bug fixes, internals invisible to plugins.                         | None.                                   |
-| minor | Adds optional surface (new lifecycle hook, service, ctx field).    | Optional — adopt new features at will.  |
-| major | Removes / renames existing surface, or changes existing semantics. | <strong>Required</strong>: see the migration steps below. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Bump</th><th>When</th><th>Plugin author response</th></tr></thead><tbody><tr><td>patch</td><td>Bug fixes, internals invisible to plugins.</td><td>None.</td></tr><tr><td>minor</td><td>Adds optional surface (new lifecycle hook, service, ctx field).</td><td>Optional — adopt new features at will.</td></tr><tr><td>major</td><td>Removes / renames existing surface, or changes existing semantics.</td><td><strong>Required</strong>: see the migration steps below.</td></tr></tbody></table>
 <p>A breaking change is anything that would cause a plugin written against the
 old runtime to fail in a way it couldn’t have anticipated:</p>
 <ul>

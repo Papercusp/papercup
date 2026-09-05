@@ -89,13 +89,42 @@ header-less 429</strong> (<code dir="auto">{"type":"rate_limit_error","message":
 fixers keep failing (this exact confusion recurred 2026-06-30). The reliable discriminator is
 <strong>behavioral, NOT the provenance headers</strong> — both can carry <code dir="auto">server=cloudflare</code>/<code dir="auto">cf-ray</code> (Anthropic sits
 behind Cloudflare) and both can carry a <code dir="auto">request-id</code>, so the tags alone do not decide it:</p>
-<p>| | <strong>Framing</strong> (missing CC block — THIS doc) | <strong>Cloudflare per-IP edge throttle</strong> (<a href="/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity">Fault #6</a>) |
-| --- | --- | --- |
-| Failure rate | <strong>deterministic, ~100%</strong> of that caller’s requests, uniform over time | <strong>bursty</strong>, low overall (e.g. 5/491 ≈ 1%), clusters under concurrency, escalates a consecutive-count circuit |
-| Load / egress-IP dependent? | <strong>No</strong> — fires at 1 request, 0 load, on any IP | <strong>Yes</strong> — per-IP; rotating to a cool IP or dropping opus concurrency helps |
-| Who hits it | raw-SDK / litellm / <strong>un-framed</strong> in-process callers | <strong>any</strong> caller incl. the framed <code dir="auto">claude</code>-CLI / psu cups, under concentrated load |
-| Decisive test | one <strong>framed</strong> vs one <strong>un-framed</strong> request → framed 200s, un-framed 429s | the SAME framed request 200s when slow / 429s under burst; failure rate tracks per-IP volume |
-| Fix | frame the first <code dir="auto">system</code> block (below) | egress pool / rotate-cool the IP / more distinct egress IPs / less opus concurrency (<a href="/internal/docs/agent-insights/inference-gateway-per-account-egress-ips">per-account egress IPs</a>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th><strong>Framing</strong> (missing CC block — THIS doc)</th><th><strong>Cloudflare per-IP edge throttle</strong> (<a href="/internal/docs/agent-insights/rate-limit-is-usually-account-routing-not-capacity">Fault #6</a>)</th></tr></thead><tbody><tr><td>Failure rate</td><td><strong>deterministic, ~100%</strong> of that caller’s requests, uniform over time</td><td><strong>bursty</strong>, low overall (e.g. 5/491 ≈ 1%), clusters under concurrency, escalates a consecutive-count circuit</td></tr><tr><td>Load / egress-IP dependent?</td><td><strong>No</strong> — fires at 1 request, 0 load, on any IP</td><td><strong>Yes</strong> — per-IP; rotating to a cool IP or dropping opus concurrency helps</td></tr><tr><td>Who hits it</td><td>raw-SDK / litellm / <strong>un-framed</strong> in-process callers</td><td><strong>any</strong> caller incl. the framed <code dir="auto">claude</code>-CLI / psu cups, under concentrated load</td></tr><tr><td>Decisive test</td><td>one <strong>framed</strong> vs one <strong>un-framed</strong> request → framed 200s, un-framed 429s</td><td>the SAME framed request 200s when slow / 429s under burst; failure rate tracks per-IP volume</td></tr><tr><td>Fix</td><td>frame the first <code dir="auto">system</code> block (below)</td><td>egress pool / rotate-cool the IP / more distinct egress IPs / less opus concurrency (<a href="/internal/docs/agent-insights/inference-gateway-per-account-egress-ips">per-account egress IPs</a>)</td></tr></tbody></table>
 <p><strong>Rule of thumb: ~100% and instant → framing. A few % and bursty under load → the edge/egress throttle.</strong>
 A one-account whole-account pause (<code dir="auto">BARE-429 CIRCUIT … pausing</code>) on an account with a SINGLE egress IP and
 no <code dir="auto">egressPool</code>, at util≪1, is the edge/egress mode — not framing.</p>
@@ -127,13 +156,48 @@ concatenates (or omits) it hits the strict limiter. The escape isn’t <em>only<
 “switch to the CLI transport” — it’s “frame the first system block correctly,”
 which any transport can do.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-proof-controlled-probes-through-the-gateway-one-quiet-account">The proof (controlled probes through the gateway, one quiet account)</h2><a class="sl-anchor-link" href="#the-proof-controlled-probes-through-the-gateway-one-quiet-account"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The proof (controlled probes through the gateway, one quiet account)”</span></a></div>
-<p>| Probe | system | model | result |
-| --- | --- | --- | --- |
-| A | exactly the CC identity | haiku | ✅ 200 |
-| B | exactly the CC identity | <strong>opus</strong> | ✅ 200 (opus is fine on Max) |
-| C | <code dir="auto">CC + "\n\n" + instructions</code> (one string) | opus | ❌ <strong>429</strong> body <code dir="auto">"Error"</code> |
-| D | array <code dir="auto">[{CC}, {instructions}]</code> | opus | ✅ 200 |
-| E | exactly the CC identity + <strong>large</strong> input | opus | ✅ 200, utilization <strong>0.0</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Probe</th><th>system</th><th>model</th><th>result</th></tr></thead><tbody><tr><td>A</td><td>exactly the CC identity</td><td>haiku</td><td>✅ 200</td></tr><tr><td>B</td><td>exactly the CC identity</td><td><strong>opus</strong></td><td>✅ 200 (opus is fine on Max)</td></tr><tr><td>C</td><td><code dir="auto">CC + "\n\n" + instructions</code> (one string)</td><td>opus</td><td>❌ <strong>429</strong> body <code dir="auto">"Error"</code></td></tr><tr><td>D</td><td>array <code dir="auto">[{CC}, {instructions}]</code></td><td>opus</td><td>✅ 200</td></tr><tr><td>E</td><td>exactly the CC identity + <strong>large</strong> input</td><td>opus</td><td>✅ 200, utilization <strong>0.0</strong></td></tr></tbody></table>
 <p>So: not the model (B), not request size (E), not budget (5h utilization <code dir="auto">0.0</code>
 throughout) — only the <strong>framing</strong> (C vs D).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-tell--distinguish-a-framing-reject-from-a-real-rate-limit">The tell — distinguish a framing-reject from a real rate limit</h2><a class="sl-anchor-link" href="#the-tell--distinguish-a-framing-reject-from-a-real-rate-limit"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The tell — distinguish a framing-reject from a real rate limit”</span></a></div>

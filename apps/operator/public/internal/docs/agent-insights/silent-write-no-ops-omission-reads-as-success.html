@@ -78,11 +78,32 @@ defensively:</p>
 even a test pinning it — <em>“a hold-engine miss (null) omits claimHold rather than reporting a false
 hold.”</em></p>
 <p>It is still wrong, because the author was choosing between two options when there are three:</p>
-<p>| option | what the caller sees | verdict |
-|---|---|---|
-| report the value anyway | <code dir="auto">claimHold: true</code> when nothing was written | a lie — correctly rejected |
-| <strong>omit the field</strong> | <code dir="auto">ok:true</code>, no <code dir="auto">claimHold</code> | <strong>indistinguishable from success</strong> |
-| <strong>name the failure</strong> | <code dir="auto">ok:true</code> + <code dir="auto">claimHoldFailed: "…did NOT persist…"</code> | what you want |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>option</th><th>what the caller sees</th><th>verdict</th></tr></thead><tbody><tr><td>report the value anyway</td><td><code dir="auto">claimHold: true</code> when nothing was written</td><td>a lie — correctly rejected</td></tr><tr><td><strong>omit the field</strong></td><td><code dir="auto">ok:true</code>, no <code dir="auto">claimHold</code></td><td><strong>indistinguishable from success</strong></td></tr><tr><td><strong>name the failure</strong></td><td><code dir="auto">ok:true</code> + <code dir="auto">claimHoldFailed: "…did NOT persist…"</code></td><td>what you want</td></tr></tbody></table>
 <p>The reply still says <code dir="auto">ok:true</code> — it describes a <em>different</em> operation that genuinely succeeded (the
 release). A missing field next to <code dir="auto">ok:true</code> reads as “fine, nothing to report”. Omission is not a
 neutral third state; it inherits the surrounding success.</p>

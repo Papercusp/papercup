@@ -82,12 +82,37 @@ holding SPICE :5930 and SSH-forward :2222.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-actually-happened">What actually happened</h2><a class="sl-anchor-link" href="#what-actually-happened"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What actually happened”</span></a></div>
 <p>Two launchers exist in <code dir="auto">~/macos-vm/OSX-KVM/</code> and they are NOT the same:</p>
-<p>| | <code dir="auto">boot-sonoma.sh</code> (old service ExecStart) | <code dir="auto">boot-sonoma-durable.sh</code> |
-|---|---|---|
-| RAM | 16 GB | 32 GB |
-| Installer media | <strong>attaches <code dir="auto">BaseSystem.img</code></strong> (since 2026-06-09 a macOS <em>Tahoe</em> installer) | none |
-| Process model | foreground (<code dir="auto">Type=simple</code>) | <code dir="auto">setsid nohup</code> fork + <code dir="auto">qemu.pid</code> (<code dir="auto">Type=forking</code>) |
-| Control socket | SPICE only | <strong>QMP at <code dir="auto">./qmp.sock</code></strong> + <code dir="auto">logs/qemu-current.log</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th><code dir="auto">boot-sonoma.sh</code> (old service ExecStart)</th><th><code dir="auto">boot-sonoma-durable.sh</code></th></tr></thead><tbody><tr><td>RAM</td><td>16 GB</td><td>32 GB</td></tr><tr><td>Installer media</td><td><strong>attaches <code dir="auto">BaseSystem.img</code></strong> (since 2026-06-09 a macOS <em>Tahoe</em> installer)</td><td>none</td></tr><tr><td>Process model</td><td>foreground (<code dir="auto">Type=simple</code>)</td><td><code dir="auto">setsid nohup</code> fork + <code dir="auto">qemu.pid</code> (<code dir="auto">Type=forking</code>)</td></tr><tr><td>Control socket</td><td>SPICE only</td><td><strong>QMP at <code dir="auto">./qmp.sock</code></strong> + <code dir="auto">logs/qemu-current.log</code></td></tr></tbody></table>
 <p>The live VM had been started by hand via the <strong>durable</strong> script; the systemd
 unit kept trying to start the <strong>old</strong> script against it and could never bind
 SPICE. Meanwhile the durable guest had rebooted into the <strong>OpenCore boot

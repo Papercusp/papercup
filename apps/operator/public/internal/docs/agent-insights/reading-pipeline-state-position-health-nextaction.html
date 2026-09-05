@@ -100,22 +100,63 @@ a freeze is a real data-loss exposure and makes fresh clones/other machines stal
 answers a different question from “can this box judge and deploy its local staging commit?”</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="3-health--whether-the-stage-is-moving">3. HEALTH — whether the stage is moving</h3><a class="sl-anchor-link" href="#3-health--whether-the-stage-is-moving"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3. HEALTH — whether the stage is moving”</span></a></div>
 <p><code dir="auto">stages[].health</code>: <code dir="auto">advancing | stalled | disabled | broken | unknown</code>.</p>
-<p>| position | health/plane interpretation |
-|---|---|
-| <code dir="auto">origin-publish ✗</code> on a commit-only member | publication/durability incident; delivery continues locally |
-| <code dir="auto">staging ✗</code> on a normal pushing member | delivery has not reached the required staging publication |
-| <code dir="auto">deployed ✓</code>, serving stalled | bytes landed, but the process still executes older code |
-| <code dir="auto">main ✗</code>, gate not firing | delivery is wedged at the gate |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>position</th><th>health/plane interpretation</th></tr></thead><tbody><tr><td><code dir="auto">origin-publish ✗</code> on a commit-only member</td><td>publication/durability incident; delivery continues locally</td></tr><tr><td><code dir="auto">staging ✗</code> on a normal pushing member</td><td>delivery has not reached the required staging publication</td></tr><tr><td><code dir="auto">deployed ✓</code>, serving stalled</td><td>bytes landed, but the process still executes older code</td></tr><tr><td><code dir="auto">main ✗</code>, gate not firing</td><td>delivery is wedged at the gate</td></tr></tbody></table>
 <p><code dir="auto">gitSync.status='synced'</code> is reachable with nothing pushed. Read <code dir="auto">gitSync.pushMode</code>,
 <code dir="auto">gitSync.pushedRepos</code>, and (for bridged members) <code dir="auto">gitSync.ownHeadPublish</code>.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="4-next-action--the-delivery-lever">4. NEXT ACTION — the delivery lever</h3><a class="sl-anchor-link" href="#4-next-action--the-delivery-lever"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “4. NEXT ACTION — the delivery lever”</span></a></div>
 <p><code dir="auto">blockedOn: StageName | null</code> + <code dir="auto">nextAction: string | null</code> are derived from pending
 <code dir="auto">plane:'delivery'</code> stages only:</p>
-<p>| blockedOn | nextAction | meaning |
-|---|---|---|
-| null | null | delivery is live; a publish warning may still exist |
-| set | null | delivery is waiting on a healthy self-advancing leg |
-| set | set | this is the single delivery action |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>blockedOn</th><th>nextAction</th><th>meaning</th></tr></thead><tbody><tr><td>null</td><td>null</td><td>delivery is live; a publish warning may still exist</td></tr><tr><td>set</td><td>null</td><td>delivery is waiting on a healthy self-advancing leg</td></tr><tr><td>set</td><td>set</td><td>this is the single delivery action</td></tr></tbody></table>
 <p>A publish side leg may have its own <code dir="auto">lever</code>; that remedy is intentionally not promoted into
 <code dir="auto">nextAction</code>. Read it from the <code dir="auto">pushed</code> stage when you own the durability incident.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="candidate-identity-comes-before-gate-interpretation">Candidate identity comes before gate interpretation</h2><a class="sl-anchor-link" href="#candidate-identity-comes-before-gate-interpretation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Candidate identity comes before gate interpretation”</span></a></div>
@@ -132,13 +173,36 @@ the next sweep time. A multi-file intermediate can become a real candidate, so f
 set before forcing <code dir="auto">git-sync:run</code>; never read a red landing inside that window without checking
 candidate containment.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="practical-routing">Practical routing</h2><a class="sl-anchor-link" href="#practical-routing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Practical routing”</span></a></div>
-<p>| question | read |
-|---|---|
-| is my change live on this box? | <code dir="auto">blockedOn</code> + <code dir="auto">nextAction</code>, then <code dir="auto">serving</code> |
-| is off-box publication healthy? | <code dir="auto">stages[name=pushed]</code> + <code dir="auto">gitSync.ownHeadPublish</code> |
-| did a normal pusher reach origin? | <code dir="auto">gitSync.pushedRepos</code>, not <code dir="auto">gitSync.status</code> |
-| is the gate judging my code? | <code dir="auto">changeInCandidate.judgingContainsPath</code> |
-| will git-sync sweep a partial refactor? | <code dir="auto">sweepExposure</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>question</th><th>read</th></tr></thead><tbody><tr><td>is my change live on this box?</td><td><code dir="auto">blockedOn</code> + <code dir="auto">nextAction</code>, then <code dir="auto">serving</code></td></tr><tr><td>is off-box publication healthy?</td><td><code dir="auto">stages[name=pushed]</code> + <code dir="auto">gitSync.ownHeadPublish</code></td></tr><tr><td>did a normal pusher reach origin?</td><td><code dir="auto">gitSync.pushedRepos</code>, not <code dir="auto">gitSync.status</code></td></tr><tr><td>is the gate judging my code?</td><td><code dir="auto">changeInCandidate.judgingContainsPath</code></td></tr><tr><td>will git-sync sweep a partial refactor?</td><td><code dir="auto">sweepExposure</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="anti-patterns">Anti-patterns</h2><a class="sl-anchor-link" href="#anti-patterns"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Anti-patterns”</span></a></div>
 <ul>
 <li>Do not read a publish-plane fault as a delivery outage.</li>

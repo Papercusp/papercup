@@ -97,10 +97,30 @@ pipeline, hooks fire from the <strong>finalizer</strong> — the step list that
 <code dir="auto">planFinalization()</code> builds when a feature pipeline ends in DONE or ESCALATE
 (<code dir="auto">packages/operator-core/lib/dbos/orchestrator-finalize.ts</code>). Two hook names
 are wired:</p>
-<p>| Hook | Fires | Event-specific env | Call site |
-|---|---|---|---|
-| <code dir="auto">on-escalate</code> | Pipeline finalizes with <strong>ESCALATE</strong>, before the <code dir="auto">onEscalate</code> recipe roles run | <code dir="auto">REASON</code>, <code dir="auto">PROJECT_DIR</code>, <code dir="auto">STATE_DIR</code> | <code dir="auto">orchestrator-runner.ts:930</code> |
-| <code dir="auto">afterDone</code> | Pipeline finalizes <strong>DONE</strong> (and the done-gates pass), after the <code dir="auto">onDone</code> recipe roles run | <code dir="auto">TRIGGER=done</code>, <code dir="auto">FEATURE_ID</code>, <code dir="auto">PROJECT_DIR</code>, <code dir="auto">STATE_DIR</code> | <code dir="auto">orchestrator-runner.ts:952</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Hook</th><th>Fires</th><th>Event-specific env</th><th>Call site</th></tr></thead><tbody><tr><td><code dir="auto">on-escalate</code></td><td>Pipeline finalizes with <strong>ESCALATE</strong>, before the <code dir="auto">onEscalate</code> recipe roles run</td><td><code dir="auto">REASON</code>, <code dir="auto">PROJECT_DIR</code>, <code dir="auto">STATE_DIR</code></td><td><code dir="auto">orchestrator-runner.ts:930</code></td></tr><tr><td><code dir="auto">afterDone</code></td><td>Pipeline finalizes <strong>DONE</strong> (and the done-gates pass), after the <code dir="auto">onDone</code> recipe roles run</td><td><code dir="auto">TRIGGER=done</code>, <code dir="auto">FEATURE_ID</code>, <code dir="auto">PROJECT_DIR</code>, <code dir="auto">STATE_DIR</code></td><td><code dir="auto">orchestrator-runner.ts:952</code></td></tr></tbody></table>
 <p>A blocked DONE skips the whole finalization step list, hook included.
 <code dir="auto">planFinalization()</code> blocks completion on <strong>any</strong> of three conditions: an open
 needs-human plan item, a configured smoke gate that ran and failed

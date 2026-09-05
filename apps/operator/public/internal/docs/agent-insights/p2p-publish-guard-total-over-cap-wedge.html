@@ -235,10 +235,30 @@ started from <code dir="auto">dbos/bootstrap.ts</code>, two signals, defaults <c
 egresses to <strong><code dir="auto">staging</code></strong> — <em>the same ingress-vs-egress conflation that made the
 original write-up above wrong.</em> And <code dir="auto">main</code> is fast-forwarded hourly by the
 release pipeline, so <strong>both</strong> signals were structurally pinned healthy:</p>
-<p>| signal | threshold | actual | why it never tripped |
-|---|---|---|---|
-| <code dir="auto">aheadCount</code> | ≥ 50 | <strong>24</strong> | measured against <code dir="auto">main</code>, which the release pipeline keeps fresh |
-| <code dir="auto">originTipAgeMs</code> | > 3h | <strong>~0</strong> | <code dir="auto">main</code>’s tip moved every hour, restarting the clock every sweep |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>signal</th><th>threshold</th><th>actual</th><th>why it never tripped</th></tr></thead><tbody><tr><td><code dir="auto">aheadCount</code></td><td>≥ 50</td><td><strong>24</strong></td><td>measured against <code dir="auto">main</code>, which the release pipeline keeps fresh</td></tr><tr><td><code dir="auto">originTipAgeMs</code></td><td>> 3h</td><td><strong>~0</strong></td><td><code dir="auto">main</code>’s tip moved every hour, restarting the clock every sweep</td></tr></tbody></table>
 <p>A watchdog pointed at a branch kept fresh by an <em>unrelated</em> mechanism cannot
 report on the mechanism it was built to watch. It reported healthy, correctly,
 about the wrong thing — for five days.</p>

@@ -80,16 +80,66 @@
 <li>Phase 1 output safety is separate from runtime unification, and its summary budget is measured rather than preselected.</li>
 </ul>
 <div class="sl-heading-wrapper level-h1"><h1 id="ownership-and-enforcement-map">Ownership and enforcement map</h1><a class="sl-anchor-link" href="#ownership-and-enforcement-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Ownership and enforcement map”</span></a></div>
-<p>| Surface | Implementation owner | Editable here? | Boundary and enforcement reach |
-|---|---|---:|---|
-| Codex <code dir="auto">functions.exec</code> | Codex client | No | A sealed V8 isolate supplied by the client. It evaluates JavaScript outside this repository; <code dir="auto">typeof process</code> is <code dir="auto">undefined</code>. Papercusp cannot patch the isolate or account for bytes that remain entirely inside it. See <a href="/internal/docs/agent-insights/codex-functions-exec-runtime-boundary">Codex functions.exec is a V8 isolate</a>. Under D-013 it is a compatibility door for direct calls, not an internal backend selected by Papercusp. |
-| <code dir="auto">code:run</code> | Papercusp operator + generic tooldef | Yes | Primary server engine. The defineTool is <code dir="auto">packages/operator-core/lib/agent-tools/code/run.ts</code>; orchestration and worker execution live in <code dir="auto">libs/generic/tooldef/src/code-orchestration/orchestrate.ts</code> and <code dir="auto">run-script.ts</code>. |
-| <code dir="auto">recipes:search/get/run</code> | Papercusp operator | Yes | Reuses the existing recipe system: tool surfaces under <code dir="auto">packages/operator-core/lib/agent-tools/recipes/</code>, PG store in <code dir="auto">code-recipes-store.ts</code>, hybrid retrieval in <code dir="auto">code-recipes-search.ts</code>, and capture in <code dir="auto">agent-tools/code/capture-recipe.ts</code>. |
-| Model-facing MCP result door | Papercusp operator | Yes | <code dir="auto">packages/operator-core/lib/result-door.ts</code>, applied from <code dir="auto">endpoint-route/routes/transport/_mcp-handler.ts</code> after projection/delta handling. It is the universal model-facing MCP choke point, not the boundary for machine-consumed inner dispatches. |
-| Scratch spill/reference substrate | Papercusp operator | Yes | The result door writes validated, private scratch files and returns a cursor/URI reference. This is the existing large-output escape hatch to extend rather than creating another artifact store. |
-| Capability execution family | Papercusp operator | Yes | <code dir="auto">capability:bash</code>, <code dir="auto">bash_output</code>, <code dir="auto">bash_kill</code>, <code dir="auto">terminal</code>, and <code dir="auto">exec-sandbox</code> are the server-side execution family D-012 calls the client adapter. The <code dir="auto">host:same</code> premise is declared; there is no second client-side DAG. |
-| Durable task manager | Papercusp operator | Yes | <code dir="auto">packages/operator-core/lib/task-manager/</code> supplies task identity, ledgering, cgroup confinement, reconciliation, resource accounting, and safe control. It is the durability substrate for long-lived capability jobs. |
-| Native Claude/Codex/OMP command and code tools | Each client/runtime | Generally no | Their implementation and disable switches live outside this repository or in client launch configuration. P-024 and P-025 must prove each disable mechanism and parity gate before D-016/D-017 can disable native surfaces for managed agents. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Implementation owner</th><th align="right">Editable here?</th><th>Boundary and enforcement reach</th></tr></thead><tbody><tr><td>Codex <code dir="auto">functions.exec</code></td><td>Codex client</td><td align="right">No</td><td>A sealed V8 isolate supplied by the client. It evaluates JavaScript outside this repository; <code dir="auto">typeof process</code> is <code dir="auto">undefined</code>. Papercusp cannot patch the isolate or account for bytes that remain entirely inside it. See <a href="/internal/docs/agent-insights/codex-functions-exec-runtime-boundary">Codex functions.exec is a V8 isolate</a>. Under D-013 it is a compatibility door for direct calls, not an internal backend selected by Papercusp.</td></tr><tr><td><code dir="auto">code:run</code></td><td>Papercusp operator + generic tooldef</td><td align="right">Yes</td><td>Primary server engine. The defineTool is <code dir="auto">packages/operator-core/lib/agent-tools/code/run.ts</code>; orchestration and worker execution live in <code dir="auto">libs/generic/tooldef/src/code-orchestration/orchestrate.ts</code> and <code dir="auto">run-script.ts</code>.</td></tr><tr><td><code dir="auto">recipes:search/get/run</code></td><td>Papercusp operator</td><td align="right">Yes</td><td>Reuses the existing recipe system: tool surfaces under <code dir="auto">packages/operator-core/lib/agent-tools/recipes/</code>, PG store in <code dir="auto">code-recipes-store.ts</code>, hybrid retrieval in <code dir="auto">code-recipes-search.ts</code>, and capture in <code dir="auto">agent-tools/code/capture-recipe.ts</code>.</td></tr><tr><td>Model-facing MCP result door</td><td>Papercusp operator</td><td align="right">Yes</td><td><code dir="auto">packages/operator-core/lib/result-door.ts</code>, applied from <code dir="auto">endpoint-route/routes/transport/_mcp-handler.ts</code> after projection/delta handling. It is the universal model-facing MCP choke point, not the boundary for machine-consumed inner dispatches.</td></tr><tr><td>Scratch spill/reference substrate</td><td>Papercusp operator</td><td align="right">Yes</td><td>The result door writes validated, private scratch files and returns a cursor/URI reference. This is the existing large-output escape hatch to extend rather than creating another artifact store.</td></tr><tr><td>Capability execution family</td><td>Papercusp operator</td><td align="right">Yes</td><td><code dir="auto">capability:bash</code>, <code dir="auto">bash_output</code>, <code dir="auto">bash_kill</code>, <code dir="auto">terminal</code>, and <code dir="auto">exec-sandbox</code> are the server-side execution family D-012 calls the client adapter. The <code dir="auto">host:same</code> premise is declared; there is no second client-side DAG.</td></tr><tr><td>Durable task manager</td><td>Papercusp operator</td><td align="right">Yes</td><td><code dir="auto">packages/operator-core/lib/task-manager/</code> supplies task identity, ledgering, cgroup confinement, reconciliation, resource accounting, and safe control. It is the durability substrate for long-lived capability jobs.</td></tr><tr><td>Native Claude/Codex/OMP command and code tools</td><td>Each client/runtime</td><td align="right">Generally no</td><td>Their implementation and disable switches live outside this repository or in client launch configuration. P-024 and P-025 must prove each disable mechanism and parity gate before D-016/D-017 can disable native surfaces for managed agents.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h1"><h1 id="the-primary-server-engine">The primary server engine</h1><a class="sl-anchor-link" href="#the-primary-server-engine"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The primary server engine”</span></a></div>
 <p><code dir="auto">code:run</code> accepts a JavaScript/TypeScript body, exposes only role-scoped tools, and returns the script’s own summary. The wrapper deliberately collapses many model/tool/model turns into one server execution:</p>
 <ol>

@@ -85,11 +85,32 @@ demand. Add step 8 to your checklist and it takes ten seconds to find: <strong>g
 <div class="sl-heading-wrapper level-h2"><h2 id="shape-1--a-threshold-that-cannot-separate">Shape 1 — a THRESHOLD that cannot SEPARATE</h2><a class="sl-anchor-link" href="#shape-1--a-threshold-that-cannot-separate"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Shape 1 — a THRESHOLD that cannot SEPARATE”</span></a></div>
 <p>See <a href="/internal/docs/agent-insights/a-score-is-not-a-similarity">a-score-is-not-a-similarity</a> for the
 full chain (EI-10372, EI-10544, EI-10562). Compressed:</p>
-<p>| consumer | the check nobody ran | what it did |
-|---|---|---|
-| <code dir="auto">orient.ts</code> floor 0.05 to ADMIT | ceiling of an RRF score is <code dir="auto">2/61 ≈ 0.033</code> | admitted <strong>nothing</strong> — every agent’s recall fold silently empty |
-| <code dir="auto">write-journal.ts</code> / <code dir="auto">remember.ts</code> 0.9 to SUPPRESS | same ceiling, ~27× below the threshold | suppressed <strong>nothing</strong> — dedup guard was unreachable dead code |
-| <code dir="auto">declare.ts</code> 0.05 to REFUSE | <code dir="auto">0.6·cosine ≥ 0.05</code> ⇒ <code dir="auto">cosine ≥ 0.083</code>, the noise floor | refused <strong>100%</strong> of new datatype declarations |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>consumer</th><th>the check nobody ran</th><th>what it did</th></tr></thead><tbody><tr><td><code dir="auto">orient.ts</code> floor 0.05 to ADMIT</td><td>ceiling of an RRF score is <code dir="auto">2/61 ≈ 0.033</code></td><td>admitted <strong>nothing</strong> — every agent’s recall fold silently empty</td></tr><tr><td><code dir="auto">write-journal.ts</code> / <code dir="auto">remember.ts</code> 0.9 to SUPPRESS</td><td>same ceiling, ~27× below the threshold</td><td>suppressed <strong>nothing</strong> — dedup guard was unreachable dead code</td></tr><tr><td><code dir="auto">declare.ts</code> 0.05 to REFUSE</td><td><code dir="auto">0.6·cosine ≥ 0.05</code> ⇒ <code dir="auto">cosine ≥ 0.083</code>, the noise floor</td><td>refused <strong>100%</strong> of new datatype declarations</td></tr></tbody></table>
 <p>The last one is the sharp one, because the quantity <em>was</em> a genuine metric — a real cosine on 0..1.
 Being a metric was not enough. <strong>It has to separate at the decision boundary</strong>, and it didn’t: the
 one true near-duplicate (<code dir="auto">bet</code>/<code dir="auto">wager</code>, 0.752) sits 0.04 from a genuinely distinct pair
@@ -156,10 +177,27 @@ payoff: “which of YOUR observations became patterns → ideas → shipped.”<
 <code dir="auto">addresses_pattern_refs</code> overlaps a citing pattern’s ref. But <code dir="auto">improvements:capture</code> recorded the
 ledger row without that field, <code dir="auto">blender:route-idea</code> didn’t accept it, and only Scout’s <em>internal</em>
 router ever set it. <strong>No su-reachable verb could write the column the reader joins on.</strong></p>
-<p>| origin | routed ideas | grounded on a pattern |
-|---|---|---|
-| <code dir="auto">scout</code> | 24 | <strong>24 (100%)</strong> |
-| <code dir="auto">su-ideate</code> | 122 | <strong>0 (0%)</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>origin</th><th>routed ideas</th><th>grounded on a pattern</th></tr></thead><tbody><tr><td><code dir="auto">scout</code></td><td>24</td><td><strong>24 (100%)</strong></td></tr><tr><td><code dir="auto">su-ideate</code></td><td>122</td><td><strong>0 (0%)</strong></td></tr></tbody></table>
 <p>So <code dir="auto">ideasGrounded</code> and <code dir="auto">shipped</code> were pinned at zero for every su agent, forever, regardless of how
 good their observations were. And a pinned zero is indistinguishable from an honest one: it reads as
 <em>“no impact yet”</em>, so nobody investigates.</p>
@@ -264,13 +302,48 @@ exists, it is structurally blind to what does not — <strong>diff against the d
 <em>“add a watchdog for degenerate gates,”</em> was filed as EI-10609: alert on any gate whose live
 fire-rate is ~0% or ~100% in <code dir="auto">tool_invocations</code>. It came with a pre-registered kill criterion, and
 <strong>the cheap experiment killed it.</strong> Over 30d, n=208 tools with ≥20 calls:</p>
-<p>| gate (known BROKEN) | calls | refusals recorded | reads as |
-|---|---|---|---|
-| <code dir="auto">meta:define-datatype</code> — refuses <strong>100%</strong> of declarations | 17 | <strong>0</strong> | 0.0%, flawless |
-| <code dir="auto">coord:orient</code> — admits <strong>nothing</strong> | 3877 | 25 | 0.6%, healthy |
-| <code dir="auto">memory:remember</code> — suppresses <strong>nothing</strong> | 572 | 131 | normal |
-| <code dir="auto">loop:checkpoint</code> — destroyed <strong>40</strong> records | 4365 | 61 | 1.4%, healthy |
-| <code dir="auto">improvements:capture</code> — metric pinned at <strong>0</strong> | 2778 | 226 | normal |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>gate (known BROKEN)</th><th>calls</th><th>refusals recorded</th><th>reads as</th></tr></thead><tbody><tr><td><code dir="auto">meta:define-datatype</code> — refuses <strong>100%</strong> of declarations</td><td>17</td><td><strong>0</strong></td><td>0.0%, flawless</td></tr><tr><td><code dir="auto">coord:orient</code> — admits <strong>nothing</strong></td><td>3877</td><td>25</td><td>0.6%, healthy</td></tr><tr><td><code dir="auto">memory:remember</code> — suppresses <strong>nothing</strong></td><td>572</td><td>131</td><td>normal</td></tr><tr><td><code dir="auto">loop:checkpoint</code> — destroyed <strong>40</strong> records</td><td>4365</td><td>61</td><td>1.4%, healthy</td></tr><tr><td><code dir="auto">improvements:capture</code> — metric pinned at <strong>0</strong></td><td>2778</td><td>226</td><td>normal</td></tr></tbody></table>
 <p><strong>Zero of five true positives.</strong> The only gate at a 100% fire-rate was <code dir="auto">chat:ask_choice</code> (85/85) — a
 healthy ask-the-human tool — and ~0% turned out to be the <em>modal</em> value: 82 of 208 tools sit at
 exactly zero. The detector had a 100% false-negative rate and its one hit was a false positive.</p>
@@ -293,11 +366,36 @@ both are the class biting the fix again.</p>
 <p>The filing said <code dir="auto">max(value) &#x3C; threshold</code> would be a <em>proof</em> of an unreachable branch. <strong>It is not</strong> —
 it is Shape 1 one more rung up, and it fails identically to EI-10609. A <em>healthy</em> gate is routinely
 one-sided:</p>
-<p>| gate | verdicts | threshold vs value range | healthy? |
-|---|---|---|---|
-| orient’s relevance floor (EI-10372) | 100% reject | above the whole range | <strong>BROKEN</strong> |
-| a rate limiter under normal traffic | 100% pass | above the whole range | <strong>HEALTHY</strong> |
-| an auth check every caller passes | 100% pass | — | <strong>HEALTHY</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>gate</th><th>verdicts</th><th>threshold vs value range</th><th>healthy?</th></tr></thead><tbody><tr><td>orient’s relevance floor (EI-10372)</td><td>100% reject</td><td>above the whole range</td><td><strong>BROKEN</strong></td></tr><tr><td>a rate limiter under normal traffic</td><td>100% pass</td><td>above the whole range</td><td><strong>HEALTHY</strong></td></tr><tr><td>an auth check every caller passes</td><td>100% pass</td><td>—</td><td><strong>HEALTHY</strong></td></tr></tbody></table>
 <p>A broken discriminator and a healthy limit-that-never-trips are <strong>observationally identical</strong> over
 <code dir="auto">(verdict, value, threshold)</code>. No statistic over those columns separates them, because the separating
 fact is not in the data — it is <em>what the gate is for</em>. So the gate <strong>declares</strong> it: <code dir="auto">expect: 'discriminates'</code> (one-sided ⇒ a defect) vs <code dir="auto">expect: 'guards'</code> (never firing ⇒ the healthy case). The

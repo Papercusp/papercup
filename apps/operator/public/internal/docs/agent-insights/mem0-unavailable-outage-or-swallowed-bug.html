@@ -90,12 +90,37 @@ unknown until you’ve read the reason.</p></div> </aside>
 <p>So the real question is <strong>why <code dir="auto">getMemoryClient()</code> (→ <code dir="auto">tryLoad()</code> in
 <code dir="auto">libs/generic/memory/src/mem0-client.ts</code>) returns <code dir="auto">null</code>.</strong> Four causes,
 and only the first three are “outages”:</p>
-<p>| # | Cause | Outage or bug? |
-|---|---|---|
-| 1 | <code dir="auto">resolveEmbedder()</code> → <code dir="auto">{ mode:'disabled' }</code> (user disabled, or <code dir="auto">auto</code> found no OpenAI key and <code dir="auto">@huggingface/transformers</code> absent) | outage |
-| 2 | <code dir="auto">pgFields()</code> throws — admin URL unreachable/unparseable | outage |
-| 3 | No Anthropic <strong>and</strong> no OpenAI key (mem0 needs an LLM for <code dir="auto">add()</code> fact-extraction; creds are encrypted in <code dir="auto">operator_credentials.payload_ct</code>) | outage |
-| 4 | <strong><code dir="auto">new Memory(...)</code> THREW and was caught</strong> (<code dir="auto">tryLoad</code>’s try/catch) — a mem0ai API/version mismatch, a bad config, a missing patch | <strong>bug</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Cause</th><th>Outage or bug?</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">resolveEmbedder()</code> → <code dir="auto">{ mode:'disabled' }</code> (user disabled, or <code dir="auto">auto</code> found no OpenAI key and <code dir="auto">@huggingface/transformers</code> absent)</td><td>outage</td></tr><tr><td>2</td><td><code dir="auto">pgFields()</code> throws — admin URL unreachable/unparseable</td><td>outage</td></tr><tr><td>3</td><td>No Anthropic <strong>and</strong> no OpenAI key (mem0 needs an LLM for <code dir="auto">add()</code> fact-extraction; creds are encrypted in <code dir="auto">operator_credentials.payload_ct</code>)</td><td>outage</td></tr><tr><td>4</td><td><strong><code dir="auto">new Memory(...)</code> THREW and was caught</strong> (<code dir="auto">tryLoad</code>’s try/catch) — a mem0ai API/version mismatch, a bad config, a missing patch</td><td><strong>bug</strong></td></tr></tbody></table>
 <p>Cause 4 is the trap: a genuine construction failure is caught and
 folded into the <em>same</em> <code dir="auto">null</code> → <code dir="auto">mem0_unavailable</code> as the benign cases.
 <strong>The symptom alone cannot tell an outage from a regression.</strong></p>

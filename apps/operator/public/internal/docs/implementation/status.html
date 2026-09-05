@@ -90,23 +90,92 @@ table was superseded by the in-app <strong>Cupboard</strong> (<code dir="auto">a
 </ul></div> </aside>
 <p>The reference runtime lives in this monorepo (<code dir="auto">Papercusp/papercup</code>). Phase numbering matches the spec sections; some phases were split into a/b for separable shipping.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="phase-status">Phase status</h2><a class="sl-anchor-link" href="#phase-status"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase status”</span></a></div>
-<p>| Phase | Status | What landed |
-|---|---|---|
-| 1. Postgres schema | ✅ Implemented + verified | <code dir="auto">libs/papercusp/libs/db/sql/005-goals-events-routines.sql</code> applied to <code dir="auto">papercusp</code>; goals / pending_events / routines tables + <code dir="auto">task_lineage()</code> function + <code dir="auto">goal_id</code> / <code dir="auto">parent_id</code> / <code dir="auto">taken_by</code> / <code dir="auto">expires_at</code> columns on every per-harness <code dir="auto">harness_features</code> |
-| 2. Plugin SDK | ✅ Implemented | <code dir="auto">@papercusp/plugin-sdk</code> — <code dir="auto">Capability</code> type, <code dir="auto">PapercuspApi</code> DI container, UI / Routine / Hook types, <code dir="auto">defineService()</code> helper |
-| 3. Plugin loader | ✅ Implemented + 66 / 66 tests pass | <code dir="auto">@papercusp/plugin-loader</code> — <code dir="auto">capabilities.ts</code> (proxy + fetch + secrets gates with wildcard support), <code dir="auto">hookbus.ts</code> (addAction / addFilter / emit), <code dir="auto">actions.ts</code> (<code dir="auto">ServerActionRegistry</code>), <code dir="auto">semver.ts</code> (runtime version validation), <code dir="auto">loader.ts</code> (entry-point discovery + dedup). Operator-side <code dir="auto">lib/plugin-host-runtime.ts</code> adds another 15 unit tests covering lifecycle dispatch + action invocation + spawn gating. |
-| 4. Substrate runtime | ✅ Implemented + smoke-tested against live DB | <code dir="auto">libs/papercusp/libs/db</code> — <code dir="auto">atomic-checkout.ts</code>, <code dir="auto">budget-enforcement.ts</code>, <code dir="auto">pending-events.ts</code>, <code dir="auto">routines-runtime.ts</code>, <code dir="auto">goal-lineage.ts</code> (postgres-js based) |
-| 5. Routine ticker + CLI | ✅ Implemented + 13 / 13 secret-scrubber tests pass | <code dir="auto">startRoutineTicker()</code> long-lived loop; CLI <code dir="auto">publish</code> scans for secrets pre-tar, hard-rejects <code dir="auto">.env*</code> / <code dir="auto">.pem</code> etc., supports <code dir="auto">--acknowledge-secrets</code> placeholder substitution |
-| 5b. Hard-stop budget at proposal-add | ✅ Already implemented (verified) | <code dir="auto">apps/papercusp/app/api/_hono/harness.ts:637</code> — atomic check-and-reject on <code dir="auto">POST /features</code> when would-exceed; returns HTTP 409 with <code dir="auto">out_of_budget</code> |
-| 6a. Plugin contribution surface (server-side) | ✅ Implemented + verified | <code dir="auto">GET /api/plugins</code>, <code dir="auto">/api/plugins/global</code>, <code dir="auto">/api/plugins/:slug/contributions</code>. Manifest extended with <code dir="auto">capabilities[]</code>, <code dir="auto">roles[]</code>, <code dir="auto">dashboardTabs[]</code>, <code dir="auto">sidebarItems[]</code>, <code dir="auto">ui</code>, <code dir="auto">routines[]</code>. Symlink-following so dev plugins (e.g. <code dir="auto">~/.papercusp/global-plugins/papercup</code> → repo) resolve correctly |
-| <strong>6b. Plugin contribution UI render</strong> | ✅ Shipped (2026-04-29) | <code dir="auto">componentId</code> resolver (<code dir="auto">lib/plugin-runtime.ts</code>) + <code dir="auto">&#x3C;PluginTabs></code> strip + <code dir="auto">&#x3C;PluginReactTab></code> single-tab render + DI container (<code dir="auto">@papercusp/plugin-loader/api-factory</code>) + apiRoutes mounter (<code dir="auto">mountPluginApiRoutes</code>) all live. Process-level lifecycle host (<code dir="auto">lib/plugin-host-runtime.ts</code>) — singleton HookBus + per-(plugin, harness) <code dir="auto">ServerActionRegistry</code> attached to <code dir="auto">ctx.actions</code> + lazy <code dir="auto">init</code>/<code dir="auto">onLoad</code> (eager warm-up of every loaded plugin on first slug contact, so plugins without the specific hook still init) + <code dir="auto">firePluginLifecycle</code> / <code dir="auto">firePluginEvent</code> / <code dir="auto">invokePluginAction</code>. SDK extended: <code dir="auto">PapercuspContext.actions?: PluginActionRegistry</code> is now an honest interface, not a runtime-only field. All 7 lifecycle fire-points wired — operator: <code dir="auto">beforeMissionStart</code> + <code dir="auto">mission.start</code> (POST /launch), <code dir="auto">onFeaturePassed</code> + <code dir="auto">task.passed</code> + <code dir="auto">feature.completed</code> (PATCH features → passed), <code dir="auto">onProposalAccepted</code> + <code dir="auto">proposal.accepted</code> (POST proposals/:id/accept); run.sh: <code dir="auto">beforeMissionStart</code>, <code dir="auto">onPostOrchestrator --decision=...</code>, <code dir="auto">onPostWorker --feature-id=...</code> at all 4 worker invoke sites (CEO mode, competition lane, parallel lane, sequential), <code dir="auto">onPostValidator --feature-id=... --status=passed\|failing</code>, <code dir="auto">afterDone</code>. Fire-hook CLI extended for the new flags; fallback path updated for the post-2026-04-28 split layout. Diagnostics: <code dir="auto">GET /api/plugins/runtime/status</code>, <code dir="auto">POST /api/plugins/runtime/fire-event</code>, <code dir="auto">POST /api/plugins/runtime/invoke-action</code>. Verified end-to-end: cloudflare-pages <code dir="auto">init()</code> + <code dir="auto">ctx.actions.register('publish')</code> + in-process invoke with dryRun all reach the handler. |
-| 7. Orchestrator reads pending_events | ✅ Implemented + verified end-to-end | Both <code dir="auto">apps/papercup/app/api/_hono/org.ts</code> (markdown ctx) and <code dir="auto">apps/papercusp/app/api/_hono/harness.ts</code> (per-harness <code dir="auto">$STATE_DIR/.papercusp/pending-events.jsonl</code>) list+consume due events. Eager-consume strategy |
-| 8. Goal-lineage endpoint for workers | ✅ Implemented + verified | <code dir="auto">GET /api/harness/:slug/feature/:id/lineage</code> returns markdown (default) or JSON. Walks <code dir="auto">parent_id</code> chain → goal via <code dir="auto">harness_shared.task_lineage()</code>. Workers can curl this and inject ”## Why this matters” into their context |
-| 9. Convert Papercup → plugin manifest | ✅ Manifest authored at <code dir="auto">apps/papercup/papercusp.json</code> | Declares 5 department roles, 5 dashboard tabs, 6 sidebar items, 3 routines, 24 capabilities, schema (<code dir="auto">papercup_shared</code>), and config (department slug → harnessSlug, mission/charter paths). Discovered by the manifest contribution surface (Phase 6a). Component resolution waits on Phase 6b |
-| <strong>§16. Publishing — hosted CF Pages</strong> | 🟡 Code complete + local smoke test passing; awaits prod CF bootstrap | <code dir="auto">libs/papercusp-publish-auth</code> shared lib (40 unit tests pass — JCS, JWT HS256, HKDF subkeys, secret-hash, signed-URL tokens, manifest sha256). <code dir="auto">apps/papercusp-publish</code> Worker (D1 + KV + R2 + Hono) with all routes (register/start/file/finalize/status/rotate/admin GC) + <code dir="auto">*.preview.papercuspai.com</code> reverse-proxy + scheduled cron. Local smoke test (<code dir="auto">npm run smoke</code> against <code dir="auto">wrangler dev --local</code>) drives 13 end-to-end checks: register → JWT mint → JCS sha verify → ratelimit → ensureProject → missing[] → signed-URL upload → idempotency → replay-guard atomic insert → aud check → bad-sha rejection → secret rotation → old-JWT-invalidation. Substrate plugin <code dir="auto">@papercupai/cloudflare-pages-hosted</code> with hosted + BYO eject paths. Settings UI at <code dir="auto">/settings/publishing</code>. <code dir="auto">requiresTemplateKinds</code> enforcement in both server route and CLI. <strong>Pending:</strong> prod token (needs D1:Edit + Workers KV:Edit + Workers Scripts:Edit added to existing CF token), then automated <code dir="auto">wrangler d1 create / kv:namespace create / secret put / deploy</code> + dashboard click for wildcard cert. |
-| <strong>§15. Snapshots v1.0 (local capture+restore+publish+fork)</strong> | ✅ Implemented + verified end-to-end | <code dir="auto">libs/papercusp-export-state</code> (~3.4k LoC, 27 files, 7 test files): <code dir="auto">capture</code> / <code dir="auto">restore</code> / <code dir="auto">pg-dump</code> / <code dir="auto">alter-schema</code> / <code dir="auto">slug-rewrite</code> / <code dir="auto">secret-scan</code> (two-tier denylist) / <code dir="auto">manifest</code> / <code dir="auto">tarball</code> / <code dir="auto">staging</code> / <code dir="auto">compat</code> / <code dir="auto">binaries</code> / <code dir="auto">shared-table-filters</code>. Operator API: <code dir="auto">POST /api/snapshots/create</code>, <code dir="auto">POST /api/snapshots/[id]/instantiate</code> (fork w/ schema rename + dir copy + registry update + ambiguous-slug detection), <code dir="auto">POST /api/snapshots/[id]/publish</code> (multipart → marketplace at :3057, R2-backed). UI: <code dir="auto">/snapshots</code> global page + <code dir="auto">SnapshotsPanel</code> in dashboard (Zero-synced from <code dir="auto">harness_&#x3C;slug>.harness_snapshots</code>). CLI: <code dir="auto">papercusp snapshot publish</code> (422 LoC, 13/13 secret-scrubber tests) + <code dir="auto">papercusp snapshot fork</code>; <code dir="auto">/api/marketplace/install</code> dispatches snapshot installs to <code dir="auto">snapshot fork</code>. Verified 2026-04-29: capture → publish (R2 upload, signed manifest) → fork (schema rename + dir copy) round-trip works against local marketplace. Re-verified 2026-05-10 against <code dir="auto">sheets</code>. v1.1 (cross-machine via Gitea/Forgejo + Cosign) deferred. |
-| <strong>§Templates v1.0 (save-as-template + publish + install)</strong> | ✅ Implemented + verified end-to-end (2026-05-10) | <code dir="auto">POST /api/harness/&#x3C;slug>/save-as-template</code> (added 2026-05-10 — was missing despite the dashboard button calling it; the gap was why no template publish had been exercised). Forks the recipe (papercusp.json + SPEC.md/AGENTS.md/.papercusp/config.json/validation-contract.md + <code dir="auto">enabled-plugins.json</code> → <code dir="auto">plugins[]</code> recommendations) into <code dir="auto">~/.papercusp/templates/&#x3C;slug>/&#x3C;version>/</code>. Round-trip verified against <code dir="auto">sheets</code>: save → <code dir="auto">POST /api/templates/&#x3C;slug>/&#x3C;version>/publish</code> → catalog row at <code dir="auto">:3057</code> → install via <code dir="auto">/api/marketplace/install</code> scaffolds new project + auto-enables 8 recommended plugins. |
-| <strong>§MHS. Multi-harness spawning (substrate)</strong> | ✅ Implemented + verified end-to-end (2026-05-01) | Auth-bound cross-harness coordination as a substrate feature, not papercup-org-specific. Per-harness shared-secret token (<code dir="auto">harness_token</code> in <code dir="auto">.papercusp/config.json</code>, mode 0600) → <code dir="auto">harness_shared.token_index</code> for O(1) bearer→slug. New endpoint <code dir="auto">POST /api/admin/execute-action</code> with 4 verbs: <code dir="auto">send_message</code>, <code dir="auto">mark_message_status</code>, <code dir="auto">spinup_project</code>, <code dir="auto">scaffold_harness</code>. Identity (<code dir="auto">from_slug</code>, <code dir="auto">parent_slug</code>) is bearer-derived; body-supplied identity fields rejected. Per-harness PG schema additions: <code dir="auto">messages</code>, <code dir="auto">supervisor_notes</code>, <code dir="auto">executed_actions</code>, <code dir="auto">config_token</code>. Tiered visibility in every role’s prompt: Tier 1 preamble + Tier 2 depth-1 neighbor view (parent/children/siblings + spawned_count + aggregate) + Tier 3 inspect-on-demand curl URLs + bounded supervisor inbox (auto-ack on DONE/NEXT_*). Builtin <code dir="auto">afterDone.sh</code> hook fires Completion to parent_slug (any harness opts in by setting parent_slug). <code dir="auto">papercup-org</code> template re-bundled to v0.1.1 with <code dir="auto">parent/</code> directory + 3-role config (director/coordinator/auditor); <code dir="auto">papercup-coding</code> + <code dir="auto">coding-project</code> marked spawnable. <code dir="auto">executeAction</code> callers retargeted (<code dir="auto">actions-block.ts</code> + <code dir="auto">run.sh:process_actions_block</code>) to slug-less <code dir="auto">:3055</code> endpoint. Smokes A/B/C/D pass twice from clean state — 25/25 each run. Plan: <a href="/internal/docs/implementation/multi-harness-spawning"><code dir="auto">/docs/implementation/multi-harness-spawning</code></a>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Phase</th><th>Status</th><th>What landed</th></tr></thead><tbody><tr><td>1. Postgres schema</td><td>✅ Implemented + verified</td><td><code dir="auto">libs/papercusp/libs/db/sql/005-goals-events-routines.sql</code> applied to <code dir="auto">papercusp</code>; goals / pending_events / routines tables + <code dir="auto">task_lineage()</code> function + <code dir="auto">goal_id</code> / <code dir="auto">parent_id</code> / <code dir="auto">taken_by</code> / <code dir="auto">expires_at</code> columns on every per-harness <code dir="auto">harness_features</code></td></tr><tr><td>2. Plugin SDK</td><td>✅ Implemented</td><td><code dir="auto">@papercusp/plugin-sdk</code> — <code dir="auto">Capability</code> type, <code dir="auto">PapercuspApi</code> DI container, UI / Routine / Hook types, <code dir="auto">defineService()</code> helper</td></tr><tr><td>3. Plugin loader</td><td>✅ Implemented + 66 / 66 tests pass</td><td><code dir="auto">@papercusp/plugin-loader</code> — <code dir="auto">capabilities.ts</code> (proxy + fetch + secrets gates with wildcard support), <code dir="auto">hookbus.ts</code> (addAction / addFilter / emit), <code dir="auto">actions.ts</code> (<code dir="auto">ServerActionRegistry</code>), <code dir="auto">semver.ts</code> (runtime version validation), <code dir="auto">loader.ts</code> (entry-point discovery + dedup). Operator-side <code dir="auto">lib/plugin-host-runtime.ts</code> adds another 15 unit tests covering lifecycle dispatch + action invocation + spawn gating.</td></tr><tr><td>4. Substrate runtime</td><td>✅ Implemented + smoke-tested against live DB</td><td><code dir="auto">libs/papercusp/libs/db</code> — <code dir="auto">atomic-checkout.ts</code>, <code dir="auto">budget-enforcement.ts</code>, <code dir="auto">pending-events.ts</code>, <code dir="auto">routines-runtime.ts</code>, <code dir="auto">goal-lineage.ts</code> (postgres-js based)</td></tr><tr><td>5. Routine ticker + CLI</td><td>✅ Implemented + 13 / 13 secret-scrubber tests pass</td><td><code dir="auto">startRoutineTicker()</code> long-lived loop; CLI <code dir="auto">publish</code> scans for secrets pre-tar, hard-rejects <code dir="auto">.env*</code> / <code dir="auto">.pem</code> etc., supports <code dir="auto">--acknowledge-secrets</code> placeholder substitution</td></tr><tr><td>5b. Hard-stop budget at proposal-add</td><td>✅ Already implemented (verified)</td><td><code dir="auto">apps/papercusp/app/api/_hono/harness.ts:637</code> — atomic check-and-reject on <code dir="auto">POST /features</code> when would-exceed; returns HTTP 409 with <code dir="auto">out_of_budget</code></td></tr><tr><td>6a. Plugin contribution surface (server-side)</td><td>✅ Implemented + verified</td><td><code dir="auto">GET /api/plugins</code>, <code dir="auto">/api/plugins/global</code>, <code dir="auto">/api/plugins/:slug/contributions</code>. Manifest extended with <code dir="auto">capabilities[]</code>, <code dir="auto">roles[]</code>, <code dir="auto">dashboardTabs[]</code>, <code dir="auto">sidebarItems[]</code>, <code dir="auto">ui</code>, <code dir="auto">routines[]</code>. Symlink-following so dev plugins (e.g. <code dir="auto">~/.papercusp/global-plugins/papercup</code> → repo) resolve correctly</td></tr><tr><td><strong>6b. Plugin contribution UI render</strong></td><td>✅ Shipped (2026-04-29)</td><td><code dir="auto">componentId</code> resolver (<code dir="auto">lib/plugin-runtime.ts</code>) + <code dir="auto">&#x3C;PluginTabs></code> strip + <code dir="auto">&#x3C;PluginReactTab></code> single-tab render + DI container (<code dir="auto">@papercusp/plugin-loader/api-factory</code>) + apiRoutes mounter (<code dir="auto">mountPluginApiRoutes</code>) all live. Process-level lifecycle host (<code dir="auto">lib/plugin-host-runtime.ts</code>) — singleton HookBus + per-(plugin, harness) <code dir="auto">ServerActionRegistry</code> attached to <code dir="auto">ctx.actions</code> + lazy <code dir="auto">init</code>/<code dir="auto">onLoad</code> (eager warm-up of every loaded plugin on first slug contact, so plugins without the specific hook still init) + <code dir="auto">firePluginLifecycle</code> / <code dir="auto">firePluginEvent</code> / <code dir="auto">invokePluginAction</code>. SDK extended: <code dir="auto">PapercuspContext.actions?: PluginActionRegistry</code> is now an honest interface, not a runtime-only field. All 7 lifecycle fire-points wired — operator: <code dir="auto">beforeMissionStart</code> + <code dir="auto">mission.start</code> (POST /launch), <code dir="auto">onFeaturePassed</code> + <code dir="auto">task.passed</code> + <code dir="auto">feature.completed</code> (PATCH features → passed), <code dir="auto">onProposalAccepted</code> + <code dir="auto">proposal.accepted</code> (POST proposals/:id/accept); run.sh: <code dir="auto">beforeMissionStart</code>, <code dir="auto">onPostOrchestrator --decision=...</code>, <code dir="auto">onPostWorker --feature-id=...</code> at all 4 worker invoke sites (CEO mode, competition lane, parallel lane, sequential), <code dir="auto">onPostValidator --feature-id=... --status=passed|failing</code>, <code dir="auto">afterDone</code>. Fire-hook CLI extended for the new flags; fallback path updated for the post-2026-04-28 split layout. Diagnostics: <code dir="auto">GET /api/plugins/runtime/status</code>, <code dir="auto">POST /api/plugins/runtime/fire-event</code>, <code dir="auto">POST /api/plugins/runtime/invoke-action</code>. Verified end-to-end: cloudflare-pages <code dir="auto">init()</code> + <code dir="auto">ctx.actions.register('publish')</code> + in-process invoke with dryRun all reach the handler.</td></tr><tr><td>7. Orchestrator reads pending_events</td><td>✅ Implemented + verified end-to-end</td><td>Both <code dir="auto">apps/papercup/app/api/_hono/org.ts</code> (markdown ctx) and <code dir="auto">apps/papercusp/app/api/_hono/harness.ts</code> (per-harness <code dir="auto">$STATE_DIR/.papercusp/pending-events.jsonl</code>) list+consume due events. Eager-consume strategy</td></tr><tr><td>8. Goal-lineage endpoint for workers</td><td>✅ Implemented + verified</td><td><code dir="auto">GET /api/harness/:slug/feature/:id/lineage</code> returns markdown (default) or JSON. Walks <code dir="auto">parent_id</code> chain → goal via <code dir="auto">harness_shared.task_lineage()</code>. Workers can curl this and inject ”## Why this matters” into their context</td></tr><tr><td>9. Convert Papercup → plugin manifest</td><td>✅ Manifest authored at <code dir="auto">apps/papercup/papercusp.json</code></td><td>Declares 5 department roles, 5 dashboard tabs, 6 sidebar items, 3 routines, 24 capabilities, schema (<code dir="auto">papercup_shared</code>), and config (department slug → harnessSlug, mission/charter paths). Discovered by the manifest contribution surface (Phase 6a). Component resolution waits on Phase 6b</td></tr><tr><td><strong>§16. Publishing — hosted CF Pages</strong></td><td>🟡 Code complete + local smoke test passing; awaits prod CF bootstrap</td><td><code dir="auto">libs/papercusp-publish-auth</code> shared lib (40 unit tests pass — JCS, JWT HS256, HKDF subkeys, secret-hash, signed-URL tokens, manifest sha256). <code dir="auto">apps/papercusp-publish</code> Worker (D1 + KV + R2 + Hono) with all routes (register/start/file/finalize/status/rotate/admin GC) + <code dir="auto">*.preview.papercuspai.com</code> reverse-proxy + scheduled cron. Local smoke test (<code dir="auto">npm run smoke</code> against <code dir="auto">wrangler dev --local</code>) drives 13 end-to-end checks: register → JWT mint → JCS sha verify → ratelimit → ensureProject → missing[] → signed-URL upload → idempotency → replay-guard atomic insert → aud check → bad-sha rejection → secret rotation → old-JWT-invalidation. Substrate plugin <code dir="auto">@papercupai/cloudflare-pages-hosted</code> with hosted + BYO eject paths. Settings UI at <code dir="auto">/settings/publishing</code>. <code dir="auto">requiresTemplateKinds</code> enforcement in both server route and CLI. <strong>Pending:</strong> prod token (needs D1:Edit + Workers KV:Edit + Workers Scripts:Edit added to existing CF token), then automated <code dir="auto">wrangler d1 create / kv:namespace create / secret put / deploy</code> + dashboard click for wildcard cert.</td></tr><tr><td><strong>§15. Snapshots v1.0 (local capture+restore+publish+fork)</strong></td><td>✅ Implemented + verified end-to-end</td><td><code dir="auto">libs/papercusp-export-state</code> (~3.4k LoC, 27 files, 7 test files): <code dir="auto">capture</code> / <code dir="auto">restore</code> / <code dir="auto">pg-dump</code> / <code dir="auto">alter-schema</code> / <code dir="auto">slug-rewrite</code> / <code dir="auto">secret-scan</code> (two-tier denylist) / <code dir="auto">manifest</code> / <code dir="auto">tarball</code> / <code dir="auto">staging</code> / <code dir="auto">compat</code> / <code dir="auto">binaries</code> / <code dir="auto">shared-table-filters</code>. Operator API: <code dir="auto">POST /api/snapshots/create</code>, <code dir="auto">POST /api/snapshots/[id]/instantiate</code> (fork w/ schema rename + dir copy + registry update + ambiguous-slug detection), <code dir="auto">POST /api/snapshots/[id]/publish</code> (multipart → marketplace at :3057, R2-backed). UI: <code dir="auto">/snapshots</code> global page + <code dir="auto">SnapshotsPanel</code> in dashboard (Zero-synced from <code dir="auto">harness_&#x3C;slug>.harness_snapshots</code>). CLI: <code dir="auto">papercusp snapshot publish</code> (422 LoC, 13/13 secret-scrubber tests) + <code dir="auto">papercusp snapshot fork</code>; <code dir="auto">/api/marketplace/install</code> dispatches snapshot installs to <code dir="auto">snapshot fork</code>. Verified 2026-04-29: capture → publish (R2 upload, signed manifest) → fork (schema rename + dir copy) round-trip works against local marketplace. Re-verified 2026-05-10 against <code dir="auto">sheets</code>. v1.1 (cross-machine via Gitea/Forgejo + Cosign) deferred.</td></tr><tr><td><strong>§Templates v1.0 (save-as-template + publish + install)</strong></td><td>✅ Implemented + verified end-to-end (2026-05-10)</td><td><code dir="auto">POST /api/harness/&#x3C;slug>/save-as-template</code> (added 2026-05-10 — was missing despite the dashboard button calling it; the gap was why no template publish had been exercised). Forks the recipe (papercusp.json + SPEC.md/AGENTS.md/.papercusp/config.json/validation-contract.md + <code dir="auto">enabled-plugins.json</code> → <code dir="auto">plugins[]</code> recommendations) into <code dir="auto">~/.papercusp/templates/&#x3C;slug>/&#x3C;version>/</code>. Round-trip verified against <code dir="auto">sheets</code>: save → <code dir="auto">POST /api/templates/&#x3C;slug>/&#x3C;version>/publish</code> → catalog row at <code dir="auto">:3057</code> → install via <code dir="auto">/api/marketplace/install</code> scaffolds new project + auto-enables 8 recommended plugins.</td></tr><tr><td><strong>§MHS. Multi-harness spawning (substrate)</strong></td><td>✅ Implemented + verified end-to-end (2026-05-01)</td><td>Auth-bound cross-harness coordination as a substrate feature, not papercup-org-specific. Per-harness shared-secret token (<code dir="auto">harness_token</code> in <code dir="auto">.papercusp/config.json</code>, mode 0600) → <code dir="auto">harness_shared.token_index</code> for O(1) bearer→slug. New endpoint <code dir="auto">POST /api/admin/execute-action</code> with 4 verbs: <code dir="auto">send_message</code>, <code dir="auto">mark_message_status</code>, <code dir="auto">spinup_project</code>, <code dir="auto">scaffold_harness</code>. Identity (<code dir="auto">from_slug</code>, <code dir="auto">parent_slug</code>) is bearer-derived; body-supplied identity fields rejected. Per-harness PG schema additions: <code dir="auto">messages</code>, <code dir="auto">supervisor_notes</code>, <code dir="auto">executed_actions</code>, <code dir="auto">config_token</code>. Tiered visibility in every role’s prompt: Tier 1 preamble + Tier 2 depth-1 neighbor view (parent/children/siblings + spawned_count + aggregate) + Tier 3 inspect-on-demand curl URLs + bounded supervisor inbox (auto-ack on DONE/NEXT_*). Builtin <code dir="auto">afterDone.sh</code> hook fires Completion to parent_slug (any harness opts in by setting parent_slug). <code dir="auto">papercup-org</code> template re-bundled to v0.1.1 with <code dir="auto">parent/</code> directory + 3-role config (director/coordinator/auditor); <code dir="auto">papercup-coding</code> + <code dir="auto">coding-project</code> marked spawnable. <code dir="auto">executeAction</code> callers retargeted (<code dir="auto">actions-block.ts</code> + <code dir="auto">run.sh:process_actions_block</code>) to slug-less <code dir="auto">:3055</code> endpoint. Smokes A/B/C/D pass twice from clean state — 25/25 each run. Plan: <a href="/internal/docs/implementation/multi-harness-spawning"><code dir="auto">/docs/implementation/multi-harness-spawning</code></a>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="whats-gating-v10">What’s gating v1.0</h2><a class="sl-anchor-link" href="#whats-gating-v10"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What’s gating v1.0”</span></a></div>
 <p>All 5 of the 6b sub-tasks have landed:</p>
 <ol>
@@ -124,40 +193,180 @@ table was superseded by the in-app <strong>Cupboard</strong> (<code dir="auto">a
 <p>Two threads run in parallel against this status page. The <strong>plugin architecture</strong> thread is Phase 6b above (handed off to a separate agent). The <strong>autonomous-harness orchestrator</strong> thread is the run.sh → TS port (see <a href="/internal/docs/implementation/orchestrator-port">its own page</a>). Below is everything that’s queued after each thread’s headline task.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped">Pi (oh-my-pi) integration — <em>Tracks A &#x26; B Phase 3a/b/c shipped</em></h3><a class="sl-anchor-link" href="#pi-oh-my-pi-integration--tracks-a--b-phase-3abc-shipped"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pi (oh-my-pi) integration — Tracks A &#x26; B Phase 3a/b/c shipped”</span></a></div>
 <p>Reference implementation of the <a href="/internal/docs/spec/cli-pluggability">CLI pluggability</a> pattern. Detailed plan + state at <a href="/internal/docs/implementation/pi-integration">/implementation/pi-integration/</a>.</p>
-<p>| Phase | Status | What landed |
-|---|---|---|
-| 3a — MVP terminal pane (backend + UI plumbing) | ✅ Shipped | <code dir="auto">node-pty</code> (lydell fork) sidecar bridge with idle reaper + 4-pty cap; Hono <code dir="auto">/api/harness/:slug/pty/{spawn,:id/stream,:id/input,:id/resize,:id/kill}</code>; <code dir="auto">&#x3C;PiPanel></code> xterm.js component slotted into <code dir="auto">MainPanel</code> next to vscode tab |
-| 3b — feature-scoped “open in pi” + cleanup | ✅ Shipped | <code dir="auto">FeaturePeekPanel</code> adds an <code dir="auto">open in pi</code> IconButton; click sets <code dir="auto">piLaneId</code> → pane spawns in <code dir="auto">&#x3C;stateDir>/worktrees/&#x3C;feature-id></code> (or project root fallback). SSE <code dir="auto">onAbort</code> now kills the pty immediately so navigation doesn’t orphan <code dir="auto">omp</code> |
-| 3c — desktop polish | ✅ Shipped | <code dir="auto">pi</code> added to <code dir="auto">/api/desktop/preflight</code> with PATH+well-known-paths probe (GUI-app no-login-shell gotcha). Bootstrap install-hint surfaces missing-pi state with brew command. README documents pi as an optional prereq |
-| 3d — deeper integration | ⏳ Deferred | Pi plugin via <code dir="auto">--plugin-dir</code> exposing <code dir="auto">papercusp.feature_status</code> etc.; session persistence with <code dir="auto">omp -c/-r</code>; audit <code dir="auto">--export</code>; subagent cross-pollination via <code dir="auto">omp agents unpack</code>; multi-pane support |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Phase</th><th>Status</th><th>What landed</th></tr></thead><tbody><tr><td>3a — MVP terminal pane (backend + UI plumbing)</td><td>✅ Shipped</td><td><code dir="auto">node-pty</code> (lydell fork) sidecar bridge with idle reaper + 4-pty cap; Hono <code dir="auto">/api/harness/:slug/pty/{spawn,:id/stream,:id/input,:id/resize,:id/kill}</code>; <code dir="auto">&#x3C;PiPanel></code> xterm.js component slotted into <code dir="auto">MainPanel</code> next to vscode tab</td></tr><tr><td>3b — feature-scoped “open in pi” + cleanup</td><td>✅ Shipped</td><td><code dir="auto">FeaturePeekPanel</code> adds an <code dir="auto">open in pi</code> IconButton; click sets <code dir="auto">piLaneId</code> → pane spawns in <code dir="auto">&#x3C;stateDir>/worktrees/&#x3C;feature-id></code> (or project root fallback). SSE <code dir="auto">onAbort</code> now kills the pty immediately so navigation doesn’t orphan <code dir="auto">omp</code></td></tr><tr><td>3c — desktop polish</td><td>✅ Shipped</td><td><code dir="auto">pi</code> added to <code dir="auto">/api/desktop/preflight</code> with PATH+well-known-paths probe (GUI-app no-login-shell gotcha). Bootstrap install-hint surfaces missing-pi state with brew command. README documents pi as an optional prereq</td></tr><tr><td>3d — deeper integration</td><td>⏳ Deferred</td><td>Pi plugin via <code dir="auto">--plugin-dir</code> exposing <code dir="auto">papercusp.feature_status</code> etc.; session persistence with <code dir="auto">omp -c/-r</code>; audit <code dir="auto">--export</code>; subagent cross-pollination via <code dir="auto">omp agents unpack</code>; multi-pane support</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="after-6b-plugin-architecture">After 6b (plugin architecture)</h3><a class="sl-anchor-link" href="#after-6b-plugin-architecture"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “After 6b (plugin architecture)”</span></a></div>
-<p>| Item | Scope | Notes |
-|---|---|---|
-| ~~Plugin schema auto-apply at install~~ | ✅ Already wired + types unified 2026-04-29 | The branch in <code dir="auto">papercusp install</code> (libs/papercusp/packages/cli/src/papercusp.ts) already runs DDL via <code dir="auto">psql ON_ERROR_STOP=1</code> when <code dir="auto">manifest.schema</code> is set. The SDK type was <code dir="auto">PluginSchemaDef = {schemaName, ddlPath}</code> while the install code expected <code dir="auto">string[]</code>. Unified: SDK now exports <code dir="auto">PluginSchemaField = PluginSchemaDef \| PluginSchemaDef[] \| string[]</code>; install normalizes via a new <code dir="auto">normalizeSchemaField</code> helper. 6 unit tests cover all three shapes + malformed input. No existing plugin uses the field yet, but the type/runtime mismatch is gone and the path is exercisable. |
-| ~~Marketplace → auto-install drop-in~~ | ✅ Already wired + cache-busting added 2026-04-29 | The UI flow already existed end-to-end: <code dir="auto">&#x3C;InstallPluginButton></code> (in <code dir="auto">MarketplaceList.tsx</code>) POSTs to <code dir="auto">/api/marketplace/install-plugin</code>, which shells out to <code dir="auto">papercusp install &#x3C;slug> --accept-capabilities</code>. The CLI extracts the tarball into <code dir="auto">~/.papercusp/global-plugins/&#x3C;name>/</code> and (post-2026-04-29) auto-applies any <code dir="auto">manifest.schema</code> DDL via psql. <strong>What was missing:</strong> the in-process runtime cache (<code dir="auto">globalThis</code>-pinned for HMR robustness) didn’t know about the just-installed plugin. Now both the install and uninstall endpoints call <code dir="auto">_resetPluginHostForTests()</code> + <code dir="auto">_resetPluginApiRoutesForTests()</code> after a successful CLI run, so the next request re-discovers and the new plugin’s <code dir="auto">init</code> / <code dir="auto">onLoad</code> fire on first slug contact. Verified end-to-end against <code dir="auto">@papercupai/docs-viewer</code>: <code dir="auto">initializedPairs</code> goes from 6 → 0 after the install POST. |
-| ~~Plugin hot-reload in dev mode~~ | ✅ Shipped 2026-04-29 | <code dir="auto">watchPluginsForReload({dir})</code> in <code dir="auto">lib/plugin-host-runtime.ts</code> — opt-in via <code dir="auto">PAPERCUSP_DEV_PLUGIN_WATCH=1</code> env var. Recursive <code dir="auto">fs.watch</code> on <code dir="auto">~/.papercusp/global-plugins/</code> with a 250ms debounce; only resets on <code dir="auto">papercusp.json</code> / <code dir="auto">index.{js,mjs,ts}</code> / <code dir="auto">dist/index.js</code> changes (ignores editor swap files + <code dir="auto">node_modules</code> churn). Watcher handle pinned on <code dir="auto">globalThis</code> so HMR doesn’t double-arm it. Production hosts leave it off. |
-| ~~Wildcard <code dir="auto">secrets:read:PREFIX_*</code> capability~~ | ✅ Shipped 2026-04-29 | Both flavors land together: subdomain (<code dir="auto">http:fetch:*.foo.com</code>) and prefix (<code dir="auto">secrets:read:YT_*</code>). Implemented in <code dir="auto">hasCapability</code> via a shared <code dir="auto">matchWildcardCap</code> helper — also reused by <code dir="auto">actions.ts</code> for action-cap subset validation. Strict semantics: <code dir="auto">*.foo.com</code> does NOT match the bare suffix <code dir="auto">foo.com</code>; <code dir="auto">head*</code> requires a non-empty head and a non-empty tail (degenerate <code dir="auto">secrets:read:*</code> is rejected). 5 new tests in <code dir="auto">capabilities.test.ts</code>. |
-| ~~<code dir="auto">compute:exec:&#x3C;binary></code> capability~~ | ✅ Shipped 2026-04-29 | Added <code dir="auto">compute:exec:&#x3C;basename></code> to the SDK Capability union; existing wildcard helper handles <code dir="auto">compute:exec:py-*</code> style prefix grants. New <code dir="auto">PapercuspContext.spawn?: PluginSpawn</code> typed surface — async returns <code dir="auto">{stdout, stderr, code, killed}</code>. Host implementation in <code dir="auto">lib/plugin-host-runtime.ts</code> (<code dir="auto">makePluginSpawn</code>): rejects path-bearing bins (basename only), gates on <code dir="auto">compute:exec:&#x3C;basename></code>, ensures the plugin’s data dir exists before spawn, captures stdout/stderr to 1 MiB each (truncated marker on overflow), 30 s timeout with SIGTERM→SIGKILL escalation. Verified end-to-end against a probe plugin: declared <code dir="auto">compute:exec:echo</code> succeeds with <code dir="auto">code=0 stdout="hello-from-spawn"</code>; undeclared <code dir="auto">ls</code> rejects with MissingCapability; <code dir="auto">/bin/echo</code> rejects before cap check on the path-separator guard. |
-| ~~Plugin runtime versioning + CHANGELOG~~ | ✅ Shipped 2026-04-29 | <code dir="auto">PAPERCUSP_RUNTIME_VERSION = '0.1.0'</code> constant in the SDK; loader rejects plugins whose <code dir="auto">papercusp:</code> range excludes the runtime version. Minimal in-tree semver matcher in <code dir="auto">packages/plugin-loader/src/semver.ts</code> covers <code dir="auto">X.Y.Z</code> / <code dir="auto">^X.Y.Z</code> (incl. caret-leading-zero) / <code dir="auto">~X.Y.Z</code> / <code dir="auto">>=X.Y.Z</code> / <code dir="auto">*</code>. 9 semver tests + 1 negative-path loader test. CHANGELOG authored at <code dir="auto">packages/plugin-sdk/CHANGELOG.md</code> — covers the lifecycle hooks, free-form bus, action registry, capability strings (incl. wildcards), manifest schema, loader contract, host runtime APIs, and the recent shape changes. |
-| ~~Reference plugins (slack-notify, jira-sync)~~ | ✅ Already authored — symlinks repointed 2026-04-29 | Both <code dir="auto">@papercupai/slack-notifier</code> (1 action: <code dir="auto">notify</code>) and <code dir="auto">@papercupai/jira-sync</code> (3 actions: <code dir="auto">create-issue</code>, <code dir="auto">list-issues</code>, <code dir="auto">post-comment</code>) lived at <code dir="auto">papercupai-workspace/papercusp/plugins/</code> but their global-plugins symlinks still pointed at a retired location in a separate internal project (<code dir="auto">…/libs/papercusp/plugins/</code>), so the runtime was silently skipping them. Repointed; both load cleanly, register all their declared actions, and the slack <code dir="auto">notify</code> invoke probe returns the expected “SLACK_WEBHOOK_URL not configured” envelope. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Scope</th><th>Notes</th></tr></thead><tbody><tr><td><del>Plugin schema auto-apply at install</del></td><td>✅ Already wired + types unified 2026-04-29</td><td>The branch in <code dir="auto">papercusp install</code> (libs/papercusp/packages/cli/src/papercusp.ts) already runs DDL via <code dir="auto">psql ON_ERROR_STOP=1</code> when <code dir="auto">manifest.schema</code> is set. The SDK type was <code dir="auto">PluginSchemaDef = {schemaName, ddlPath}</code> while the install code expected <code dir="auto">string[]</code>. Unified: SDK now exports <code dir="auto">PluginSchemaField = PluginSchemaDef | PluginSchemaDef[] | string[]</code>; install normalizes via a new <code dir="auto">normalizeSchemaField</code> helper. 6 unit tests cover all three shapes + malformed input. No existing plugin uses the field yet, but the type/runtime mismatch is gone and the path is exercisable.</td></tr><tr><td><del>Marketplace → auto-install drop-in</del></td><td>✅ Already wired + cache-busting added 2026-04-29</td><td>The UI flow already existed end-to-end: <code dir="auto">&#x3C;InstallPluginButton></code> (in <code dir="auto">MarketplaceList.tsx</code>) POSTs to <code dir="auto">/api/marketplace/install-plugin</code>, which shells out to <code dir="auto">papercusp install &#x3C;slug> --accept-capabilities</code>. The CLI extracts the tarball into <code dir="auto">~/.papercusp/global-plugins/&#x3C;name>/</code> and (post-2026-04-29) auto-applies any <code dir="auto">manifest.schema</code> DDL via psql. <strong>What was missing:</strong> the in-process runtime cache (<code dir="auto">globalThis</code>-pinned for HMR robustness) didn’t know about the just-installed plugin. Now both the install and uninstall endpoints call <code dir="auto">_resetPluginHostForTests()</code> + <code dir="auto">_resetPluginApiRoutesForTests()</code> after a successful CLI run, so the next request re-discovers and the new plugin’s <code dir="auto">init</code> / <code dir="auto">onLoad</code> fire on first slug contact. Verified end-to-end against <code dir="auto">@papercupai/docs-viewer</code>: <code dir="auto">initializedPairs</code> goes from 6 → 0 after the install POST.</td></tr><tr><td><del>Plugin hot-reload in dev mode</del></td><td>✅ Shipped 2026-04-29</td><td><code dir="auto">watchPluginsForReload({dir})</code> in <code dir="auto">lib/plugin-host-runtime.ts</code> — opt-in via <code dir="auto">PAPERCUSP_DEV_PLUGIN_WATCH=1</code> env var. Recursive <code dir="auto">fs.watch</code> on <code dir="auto">~/.papercusp/global-plugins/</code> with a 250ms debounce; only resets on <code dir="auto">papercusp.json</code> / <code dir="auto">index.{js,mjs,ts}</code> / <code dir="auto">dist/index.js</code> changes (ignores editor swap files + <code dir="auto">node_modules</code> churn). Watcher handle pinned on <code dir="auto">globalThis</code> so HMR doesn’t double-arm it. Production hosts leave it off.</td></tr><tr><td><del>Wildcard <code dir="auto">secrets:read:PREFIX_*</code> capability</del></td><td>✅ Shipped 2026-04-29</td><td>Both flavors land together: subdomain (<code dir="auto">http:fetch:*.foo.com</code>) and prefix (<code dir="auto">secrets:read:YT_*</code>). Implemented in <code dir="auto">hasCapability</code> via a shared <code dir="auto">matchWildcardCap</code> helper — also reused by <code dir="auto">actions.ts</code> for action-cap subset validation. Strict semantics: <code dir="auto">*.foo.com</code> does NOT match the bare suffix <code dir="auto">foo.com</code>; <code dir="auto">head*</code> requires a non-empty head and a non-empty tail (degenerate <code dir="auto">secrets:read:*</code> is rejected). 5 new tests in <code dir="auto">capabilities.test.ts</code>.</td></tr><tr><td><del><code dir="auto">compute:exec:&#x3C;binary></code> capability</del></td><td>✅ Shipped 2026-04-29</td><td>Added <code dir="auto">compute:exec:&#x3C;basename></code> to the SDK Capability union; existing wildcard helper handles <code dir="auto">compute:exec:py-*</code> style prefix grants. New <code dir="auto">PapercuspContext.spawn?: PluginSpawn</code> typed surface — async returns <code dir="auto">{stdout, stderr, code, killed}</code>. Host implementation in <code dir="auto">lib/plugin-host-runtime.ts</code> (<code dir="auto">makePluginSpawn</code>): rejects path-bearing bins (basename only), gates on <code dir="auto">compute:exec:&#x3C;basename></code>, ensures the plugin’s data dir exists before spawn, captures stdout/stderr to 1 MiB each (truncated marker on overflow), 30 s timeout with SIGTERM→SIGKILL escalation. Verified end-to-end against a probe plugin: declared <code dir="auto">compute:exec:echo</code> succeeds with <code dir="auto">code=0 stdout="hello-from-spawn"</code>; undeclared <code dir="auto">ls</code> rejects with MissingCapability; <code dir="auto">/bin/echo</code> rejects before cap check on the path-separator guard.</td></tr><tr><td><del>Plugin runtime versioning + CHANGELOG</del></td><td>✅ Shipped 2026-04-29</td><td><code dir="auto">PAPERCUSP_RUNTIME_VERSION = '0.1.0'</code> constant in the SDK; loader rejects plugins whose <code dir="auto">papercusp:</code> range excludes the runtime version. Minimal in-tree semver matcher in <code dir="auto">packages/plugin-loader/src/semver.ts</code> covers <code dir="auto">X.Y.Z</code> / <code dir="auto">^X.Y.Z</code> (incl. caret-leading-zero) / <code dir="auto">~X.Y.Z</code> / <code dir="auto">>=X.Y.Z</code> / <code dir="auto">*</code>. 9 semver tests + 1 negative-path loader test. CHANGELOG authored at <code dir="auto">packages/plugin-sdk/CHANGELOG.md</code> — covers the lifecycle hooks, free-form bus, action registry, capability strings (incl. wildcards), manifest schema, loader contract, host runtime APIs, and the recent shape changes.</td></tr><tr><td><del>Reference plugins (slack-notify, jira-sync)</del></td><td>✅ Already authored — symlinks repointed 2026-04-29</td><td>Both <code dir="auto">@papercupai/slack-notifier</code> (1 action: <code dir="auto">notify</code>) and <code dir="auto">@papercupai/jira-sync</code> (3 actions: <code dir="auto">create-issue</code>, <code dir="auto">list-issues</code>, <code dir="auto">post-comment</code>) lived at <code dir="auto">papercupai-workspace/papercusp/plugins/</code> but their global-plugins symlinks still pointed at a retired location in a separate internal project (<code dir="auto">…/libs/papercusp/plugins/</code>), so the runtime was silently skipping them. Repointed; both load cleanly, register all their declared actions, and the slack <code dir="auto">notify</code> invoke probe returns the expected “SLACK_WEBHOOK_URL not configured” envelope.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="after-stage-5a-orchestrator-port--stage-5a-is-now-">After Stage 5a (orchestrator port) — <em>Stage 5a is now ✅</em></h3><a class="sl-anchor-link" href="#after-stage-5a-orchestrator-port--stage-5a-is-now-"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “After Stage 5a (orchestrator port) — Stage 5a is now ✅”</span></a></div>
-<p>| Item | Scope | Notes |
-|---|---|---|
-| <strong>Cutover:</strong> flip <code dir="auto">PAPERCUSP_USE_TS_ORCHESTRATOR=1</code> default-on | ~½ day | Edit <code dir="auto">apps/papercusp-desktop/src-tauri/src/main.rs</code> spawn env. Requires end-to-end run validation against papercup/sheets-clone first (sequential, parallel-lane, and competition modes). |
-| SQL feature import on TS path | ~1 day | The <code dir="auto">features.json</code> → Postgres <code dir="auto">harness_&#x3C;slug>.harness_features</code> import. Bash currently does it via psql + python heredoc; observability layer only, doesn’t gate cutover. |
-| Tag <code dir="auto">desktop-v0.0.2</code> | ~½ day | Run <code dir="auto">bin/release-local.sh 0.0.2 alpha</code> in the desktop checkout. Local Linux x86_64 build → signed → GitHub Release. No CI involved. |
-| macOS code signing | ~1 day my work + your $99/yr Apple cert | Requires a real Mac to build + notarize on; alpha skips macOS. |
-| Windows code signing | ~½ day my work + your $200-500/yr OV cert | Local cross-build via <code dir="auto">WITH_WINDOWS=1</code>; signing is a separate step against the OV cert. Eliminates SmartScreen warning (~1-2wk reputation curve). |
-| Auto-updater wiring (Tauri) | ✅ shipped | Runtime endpoint resolution + channel-aware manifest (<code dir="auto">/api/updates/manifest</code>) + signed releases via local builds (see desktop <code dir="auto">SHIPPING.md</code>). |
-| Embedded-Postgres on desktop (drop Postgres prereq) | ✅ shipped | Desktop sidecar bundles <code dir="auto">embedded-postgres</code> (real PG binary with logical replication) and spawns it per-workspace on a TCP port. Default ON via <code dir="auto">PAPERCUSP_USE_EMBEDDED_PG=1</code>; pglite-server remains as a legacy fallback. Zero WS works on desktop in this mode (same as browser). See <code dir="auto">libs/papercusp/packages/embedded-postgres-server/</code>. |
-| Real branded icons | ~½ day | Replace placeholder paper-cup glyph with designed icons. Pure aesthetics; doesn’t gate anything. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Scope</th><th>Notes</th></tr></thead><tbody><tr><td><strong>Cutover:</strong> flip <code dir="auto">PAPERCUSP_USE_TS_ORCHESTRATOR=1</code> default-on</td><td>~½ day</td><td>Edit <code dir="auto">apps/papercusp-desktop/src-tauri/src/main.rs</code> spawn env. Requires end-to-end run validation against papercup/sheets-clone first (sequential, parallel-lane, and competition modes).</td></tr><tr><td>SQL feature import on TS path</td><td>~1 day</td><td>The <code dir="auto">features.json</code> → Postgres <code dir="auto">harness_&#x3C;slug>.harness_features</code> import. Bash currently does it via psql + python heredoc; observability layer only, doesn’t gate cutover.</td></tr><tr><td>Tag <code dir="auto">desktop-v0.0.2</code></td><td>~½ day</td><td>Run <code dir="auto">bin/release-local.sh 0.0.2 alpha</code> in the desktop checkout. Local Linux x86_64 build → signed → GitHub Release. No CI involved.</td></tr><tr><td>macOS code signing</td><td>~1 day my work + your $99/yr Apple cert</td><td>Requires a real Mac to build + notarize on; alpha skips macOS.</td></tr><tr><td>Windows code signing</td><td>~½ day my work + your $200-500/yr OV cert</td><td>Local cross-build via <code dir="auto">WITH_WINDOWS=1</code>; signing is a separate step against the OV cert. Eliminates SmartScreen warning (~1-2wk reputation curve).</td></tr><tr><td>Auto-updater wiring (Tauri)</td><td>✅ shipped</td><td>Runtime endpoint resolution + channel-aware manifest (<code dir="auto">/api/updates/manifest</code>) + signed releases via local builds (see desktop <code dir="auto">SHIPPING.md</code>).</td></tr><tr><td>Embedded-Postgres on desktop (drop Postgres prereq)</td><td>✅ shipped</td><td>Desktop sidecar bundles <code dir="auto">embedded-postgres</code> (real PG binary with logical replication) and spawns it per-workspace on a TCP port. Default ON via <code dir="auto">PAPERCUSP_USE_EMBEDDED_PG=1</code>; pglite-server remains as a legacy fallback. Zero WS works on desktop in this mode (same as browser). See <code dir="auto">libs/papercusp/packages/embedded-postgres-server/</code>.</td></tr><tr><td>Real branded icons</td><td>~½ day</td><td>Replace placeholder paper-cup glyph with designed icons. Pure aesthetics; doesn’t gate anything.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="after-all-of-the-above">After all of the above</h3><a class="sl-anchor-link" href="#after-all-of-the-above"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “After all of the above”</span></a></div>
-<p>| Item | Scope | Notes |
-|---|---|---|
-| Spec page MDX cleanup | ~1 day | The current MDX is JSX-heavy (preserved from React conversion). Convert tables to markdown tables, strip residual <code dir="auto">&#x3C;p></code> / <code dir="auto">&#x3C;ul></code> tags, normalize callouts to Starlight <code dir="auto">&#x3C;Aside type="note"></code> components. Cosmetic but improves authoring ergonomics. |
-| Move spec to its own repo | ~½ day | After v1.0 freeze. Per the spec’s own footer: “the canonical spec moves to its own repo and this page becomes a rendered version.” |
-| Plugin marketplace cloud hosting | ~3 days | <code dir="auto">apps/papercusp-marketplace/</code> runs locally today. Cloud-hosted version with auth + payments for paid plugins. |
-| Cloud-hosted Papercusp tier | ~2-3 weeks | Tauri sidecar packaged as a Docker container; Cloudflare Pages or Fly.io deploy; multi-tenant scoping; per-user billing. Same Hono code that runs locally. |
-| Multi-tenant cloud auth integration | ~1 week | OIDC / GitHub OAuth for the cloud tier. Tenant isolation in Postgres + plugin discovery. |
-| Linux ARM64 release validation | ~½ day | Tag desktop-v0.0.2 actually runs the new arm64 matrix. Smoke test on a real arm64 device (Pi 5 / Graviton). |
-| ~~Plugin migration story~~ | ✅ Shipped 2026-04-29 | New page at <a href="/internal/docs/spec/plugin-migration">/spec/plugin-migration</a> — covers the runtime semver bump rules, what the loader does to out-of-range plugins (refuses to load with a clear message rather than silent skip), step-by-step recipes for plugin authors and host operators when a major bump happens, and the <code dir="auto">PAPERCUSP_RUNTIME_VERSION_OVERRIDE</code> incident-response escape hatch (also shipped — read in <code dir="auto">getRuntimeVersion()</code> so operators can flip it without restarting). |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/harness/worktrees.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Worktrees &amp; isolation</span> </span> </a> <a href="/internal/docs/implementation/marketplace.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Marketplace implementation</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Scope</th><th>Notes</th></tr></thead><tbody><tr><td>Spec page MDX cleanup</td><td>~1 day</td><td>The current MDX is JSX-heavy (preserved from React conversion). Convert tables to markdown tables, strip residual <code dir="auto">&#x3C;p></code> / <code dir="auto">&#x3C;ul></code> tags, normalize callouts to Starlight <code dir="auto">&#x3C;Aside type="note"></code> components. Cosmetic but improves authoring ergonomics.</td></tr><tr><td>Move spec to its own repo</td><td>~½ day</td><td>After v1.0 freeze. Per the spec’s own footer: “the canonical spec moves to its own repo and this page becomes a rendered version.”</td></tr><tr><td>Plugin marketplace cloud hosting</td><td>~3 days</td><td><code dir="auto">apps/papercusp-marketplace/</code> runs locally today. Cloud-hosted version with auth + payments for paid plugins.</td></tr><tr><td>Cloud-hosted Papercusp tier</td><td>~2-3 weeks</td><td>Tauri sidecar packaged as a Docker container; Cloudflare Pages or Fly.io deploy; multi-tenant scoping; per-user billing. Same Hono code that runs locally.</td></tr><tr><td>Multi-tenant cloud auth integration</td><td>~1 week</td><td>OIDC / GitHub OAuth for the cloud tier. Tenant isolation in Postgres + plugin discovery.</td></tr><tr><td>Linux ARM64 release validation</td><td>~½ day</td><td>Tag desktop-v0.0.2 actually runs the new arm64 matrix. Smoke test on a real arm64 device (Pi 5 / Graviton).</td></tr><tr><td><del>Plugin migration story</del></td><td>✅ Shipped 2026-04-29</td><td>New page at <a href="/internal/docs/spec/plugin-migration">/spec/plugin-migration</a> — covers the runtime semver bump rules, what the loader does to out-of-range plugins (refuses to load with a clear message rather than silent skip), step-by-step recipes for plugin authors and host operators when a major bump happens, and the <code dir="auto">PAPERCUSP_RUNTIME_VERSION_OVERRIDE</code> incident-response escape hatch (also shipped — read in <code dir="auto">getRuntimeVersion()</code> so operators can flip it without restarting).</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/harness/worktrees.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Worktrees &amp; isolation</span> </span> </a> <a href="/internal/docs/implementation/marketplace.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Marketplace implementation</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

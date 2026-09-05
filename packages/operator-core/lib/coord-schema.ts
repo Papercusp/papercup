@@ -28,6 +28,7 @@ import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/records';
 import { renderAuthoredFieldsSuffix } from './agent-tools/coordination/message-fields';
 import { renderStaleBasisSuffix, STALE_BASIS_FIELD } from './agent-tools/coordination/stale-basis';
+import { renderMessageAgeSuffix } from './agent-tools/coordination/message-age';
 import {
   renderBlockedOnStatusSuffix,
   BLOCKED_ON_STATUS_FIELD,
@@ -342,6 +343,11 @@ export interface RenderInjectionOpts {
    * line — an auto-detected mention is opportunistic decoration, never loud.
    */
   bodyRefs?: ReadonlyMap<string, HydratedRef>;
+  /**
+   * EI-20261012762389206: clock seam for the message-AGE marker, so the
+   * renderer stays pure and its tests deterministic. Defaults to `Date.now()`.
+   */
+  nowMs?: number;
 }
 
 /**
@@ -360,6 +366,7 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
   if (entries.length === 0) return '';
   const maxLines = opts.maxLines ?? 8;
   const textCap = opts.textCap ?? 200;
+  const nowMs = opts.nowMs ?? Date.now();
 
   const collapsed = collapseIntents(collapseDigestNotifies(entries));
   const sorted = [...collapsed].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
@@ -503,8 +510,16 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
         ? ` ↩ reply with related_msg_id:${e.msg_id}`
         : '';
     const text = tag ? `[${tag}] ${body}` : body;
+    // EI-20261012762389206: a line's own AGE, rendered immediately after the
+    // text and before every other suffix — deliberately adjacent to the claim
+    // it falsifies. The injection block carries no timestamp at all, so a
+    // time-relative body ("sweeping in ~74s") reads as live however long it
+    // waited; a delayed wake then delivers a stale countdown as a live alarm.
+    // Silent under MESSAGE_AGE_MARKER_MIN_MS, so an ordinary live delta is
+    // byte-identical to before.
+    const ageSuffix = renderMessageAgeSuffix(e.ts, nowMs);
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${ageSuffix}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}${blockedOnSuffix}${replyHintSuffix}`,
     );
   }
   return lines.join('\n');

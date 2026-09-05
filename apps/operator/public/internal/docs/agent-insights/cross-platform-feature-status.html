@@ -145,13 +145,42 @@ with no WSL-specific code and logs “up on 127.0.0.1:8788” in <code dir="auto
 live with <code dir="auto">/healthz</code> 200. Confirms the P-006/007/008 port-probe-first-adoption + managed-child-spawn
 shape genuinely works under WSL as claimed above.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="verified-cat1-runtime-table-p-009">Verified CAT1 runtime table (P-009)</h2><a class="sl-anchor-link" href="#verified-cat1-runtime-table-p-009"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verified CAT1 runtime table (P-009)”</span></a></div>
-<p>| Surface | Verdict | Evidence |
-|---|---|---|
-| <code dir="auto">host-recycle.ts</code> | ✅ cross-platform | Mechanism = <code dir="auto">process.exit(75)</code> / <code dir="auto">exit(0)</code> + “supervisor restarts me”. Supervisor exists everywhere: systemd <code dir="auto">Restart=always</code> (Linux dev), Tauri <code dir="auto">decide_serve_respawn</code> (packaged, all OSes — exit-code-agnostic). |
-| <code dir="auto">memory-watchdog.ts</code> | ✅ cross-platform | RSS via <code dir="auto">process.memoryUsage().rss</code> (pure Node); recycle uses the same exit mechanism. The RSS high-water systemd drop-in (EI-1613) is Linux-dev tuning only; defaults apply elsewhere. |
-| <code dir="auto">shutdown-state.ts</code> | ✅ cross-platform | Pure <code dir="auto">process.on('SIGTERM'/'SIGINT')</code> drain latch — POSIX (darwin ✓); Windows runs the sidecar under WSL (= linux signal semantics). |
-| <code dir="auto">bghost-watchdog.mjs</code> | 🐧 Linux-only <strong>by design</strong> | Dev-box standalone script + unit watching <code dir="auto">papercup-bg-host</code> via <code dir="auto">systemctl</code>/<code dir="auto">journalctl</code>/<code dir="auto">/proc/&#x3C;pid>/environ</code>. Not imported by <code dir="auto">serve.ts</code>/<code dir="auto">host-bootstrap.ts</code> ⇒ not in the esbuild bundle ⇒ never ships. Not a gap. |
-| <code dir="auto">service-health.ts</code> <code dir="auto">probeBgHostCodeDrift</code> | ✅ platform-guarded (P-005) | Non-Linux returns <code dir="auto">{ up:true, present:false, note:'Linux/systemd-only…' }</code> instead of a failed <code dir="auto">systemctl</code> exec. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Verdict</th><th>Evidence</th></tr></thead><tbody><tr><td><code dir="auto">host-recycle.ts</code></td><td>✅ cross-platform</td><td>Mechanism = <code dir="auto">process.exit(75)</code> / <code dir="auto">exit(0)</code> + “supervisor restarts me”. Supervisor exists everywhere: systemd <code dir="auto">Restart=always</code> (Linux dev), Tauri <code dir="auto">decide_serve_respawn</code> (packaged, all OSes — exit-code-agnostic).</td></tr><tr><td><code dir="auto">memory-watchdog.ts</code></td><td>✅ cross-platform</td><td>RSS via <code dir="auto">process.memoryUsage().rss</code> (pure Node); recycle uses the same exit mechanism. The RSS high-water systemd drop-in (EI-1613) is Linux-dev tuning only; defaults apply elsewhere.</td></tr><tr><td><code dir="auto">shutdown-state.ts</code></td><td>✅ cross-platform</td><td>Pure <code dir="auto">process.on('SIGTERM'/'SIGINT')</code> drain latch — POSIX (darwin ✓); Windows runs the sidecar under WSL (= linux signal semantics).</td></tr><tr><td><code dir="auto">bghost-watchdog.mjs</code></td><td>🐧 Linux-only <strong>by design</strong></td><td>Dev-box standalone script + unit watching <code dir="auto">papercup-bg-host</code> via <code dir="auto">systemctl</code>/<code dir="auto">journalctl</code>/<code dir="auto">/proc/&#x3C;pid>/environ</code>. Not imported by <code dir="auto">serve.ts</code>/<code dir="auto">host-bootstrap.ts</code> ⇒ not in the esbuild bundle ⇒ never ships. Not a gap.</td></tr><tr><td><code dir="auto">service-health.ts</code> <code dir="auto">probeBgHostCodeDrift</code></td><td>✅ platform-guarded (P-005)</td><td>Non-Linux returns <code dir="auto">{ up:true, present:false, note:'Linux/systemd-only…' }</code> instead of a failed <code dir="auto">systemctl</code> exec.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-rest-of-the-72-file-systemd-sweep">The rest of the 72-file systemd sweep</h2><a class="sl-anchor-link" href="#the-rest-of-the-72-file-systemd-sweep"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The rest of the 72-file systemd sweep”</span></a></div>
 <p>Everything else lives in the dev/CI/release plane and never ships in the desktop bundle:
 green-checkpoint + deploy-cli + release-trigger, git-sync routines, the <code dir="auto">apps/operator/scripts/systemd/</code>
@@ -162,7 +191,7 @@ would be effort spent on infrastructure that only ever runs on the Linux dev box
 <li><strong>Mac-VM Keychain-fallback smoke</strong> — the supervisor boot + gateway spawn is now verified
 (2026-07-06), but the specific <code dir="auto">keychain:</code> credential branch (file bundle ABSENT) still needs a
 fresh-install Mac VM pass, since the current VM has a hand-provisioned credentials file.</li>
-<li>~~Windows-VM equivalent~~ — verified 2026-07-06 (WI-3080): WSL sidecar boots the supervisor,
+<li><del>Windows-VM equivalent</del> — verified 2026-07-06 (WI-3080): WSL sidecar boots the supervisor,
 gateway reachable, confirmed live.</li>
 <li><strong>Sidecar-spawn extraction</strong> — <code dir="auto">gateway-sidecar-spawn.ts</code> is the third copy of the
 spawn/respawn/backoff shape; extract to a shared lib.</li>

@@ -93,13 +93,36 @@ before you fork). A one-off join across <code dir="auto">tool_invocations</code>
 you will never ask again is exactly what the escape hatch is for; that is not
 what this is about.</p>
 <p>Concretely, the reads that already have tools:</p>
-<p>| you want | use |
-|---|---|
-| what issue-family work is claimable now | <code dir="auto">work_items:claimable { harness }</code> — the SSOT floors, same oracle <code dir="auto">scheduler:get_next</code> runs |
-| a filtered work-item / issue slice | <code dir="auto">work_items:list</code> (server-side filters) |
-| the plan directory, or recent plans | <code dir="auto">plans:list { updatedSince, createdSince, order, limit }</code> |
-| plan COUNTS by status / harness / day | <code dir="auto">plans:list { groupBy, aggregateOnly }</code> |
-| pickable plan items across plans | <code dir="auto">plans:items { actionable: true }</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>you want</th><th>use</th></tr></thead><tbody><tr><td>what issue-family work is claimable now</td><td><code dir="auto">work_items:claimable { harness }</code> — the SSOT floors, same oracle <code dir="auto">scheduler:get_next</code> runs</td></tr><tr><td>a filtered work-item / issue slice</td><td><code dir="auto">work_items:list</code> (server-side filters)</td></tr><tr><td>the plan directory, or recent plans</td><td><code dir="auto">plans:list { updatedSince, createdSince, order, limit }</code></td></tr><tr><td>plan COUNTS by status / harness / day</td><td><code dir="auto">plans:list { groupBy, aggregateOnly }</code></td></tr><tr><td>pickable plan items across plans</td><td><code dir="auto">plans:items { actionable: true }</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-guard">The guard</h2><a class="sl-anchor-link" href="#the-guard"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The guard”</span></a></div>
 <p><code dir="auto">lint:sql-guidance-justified</code> (<code dir="auto">scripts/check-sql-guidance-justified.mjs</code>, gating
 in CI) scans <strong>agent-facing surfaces only</strong> — a tool’s own <code dir="auto">description:</code> /

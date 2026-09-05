@@ -94,11 +94,36 @@ command downloads the artifact <strong>through the operator proxy</strong>
 <li>Linux: the AppImage file size + the header chip reading the new version after relaunch.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="per-platform-swap">Per-platform swap</h2><a class="sl-anchor-link" href="#per-platform-swap"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Per-platform swap”</span></a></div>
-<p>| Platform | Artifact | Swap mechanism | Notes |
-|---|---|---|---|
-| Windows | <code dir="auto">-setup.exe</code> (Inno/NSIS) | installer runs, replaces exe | installed exe version bumps |
-| Linux | <code dir="auto">.AppImage</code> | <strong>in-place self-swap of the running AppImage</strong> | ONLY when launched from an AppImage (<code dir="auto">APPIMAGE</code> env present); else <code dir="auto">install_update</code> returns <code dir="auto">no_compatible_assets</code>. <code dir="auto">.deb</code> gets a fallback link, not a silent update. |
-| Mac | <code dir="auto">_universal.app.tar.gz</code> (+<code dir="auto">.sig</code>) | tar swap of the .app | universal binary, unsigned by Apple (D-002/D-006) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Platform</th><th>Artifact</th><th>Swap mechanism</th><th>Notes</th></tr></thead><tbody><tr><td>Windows</td><td><code dir="auto">-setup.exe</code> (Inno/NSIS)</td><td>installer runs, replaces exe</td><td>installed exe version bumps</td></tr><tr><td>Linux</td><td><code dir="auto">.AppImage</code></td><td><strong>in-place self-swap of the running AppImage</strong></td><td>ONLY when launched from an AppImage (<code dir="auto">APPIMAGE</code> env present); else <code dir="auto">install_update</code> returns <code dir="auto">no_compatible_assets</code>. <code dir="auto">.deb</code> gets a fallback link, not a silent update.</td></tr><tr><td>Mac</td><td><code dir="auto">_universal.app.tar.gz</code> (+<code dir="auto">.sig</code>)</td><td>tar swap of the .app</td><td>universal binary, unsigned by Apple (D-002/D-006)</td></tr></tbody></table>
 <p>Only the Linux leg exercises the AppImage self-swap path — verify it explicitly on
 a Linux release, not by analogy to Windows.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-2gib-linux-fallback--the-operational-gotcha">The >2GiB Linux fallback — the operational gotcha</h2><a class="sl-anchor-link" href="#the-2gib-linux-fallback--the-operational-gotcha"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The >2GiB Linux fallback — the operational gotcha”</span></a></div>

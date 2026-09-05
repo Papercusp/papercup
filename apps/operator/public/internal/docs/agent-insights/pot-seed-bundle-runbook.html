@@ -90,19 +90,72 @@ all the <strong>trust</strong> (admission, epoch keys, delta replication) and ev
 signatures). Nothing about the join changes — a build with no bundled seed, or with
 the feature flag off, takes the identical <strong>cold</strong> path.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-pieces-as-built">The pieces (as built)</h2><a class="sl-anchor-link" href="#the-pieces-as-built"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The pieces (as built)”</span></a></div>
-<p>| Concern | Module | Notes |
-| --- | --- | --- |
-| Generic core | <code dir="auto">libs/generic/seed-bundle</code> | manifest types + validation, pack/unpack, hashing, the <code dir="auto">SeedProvider</code> registry — behind a <code dir="auto">configure*()</code> seam (generic-first, <code dir="auto">BORROWABLE</code>). |
-| Corestore provider | <code dir="auto">sync/hyperbee/seed-provider-corestore.ts</code> | cut = copy each author core at its current length; restore = drop-in before boot. Blocks stay <strong>epoch-ciphertext</strong>. |
-| Git provider | <code dir="auto">sync/hyperbee/seed-provider-git.ts</code> | cut = a <code dir="auto">git bundle</code> set; restore = clone-from-bundle, re-point origin to GitHub, wire submodules; a later <code dir="auto">fetch</code> = delta only. |
-| Cut CLI | <code dir="auto">apps/operator/lib/release/cut-seed-cli.ts</code> | <code dir="auto">pickGitEncryption()</code> selects the git-seal key (below). Run at release-build time <strong>on the owner box</strong>. |
-| Restore entry | <code dir="auto">sync/hyperbee/restore-hive-seed.ts</code> | <code dir="auto">resolveSeedDir()</code> (escape hatch / override / autodetect) + <code dir="auto">onlyKinds</code> scoped restore. |
-| Deferred git | <code dir="auto">sync/hyperbee/deferred-git-restore.ts</code> | resolves the epoch key <strong>post-admission</strong> and re-restores the encrypted git store. |
-| Boot wiring | <code dir="auto">harness/bootstrap-papercusp-hive.ts</code> | <code dir="auto">seedBundleEnabled()</code> gate → <code dir="auto">defaultRestoreHiveSeed</code> (pre-join) → join → <code dir="auto">defaultRestoreDeferredGitSeed</code> (post-admission). |
-| Cold-path guard | <code dir="auto">sync/hyperbee/cold-join-canary.ts</code> + <code dir="auto">cold-join-executor.ts</code> | forces a periodic REAL cold join so the seeded path never lets the cold path bit-rot. |
-| E2E acceptance | <code dir="auto">sync/hyperbee/seed-e2e-measurement.ts</code> | pure cold-vs-seeded verdict (usable / join-exercised / delta-only / faster). |
-| Bundled epoch key | <code dir="auto">sync/hyperbee/bundled-epoch-key-provider.ts</code> + <code dir="auto">epoch-key-provider-chain.ts</code> | WI-3232/3288 “offline pot”: an <code dir="auto">EpochKeyProvider</code> that reads the epoch key straight from the seed’s <code dir="auto">epoch-keys.json</code> (no admission needed), chained as the member provider’s fallback. |
-| Offline log admission | <code dir="auto">sync/hyperbee/seed-log-admission.ts</code> | WI-3288: admits the seed manifest’s <code dir="auto">coreKeys</code> into the read-merge WITHOUT a swarm join, so a box that can never join still projects real content. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Module</th><th>Notes</th></tr></thead><tbody><tr><td>Generic core</td><td><code dir="auto">libs/generic/seed-bundle</code></td><td>manifest types + validation, pack/unpack, hashing, the <code dir="auto">SeedProvider</code> registry — behind a <code dir="auto">configure*()</code> seam (generic-first, <code dir="auto">BORROWABLE</code>).</td></tr><tr><td>Corestore provider</td><td><code dir="auto">sync/hyperbee/seed-provider-corestore.ts</code></td><td>cut = copy each author core at its current length; restore = drop-in before boot. Blocks stay <strong>epoch-ciphertext</strong>.</td></tr><tr><td>Git provider</td><td><code dir="auto">sync/hyperbee/seed-provider-git.ts</code></td><td>cut = a <code dir="auto">git bundle</code> set; restore = clone-from-bundle, re-point origin to GitHub, wire submodules; a later <code dir="auto">fetch</code> = delta only.</td></tr><tr><td>Cut CLI</td><td><code dir="auto">apps/operator/lib/release/cut-seed-cli.ts</code></td><td><code dir="auto">pickGitEncryption()</code> selects the git-seal key (below). Run at release-build time <strong>on the owner box</strong>.</td></tr><tr><td>Restore entry</td><td><code dir="auto">sync/hyperbee/restore-hive-seed.ts</code></td><td><code dir="auto">resolveSeedDir()</code> (escape hatch / override / autodetect) + <code dir="auto">onlyKinds</code> scoped restore.</td></tr><tr><td>Deferred git</td><td><code dir="auto">sync/hyperbee/deferred-git-restore.ts</code></td><td>resolves the epoch key <strong>post-admission</strong> and re-restores the encrypted git store.</td></tr><tr><td>Boot wiring</td><td><code dir="auto">harness/bootstrap-papercusp-hive.ts</code></td><td><code dir="auto">seedBundleEnabled()</code> gate → <code dir="auto">defaultRestoreHiveSeed</code> (pre-join) → join → <code dir="auto">defaultRestoreDeferredGitSeed</code> (post-admission).</td></tr><tr><td>Cold-path guard</td><td><code dir="auto">sync/hyperbee/cold-join-canary.ts</code> + <code dir="auto">cold-join-executor.ts</code></td><td>forces a periodic REAL cold join so the seeded path never lets the cold path bit-rot.</td></tr><tr><td>E2E acceptance</td><td><code dir="auto">sync/hyperbee/seed-e2e-measurement.ts</code></td><td>pure cold-vs-seeded verdict (usable / join-exercised / delta-only / faster).</td></tr><tr><td>Bundled epoch key</td><td><code dir="auto">sync/hyperbee/bundled-epoch-key-provider.ts</code> + <code dir="auto">epoch-key-provider-chain.ts</code></td><td>WI-3232/3288 “offline pot”: an <code dir="auto">EpochKeyProvider</code> that reads the epoch key straight from the seed’s <code dir="auto">epoch-keys.json</code> (no admission needed), chained as the member provider’s fallback.</td></tr><tr><td>Offline log admission</td><td><code dir="auto">sync/hyperbee/seed-log-admission.ts</code></td><td>WI-3288: admits the seed manifest’s <code dir="auto">coreKeys</code> into the read-merge WITHOUT a swarm join, so a box that can never join still projects real content.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="restore-before-join-state-machine">Restore-before-join state machine</h2><a class="sl-anchor-link" href="#restore-before-join-state-machine"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Restore-before-join state machine”</span></a></div>
 <ol>
 <li><strong><code dir="auto">seedBundleEnabled()</code></strong> — the <code dir="auto">FLAGS.POT_SEED_BUNDLE</code> master gate (below). OFF ⇒
@@ -227,15 +280,52 @@ hatch if a seed restore ever misbehaves in the field — no redeploy needed.</li
 <div class="sl-heading-wrapper level-h2"><h2 id="failure-modes--every-one-degrades-to-the-cold-path">Failure modes → every one degrades to the cold path</h2><a class="sl-anchor-link" href="#failure-modes--every-one-degrades-to-the-cold-path"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Failure modes → every one degrades to the cold path”</span></a></div>
 <p>The seed is a <strong>pure optimization</strong>; a fresh install is <strong>never bricked</strong> by a bad
 seed. Each failure resolves to the unchanged cold join:</p>
-<p>| Failure | Detection | Fallback |
-| --- | --- | --- |
-| No seed bundled | <code dir="auto">resolveSeedDir → null</code> | cold join (today’s behavior) |
-| Flag OFF | <code dir="auto">seedBundleEnabled() === false</code> | cold join |
-| <code dir="auto">--no-seed</code> set | <code dir="auto">resolveSeedDir().disabled</code> | cold join (operator opt-out) |
-| Corrupt / hash-mismatch bundle | provider <code dir="auto">restore</code> throws → caught | cold join, warned |
-| Encrypted git, no epoch key yet | <code dir="auto">buildMemberEpochKeyProvider → null</code> | git stays deferred; join’s cold clone back-fills |
-| Git sealed <code dir="auto">via: 'seed-key-op'</code> | no joiner delivery path | deferral never resolves → cold clone |
-| Wrong-keychain cut (divergent key) | member <code dir="auto">epoch_decrypt_fail</code> | deferral fails → cold clone (data-safe, just slow) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Failure</th><th>Detection</th><th>Fallback</th></tr></thead><tbody><tr><td>No seed bundled</td><td><code dir="auto">resolveSeedDir → null</code></td><td>cold join (today’s behavior)</td></tr><tr><td>Flag OFF</td><td><code dir="auto">seedBundleEnabled() === false</code></td><td>cold join</td></tr><tr><td><code dir="auto">--no-seed</code> set</td><td><code dir="auto">resolveSeedDir().disabled</code></td><td>cold join (operator opt-out)</td></tr><tr><td>Corrupt / hash-mismatch bundle</td><td>provider <code dir="auto">restore</code> throws → caught</td><td>cold join, warned</td></tr><tr><td>Encrypted git, no epoch key yet</td><td><code dir="auto">buildMemberEpochKeyProvider → null</code></td><td>git stays deferred; join’s cold clone back-fills</td></tr><tr><td>Git sealed <code dir="auto">via: 'seed-key-op'</code></td><td>no joiner delivery path</td><td>deferral never resolves → cold clone</td></tr><tr><td>Wrong-keychain cut (divergent key)</td><td>member <code dir="auto">epoch_decrypt_fail</code></td><td>deferral fails → cold clone (data-safe, just slow)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="keeping-the-cold-path-honest--the-cold-join-canary-d-007">Keeping the cold path honest — the cold-join canary (D-007)</h2><a class="sl-anchor-link" href="#keeping-the-cold-path-honest--the-cold-join-canary-d-007"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Keeping the cold path honest — the cold-join canary (D-007)”</span></a></div>
 <p>Because a seeded install stops exercising the full cold join on every boot, the cold
 path can silently bit-rot. The <strong>cold-join canary</strong> (<code dir="auto">cold-join-canary.ts</code> +
@@ -263,11 +353,37 @@ honestly-gated (<code dir="auto">PACKAGED_MEASURE_BUILD_REQUIRED</code>) — it 
 a build (deploys are frozen while green-checkpoint is stalled on an internal
 reference harness; no numbers are fabricated in-process).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="quick-reference--env--flags">Quick reference — env + flags</h2><a class="sl-anchor-link" href="#quick-reference--env--flags"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Quick reference — env + flags”</span></a></div>
-<p>| Knob | Effect |
-| --- | --- |
-| <code dir="auto">FLAGS.POT_SEED_BUNDLE</code> (default ON) | master kill-switch; OFF ⇒ cold path |
-| <code dir="auto">PAPERCUSP_NO_SEED=1</code> | per-launch escape hatch ⇒ cold path |
-| <code dir="auto">PAPERCUSP_SEED_DIR=&#x3C;dir></code> | override the seed dir (must contain <code dir="auto">manifest.json</code>) |
-| <code dir="auto">PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=&#x3C;n></code> | opt into the cold-join canary (default 0 = off) |
-| <code dir="auto">cut-seed-cli --sparse</code> | P-004: ship only the head-snapshot suffix of each corestore (needs <code dir="auto">FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER</code> ON to restore — default ON since the WI-3370 2026-07-10 split; the sibling <code dir="auto">FLAGS.SUBSTRATE_LOG_SNAPSHOT</code> producer flag stays dark but doesn’t gate restore) |
-| <code dir="auto">cut-seed-cli --emit-epoch-key</code> | WI-3232/3288: bundle the pot epoch key readable (<code dir="auto">epoch-keys.json</code>) so an offline box that never joins can still decrypt + admit the seed’s content (alpha-only trust relaxation) |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:59.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/pot-seed-bundle-design.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Seed-bundle design — installer-shipped shared-pot snapshot + live-join delta catch-up</span> </span> </a> <a href="/internal/docs/agent-insights/pot-survey-empty-frontier-is-not-a-read-bug.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">pot:survey returning empty frontier/plans is NOT a read-path bug — it is admission-starvation, and its counts are DIFFERENT from OverwatchBrief&#39;s (WI-4563)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Knob</th><th>Effect</th></tr></thead><tbody><tr><td><code dir="auto">FLAGS.POT_SEED_BUNDLE</code> (default ON)</td><td>master kill-switch; OFF ⇒ cold path</td></tr><tr><td><code dir="auto">PAPERCUSP_NO_SEED=1</code></td><td>per-launch escape hatch ⇒ cold path</td></tr><tr><td><code dir="auto">PAPERCUSP_SEED_DIR=&#x3C;dir></code></td><td>override the seed dir (must contain <code dir="auto">manifest.json</code>)</td></tr><tr><td><code dir="auto">PAPERCUSP_COLD_JOIN_CANARY_INTERVAL_SEC=&#x3C;n></code></td><td>opt into the cold-join canary (default 0 = off)</td></tr><tr><td><code dir="auto">cut-seed-cli --sparse</code></td><td>P-004: ship only the head-snapshot suffix of each corestore (needs <code dir="auto">FLAGS.SUBSTRATE_LOG_SNAPSHOT_READER</code> ON to restore — default ON since the WI-3370 2026-07-10 split; the sibling <code dir="auto">FLAGS.SUBSTRATE_LOG_SNAPSHOT</code> producer flag stays dark but doesn’t gate restore)</td></tr><tr><td><code dir="auto">cut-seed-cli --emit-epoch-key</code></td><td>WI-3232/3288: bundle the pot epoch key readable (<code dir="auto">epoch-keys.json</code>) so an offline box that never joins can still decrypt + admit the seed’s content (alpha-only trust relaxation)</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:59.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/pot-seed-bundle-design.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Seed-bundle design — installer-shipped shared-pot snapshot + live-join delta catch-up</span> </span> </a> <a href="/internal/docs/agent-insights/pot-survey-empty-frontier-is-not-a-read-bug.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">pot:survey returning empty frontier/plans is NOT a read-path bug — it is admission-starvation, and its counts are DIFFERENT from OverwatchBrief&#39;s (WI-4563)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

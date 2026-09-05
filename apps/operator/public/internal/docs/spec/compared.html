@@ -89,19 +89,72 @@ frameworks were surveyed. This is the survey that shaped the original design;
 it’s preserved here because the borrowed patterns still run in today’s engine
 (each mapped below). Star counts, project status, and authorship are as of the
 survey date.</p>
-<p>| Framework | Core idea | Pattern adopted |
-|---|---|---|
-| gstack | 23 role-based slash commands, “boil the lake” | “Boil the lake” (do fewer things perfectly) in role prompts |
-| Superpowers | 7-phase TDD iron law | TDD iron law in the validator |
-| GSD | Per-phase orchestrators, state-to-disk | Fresh contexts + cache-stable prompts |
-| Agentwise | 8 specialist agents in parallel + dashboard | Real-time dashboard |
-| Hermes | Autonomous orchestration with checkpoints | Named checkpoints <em>(since deprecated → <code dir="auto">needs-human</code> plan items)</em> |
-| Multi-Agent Ralph Loop | MemPalace 4-layer memory | Layered memory (raw → summary → MEMORY → identity) |
-| ComposioHQ Agent Orchestrator | Git worktrees per parallel agent | Worktrees per lane <em>(now transient scratch worktrees)</em> |
-| OpenSwarm | Linear-driven Worker/Reviewer pair | rejected — no external task source |
-| Conductor | Two-mode parallelism | Competition mode <em>(since removed → work-item redundancy)</em> |
-| claudecode-orchestrator | “Quality through truth” + service smoke-test | Evidence rule + smoke-test gate |
-| MOLTRON | Self-evolving Skills.md | <code dir="auto">TRICK:</code> observation-promotion convention |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Framework</th><th>Core idea</th><th>Pattern adopted</th></tr></thead><tbody><tr><td>gstack</td><td>23 role-based slash commands, “boil the lake"</td><td>"Boil the lake” (do fewer things perfectly) in role prompts</td></tr><tr><td>Superpowers</td><td>7-phase TDD iron law</td><td>TDD iron law in the validator</td></tr><tr><td>GSD</td><td>Per-phase orchestrators, state-to-disk</td><td>Fresh contexts + cache-stable prompts</td></tr><tr><td>Agentwise</td><td>8 specialist agents in parallel + dashboard</td><td>Real-time dashboard</td></tr><tr><td>Hermes</td><td>Autonomous orchestration with checkpoints</td><td>Named checkpoints <em>(since deprecated → <code dir="auto">needs-human</code> plan items)</em></td></tr><tr><td>Multi-Agent Ralph Loop</td><td>MemPalace 4-layer memory</td><td>Layered memory (raw → summary → MEMORY → identity)</td></tr><tr><td>ComposioHQ Agent Orchestrator</td><td>Git worktrees per parallel agent</td><td>Worktrees per lane <em>(now transient scratch worktrees)</em></td></tr><tr><td>OpenSwarm</td><td>Linear-driven Worker/Reviewer pair</td><td>rejected — no external task source</td></tr><tr><td>Conductor</td><td>Two-mode parallelism</td><td>Competition mode <em>(since removed → work-item redundancy)</em></td></tr><tr><td>claudecode-orchestrator</td><td>”Quality through truth” + service smoke-test</td><td>Evidence rule + smoke-test gate</td></tr><tr><td>MOLTRON</td><td>Self-evolving Skills.md</td><td><code dir="auto">TRICK:</code> observation-promotion convention</td></tr></tbody></table>
 <p>The ecosystem clustered into <strong>skill packs</strong> (gstack, Superpowers, GSD —
 human as orchestrator, one task at a time) and <strong>multi-agent runtimes</strong>
 (Agentwise, Hermes, Conductor, ComposioHQ — parallel agents, but each tied to

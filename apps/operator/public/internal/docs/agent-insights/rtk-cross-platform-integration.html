@@ -82,12 +82,42 @@ subcommand, its <code dir="auto">--help</code> says “query Rust types and prod
 a real name collision. <strong>Never <code dir="auto">cargo install rtk</code>.</strong> Use one of the correct
 sources below.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="per-platform-install-all-yield-the-real-rtk--hook-claude">Per-platform install (all yield the real <code dir="auto">rtk … hook claude</code>)</h2><a class="sl-anchor-link" href="#per-platform-install-all-yield-the-real-rtk--hook-claude"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Per-platform install (all yield the real rtk … hook claude)”</span></a></div>
-<p>| Platform | Install | Version got | Notes |
-|---|---|---|---|
-| <strong>Linux</strong> (dev box) | Homebrew bottle (<code dir="auto">brew install rtk</code>) → <code dir="auto">/home/linuxbrew/.linuxbrew/bin/rtk</code> | 0.43.0 | Surface A, live |
-| <strong>macOS</strong> (x86_64 Sonoma 14.8.5) | <code dir="auto">brew install rtk</code> → <code dir="auto">/usr/local/bin/rtk</code> | 0.43.0 | Verified 2026-07-06 |
-| <strong>Windows</strong> (prebuilt, PREFERRED) | Download <code dir="auto">rtk-x86_64-pc-windows-msvc.zip</code> from the GitHub release, extract to <code dir="auto">C:\tools\rtk</code>, add to PATH | 0.43.0 | Version-matches Linux/Mac |
-| <strong>Windows</strong> (from source) | <code dir="auto">cargo install --git https://github.com/rtk-ai/rtk</code> → <code dir="auto">%USERPROFILE%\.cargo\bin\rtk.exe</code> | 0.42.4 (tracks master) | Works; slightly behind the release |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Platform</th><th>Install</th><th>Version got</th><th>Notes</th></tr></thead><tbody><tr><td><strong>Linux</strong> (dev box)</td><td>Homebrew bottle (<code dir="auto">brew install rtk</code>) → <code dir="auto">/home/linuxbrew/.linuxbrew/bin/rtk</code></td><td>0.43.0</td><td>Surface A, live</td></tr><tr><td><strong>macOS</strong> (x86_64 Sonoma 14.8.5)</td><td><code dir="auto">brew install rtk</code> → <code dir="auto">/usr/local/bin/rtk</code></td><td>0.43.0</td><td>Verified 2026-07-06</td></tr><tr><td><strong>Windows</strong> (prebuilt, PREFERRED)</td><td>Download <code dir="auto">rtk-x86_64-pc-windows-msvc.zip</code> from the GitHub release, extract to <code dir="auto">C:\tools\rtk</code>, add to PATH</td><td>0.43.0</td><td>Version-matches Linux/Mac</td></tr><tr><td><strong>Windows</strong> (from source)</td><td><code dir="auto">cargo install --git https://github.com/rtk-ai/rtk</code> → <code dir="auto">%USERPROFILE%\.cargo\bin\rtk.exe</code></td><td>0.42.4 (tracks master)</td><td>Works; slightly behind the release</td></tr></tbody></table>
 <p>Release assets for v0.43.0: <code dir="auto">rtk-{x86_64,aarch64}-apple-darwin.tar.gz</code>,
 <code dir="auto">rtk-{x86_64-musl,aarch64-gnu}-unknown-linux.tar.gz</code>,
 <code dir="auto">rtk-x86_64-pc-windows-msvc.zip</code>, <code dir="auto">.deb</code>/<code dir="auto">.rpm</code>. (<code dir="auto">gh release view v0.43.0 --repo rtk-ai/rtk --json assets</code>.)</p>

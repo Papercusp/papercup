@@ -109,10 +109,30 @@ publishes no bare alias at all; its Claude entries are fully qualified (<code di
 cannot resolve, and the role is hard-down on every fire.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-asymmetry-that-hid-it-from-100-of-cup-spawns">The asymmetry that hid it from 100% of cup spawns</h2><a class="sl-anchor-link" href="#the-asymmetry-that-hid-it-from-100-of-cup-spawns"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The asymmetry that hid it from 100% of cup spawns”</span></a></div>
 <p>This is the part worth remembering, because the working process <strong>conceals</strong> the broken one:</p>
-<p>| process | sources | <code dir="auto">AGENT_CMD</code> | result |
-|---|---|---|---|
-| <code dir="auto">papercup-bg-host.service</code> | the <strong>staging</strong> tree’s <code dir="auto">apps/operator/.env.local</code> | <code dir="auto">claude -p</code> | mug/kettle always fine |
-| <code dir="auto">papercup-dev-api.service</code> | the <strong>release</strong> checkout’s copy — <strong>which does not exist</strong> | unset | every spawn it serves falls to <code dir="auto">omp -p</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>process</th><th>sources</th><th><code dir="auto">AGENT_CMD</code></th><th>result</th></tr></thead><tbody><tr><td><code dir="auto">papercup-bg-host.service</code></td><td>the <strong>staging</strong> tree’s <code dir="auto">apps/operator/.env.local</code></td><td><code dir="auto">claude -p</code></td><td>mug/kettle always fine</td></tr><tr><td><code dir="auto">papercup-dev-api.service</code></td><td>the <strong>release</strong> checkout’s copy — <strong>which does not exist</strong></td><td>unset</td><td>every spawn it serves falls to <code dir="auto">omp -p</code></td></tr></tbody></table>
 <p><code dir="auto">dev-api</code>’s <code dir="auto">ExecStart</code> is <code dir="auto">[ -f .env.local ] &#x26;&#x26; . ./.env.local</code>, so the missing file makes the
 sourcing <strong>silently no-op</strong>. And <code dir="auto">dev-api</code> is the process that serves <code dir="auto">cup:spawn</code>. Check both
 directly rather than reasoning about unit files:</p>

@@ -87,12 +87,37 @@ successor to park it properly on its first turn.</li>
 <div class="sl-heading-wrapper level-h2"><h2 id="flush-before-you-summarize">Flush BEFORE you summarize</h2><a class="sl-anchor-link" href="#flush-before-you-summarize"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Flush BEFORE you summarize”</span></a></div>
 <p>The core rule: <strong>externalize state to re-injected surfaces, then let the
 summary carry pointers, not copies.</strong> The surfaces:</p>
-<p>| State | Surface | Re-injected when |
-|---|---|---|
-| In-flight work-item progress | <code dir="auto">work_items:checkpoint { id, checkpoint }</code> | The item’s next invocation (yours or a successor’s) |
-| An armed loop’s progress | <code dir="auto">loop:checkpoint { did, left, insight, next }</code> | The next loop wake |
-| Scoped standing conclusions | <code dir="auto">facts:assert { scope, key, body }</code> | Every future orient/brief, verbatim, until retracted |
-| Fuzzy background knowledge | <code dir="auto">memory:remember</code> | Semantic recall (<code dir="auto">coord:orient</code> / <code dir="auto">memory:search</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>State</th><th>Surface</th><th>Re-injected when</th></tr></thead><tbody><tr><td>In-flight work-item progress</td><td><code dir="auto">work_items:checkpoint { id, checkpoint }</code></td><td>The item’s next invocation (yours or a successor’s)</td></tr><tr><td>An armed loop’s progress</td><td><code dir="auto">loop:checkpoint { did, left, insight, next }</code></td><td>The next loop wake</td></tr><tr><td>Scoped standing conclusions</td><td><code dir="auto">facts:assert { scope, key, body }</code></td><td>Every future orient/brief, verbatim, until retracted</td></tr><tr><td>Fuzzy background knowledge</td><td><code dir="auto">memory:remember</code></td><td>Semantic recall (<code dir="auto">coord:orient</code> / <code dir="auto">memory:search</code>)</td></tr></tbody></table>
 <p>Checkpoints and facts live in Postgres (<code dir="auto">harness_shared.carry_notes</code> — see
 <a href="/internal/docs/coordination/checkpoints-and-facts">checkpoints and facts</a>), so
 they survive compaction <em>losslessly</em> while summary prose degrades.</p>

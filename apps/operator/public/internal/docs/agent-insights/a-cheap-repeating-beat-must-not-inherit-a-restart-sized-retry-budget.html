@@ -92,14 +92,40 @@ because “the launcher treats any failure as a missed beat, never an error loop
 could not see that intent, and turned each shrug into ~30 attempts over 27–42s (observed on
 <strong>successes</strong>), with give-ups clustering at the full <strong>~90,000 ms</strong> window.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-numbers">The numbers</h3><a class="sl-anchor-link" href="#the-numbers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The numbers”</span></a></div>
-<p>| hour (UTC) | proxy-forwarded failures |
-|---|---|
-| 18:00 | 57 |
-| 19:00 | 151 |
-| 20:00 | 3,175 |
-| 21:00 | 3,822 |
-| 22:00 | 5,647 |
-| 23:00 (partial) | 8,107 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>hour (UTC)</th><th>proxy-forwarded failures</th></tr></thead><tbody><tr><td>18:00</td><td>57</td></tr><tr><td>19:00</td><td>151</td></tr><tr><td>20:00</td><td>3,175</td></tr><tr><td>21:00</td><td>3,822</td></tr><tr><td>22:00</td><td>5,647</td></tr><tr><td>23:00 (partial)</td><td>8,107</td></tr></tbody></table>
 <p><strong>97%</strong> of them were that one endpoint (13,330 of 13,754 in a 90-minute window). With ~140
 agents beating every ~60s, transient upstream slowness was multiplied ~30× on the hottest
 path in the system — and the amplified load <strong>sustained the slowness that caused it</strong>. That

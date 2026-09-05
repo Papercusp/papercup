@@ -134,34 +134,118 @@ the phone for free — the device JWT is a bearer token, and the
 <code dir="auto">/api/agent-tools/*</code> catch-all resolves it like any other.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="two-channels-at-a-glance">Two channels at a glance</h2><a class="sl-anchor-link" href="#two-channels-at-a-glance"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Two channels at a glance”</span></a></div>
 <p>A tool handler has two outbound channels available, projected uniformly across transports:</p>
-<p>| Channel | API | Wire | Replay on reconnect |
-|---|---|---|---|
-| <strong>Events</strong> | <code dir="auto">ctx.emit('name', payload)</code>, <code dir="auto">ctx.progress(pct, msg)</code> | typed SSE events / MCP notifications | Ring buffer (T2.2), bounded by <code dir="auto">replayBufferSize</code> |
-| <strong>State</strong> | <code dir="auto">ctx.askUser(spec)</code>, <code dir="auto">ctx.publishState(snapshot)</code> | <code dir="auto">state-snapshot</code> SSE on <code dir="auto">/api/operator/state-snapshot</code> | Current snapshot only — replay does not re-prompt |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Channel</th><th>API</th><th>Wire</th><th>Replay on reconnect</th></tr></thead><tbody><tr><td><strong>Events</strong></td><td><code dir="auto">ctx.emit('name', payload)</code>, <code dir="auto">ctx.progress(pct, msg)</code></td><td>typed SSE events / MCP notifications</td><td>Ring buffer (T2.2), bounded by <code dir="auto">replayBufferSize</code></td></tr><tr><td><strong>State</strong></td><td><code dir="auto">ctx.askUser(spec)</code>, <code dir="auto">ctx.publishState(snapshot)</code></td><td><code dir="auto">state-snapshot</code> SSE on <code dir="auto">/api/operator/state-snapshot</code></td><td>Current snapshot only — replay does not re-prompt</td></tr></tbody></table>
 <p>Cards (<code dir="auto">ctx.askUser</code>) and tool state (<code dir="auto">ctx.publishState</code>) live on the state channel because they’re not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The two installs have different conditions: <code dir="auto">ctx.askUser</code> is installed whenever the call has a <code dir="auto">workspaceId + runId</code> (always present for HTTP-projected calls), but <code dir="auto">ctx.publishState</code> is installed only when the tool <em>also</em> declares a <code dir="auto">state</code> schema. A tool with no <code dir="auto">state</code> schema gets <code dir="auto">ctx.publishState === undefined</code> even on an HTTP-projected call — publish snapshots from a state-shaped tool, and use <code dir="auto">ctx.emit</code> otherwise. See <a href="/internal/docs/endpoint-system/ask-user">ctx.askUser</a> and <a href="/internal/docs/endpoint-system/state-tools">state-shaped tools</a>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-its-packaged">How it’s packaged</h2><a class="sl-anchor-link" href="#how-its-packaged"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How it’s packaged”</span></a></div>
 <p>The endpoint system started life inside <code dir="auto">@papercusp/agent-mcp</code>. It has since been
 <strong>carved into a host-agnostic engine plus thin adapters</strong> (plan
 <code dir="auto">papercusp-tooldef-extraction-2026-05-29</code>), so the same dispatcher can be used outside
 Papercusp:</p>
-<p>| Package | Role |
-|---|---|
-| <strong><code dir="auto">@papercusp/tooldef</code></strong> | The engine — <code dir="auto">defineTool</code>, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. <strong>Zero host-coupled deps</strong>: no PG / Next / <code dir="auto">@restart</code>. Its only <code dir="auto">@papercusp/*</code> deps are three host-agnostic <code dir="auto">libs/generic/</code> libs (<code dir="auto">chat-protocol</code>, <code dir="auto">result-encoding</code>, <code dir="auto">rules</code>). Validator-agnostic (<a href="https://standardschema.dev">Standard Schema</a>); every host-specific rule is injected (table below). |
-| <strong><code dir="auto">@papercusp/tooldef-http</code></strong> | The HTTP transport adapter (<code dir="auto">handleHttpToolRequest</code> / <code dir="auto">…Streaming</code>). Resolves a request → tool, builds the ctx from <code dir="auto">X-Papercusp-*</code> headers, dispatches. Depends only on the engine + <code dir="auto">@papercusp/sse</code>. |
-| <strong><code dir="auto">@papercusp/ipc-endpoint-server</code></strong> | The IPC (unix-socket) transport adapter. IPC exposure is <strong>opt-in per tool</strong> via <code dir="auto">expose: { ipc: true }</code> in <code dir="auto">defineTool</code> — unlike HTTP + MCP, which project automatically. |
-| <strong><code dir="auto">@papercusp/tooldef-mcp</code></strong> | The MCP transport bridge primitives — generic <code dir="auto">mcp-handler</code> <code dir="auto">extra</code> extractors (<code dir="auto">bearerFromExtra</code> / <code dir="auto">urlFromExtra</code> / <code dir="auto">headersFromExtra</code>) plus a projected-dispatch→MCP-result mapper (extracted under P-031). The host-specific auth + spawn-context assembly stays in the host route layer. |
-| <strong><code dir="auto">@papercusp/agent-mcp</code></strong> | The <strong>Papercusp host adapter</strong> — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping) and re-exports the engine + HTTP surface so existing import sites are untouched. The <strong>generic MCP-bridge glue</strong> now lives in <code dir="auto">@papercusp/tooldef-mcp</code>; only the host-specific spawn-context auth and HMAC spawn <em>verification</em> stay in the operator route layer (<code dir="auto">packages/operator-core/lib/spawn-signing.ts</code>, wired in the transport <code dir="auto">_mcp-handler</code>). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Package</th><th>Role</th></tr></thead><tbody><tr><td><strong><code dir="auto">@papercusp/tooldef</code></strong></td><td>The engine — <code dir="auto">defineTool</code>, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. <strong>Zero host-coupled deps</strong>: no PG / Next / <code dir="auto">@restart</code>. Its only <code dir="auto">@papercusp/*</code> deps are three host-agnostic <code dir="auto">libs/generic/</code> libs (<code dir="auto">chat-protocol</code>, <code dir="auto">result-encoding</code>, <code dir="auto">rules</code>). Validator-agnostic (<a href="https://standardschema.dev">Standard Schema</a>); every host-specific rule is injected (table below).</td></tr><tr><td><strong><code dir="auto">@papercusp/tooldef-http</code></strong></td><td>The HTTP transport adapter (<code dir="auto">handleHttpToolRequest</code> / <code dir="auto">…Streaming</code>). Resolves a request → tool, builds the ctx from <code dir="auto">X-Papercusp-*</code> headers, dispatches. Depends only on the engine + <code dir="auto">@papercusp/sse</code>.</td></tr><tr><td><strong><code dir="auto">@papercusp/ipc-endpoint-server</code></strong></td><td>The IPC (unix-socket) transport adapter. IPC exposure is <strong>opt-in per tool</strong> via <code dir="auto">expose: { ipc: true }</code> in <code dir="auto">defineTool</code> — unlike HTTP + MCP, which project automatically.</td></tr><tr><td><strong><code dir="auto">@papercusp/tooldef-mcp</code></strong></td><td>The MCP transport bridge primitives — generic <code dir="auto">mcp-handler</code> <code dir="auto">extra</code> extractors (<code dir="auto">bearerFromExtra</code> / <code dir="auto">urlFromExtra</code> / <code dir="auto">headersFromExtra</code>) plus a projected-dispatch→MCP-result mapper (extracted under P-031). The host-specific auth + spawn-context assembly stays in the host route layer.</td></tr><tr><td><strong><code dir="auto">@papercusp/agent-mcp</code></strong></td><td>The <strong>Papercusp host adapter</strong> — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping) and re-exports the engine + HTTP surface so existing import sites are untouched. The <strong>generic MCP-bridge glue</strong> now lives in <code dir="auto">@papercusp/tooldef-mcp</code>; only the host-specific spawn-context auth and HMAC spawn <em>verification</em> stay in the operator route layer (<code dir="auto">packages/operator-core/lib/spawn-signing.ts</code>, wired in the transport <code dir="auto">_mcp-handler</code>).</td></tr></tbody></table>
 <p>Everything Papercusp-specific is a <strong>host-injected seam</strong> with a generic engine default:</p>
-<p>| Concern | Seam | Engine default |
-|---|---|---|
-| Roles | augment the <code dir="auto">RoleRegistry</code> interface → shapes <code dir="auto">AgentRole</code> | <code dir="auto">string</code> (any role) |
-| Quota window + ceiling | <code dir="auto">DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)</code> | run-scoped / <code dir="auto">perRun</code> |
-| Capability → tier | <code dir="auto">setCapabilityTierResolver</code> (read via <code dir="auto">tierFor</code>) | <code dir="auto">'low'</code> |
-| Gate bypass (privileged callers) | <code dir="auto">ctx.gateBypass { role?, capability?, quota? }</code> | absent ⇒ all gates enforce |
-| Schema validation | <code dir="auto">args</code> / <code dir="auto">state</code> / card <code dir="auto">dataSchema</code> typed <code dir="auto">StandardSchemaV1</code>; <code dir="auto">standardValidate</code> | any Standard Schema validator |
-| Schema → JSON Schema | <code dir="auto">setJsonSchemaAdapter</code> (read via <code dir="auto">toJsonSchema</code>) | Zod 4 <code dir="auto">toJSONSchema</code> |
-| Quota / telemetry I/O | <code dir="auto">DispatchProjectedDeps.readQuotaState</code> / <code dir="auto">recordInvocation</code> | no-ops |
-| Transaction handle | <code dir="auto">ToolContext&#x3C;Tx = any></code> | <code dir="auto">any</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Seam</th><th>Engine default</th></tr></thead><tbody><tr><td>Roles</td><td>augment the <code dir="auto">RoleRegistry</code> interface → shapes <code dir="auto">AgentRole</code></td><td><code dir="auto">string</code> (any role)</td></tr><tr><td>Quota window + ceiling</td><td><code dir="auto">DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)</code></td><td>run-scoped / <code dir="auto">perRun</code></td></tr><tr><td>Capability → tier</td><td><code dir="auto">setCapabilityTierResolver</code> (read via <code dir="auto">tierFor</code>)</td><td><code dir="auto">'low'</code></td></tr><tr><td>Gate bypass (privileged callers)</td><td><code dir="auto">ctx.gateBypass { role?, capability?, quota? }</code></td><td>absent ⇒ all gates enforce</td></tr><tr><td>Schema validation</td><td><code dir="auto">args</code> / <code dir="auto">state</code> / card <code dir="auto">dataSchema</code> typed <code dir="auto">StandardSchemaV1</code>; <code dir="auto">standardValidate</code></td><td>any Standard Schema validator</td></tr><tr><td>Schema → JSON Schema</td><td><code dir="auto">setJsonSchemaAdapter</code> (read via <code dir="auto">toJsonSchema</code>)</td><td>Zod 4 <code dir="auto">toJSONSchema</code></td></tr><tr><td>Quota / telemetry I/O</td><td><code dir="auto">DispatchProjectedDeps.readQuotaState</code> / <code dir="auto">recordInvocation</code></td><td>no-ops</td></tr><tr><td>Transaction handle</td><td><code dir="auto">ToolContext&#x3C;Tx = any></code></td><td><code dir="auto">any</code></td></tr></tbody></table>
 <p>The engine is provably standalone — see <code dir="auto">libs/generic/tooldef/examples/standalone-inprocess.ts</code>
 (registers + dispatches a tool importing <strong>only</strong> <code dir="auto">@papercusp/tooldef</code>). It is also
 mirrored to a standalone <code dir="auto">Papercusp/tooldef</code> repo for external consumers.</p>

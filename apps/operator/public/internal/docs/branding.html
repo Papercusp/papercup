@@ -88,28 +88,92 @@ identifiers, database rows, or tools.</li>
 <aside aria-label="Public default vs. the-hive skin" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>Public default vs. the-hive skin </p>  <div class="starlight-aside__content"><p>The public-release default is the <strong>classic / Pot</strong> lexicon (the cup theme). The <strong>The Swarm</strong> (<code dir="auto">the-hive</code>) pack — Hive / Sentinel / Queen / Overwatch / Scout / Bee — is preserved but flag-gated for internal and testing use (<code dir="auto">restore-pot-lexicon-public-release-2026-07-04</code>). The implementation pack id remains <code dir="auto">the-hive</code> for reversibility; when the flag is on, the user creates or joins a <strong>Hive</strong>, and inside a Hive many <strong>Swarms</strong> can run.</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="classic-identity">Classic Identity</h2><a class="sl-anchor-link" href="#classic-identity"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Classic Identity”</span></a></div>
 <p>Classic assets stay in their existing locations and must not be overwritten by the-hive-skin work:</p>
-<p>| Surface | Path |
-|---|---|
-| Operator logo component | <code dir="auto">apps/operator/app/_components/OperatorLogoMark.tsx</code> |
-| Operator wordmark component | <code dir="auto">apps/operator/app/_components/OperatorWordmarkLockup.tsx</code> |
-| Operator favicon/icon | <code dir="auto">apps/operator/app/icon.svg</code> |
-| Public wordmark | <code dir="auto">apps/operator/public/wordmark.svg</code> |
-| Desktop icon set | <code dir="auto">papercusp-desktop/src-tauri/icons/</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Path</th></tr></thead><tbody><tr><td>Operator logo component</td><td><code dir="auto">apps/operator/app/_components/OperatorLogoMark.tsx</code></td></tr><tr><td>Operator wordmark component</td><td><code dir="auto">apps/operator/app/_components/OperatorWordmarkLockup.tsx</code></td></tr><tr><td>Operator favicon/icon</td><td><code dir="auto">apps/operator/app/icon.svg</code></td></tr><tr><td>Public wordmark</td><td><code dir="auto">apps/operator/public/wordmark.svg</code></td></tr><tr><td>Desktop icon set</td><td><code dir="auto">papercusp-desktop/src-tauri/icons/</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-swarm-identity">The Swarm Identity</h2><a class="sl-anchor-link" href="#the-swarm-identity"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The Swarm Identity”</span></a></div>
 <p>The Swarm direction is engineered swarm intelligence: honey-amber signal color on charcoal, precise hex geometry, a primary bee-swarm mark for the app, and a distinct Queen mark for the brain.</p>
-<p>| Asset | Path |
-|---|---|
-| Primary mark | <code dir="auto">apps/operator/public/brand/the-hive/primary-mark.svg</code> |
-| Primary monochrome mark | <code dir="auto">apps/operator/public/brand/the-hive/primary-mark.mono.svg</code> |
-| Queen mark | <code dir="auto">apps/operator/public/brand/the-hive/queen-mark.svg</code> |
-| Queen monochrome mark | <code dir="auto">apps/operator/public/brand/the-hive/queen-mark.mono.svg</code> |
-| Wordmark | <code dir="auto">apps/operator/public/brand/the-hive/wordmark.svg</code> |
-| Wordmark lockup | <code dir="auto">apps/operator/public/brand/the-hive/wordmark-lockup.svg</code> |
-| Favicon | <code dir="auto">apps/operator/public/brand/the-hive/favicon.svg</code> and <code dir="auto">favicon.png</code> |
-| Comb motif | <code dir="auto">apps/operator/public/brand/the-hive/comb-motif.svg</code> |
-| Lexicon icons | <code dir="auto">apps/operator/public/brand/the-hive/icons/*.svg</code> |
-| Desktop icon pack | <code dir="auto">papercusp-desktop/src-tauri/icons/the-hive/</code> and <code dir="auto">libs/papercusp/apps/desktop/src-tauri/icons/the-hive/</code> |
-| React mark components | <code dir="auto">apps/operator/app/_components/HiveVisualIdentity.tsx</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Asset</th><th>Path</th></tr></thead><tbody><tr><td>Primary mark</td><td><code dir="auto">apps/operator/public/brand/the-hive/primary-mark.svg</code></td></tr><tr><td>Primary monochrome mark</td><td><code dir="auto">apps/operator/public/brand/the-hive/primary-mark.mono.svg</code></td></tr><tr><td>Queen mark</td><td><code dir="auto">apps/operator/public/brand/the-hive/queen-mark.svg</code></td></tr><tr><td>Queen monochrome mark</td><td><code dir="auto">apps/operator/public/brand/the-hive/queen-mark.mono.svg</code></td></tr><tr><td>Wordmark</td><td><code dir="auto">apps/operator/public/brand/the-hive/wordmark.svg</code></td></tr><tr><td>Wordmark lockup</td><td><code dir="auto">apps/operator/public/brand/the-hive/wordmark-lockup.svg</code></td></tr><tr><td>Favicon</td><td><code dir="auto">apps/operator/public/brand/the-hive/favicon.svg</code> and <code dir="auto">favicon.png</code></td></tr><tr><td>Comb motif</td><td><code dir="auto">apps/operator/public/brand/the-hive/comb-motif.svg</code></td></tr><tr><td>Lexicon icons</td><td><code dir="auto">apps/operator/public/brand/the-hive/icons/*.svg</code></td></tr><tr><td>Desktop icon pack</td><td><code dir="auto">papercusp-desktop/src-tauri/icons/the-hive/</code> and <code dir="auto">libs/papercusp/apps/desktop/src-tauri/icons/the-hive/</code></td></tr><tr><td>React mark components</td><td><code dir="auto">apps/operator/app/_components/HiveVisualIdentity.tsx</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="runtime-behavior">Runtime Behavior</h2><a class="sl-anchor-link" href="#runtime-behavior"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Runtime Behavior”</span></a></div>
 <p>The Swarm skin is selected by <code dir="auto">FLAGS.THE_HIVE</code> / <code dir="auto">papercusp-the-hive</code>.</p>
 <ul>
@@ -126,21 +190,82 @@ identifiers, database rows, or tools.</li>
 tools. The <strong>classic / Pot</strong> column is the public-release default (flag OFF); the
 <strong>the-hive / Swarm</strong> column is the flag-on internal/testing skin. Source of truth:
 <code dir="auto">libs/generic/lexicon/src/packs.ts</code>.</p>
-<p>| Concept (term key) | Classic / Pot (default, flag OFF) | the-hive / Swarm (flag ON) |
-|---|---|---|
-| Project / deployable group (<code dir="auto">pot</code>) | Pot | Hive |
-| Live set of working agents (<code dir="auto">fleet</code>) | Fleet | Colony |
-| Brain / high-judgment orchestrator (<code dir="auto">brain</code>) | Mug | Queen |
-| Always-on operator (<code dir="auto">operator</code>) | Papercup | Sentinel |
-| Health / overwatch monitor (<code dir="auto">overwatch</code>) | Kettle | Overwatch |
-| Idea-radar scout (<code dir="auto">scout</code>) | Blender | Scout |
-| AI agent / worker (<code dir="auto">contributor</code>) | Cup | Bee |
-| Human member (<code dir="auto">human</code>) | Human | Keeper |
-| Unit of work (<code dir="auto">chunk</code>) | Chunk | Cell |
-| Shared store (<code dir="auto">cupboard</code>) | Cupboard | Comb |
-| Machine / deployment instance (<code dir="auto">node</code>) | Node | Swarm |
-| Collaboration substrate (<code dir="auto">substrate</code>) | Coordination | Hive Mind |
-| Agent signal / handoff (<code dir="auto">signal</code>) | Signal | Waggle |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concept (term key)</th><th>Classic / Pot (default, flag OFF)</th><th>the-hive / Swarm (flag ON)</th></tr></thead><tbody><tr><td>Project / deployable group (<code dir="auto">pot</code>)</td><td>Pot</td><td>Hive</td></tr><tr><td>Live set of working agents (<code dir="auto">fleet</code>)</td><td>Fleet</td><td>Colony</td></tr><tr><td>Brain / high-judgment orchestrator (<code dir="auto">brain</code>)</td><td>Mug</td><td>Queen</td></tr><tr><td>Always-on operator (<code dir="auto">operator</code>)</td><td>Papercup</td><td>Sentinel</td></tr><tr><td>Health / overwatch monitor (<code dir="auto">overwatch</code>)</td><td>Kettle</td><td>Overwatch</td></tr><tr><td>Idea-radar scout (<code dir="auto">scout</code>)</td><td>Blender</td><td>Scout</td></tr><tr><td>AI agent / worker (<code dir="auto">contributor</code>)</td><td>Cup</td><td>Bee</td></tr><tr><td>Human member (<code dir="auto">human</code>)</td><td>Human</td><td>Keeper</td></tr><tr><td>Unit of work (<code dir="auto">chunk</code>)</td><td>Chunk</td><td>Cell</td></tr><tr><td>Shared store (<code dir="auto">cupboard</code>)</td><td>Cupboard</td><td>Comb</td></tr><tr><td>Machine / deployment instance (<code dir="auto">node</code>)</td><td>Node</td><td>Swarm</td></tr><tr><td>Collaboration substrate (<code dir="auto">substrate</code>)</td><td>Coordination</td><td>Hive Mind</td></tr><tr><td>Agent signal / handoff (<code dir="auto">signal</code>)</td><td>Signal</td><td>Waggle</td></tr></tbody></table>
 <p>The agent-role marks map to cup glyphs in the classic pack (matching <code dir="auto">apps/tui</code>
 <code dir="auto">agent_pane_kind.rs</code>, fixed regardless of pack): <strong>Mug</strong> ☕ (brain/queen), <strong>Kettle</strong> 🫖
 (overwatch), <strong>Papercup</strong> 🥤 (operator/sentinel), <strong>Cup</strong> 🍵 (contributor/bee). Nav icons in
@@ -168,17 +293,62 @@ the flag-on lexicon term is <code dir="auto">Sentinel</code>.</p>
 <li><strong>Prototype demo palette</strong> — the brighter <code dir="auto">#EAB308</code>/<code dir="auto">#FDE68A</code> honey used only in the <code dir="auto">/dev/swarm-logos</code> exploration page (<code dir="auto">swarm-logos.module.css</code>). Not a runtime theme.</li>
 </ul>
 <p>The shipped Honeycomb token pack is dark-first and WCAG-oriented (values are the runtime CSS variables emitted under <code dir="auto">[data-theme="honeycomb"]</code>):</p>
-<p>| Token | Value | Use |
-|---|---:|---|
-| Background | <code dir="auto">#070704</code> | app shell base |
-| Deepest background | <code dir="auto">#030303</code> | maximum depth |
-| Popover surface | <code dir="auto">#11100B</code> | cards and elevated panels |
-| Raised surface | <code dir="auto">#15130B</code> | elevated chrome |
-| Text | <code dir="auto">#F4EBD4</code> | primary foreground |
-| Muted text | <code dir="auto">#9F9378</code> | secondary foreground |
-| Primary accent | <code dir="auto">#C68E24</code> | muted honey action color |
-| Strong accent | <code dir="auto">#D6A64A</code> | hover/focus accent |
-| Accent ink | <code dir="auto">#130D03</code> | text on honey |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Token</th><th align="right">Value</th><th>Use</th></tr></thead><tbody><tr><td>Background</td><td align="right"><code dir="auto">#070704</code></td><td>app shell base</td></tr><tr><td>Deepest background</td><td align="right"><code dir="auto">#030303</code></td><td>maximum depth</td></tr><tr><td>Popover surface</td><td align="right"><code dir="auto">#11100B</code></td><td>cards and elevated panels</td></tr><tr><td>Raised surface</td><td align="right"><code dir="auto">#15130B</code></td><td>elevated chrome</td></tr><tr><td>Text</td><td align="right"><code dir="auto">#F4EBD4</code></td><td>primary foreground</td></tr><tr><td>Muted text</td><td align="right"><code dir="auto">#9F9378</code></td><td>secondary foreground</td></tr><tr><td>Primary accent</td><td align="right"><code dir="auto">#C68E24</code></td><td>muted honey action color</td></tr><tr><td>Strong accent</td><td align="right"><code dir="auto">#D6A64A</code></td><td>hover/focus accent</td></tr><tr><td>Accent ink</td><td align="right"><code dir="auto">#130D03</code></td><td>text on honey</td></tr></tbody></table>
 <p>Semantic colors remain distinct from the primary honey accent: success green (<code dir="auto">#68D391</code>), danger rose (<code dir="auto">#E06F69</code>), and warning honey (<code dir="auto">#D6A64A</code>).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="motif-rules">Motif Rules</h2><a class="sl-anchor-link" href="#motif-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Motif Rules”</span></a></div>
 <p>Use hexagons as layout structure, not wallpaper. The comb motif works for background texture, dividers, empty states, and swarm/loading states when it is low-contrast and aligned to the UI grid.</p>

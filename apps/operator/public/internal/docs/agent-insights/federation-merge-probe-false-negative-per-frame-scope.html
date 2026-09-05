@@ -87,10 +87,27 @@ nothing.</p>
 <p><strong>A pot has one identity but two local names.</strong> <code dir="auto">harness_shared.pots.public_key</code>
 is byte-identical on every frame in the pot. <code dir="auto">(workspace_id, pot_home_slug)</code> is
 <strong>local to each machine</strong>:</p>
-<p>| frame | workspace_id | pot_home_slug |
-| --- | --- | --- |
-| fed-a | <code dir="auto">workspace-319be5e5</code> | <code dir="auto">spoon-knife-pot</code> |
-| fed-b | <code dir="auto">workspace-b31a7a01</code> | <code dir="auto">octocat-spoon-knife</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>frame</th><th>workspace_id</th><th>pot_home_slug</th></tr></thead><tbody><tr><td>fed-a</td><td><code dir="auto">workspace-319be5e5</code></td><td><code dir="auto">spoon-knife-pot</code></td></tr><tr><td>fed-b</td><td><code dir="auto">workspace-b31a7a01</code></td><td><code dir="auto">octocat-spoon-knife</code></td></tr></tbody></table>
 <p>So a probe that resolves the workspace on one frame and reuses it on the other —</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># WRONG: WS is resolved on fed-a…</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">WS</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">$(</span><span style="--0:#82AAFF;--1:#3B61B0">sql</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#ECC48D;--1:#3B61B0">a</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">SELECT workspace_id FROM harness_shared.pot_members</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#ECC48D;--1:#984E4D">             </span></span><span style="--0:#ECC48D;--1:#984E4D">WHERE coalesce(origin,'local')='local' ORDER BY joined_at LIMIT 1;</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">)</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># …then written on BOTH frames</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">write_row</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">a</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$WS</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$FWD</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#919F9F;--1:#5F636F"># fine, it is A's own workspace</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">write_row</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">b</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$WS</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$REV</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#919F9F;--1:#5F636F"># lands in a tuple fed-b has never booted</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="WS=&#x22;$(sql a &#x22;SELECT workspace_id FROM harness_shared.pot_members             WHERE coalesce(origin,&#x27;local&#x27;)=&#x27;local&#x27; ORDER BY joined_at LIMIT 1;&#x22;)&#x22;write_row a &#x22;$WS&#x22; &#x22;$FWD&#x22;   # fine, it is A&#x27;s own workspacewrite_row b &#x22;$WS&#x22; &#x22;$REV&#x22;   # lands in a tuple fed-b has never booted"><div></div></button></div></figure></div>
 <p>— writes the reverse row into <code dir="auto">workspace-319be5e5/spoon-knife</code> <strong>on fed-b</strong>, a
@@ -110,11 +127,36 @@ pot and you get a loud rejection — which is how the trap was finally noticed.)
 separates the two causes:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="sql"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">SELECT</span><span style="--0:#D6DEEB;--1:#403F53"> workspace_id, harness_slug,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">       </span></span><span style="--0:#D6DEEB;--1:#403F53">(drained_at     </span><span style="--0:#C792EA;--1:#8844AE">IS NOT NULL</span><span style="--0:#D6DEEB;--1:#403F53">) </span><span style="--0:#C792EA;--1:#8844AE">AS</span><span style="--0:#D6DEEB;--1:#403F53"> drained,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">       </span></span><span style="--0:#D6DEEB;--1:#403F53">(quarantined_at </span><span style="--0:#C792EA;--1:#8844AE">IS NOT NULL</span><span style="--0:#D6DEEB;--1:#403F53">) </span><span style="--0:#C792EA;--1:#8844AE">AS</span><span style="--0:#D6DEEB;--1:#403F53"> quarantined</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">FROM</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">harness_shared</span><span style="--0:#D6DEEB;--1:#403F53">.</span><span style="--0:#82AAFF;--1:#3B61B0">substrate_outbox</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">WHERE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">key</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">&#x3C;the feature_id you wrote></span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="SELECT workspace_id, harness_slug,       (drained_at     IS NOT NULL) AS drained,       (quarantined_at IS NOT NULL) AS quarantinedFROM harness_shared.substrate_outboxWHERE key = &#x27;<the feature_id you wrote>&#x27;;"><div></div></button></div></figure></div>
 <p>Measured on the live rig, this cleanly split the probes:</p>
-<p>| probe | tuple written | drained | reality |
-| --- | --- | --- | --- |
-| <code dir="auto">F-6209-REV-…</code> | <code dir="auto">workspace-319be5e5/spoon-knife</code> on <strong>B</strong> | <code dir="auto">f</code> | mis-targeted — never publishable |
-| <code dir="auto">F-6209-REVTRUE-…</code> | <code dir="auto">workspace-b31a7a01/octocat-spoon-knife</code> | <code dir="auto">t</code> | arrived on A in <strong>6s</strong> |
-| <code dir="auto">F-6209-SK-REV-…</code> | <code dir="auto">workspace-b31a7a01/spoon-knife</code> | <code dir="auto">t</code> | arrived on A, but <strong>after 90s</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>probe</th><th>tuple written</th><th>drained</th><th>reality</th></tr></thead><tbody><tr><td><code dir="auto">F-6209-REV-…</code></td><td><code dir="auto">workspace-319be5e5/spoon-knife</code> on <strong>B</strong></td><td><code dir="auto">f</code></td><td>mis-targeted — never publishable</td></tr><tr><td><code dir="auto">F-6209-REVTRUE-…</code></td><td><code dir="auto">workspace-b31a7a01/octocat-spoon-knife</code></td><td><code dir="auto">t</code></td><td>arrived on A in <strong>6s</strong></td></tr><tr><td><code dir="auto">F-6209-SK-REV-…</code></td><td><code dir="auto">workspace-b31a7a01/spoon-knife</code></td><td><code dir="auto">t</code></td><td>arrived on A, but <strong>after 90s</strong></td></tr></tbody></table>
 <p>Read it as:</p>
 <ul>
 <li><strong>no outbox row</strong> → the capture trigger never fired; the INSERT targeted

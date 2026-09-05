@@ -83,10 +83,27 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="step-1--the-two-store-rule-and-the-zero-that-lies">Step 1 — the two-store rule, and the zero that lies</h2><a class="sl-anchor-link" href="#step-1--the-two-store-rule-and-the-zero-that-lies"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Step 1 — the two-store rule, and the zero that lies”</span></a></div>
 <p><strong>This is the trap that costs a whole criterion, and it fails toward a false PASS.</strong></p>
 <p>Two different stores answer “what did this agent do”, and they do not overlap:</p>
-<p>| you want to know | read | scoped to |
-|---|---|---|
-| which <strong>MCP tools</strong> the agent called (<code dir="auto">goals:create</code>, <code dir="auto">fleet:launch-on-plan</code>, <code dir="auto">plans:new</code>, …) | <code dir="auto">harness_shared.tool_invocations</code> (<code dir="auto">coord_owner_id</code>, <code dir="auto">tool_name</code>, <code dir="auto">invoked_at</code>) | <code dir="auto">workspace_id = 'papercusp-workspace'</code> |
-| which <strong>native client tools</strong> it used (<code dir="auto">Edit</code>, <code dir="auto">Write</code>, <code dir="auto">Bash</code>, <code dir="auto">Read</code>) | <code dir="auto">harness_shared.session_turn_parts</code> (<code dir="auto">owner</code>, <code dir="auto">tool_name</code>, <code dir="auto">part_kind</code>, <code dir="auto">ts</code>) | <code dir="auto">workspace_id = 'default'</code> ⚠ |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>you want to know</th><th>read</th><th>scoped to</th></tr></thead><tbody><tr><td>which <strong>MCP tools</strong> the agent called (<code dir="auto">goals:create</code>, <code dir="auto">fleet:launch-on-plan</code>, <code dir="auto">plans:new</code>, …)</td><td><code dir="auto">harness_shared.tool_invocations</code> (<code dir="auto">coord_owner_id</code>, <code dir="auto">tool_name</code>, <code dir="auto">invoked_at</code>)</td><td><code dir="auto">workspace_id = 'papercusp-workspace'</code></td></tr><tr><td>which <strong>native client tools</strong> it used (<code dir="auto">Edit</code>, <code dir="auto">Write</code>, <code dir="auto">Bash</code>, <code dir="auto">Read</code>)</td><td><code dir="auto">harness_shared.session_turn_parts</code> (<code dir="auto">owner</code>, <code dir="auto">tool_name</code>, <code dir="auto">part_kind</code>, <code dir="auto">ts</code>)</td><td><code dir="auto">workspace_id = 'default'</code> ⚠</td></tr></tbody></table>
 <p>Both halves bite:</p>
 <ol>
 <li><strong><code dir="auto">tool_invocations</code> never records native tools.</strong> Measured over 24h in <code dir="auto">papercusp-workspace</code>: <code dir="auto">capability:bash</code> 2031, <code dir="auto">capability:read</code> 73, <code dir="auto">capability:edit</code> 17 — and zero rows for <code dir="auto">Edit</code> / <code dir="auto">Write</code> / <code dir="auto">Bash</code>. An agent that edits code the ordinary way leaves no row here at all.</li>

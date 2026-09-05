@@ -96,13 +96,42 @@ one, the registry is gone, even when the <em>logical</em> session/transcript
 continues.</p>
 <p>**Only transitions that actually replace the CLI process lose native background tasks; a context
 RESET/RECYCLE wake can reuse the existing process and preserve them:</p>
-<p>| Trigger                                                                                                                                                                                                              | What happens to the OS process                                                       | Background task survives?                                                 |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Wake lands on the “alive + injectable pty” rung (<code dir="auto">fireLoopWake</code>’s liveness ladder, <a href="/internal/docs/agent-insights/engine-managed-loops">engine-managed-loops</a>) — the common warm case                                | Same process, just injected a turn (“press enter”)                                   | <strong>Yes</strong>                                                                   |
-| Wake lands on the “process exited → <code dir="auto">claude --resume &#x3C;sid></code>” rung — still a <strong>warm</strong> loop                                                                                                                            | Old process is dead; <code dir="auto">--resume</code> boots a <strong>new</strong> process reading the saved transcript | <strong>No</strong> — new process, empty registry, even though it’s “the same session” |
-| <strong>Cold</strong>-carry loop fire (<code dir="auto">loop:arm { carry:'cold' }</code>) | Context reset/recycle rebuilds context but reuses the host process | <strong>Yes</strong> — unless the host process dies and the wake takes the respawn ladder |
-| Compaction carry-respawn / cold-loop RECYCLE (<code dir="auto">psu-pty-host.mjs</code>’s <code dir="auto">recycleChild</code>, see <a href="/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id">carry-respawn must reanchor native session id</a>) | Old child killed, fresh <code dir="auto">--session-id</code> minted for the successor                      | <strong>No</strong>                                                                    |
-| <code dir="auto">session:request-compaction</code> (the deliberate P-022 carry-respawn cut)                                                                                                                                                | Same shape as above                                                                  | <strong>No</strong>                                                                    |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Trigger</th><th>What happens to the OS process</th><th>Background task survives?</th></tr></thead><tbody><tr><td>Wake lands on the “alive + injectable pty” rung (<code dir="auto">fireLoopWake</code>’s liveness ladder, <a href="/internal/docs/agent-insights/engine-managed-loops">engine-managed-loops</a>) — the common warm case</td><td>Same process, just injected a turn (“press enter”)</td><td><strong>Yes</strong></td></tr><tr><td>Wake lands on the “process exited → <code dir="auto">claude --resume &#x3C;sid></code>” rung — still a <strong>warm</strong> loop</td><td>Old process is dead; <code dir="auto">--resume</code> boots a <strong>new</strong> process reading the saved transcript</td><td><strong>No</strong> — new process, empty registry, even though it’s “the same session”</td></tr><tr><td><strong>Cold</strong>-carry loop fire (<code dir="auto">loop:arm { carry:'cold' }</code>)</td><td>Context reset/recycle rebuilds context but reuses the host process</td><td><strong>Yes</strong> — unless the host process dies and the wake takes the respawn ladder</td></tr><tr><td>Compaction carry-respawn / cold-loop RECYCLE (<code dir="auto">psu-pty-host.mjs</code>’s <code dir="auto">recycleChild</code>, see <a href="/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id">carry-respawn must reanchor native session id</a>)</td><td>Old child killed, fresh <code dir="auto">--session-id</code> minted for the successor</td><td><strong>No</strong></td></tr><tr><td><code dir="auto">session:request-compaction</code> (the deliberate P-022 carry-respawn cut)</td><td>Same shape as above</td><td><strong>No</strong></td></tr></tbody></table>
 <p>So “same session” in the
 <a href="/internal/docs/agent-insights/coord-mid-turn-delivery">mid-turn-delivery backgrounding matrix</a>
 (<code dir="auto">"the harness re-invokes the SAME session when it exits"</code>) is true for the

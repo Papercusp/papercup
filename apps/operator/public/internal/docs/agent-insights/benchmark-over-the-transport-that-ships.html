@@ -83,12 +83,37 @@ not merely imprecise, they pointed at the wrong setting.</p>
 <p>The plan replaced a request batcher with individual requests through a
 bounded-concurrency gate, and had to pick a default max-in-flight. Same 106
 sync queries, same code, both transports:</p>
-<p>| | loopback HTTP (<code dir="auto">:3070</code>) | Tauri IPC (shipping) |
-|---|---|---|
-| wall @ conc 6 → 24 | <strong>flat</strong> (1126ms → 1106ms) | <strong>not flat</strong> (see below) |
-| conc 12 | — | 4981ms wall, p50 212ms |
-| conc 24 | — | 2922ms wall, p50 395ms |
-| one bundle (old design) | 2676ms | 3000ms |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>loopback HTTP (<code dir="auto">:3070</code>)</th><th>Tauri IPC (shipping)</th></tr></thead><tbody><tr><td>wall @ conc 6 → 24</td><td><strong>flat</strong> (1126ms → 1106ms)</td><td><strong>not flat</strong> (see below)</td></tr><tr><td>conc 12</td><td>—</td><td>4981ms wall, p50 212ms</td></tr><tr><td>conc 24</td><td>—</td><td>2922ms wall, p50 395ms</td></tr><tr><td>one bundle (old design)</td><td>2676ms</td><td>3000ms</td></tr></tbody></table>
 <p>Over loopback, wall time was flat across the whole range, which says <em>pick the
 low end — concurrency is free here and per-query latency is better there</em>. That
 reasoning is sound and the conclusion is wrong: over IPC the curve is steep, and

@@ -120,11 +120,36 @@ privileged blueprint (the <code dir="auto">pot</code>, <code dir="auto">kind: 'p
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">LLM emits &#x3C;suggestion> JSON</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">↓</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Zod validates against discriminated-union schema  ← bad blocks dropped</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">↓</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Server-side tier lookup (substrate → plugin tierMap → cap-string heuristic → fail-safe high)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">↓</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Compare LLM-claimed tier vs server-derived (mismatch → degraded flag, force authoritative)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">↓</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Derive auto_dispatch from (actualTier, preferences standing approvals)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">↓</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">Append to scan SSE stream (the persisted last-scan / idle-snapshot store</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                            </span></span><span style="--0:#d6deeb;--1:#403f53">was removed in the 167 scanner teardown)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="LLM emits <suggestion> JSON       ↓Zod validates against discriminated-union schema  ← bad blocks dropped       ↓Server-side tier lookup (substrate → plugin tierMap → cap-string heuristic → fail-safe high)       ↓Compare LLM-claimed tier vs server-derived (mismatch → degraded flag, force authoritative)       ↓Derive auto_dispatch from (actualTier, preferences standing approvals)       ↓Append to scan SSE stream (the persisted last-scan / idle-snapshot store                            was removed in the 167 scanner teardown)"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="action-variants-3">Action variants (3)</h2><a class="sl-anchor-link" href="#action-variants-3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Action variants (3)”</span></a></div>
 <p>The schema is a discriminated union on <code dir="auto">action</code>:</p>
-<p>| <code dir="auto">action</code> | <code dir="auto">capability</code> | Tier | Behavior |
-|---|---|---|---|
-| <code dir="auto">send_directive</code> | <code dir="auto">messages:write</code> | substrate-classified | dispatches a Directive to <code dir="auto">target_harness</code> |
-| <code dir="auto">navigate</code> | <code dir="auto">null</code> | always <code dir="auto">low</code> | renders an <code dir="auto">Open &#x3C;resource></code> link |
-| <code dir="auto">inform</code> | <code dir="auto">null</code> | always <code dir="auto">low</code> | renders body text in the card |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">action</code></th><th><code dir="auto">capability</code></th><th>Tier</th><th>Behavior</th></tr></thead><tbody><tr><td><code dir="auto">send_directive</code></td><td><code dir="auto">messages:write</code></td><td>substrate-classified</td><td>dispatches a Directive to <code dir="auto">target_harness</code></td></tr><tr><td><code dir="auto">navigate</code></td><td><code dir="auto">null</code></td><td>always <code dir="auto">low</code></td><td>renders an <code dir="auto">Open &#x3C;resource></code> link</td></tr><tr><td><code dir="auto">inform</code></td><td><code dir="auto">null</code></td><td>always <code dir="auto">low</code></td><td>renders body text in the card</td></tr></tbody></table>
 <p>The earlier v4 had 4 variants (<code dir="auto">draft</code>, <code dir="auto">advise</code>); v5 collapsed them into
 <code dir="auto">inform</code> because they did the same thing.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="tier-table--substrate-authoritative">Tier table — substrate-authoritative</h2><a class="sl-anchor-link" href="#tier-table--substrate-authoritative"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Tier table — substrate-authoritative”</span></a></div>
@@ -208,16 +233,57 @@ and <code dir="auto">standing-candidates</code> in <code dir="auto">harness_shar
 <code dir="auto">last-scan</code> / <code dir="auto">idle-snapshot</code> / <code dir="auto">dismissed</code> blobs (and their tables) were removed
 in the scanner teardown (migration 167). The table below documents the <strong>shape</strong>
 of each blob — the old filenames are kept only as labels.</p>
-<p>| Blob (old filename) | Purpose | Lifecycle |
-|---|---|---|
-| <code dir="auto">prompt-user.md</code> | User-editable voice/tone, free-form prefs | edit at <code dir="auto">/settings/operator</code> |
-| <code dir="auto">preferences</code> (was <code dir="auto">preferences.md</code>) | Workspace-scoped learned preferences; PG, migration 022 (JSONB <code dir="auto">{ content }</code> holding the markdown body) | append-only via dismiss-with-reason + standing-approval; per-entry remove from settings |
-| <code dir="auto">last-scan</code> (was <code dir="auto">last-scan.json</code>) | Most recent scan’s emitted cards | <strong>removed</strong> — <code dir="auto">operator_last_scan</code> dropped in migration 167 |
-| <code dir="auto">idle-snapshot</code> (was <code dir="auto">idle-snapshot.json</code>) | Cached cards keyed by trigger-state fingerprint | <strong>removed</strong> — <code dir="auto">operator_idle_snapshot</code> dropped in migration 167 |
-| <code dir="auto">dismissed</code> (was <code dir="auto">dismissed.json</code>) | Local cooldown cache (1h default) | <strong>removed</strong> — <code dir="auto">operator_dismissed_cards</code> dropped in migration 167 |
-| <code dir="auto">first-run.json</code> | <code dir="auto">{shownAt, shownToUserIds}</code> for the intro modal | per-(workspace, user) gate |
-| <code dir="auto">budget</code> (was <code dir="auto">budget.json</code>) | Daily cap + last-7-days spend; PG, migration 020 (<code dir="auto">{ dailyCapUsd, spend[] }</code>) | sized at first launch via Light/Active/Heavy modal |
-| <code dir="auto">standing-candidates</code> (was <code dir="auto">standing-candidates.json</code>) | (capability, target) pairs Operator wants to standing-approve; PG <code dir="auto">harness_shared.operator_standing_candidates</code> | recomputed after every dispatched audit-write |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Blob (old filename)</th><th>Purpose</th><th>Lifecycle</th></tr></thead><tbody><tr><td><code dir="auto">prompt-user.md</code></td><td>User-editable voice/tone, free-form prefs</td><td>edit at <code dir="auto">/settings/operator</code></td></tr><tr><td><code dir="auto">preferences</code> (was <code dir="auto">preferences.md</code>)</td><td>Workspace-scoped learned preferences; PG, migration 022 (JSONB <code dir="auto">{ content }</code> holding the markdown body)</td><td>append-only via dismiss-with-reason + standing-approval; per-entry remove from settings</td></tr><tr><td><code dir="auto">last-scan</code> (was <code dir="auto">last-scan.json</code>)</td><td>Most recent scan’s emitted cards</td><td><strong>removed</strong> — <code dir="auto">operator_last_scan</code> dropped in migration 167</td></tr><tr><td><code dir="auto">idle-snapshot</code> (was <code dir="auto">idle-snapshot.json</code>)</td><td>Cached cards keyed by trigger-state fingerprint</td><td><strong>removed</strong> — <code dir="auto">operator_idle_snapshot</code> dropped in migration 167</td></tr><tr><td><code dir="auto">dismissed</code> (was <code dir="auto">dismissed.json</code>)</td><td>Local cooldown cache (1h default)</td><td><strong>removed</strong> — <code dir="auto">operator_dismissed_cards</code> dropped in migration 167</td></tr><tr><td><code dir="auto">first-run.json</code></td><td><code dir="auto">{shownAt, shownToUserIds}</code> for the intro modal</td><td>per-(workspace, user) gate</td></tr><tr><td><code dir="auto">budget</code> (was <code dir="auto">budget.json</code>)</td><td>Daily cap + last-7-days spend; PG, migration 020 (<code dir="auto">{ dailyCapUsd, spend[] }</code>)</td><td>sized at first launch via Light/Active/Heavy modal</td></tr><tr><td><code dir="auto">standing-candidates</code> (was <code dir="auto">standing-candidates.json</code>)</td><td>(capability, target) pairs Operator wants to standing-approve; PG <code dir="auto">harness_shared.operator_standing_candidates</code></td><td>recomputed after every dispatched audit-write</td></tr></tbody></table>
 <p>The substrate-owned Operator system prompt (the <code dir="auto">scanner</code> role — tier
 rules, schema, anti-patterns) is canonically
 <code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/scanner.md</code>, a built-in role
@@ -228,16 +294,57 @@ FS-less callers keep working) and carries an inline fallback synced to the
 canonical file; drift is caught by the <code dir="auto">lint:scanner-prompt</code> check. Neither
 can be edited from the UI.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="server-side-policies">Server-side policies</h2><a class="sl-anchor-link" href="#server-side-policies"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Server-side policies”</span></a></div>
-<p>| Concern | Module | Behavior |
-|---|---|---|
-| Multi-tab dedup <em>(removed)</em> | <code dir="auto">operator-scan-lock.ts</code> | design-of-record: PG row in <code dir="auto">operator_scan_locks</code> (60s TTL); the table + module were dropped in the scanner teardown (migration 167) |
-| Per-workspace rate limit | <code dir="auto">operator-rate-limit.ts</code> | 2 background scans/min default; manual rescans bypass. <strong>PG-backed</strong> (migration 031) — a single JSONB row per workspace in <code dir="auto">harness_shared.operator_rate_limit</code>; was previously a process-local <code dir="auto">Map</code> |
-| 503 circuit breaker | <code dir="auto">operator-rate-limit.ts</code> | 5 consecutive PG 503s → 10 min cooldown; manual scans surface errors (same PG row) |
-| Idle short-circuit <em>(partly removed)</em> | <code dir="auto">operator-trigger-state.ts</code> | still computes a stable trigger-state digest (unconsumed_events + project statuses + operator inbox); the <code dir="auto">operator-idle-snapshot.ts</code> consumer + its table were dropped in migration 167 |
-| Daily budget | <code dir="auto">operator-budget.ts</code> | first-launch sizing prompt; 402 from scan route on overrun (PG, migration 020) |
-| Dismissed cooldown <em>(removed)</em> | <code dir="auto">operator-dismissed-cache.ts</code> | design-of-record: 1h default per id, PG-mirrored; the <code dir="auto">operator_dismissed_cards</code> table + module were dropped in migration 167 |
-| Suggestion fuzzy dedup | <code dir="auto">operator-fuzzy-dedup.ts</code> | Levenshtein-on-normalized-titles, 0.82 similarity threshold |
-| Plugin-tier resolution | <code dir="auto">operator-plugin-tier.ts</code> | walks loaded plugin manifests; substrate caps cannot be downgraded |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Module</th><th>Behavior</th></tr></thead><tbody><tr><td>Multi-tab dedup <em>(removed)</em></td><td><code dir="auto">operator-scan-lock.ts</code></td><td>design-of-record: PG row in <code dir="auto">operator_scan_locks</code> (60s TTL); the table + module were dropped in the scanner teardown (migration 167)</td></tr><tr><td>Per-workspace rate limit</td><td><code dir="auto">operator-rate-limit.ts</code></td><td>2 background scans/min default; manual rescans bypass. <strong>PG-backed</strong> (migration 031) — a single JSONB row per workspace in <code dir="auto">harness_shared.operator_rate_limit</code>; was previously a process-local <code dir="auto">Map</code></td></tr><tr><td>503 circuit breaker</td><td><code dir="auto">operator-rate-limit.ts</code></td><td>5 consecutive PG 503s → 10 min cooldown; manual scans surface errors (same PG row)</td></tr><tr><td>Idle short-circuit <em>(partly removed)</em></td><td><code dir="auto">operator-trigger-state.ts</code></td><td>still computes a stable trigger-state digest (unconsumed_events + project statuses + operator inbox); the <code dir="auto">operator-idle-snapshot.ts</code> consumer + its table were dropped in migration 167</td></tr><tr><td>Daily budget</td><td><code dir="auto">operator-budget.ts</code></td><td>first-launch sizing prompt; 402 from scan route on overrun (PG, migration 020)</td></tr><tr><td>Dismissed cooldown <em>(removed)</em></td><td><code dir="auto">operator-dismissed-cache.ts</code></td><td>design-of-record: 1h default per id, PG-mirrored; the <code dir="auto">operator_dismissed_cards</code> table + module were dropped in migration 167</td></tr><tr><td>Suggestion fuzzy dedup</td><td><code dir="auto">operator-fuzzy-dedup.ts</code></td><td>Levenshtein-on-normalized-titles, 0.82 similarity threshold</td></tr><tr><td>Plugin-tier resolution</td><td><code dir="auto">operator-plugin-tier.ts</code></td><td>walks loaded plugin manifests; substrate caps cannot be downgraded</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="client-side-surfaces">Client-side surfaces</h2><a class="sl-anchor-link" href="#client-side-surfaces"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Client-side surfaces”</span></a></div>
 <p><code dir="auto">OperatorBackgroundScanner</code> was a chrome-layout component that polled
 <code dir="auto">/api/agent-mcp/operator-trigger-state</code> every 30s and scheduled a 60s
@@ -264,13 +371,42 @@ errors are isolated — a thrown hook never blocks LLM output.</p>
 PR comment goes unanswered for >24h, without relying on the LLM to
 notice it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="preferences-learning">Preferences learning</h2><a class="sl-anchor-link" href="#preferences-learning"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Preferences learning”</span></a></div>
-<p>| Trigger | Provenance tag | Effect |
-|---|---|---|
-| User dismisses with reason | <code dir="auto">[USER-TYPED] [DISMISS]</code> | appended to <code dir="auto">preferences.md</code> + recent-undo strip in settings |
-| User edits a directive then dispatches (Phase 4 future) | <code dir="auto">[USER-TYPED] [EDIT]</code> | appended |
-| User pauses Operator mid-scan (Phase 4 future) | <code dir="auto">[USER-TYPED] [PAUSE]</code> | appended |
-| 3 silent dispatches of (capability, target) in 24h | <code dir="auto">[OPERATOR-PROPOSED-USER-CONFIRMED-…] [STANDING-APPROVE]</code> | candidate appears in settings; user approves |
-| Undo-window cancel of an auto-fire toast | (audit only) | NOT a learning event — only <code dir="auto">audit_log</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Trigger</th><th>Provenance tag</th><th>Effect</th></tr></thead><tbody><tr><td>User dismisses with reason</td><td><code dir="auto">[USER-TYPED] [DISMISS]</code></td><td>appended to <code dir="auto">preferences.md</code> + recent-undo strip in settings</td></tr><tr><td>User edits a directive then dispatches (Phase 4 future)</td><td><code dir="auto">[USER-TYPED] [EDIT]</code></td><td>appended</td></tr><tr><td>User pauses Operator mid-scan (Phase 4 future)</td><td><code dir="auto">[USER-TYPED] [PAUSE]</code></td><td>appended</td></tr><tr><td>3 silent dispatches of (capability, target) in 24h</td><td><code dir="auto">[OPERATOR-PROPOSED-USER-CONFIRMED-…] [STANDING-APPROVE]</code></td><td>candidate appears in settings; user approves</td></tr><tr><td>Undo-window cancel of an auto-fire toast</td><td>(audit only)</td><td>NOT a learning event — only <code dir="auto">audit_log</code></td></tr></tbody></table>
 <p>The settings page (<code dir="auto">/settings/operator</code>) renders the preferences with
 per-entry remove + filter (All / User-typed / Operator-proposed). Recent
 entries (last 24h) get an additional undo strip so a single misclick

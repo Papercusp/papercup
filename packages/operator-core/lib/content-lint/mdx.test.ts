@@ -203,3 +203,48 @@ describe('autoFixMdxAngles (WI-276 — deterministic safe repair of `<`+digit an
     expect(autoFixMdxAngles(once)).toEqual({ fixed: once, changed: false });
   });
 });
+
+describe('findMdxCompileError — GFM-dependent parses (EI-22415725782521670)', () => {
+  // The real fleet-wide break: a table cell whose inline code span contains
+  // backslash-escaped backticks. With the GFM table extension the row parses;
+  // without it the span leaks into the NEXT line, whose `<Component>` is then
+  // read as an unclosed JSX tag. `astro build` resolved the no-gfm pipeline and
+  // died with "Expected a closing tag for `<ArchitectChat>`", while this
+  // detector — compiling WITH gfm — reported the doc clean. Both compiles now
+  // run, so content that parses only one way is rejected as the latent
+  // fleet-wide build break it is.
+  const gfmDependent =
+    '| Surface | What it does |\n' +
+    '|---|---|\n' +
+    '| **Brainstorm** | Can emit `\\`\\`\\`promote:spec\\`\\`\\`` action blocks. |\n' +
+    '| **Architect** | Embedded via `<ArchitectInbox><ArchitectChat>` in the panel. |\n';
+
+  it('REJECTS a doc that parses only when the GFM table extension is active', async () => {
+    const err = await findMdxCompileError('system/lifecycle.mdx', gfmDependent);
+    expect(err).not.toBeNull();
+    // It must explain WHY, or the reader sees a parse error on a doc astro
+    // currently builds fine and concludes the guard is broken.
+    expect(err?.reason).toMatch(/GFM table extension/);
+    expect(err?.reason).toMatch(/EI-22415725782521670/);
+  });
+
+  it('positive control: the same table WITHOUT the escaped backticks stays clean', async () => {
+    // Proves the rejection above is caused by the escaped-backtick construct and
+    // not merely by "a table containing a JSX-looking code span" — otherwise the
+    // guard would be indistinguishable from one that rejects every such table.
+    const repaired = gfmDependent.replace('`\\`\\`\\`promote:spec\\`\\`\\``', '`promote:spec`');
+    expect(await findMdxCompileError('system/lifecycle.mdx', repaired)).toBeNull();
+  });
+
+  it('still accepts ordinary GFM tables and ordinary prose', async () => {
+    const ordinary = '# Title\n\n| a | b |\n|---|---|\n| `code` | text |\n\nProse with `<Component>` in a span.\n';
+    expect(await findMdxCompileError('x.mdx', ordinary)).toBeNull();
+  });
+
+  it('still reports a plain unclosed-JSX error (the pre-existing contract)', async () => {
+    const err = await findMdxCompileError('x.mdx', '# x\n\nA bare <date> token in prose.\n');
+    expect(err?.reason).toMatch(/Expected a closing tag/);
+    // A plain parse error must NOT be dressed up in the gfm explanation.
+    expect(err?.reason).not.toMatch(/GFM table extension/);
+  });
+});

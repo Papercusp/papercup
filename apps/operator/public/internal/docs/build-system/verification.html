@@ -202,17 +202,52 @@ instead.</p>
 <p>Or via Settings → Apps → Papercusp GUI → Uninstall.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="fail-criteria-any-platform">FAIL criteria (any platform)</h2><a class="sl-anchor-link" href="#fail-criteria-any-platform"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “FAIL criteria (any platform)”</span></a></div>
-<p>| Symptom | Means |
-|---|---|
-| A real PostHog key (<code dir="auto">phx_…</code> / <code dir="auto">phc_…</code>) found by <code dir="auto">audit-bundle.sh</code> inside the install | Secret leaked into bundle — <strong>must</strong> rebuild |
-| <code dir="auto">/api/flags/bootstrap</code> returns <code dir="auto">source: "posthog"</code> on a clean install | PostHog config (env var or discovery file) made it through — leak |
-| A flag value disagrees with <code dir="auto">FLAG_DEFAULTS</code> in <code dir="auto">libs/flags/src/types.ts</code> on a clean install | Default ship-state violated — leak. (Note: 51 flags default <code dir="auto">true</code>, so a clean install with many <code dir="auto">true</code> flags is <strong>correct</strong> — only a <em>mismatch</em> against <code dir="auto">FLAG_DEFAULTS</code> is a leak.) |
-| A retired key (e.g. <code dir="auto">papercusp-oracle</code>, <code dir="auto">papercusp-snapshots</code>) appears in the payload | <code dir="auto">resolveWithDefaults</code> should have dropped it — stored override row leaking retired keys |
-| <code dir="auto">ss -tnp</code> shows connection to <code dir="auto">flags.papercuspai.com</code> | App phoning home in clean-install state — leak |
-| Window stuck on the bootstrap page (never navigates off <code dir="auto">web/index.html</code>) | The sidecar never became ready — check the preflight handshake / serve logs |
-| <code dir="auto">embedded-pg.json</code> / <code dir="auto">operator.json</code> missing, or app connects to <code dir="auto">:5432</code> | Embedded PG didn’t bootstrap (<code dir="auto">serve.mjs</code> owns this) |
-| Sheets harness shows 0 features when the API returns features | Feature loading broken |
-| Window shows the <strong>dev</strong> server’s app (URL has <code dir="auto">:3055</code>) | The webview pointed at the dev server instead of the bundled sidecar — rebuild |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Symptom</th><th>Means</th></tr></thead><tbody><tr><td>A real PostHog key (<code dir="auto">phx_…</code> / <code dir="auto">phc_…</code>) found by <code dir="auto">audit-bundle.sh</code> inside the install</td><td>Secret leaked into bundle — <strong>must</strong> rebuild</td></tr><tr><td><code dir="auto">/api/flags/bootstrap</code> returns <code dir="auto">source: "posthog"</code> on a clean install</td><td>PostHog config (env var or discovery file) made it through — leak</td></tr><tr><td>A flag value disagrees with <code dir="auto">FLAG_DEFAULTS</code> in <code dir="auto">libs/flags/src/types.ts</code> on a clean install</td><td>Default ship-state violated — leak. (Note: 51 flags default <code dir="auto">true</code>, so a clean install with many <code dir="auto">true</code> flags is <strong>correct</strong> — only a <em>mismatch</em> against <code dir="auto">FLAG_DEFAULTS</code> is a leak.)</td></tr><tr><td>A retired key (e.g. <code dir="auto">papercusp-oracle</code>, <code dir="auto">papercusp-snapshots</code>) appears in the payload</td><td><code dir="auto">resolveWithDefaults</code> should have dropped it — stored override row leaking retired keys</td></tr><tr><td><code dir="auto">ss -tnp</code> shows connection to <code dir="auto">flags.papercuspai.com</code></td><td>App phoning home in clean-install state — leak</td></tr><tr><td>Window stuck on the bootstrap page (never navigates off <code dir="auto">web/index.html</code>)</td><td>The sidecar never became ready — check the preflight handshake / serve logs</td></tr><tr><td><code dir="auto">embedded-pg.json</code> / <code dir="auto">operator.json</code> missing, or app connects to <code dir="auto">:5432</code></td><td>Embedded PG didn’t bootstrap (<code dir="auto">serve.mjs</code> owns this)</td></tr><tr><td>Sheets harness shows 0 features when the API returns features</td><td>Feature loading broken</td></tr><tr><td>Window shows the <strong>dev</strong> server’s app (URL has <code dir="auto">:3055</code>)</td><td>The webview pointed at the dev server instead of the bundled sidecar — rebuild</td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="a-self-contained-checklist">A self-contained checklist</h2><a class="sl-anchor-link" href="#a-self-contained-checklist"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “A self-contained checklist”</span></a></div>
 <p>Copy this and run top to bottom:</p>

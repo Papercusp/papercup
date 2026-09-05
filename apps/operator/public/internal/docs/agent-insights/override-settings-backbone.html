@@ -97,44 +97,271 @@ and the rule is shared (null/undefined = “not set” → fall through to base;
 still the canonical consumer (<code dir="auto">VOICE_USER_OVERRIDE_KEYS</code>).</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="scope-vocabulary">Scope vocabulary</h2><a class="sl-anchor-link" href="#scope-vocabulary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Scope vocabulary”</span></a></div>
-<p>| scope | who it applies to | resolved at |
-| --- | --- | --- |
-| <strong>global</strong> | the whole install / process (env, host profile) | boot / env read |
-| <strong>workspace</strong> | one workspace’s operator-state row | <code dir="auto">activeWorkspaceId()</code> |
-| <strong>pot</strong> | one pot’s <code dir="auto">hive_settings</code> | pot id |
-| <strong>user</strong> | one signed-in user, per-workspace (<code dir="auto">user_preferences</code>, migration 304) | session user × workspace |
-| <strong>session</strong> | a transient “session-now” steer (no TTL, owner-cleared) | the override row |
-| <strong>device</strong> | a client-local value (cpal / MediaDevice ids) | the client |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>scope</th><th>who it applies to</th><th>resolved at</th></tr></thead><tbody><tr><td><strong>global</strong></td><td>the whole install / process (env, host profile)</td><td>boot / env read</td></tr><tr><td><strong>workspace</strong></td><td>one workspace’s operator-state row</td><td><code dir="auto">activeWorkspaceId()</code></td></tr><tr><td><strong>pot</strong></td><td>one pot’s <code dir="auto">hive_settings</code></td><td>pot id</td></tr><tr><td><strong>user</strong></td><td>one signed-in user, per-workspace (<code dir="auto">user_preferences</code>, migration 304)</td><td>session user × workspace</td></tr><tr><td><strong>session</strong></td><td>a transient “session-now” steer (no TTL, owner-cleared)</td><td>the override row</td></tr><tr><td><strong>device</strong></td><td>a client-local value (cpal / MediaDevice ids)</td><td>the client</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="backend-mechanisms--scope--persistence--resolution--contract">Backend mechanisms → scope / persistence / resolution / contract</h2><a class="sl-anchor-link" href="#backend-mechanisms--scope--persistence--resolution--contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Backend mechanisms → scope / persistence / resolution / contract”</span></a></div>
 <p>Resolution order reads <strong>left → right; the LAST present layer wins.</strong></p>
-<p>| family | mechanism | scope | persistence | resolution order | concern (config:list-overrides) |
-| --- | --- | --- | --- | --- | --- |
-| voice-prefs | workspace voice/operator prefs | workspace (+ user) | <code dir="auto">operator_voice_prefs</code> | DEFAULT_VOICE_PREFS → workspace row → <strong>user</strong> (<code dir="auto">mergeLayered</code> over <code dir="auto">VOICE_USER_OVERRIDE_KEYS</code>) | <code dir="auto">voice-prefs</code> ✅ (P-037) |
-| user-prefs | per-user override layer | user | <code dir="auto">user_preferences</code> | workspace value → user value (set-only) | (layer of voice-prefs; not a standalone concern) |
-| rate-limit | fleet cap + AIMD floor | workspace | <code dir="auto">operator_rate_limit_config</code> | host-profile seed → workspace row (live bus) | <code dir="auto">rate-limit-config</code> ✅ (P-037) |
-| budget | operator daily cap | workspace | <code dir="auto">operator_budget</code> | <em>unset (null → sizing modal)</em> → user-chosen cap | <strong>skipped</strong> (see below) |
-| agent-config | backend + cmd + per-role/surface model &#x26; backend maps | workspace | <code dir="auto">operator_agent_config</code> | DEFAULT_CONFIG → workspace row → boot env mirror | <code dir="auto">agent-config</code> ✅ (P-037) |
-| account-override | session-now account allow/exclude steer | session (workspace-level) | <code dir="auto">operator_account_override</code> | empty (no restriction) → owner steer | <code dir="auto">account-session-override</code> ✅ (P-037) |
-| backup | backup cadence/retention/destination | workspace | <code dir="auto">workspace_backup_settings</code> (own table) | migration DDL defaults → row | <strong>skipped</strong> (see below) |
-| role-grants | runtime role→capability grants (DARK) | workspace | <code dir="auto">role_capability_grants</code> | code BLUEPRINT_ROLE_CAPS → runtime grants (flag-gated) | <code dir="auto">role-capability-grants</code> ✅ (pre-existing) |
-| pot-steering | Mug focus / eligible plans / new-work pause | pot | <code dir="auto">hive_settings</code> | unset → owner steer | <code dir="auto">pot-control-policy</code> ✅ (pre-existing) |
-| autonomy-policy | auto-implement risk + dispatch limits | workspace | <code dir="auto">operator_auto_implement_policy</code> | DEFAULT → row | <code dir="auto">auto-implement-policy</code> ✅ (pre-existing) |
-| effective-tier-config | opus-budget shed bands | workspace | <code dir="auto">operator_opus_budget_policy</code> | DEFAULT_OPUS_BUDGET_POLICY → row | <code dir="auto">opus-budget-policy</code> ✅ (pre-existing) |
-| scale-policy | account scale-out trigger | workspace | <code dir="auto">operator_scale_policy</code> | DEFAULT → row | <code dir="auto">scale-policy</code> ✅ (pre-existing) |
-| watchdog-tunables | improvement-watchdog bars + caps | workspace | routine <code dir="auto">payload_template</code> | code collector defaults → routine payload (← env <code dir="auto">PAPERCUSP_..._MAX_PER_TICK</code> at tick time) | <code dir="auto">watchdog-tunables</code> ✅ (pre-existing, the P-024 canary) |
-| migrate-policy | deploy-migration lock/statement timeout | workspace | <code dir="auto">operator_migrate_policy</code> | DEFAULT → row | <code dir="auto">migrate-policy</code> ✅ (pre-existing) |
-| coord-liveness | reclaim / handoff-TTL / reaper grace | workspace | <code dir="auto">operator_coord_liveness_config</code> | DEFAULT → row | <code dir="auto">coord-liveness-config</code> ✅ (pre-existing) |
-| capability-envelope | per-role envelope overrides (DARK) | workspace | <code dir="auto">operator_capability_envelopes</code> | code envelope → row (flag-gated) | <code dir="auto">capability-envelope-overrides</code> ✅ (pre-existing) |
-| release-checkpoint | green-checkpoint thresholds | workspace | <code dir="auto">operator_release_checkpoint_config</code> | DEFAULT → row | <code dir="auto">release-checkpoint-config</code> ✅ (pre-existing) |
-| gym-gates | per-harness gym promotion gates | workspace/pot | (gym-gates store) | DEFAULT → row | <code dir="auto">gym-gates</code> ✅ (pre-existing) |
-| scout-workspace-budget | Scout workspace spend-ceiling override | workspace | <code dir="auto">operator_scout_budget</code> | PG override → env <code dir="auto">PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD</code> → <code dir="auto">DEFAULT_SCOUT_WORKSPACE_CEILING_USD</code> | <code dir="auto">scout-workspace-budget</code> ✅ |
-| tool-quota-overrides | per-(tool,role) quota overrides | workspace | <code dir="auto">operator_quota_overrides</code> | baked <code dir="auto">rolesQuota[role]</code> → PG override (D-010 sync cache) | <code dir="auto">tool-quota-overrides</code> ✅ |
-| telemetry-buffer-config | dispatch telemetry-buffer sizing (maxPending/debounceMs/maxBatch) | workspace | <code dir="auto">operator_telemetry_buffer_config</code> | baked <code dir="auto">TELEMETRY_BUFFER_DEFAULTS</code> → PG override (kill-switch <code dir="auto">papercusp-telemetry-buffer-config</code>, default ON) | <code dir="auto">telemetry-buffer-config</code> ✅ |
-| txn-timeouts-config | per-workspace txn <code dir="auto">lock_timeout</code>/<code dir="auto">statement_timeout</code> | workspace | <code dir="auto">operator_txn_timeouts_config</code> | baked 5s/5s (<code dir="auto">TXN_TIMEOUTS_DEFAULTS</code>) → PG override (kill-switch <code dir="auto">papercusp-txn-timeouts-config</code>, default ON) | <code dir="auto">txn-timeouts-config</code> ✅ |
-| capability-tier-overrides | per-capability tier reclassification | workspace | <code dir="auto">operator_capability_tiers</code> | baked EXACT table → PG override, <strong>DARK</strong> (<code dir="auto">papercusp-auth-config-overrides</code>) | <code dir="auto">capability-tier-overrides</code> ✅ |
-| auth-config-overrides | §G auth/sandbox dials (full-access bypass roles, scoped-SU safe-tools, sandbox mask/egress) | workspace | <code dir="auto">operator_auth_config</code> | baked literals → PG override, <strong>DARK</strong> (<code dir="auto">papercusp-auth-config-overrides</code>); tighten/replace-only, never widens | <code dir="auto">auth-config-overrides</code> ✅ |
-| flags | runtime flag overrides | workspace | <code dir="auto">operator_flag_overrides</code> | code flag defaults → row | (flag-bus; not yet a concern) |
-| knowledge-packs | installed pack enable/config | workspace/pot | knowledge-pack store | pack default → install row | (not yet a concern) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>family</th><th>mechanism</th><th>scope</th><th>persistence</th><th>resolution order</th><th>concern (config:list-overrides)</th></tr></thead><tbody><tr><td>voice-prefs</td><td>workspace voice/operator prefs</td><td>workspace (+ user)</td><td><code dir="auto">operator_voice_prefs</code></td><td>DEFAULT_VOICE_PREFS → workspace row → <strong>user</strong> (<code dir="auto">mergeLayered</code> over <code dir="auto">VOICE_USER_OVERRIDE_KEYS</code>)</td><td><code dir="auto">voice-prefs</code> ✅ (P-037)</td></tr><tr><td>user-prefs</td><td>per-user override layer</td><td>user</td><td><code dir="auto">user_preferences</code></td><td>workspace value → user value (set-only)</td><td>(layer of voice-prefs; not a standalone concern)</td></tr><tr><td>rate-limit</td><td>fleet cap + AIMD floor</td><td>workspace</td><td><code dir="auto">operator_rate_limit_config</code></td><td>host-profile seed → workspace row (live bus)</td><td><code dir="auto">rate-limit-config</code> ✅ (P-037)</td></tr><tr><td>budget</td><td>operator daily cap</td><td>workspace</td><td><code dir="auto">operator_budget</code></td><td><em>unset (null → sizing modal)</em> → user-chosen cap</td><td><strong>skipped</strong> (see below)</td></tr><tr><td>agent-config</td><td>backend + cmd + per-role/surface model &#x26; backend maps</td><td>workspace</td><td><code dir="auto">operator_agent_config</code></td><td>DEFAULT_CONFIG → workspace row → boot env mirror</td><td><code dir="auto">agent-config</code> ✅ (P-037)</td></tr><tr><td>account-override</td><td>session-now account allow/exclude steer</td><td>session (workspace-level)</td><td><code dir="auto">operator_account_override</code></td><td>empty (no restriction) → owner steer</td><td><code dir="auto">account-session-override</code> ✅ (P-037)</td></tr><tr><td>backup</td><td>backup cadence/retention/destination</td><td>workspace</td><td><code dir="auto">workspace_backup_settings</code> (own table)</td><td>migration DDL defaults → row</td><td><strong>skipped</strong> (see below)</td></tr><tr><td>role-grants</td><td>runtime role→capability grants (DARK)</td><td>workspace</td><td><code dir="auto">role_capability_grants</code></td><td>code BLUEPRINT_ROLE_CAPS → runtime grants (flag-gated)</td><td><code dir="auto">role-capability-grants</code> ✅ (pre-existing)</td></tr><tr><td>pot-steering</td><td>Mug focus / eligible plans / new-work pause</td><td>pot</td><td><code dir="auto">hive_settings</code></td><td>unset → owner steer</td><td><code dir="auto">pot-control-policy</code> ✅ (pre-existing)</td></tr><tr><td>autonomy-policy</td><td>auto-implement risk + dispatch limits</td><td>workspace</td><td><code dir="auto">operator_auto_implement_policy</code></td><td>DEFAULT → row</td><td><code dir="auto">auto-implement-policy</code> ✅ (pre-existing)</td></tr><tr><td>effective-tier-config</td><td>opus-budget shed bands</td><td>workspace</td><td><code dir="auto">operator_opus_budget_policy</code></td><td>DEFAULT_OPUS_BUDGET_POLICY → row</td><td><code dir="auto">opus-budget-policy</code> ✅ (pre-existing)</td></tr><tr><td>scale-policy</td><td>account scale-out trigger</td><td>workspace</td><td><code dir="auto">operator_scale_policy</code></td><td>DEFAULT → row</td><td><code dir="auto">scale-policy</code> ✅ (pre-existing)</td></tr><tr><td>watchdog-tunables</td><td>improvement-watchdog bars + caps</td><td>workspace</td><td>routine <code dir="auto">payload_template</code></td><td>code collector defaults → routine payload (← env <code dir="auto">PAPERCUSP_..._MAX_PER_TICK</code> at tick time)</td><td><code dir="auto">watchdog-tunables</code> ✅ (pre-existing, the P-024 canary)</td></tr><tr><td>migrate-policy</td><td>deploy-migration lock/statement timeout</td><td>workspace</td><td><code dir="auto">operator_migrate_policy</code></td><td>DEFAULT → row</td><td><code dir="auto">migrate-policy</code> ✅ (pre-existing)</td></tr><tr><td>coord-liveness</td><td>reclaim / handoff-TTL / reaper grace</td><td>workspace</td><td><code dir="auto">operator_coord_liveness_config</code></td><td>DEFAULT → row</td><td><code dir="auto">coord-liveness-config</code> ✅ (pre-existing)</td></tr><tr><td>capability-envelope</td><td>per-role envelope overrides (DARK)</td><td>workspace</td><td><code dir="auto">operator_capability_envelopes</code></td><td>code envelope → row (flag-gated)</td><td><code dir="auto">capability-envelope-overrides</code> ✅ (pre-existing)</td></tr><tr><td>release-checkpoint</td><td>green-checkpoint thresholds</td><td>workspace</td><td><code dir="auto">operator_release_checkpoint_config</code></td><td>DEFAULT → row</td><td><code dir="auto">release-checkpoint-config</code> ✅ (pre-existing)</td></tr><tr><td>gym-gates</td><td>per-harness gym promotion gates</td><td>workspace/pot</td><td>(gym-gates store)</td><td>DEFAULT → row</td><td><code dir="auto">gym-gates</code> ✅ (pre-existing)</td></tr><tr><td>scout-workspace-budget</td><td>Scout workspace spend-ceiling override</td><td>workspace</td><td><code dir="auto">operator_scout_budget</code></td><td>PG override → env <code dir="auto">PAPERCUSP_SCOUT_WORKSPACE_CEILING_USD</code> → <code dir="auto">DEFAULT_SCOUT_WORKSPACE_CEILING_USD</code></td><td><code dir="auto">scout-workspace-budget</code> ✅</td></tr><tr><td>tool-quota-overrides</td><td>per-(tool,role) quota overrides</td><td>workspace</td><td><code dir="auto">operator_quota_overrides</code></td><td>baked <code dir="auto">rolesQuota[role]</code> → PG override (D-010 sync cache)</td><td><code dir="auto">tool-quota-overrides</code> ✅</td></tr><tr><td>telemetry-buffer-config</td><td>dispatch telemetry-buffer sizing (maxPending/debounceMs/maxBatch)</td><td>workspace</td><td><code dir="auto">operator_telemetry_buffer_config</code></td><td>baked <code dir="auto">TELEMETRY_BUFFER_DEFAULTS</code> → PG override (kill-switch <code dir="auto">papercusp-telemetry-buffer-config</code>, default ON)</td><td><code dir="auto">telemetry-buffer-config</code> ✅</td></tr><tr><td>txn-timeouts-config</td><td>per-workspace txn <code dir="auto">lock_timeout</code>/<code dir="auto">statement_timeout</code></td><td>workspace</td><td><code dir="auto">operator_txn_timeouts_config</code></td><td>baked 5s/5s (<code dir="auto">TXN_TIMEOUTS_DEFAULTS</code>) → PG override (kill-switch <code dir="auto">papercusp-txn-timeouts-config</code>, default ON)</td><td><code dir="auto">txn-timeouts-config</code> ✅</td></tr><tr><td>capability-tier-overrides</td><td>per-capability tier reclassification</td><td>workspace</td><td><code dir="auto">operator_capability_tiers</code></td><td>baked EXACT table → PG override, <strong>DARK</strong> (<code dir="auto">papercusp-auth-config-overrides</code>)</td><td><code dir="auto">capability-tier-overrides</code> ✅</td></tr><tr><td>auth-config-overrides</td><td>§G auth/sandbox dials (full-access bypass roles, scoped-SU safe-tools, sandbox mask/egress)</td><td>workspace</td><td><code dir="auto">operator_auth_config</code></td><td>baked literals → PG override, <strong>DARK</strong> (<code dir="auto">papercusp-auth-config-overrides</code>); tighten/replace-only, never widens</td><td><code dir="auto">auth-config-overrides</code> ✅</td></tr><tr><td>flags</td><td>runtime flag overrides</td><td>workspace</td><td><code dir="auto">operator_flag_overrides</code></td><td>code flag defaults → row</td><td>(flag-bus; not yet a concern)</td></tr><tr><td>knowledge-packs</td><td>installed pack enable/config</td><td>workspace/pot</td><td>knowledge-pack store</td><td>pack default → install row</td><td>(not yet a concern)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="why-two-families-were-skipped-p-037">Why two families were skipped (P-037)</h3><a class="sl-anchor-link" href="#why-two-families-were-skipped-p-037"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why two families were skipped (P-037)”</span></a></div>
 <ul>
 <li><strong>budget</strong> (<code dir="auto">operator_budget</code>) — there is <strong>no baked default to diff against</strong>:

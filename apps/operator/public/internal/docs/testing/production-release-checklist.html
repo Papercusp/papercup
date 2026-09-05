@@ -130,14 +130,47 @@ candidates are quarantined accountably with a de-quarantine follow-up
 filed (see §3).</li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="2-signal-sources-and-what-they-cover">2. Signal sources and what they cover</h2><a class="sl-anchor-link" href="#2-signal-sources-and-what-they-cover"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “2. Signal sources and what they cover”</span></a></div>
-<p>| Source | What it proves | How to check |
-|---|---|---|
-| Vitest unit + integration | Per-package correctness; the bulk of the suite | <code dir="auto">npm run test:affected[:integration]</code>, or the gate’s full nightly run |
-| Playwright (<code dir="auto">apps/operator/e2e/*.spec.ts</code>) | Critical user journeys inside the Tauri shell: boot, pot/harness create, work-items flow, tests tab, deploy/admin-git, chat (WI-3204 audit) | Tests tab, or <code dir="auto">npx playwright test</code> |
-| Cargo (<code dir="auto">#[cfg(test)]</code>, desktop shell) | Rust/Tauri native suite — ~203 test fns across <code dir="auto">papercusp-desktop/src-tauri</code> | Wired into <code dir="auto">harness_shared.test_runs</code> (framework=<code dir="auto">cargo</code>) since WI-3228/P-009; previously <strong>zero</strong> cargo signal existed |
-| LLM scenario suite | Operator/Papercup behavioral regressions under judged conversation scenarios | <code dir="auto">harness_shared.llm_test_runs</code> / <code dir="auto">llm_test_findings</code> — triaged 2026-07-06 (WI-3203); see the two active findings below |
-| Artifact drill | The actual shipped <code dir="auto">.deb</code> boots + upgrades correctly, not just “tests pass in-tree” | Manual VM drill, see §4 |
-| Backup/restore drill | A real restore recovers a populated workspace | Manual drill, see §4 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Source</th><th>What it proves</th><th>How to check</th></tr></thead><tbody><tr><td>Vitest unit + integration</td><td>Per-package correctness; the bulk of the suite</td><td><code dir="auto">npm run test:affected[:integration]</code>, or the gate’s full nightly run</td></tr><tr><td>Playwright (<code dir="auto">apps/operator/e2e/*.spec.ts</code>)</td><td>Critical user journeys inside the Tauri shell: boot, pot/harness create, work-items flow, tests tab, deploy/admin-git, chat (WI-3204 audit)</td><td>Tests tab, or <code dir="auto">npx playwright test</code></td></tr><tr><td>Cargo (<code dir="auto">#[cfg(test)]</code>, desktop shell)</td><td>Rust/Tauri native suite — ~203 test fns across <code dir="auto">papercusp-desktop/src-tauri</code></td><td>Wired into <code dir="auto">harness_shared.test_runs</code> (framework=<code dir="auto">cargo</code>) since WI-3228/P-009; previously <strong>zero</strong> cargo signal existed</td></tr><tr><td>LLM scenario suite</td><td>Operator/Papercup behavioral regressions under judged conversation scenarios</td><td><code dir="auto">harness_shared.llm_test_runs</code> / <code dir="auto">llm_test_findings</code> — triaged 2026-07-06 (WI-3203); see the two active findings below</td></tr><tr><td>Artifact drill</td><td>The actual shipped <code dir="auto">.deb</code> boots + upgrades correctly, not just “tests pass in-tree”</td><td>Manual VM drill, see §4</td></tr><tr><td>Backup/restore drill</td><td>A real restore recovers a populated workspace</td><td>Manual drill, see §4</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="known-active-non-blocking-findings-from-the-llm-scenario-triage-wi-3203">Known active (non-blocking) findings from the LLM scenario triage (WI-3203)</h3><a class="sl-anchor-link" href="#known-active-non-blocking-findings-from-the-llm-scenario-triage-wi-3203"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Known active (non-blocking) findings from the LLM scenario triage (WI-3203)”</span></a></div>
 <ul>
 <li><strong>WI-3229</strong> (major) — delta-merge staleness: the operator/Papercup can show
@@ -152,13 +185,42 @@ regression).</li>
 <p>These file patterns are excluded from the v1 green-checkpoint <strong>verdict</strong>
 (failures still run and are logged, just don’t hold the gate red). Each has
 a filed, owned v2 follow-up — a quarantine here is never silent:</p>
-<p>| Pattern(s) | Lane | v2 de-quarantine follow-up |
-|---|---|---|
-| <code dir="auto">@papercusp/operator-core::lib/sync/hyperbee/**</code> | p2p sync/hyperbee | WI-3240 |
-| <code dir="auto">@papercusp/operator-core::lib/shared-pot-loop/**</code> | shared-pot loop | WI-3241 |
-| <code dir="auto">@papercusp/operator-core::lib/p2p/**</code>, <code dir="auto">lib/deployment/p2p-perf-tier3/**</code>, <code dir="auto">lib/**/*p2p*.test.ts</code>, <code dir="auto">lib/**/*federation*.test.ts</code>, <code dir="auto">lib/**/dogfood-substrate*.test.ts</code>, <code dir="auto">lib/**/substrate*.test.ts</code> | p2p/substrate/federation (operator-core) | WI-3242 |
-| <code dir="auto">@papercusp/p2p-voice::src/**</code>, <code dir="auto">@papercusp/pubsub-substrate::src/**</code> | generic p2p-voice / pubsub-substrate libs | WI-3243 |
-| <code dir="auto">@papercupai/operator::apps/operator/e2e/voice-mode.spec.ts</code> | Known-red harness limitation (NumField blur-commit + ipcFetch transport not reliably assertable headless); feature verified working via direct API | Not v2-scoped — pre-existing headless-assertion gap, see the test’s own comment |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pattern(s)</th><th>Lane</th><th>v2 de-quarantine follow-up</th></tr></thead><tbody><tr><td><code dir="auto">@papercusp/operator-core::lib/sync/hyperbee/**</code></td><td>p2p sync/hyperbee</td><td>WI-3240</td></tr><tr><td><code dir="auto">@papercusp/operator-core::lib/shared-pot-loop/**</code></td><td>shared-pot loop</td><td>WI-3241</td></tr><tr><td><code dir="auto">@papercusp/operator-core::lib/p2p/**</code>, <code dir="auto">lib/deployment/p2p-perf-tier3/**</code>, <code dir="auto">lib/**/*p2p*.test.ts</code>, <code dir="auto">lib/**/*federation*.test.ts</code>, <code dir="auto">lib/**/dogfood-substrate*.test.ts</code>, <code dir="auto">lib/**/substrate*.test.ts</code></td><td>p2p/substrate/federation (operator-core)</td><td>WI-3242</td></tr><tr><td><code dir="auto">@papercusp/p2p-voice::src/**</code>, <code dir="auto">@papercusp/pubsub-substrate::src/**</code></td><td>generic p2p-voice / pubsub-substrate libs</td><td>WI-3243</td></tr><tr><td><code dir="auto">@papercupai/operator::apps/operator/e2e/voice-mode.spec.ts</code></td><td>Known-red harness limitation (NumField blur-commit + ipcFetch transport not reliably assertable headless); feature verified working via direct API</td><td>Not v2-scoped — pre-existing headless-assertion gap, see the test’s own comment</td></tr></tbody></table>
 <p>This is implemented as a <strong>file-level</strong> filter in
 <code dir="auto">green-checkpoint.ts</code> (<code dir="auto">applyTestQuarantine</code> / <code dir="auto">parseTestQuarantine</code>), not a
 whole-workspace exclusion — <code dir="auto">@papercusp/operator-core</code> still holds the gate

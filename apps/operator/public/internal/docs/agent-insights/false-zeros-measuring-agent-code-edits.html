@@ -73,12 +73,32 @@
 </script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#trap-1--tool_invocations-records-mcp-tools-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Trap 1 — tool_invocations records MCP tools only</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#trap-2--the-store-that-does-see-native-tools-is-corpus-namespaced" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Trap 2 — the store that does see native tools is corpus-namespaced</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-the-pair-is-worse-than-either-half" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why the pair is worse than either half</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-query-that-works" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The query that works</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#which-tables-are-corpus-namespaced" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Which tables are corpus-namespaced</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-now-guards-this" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What now guards this</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-transferable-rule" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The transferable rule</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#trap-1--tool_invocations-records-mcp-tools-only" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Trap 1 — tool_invocations records MCP tools only</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#trap-2--the-store-that-does-see-native-tools-is-corpus-namespaced" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Trap 2 — the store that does see native tools is corpus-namespaced</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-the-pair-is-worse-than-either-half" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why the pair is worse than either half</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-query-that-works" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The query that works</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#which-tables-are-corpus-namespaced" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Which tables are corpus-namespaced</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#what-now-guards-this" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">What now guards this</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-transferable-rule" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The transferable rule</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">Two false zeros when measuring what an agent actually did</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <p>Asking “did this agent edit code?” against this database has two independent ways to return a clean, well-formed <strong>zero</strong> while the agent was editing constantly. Each is individually survivable. The reason they have cost real time is that they <strong>compose</strong>, and the second one looks like confirmation of the first.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="trap-1--tool_invocations-records-mcp-tools-only">Trap 1 — <code dir="auto">tool_invocations</code> records MCP tools only</h2><a class="sl-anchor-link" href="#trap-1--tool_invocations-records-mcp-tools-only"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Trap 1 — tool_invocations records MCP tools only”</span></a></div>
 <p><code dir="auto">harness_shared.tool_invocations</code> is an <strong>MCP</strong> ledger. Claude’s native <code dir="auto">Edit</code> / <code dir="auto">Write</code> / <code dir="auto">Bash</code> never pass through MCP, so they never produce a row. Measured over 24h:</p>
-<p>| tool_name | rows |
-|---|---|
-| <code dir="auto">capability:bash</code> | 1997 |
-| <code dir="auto">capability:read</code> | 73 |
-| <code dir="auto">capability:edit</code> | 17 |
-| <code dir="auto">Edit</code> / <code dir="auto">Write</code> / <code dir="auto">Bash</code> (native) | <strong>0</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>tool_name</th><th>rows</th></tr></thead><tbody><tr><td><code dir="auto">capability:bash</code></td><td>1997</td></tr><tr><td><code dir="auto">capability:read</code></td><td>73</td></tr><tr><td><code dir="auto">capability:edit</code></td><td>17</td></tr><tr><td><code dir="auto">Edit</code> / <code dir="auto">Write</code> / <code dir="auto">Bash</code> (native)</td><td><strong>0</strong></td></tr></tbody></table>
 <p>So <code dir="auto">WHERE tool_name IN ('Edit','Write','MultiEdit')</code> returns zero — not because nothing happened, but because this table cannot see it. Any “did agent X do Y” metric built here under-reports by exactly the amount of work done with native tools, which for coding agents here is most of it.</p>
 <p>(Two incidental traps in the same table: the timestamp column is <strong><code dir="auto">invoked_at</code>, not <code dir="auto">ts</code></strong>, and unlike the table below it <strong>is</strong> genuinely multi-tenant, so a <code dir="auto">workspace_id</code> predicate there is correct.)</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="trap-2--the-store-that-does-see-native-tools-is-corpus-namespaced">Trap 2 — the store that <em>does</em> see native tools is corpus-namespaced</h2><a class="sl-anchor-link" href="#trap-2--the-store-that-does-see-native-tools-is-corpus-namespaced"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Trap 2 — the store that does see native tools is corpus-namespaced”</span></a></div>
@@ -93,13 +113,48 @@
 <p><code dir="auto">owner</code> is the coord ownerId (<code dir="auto">su-&#x3C;uuid></code>), so it joins straight to an agent — it is the column that actually identifies <em>who</em>, which is what the <code dir="auto">workspace_id</code> predicate was reaching for in the first place.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="which-tables-are-corpus-namespaced">Which tables are corpus-namespaced</h2><a class="sl-anchor-link" href="#which-tables-are-corpus-namespaced"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Which tables are corpus-namespaced”</span></a></div>
 <p>Measured 2026-08-10 across the whole session/event family. <strong>Do not infer membership from a name</strong> — verify with <code dir="auto">count(*) GROUP BY workspace_id</code>:</p>
-<p>| table | <code dir="auto">'default'</code> | tenant rows | verdict |
-|---|---|---|---|
-| <code dir="auto">session_turn_parts</code> | 603,723 | 0 | corpus |
-| <code dir="auto">tool_usage_rollup</code>, <code dir="auto">event_awaits</code>, <code dir="auto">event_key_fires</code>, <code dir="auto">event_wake_deliveries</code> | all | 0 | corpus |
-| <code dir="auto">session_turns</code> | 362,038 | 15 strays | corpus |
-| <code dir="auto">session_turn_chunks</code> | 123,498 | 12 strays | probably corpus, writer unread |
-| <code dir="auto">session_turn_journal</code> | 10,453 | <strong>4,706 (31%)</strong> | <strong>genuinely mixed — a tenant predicate is correct</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>table</th><th><code dir="auto">'default'</code></th><th>tenant rows</th><th>verdict</th></tr></thead><tbody><tr><td><code dir="auto">session_turn_parts</code></td><td>603,723</td><td>0</td><td>corpus</td></tr><tr><td><code dir="auto">tool_usage_rollup</code>, <code dir="auto">event_awaits</code>, <code dir="auto">event_key_fires</code>, <code dir="auto">event_wake_deliveries</code></td><td>all</td><td>0</td><td>corpus</td></tr><tr><td><code dir="auto">session_turns</code></td><td>362,038</td><td>15 strays</td><td>corpus</td></tr><tr><td><code dir="auto">session_turn_chunks</code></td><td>123,498</td><td>12 strays</td><td>probably corpus, writer unread</td></tr><tr><td><code dir="auto">session_turn_journal</code></td><td>10,453</td><td><strong>4,706 (31%)</strong></td><td><strong>genuinely mixed — a tenant predicate is correct</strong></td></tr></tbody></table>
 <p>That last row is why the tempting sweep-in-every-<code dir="auto">session_*</code>-table fix is wrong: it would start warning about correct queries and train callers to ignore the advisory.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-now-guards-this">What now guards this</h2><a class="sl-anchor-link" href="#what-now-guards-this"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What now guards this”</span></a></div>
 <p><code dir="auto">dev:pg_query</code> gained two advisories (<code dir="auto">pg-read-query.ts</code>), deliberately separate from the tenant advisory because they warn about a different thing — that one says <em>the rows may be from the wrong tenant</em>; these say <em>there will be no rows at all, from a query that looks perfectly scoped</em>:</p>

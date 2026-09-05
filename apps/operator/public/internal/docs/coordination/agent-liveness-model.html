@@ -74,12 +74,47 @@
 stale-claims sweep and EI-348). This page is the one mental model; the
 per-module docs live in the source headers it links.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-signals-robustness-ordered">The four signals, robustness-ordered</h2><a class="sl-anchor-link" href="#the-four-signals-robustness-ordered"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four signals, robustness-ordered”</span></a></div>
-<p>| # | Signal | Written by | Semantics | Covers a long no-tool-call turn? |
-|---|--------|-----------|-----------|------------------|
-| 1 | <strong>Supervision heartbeat</strong> — <code dir="auto">spawned_agents.heartbeat_at</code> | The host that OWNS the process: the operator’s nursery loop (<code dir="auto">fleet/operator-spawn.ts ensureSpawnHeartbeatLoop</code>) for cups; the psu launcher’s supervisor beat (<code dir="auto">scripts/psu-launcher.mjs startSupervisorBeat</code> → the bootstrap-su heartbeat endpoint) for interactive sessions | “I hold this process handle and it is alive” | <strong>Yes</strong> |
-| 2 | <strong>Stream activity</strong> — <code dir="auto">spawned_agents.last_output_at</code> (cups, mig 233) · pty discovery-file <code dir="auto">lastOutputAt</code> (psu pty sessions) | The runner’s in-process stdout/stderr listeners (<code dir="auto">dbos/orchestrator-runner.ts onOutputActivity</code>); the pty host’s activity tracker (<code dir="auto">scripts/psu-pty-host.mjs makeActivityTracker</code>) | “The agent emitted bytes just now” — <em>generating</em>, not merely alive | Yes, and it distinguishes generating from wedged |
-| 3 | <strong>Dispatch beat</strong> — <code dir="auto">coord_presence.last_active_at</code> AND <code dir="auto">.heartbeat_at</code> via <code dir="auto">touchActivity</code> | The projected-tool dispatch seam (<code dir="auto">projected-tool-deps.ts recordInvocationImpl</code> → <code dir="auto">agent-tools/coordination/dispatch-heartbeat.ts</code>), throttled per owner | “The agent made ANY platform tool call recently” — the per-edit lock hook traffic alone keeps an actively-editing session warm | No (but such turns also make no edits) |
-| 4 | <strong>Coord beat</strong> — <code dir="auto">coord_presence.heartbeat_at</code> | <code dir="auto">coord:declare-intent</code>, <code dir="auto">coord:inbox</code> reads | “The agent touched the coordination layer recently” | No |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Signal</th><th>Written by</th><th>Semantics</th><th>Covers a long no-tool-call turn?</th></tr></thead><tbody><tr><td>1</td><td><strong>Supervision heartbeat</strong> — <code dir="auto">spawned_agents.heartbeat_at</code></td><td>The host that OWNS the process: the operator’s nursery loop (<code dir="auto">fleet/operator-spawn.ts ensureSpawnHeartbeatLoop</code>) for cups; the psu launcher’s supervisor beat (<code dir="auto">scripts/psu-launcher.mjs startSupervisorBeat</code> → the bootstrap-su heartbeat endpoint) for interactive sessions</td><td>”I hold this process handle and it is alive”</td><td><strong>Yes</strong></td></tr><tr><td>2</td><td><strong>Stream activity</strong> — <code dir="auto">spawned_agents.last_output_at</code> (cups, mig 233) · pty discovery-file <code dir="auto">lastOutputAt</code> (psu pty sessions)</td><td>The runner’s in-process stdout/stderr listeners (<code dir="auto">dbos/orchestrator-runner.ts onOutputActivity</code>); the pty host’s activity tracker (<code dir="auto">scripts/psu-pty-host.mjs makeActivityTracker</code>)</td><td>“The agent emitted bytes just now” — <em>generating</em>, not merely alive</td><td>Yes, and it distinguishes generating from wedged</td></tr><tr><td>3</td><td><strong>Dispatch beat</strong> — <code dir="auto">coord_presence.last_active_at</code> AND <code dir="auto">.heartbeat_at</code> via <code dir="auto">touchActivity</code></td><td>The projected-tool dispatch seam (<code dir="auto">projected-tool-deps.ts recordInvocationImpl</code> → <code dir="auto">agent-tools/coordination/dispatch-heartbeat.ts</code>), throttled per owner</td><td>”The agent made ANY platform tool call recently” — the per-edit lock hook traffic alone keeps an actively-editing session warm</td><td>No (but such turns also make no edits)</td></tr><tr><td>4</td><td><strong>Coord beat</strong> — <code dir="auto">coord_presence.heartbeat_at</code></td><td><code dir="auto">coord:declare-intent</code>, <code dir="auto">coord:inbox</code> reads</td><td>”The agent touched the coordination layer recently”</td><td>No</td></tr></tbody></table>
 <p>A projected dispatch IS genuine activity, so leg 3 beats via <code dir="auto">touchActivity</code>
 (bumps <code dir="auto">last_active_at</code> <em>and</em> <code dir="auto">heartbeat_at</code>, presence-v2 D-003) — distinct from
 the pure keepalive <code dir="auto">touchHeartbeat</code> (leg 1’s 60s supervisor beat) which bumps
@@ -108,13 +143,42 @@ claim release; absence of any observed output is still never treated as a
 wedge.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="which-consumers-read-which-legs">Which consumers read which legs</h2><a class="sl-anchor-link" href="#which-consumers-read-which-legs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Which consumers read which legs”</span></a></div>
-<p>| Consumer | Legs read | Where |
-|----------|----------|-------|
-| Stale-claims sweep (releases <code dir="auto">taken_by</code> of dead holders) | 1 + 3/4 (presence OR nursery, alias-aware per mig 225) | <code dir="auto">work-items-stale-claims.ts</code> |
-| Spawn reclaim (frees ceiling slots of dead-host spawns) | 1, plus same-host pid-alive as a keep-alive override (EI-85) | <code dir="auto">fleet/spawn-reclaim.ts</code> |
-| Colony roster / Sessions view | best of 1 (nursery join, pid-alive definitive) and 3/4 (presence) — EI-348 | <code dir="auto">adv-roster.ts mergeRosterEntries</code> |
-| Wedge badge (<code dir="auto">possibly_wedged</code>) | 1 fresh AND 2 stale | <code dir="auto">fleet:tree</code> → <code dir="auto">isPossiblyWedged</code> |
-| Wedge auto-reaper (cancels + releases claims of supervised cups silent past threshold) | 1 fresh AND 2 stale | <code dir="auto">fleet/operator-spawn.ts reapWedgedLocalSpawns</code> (flag <code dir="auto">WEDGE_AUTO_REAP</code>, default ON) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Consumer</th><th>Legs read</th><th>Where</th></tr></thead><tbody><tr><td>Stale-claims sweep (releases <code dir="auto">taken_by</code> of dead holders)</td><td>1 + 3/4 (presence OR nursery, alias-aware per mig 225)</td><td><code dir="auto">work-items-stale-claims.ts</code></td></tr><tr><td>Spawn reclaim (frees ceiling slots of dead-host spawns)</td><td>1, plus same-host pid-alive as a keep-alive override (EI-85)</td><td><code dir="auto">fleet/spawn-reclaim.ts</code></td></tr><tr><td>Colony roster / Sessions view</td><td>best of 1 (nursery join, pid-alive definitive) and 3/4 (presence) — EI-348</td><td><code dir="auto">adv-roster.ts mergeRosterEntries</code></td></tr><tr><td>Wedge badge (<code dir="auto">possibly_wedged</code>)</td><td>1 fresh AND 2 stale</td><td><code dir="auto">fleet:tree</code> → <code dir="auto">isPossiblyWedged</code></td></tr><tr><td>Wedge auto-reaper (cancels + releases claims of supervised cups silent past threshold)</td><td>1 fresh AND 2 stale</td><td><code dir="auto">fleet/operator-spawn.ts reapWedgedLocalSpawns</code> (flag <code dir="auto">WEDGE_AUTO_REAP</code>, default ON)</td></tr></tbody></table>
 <p><strong>The rule for new consumers: read the strongest leg available for the agent
 class, not just presence.</strong> EI-348 was exactly a consumer reading only leg 3/4
 for agents whose truth lived in leg 1.</p>

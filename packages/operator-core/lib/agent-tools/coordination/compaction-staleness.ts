@@ -24,6 +24,10 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+// EI-20261012762389206 moved this formatter to message-age.ts so the coord
+// age-marker and these staleness warnings cannot drift apart. Aliased to `ago`
+// to keep the call sites (and their asserted strings) byte-identical.
+import { formatAgo as ago } from './message-age';
 
 export const STALENESS_MAX_WARNINGS = 8;
 
@@ -117,13 +121,6 @@ export interface BuildStalenessWarningsOpts {
     workspaceId: string,
     sinceMs: number,
   ) => Promise<HeldChangedRow[]>;
-}
-
-function ago(ms: number, now: number): string {
-  const min = Math.round(Math.max(0, now - ms) / 60_000);
-  if (min < 60) return `${Math.max(min, 1)}m ago`;
-  const h = Math.floor(min / 60);
-  return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
 /**

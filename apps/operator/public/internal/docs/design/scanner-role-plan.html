@@ -186,12 +186,32 @@ scan to ask follow-ups about that specific scan turn (same
 <code dir="auto">delegate_to_claude</code> resume pattern).</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="risk-register">Risk register</h2><a class="sl-anchor-link" href="#risk-register"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Risk register”</span></a></div>
-<p>| Risk | Mitigation |
-|---|---|
-| Scanner session drifts / hallucinates past state | State bootstrap on every turn (Phase 3). |
-| Long session = high latency + cost on each scan | Phase 3 only — start with persistence (Phase 2). User can decide if continuity is worth the cost. |
-| Existing operator-scan flow breaks during refactor | Phases 1+2 don’t change scan behavior. Phase 3 is opt-in via a feature flag (<code dir="auto">OPERATOR_SCANNER_RESUME=1</code>) until it stabilizes. |
-| Migration vs. plugin role registry overlap | Scanner is a <em>built-in</em> role (lives in the harness package), not a plugin-contributed role. The two systems coexist; the role-registry’s <code dir="auto">RoleManifest</code> shape doesn’t need extending. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td>Scanner session drifts / hallucinates past state</td><td>State bootstrap on every turn (Phase 3).</td></tr><tr><td>Long session = high latency + cost on each scan</td><td>Phase 3 only — start with persistence (Phase 2). User can decide if continuity is worth the cost.</td></tr><tr><td>Existing operator-scan flow breaks during refactor</td><td>Phases 1+2 don’t change scan behavior. Phase 3 is opt-in via a feature flag (<code dir="auto">OPERATOR_SCANNER_RESUME=1</code>) until it stabilizes.</td></tr><tr><td>Migration vs. plugin role registry overlap</td><td>Scanner is a <em>built-in</em> role (lives in the harness package), not a plugin-contributed role. The two systems coexist; the role-registry’s <code dir="auto">RoleManifest</code> shape doesn’t need extending.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-changes-for-the-user">What changes for the user</h2><a class="sl-anchor-link" href="#what-changes-for-the-user"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What changes for the user”</span></a></div>
 <ul>
 <li><strong>Today</strong>: every “Operator scan” is a fresh Claude call with no

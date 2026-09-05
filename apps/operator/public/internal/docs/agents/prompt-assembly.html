@@ -78,12 +78,37 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="why-a-separate-layer">Why a separate layer</h2><a class="sl-anchor-link" href="#why-a-separate-layer"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why a separate layer”</span></a></div>
 <p>The <a href="/internal/docs/endpoint-system/overview">endpoint system</a> decides <em>what</em> tools exist and <em>how</em> they get invoked across transports. The prompt-assembly layer decides <em>what the model is told about those tools and how to use them</em>. Different concerns; different files.</p>
 <p>A given tool needs <strong>three</strong> kinds of guidance authored:</p>
-<p>| Question | Where it lives | Why |
-|---|---|---|
-| “How do I call this tool?” | <code dir="auto">defineTool({ inputSchema })</code> | Schema is consumed by MCP <code dir="auto">tools/list</code>; the model sees it via its API parameter |
-| “When should I call this tool vs. another?” | <code dir="auto">defineTool({ guidance })</code> | Lives at the tool — authored once, projected per-role into every prompt |
-| “When working as the operator, what workflows span multiple tools?” | <code dir="auto">&#x3C;role>.tools.md</code> | Can’t live at any single tool; verbs across tools |
-| “How does this agent behave — character, tone, what to never read aloud?” | <code dir="auto">&#x3C;role>.persona.md</code> | Agent-level, not tool-level |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Question</th><th>Where it lives</th><th>Why</th></tr></thead><tbody><tr><td>”How do I call this tool?”</td><td><code dir="auto">defineTool({ inputSchema })</code></td><td>Schema is consumed by MCP <code dir="auto">tools/list</code>; the model sees it via its API parameter</td></tr><tr><td>”When should I call this tool vs. another?”</td><td><code dir="auto">defineTool({ guidance })</code></td><td>Lives at the tool — authored once, projected per-role into every prompt</td></tr><tr><td>”When working as the operator, what workflows span multiple tools?”</td><td><code dir="auto">&#x3C;role>.tools.md</code></td><td>Can’t live at any single tool; verbs across tools</td></tr><tr><td>”How does this agent behave — character, tone, what to never read aloud?”</td><td><code dir="auto">&#x3C;role>.persona.md</code></td><td>Agent-level, not tool-level</td></tr></tbody></table>
 <p>If you put cross-tool guidance in a single tool’s <code dir="auto">guidance</code>, you have to copy it to N other tools when you change it. If you put per-tool guidance in <code dir="auto">&#x3C;role>.tools.md</code>, you have to copy it to every role file the tool appears in. The split avoids both.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-sections">The sections</h2><a class="sl-anchor-link" href="#the-sections"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The sections”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="section-1--rolepersonamd">Section 1 — <code dir="auto">&#x3C;role>.persona.md</code></h3><a class="sl-anchor-link" href="#section-1--rolepersonamd"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Section 1 — &#x3C;role>.persona.md”</span></a></div>
@@ -124,30 +149,101 @@
 <p>The order within runtime is caller-controlled. The contract is: runtime always comes last so it can refer to everything above it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-shared-base-policy-block">The shared-base policy block</h2><a class="sl-anchor-link" href="#the-shared-base-policy-block"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The shared-base policy block”</span></a></div>
 <p>Between the tools playbook (section 3) and runtime (section 18), <code dir="auto">assembleRolePrompt</code> injects up to <strong>fourteen shared-base policy sections</strong> in this order:</p>
-<p>| Section | What it primes |
-|---|---|
-| <code dir="auto">coord-legend</code> | how to read the injected <code dir="auto">[coord+N]</code> blocks the PostToolUse hook adds |
-| <code dir="auto">friction-tripwire</code> | file friction you <em>felt</em> (a workaround, a misleading doc, a >3-attempt confusing failure) via <code dir="auto">improvements:capture</code> the moment it hits |
-| <code dir="auto">observation-rubric-nudge</code> | when filing a turn-end observation, check <code dir="auto">rubrics:list</code> first and file a structured observation if an active rubric fits |
-| <code dir="auto">yield-policy</code> | on a <code dir="auto">turn:interrupt</code> yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn |
-| <code dir="auto">account-routing-note</code> | don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system |
-| <code dir="auto">concurrency-first-note</code> | don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents |
-| <code dir="auto">testing-standard</code> | write tests the project way |
-| <code dir="auto">deploy-pipeline-note</code> | your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall |
-| <code dir="auto">reuse-first-nudge</code> | extend an existing durable surface, don’t fork a parallel one |
-| <code dir="auto">code-run-note</code> | reach for <code dir="auto">code:run</code> to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on <code dir="auto">code:run</code> being in your toolset) |
-| <code dir="auto">finish-the-rollout-note</code> | a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task |
-| <code dir="auto">agent-activity-truth-note</code> | “who’s doing what” is a live derived truth (<code dir="auto">fleet:assignments</code>: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work |
-| <code dir="auto">wait-loop-note</code> | waiting on something that may never fire? arm a recurring self-wake (<code dir="auto">loop:arm</code> / <code dir="auto">pot:declare-wake</code>) and FIX what’s blocking it — don’t sleep forever on a bare <code dir="auto">events:await</code> |
-| <code dir="auto">peer-wake-note</code> | a parked agent sleeps until something re-invokes it, so handing work off doesn’t make a peer act — WAKE the peer you depend on (<code dir="auto">coord:dispatch</code> / <code dir="auto">coord:handoff</code> for new work, <code dir="auto">coord:wake</code> to resume an assigned lane) and verify it landed (<code dir="auto">woken</code> / <code dir="auto">recipient_absent</code>); the active complement of <code dir="auto">wait-loop-note</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Section</th><th>What it primes</th></tr></thead><tbody><tr><td><code dir="auto">coord-legend</code></td><td>how to read the injected <code dir="auto">[coord+N]</code> blocks the PostToolUse hook adds</td></tr><tr><td><code dir="auto">friction-tripwire</code></td><td>file friction you <em>felt</em> (a workaround, a misleading doc, a >3-attempt confusing failure) via <code dir="auto">improvements:capture</code> the moment it hits</td></tr><tr><td><code dir="auto">observation-rubric-nudge</code></td><td>when filing a turn-end observation, check <code dir="auto">rubrics:list</code> first and file a structured observation if an active rubric fits</td></tr><tr><td><code dir="auto">yield-policy</code></td><td>on a <code dir="auto">turn:interrupt</code> yield: checkpoint, persist partial state, release locks, leave a successor note, end the turn</td></tr><tr><td><code dir="auto">account-routing-note</code></td><td>don’t mis-diagnose a routing/config fault as a true capacity limit; steer LLM work onto the account-routing system</td></tr><tr><td><code dir="auto">concurrency-first-note</code></td><td>don’t back off on contention — the only legit block is verified resource exhaustion; the design target is hundreds-to-thousands of concurrent agents</td></tr><tr><td><code dir="auto">testing-standard</code></td><td>write tests the project way</td></tr><tr><td><code dir="auto">deploy-pipeline-note</code></td><td>your change ships via an async, self-healing pipeline; don’t babysit or self-diagnose a stall</td></tr><tr><td><code dir="auto">reuse-first-nudge</code></td><td>extend an existing durable surface, don’t fork a parallel one</td></tr><tr><td><code dir="auto">code-run-note</code></td><td>reach for <code dir="auto">code:run</code> to collapse a multi-step tool flow into one call instead of N inference round-trips (self-gated on <code dir="auto">code:run</code> being in your toolset)</td></tr><tr><td><code dir="auto">finish-the-rollout-note</code></td><td>a capability built then left gated OFF (flag or env boolean) is incomplete — flipping the gate on is the last step of the task</td></tr><tr><td><code dir="auto">agent-activity-truth-note</code></td><td>”who’s doing what” is a live derived truth (<code dir="auto">fleet:assignments</code>: claim + holder-liveness + progress), never a stale coord broadcast that outlives the work</td></tr><tr><td><code dir="auto">wait-loop-note</code></td><td>waiting on something that may never fire? arm a recurring self-wake (<code dir="auto">loop:arm</code> / <code dir="auto">pot:declare-wake</code>) and FIX what’s blocking it — don’t sleep forever on a bare <code dir="auto">events:await</code></td></tr><tr><td><code dir="auto">peer-wake-note</code></td><td>a parked agent sleeps until something re-invokes it, so handing work off doesn’t make a peer act — WAKE the peer you depend on (<code dir="auto">coord:dispatch</code> / <code dir="auto">coord:handoff</code> for new work, <code dir="auto">coord:wake</code> to resume an assigned lane) and verify it landed (<code dir="auto">woken</code> / <code dir="auto">recipient_absent</code>); the active complement of <code dir="auto">wait-loop-note</code></td></tr></tbody></table>
 <p>Each section is sourced from a <strong>single orchestrator constant</strong> (<code dir="auto">COORD_LEGEND</code>, <code dir="auto">FRICTION_TRIPWIRE</code>, <code dir="auto">YIELD_POLICY</code>, …), re-exported through a thin <code dir="auto">render*</code> wrapper in operator-core. That single-source design is the point: the operator-launched-role base and the spawned-cup base (<code dir="auto">buildPrompt</code>) both pull the same constant, so they can’t desync. Any section whose renderer returns <code dir="auto">''</code> collapses to nothing, so a prompt may carry fewer than all fourteen.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-nounverb-split">The noun/verb split</h2><a class="sl-anchor-link" href="#the-nounverb-split"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The noun/verb split”</span></a></div>
 <p>A working mental model:</p>
-<p>| File / source | Layer | Example content |
-|---|---|---|
-| <code dir="auto">defineTool({ guidance })</code> | <strong>Nouns</strong> — about a tool | “When should I call <code dir="auto">harness:status</code>?” |
-| <code dir="auto">&#x3C;role>.tools.md</code> | <strong>Verbs</strong> — doing something that uses tools | “When approving anything, confirm aloud BEFORE the write call” |
-| <code dir="auto">&#x3C;role>.persona.md</code> | <strong>Identity</strong> — about the agent | “Never read URLs aloud in voice mode” |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File / source</th><th>Layer</th><th>Example content</th></tr></thead><tbody><tr><td><code dir="auto">defineTool({ guidance })</code></td><td><strong>Nouns</strong> — about a tool</td><td>”When should I call <code dir="auto">harness:status</code>?”</td></tr><tr><td><code dir="auto">&#x3C;role>.tools.md</code></td><td><strong>Verbs</strong> — doing something that uses tools</td><td>”When approving anything, confirm aloud BEFORE the write call”</td></tr><tr><td><code dir="auto">&#x3C;role>.persona.md</code></td><td><strong>Identity</strong> — about the agent</td><td>”Never read URLs aloud in voice mode”</td></tr></tbody></table>
 <p>If a rule is “always do X when calling Y,” put it in Y’s <code dir="auto">defineTool({ guidance })</code>.
 If a rule is “after listing X, you usually want to get Y,” put it in <code dir="auto">&#x3C;role>.tools.md</code>.
 If a rule is “the operator never raises voice prompts after midnight,” put it in <code dir="auto">&#x3C;role>.persona.md</code>.</p>

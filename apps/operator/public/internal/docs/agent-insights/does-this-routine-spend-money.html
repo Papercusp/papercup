@@ -85,14 +85,47 @@ not be able to present itself as free; the pane surfaces it, and
 <div class="sl-heading-wrapper level-h2"><h2 id="why-not-the-name--it-was-wrong-six-ways">Why not the name — it was wrong six ways</h2><a class="sl-anchor-link" href="#why-not-the-name--it-was-wrong-six-ways"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why not the name — it was wrong six ways”</span></a></div>
 <p>The predecessor was <code dir="auto">AGENT_SPAWNING_PATTERNS</code>, a list of regexes over the routine’s
 NAME. A name is a label; it cannot see the handler. Measured on 2026-07-26:</p>
-<p>| routine | regex said | truth |
-|---|---|---|
-| <code dir="auto">wake-brain</code> | spends | handler is <code dir="auto">async (ctx) => { void ctx; }</code> — a retired tombstone |
-| <code dir="auto">improvement-triage</code> | spends | “never dispatches — only records routing metadata” |
-| <code dir="auto">improvement-watchdog</code> | spends | a SQL pass that files work items |
-| <code dir="auto">improvement-human-digest</code> | spends | ranks the queue and sends it |
-| <code dir="auto">improvement-invalid-args-miner</code> | spends | mines <code dir="auto">tool_invocations</code> in SQL |
-| <code dir="auto">template-gym</code> | spends | <strong>no handler is registered at all</strong> (EI-18741229858124453) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>routine</th><th>regex said</th><th>truth</th></tr></thead><tbody><tr><td><code dir="auto">wake-brain</code></td><td>spends</td><td>handler is <code dir="auto">async (ctx) => { void ctx; }</code> — a retired tombstone</td></tr><tr><td><code dir="auto">improvement-triage</code></td><td>spends</td><td>”never dispatches — only records routing metadata”</td></tr><tr><td><code dir="auto">improvement-watchdog</code></td><td>spends</td><td>a SQL pass that files work items</td></tr><tr><td><code dir="auto">improvement-human-digest</code></td><td>spends</td><td>ranks the queue and sends it</td></tr><tr><td><code dir="auto">improvement-invalid-args-miner</code></td><td>spends</td><td>mines <code dir="auto">tool_invocations</code> in SQL</td></tr><tr><td><code dir="auto">template-gym</code></td><td>spends</td><td><strong>no handler is registered at all</strong> (EI-18741229858124453)</td></tr></tbody></table>
 <p>Five false positives and one routine that turned out to be firing into a void. The
 tests pinning that behaviour asserted the guess faithfully — <code dir="auto">catalog.test.ts</code> had
 <code dir="auto">template-gym</code> and <code dir="auto">wake-brain</code> listed under “observed firing and billing tokens”.</p>

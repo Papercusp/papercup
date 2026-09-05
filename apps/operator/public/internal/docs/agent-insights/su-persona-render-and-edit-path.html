@@ -76,12 +76,42 @@ behavior you edit the canonical SOURCE for the right layer; the live prompt is a
 launch. Editing the wrong copy (a build artifact, a sibling worktree, a materialized copy)
 looks like it worked and changes nothing live.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-layers-in-render-order">The layers (in render order)</h2><a class="sl-anchor-link" href="#the-layers-in-render-order"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The layers (in render order)”</span></a></div>
-<p>| # | Layer | Canonical source | Edit it for |
-|---|---|---|---|
-| 1 | <strong>Base domain-neutral persona</strong> | <code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code> — a git <strong>submodule</strong> @ <code dir="auto">main</code> | the universal “how we work” spine: discipline, coordination, default posture, memory |
-| 2 | <strong>Per-client tooling overlay</strong> | <code dir="auto">apps/operator/prompts/papercusp-su.claude.md</code> (<code dir="auto">.codex.md</code> / <code dir="auto">.omp.md</code>), spliced at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY --></code> (su.md ~L19) | client-specific tool guidance (task tracking, engine loops, lock hook) |
-| 3 | <strong>Code-generated sections</strong> | TS renderers, spliced at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:* --></code> markers | AUTO mode, wire schemas, coord legend, promotion model |
-| 4 | <strong>Per-pot instance override</strong> | DB <code dir="auto">harness_shared.hive_settings</code>, key <code dir="auto">promptOverride.su</code>, appended LAST (<code dir="auto">pot-settings-store.ts</code> → <code dir="auto">getHiveInstancePromptOverride</code> / <code dir="auto">setHiveInstancePromptOverride</code>) | a single pot’s domain specifics |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Layer</th><th>Canonical source</th><th>Edit it for</th></tr></thead><tbody><tr><td>1</td><td><strong>Base domain-neutral persona</strong></td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code> — a git <strong>submodule</strong> @ <code dir="auto">main</code></td><td>the universal “how we work” spine: discipline, coordination, default posture, memory</td></tr><tr><td>2</td><td><strong>Per-client tooling overlay</strong></td><td><code dir="auto">apps/operator/prompts/papercusp-su.claude.md</code> (<code dir="auto">.codex.md</code> / <code dir="auto">.omp.md</code>), spliced at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY --></code> (su.md ~L19)</td><td>client-specific tool guidance (task tracking, engine loops, lock hook)</td></tr><tr><td>3</td><td><strong>Code-generated sections</strong></td><td>TS renderers, spliced at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:* --></code> markers</td><td>AUTO mode, wire schemas, coord legend, promotion model</td></tr><tr><td>4</td><td><strong>Per-pot instance override</strong></td><td>DB <code dir="auto">harness_shared.hive_settings</code>, key <code dir="auto">promptOverride.su</code>, appended LAST (<code dir="auto">pot-settings-store.ts</code> → <code dir="auto">getHiveInstancePromptOverride</code> / <code dir="auto">setHiveInstancePromptOverride</code>)</td><td>a single pot’s domain specifics</td></tr></tbody></table>
 <p>The marker-spliced code sections are <strong>not in any <code dir="auto">.md</code></strong> — e.g. <code dir="auto">## AUTO mode</code> is produced
 by <code dir="auto">renderModesPolicy()</code> (<code dir="auto">operating-modes-policy.ts</code>) and spliced at <code dir="auto">&#x3C;!-- PAPERCUSP-SU:AUTO-MODE --></code>
 (su.md ~L122). Marker constants live in <code dir="auto">desktop-install/splice-tooling-overlay.ts</code>.</p>

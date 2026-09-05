@@ -72,14 +72,40 @@
 	StarlightThemeProvider.updatePickers();
 </script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-routing-table" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The routing table</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-the-doors-are-distinct" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why the doors are distinct</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#selection-heuristic" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Selection heuristic</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#per-member-config--runtime-reconfigure-per-member-declarative-launch-specs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Per-member config + runtime reconfigure (per-member-declarative-launch-specs)</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#the-routing-table" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">The routing table</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-the-doors-are-distinct" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why the doors are distinct</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#selection-heuristic" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Selection heuristic</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#per-member-config--runtime-reconfigure-per-member-declarative-launch-specs" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Per-member config + runtime reconfigure (per-member-declarative-launch-specs)</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">Launching agents — which tool for which door</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <div class="sl-heading-wrapper level-h2"><h2 id="the-routing-table">The routing table</h2><a class="sl-anchor-link" href="#the-routing-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The routing table”</span></a></div>
 <p>Use the narrowest purpose-built door that matches the intent:</p>
-<p>| You want to… | Correct tool |
-|---|---|
-| Launch / resume / fork an agent (visible or headless, fleet or not) | <code dir="auto">capability:launch-agent</code> — the flexible superset |
-| Launch N agents on a plan (the ergonomic door) | <code dir="auto">fleet:launch-on-plan</code> |
-| Run an arbitrary command in a window | <code dir="auto">capability:terminal</code> |
-| Use the “+” / “Resume in new terminal” desktop buttons | the <code dir="auto">/console/launch</code> route → <code dir="auto">spawnConsole</code> |
-| Reconfigure ONE running fleet member (no respawn) | <code dir="auto">fleet:reconfigure-member</code> |
-| Change a member’s boot-baked settings (model/account/…) | <code dir="auto">fleet:respawn-member</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You want to…</th><th>Correct tool</th></tr></thead><tbody><tr><td>Launch / resume / fork an agent (visible or headless, fleet or not)</td><td><code dir="auto">capability:launch-agent</code> — the flexible superset</td></tr><tr><td>Launch N agents on a plan (the ergonomic door)</td><td><code dir="auto">fleet:launch-on-plan</code></td></tr><tr><td>Run an arbitrary command in a window</td><td><code dir="auto">capability:terminal</code></td></tr><tr><td>Use the “+” / “Resume in new terminal” desktop buttons</td><td>the <code dir="auto">/console/launch</code> route → <code dir="auto">spawnConsole</code></td></tr><tr><td>Reconfigure ONE running fleet member (no respawn)</td><td><code dir="auto">fleet:reconfigure-member</code></td></tr><tr><td>Change a member’s boot-baked settings (model/account/…)</td><td><code dir="auto">fleet:respawn-member</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-the-doors-are-distinct">Why the doors are distinct</h2><a class="sl-anchor-link" href="#why-the-doors-are-distinct"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why the doors are distinct”</span></a></div>
 <p><code dir="auto">capability:launch-agent</code> owns agent lifecycle: fresh launch, resume, fork, visible/headless, and optional fleet membership. It injects the first turn and uses the shared agent-launch core.</p>
 <p><code dir="auto">fleet:launch-on-plan</code> is the ergonomic plan-fleet wrapper. It ensures the fleet exists, establishes leadership, binds the plan and claim spec, opens N members, and auto-starts each member. Do not reproduce that choreography with <code dir="auto">capability:terminal</code>.</p>
@@ -96,9 +122,26 @@
 <p>A multi-agent launch is <strong>declarative</strong>: pass <code dir="auto">members: MemberSpec[]</code> to either <code dir="auto">capability:launch-agent</code> or <code dir="auto">fleet:launch-on-plan</code>. Entry <code dir="auto">i</code> configures agent <code dir="auto">i</code> (index-aligned to <code dir="auto">count</code>); each set field OVERRIDES the flat top-level arg for that agent only, an unset field falls through to the flat arg then the system default, and a shorter array is fine (<code dir="auto">count</code> defaults to <code dir="auto">members.length</code>). <code dir="auto">MemberSpec</code> carries <code dir="auto">model</code>, <code dir="auto">effort</code>, <code dir="auto">account</code>, <code dir="auto">carry</code>, <code dir="auto">contextSize</code>, <code dir="auto">compactionLimit</code>, <code dir="auto">role</code>, <code dir="auto">agent</code>, <code dir="auto">brief</code>, <code dir="auto">claimKinds</code>, <code dir="auto">headless</code>, and more (see <code dir="auto">agent-launch-core.ts</code>).</p>
 <p>Door note: <code dir="auto">carry</code> / <code dir="auto">claimKinds</code> seed a <strong>self-pulling fleet</strong> member’s baseline + per-member claim spec, so they are honored ONLY by <code dir="auto">fleet:launch-on-plan</code>. The general <code dir="auto">capability:launch-agent</code> door opens raw agents — it IGNORES those two fields (and warns), so use <code dir="auto">fleet:launch-on-plan</code> when a member needs a carry mode or a claim-kind lane.</p>
 <p>Once a fleet is running, reconfigure ONE member without re-authoring the whole launch — the setting’s nature picks the tool (D-003):</p>
-<p>| Setting | Fixed at launch? | Tool |
-|---|---|---|
-| compaction limit, claim spec, next-wake brief | no — runtime | <code dir="auto">fleet:reconfigure-member</code> (adjusts in place, no respawn) |
-| model, effort, account, contextSize, agent, compactionLimit | yes — boot-baked | <code dir="auto">fleet:respawn-member</code> (drains + relaunches with the new spec) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Setting</th><th>Fixed at launch?</th><th>Tool</th></tr></thead><tbody><tr><td>compaction limit, claim spec, next-wake brief</td><td>no — runtime</td><td><code dir="auto">fleet:reconfigure-member</code> (adjusts in place, no respawn)</td></tr><tr><td>model, effort, account, contextSize, agent, compactionLimit</td><td>yes — boot-baked</td><td><code dir="auto">fleet:respawn-member</code> (drains + relaunches with the new spec)</td></tr></tbody></table>
 <p><code dir="auto">fleet:reconfigure-member</code> applies each lever directly — compaction limit via the cross-session setter (clamped to the member’s own spec+role ceiling), claim spec under the member’s cupId (applied on its next <code dir="auto">scheduler:get_next</code>), and the brief as a next-wake coord message. <code dir="auto">fleet:respawn-member</code> KILLS the old session (releasing its claims via <code dir="auto">fleet:kill</code>) then fresh-launches a replacement into the same fleet — a new identity that inherits the fleet claim lane; it ABORTS the relaunch if the kill fails, so a lane is never double-run. Both default <code dir="auto">fleet</code> to the single fleet you lead and are authorized to the fleet’s leader, the queen, or the owner.</p>
 <p>Deep dives: <a href="/internal/docs/agent-insights/desktop-fleet-vs-loop-cup">desktop fleet vs. loop cup</a>, <a href="/internal/docs/agent-insights/launching-resuming-and-forking-agents">launching, resuming and forking agents</a>, and <a href="/internal/docs/desktop/native-console">native console</a>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:59.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/launching-a-desktop-fleet.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Launching a desktop fleet — use fleet:launch-on-plan, never capability:terminal</span> </span> </a> <a href="/internal/docs/agent-insights/launching-resuming-and-forking-agents.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Launching, resuming and forking agents — capability:launch-agent</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

@@ -105,15 +105,44 @@ omitted; pass <code dir="auto">--no-plan</code> for an ad-hoc session or <code d
 <div class="sl-heading-wrapper level-h3"><h3 id="more-flags">More flags</h3><a class="sl-anchor-link" href="#more-flags"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “More flags”</span></a></div>
 <p>The launcher implements several other first-class flags on top of
 agent/workspace/harness/plan:</p>
-<p>| Flag | Effect |
-|---|---|
-| <code dir="auto">--profile=engineer\|power\|generic</code> | Which su playbook + dispatch tier (default <code dir="auto">engineer</code>). Changes <strong>both</strong> the rendered playbook <strong>and</strong> the MCP dispatch gating, via <code dir="auto">PAPERCUSP_PROFILE</code> — see <a href="#profiles">Profiles</a>. |
-| <code dir="auto">--account=&#x3C;id></code> | Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown. |
-| <code dir="auto">--brain</code> | Retired: fails closed with a tombstone message. Use the live operator/papercup converse surface or a normal <code dir="auto">psu</code> session. |
-| <code dir="auto">--fork</code> / <code dir="auto">--fork-session</code> | claude + codex, resume-only: branch the resumed conversation into a <strong>new</strong> native session id (seeded with the original’s history) with a fresh coord identity, so the fork runs concurrently with the still-live original. Claude tracked forks can pre-mint the fork id; Codex uses <code dir="auto">codex fork</code> and discovers the resulting rollout later. |
-| <code dir="auto">--add-dir=&#x3C;dir></code> | Repeatable; maps to claude’s + codex’s native <code dir="auto">--add-dir</code> (omp has none → warned + skipped). Both space and <code dir="auto">=</code> forms. |
-| <code dir="auto">--model=&#x3C;m></code> | Backend model fuzzy-match passthrough. |
-| <code dir="auto">--yes</code> / <code dir="auto">-y</code> | Skip the “proceed anyway?” confirm when resuming an untracked (non-psu) session in scripts. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Flag</th><th>Effect</th></tr></thead><tbody><tr><td><code dir="auto">--profile=engineer|power|generic</code></td><td>Which su playbook + dispatch tier (default <code dir="auto">engineer</code>). Changes <strong>both</strong> the rendered playbook <strong>and</strong> the MCP dispatch gating, via <code dir="auto">PAPERCUSP_PROFILE</code> — see <a href="#profiles">Profiles</a>.</td></tr><tr><td><code dir="auto">--account=&#x3C;id></code></td><td>Pin the session to a specific inference-gateway pool account; fail-soft to the default credential if the gateway is off or the id is unknown.</td></tr><tr><td><code dir="auto">--brain</code></td><td>Retired: fails closed with a tombstone message. Use the live operator/papercup converse surface or a normal <code dir="auto">psu</code> session.</td></tr><tr><td><code dir="auto">--fork</code> / <code dir="auto">--fork-session</code></td><td>claude + codex, resume-only: branch the resumed conversation into a <strong>new</strong> native session id (seeded with the original’s history) with a fresh coord identity, so the fork runs concurrently with the still-live original. Claude tracked forks can pre-mint the fork id; Codex uses <code dir="auto">codex fork</code> and discovers the resulting rollout later.</td></tr><tr><td><code dir="auto">--add-dir=&#x3C;dir></code></td><td>Repeatable; maps to claude’s + codex’s native <code dir="auto">--add-dir</code> (omp has none → warned + skipped). Both space and <code dir="auto">=</code> forms.</td></tr><tr><td><code dir="auto">--model=&#x3C;m></code></td><td>Backend model fuzzy-match passthrough.</td></tr><tr><td><code dir="auto">--yes</code> / <code dir="auto">-y</code></td><td>Skip the “proceed anyway?” confirm when resuming an untracked (non-psu) session in scripts.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-a-launch-is-assembled">How a launch is assembled</h2><a class="sl-anchor-link" href="#how-a-launch-is-assembled"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How a launch is assembled”</span></a></div>
 <p><code dir="auto">psu</code> calls <code dir="auto">POST /api/agent-mcp/console/bootstrap-su</code>, which builds the
 launch spec via <code dir="auto">buildLaunchSpec({ kind: 'su' })</code> — the playbook (rendered
@@ -122,11 +151,36 @@ overlay, so it can’t drift from the installed copy) plus a per-launch
 scope/plan addendum — records the <code dir="auto">adv_sessions</code> row, mints a per-session
 <code dir="auto">PAPERCUSP_SID</code>, and returns the prompt file + raw backend. <code dir="auto">psu</code> then execs
 the raw CLI. What each agent needs differs:</p>
-<p>| Agent | Prompt | MCP (<code dir="auto">papercusp-su</code>) | Lock enforcement |
-|---|---|---|---|
-| <code dir="auto">claude</code> | <code dir="auto">--append-system-prompt-file &#x3C;playbook+ctx></code> <code dir="auto">--dangerously-skip-permissions</code> <code dir="auto">--permission-mode bypassPermissions</code> | <strong>user-level</strong> in <code dir="auto">~/.claude.json</code> (survives a raw launch; its url env-expands <code dir="auto">${PAPERCUSP_SID}</code>) | <strong>user-level</strong> <code dir="auto">Pre/PostToolUse</code> hooks in <code dir="auto">~/.claude/settings.json</code> — automatic |
-| <code dir="auto">omp</code> | <code dir="auto">--approval-mode yolo --append-system-prompt &#x3C;playbook+ctx></code> <code dir="auto">-e ~/.papercusp/papercusp-coord.ts</code> | <strong>user-level</strong> in <code dir="auto">~/.omp/agent/mcp.json</code> | <code dir="auto">coord-hook.ts</code> loaded per-launch via <code dir="auto">-e</code> |
-| <code dir="auto">codex</code> | per-session <code dir="auto">CODEX_HOME</code> (<code dir="auto">AGENTS.md</code> = playbook, <code dir="auto">config.toml</code> = superuser MCP) | in that <code dir="auto">CODEX_HOME</code>’s <code dir="auto">config.toml</code> (<code dir="auto">http_headers</code> bearer) | per-session <code dir="auto">hooks.json</code> <code dir="auto">Pre/PostToolUse</code> gates for <code dir="auto">apply_patch</code>/<code dir="auto">Edit</code>/<code dir="auto">Write</code> + Bash resource checks |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Agent</th><th>Prompt</th><th>MCP (<code dir="auto">papercusp-su</code>)</th><th>Lock enforcement</th></tr></thead><tbody><tr><td><code dir="auto">claude</code></td><td><code dir="auto">--append-system-prompt-file &#x3C;playbook+ctx></code> <code dir="auto">--dangerously-skip-permissions</code> <code dir="auto">--permission-mode bypassPermissions</code></td><td><strong>user-level</strong> in <code dir="auto">~/.claude.json</code> (survives a raw launch; its url env-expands <code dir="auto">${PAPERCUSP_SID}</code>)</td><td><strong>user-level</strong> <code dir="auto">Pre/PostToolUse</code> hooks in <code dir="auto">~/.claude/settings.json</code> — automatic</td></tr><tr><td><code dir="auto">omp</code></td><td><code dir="auto">--approval-mode yolo --append-system-prompt &#x3C;playbook+ctx></code> <code dir="auto">-e ~/.papercusp/papercusp-coord.ts</code></td><td><strong>user-level</strong> in <code dir="auto">~/.omp/agent/mcp.json</code></td><td><code dir="auto">coord-hook.ts</code> loaded per-launch via <code dir="auto">-e</code></td></tr><tr><td><code dir="auto">codex</code></td><td>per-session <code dir="auto">CODEX_HOME</code> (<code dir="auto">AGENTS.md</code> = playbook, <code dir="auto">config.toml</code> = superuser MCP)</td><td>in that <code dir="auto">CODEX_HOME</code>’s <code dir="auto">config.toml</code> (<code dir="auto">http_headers</code> bearer)</td><td>per-session <code dir="auto">hooks.json</code> <code dir="auto">Pre/PostToolUse</code> gates for <code dir="auto">apply_patch</code>/<code dir="auto">Edit</code>/<code dir="auto">Write</code> + Bash resource checks</td></tr></tbody></table>
 <p><code dir="auto">PAPERCUSP_SID</code> is minted per launch and exported, so each session is a
 distinct coord/lock owner (two concurrent <code dir="auto">psu</code> sessions don’t collide).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="profiles">Profiles</h3><a class="sl-anchor-link" href="#profiles"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Profiles”</span></a></div>

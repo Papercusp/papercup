@@ -71,12 +71,47 @@
 	</script> </sl-sidebar-state-persist> <div class="md:sl-hidden"> <div class="mobile-preferences sl-flex astro-y7ehbkho"> <div class="social-icons astro-y7ehbkho">  </div> <starlight-theme-select>  <label style="--sl-select-width: 6.25em" class="astro-bnwok5g3"> <span class="sr-only astro-bnwok5g3">Select theme</span> <svg aria-hidden="true" class="icon label-icon astro-bnwok5g3 astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M21 14h-1V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v7H3a1 1 0 0 0-1 1v2a3 3 0 0 0 3 3h14a3 3 0 0 0 3-3v-2a1 1 0 0 0-1-1ZM6 7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v7H6V7Zm14 10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1h16v1Z"/></svg> <select autocomplete="off" class="astro-bnwok5g3"> <option value="dark" class="astro-bnwok5g3">Dark</option><option value="light" class="astro-bnwok5g3">Light</option><option value="auto" selected class="astro-bnwok5g3">Auto</option> </select> <svg aria-hidden="true" class="icon caret astro-bnwok5g3 astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M17 9.17a1 1 0 0 0-1.41 0L12 12.71 8.46 9.17a1 1 0 1 0-1.41 1.42l4.24 4.24a1.002 1.002 0 0 0 1.42 0L17 10.59a1.002 1.002 0 0 0 0-1.42Z"/></svg> </label> </starlight-theme-select>  <script>
 	StarlightThemeProvider.updatePickers();
 </script>   </div> </div> </div> </div> </nav> <div class="main-frame astro-2pnnd2tz">  <script type="module">const a=document.getElementById("starlight__sidebar"),n=a?.querySelector("sl-sidebar-state-persist"),o="sl-sidebar-state",i=()=>{let t=[];const e=n?.dataset.hash||"";try{const s=sessionStorage.getItem(o),r=JSON.parse(s||"{}");Array.isArray(r.open)&&r.hash===e&&(t=r.open)}catch{}return{hash:e,open:t,scroll:a?.scrollTop||0}},c=t=>{try{sessionStorage.setItem(o,JSON.stringify(t))}catch{}},d=()=>c(i()),l=(t,e)=>{const s=i();s.open[e]=t,c(s)};n?.addEventListener("click",t=>{if(!(t.target instanceof Element))return;const e=t.target.closest("summary")?.closest("details");if(!e)return;const s=e.querySelector("sl-sidebar-restore"),r=parseInt(s?.dataset.index||"");isNaN(r)||l(!e.open,r)});addEventListener("visibilitychange",()=>{document.visibilityState==="hidden"&&d()});addEventListener("pageHide",d);</script> <div class="lg:sl-flex astro-dnhm3vak"> <aside class="right-sidebar-container print:hidden astro-dnhm3vak"> <div class="right-sidebar astro-dnhm3vak"> <div class="lg:sl-hidden astro-sh2uhkrs"><mobile-starlight-toc data-min-h="2" data-max-h="3" class="astro-7bgemepd"><nav aria-labelledby="starlight__on-this-page--mobile" class="astro-7bgemepd"><details id="starlight__mobile-toc" class="astro-7bgemepd"><summary id="starlight__on-this-page--mobile" class="sl-flex astro-7bgemepd"><span class="toggle sl-flex astro-7bgemepd">On this page<svg aria-hidden="true" class="caret astro-7bgemepd astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1rem;"><path d="m14.83 11.29-4.24-4.24a1 1 0 1 0-1.42 1.41L12.71 12l-3.54 3.54a1 1 0 0 0 0 1.41 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l4.24-4.24a1.002 1.002 0 0 0 0-1.42Z"/></svg></span><span class="display-current astro-7bgemepd"></span></summary><div class="dropdown astro-7bgemepd"><ul class="isMobile astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#inventory" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Inventory</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#linux-test-vm-clean-room-fresh-install--federation" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Linux test VM (clean-room: fresh-install + federation)</span> </a> <ul class="isMobile astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#two-machine-federation-phase-2" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Two-machine federation (Phase 2)</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#ssh-commands" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">SSH commands</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#booting-them" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Booting them</span> </a> <ul class="isMobile astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#mac-vm" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Mac VM</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 1;"> <a href="#windows-vm" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Windows VM</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#resource-specs-current-tunable-in-the-boot-scripts" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Resource specs (current; tunable in the boot scripts)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#disk-discipline" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Disk discipline</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#node-version-pinning" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Node version pinning</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#npm---legacy-peer-deps-is-required" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">npm --legacy-peer-deps is required</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mac-vm-environment-quirks" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mac VM environment quirks</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#windows-vm-preflight-host-storage-and-qemu-state" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Windows VM preflight: host storage and QEMU state</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#windows-vm-crashes-routinely" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Windows VM crashes routinely</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-builds-dont-run-in-containers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why builds don’t run in containers</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#build-cancellation" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Build cancellation</span> </a>  </li> </ul></div></details></nav></mobile-starlight-toc><script type="module" src="/internal/docs/_astro/MobileTableOfContents.astro_astro_type_script_index_0_lang.hwBsy0Mo.js"></script></div><div class="right-sidebar-panel sl-hidden lg:sl-block astro-sh2uhkrs"><div class="sl-container astro-sh2uhkrs"><starlight-toc data-min-h="2" data-max-h="3"><nav aria-labelledby="starlight__on-this-page"><h2 id="starlight__on-this-page">On this page</h2><ul class="astro-wig33ucl" style="--depth: 0;"> <li class="astro-wig33ucl" style="--depth: 0;"> <a href="#_top" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Overview</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#inventory" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Inventory</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#linux-test-vm-clean-room-fresh-install--federation" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Linux test VM (clean-room: fresh-install + federation)</span> </a> <ul class="astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#two-machine-federation-phase-2" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Two-machine federation (Phase 2)</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#ssh-commands" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">SSH commands</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#booting-them" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Booting them</span> </a> <ul class="astro-wig33ucl" style="--depth: 1;"> <li class="astro-wig33ucl" style="--depth: 1;"> <a href="#mac-vm" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Mac VM</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 1;"> <a href="#windows-vm" class="astro-wig33ucl" style="--depth: 1;"> <span class="astro-wig33ucl" style="--depth: 1;">Windows VM</span> </a>  </li> </ul> </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#resource-specs-current-tunable-in-the-boot-scripts" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Resource specs (current; tunable in the boot scripts)</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#disk-discipline" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Disk discipline</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#node-version-pinning" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Node version pinning</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#npm---legacy-peer-deps-is-required" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">npm --legacy-peer-deps is required</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#mac-vm-environment-quirks" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Mac VM environment quirks</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#windows-vm-preflight-host-storage-and-qemu-state" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Windows VM preflight: host storage and QEMU state</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#windows-vm-crashes-routinely" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Windows VM crashes routinely</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#why-builds-dont-run-in-containers" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Why builds don’t run in containers</span> </a>  </li><li class="astro-wig33ucl" style="--depth: 0;"> <a href="#build-cancellation" class="astro-wig33ucl" style="--depth: 0;"> <span class="astro-wig33ucl" style="--depth: 0;">Build cancellation</span> </a>  </li> </ul></nav></starlight-toc><script type="module" src="/internal/docs/_astro/TableOfContents.astro_astro_type_script_index_0_lang.FuRcXuRY.js"></script></div></div> </div> </aside> <div class="main-pane astro-dnhm3vak">  <main data-pagefind-body class="astro-6kzpinbh" lang="en" dir="ltr">    <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <h1 id="_top" class="astro-f4aqcfpu">VMs (Mac + Windows + Linux test)</h1> </div> </div> <div class="content-panel astro-q6dtxd2q"> <div class="sl-container astro-q6dtxd2q"> <div class="sl-markdown-content"> <div class="sl-heading-wrapper level-h2"><h2 id="inventory">Inventory</h2><a class="sl-anchor-link" href="#inventory"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Inventory”</span></a></div>
-<p>| VM | Host process | SSH port | Display | Inside-VM repo path |
-|---|---|---|---|---|
-| <strong>macOS Sonoma</strong> (x86_64) | <code dir="auto">qemu-system-x86_64 ... mac_hdd_ng.img</code> | <code dir="auto">2222</code> | SPICE on <code dir="auto">127.0.0.1:5930</code> | rsync’d <code dir="auto">~/papercup-build-mac/papercup/papercusp-desktop</code> (the in-VM <code dir="auto">~/papercupai/papercusp-desktop</code> checkout is legacy/broken — see below) |
-| <strong>Windows 11</strong> | <code dir="auto">qemu-system-x86_64 ... windows_hdd.qcow2</code> | <code dir="auto">2223</code> | SPICE <code dir="auto">127.0.0.1:5931</code> + VNC <code dir="auto">127.0.0.1:5909</code> | <code dir="auto">C:\Users\User\papercupai\papercusp-desktop</code> |
-| <strong>Linux test</strong> <code dir="auto">clean</code> (Ubuntu 24.04) | <code dir="auto">qemu-system-x86_64 … run/&#x3C;name>/overlay.qcow2</code> (via <code dir="auto">scripts/linux-test-vm/vmctl</code>) | <code dir="auto">2224</code> | SPICE on <code dir="auto">127.0.0.1:5932</code> | n/a — installs the packaged <code dir="auto">.deb</code> (no checkout) |
-| <strong>Linux fed</strong> <code dir="auto">fed-a</code>/<code dir="auto">fed-b</code> (Ubuntu 24.04) | same golden image, +2nd NIC on <code dir="auto">pcusp-fedbr0</code> (via <code dir="auto">bin/vm-federation.sh</code>) | <code dir="auto">2225</code>/<code dir="auto">2226</code> | SPICE <code dir="auto">127.0.0.1:5933</code>/<code dir="auto">5934</code> | n/a — two-machine federation testing |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>VM</th><th>Host process</th><th>SSH port</th><th>Display</th><th>Inside-VM repo path</th></tr></thead><tbody><tr><td><strong>macOS Sonoma</strong> (x86_64)</td><td><code dir="auto">qemu-system-x86_64 ... mac_hdd_ng.img</code></td><td><code dir="auto">2222</code></td><td>SPICE on <code dir="auto">127.0.0.1:5930</code></td><td>rsync’d <code dir="auto">~/papercup-build-mac/papercup/papercusp-desktop</code> (the in-VM <code dir="auto">~/papercupai/papercusp-desktop</code> checkout is legacy/broken — see below)</td></tr><tr><td><strong>Windows 11</strong></td><td><code dir="auto">qemu-system-x86_64 ... windows_hdd.qcow2</code></td><td><code dir="auto">2223</code></td><td>SPICE <code dir="auto">127.0.0.1:5931</code> + VNC <code dir="auto">127.0.0.1:5909</code></td><td><code dir="auto">C:\Users\User\papercupai\papercusp-desktop</code></td></tr><tr><td><strong>Linux test</strong> <code dir="auto">clean</code> (Ubuntu 24.04)</td><td><code dir="auto">qemu-system-x86_64 … run/&#x3C;name>/overlay.qcow2</code> (via <code dir="auto">scripts/linux-test-vm/vmctl</code>)</td><td><code dir="auto">2224</code></td><td>SPICE on <code dir="auto">127.0.0.1:5932</code></td><td>n/a — installs the packaged <code dir="auto">.deb</code> (no checkout)</td></tr><tr><td><strong>Linux fed</strong> <code dir="auto">fed-a</code>/<code dir="auto">fed-b</code> (Ubuntu 24.04)</td><td>same golden image, +2nd NIC on <code dir="auto">pcusp-fedbr0</code> (via <code dir="auto">bin/vm-federation.sh</code>)</td><td><code dir="auto">2225</code>/<code dir="auto">2226</code></td><td>SPICE <code dir="auto">127.0.0.1:5933</code>/<code dir="auto">5934</code></td><td>n/a — two-machine federation testing</td></tr></tbody></table>
 <p>The <strong>Mac</strong> and <strong>Windows</strong> VMs exist only to <em>produce</em> their platform’s Tauri bundle. The <strong>Linux test</strong> VM is different in kind — it <em>consumes</em> the built <code dir="auto">.deb</code>, fresh-installing it on a pristine Ubuntu to validate the shipped artifact (and to act as a separate machine for federation testing). Day-to-day operator dev (<code dir="auto">:3055</code>) and Linux builds still run entirely on the host.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="linux-test-vm-clean-room-fresh-install--federation">Linux test VM (clean-room: fresh-install + federation)</h2><a class="sl-anchor-link" href="#linux-test-vm-clean-room-fresh-install--federation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Linux test VM (clean-room: fresh-install + federation)”</span></a></div>
 <p>Unlike the build VMs, this is a <strong>disposable Ubuntu 24.04 clean-room</strong> for testing the
@@ -195,14 +230,47 @@ at <code dir="auto">papercusp-desktop/scripts/windows-vm/launch-install.sh</code
 2026-08-15 rebuild (WI-39356). <code dir="auto">~/windows-vm</code> is a symlink to <code dir="auto">/mnt/data/offload/windows-vm</code>;
 they are the same directory, so either path resolves.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="resource-specs-current-tunable-in-the-boot-scripts">Resource specs (current; tunable in the boot scripts)</h2><a class="sl-anchor-link" href="#resource-specs-current-tunable-in-the-boot-scripts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Resource specs (current; tunable in the boot scripts)”</span></a></div>
-<p>| | macOS VM | Windows VM |
-|---|---|---|
-| RAM | 32 GB (was 16; Xcode + Rust eats RAM) | 16 GiB (<code dir="auto">-m 16384</code>) |
-| vCPUs | 8 (<code dir="auto">-smp 8</code>: 4 cores × 2 threads) | 8 (<code dir="auto">-smp 8</code>) |
-| Disk | 120 GB qcow2 (grown from 80 on 2026-05-13) | <code dir="auto">windows_hdd.qcow2</code>, ~120 GB qcow2 |
-| Cache | writeback | writeback |
-| Net | virtio-net-pci | e1000 |
-| Storage | AHCI | AHCI |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>macOS VM</th><th>Windows VM</th></tr></thead><tbody><tr><td>RAM</td><td>32 GB (was 16; Xcode + Rust eats RAM)</td><td>16 GiB (<code dir="auto">-m 16384</code>)</td></tr><tr><td>vCPUs</td><td>8 (<code dir="auto">-smp 8</code>: 4 cores × 2 threads)</td><td>8 (<code dir="auto">-smp 8</code>)</td></tr><tr><td>Disk</td><td>120 GB qcow2 (grown from 80 on 2026-05-13)</td><td><code dir="auto">windows_hdd.qcow2</code>, ~120 GB qcow2</td></tr><tr><td>Cache</td><td>writeback</td><td>writeback</td></tr><tr><td>Net</td><td>virtio-net-pci</td><td>e1000</td></tr><tr><td>Storage</td><td>AHCI</td><td>AHCI</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="disk-discipline">Disk discipline</h2><a class="sl-anchor-link" href="#disk-discipline"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Disk discipline”</span></a></div>
 <p>Tauri builds are huge. A clean Mac build typically consumes:</p>
 <ul>

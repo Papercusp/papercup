@@ -75,14 +75,40 @@ retired web UI. Today steering is several purpose-built surfaces; picking the
 right one matters because they differ in durability, latency, and who reads
 them.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="which-surface-for-which-job">Which surface for which job</h2><a class="sl-anchor-link" href="#which-surface-for-which-job"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Which surface for which job”</span></a></div>
-<p>| You want to… | Use |
-|---|---|
-| Leave durable direction/context for whoever works a feature next | <code dir="auto">work_items:comment</code> / <code dir="auto">work_items:checkpoint</code> (the work-item ledger) |
-| Have an interactive conversation with a role agent inside a harness | <code dir="auto">agent_chats:*</code> |
-| Nudge a <em>live</em> agent right now (or wake an idle one) | <code dir="auto">coord:send</code> (with <code dir="auto">wake: 'required'</code>/<code dir="auto">'optimistic'</code>) |
-| Make a running agent stop / wrap up | <code dir="auto">turn:interrupt</code> |
-| Answer a question an agent asked | the decision card / <code dir="auto">conversations:answer</code> / <code dir="auto">coord</code> escalation |
-| Steer the whole Pot (not one agent) | the operator chat surface |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You want to…</th><th>Use</th></tr></thead><tbody><tr><td>Leave durable direction/context for whoever works a feature next</td><td><code dir="auto">work_items:comment</code> / <code dir="auto">work_items:checkpoint</code> (the work-item ledger)</td></tr><tr><td>Have an interactive conversation with a role agent inside a harness</td><td><code dir="auto">agent_chats:*</code></td></tr><tr><td>Nudge a <em>live</em> agent right now (or wake an idle one)</td><td><code dir="auto">coord:send</code> (with <code dir="auto">wake: 'required'</code>/<code dir="auto">'optimistic'</code>)</td></tr><tr><td>Make a running agent stop / wrap up</td><td><code dir="auto">turn:interrupt</code></td></tr><tr><td>Answer a question an agent asked</td><td>the decision card / <code dir="auto">conversations:answer</code> / <code dir="auto">coord</code> escalation</td></tr><tr><td>Steer the whole Pot (not one agent)</td><td>the operator chat surface</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="durable-direction--the-work-item-ledger">Durable direction — the work-item ledger</h2><a class="sl-anchor-link" href="#durable-direction--the-work-item-ledger"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Durable direction — the work-item ledger”</span></a></div>
 <p>Durable, work-scoped direction lives <strong>on the work-item</strong>, not in a mailbox.
 <code dir="auto">work_items:comment</code> appends to the item’s thread; <code dir="auto">work_items:checkpoint</code>

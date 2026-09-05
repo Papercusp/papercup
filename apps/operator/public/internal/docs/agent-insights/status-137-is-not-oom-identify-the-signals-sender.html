@@ -82,14 +82,40 @@ already reading:</p>
 <p><strong>SIGKILL carries no sender.</strong> The exit code tells you the process was killed with
 prejudice and <em>nothing whatsoever</em> about who did it. At least six things send it here, and
 they need completely different fixes:</p>
-<p>| sender | how to confirm |
-|---|---|
-| kernel OOM killer | <code dir="auto">journalctl -k \| grep -icE 'oom-kill\|Killed process'</code> |
-| cgroup <code dir="auto">memory.max</code> breach | <code dir="auto">systemctl --user show &#x3C;unit> -p MemoryMax -p MemoryPeak</code> |
-| systemd <code dir="auto">WatchdogSec</code> | <code dir="auto">-p Result</code> reads <code dir="auto">watchdog</code>, not <code dir="auto">exit-code</code> |
-| an application watchdog self-kill | grep the unit’s own log for a kill line naming itself |
-| a peer agent’s <code dir="auto">processes:kill</code> | the task ledger |
-| a pattern-matching <code dir="auto">pkill -f</code> | nothing logs it — the silent one |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>sender</th><th>how to confirm</th></tr></thead><tbody><tr><td>kernel OOM killer</td><td><code dir="auto">journalctl -k | grep -icE 'oom-kill|Killed process'</code></td></tr><tr><td>cgroup <code dir="auto">memory.max</code> breach</td><td><code dir="auto">systemctl --user show &#x3C;unit> -p MemoryMax -p MemoryPeak</code></td></tr><tr><td>systemd <code dir="auto">WatchdogSec</code></td><td><code dir="auto">-p Result</code> reads <code dir="auto">watchdog</code>, not <code dir="auto">exit-code</code></td></tr><tr><td>an application watchdog self-kill</td><td>grep the unit’s own log for a kill line naming itself</td></tr><tr><td>a peer agent’s <code dir="auto">processes:kill</code></td><td>the task ledger</td></tr><tr><td>a pattern-matching <code dir="auto">pkill -f</code></td><td>nothing logs it — the silent one</td></tr></tbody></table>
 <p><strong>And systemd puts an accounting line next to a causal one.</strong> <code dir="auto">Consumed … 13.2G memory peak</code> is bookkeeping for the generation that just ended. It is not a claim about why it
 ended. But it is printed in the same block, so a large number sits visually adjacent to
 the exit status and supplies a cause the data never offered.</p>

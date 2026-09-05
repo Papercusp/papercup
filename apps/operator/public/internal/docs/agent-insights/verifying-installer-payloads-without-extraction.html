@@ -120,13 +120,42 @@ in <em>emitted</em> output, never in the code that emits it. This is the general
 that produces it.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-this-method-can-and-cannot-reach">What this method can and cannot reach</h2><a class="sl-anchor-link" href="#what-this-method-can-and-cannot-reach"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What this method can and cannot reach”</span></a></div>
 <p>Applied to the 0.0.11 Windows artifacts (WI-5016) it produced real measurements:</p>
-<p>| question | reachable? | how |
-|---|---|---|
-| does the Server bundle contain the seed? | ✅ measured | manifest <code dir="auto">coreKey</code> → 7 + 3 hits across the two <code dir="auto">.bin</code> slices |
-| does the GUI bundle contain the seed? | ✅ measured | same key → <strong>0 hits</strong> (correct — <code dir="auto">iss:105</code> guards it Server-only) |
-| is a stray RocksDB <code dir="auto">LOG</code> shipped? | ✅ measured | detector validated, then <strong>0 hits</strong> in all artifacts |
-| are <code dir="auto">{app}\seed</code> and <code dir="auto">{app}\sidecar</code> <strong>siblings</strong>? | ❌ <strong>not reachable</strong> | Inno’s file-destination records live in the setup.exe’s <strong>compressed header</strong> — grep can’t see them. Needs <code dir="auto">innoextract</code>. |
-| does the seed get <strong>consumed</strong> at runtime? | ❌ not reachable | needs a real install on the target OS |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>question</th><th>reachable?</th><th>how</th></tr></thead><tbody><tr><td>does the Server bundle contain the seed?</td><td>✅ measured</td><td>manifest <code dir="auto">coreKey</code> → 7 + 3 hits across the two <code dir="auto">.bin</code> slices</td></tr><tr><td>does the GUI bundle contain the seed?</td><td>✅ measured</td><td>same key → <strong>0 hits</strong> (correct — <code dir="auto">iss:105</code> guards it Server-only)</td></tr><tr><td>is a stray RocksDB <code dir="auto">LOG</code> shipped?</td><td>✅ measured</td><td>detector validated, then <strong>0 hits</strong> in all artifacts</td></tr><tr><td>are <code dir="auto">{app}\seed</code> and <code dir="auto">{app}\sidecar</code> <strong>siblings</strong>?</td><td>❌ <strong>not reachable</strong></td><td>Inno’s file-destination records live in the setup.exe’s <strong>compressed header</strong> — grep can’t see them. Needs <code dir="auto">innoextract</code>.</td></tr><tr><td>does the seed get <strong>consumed</strong> at runtime?</td><td>❌ not reachable</td><td>needs a real install on the target OS</td></tr></tbody></table>
 <p>Be explicit about that boundary when you report. “The seed bytes are in the
 bundle” is <strong>not</strong> “the installer puts them where the app looks” is <strong>not</strong> “the
 app consumes them”. Three different claims, three different proofs. Reporting the

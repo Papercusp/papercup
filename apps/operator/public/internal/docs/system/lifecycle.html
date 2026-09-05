@@ -185,10 +185,30 @@ Asides above and the “Plans” and “Blueprints” subsections.</p></div> </a
 <p><strong>Where this lives:</strong> outside the system. The user knows what they want to build.</p>
 <p>If the idea is half-formed, they have <strong>two pre-spec surfaces</strong> in the operator UI to
 explore it before committing to a SPEC.md:</p>
-<p>| Surface | URL | What it does | Persists to |
-|---|---|---|---|
-| <strong>Brainstorm chat</strong> | <code dir="auto">/harness/&#x3C;slug>?panel=brainstorm</code> | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit <code dir="auto">promote:spec</code> / <code dir="auto">promote:feature</code> / <code dir="auto">promote:issue</code> action blocks. | Brainstorm scratchpad <strong>PG-canonical</strong> in <code dir="auto">harness_shared.harness_brainstorm</code> (Migration 033), with <code dir="auto">.papercusp/brainstorm.{md,canvas.json,mindmap.json}</code> as a dual-written file mirror so the orchestrator subprocess can read it. |
-| <strong>Architect chat</strong> | <code dir="auto">/harness/&#x3C;slug></code> — embedded inside the <strong>Inbox panel</strong> of the dashboard via <code dir="auto">&#x3C;ArchitectInbox>&#x3C;ArchitectChat></code> | More structured — Socratic clarifying questions, proposes concrete <code dir="auto">proposal:SPEC.md</code> or <code dir="auto">proposal:contract</code> diff blocks the user can accept. | On accept: writes <code dir="auto">harness_shared.harness_project_files</code> (Migration 034) for SPEC.md / validation-contract.md / config.json (PG-canonical, file-mirror) via <code dir="auto">POST /:slug/architect/apply</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>URL</th><th>What it does</th><th>Persists to</th></tr></thead><tbody><tr><td><strong>Brainstorm chat</strong></td><td><code dir="auto">/harness/&#x3C;slug>?panel=brainstorm</code></td><td>Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit <code dir="auto">promote:spec</code> / <code dir="auto">promote:feature</code> / <code dir="auto">promote:issue</code> action blocks.</td><td>Brainstorm scratchpad <strong>PG-canonical</strong> in <code dir="auto">harness_shared.harness_brainstorm</code> (Migration 033), with <code dir="auto">.papercusp/brainstorm.{md,canvas.json,mindmap.json}</code> as a dual-written file mirror so the orchestrator subprocess can read it.</td></tr><tr><td><strong>Architect chat</strong></td><td><code dir="auto">/harness/&#x3C;slug></code> — embedded inside the <strong>Inbox panel</strong> of the dashboard via <code dir="auto">&#x3C;ArchitectInbox>&#x3C;ArchitectChat></code></td><td>More structured — Socratic clarifying questions, proposes concrete <code dir="auto">proposal:SPEC.md</code> or <code dir="auto">proposal:contract</code> diff blocks the user can accept.</td><td>On accept: writes <code dir="auto">harness_shared.harness_project_files</code> (Migration 034) for SPEC.md / validation-contract.md / config.json (PG-canonical, file-mirror) via <code dir="auto">POST /:slug/architect/apply</code>.</td></tr></tbody></table>
 <p>Both are backed by <code dir="auto">runClaudeChat</code>, which spawns the configured agent CLI per the
 resolved backend (<code dir="auto">claude -p</code> by default; <code dir="auto">omp -p</code> / <code dir="auto">codex</code> when selected — see
 <code dir="auto">effectiveBackend()</code> in <code dir="auto">packages/operator-core/lib/agent-config.ts</code>, which defaults
@@ -229,11 +249,32 @@ item that the orchestrator can pick, lease, and finalize one at a time.</li>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="stage-1--harness-creation">Stage 1 — Harness creation</h2><a class="sl-anchor-link" href="#stage-1--harness-creation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Stage 1 — Harness creation”</span></a></div>
 <p>The user <strong>registers a project</strong> (an existing dir on disk) as a harness. Three entry points:</p>
-<p>| Entry point | Route | What gets created |
-|---|---|---|
-| Manually-typed slug + path in the operator UI | POST /api/harness/projects | Register the slug/path and ensure the shared-state compatibility views |
-| From a saved template | <code dir="auto">POST /api/templates/&#x3C;slug>/&#x3C;version>/install</code> | Materialise template files into a target dir, then <code dir="auto">POST /api/harness/projects</code> |
-| From a marketplace snapshot | <code dir="auto">POST /api/marketplace/install</code> or <code dir="auto">POST /api/snapshots/[id]/instantiate</code> | Fork a snapshot into a fresh harness |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Entry point</th><th>Route</th><th>What gets created</th></tr></thead><tbody><tr><td>Manually-typed slug + path in the operator UI</td><td>POST /api/harness/projects</td><td>Register the slug/path and ensure the shared-state compatibility views</td></tr><tr><td>From a saved template</td><td><code dir="auto">POST /api/templates/&#x3C;slug>/&#x3C;version>/install</code></td><td>Materialise template files into a target dir, then <code dir="auto">POST /api/harness/projects</code></td></tr><tr><td>From a marketplace snapshot</td><td><code dir="auto">POST /api/marketplace/install</code> or <code dir="auto">POST /api/snapshots/[id]/instantiate</code></td><td>Fork a snapshot into a fresh harness</td></tr></tbody></table>
 <p>The project-registration handler does:</p>
 <ol>
 <li><strong>Register the slug.</strong> Add the slug → project-path mapping to the workspace harness registry.</li>
@@ -384,12 +425,37 @@ blueprints, and more. <strong>Role prompts now live under that tree</strong> —
 <p>One mission, 87 iterations, ~2 hours of wall-clock time, ~12 features shipped.</p>
 <p>A <strong>mission</strong> is the entire <code dir="auto">runMainLoopBody</code> execution; an <strong>iteration</strong> is one trip through the for-loop. Iterations are nested inside the mission — they’re not different <em>kinds</em> of things, they’re different scales.</p>
 <p><strong>Verb-set divergence between backends:</strong></p>
-<p>|  | Bash (run.sh) | TS (main-loop.ts) |
-|---|---|---|
-| Recognized verbs | 20 | 19 |
-| Handled verbs | 20 | 17 (other 2 fall to default → exit 4) |
-| Bash-only | <code dir="auto">NEXT_EXPERT</code> @2186, <code dir="auto">NEXT_FEEDBACK</code> @2204, <code dir="auto">NEXT_SCOPER</code> @2228 | — |
-| TS-only (recognized but unhandled) | — | <code dir="auto">NEXT_PROJECT_MANAGER</code>, <code dir="auto">NEXT_SUMMARIZER</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Bash (run.sh)</th><th>TS (main-loop.ts)</th></tr></thead><tbody><tr><td>Recognized verbs</td><td>20</td><td>19</td></tr><tr><td>Handled verbs</td><td>20</td><td>17 (other 2 fall to default → exit 4)</td></tr><tr><td>Bash-only</td><td><code dir="auto">NEXT_EXPERT</code> @2186, <code dir="auto">NEXT_FEEDBACK</code> @2204, <code dir="auto">NEXT_SCOPER</code> @2228</td><td>—</td></tr><tr><td>TS-only (recognized but unhandled)</td><td>—</td><td><code dir="auto">NEXT_PROJECT_MANAGER</code>, <code dir="auto">NEXT_SUMMARIZER</code></td></tr></tbody></table>
 <p>An agent emitting <code dir="auto">NEXT_EXPERT</code> works in bash but is ignored by TS. One emitting <code dir="auto">NEXT_PROJECT_MANAGER</code> is exit-4’d by TS and treated as unparsed by bash.</p>
 <p><strong>Important</strong>: <code dir="auto">NEXT_DEBUGGER</code> is <strong>not</strong> a decision verb. The debugger role is invoked from inside the <strong><code dir="auto">NEXT_WORKER</code> handler</strong> (<code dir="auto">handleNextWorker</code> in main-loop.ts:438–456 — the comment in code reads “Optional debugger before the worker.”) when a feature has hit the <code dir="auto">debugger.threshold</code> attempts AND <code dir="auto">.papercusp/debug/&#x3C;fid>.md</code> doesn’t exist yet. The flow is: validator returns failing → orchestrator decides <code dir="auto">NEXT_WORKER F-001</code> again → handleNextWorker runs the debugger first, then re-runs the worker. Don’t expect the orchestrator agent to emit <code dir="auto">NEXT_DEBUGGER</code> directly, and don’t look for the debugger fire-point inside handleNextValidator — it isn’t there.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="how-an-agent-runs-invoke">How an agent runs (<code dir="auto">invoke()</code>)</h3><a class="sl-anchor-link" href="#how-an-agent-runs-invoke"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How an agent runs (invoke())”</span></a></div>
@@ -471,50 +537,214 @@ phase/department overrides under the blueprints tree). New roles also exist
 “When invoked” descriptions referencing <code dir="auto">main-loop.ts</code> / <code dir="auto">run.sh</code> describe the
 archived loop; the live decider is the per-feature <code dir="auto">director</code>.</p></div> </aside>
 <p><strong>In-loop roles (called by main-loop.ts or run.sh during iteration):</strong></p>
-<p>| Role | When invoked | Reads | Writes |
-|---|---|---|---|
-| <strong>scoper</strong> | pre-loop step 1 (<code dir="auto">MODE=initial</code>) when contract or features missing; also on <code dir="auto">POST /:slug/replan</code> | SPEC.md | POSTs <code dir="auto">/api/harness/&#x3C;slug>/features/import</code> (PG); writes <code dir="auto">.papercusp/validation-contract.md</code> (PG-mirrored to <code dir="auto">harness_project_files.contract</code>) |
-| <strong>reviewer</strong> | pre-loop step 1.5 (<code dir="auto">MODE=plan</code>) — <strong>only here</strong>, not on completion | scoper output, SPEC.md | <code dir="auto">.papercusp/plan-review.md</code> (<code dir="auto">VERDICT: …</code>) — PG-mirrored to <code dir="auto">harness_shared.harness_plan_review</code> by fs-watcher |
-| <strong>orchestrator</strong> | every loop iteration | <code dir="auto">.papercusp/</code> state, recent run.log, memory | last-line decision verb (one of 19 in <code dir="auto">DECISION_VERBS</code>) |
-| <strong>worker</strong> | <code dir="auto">NEXT_WORKER</code> (single / parallel-lanes / competition path) | SPEC.md, feature claims, recent issues | project code; PATCHes <code dir="auto">/api/harness/&#x3C;slug>/features/&#x3C;id></code> for status changes |
-| <strong>validator</strong> | <code dir="auto">NEXT_VALIDATOR</code> | validation-contract.md, feature claims | <code dir="auto">harness_features.status</code> via PATCH; <code dir="auto">.papercusp/issues.md</code> (PG-canonical in <code dir="auto">harness_text_artifacts</code>, Migration 035; file mirror); POSTs <code dir="auto">/api/harness/&#x3C;slug>/issues/append-pending</code> per finding |
-| <strong>debugger</strong> | invoked inline by the <strong><code dir="auto">NEXT_WORKER</code> handler</strong> (<code dir="auto">handleNextWorker</code> in main-loop.ts:438–456) BEFORE the worker runs, when <code dir="auto">attempts ≥ debugger.threshold</code> (default 3) AND <code dir="auto">.papercusp/debug/&#x3C;fid>.md</code> doesn’t exist (one-shot per feature) | failing feature’s issues, recent worker output | code (fix attempts), <code dir="auto">.papercusp/debug/&#x3C;fid>.md</code> marker |
-| <strong>architect</strong> | <code dir="auto">NEXT_ARCHITECT</code> decision (in-loop) | SPEC.md, contract, features, issues | proposals — emits fenced <code dir="auto">proposal:contract</code> / <code dir="auto">proposal:SPEC.md</code> blocks in stdout (parsed per <code dir="auto">prompts/architect.md</code> line 55+); the orchestrator extracts those blocks and writes <code dir="auto">.papercusp/proposals/&#x3C;id>.md</code>; <code dir="auto">apps/operator/lib/harness-fs-watcher.ts</code> then mirrors the file into <code dir="auto">harness_shared.harness_proposals_shared</code>. There is <strong>no</strong> <code dir="auto">POST /api/harness/&#x3C;slug>/proposals</code> endpoint — only <code dir="auto">GET /:slug/proposals</code>, <code dir="auto">GET /:slug/proposals/:id</code>, and <code dir="auto">POST /:slug/proposals/:id/accept</code> / <code dir="auto">…/reject</code> (harness.ts:3189–3290) |
-| <strong>curator</strong> | on <code dir="auto">DONE</code> (<code dir="auto">TRIGGER=done</code>) and on <code dir="auto">ESCALATE</code> (<code dir="auto">TRIGGER=escalate</code>) | <code dir="auto">.papercusp/memory/raw.md</code> (PG-canonical, Migration 035 dual-write) | <code dir="auto">memory/summary.md</code>, <code dir="auto">memory/MEMORY.md</code> (both PG-canonical via Migration 035), role identity files (PG-mirrored via Migration 041) |
-| <strong>documenter</strong> | on <code dir="auto">DONE</code> (<code dir="auto">TRIGGER=done</code>) | feature docs, issues, summary | per-harness docs dir |
-| <strong>ui-qa</strong> | invoked <strong>automatically by run.sh:2105</strong> post-worker, when feature has any <code dir="auto">VAL-UI-*</code> claim AND <code dir="auto">verdict</code> CLI is on PATH (NOT via <code dir="auto">NEXT_TESTER</code>) | <code dir="auto">auto_screenshot_post_worker</code> output | <code dir="auto">UIQA_PASS</code>/<code dir="auto">UIQA_FAIL</code> line; on fail, run.sh sets feature status <code dir="auto">failing</code> |
-| <strong>crosscheck</strong> | invoked from run.sh:2040 inside the validator handler when <code dir="auto">config.crosscheck.enabled = true</code> (currently bash-only — TS port doesn’t fire it) | feature claims | second-opinion verdict line |
-| <strong>security-reviewer</strong> | <code dir="auto">NEXT_SECURITY</code> | code diff for feature | security verdict |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>When invoked</th><th>Reads</th><th>Writes</th></tr></thead><tbody><tr><td><strong>scoper</strong></td><td>pre-loop step 1 (<code dir="auto">MODE=initial</code>) when contract or features missing; also on <code dir="auto">POST /:slug/replan</code></td><td>SPEC.md</td><td>POSTs <code dir="auto">/api/harness/&#x3C;slug>/features/import</code> (PG); writes <code dir="auto">.papercusp/validation-contract.md</code> (PG-mirrored to <code dir="auto">harness_project_files.contract</code>)</td></tr><tr><td><strong>reviewer</strong></td><td>pre-loop step 1.5 (<code dir="auto">MODE=plan</code>) — <strong>only here</strong>, not on completion</td><td>scoper output, SPEC.md</td><td><code dir="auto">.papercusp/plan-review.md</code> (<code dir="auto">VERDICT: …</code>) — PG-mirrored to <code dir="auto">harness_shared.harness_plan_review</code> by fs-watcher</td></tr><tr><td><strong>orchestrator</strong></td><td>every loop iteration</td><td><code dir="auto">.papercusp/</code> state, recent run.log, memory</td><td>last-line decision verb (one of 19 in <code dir="auto">DECISION_VERBS</code>)</td></tr><tr><td><strong>worker</strong></td><td><code dir="auto">NEXT_WORKER</code> (single / parallel-lanes / competition path)</td><td>SPEC.md, feature claims, recent issues</td><td>project code; PATCHes <code dir="auto">/api/harness/&#x3C;slug>/features/&#x3C;id></code> for status changes</td></tr><tr><td><strong>validator</strong></td><td><code dir="auto">NEXT_VALIDATOR</code></td><td>validation-contract.md, feature claims</td><td><code dir="auto">harness_features.status</code> via PATCH; <code dir="auto">.papercusp/issues.md</code> (PG-canonical in <code dir="auto">harness_text_artifacts</code>, Migration 035; file mirror); POSTs <code dir="auto">/api/harness/&#x3C;slug>/issues/append-pending</code> per finding</td></tr><tr><td><strong>debugger</strong></td><td>invoked inline by the <strong><code dir="auto">NEXT_WORKER</code> handler</strong> (<code dir="auto">handleNextWorker</code> in main-loop.ts:438–456) BEFORE the worker runs, when <code dir="auto">attempts ≥ debugger.threshold</code> (default 3) AND <code dir="auto">.papercusp/debug/&#x3C;fid>.md</code> doesn’t exist (one-shot per feature)</td><td>failing feature’s issues, recent worker output</td><td>code (fix attempts), <code dir="auto">.papercusp/debug/&#x3C;fid>.md</code> marker</td></tr><tr><td><strong>architect</strong></td><td><code dir="auto">NEXT_ARCHITECT</code> decision (in-loop)</td><td>SPEC.md, contract, features, issues</td><td>proposals — emits fenced <code dir="auto">proposal:contract</code> / <code dir="auto">proposal:SPEC.md</code> blocks in stdout (parsed per <code dir="auto">prompts/architect.md</code> line 55+); the orchestrator extracts those blocks and writes <code dir="auto">.papercusp/proposals/&#x3C;id>.md</code>; <code dir="auto">apps/operator/lib/harness-fs-watcher.ts</code> then mirrors the file into <code dir="auto">harness_shared.harness_proposals_shared</code>. There is <strong>no</strong> <code dir="auto">POST /api/harness/&#x3C;slug>/proposals</code> endpoint — only <code dir="auto">GET /:slug/proposals</code>, <code dir="auto">GET /:slug/proposals/:id</code>, and <code dir="auto">POST /:slug/proposals/:id/accept</code> / <code dir="auto">…/reject</code> (harness.ts:3189–3290)</td></tr><tr><td><strong>curator</strong></td><td>on <code dir="auto">DONE</code> (<code dir="auto">TRIGGER=done</code>) and on <code dir="auto">ESCALATE</code> (<code dir="auto">TRIGGER=escalate</code>)</td><td><code dir="auto">.papercusp/memory/raw.md</code> (PG-canonical, Migration 035 dual-write)</td><td><code dir="auto">memory/summary.md</code>, <code dir="auto">memory/MEMORY.md</code> (both PG-canonical via Migration 035), role identity files (PG-mirrored via Migration 041)</td></tr><tr><td><strong>documenter</strong></td><td>on <code dir="auto">DONE</code> (<code dir="auto">TRIGGER=done</code>)</td><td>feature docs, issues, summary</td><td>per-harness docs dir</td></tr><tr><td><strong>ui-qa</strong></td><td>invoked <strong>automatically by run.sh:2105</strong> post-worker, when feature has any <code dir="auto">VAL-UI-*</code> claim AND <code dir="auto">verdict</code> CLI is on PATH (NOT via <code dir="auto">NEXT_TESTER</code>)</td><td><code dir="auto">auto_screenshot_post_worker</code> output</td><td><code dir="auto">UIQA_PASS</code>/<code dir="auto">UIQA_FAIL</code> line; on fail, run.sh sets feature status <code dir="auto">failing</code></td></tr><tr><td><strong>crosscheck</strong></td><td>invoked from run.sh:2040 inside the validator handler when <code dir="auto">config.crosscheck.enabled = true</code> (currently bash-only — TS port doesn’t fire it)</td><td>feature claims</td><td>second-opinion verdict line</td></tr><tr><td><strong>security-reviewer</strong></td><td><code dir="auto">NEXT_SECURITY</code></td><td>code diff for feature</td><td>security verdict</td></tr></tbody></table>
 <p><strong>Out-of-loop roles (invoked by operator code, not by the main loop):</strong></p>
-<p>| Role | Invoked by | Notes |
-|---|---|---|
-| <strong>architect</strong> (chat surface) | <code dir="auto">runClaudeChat</code> from <code dir="auto">/api/harness/&#x3C;slug>/architect/chat</code> (<code dir="auto">harness.ts:5259</code>) | conversational variant of the in-loop architect role |
-| <strong>scanner</strong> | <code dir="auto">runClaudeChat</code> from <code dir="auto">/api/agent-mcp/operator-scan</code> | OS-level workspace scan; writes suggestion JSON cards back to the operator |
-| <strong>project_manager</strong> | <code dir="auto">apps/operator/lib/pm-dispatch.ts</code> on <code dir="auto">pm_due</code> events | scheduled spec-revision proposals |
-| <strong>expert</strong> | <code dir="auto">apps/operator/lib/expert-dispatcher.ts</code> (POST <code dir="auto">/:slug/experts/dispatch</code>) | one-shot autonomous role dispatched from the /experts panel |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>Invoked by</th><th>Notes</th></tr></thead><tbody><tr><td><strong>architect</strong> (chat surface)</td><td><code dir="auto">runClaudeChat</code> from <code dir="auto">/api/harness/&#x3C;slug>/architect/chat</code> (<code dir="auto">harness.ts:5259</code>)</td><td>conversational variant of the in-loop architect role</td></tr><tr><td><strong>scanner</strong></td><td><code dir="auto">runClaudeChat</code> from <code dir="auto">/api/agent-mcp/operator-scan</code></td><td>OS-level workspace scan; writes suggestion JSON cards back to the operator</td></tr><tr><td><strong>project_manager</strong></td><td><code dir="auto">apps/operator/lib/pm-dispatch.ts</code> on <code dir="auto">pm_due</code> events</td><td>scheduled spec-revision proposals</td></tr><tr><td><strong>expert</strong></td><td><code dir="auto">apps/operator/lib/expert-dispatcher.ts</code> (POST <code dir="auto">/:slug/experts/dispatch</code>)</td><td>one-shot autonomous role dispatched from the /experts panel</td></tr></tbody></table>
 <p><strong>Roles with prompt files but no live invocation path</strong> (verify before relying on them):</p>
-<p>| Role | Status |
-|---|---|
-| <strong>infra-reviewer</strong> | Live, but only via the <strong>expert</strong> path (not in main-loop). Has <code dir="auto">prompts/infra-reviewer.md</code> + <code dir="auto">prompts/infra-reviewer.role.json</code> registering it with the role-registry. Reachable via human dispatch (<code dir="auto">POST /:slug/experts/dispatch</code> → <code dir="auto">experts.ts:411</code> → <code dir="auto">dispatchExpert</code>) or auto-trigger (<code dir="auto">expert-triggers.ts</code> on configured <code dir="auto">role.alwaysFireOn</code> events). The scoper prompt recommends it as a consultant for infra-touching changes. |
-| <strong>summarizer</strong> | <code dir="auto">NEXT_SUMMARIZER</code> is in <code dir="auto">DECISION_VERBS</code> but lacks a switch case in main-loop.ts — falls to default and exits 4. Prompt file exists but the verb is effectively dead. |
-| <strong>feedback</strong> | prompt file exists but <code dir="auto">agent-chats.ts:73</code> explicitly excludes it (<code dir="auto">if (role === 'feedback') return false</code>). Likely a dead role from an earlier design. |
-| <strong>tester</strong>, <strong>test-writer</strong>, <strong>monitor</strong> | Phase-scoped. Invoked from <code dir="auto">main-loop.ts</code> via <code dir="auto">handleSimpleInvoke(...)</code> for <code dir="auto">NEXT_TESTER</code> / <code dir="auto">GENERATE_TESTS</code> / <code dir="auto">NEXT_MONITOR</code>. Prompts at <code dir="auto">prompts/testing/{tester,test-writer}.md</code> and <code dir="auto">prompts/production/monitor.md</code> — resolve only when <code dir="auto">config.json#phase</code> matches. No root-level fallback, so invocation outside the matching phase fails at prompt-resolve. The staging-phase orchestrator is unlikely to emit these verbs. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>Status</th></tr></thead><tbody><tr><td><strong>infra-reviewer</strong></td><td>Live, but only via the <strong>expert</strong> path (not in main-loop). Has <code dir="auto">prompts/infra-reviewer.md</code> + <code dir="auto">prompts/infra-reviewer.role.json</code> registering it with the role-registry. Reachable via human dispatch (<code dir="auto">POST /:slug/experts/dispatch</code> → <code dir="auto">experts.ts:411</code> → <code dir="auto">dispatchExpert</code>) or auto-trigger (<code dir="auto">expert-triggers.ts</code> on configured <code dir="auto">role.alwaysFireOn</code> events). The scoper prompt recommends it as a consultant for infra-touching changes.</td></tr><tr><td><strong>summarizer</strong></td><td><code dir="auto">NEXT_SUMMARIZER</code> is in <code dir="auto">DECISION_VERBS</code> but lacks a switch case in main-loop.ts — falls to default and exits 4. Prompt file exists but the verb is effectively dead.</td></tr><tr><td><strong>feedback</strong></td><td>prompt file exists but <code dir="auto">agent-chats.ts:73</code> explicitly excludes it (<code dir="auto">if (role === 'feedback') return false</code>). Likely a dead role from an earlier design.</td></tr><tr><td><strong>tester</strong>, <strong>test-writer</strong>, <strong>monitor</strong></td><td>Phase-scoped. Invoked from <code dir="auto">main-loop.ts</code> via <code dir="auto">handleSimpleInvoke(...)</code> for <code dir="auto">NEXT_TESTER</code> / <code dir="auto">GENERATE_TESTS</code> / <code dir="auto">NEXT_MONITOR</code>. Prompts at <code dir="auto">prompts/testing/{tester,test-writer}.md</code> and <code dir="auto">prompts/production/monitor.md</code> — resolve only when <code dir="auto">config.json#phase</code> matches. No root-level fallback, so invocation outside the matching phase fails at prompt-resolve. The staging-phase orchestrator is unlikely to emit these verbs.</td></tr></tbody></table>
 <p><code dir="auto">identity/&#x3C;role>.md</code> files (cross-mission) are maintained by the curator across runs. PG-mirrored to <code dir="auto">harness_shared.identity_files</code> (Migration 041) by <code dir="auto">apps/operator/lib/identity-files-watcher.ts</code>; the operator UI’s IdentityPanel reads PG, but the orchestrator subprocess at <code dir="auto">prompt-build.ts:87</code> still reads the file directly per role contract.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="stage-4--live-monitoring-parallel-to-stage-3">Stage 4 — Live monitoring (parallel to Stage 3)</h2><a class="sl-anchor-link" href="#stage-4--live-monitoring-parallel-to-stage-3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Stage 4 — Live monitoring (parallel to Stage 3)”</span></a></div>
 <p>While the loop runs, the operator UI surfaces live state:</p>
-<p>| UI surface | Code | Data source |
-|---|---|---|
-| <strong>HarnessDashboard</strong> at <code dir="auto">/harness/&#x3C;slug></code> | <code dir="auto">app/harness/HarnessDashboard.tsx</code> | Six Zero subscriptions: <code dir="auto">features&#x3C;HarnessName>.all</code> (e.g. <code dir="auto">featuresSheets.all</code>) for the work queue, <code dir="auto">agentRuns&#x3C;HarnessName>.all</code> (reads per-harness <code dir="auto">agent_runs</code>), <code dir="auto">proposalsShared.byHarness</code> (cross-harness <code dir="auto">harness_shared.harness_proposals_shared</code>), <code dir="auto">harnessStatus.byHarness</code>, <code dir="auto">pendingReviews.byHarness</code>, <code dir="auto">harnessLanes.byHarness</code>. Sub-components subscribe further (IssuesList → <code dir="auto">issues&#x3C;HarnessName>.all</code>, SnapshotsPanel → <code dir="auto">snapshots&#x3C;HarnessName>.all</code>). |
-| <strong>Run log tail</strong> | rendered inside <code dir="auto">HarnessDashboard.tsx</code> (~line 2509) | SSE: <code dir="auto">GET /api/harness/:slug/log/stream?phase=…&#x26;tail=500</code> (route at <code dir="auto">harness.ts:1809</code>) — streams structured events from <code dir="auto">.papercusp/logs/run.log.jsonl</code>. (A separate <code dir="auto">GET /:slug/stream</code> at <code dir="auto">harness.ts:1654</code> tails the plain <code dir="auto">run.log</code> text — used by other surfaces, not the dashboard.) |
-| <strong>Plan review banner</strong> | <code dir="auto">app/harness/PlanReviewBanner.tsx</code> | <code dir="auto">GET /:slug/plan-review</code> (file content) + <code dir="auto">GET /:slug/plan-review/sse</code> for change events |
-| <strong>Proposals panel</strong> | <code dir="auto">app/harness/ProposalsPanel.tsx</code> | Zero query <code dir="auto">proposalsShared.byHarness</code> reading <code dir="auto">harness_shared.harness_proposals_shared</code> (cross-harness shared table — NOT per-harness). Accept/reject via <code dir="auto">POST /:slug/proposals/:id/accept</code> and <code dir="auto">POST /:slug/proposals/:id/reject</code> |
-| <strong>Issues list</strong> | <code dir="auto">app/harness/issues/IssuesList.tsx</code> | Zero query <code dir="auto">issues&#x3C;HarnessName>.all</code> (camelCase per-harness, e.g. <code dir="auto">issuesSheets.all</code>, <code dir="auto">issuesOrgRd.all</code>) |
-| <strong>Feature list</strong> | <code dir="auto">app/harness/FeatureList.tsx</code> | Zero query <code dir="auto">features&#x3C;HarnessName>.all</code> (camelCase per-harness, e.g. <code dir="auto">featuresSheets.all</code>) — canonical UI read path post-2026-04-27 PG migration |
-| <strong>Recent agents</strong> | dashboard panel | Zero query <code dir="auto">agentRuns&#x3C;HarnessName>.all</code> (e.g. <code dir="auto">agentRunsSheets.all</code>); reads per-harness <code dir="auto">agent_runs</code> (no <code dir="auto">harness_</code> prefix) |
-| <strong>Snapshots panel</strong> | <code dir="auto">app/harness/SnapshotsPanel.tsx</code> | Zero query <code dir="auto">snapshots&#x3C;HarnessName>.all</code> |
-| <strong>Recent actions popover</strong> | chrome-mounted <code dir="auto">RecentActionsCenter</code> | Zero query <code dir="auto">userActions.byHarness</code> (or REST poll fallback off-/harness routes; see <code dir="auto">OperatorActionLog.tsx</code>) |
-| <strong>Oracle dock</strong> | <code dir="auto">app/_components/OracleDock.tsx</code> | global concierge — runs <code dir="auto">runClaudeChat</code> with the Oracle MCP server attached, can navigate / dispatch agents / list chats |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>UI surface</th><th>Code</th><th>Data source</th></tr></thead><tbody><tr><td><strong>HarnessDashboard</strong> at <code dir="auto">/harness/&#x3C;slug></code></td><td><code dir="auto">app/harness/HarnessDashboard.tsx</code></td><td>Six Zero subscriptions: <code dir="auto">features&#x3C;HarnessName>.all</code> (e.g. <code dir="auto">featuresSheets.all</code>) for the work queue, <code dir="auto">agentRuns&#x3C;HarnessName>.all</code> (reads per-harness <code dir="auto">agent_runs</code>), <code dir="auto">proposalsShared.byHarness</code> (cross-harness <code dir="auto">harness_shared.harness_proposals_shared</code>), <code dir="auto">harnessStatus.byHarness</code>, <code dir="auto">pendingReviews.byHarness</code>, <code dir="auto">harnessLanes.byHarness</code>. Sub-components subscribe further (IssuesList → <code dir="auto">issues&#x3C;HarnessName>.all</code>, SnapshotsPanel → <code dir="auto">snapshots&#x3C;HarnessName>.all</code>).</td></tr><tr><td><strong>Run log tail</strong></td><td>rendered inside <code dir="auto">HarnessDashboard.tsx</code> (~line 2509)</td><td>SSE: <code dir="auto">GET /api/harness/:slug/log/stream?phase=…&#x26;tail=500</code> (route at <code dir="auto">harness.ts:1809</code>) — streams structured events from <code dir="auto">.papercusp/logs/run.log.jsonl</code>. (A separate <code dir="auto">GET /:slug/stream</code> at <code dir="auto">harness.ts:1654</code> tails the plain <code dir="auto">run.log</code> text — used by other surfaces, not the dashboard.)</td></tr><tr><td><strong>Plan review banner</strong></td><td><code dir="auto">app/harness/PlanReviewBanner.tsx</code></td><td><code dir="auto">GET /:slug/plan-review</code> (file content) + <code dir="auto">GET /:slug/plan-review/sse</code> for change events</td></tr><tr><td><strong>Proposals panel</strong></td><td><code dir="auto">app/harness/ProposalsPanel.tsx</code></td><td>Zero query <code dir="auto">proposalsShared.byHarness</code> reading <code dir="auto">harness_shared.harness_proposals_shared</code> (cross-harness shared table — NOT per-harness). Accept/reject via <code dir="auto">POST /:slug/proposals/:id/accept</code> and <code dir="auto">POST /:slug/proposals/:id/reject</code></td></tr><tr><td><strong>Issues list</strong></td><td><code dir="auto">app/harness/issues/IssuesList.tsx</code></td><td>Zero query <code dir="auto">issues&#x3C;HarnessName>.all</code> (camelCase per-harness, e.g. <code dir="auto">issuesSheets.all</code>, <code dir="auto">issuesOrgRd.all</code>)</td></tr><tr><td><strong>Feature list</strong></td><td><code dir="auto">app/harness/FeatureList.tsx</code></td><td>Zero query <code dir="auto">features&#x3C;HarnessName>.all</code> (camelCase per-harness, e.g. <code dir="auto">featuresSheets.all</code>) — canonical UI read path post-2026-04-27 PG migration</td></tr><tr><td><strong>Recent agents</strong></td><td>dashboard panel</td><td>Zero query <code dir="auto">agentRuns&#x3C;HarnessName>.all</code> (e.g. <code dir="auto">agentRunsSheets.all</code>); reads per-harness <code dir="auto">agent_runs</code> (no <code dir="auto">harness_</code> prefix)</td></tr><tr><td><strong>Snapshots panel</strong></td><td><code dir="auto">app/harness/SnapshotsPanel.tsx</code></td><td>Zero query <code dir="auto">snapshots&#x3C;HarnessName>.all</code></td></tr><tr><td><strong>Recent actions popover</strong></td><td>chrome-mounted <code dir="auto">RecentActionsCenter</code></td><td>Zero query <code dir="auto">userActions.byHarness</code> (or REST poll fallback off-/harness routes; see <code dir="auto">OperatorActionLog.tsx</code>)</td></tr><tr><td><strong>Oracle dock</strong></td><td><code dir="auto">app/_components/OracleDock.tsx</code></td><td>global concierge — runs <code dir="auto">runClaudeChat</code> with the Oracle MCP server attached, can navigate / dispatch agents / list chats</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="human-in-the-loop-optional">Human in the loop, optional</h3><a class="sl-anchor-link" href="#human-in-the-loop-optional"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Human in the loop, optional”</span></a></div>
 <p>The user can intervene at any iteration without stopping the loop:</p>
 <ul>
@@ -552,14 +782,40 @@ archived loop; the live decider is the per-feature <code dir="auto">director</co
 <li>
 <p><strong>Plugin lifecycle</strong> — <em>(updated 2026-06-12, plugin-system-pot-port P-006)</em> the DBOS finalizer fires the in-process typed hook <code dir="auto">firePluginLifecycle('afterDone', …)</code> and emits the <code dir="auto">pipeline:done:&#x3C;slug>:&#x3C;feature></code> event; the old <code dir="auto">firePluginHook</code> shell-out via the <code dir="auto">papercusp-fire-hook</code> CLI is retired, as is the addAction/addFilter event bus — plugins subscribe via event-reaction rules (<code dir="auto">reactions</code> in the manifest/SDK).</p>
 <p>Live plugin set in <code dir="auto">libs/papercusp/plugins/</code> and their event subscriptions:</p>
-<p>| Plugin | Event subscriptions |
-|---|---|
-| <code dir="auto">@papercupai/cloudflare-pages</code> | <code dir="auto">mission-done</code> → publishes to Cloudflare Pages |
-| <code dir="auto">@papercupai/jira-sync</code> | <code dir="auto">feature-passed</code>, <code dir="auto">feature-failed</code>, <code dir="auto">proposal-accepted</code>, <code dir="auto">mission-done</code> |
-| <code dir="auto">@papercupai/linear-sync</code> | same four as jira-sync |
-| <code dir="auto">@papercupai/notion-export</code> | <code dir="auto">mission-done</code> (action: <code dir="auto">exportMission</code>) |
-| <code dir="auto">@papercupai/slack-notifier</code> | <code dir="auto">mission-done</code>, <code dir="auto">action-failed</code> |
-| <code dir="auto">starlight</code>, <code dir="auto">pi-coding</code>, <code dir="auto">postgres-manager</code>, <code dir="auto">vscode-server</code> | none — UI tabs / manual actions only (the docs-tab plugin is <code dir="auto">starlight</code>, at <code dir="auto">libs/papercusp/plugins/starlight</code>; there is no <code dir="auto">fumadocs</code> plugin) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Plugin</th><th>Event subscriptions</th></tr></thead><tbody><tr><td><code dir="auto">@papercupai/cloudflare-pages</code></td><td><code dir="auto">mission-done</code> → publishes to Cloudflare Pages</td></tr><tr><td><code dir="auto">@papercupai/jira-sync</code></td><td><code dir="auto">feature-passed</code>, <code dir="auto">feature-failed</code>, <code dir="auto">proposal-accepted</code>, <code dir="auto">mission-done</code></td></tr><tr><td><code dir="auto">@papercupai/linear-sync</code></td><td>same four as jira-sync</td></tr><tr><td><code dir="auto">@papercupai/notion-export</code></td><td><code dir="auto">mission-done</code> (action: <code dir="auto">exportMission</code>)</td></tr><tr><td><code dir="auto">@papercupai/slack-notifier</code></td><td><code dir="auto">mission-done</code>, <code dir="auto">action-failed</code></td></tr><tr><td><code dir="auto">starlight</code>, <code dir="auto">pi-coding</code>, <code dir="auto">postgres-manager</code>, <code dir="auto">vscode-server</code></td><td>none — UI tabs / manual actions only (the docs-tab plugin is <code dir="auto">starlight</code>, at <code dir="auto">libs/papercusp/plugins/starlight</code>; there is no <code dir="auto">fumadocs</code> plugin)</td></tr></tbody></table>
 <p><em>briefings is not a plugin</em> — it’s a separate app in a separate internal project; the <code dir="auto">afterDone</code> hook can’t reach it directly.</p>
 </li>
 <li>
@@ -578,15 +834,52 @@ archived loop; the live decider is the per-feature <code dir="auto">director</co
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="failure--escalation-paths">Failure / escalation paths</h2><a class="sl-anchor-link" href="#failure--escalation-paths"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Failure / escalation paths”</span></a></div>
 <p>Any of these can short-circuit the happy path:</p>
-<p>| Path | Trigger | Effect |
-|---|---|---|
-| <strong>Plan rejected</strong> | reviewer writes <code dir="auto">VERDICT: reject</code> in plan-review.md | Pre-loop exits 7 with reason “plan-rejected”; user must edit SPEC.md and re-launch |
-| <strong>Stuck feature</strong> | feature <code dir="auto">attempts >= debugger.threshold</code> (default 3); after debugger fires once, further failures lead to architect/escalate | Orchestrator emits <code dir="auto">NEXT_ARCHITECT</code> for replan, or eventually <code dir="auto">ESCALATE</code> |
-| <strong>ESCALATE</strong> | orchestrator decision after exhausting options | LLM writes <code dir="auto">.papercusp/escalation.md</code> (per orchestrator.md §E), then prints <code dir="auto">ESCALATE &#x3C;reason></code>. handleEscalate fires <code dir="auto">on-escalate</code> hook, runs curator (<code dir="auto">TRIGGER=escalate</code>), notify_event, exits 3. The <strong>supervisor cron</strong> (<code dir="auto">bin/supervisor.sh</code>, suggested <code dir="auto">0 */6 * * *</code>; user owns the actual crontab) wakes periodically, reads escalation.md + recent logs, decides: unblock / expand spec / ping human. <em>Note: escalation.md is also written system-side by run.sh:1620 / pre-loop.ts:87 on plan-reviewer reject — that path exits 7, not 3.</em> |
-| <strong>Cost cap exceeded</strong> | <code dir="auto">cost-cap.ts</code> (or <code dir="auto">run.sh:check_cost_cap</code>) sums each <code dir="auto">.jsonl</code>’s last <code dir="auto">total_cost_usd</code> per iteration; exceeds <code dir="auto">config.maxCostUsd</code> | Clean <strong>exit 6</strong> (not SIGTERM); <code dir="auto">notify_event cost-cap</code> fires. Soft warn at <code dir="auto">config.maxCostUsdWarnThreshold</code> * cap (default 0.8, dedup’d by <code dir="auto">.papercusp/.cost-warn-fired</code> papercup). Optional <code dir="auto">config.maxCostUsdAutoPause=true</code> SIGSTOPs the process at warn threshold; <code dir="auto">/api/harness/&#x3C;slug>/unpause</code> SIGCONTs it. |
-| <strong>Timeout</strong> | per-role <code dir="auto">config.timeouts.&#x3C;role></code> exceeded | invoke() returns rc=124; orchestrator treats as failure |
-| <strong>Smoke test fails on done</strong> | <code dir="auto">smokeTest.onDone</code> script exits non-zero | Feature reopens, loop continues |
-| <strong>Manual stop</strong> | user kills the process or hits “Stop” in UI | <code dir="auto">POST /:slug/stop</code> walks <code dir="auto">/proc</code>, matches processes whose cwd starts with <code dir="auto">project.path</code> AND whose cmdline contains <code dir="auto">autonomous-harness/run.sh</code> or <code dir="auto">/harness/run.sh</code>, then SIGTERMs each |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>Trigger</th><th>Effect</th></tr></thead><tbody><tr><td><strong>Plan rejected</strong></td><td>reviewer writes <code dir="auto">VERDICT: reject</code> in plan-review.md</td><td>Pre-loop exits 7 with reason “plan-rejected”; user must edit SPEC.md and re-launch</td></tr><tr><td><strong>Stuck feature</strong></td><td>feature <code dir="auto">attempts >= debugger.threshold</code> (default 3); after debugger fires once, further failures lead to architect/escalate</td><td>Orchestrator emits <code dir="auto">NEXT_ARCHITECT</code> for replan, or eventually <code dir="auto">ESCALATE</code></td></tr><tr><td><strong>ESCALATE</strong></td><td>orchestrator decision after exhausting options</td><td>LLM writes <code dir="auto">.papercusp/escalation.md</code> (per orchestrator.md §E), then prints <code dir="auto">ESCALATE &#x3C;reason></code>. handleEscalate fires <code dir="auto">on-escalate</code> hook, runs curator (<code dir="auto">TRIGGER=escalate</code>), notify_event, exits 3. The <strong>supervisor cron</strong> (<code dir="auto">bin/supervisor.sh</code>, suggested <code dir="auto">0 */6 * * *</code>; user owns the actual crontab) wakes periodically, reads escalation.md + recent logs, decides: unblock / expand spec / ping human. <em>Note: escalation.md is also written system-side by run.sh:1620 / pre-loop.ts:87 on plan-reviewer reject — that path exits 7, not 3.</em></td></tr><tr><td><strong>Cost cap exceeded</strong></td><td><code dir="auto">cost-cap.ts</code> (or <code dir="auto">run.sh:check_cost_cap</code>) sums each <code dir="auto">.jsonl</code>’s last <code dir="auto">total_cost_usd</code> per iteration; exceeds <code dir="auto">config.maxCostUsd</code></td><td>Clean <strong>exit 6</strong> (not SIGTERM); <code dir="auto">notify_event cost-cap</code> fires. Soft warn at <code dir="auto">config.maxCostUsdWarnThreshold</code> * cap (default 0.8, dedup’d by <code dir="auto">.papercusp/.cost-warn-fired</code> papercup). Optional <code dir="auto">config.maxCostUsdAutoPause=true</code> SIGSTOPs the process at warn threshold; <code dir="auto">/api/harness/&#x3C;slug>/unpause</code> SIGCONTs it.</td></tr><tr><td><strong>Timeout</strong></td><td>per-role <code dir="auto">config.timeouts.&#x3C;role></code> exceeded</td><td>invoke() returns rc=124; orchestrator treats as failure</td></tr><tr><td><strong>Smoke test fails on done</strong></td><td><code dir="auto">smokeTest.onDone</code> script exits non-zero</td><td>Feature reopens, loop continues</td></tr><tr><td><strong>Manual stop</strong></td><td>user kills the process or hits “Stop” in UI</td><td><code dir="auto">POST /:slug/stop</code> walks <code dir="auto">/proc</code>, matches processes whose cwd starts with <code dir="auto">project.path</code> AND whose cmdline contains <code dir="auto">autonomous-harness/run.sh</code> or <code dir="auto">/harness/run.sh</code>, then SIGTERMs each</td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="state-summary--what-lives-where">State summary — what lives where</h2><a class="sl-anchor-link" href="#state-summary--what-lives-where"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “State summary — what lives where”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="postgres-canonical-queryable">Postgres (canonical, queryable)</h3><a class="sl-anchor-link" href="#postgres-canonical-queryable"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Postgres (canonical, queryable)”</span></a></div>
@@ -612,24 +905,90 @@ which subscribe to the publication <code dir="auto">zero_harness</code> on the <
 <p><strong>Storage policy reference:</strong> <code dir="auto">/internal/docs/system/storage-policy</code> documents the PG-by-default rule and the dual-write pattern.</p>
 <p><code dir="auto">.papercusp/</code> per-project — by category:</p>
 <p><strong>PG-canonical, file mirror (operator UI reads PG; orchestrator/curator subprocess reads the file):</strong></p>
-<p>| File | PG location | Migration |
-|---|---|---|
-| <code dir="auto">config.json</code> | <code dir="auto">harness_shared.harness_project_files.config</code> | 034 |
-| <code dir="auto">validation-contract.md</code> | <code dir="auto">harness_shared.harness_project_files.contract</code> | 034 |
-| <code dir="auto">brainstorm.md</code>, <code dir="auto">brainstorm.canvas.json</code>, <code dir="auto">brainstorm.mindmap.json</code> | <code dir="auto">harness_shared.harness_brainstorm</code> (content / canvas / mindmap columns) | 033 |
-| <code dir="auto">memory/raw.md</code>, <code dir="auto">memory/summary.md</code>, <code dir="auto">memory/MEMORY.md</code> | <code dir="auto">harness_shared.harness_text_artifacts</code> (rel_path key) | 035 |
-| <code dir="auto">issues.md</code> | <code dir="auto">harness_shared.harness_text_artifacts</code> | 035 |
-| <code dir="auto">escalation.md</code> | <code dir="auto">harness_shared.harness_text_artifacts</code> | 035 |
-| <code dir="auto">supervisor-notes.md</code> | <code dir="auto">harness_shared.harness_text_artifacts</code> (Migration 035, round 18 dual-write fix). Also mirrored to <code dir="auto">harness_shared.harness_escalations.supervisor_notes</code> column by <code dir="auto">harness-fs-watcher.ts</code> for the operator’s escalations panel (legacy view). | 035 |
-| <code dir="auto">prompts/&#x3C;role>.md</code>, <code dir="auto">worker-log.md</code>, etc. (any free-form text artifact) | <code dir="auto">harness_shared.harness_text_artifacts</code> | 035 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File</th><th>PG location</th><th>Migration</th></tr></thead><tbody><tr><td><code dir="auto">config.json</code></td><td><code dir="auto">harness_shared.harness_project_files.config</code></td><td>034</td></tr><tr><td><code dir="auto">validation-contract.md</code></td><td><code dir="auto">harness_shared.harness_project_files.contract</code></td><td>034</td></tr><tr><td><code dir="auto">brainstorm.md</code>, <code dir="auto">brainstorm.canvas.json</code>, <code dir="auto">brainstorm.mindmap.json</code></td><td><code dir="auto">harness_shared.harness_brainstorm</code> (content / canvas / mindmap columns)</td><td>033</td></tr><tr><td><code dir="auto">memory/raw.md</code>, <code dir="auto">memory/summary.md</code>, <code dir="auto">memory/MEMORY.md</code></td><td><code dir="auto">harness_shared.harness_text_artifacts</code> (rel_path key)</td><td>035</td></tr><tr><td><code dir="auto">issues.md</code></td><td><code dir="auto">harness_shared.harness_text_artifacts</code></td><td>035</td></tr><tr><td><code dir="auto">escalation.md</code></td><td><code dir="auto">harness_shared.harness_text_artifacts</code></td><td>035</td></tr><tr><td><code dir="auto">supervisor-notes.md</code></td><td><code dir="auto">harness_shared.harness_text_artifacts</code> (Migration 035, round 18 dual-write fix). Also mirrored to <code dir="auto">harness_shared.harness_escalations.supervisor_notes</code> column by <code dir="auto">harness-fs-watcher.ts</code> for the operator’s escalations panel (legacy view).</td><td>035</td></tr><tr><td><code dir="auto">prompts/&#x3C;role>.md</code>, <code dir="auto">worker-log.md</code>, etc. (any free-form text artifact)</td><td><code dir="auto">harness_shared.harness_text_artifacts</code></td><td>035</td></tr></tbody></table>
 <p>The <code dir="auto">.papercusp/config.json</code> notes the phase/dept/models/timeouts/smokeTest/branchIsolation/checkpoints/autoScreenshot/debugger-threshold/cost-cap settings. <strong>Plugin enables are NOT here</strong> — those live at <code dir="auto">~/.papercusp/harnesses/&#x3C;slug>/enabled-plugins.json</code> (CLI-authoritative) and mirror to <code dir="auto">harness_shared.plugin_enables</code> via <code dir="auto">plugin-enables-pg.ts</code>.</p>
 <p><strong>File-canonical, PG-mirrored (the file is the source of truth for the worker; PG mirror serves operator UI):</strong></p>
-<p>| File | PG mirror | Mirror mechanism |
-|---|---|---|
-| <code dir="auto">plan-review.md</code> | <code dir="auto">harness_shared.harness_plan_review</code> | <code dir="auto">harness-fs-watcher.ts</code> |
-| <code dir="auto">pending-issues.jsonl</code> | <code dir="auto">harness_shared.harness_pending_issues</code> | fs-watcher; ids without explicit <code dir="auto">id</code> synthesized as <code dir="auto">PENDING-&#x3C;n></code> to match the operator reader |
-| <code dir="auto">issues.json</code> | per-harness <code dir="auto">harness_issues</code> table | <code dir="auto">syncIssuesToPg</code> called by every operator-side write |
-| <code dir="auto">proposals/&#x3C;id>.md</code> | <code dir="auto">harness_shared.harness_proposals_shared</code> | fs-watcher (mirror 6 in <code dir="auto">harness-fs-watcher.ts</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File</th><th>PG mirror</th><th>Mirror mechanism</th></tr></thead><tbody><tr><td><code dir="auto">plan-review.md</code></td><td><code dir="auto">harness_shared.harness_plan_review</code></td><td><code dir="auto">harness-fs-watcher.ts</code></td></tr><tr><td><code dir="auto">pending-issues.jsonl</code></td><td><code dir="auto">harness_shared.harness_pending_issues</code></td><td>fs-watcher; ids without explicit <code dir="auto">id</code> synthesized as <code dir="auto">PENDING-&#x3C;n></code> to match the operator reader</td></tr><tr><td><code dir="auto">issues.json</code></td><td>per-harness <code dir="auto">harness_issues</code> table</td><td><code dir="auto">syncIssuesToPg</code> called by every operator-side write</td></tr><tr><td><code dir="auto">proposals/&#x3C;id>.md</code></td><td><code dir="auto">harness_shared.harness_proposals_shared</code></td><td>fs-watcher (mirror 6 in <code dir="auto">harness-fs-watcher.ts</code>)</td></tr></tbody></table>
 <p><strong>Largely retired (legacy fallback only):</strong></p>
 <ul>
 <li><code dir="auto">features.json</code> — scoper + validator prompts migrated 2026-05-01 to the <code dir="auto">/api/harness/&#x3C;slug>/features/import</code> and <code dir="auto">/features/&#x3C;id></code> PATCH endpoints. run.sh keeps a legacy “features.json → psql” import shim for back-compat. Snapshots may still include this file in their tarball for restore parity.</li>
@@ -669,13 +1028,48 @@ which subscribe to the publication <code dir="auto">zero_harness</code> on the <
 <div class="sl-heading-wrapper level-h3"><h3 id="ttl-based-appsoperatorlibexpirable-registryts">TTL-based: <code dir="auto">apps/operator/lib/expirable-registry.ts</code></h3><a class="sl-anchor-link" href="#ttl-based-appsoperatorlibexpirable-registryts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “TTL-based: apps/operator/lib/expirable-registry.ts”</span></a></div>
 <p>For state with a clear “lease until” semantic. Writers set <code dir="auto">expires_at</code> on every write; the registry runs a single 30-second sweep loop that DELETEs (or in <code dir="auto">harness_status</code>’s case, flips status to <code dir="auto">stalled</code>) any row whose <code dir="auto">expires_at</code> is in the past. One <code dir="auto">setInterval</code>, declarative registrations, no per-table sweep code.</p>
 <p>Registered tables (manifest at <code dir="auto">expirable-registrations.ts</code>):</p>
-<p>| Table | Lease | On expire | Notes |
-|---|---|---|---|
-| <code dir="auto">harness_shared.operator_scan_locks</code> | 60s | delete | Was lazy-deleted on next acquire; now also actively reaped |
-| <code dir="auto">harness_shared.operator_claims</code> | 90s | delete | Previously had no sweeper at all — accumulated until manually overwritten |
-| <code dir="auto">harness_shared.harness_status</code> | 5min, refreshed each iteration | mark-status <code dir="auto">running</code>→<code dir="auto">stalled</code>, write <code dir="auto">updated_at</code> | unix-ms <code dir="auto">expires_at</code> column populated by <code dir="auto">POST /:slug/orchestrator/status</code> |
-| <code dir="auto">papercusp_auth.magic_link_requests</code> | per-row, unix-ms | delete | 15-min auth tokens |
-| <code dir="auto">papercusp_auth.sessions</code> | per-row, unix-ms | delete | 30-day sessions, hourly cadence (no rush) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Table</th><th>Lease</th><th>On expire</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">harness_shared.operator_scan_locks</code></td><td>60s</td><td>delete</td><td>Was lazy-deleted on next acquire; now also actively reaped</td></tr><tr><td><code dir="auto">harness_shared.operator_claims</code></td><td>90s</td><td>delete</td><td>Previously had no sweeper at all — accumulated until manually overwritten</td></tr><tr><td><code dir="auto">harness_shared.harness_status</code></td><td>5min, refreshed each iteration</td><td>mark-status <code dir="auto">running</code>→<code dir="auto">stalled</code>, write <code dir="auto">updated_at</code></td><td>unix-ms <code dir="auto">expires_at</code> column populated by <code dir="auto">POST /:slug/orchestrator/status</code></td></tr><tr><td><code dir="auto">papercusp_auth.magic_link_requests</code></td><td>per-row, unix-ms</td><td>delete</td><td>15-min auth tokens</td></tr><tr><td><code dir="auto">papercusp_auth.sessions</code></td><td>per-row, unix-ms</td><td>delete</td><td>30-day sessions, hourly cadence (no rush)</td></tr></tbody></table>
 <p>Adding a new TTL table: schema gets <code dir="auto">expires_at</code>, writers compute <code dir="auto">now() + lease</code>, one <code dir="auto">registerExpirable()</code> line. No new sweep code, no new interval, no new file.</p>
 <p>Future migration: when pg_cron is installed, each registered sweep becomes one <code dir="auto">pg_cron.schedule(...)</code> call; writers don’t change.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="pid-liveness-appsoperatorlibharness-status-sweepts">PID-liveness: <code dir="auto">apps/operator/lib/harness-status-sweep.ts</code></h3><a class="sl-anchor-link" href="#pid-liveness-appsoperatorlibharness-status-sweepts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “PID-liveness: apps/operator/lib/harness-status-sweep.ts”</span></a></div>
@@ -689,25 +1083,84 @@ which subscribe to the publication <code dir="auto">zero_harness</code> on the <
 <p>The split rule: <strong>TTL when there’s a clear lease and the writer can refresh on its own cadence; PID-liveness when the writer is a long-running process that already exists in <code dir="auto">/proc</code>.</strong> Filesystem-paired tables (the 20+ DELETE statements in <code dir="auto">harness-fs-watcher.ts</code>) are a third category — the file is the source of truth and chokidar handles cleanup; not a sweep at all.</p>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-to-look-for-x">Where to look for X</h2><a class="sl-anchor-link" href="#where-to-look-for-x"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where to look for X”</span></a></div>
-<p>| If you want to understand… | Read this |
-|---|---|
-| The orchestrator decision verbs | <code dir="auto">libs/papercusp/packages/orchestrator/src/decision-parse.ts</code> |
-| The live per-feature dispatch loop | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-workflow.ts</code> (<code dir="auto">deriveNext</code> over the <code dir="auto">coding-factory</code> blueprint spine) |
-| The global dispatcher (selects work) | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-loop.ts</code> |
-| Terminal finalization (curator/documenter/afterDone) | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-finalize.ts</code> |
-| The decision classifier (oracle, not live router) | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-decide.ts</code> (<code dir="auto">classifyDecision</code> — retained for <code dir="auto">derive-next-equivalence.test.ts</code>) |
-| How an agent gets spawned | <code dir="auto">libs/papercusp/packages/orchestrator/src/invoke.ts</code> and <code dir="auto">libs/papercusp/packages/harness/run.sh:invoke()</code> |
-| Pre-loop bootstrap | <code dir="auto">libs/papercusp/packages/orchestrator/src/pre-loop.ts:runPreLoop</code> |
-| What happens on DONE | <code dir="auto">libs/papercusp/packages/orchestrator/src/main-loop.ts:handleDone</code> (line 342) |
-| Role prompts | <code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/&#x3C;role>.md</code> (the old <code dir="auto">packages/harness/prompts/</code> dir is retired) |
-| Blueprints catalog | <code dir="auto">libs/papercusp/packages/harness/blueprints/</code> (~46 spines: <code dir="auto">coding-factory</code>, <code dir="auto">research</code>, <code dir="auto">audit</code>, <code dir="auto">migration</code>, <code dir="auto">dist-*</code>, …) |
-| Cross-mission identities | <code dir="auto">libs/papercusp/packages/harness/identity/&#x3C;role>.md</code> (file-canonical for orchestrator subprocess; PG-mirrored to <code dir="auto">harness_shared.identity_files</code> via Migration 041 for operator UI reads) |
-| All API routes | <code dir="auto">apps/operator/app/api/_hono/harness.ts</code> (mostly), <code dir="auto">apps/operator/app/api/agent-mcp/*</code> (operator-scan, delegate-chat, agent-config), <code dir="auto">apps/operator/app/api/agent-config/*</code> (settings) |
-| Chat-stream backend | <code dir="auto">apps/operator/lib/claude-chat-stream.ts</code> (operator wrapper) → <code dir="auto">libs/papercusp-shared/src/agent/chat-stream.ts</code> (shared runtime) |
-| Schema + Zero queries | <code dir="auto">libs/zero-harness/src/{schema,queries}.ts</code> |
-| Per-harness PG compatibility views | packages/operator-core/lib/scaffold-harness-schema.ts |
-| Plugin lifecycle | <code dir="auto">packages/operator-core/lib/plugin-host-runtime.ts</code> (<code dir="auto">firePluginLifecycle</code> + <code dir="auto">ServerActionRegistry</code> + plugin reaction-rule registration; the orchestrator-side <code dir="auto">plugin-hooks.ts</code> shell-out and the <code dir="auto">papercusp-fire-hook</code> CLI were retired 2026-06-12) |
-| Cleanup of ephemeral state | <code dir="auto">apps/operator/lib/expirable-registry.ts</code> (TTL) + <code dir="auto">apps/operator/lib/harness-status-sweep.ts</code> (PID-liveness); declarative manifest at <code dir="auto">apps/operator/lib/expirable-registrations.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>If you want to understand…</th><th>Read this</th></tr></thead><tbody><tr><td>The orchestrator decision verbs</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/decision-parse.ts</code></td></tr><tr><td>The live per-feature dispatch loop</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-workflow.ts</code> (<code dir="auto">deriveNext</code> over the <code dir="auto">coding-factory</code> blueprint spine)</td></tr><tr><td>The global dispatcher (selects work)</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-loop.ts</code></td></tr><tr><td>Terminal finalization (curator/documenter/afterDone)</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-finalize.ts</code></td></tr><tr><td>The decision classifier (oracle, not live router)</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-decide.ts</code> (<code dir="auto">classifyDecision</code> — retained for <code dir="auto">derive-next-equivalence.test.ts</code>)</td></tr><tr><td>How an agent gets spawned</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/invoke.ts</code> and <code dir="auto">libs/papercusp/packages/harness/run.sh:invoke()</code></td></tr><tr><td>Pre-loop bootstrap</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/pre-loop.ts:runPreLoop</code></td></tr><tr><td>What happens on DONE</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/main-loop.ts:handleDone</code> (line 342)</td></tr><tr><td>Role prompts</td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/&#x3C;role>.md</code> (the old <code dir="auto">packages/harness/prompts/</code> dir is retired)</td></tr><tr><td>Blueprints catalog</td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/</code> (~46 spines: <code dir="auto">coding-factory</code>, <code dir="auto">research</code>, <code dir="auto">audit</code>, <code dir="auto">migration</code>, <code dir="auto">dist-*</code>, …)</td></tr><tr><td>Cross-mission identities</td><td><code dir="auto">libs/papercusp/packages/harness/identity/&#x3C;role>.md</code> (file-canonical for orchestrator subprocess; PG-mirrored to <code dir="auto">harness_shared.identity_files</code> via Migration 041 for operator UI reads)</td></tr><tr><td>All API routes</td><td><code dir="auto">apps/operator/app/api/_hono/harness.ts</code> (mostly), <code dir="auto">apps/operator/app/api/agent-mcp/*</code> (operator-scan, delegate-chat, agent-config), <code dir="auto">apps/operator/app/api/agent-config/*</code> (settings)</td></tr><tr><td>Chat-stream backend</td><td><code dir="auto">apps/operator/lib/claude-chat-stream.ts</code> (operator wrapper) → <code dir="auto">libs/papercusp-shared/src/agent/chat-stream.ts</code> (shared runtime)</td></tr><tr><td>Schema + Zero queries</td><td><code dir="auto">libs/zero-harness/src/{schema,queries}.ts</code></td></tr><tr><td>Per-harness PG compatibility views</td><td>packages/operator-core/lib/scaffold-harness-schema.ts</td></tr><tr><td>Plugin lifecycle</td><td><code dir="auto">packages/operator-core/lib/plugin-host-runtime.ts</code> (<code dir="auto">firePluginLifecycle</code> + <code dir="auto">ServerActionRegistry</code> + plugin reaction-rule registration; the orchestrator-side <code dir="auto">plugin-hooks.ts</code> shell-out and the <code dir="auto">papercusp-fire-hook</code> CLI were retired 2026-06-12)</td></tr><tr><td>Cleanup of ephemeral state</td><td><code dir="auto">apps/operator/lib/expirable-registry.ts</code> (TTL) + <code dir="auto">apps/operator/lib/harness-status-sweep.ts</code> (PID-liveness); declarative manifest at <code dir="auto">apps/operator/lib/expirable-registrations.ts</code></td></tr></tbody></table>
 <hr>
 <div class="sl-heading-wrapper level-h2"><h2 id="caveats--whats-currently-in-flux">Caveats — what’s currently in flux</h2><a class="sl-anchor-link" href="#caveats--whats-currently-in-flux"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Caveats — what’s currently in flux”</span></a></div>
 <p>These reflect known in-progress migrations as of 2026-05-06; expect them to drift:</p>
@@ -741,4 +1194,4 @@ which subscribe to the publication <code dir="auto">zero_harness</code> on the <
 </ul>
 <p>For a one-page summary of recent migrations and their commit hashes, see
 <code dir="auto">/home/dev/.claude/projects/-tmp/memory/project_omp_routing_migration.md</code>
-and <code dir="auto">/home/dev/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-21T07:48:24.000Z">Aug 21, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/spec/trust-model.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Trust model</span> </span> </a> <a href="/internal/docs/system/self-learning.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Self-learning — the pot-scoped learning system (overview)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+and <code dir="auto">/home/dev/.claude/projects/-tmp/memory/project_filesystem_to_pg_migration.md</code>.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-09-05T10:14:16.000Z">Sep 5, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/spec/trust-model.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Trust model</span> </span> </a> <a href="/internal/docs/system/self-learning.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Self-learning — the pot-scoped learning system (overview)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

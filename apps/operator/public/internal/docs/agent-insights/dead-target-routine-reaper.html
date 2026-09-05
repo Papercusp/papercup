@@ -76,11 +76,28 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="what-it-does">What it does</h2><a class="sl-anchor-link" href="#what-it-does"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What it does”</span></a></div>
 <p>On each routines tick, a step named <code dir="auto">dead-target-reaper-sweep</code> (in <code dir="auto">dbos/routines-workflow.ts</code>, alongside the autoloop chronic-failure and silent-stop sweeps) groups this workspace’s <strong>active</strong> routines by install, probes each install’s tree <strong>once</strong>, and — only on a permanent verdict confirmed across two spaced sweeps — sets that install’s routines <code dir="auto">active = false</code> and stamps the evidence where a human will find it.</p>
 <p>Three modules, deliberately split:</p>
-<p>| file | what it is |
-|---|---|
-| <code dir="auto">dead-target-routine-reaper.ts</code> | the pure decider. No I/O at all: <code dir="auto">classifyTargetHealth(probe)</code> → <code dir="auto">ok \| root-missing \| git-corrupt \| unknown</code>, plus <code dir="auto">confirmPermanence</code>, <code dir="auto">isProtectedInstall</code>, <code dir="auto">targetIdentity</code>. |
-| <code dir="auto">dead-target-probe.ts</code> | the bounded probe: resolve the install slug to a path, does the root exist, is the git object store readable. Timeouts, never recursive fsck on the hot path. |
-| <code dir="auto">dead-target-sweep.ts</code> | the write side: candidate query, park, stamp, escalate. Fail-soft by contract. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>file</th><th>what it is</th></tr></thead><tbody><tr><td><code dir="auto">dead-target-routine-reaper.ts</code></td><td>the pure decider. No I/O at all: <code dir="auto">classifyTargetHealth(probe)</code> → <code dir="auto">ok | root-missing | git-corrupt | unknown</code>, plus <code dir="auto">confirmPermanence</code>, <code dir="auto">isProtectedInstall</code>, <code dir="auto">targetIdentity</code>.</td></tr><tr><td><code dir="auto">dead-target-probe.ts</code></td><td>the bounded probe: resolve the install slug to a path, does the root exist, is the git object store readable. Timeouts, never recursive fsck on the hot path.</td></tr><tr><td><code dir="auto">dead-target-sweep.ts</code></td><td>the write side: candidate query, park, stamp, escalate. Fail-soft by contract.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="it-classifies-by-structure-not-by-a-failure-streak">It classifies by STRUCTURE, not by a failure streak</h2><a class="sl-anchor-link" href="#it-classifies-by-structure-not-by-a-failure-streak"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “It classifies by STRUCTURE, not by a failure streak”</span></a></div>
 <p>The originating suggestion was a streak rule: on N consecutive failures with a permanent-looking cause, park the pot. The plan adopted the <em>cause</em> half and rejected the <em>streak</em> half (D-001).</p>
 <p>The decisive reason is not taste — <strong>there is no counter to threshold on.</strong> <code dir="auto">harness_shared.routines</code> has no generic consecutive-failure column, so a streak design starts with a migration adding a counter and write-path changes on the fire hot path. A direct structural observation of the tree is cheaper, is available on the first tick rather than the Nth, and answers the question you actually have (“is this tree usable?”) instead of a proxy for it (“has it failed a lot lately?”).</p>

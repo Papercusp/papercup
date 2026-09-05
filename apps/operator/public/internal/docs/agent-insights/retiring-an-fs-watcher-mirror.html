@@ -79,12 +79,37 @@ POST endpoint, migrate the producer, live-verify the panel, then remove the
 mirror leg”).</p>
 <p>That premise was <strong>wrong for 3 of 4</strong>. Re-auditing code truth before touching
 anything (the <code dir="auto">git_log</code> step-1 pattern) showed:</p>
-<p>| Mirror | Reality | Retirement |
-|---|---|---|
-| <code dir="auto">summary</code> | no producer writes the file; no consumer reads the table (UI summary comes from <code dir="auto">harness_text_artifacts</code>, mig 035) | <strong>dead orphan</strong> → drop |
-| <code dir="auto">branch_actions</code> | marked “KEPT mirror” but the <code dir="auto">/branch/:branch/actions</code> REST route recomputes on demand; no sync subscriber | <strong>dead orphan</strong> → drop |
-| <code dir="auto">phases</code> | only consumer (HealthBadge) read <code dir="auto">alive</code>, which the watcher <strong>hardcoded <code dir="auto">false</code></strong> — an always-dark dot; the <code dir="auto">/phases</code> REST route recomputes | repoint consumer → drop |
-| <code dir="auto">pending-reviews</code> | the watcher leg was REDUNDANT — <code dir="auto">promote.ts</code>/<code dir="auto">resolveReview</code> already write PG directly (audit P-077) | remove leg, <strong>keep table</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Mirror</th><th>Reality</th><th>Retirement</th></tr></thead><tbody><tr><td><code dir="auto">summary</code></td><td>no producer writes the file; no consumer reads the table (UI summary comes from <code dir="auto">harness_text_artifacts</code>, mig 035)</td><td><strong>dead orphan</strong> → drop</td></tr><tr><td><code dir="auto">branch_actions</code></td><td>marked “KEPT mirror” but the <code dir="auto">/branch/:branch/actions</code> REST route recomputes on demand; no sync subscriber</td><td><strong>dead orphan</strong> → drop</td></tr><tr><td><code dir="auto">phases</code></td><td>only consumer (HealthBadge) read <code dir="auto">alive</code>, which the watcher <strong>hardcoded <code dir="auto">false</code></strong> — an always-dark dot; the <code dir="auto">/phases</code> REST route recomputes</td><td>repoint consumer → drop</td></tr><tr><td><code dir="auto">pending-reviews</code></td><td>the watcher leg was REDUNDANT — <code dir="auto">promote.ts</code>/<code dir="auto">resolveReview</code> already write PG directly (audit P-077)</td><td>remove leg, <strong>keep table</strong></td></tr></tbody></table>
 <p>Only <code dir="auto">pending-reviews</code> was a “migration” — and it had <strong>already happened</strong>;
 the watcher leg was leftover dead weight (its orphan-delete sweep was even a
 latent hazard to the PG-only rows).</p>

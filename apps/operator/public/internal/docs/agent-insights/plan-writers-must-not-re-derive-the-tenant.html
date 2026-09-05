@@ -95,11 +95,32 @@ shape — an <code dir="auto">UPDATE</code> matching <strong>zero rows</strong> 
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-generations">The three generations</h2><a class="sl-anchor-link" href="#the-three-generations"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three generations”</span></a></div>
 <p>Each fix replaced one wrong derivation with a <em>different</em> wrong derivation,
 because the diagnosis stopped at the value instead of at the second path.</p>
-<p>| gen | the writer used | why it was wrong |
-|---|---|---|
-| 1 — WI-5125 / EI-16183 | a hardcoded <code dir="auto">DEFAULT_WORKSPACE_ID</code> | there are <strong>zero</strong> plans in the <code dir="auto">'default'</code> workspace; every real plan lives in <code dir="auto">papercusp-workspace</code>. Every <code dir="auto">UPDATE</code> matched 0 rows. |
-| 2 — the EI-16183 <em>fix</em> | <code dir="auto">activeWorkspaceId()</code> | the AMBIENT workspace (request-ALS → env → registry default). Correct only inside a browser request whose workspace happens to match the harness’s registered one — so <strong>any agent-side tool call outside that ALS scope keys a different row than the read just returned</strong>. |
-| 3 — WI-5825 | the raw ctx harness slug | skips the Hive-home collapse, so a member harness’s write targets a row no reader ever looks at. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>gen</th><th>the writer used</th><th>why it was wrong</th></tr></thead><tbody><tr><td>1 — WI-5125 / EI-16183</td><td>a hardcoded <code dir="auto">DEFAULT_WORKSPACE_ID</code></td><td>there are <strong>zero</strong> plans in the <code dir="auto">'default'</code> workspace; every real plan lives in <code dir="auto">papercusp-workspace</code>. Every <code dir="auto">UPDATE</code> matched 0 rows.</td></tr><tr><td>2 — the EI-16183 <em>fix</em></td><td><code dir="auto">activeWorkspaceId()</code></td><td>the AMBIENT workspace (request-ALS → env → registry default). Correct only inside a browser request whose workspace happens to match the harness’s registered one — so <strong>any agent-side tool call outside that ALS scope keys a different row than the read just returned</strong>.</td></tr><tr><td>3 — WI-5825</td><td>the raw ctx harness slug</td><td>skips the Hive-home collapse, so a member harness’s write targets a row no reader ever looks at.</td></tr></tbody></table>
 <p>Generation 2 is the instructive one: it was <em>the fix for generation 1</em>, it
 passed review, and it shipped. <code dir="auto">plan-start-state.ts</code> caught it — and was
 repaired by taking the resolved scope as a <strong>parameter</strong> instead of resolving it

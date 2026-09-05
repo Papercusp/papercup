@@ -77,11 +77,32 @@ situation” — and the system’s own prompt surfaces already used it informal
 (“insights — procedural memory (the runbook)”). This page makes it official.</p>
 <p><strong>A runbook is a procedural agent-insight: a doc whose body is ordered steps you
 execute</strong>, not an explanation you absorb. It is one of three related concepts:</p>
-<p>| Concept     | What it is                                             | Where it lives                                  |
-| ----------- | ------------------------------------------------------ | ----------------------------------------------- |
-| <strong>recipe</strong>  | machine-executable, parameterized procedure            | <code dir="auto">recipes:run</code> / <code dir="auto">recipes:list</code>                  |
-| <strong>runbook</strong> | agent/human-readable procedure doc (ordered steps)     | agent-insights MDX, slug <code dir="auto">*-runbook</code>            |
-| <strong>insight</strong> | explanation: incident, root cause, lesson, “what this means for you” | agent-insights MDX (everything else) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concept</th><th>What it is</th><th>Where it lives</th></tr></thead><tbody><tr><td><strong>recipe</strong></td><td>machine-executable, parameterized procedure</td><td><code dir="auto">recipes:run</code> / <code dir="auto">recipes:list</code></td></tr><tr><td><strong>runbook</strong></td><td>agent/human-readable procedure doc (ordered steps)</td><td>agent-insights MDX, slug <code dir="auto">*-runbook</code></td></tr><tr><td><strong>insight</strong></td><td>explanation: incident, root cause, lesson, “what this means for you”</td><td>agent-insights MDX (everything else)</td></tr></tbody></table>
 <p>A runbook often <em>composes</em> recipes — e.g. <code dir="auto">papercusp-desktop/RELEASE-RUNBOOK.md</code>
 is executed through <code dir="auto">recipes:run release-verify-provenance</code> /
 <code dir="auto">release-vm-preflight</code> — and an incident insight often <em>ends</em> in a short runbook

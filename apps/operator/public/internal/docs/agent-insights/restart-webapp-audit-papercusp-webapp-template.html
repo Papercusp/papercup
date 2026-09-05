@@ -90,18 +90,56 @@ in the reference webapp as git submodules pointing at papercupai (<code dir="aut
 to reconcile.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="appsweb-architecture-end-to-end">apps/web architecture, end to end</h2><a class="sl-anchor-link" href="#appsweb-architecture-end-to-end"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “apps/web architecture, end to end”</span></a></div>
-<p>| Dimension | What the reference webapp does |
-|---|---|
-| Hosting/server | Next.js app-router, <code dir="auto">output: 'standalone'</code>, <code dir="auto">outputFileTracingRoot</code> at repo root (monorepo tracing), <code dir="auto">transpilePackages</code> for 12 <code dir="auto">@papercusp/*</code> workspace libs; start = <code dir="auto">node .next/standalone/apps/web/server.js</code> after copying <code dir="auto">.next/static</code> + <code dir="auto">public/</code> in; <code dir="auto">write-build-info.mjs</code> build stamp |
-| Auth | <code dir="auto">middleware.ts</code> gate stub on <code dir="auto">/internal/docs/*</code> (env bypass) + root <code dir="auto">auth-proxy.mjs</code> (minimal basic-auth reverse proxy 3002→3001); <code dir="auto">libs/api-auth</code> = Nest guards (ApiKeyGuard/RateLimitGuard/API_TIERS) + Stripe metering |
-| Data layer | Root drizzle + <code dir="auto">libs/db</code>; mongo/redis/typesense infra libs; <strong>web tests run against a papercusp harness PG</strong> (<code dir="auto">HARNESS_DATABASE_URL</code> in vitest env) |
-| Routing/SSR | App-router pages per admin domain (~30 top-level routes); fumadocs-mdx (<code dir="auto">source.config.ts</code>) for <code dir="auto">/internal/docs</code> content; <code dir="auto">rewrites()</code> proxying the OpenObserve SPA |
-| UI stack | <code dir="auto">@papercusp/ui-primitives</code>, <code dir="auto">grid</code>/papergrid, <code dir="auto">git-graph</code>, <code dir="auto">design-tokens</code>, <code dir="auto">agent-chat</code>, plus Mantine, BlockNote, Excalidraw, Monaco, glide-data-grid, xterm |
-| Search | <code dir="auto">libs/catalog-search</code> + typesense (domain infra); <code dir="auto">search-core</code>/<code dir="auto">rerank</code> already shared |
-| Sync/live | <code dir="auto">providers/ZeroProvider</code> (Rocicorp Zero, <code dir="auto">libs/zero</code>) + <code dir="auto">QueryProvider</code> (react-query); <code dir="auto">libs/sse</code> + <code dir="auto">libs/sync</code> (migrated) |
-| Testing | vitest node env, serial single-fork pool against a shared test PG (<code dir="auto">fileParallelism: false</code>); <code dir="auto">@papercusp/testing-shell</code> + <code dir="auto">test-config</code>; separate <code dir="auto">vitest.integration.config.ts</code> |
-| Observability | <code dir="auto">instrumentation.ts</code> + <code dir="auto">@vercel/otel</code> + OTEL node SDK; OpenObserve browser RUM/logs; rewrites route the OO SPA |
-| Deploy | <code dir="auto">Dockerfile.web</code>: node:20-alpine builder, <code dir="auto">COPY --parents libs/*/package.json</code> workspace-manifest layer for cacheable installs, standalone output image |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Dimension</th><th>What the reference webapp does</th></tr></thead><tbody><tr><td>Hosting/server</td><td>Next.js app-router, <code dir="auto">output: 'standalone'</code>, <code dir="auto">outputFileTracingRoot</code> at repo root (monorepo tracing), <code dir="auto">transpilePackages</code> for 12 <code dir="auto">@papercusp/*</code> workspace libs; start = <code dir="auto">node .next/standalone/apps/web/server.js</code> after copying <code dir="auto">.next/static</code> + <code dir="auto">public/</code> in; <code dir="auto">write-build-info.mjs</code> build stamp</td></tr><tr><td>Auth</td><td><code dir="auto">middleware.ts</code> gate stub on <code dir="auto">/internal/docs/*</code> (env bypass) + root <code dir="auto">auth-proxy.mjs</code> (minimal basic-auth reverse proxy 3002→3001); <code dir="auto">libs/api-auth</code> = Nest guards (ApiKeyGuard/RateLimitGuard/API_TIERS) + Stripe metering</td></tr><tr><td>Data layer</td><td>Root drizzle + <code dir="auto">libs/db</code>; mongo/redis/typesense infra libs; <strong>web tests run against a papercusp harness PG</strong> (<code dir="auto">HARNESS_DATABASE_URL</code> in vitest env)</td></tr><tr><td>Routing/SSR</td><td>App-router pages per admin domain (~30 top-level routes); fumadocs-mdx (<code dir="auto">source.config.ts</code>) for <code dir="auto">/internal/docs</code> content; <code dir="auto">rewrites()</code> proxying the OpenObserve SPA</td></tr><tr><td>UI stack</td><td><code dir="auto">@papercusp/ui-primitives</code>, <code dir="auto">grid</code>/papergrid, <code dir="auto">git-graph</code>, <code dir="auto">design-tokens</code>, <code dir="auto">agent-chat</code>, plus Mantine, BlockNote, Excalidraw, Monaco, glide-data-grid, xterm</td></tr><tr><td>Search</td><td><code dir="auto">libs/catalog-search</code> + typesense (domain infra); <code dir="auto">search-core</code>/<code dir="auto">rerank</code> already shared</td></tr><tr><td>Sync/live</td><td><code dir="auto">providers/ZeroProvider</code> (Rocicorp Zero, <code dir="auto">libs/zero</code>) + <code dir="auto">QueryProvider</code> (react-query); <code dir="auto">libs/sse</code> + <code dir="auto">libs/sync</code> (migrated)</td></tr><tr><td>Testing</td><td>vitest node env, serial single-fork pool against a shared test PG (<code dir="auto">fileParallelism: false</code>); <code dir="auto">@papercusp/testing-shell</code> + <code dir="auto">test-config</code>; separate <code dir="auto">vitest.integration.config.ts</code></td></tr><tr><td>Observability</td><td><code dir="auto">instrumentation.ts</code> + <code dir="auto">@vercel/otel</code> + OTEL node SDK; OpenObserve browser RUM/logs; rewrites route the OO SPA</td></tr><tr><td>Deploy</td><td><code dir="auto">Dockerfile.web</code>: node:20-alpine builder, <code dir="auto">COPY --parents libs/*/package.json</code> workspace-manifest layer for cacheable installs, standalone output image</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="classification">Classification</h2><a class="sl-anchor-link" href="#classification"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Classification”</span></a></div>
 <p><strong>(a) Already migrated into papercup (<code dir="auto">libs/generic/</code>)</strong> — nothing to re-extract; the existing aspect
 templates already cover them: <code dir="auto">ui-primitives</code>, <code dir="auto">papergrid</code>, <code dir="auto">git-graph</code>, <code dir="auto">sync</code>, <code dir="auto">sse</code>, <code dir="auto">search</code>,

@@ -105,22 +105,102 @@ bridge covers out-of-process writes.</p>
 <p>The table preserves the original failure mode and the implementation decision.
 Every numbered row is complete; imperative wording in the last column describes
 the durable pattern to retain, not pending work.</p>
-<p>| # | Surface(s) | Original violation | Implemented shape |
-|---|---|---|---|
-| 1 | <code dir="auto">AdvConversationsTab</code> (Advanced → Conversations) | <strong>Fixed in this change.</strong> It previously issued independent REST reads and an expensive <code dir="auto">conversations.unified</code> four-store aggregate. Selection changes could be overwritten by stale request completion, refresh blanked the list, and every source switch started cold. | Keep the shipped <code dir="auto">conversations.{questions,deliberation,agentChat,message}{List,Detail}</code> split. List rows are bounded summaries; detail is keyed by <code dir="auto">{id}</code> and enabled only for the selection. Table changes invalidate lists plus ID-scoped details where the changed parent ID is available. The unified view client-composes the same four list caches. |
-| 2 | <code dir="auto">OperatorConversationProvider</code> (global Papercup/operator chat history) | The live tail uses <code dir="auto">operatorTurns.byConversation</code>, but mount still GETs <code dir="auto">/api/operator/conversations</code>, and older-page loading uses REST. The initial REST response owns conversation identity and can race the live cache. | Add <code dir="auto">operatorConversations.current</code> (workspace/user keyed) and a cursor-capable <code dir="auto">operatorTurns.page</code>. Hydrate identity through sync first, let <code dir="auto">operatorTurns.byConversation</code> own the live 200-row tail, and fetch immutable older pages through a sync-client/infinite-query adapter. Keep token generation and voice audio on their stream transports. |
-| 3 | <code dir="auto">/coord</code> → <code dir="auto">CoordDashboard</code> and <code dir="auto">CoordHistory</code> | Presence, inbox, plans, and history are polled at 5–15 s even though <code dir="auto">dev.coordPresence</code>, <code dir="auto">dev.coordFeed</code>, and plan named queries exist. The code comments still describe missing invalidation coverage. | Replace <code dir="auto">/coord/presence</code> with <code dir="auto">dev.coordPresence</code>; replace history with <code dir="auto">dev.coordFeed</code> using its existing <code dir="auto">kinds</code>, <code dir="auto">owner</code>, and <code dir="auto">plan_slug</code> args; use <code dir="auto">plans.list</code>/plan detail for plans; add a small <code dir="auto">coord.inbox</code> resolver for the human-facing projection. Do <strong>not</strong> add a high-churn row trigger to <code dir="auto">coord_event_log</code>; emit a coalesced <code dir="auto">notifySyncInvalidate('dev.coordFeed')</code> from the canonical append seam. Keep <code dir="auto">/api/su-locks/hook-health</code> as a process-health poll. |
-| 4 | <code dir="auto">ChatPanel</code>, <code dir="auto">PiTerminalsDock</code>, and <code dir="auto">PlanChat</code> agent-chat consumers | <code dir="auto">ChatPanel</code> has an <code dir="auto">agentChats.byHarness</code> subscription but falls back to per-chat REST; <code dir="auto">PiTerminalsDock</code> re-lists chats over REST to clean dead panels. These duplicate caches are exactly the stale-transcript class the sync query is meant to remove. | Add <code dir="auto">agentChats.detail</code> keyed by <code dir="auto">{id}</code> and invalidate it from consolidated and legacy write seams. Pass the live <code dir="auto">agentChats.byHarness</code> ID set into dock cleanup. Creation/send/archive remain mutations; invalidate list + selected detail immediately after them. <code dir="auto">PlanChat</code> only creates chats today, so it needs no read migration unless it starts rendering a list. |
-| 5 | <code dir="auto">PiTerminalsDock</code> persisted layouts | GET <code dir="auto">/api/dock-layouts/:name</code> restores a Postgres <code dir="auto">harness_dock_layouts</code> row into an independent local cache. Concurrent tabs/devices do not converge through the root cache. | Add <code dir="auto">dockLayouts.byName</code> keyed by workspace, user, and layout name plus <code dir="auto">dockLayouts.list</code>; map <code dir="auto">harness_dock_layouts</code> changes to both. Keep localStorage as an instant/offline paint seed only. PUT with <code dir="auto">If-Match</code> stays REST and invalidates the exact name after success/conflict resolution. |
-| 6 | <code dir="auto">DetailPanel</code> feature steer notes | GET <code dir="auto">/features/:id/notes</code> bypasses the already-existing <code dir="auto">featureNotes.byHarness</code> named query; POST then appends only local state. | Read <code dir="auto">featureNotes.byHarness</code> once at the harness panel and derive the selected feature’s blocks, or add <code dir="auto">featureNotes.byFeature</code> if payload size justifies it. POST should invalidate the selected feature/list key; the existing <code dir="auto">harness_feature_notes</code> bridge remains the out-of-process guard. |
-| 7 | Harness Tests → <code dir="auto">AcceptancePanel</code> | The assertion list is Postgres <code dir="auto">harness_plan_assertions</code>, but the panel fetches it directly and reloads locally after toggles. | Add <code dir="auto">testing.assertionsByHarness</code> with optional plan arg, map <code dir="auto">harness_plan_assertions</code>, and render it with <code dir="auto">useSyncQuery</code>. Keep the toggle as POST with an optimistic cache patch followed by invalidation. Testing-domain discovery stays REST because it reads harness config/files, not live database state. |
-| 8 | Settings → Operator (<code dir="auto">operator-config</code>, operator preferences, standing approvals, budget) | All four reads are Postgres operator-state tables. The page manually loads them, while <code dir="auto">operatorBudget.byWorkspace</code> already exists. A write calls <code dir="auto">loadAll</code>, producing avoidable serial work and cross-tab staleness. | Use existing <code dir="auto">operatorBudget.byWorkspace</code>; add <code dir="auto">operatorConfig.byWorkspace</code> and <code dir="auto">operatorPreferences.byWorkspace</code> (standing-approval candidates may be a derived query on the same row). Map <code dir="auto">operator_prompt_user</code>, <code dir="auto">operator_preferences</code>, and relevant candidate tables. Mutations update/invalidate only their concern. Keep <code dir="auto">operator-stats</code> as a snapshot query or short process metric only if it truly contains runtime counters. |
-| 9 | Settings → User, Settings → Voice, <code dir="auto">PapercupTab</code>, <code dir="auto">OperatorActiveToggle</code>, <code dir="auto">OperatorDelegationListener</code>, <code dir="auto">AudienceModeSelector</code>, SetupWizard preference reads, and <code dir="auto">voice-prefs-client</code> | These surfaces independently GET the same Postgres <code dir="auto">user_preferences</code> and <code dir="auto">operator_voice_prefs</code> blobs. The custom module cache only coheres inside one JS realm and is invisible to other tabs/processes. | Add <code dir="auto">userPreferences.current</code> and <code dir="auto">voicePrefs.effective</code>/<code dir="auto">voicePrefs.workspace</code> queries keyed by workspace and authenticated user. Map <code dir="auto">user_preferences</code> and <code dir="auto">operator_voice_prefs</code>; invalidate both effective and layer-specific keys after writes. Replace <code dir="auto">voice-prefs-client</code>’s fetch cache with a thin sync-cache selector. Engine health, voice catalog discovery, subscription/spend APIs, credential operations, previews, and audio streams stay outside this migration. |
-| 10 | Advanced account controls → <code dir="auto">use-account-override</code> | GET <code dir="auto">/admin/deploy-accounts/session-override</code> reads the Postgres <code dir="auto">operator_account_override</code> row into component state; other control surfaces can change it without updating this hook. | Add <code dir="auto">accounts.sessionOverride</code> keyed by workspace, map <code dir="auto">operator_account_override</code>, and invalidate after POST/reset. Keep the account-pool live-capacity gauge separate; it is runtime telemetry, not this durable override row. |
-| 11 | Installed → KPIs | <code dir="auto">/api/harness/all/kpis</code> is a cross-harness Postgres aggregate polled every 30 s. It is durable dashboard state, not an OS probe. | Move the existing loader behind <code dir="auto">kpis.all</code>, with a 30 s stale time and dependency mapping for the constituent tables (registry, messages, audit/actions, directives, and autoloop state). Coalesce invalidations because several sources are high-write. Keep the 1 s relative-duration timer; it only updates labels. |
-| 12 | Advanced → Evaluations active-run live card | The page uses named queries, but <code dir="auto">evals.benchRunLive</code> still sets <code dir="auto">pollIntervalMs: 4000</code> while a run is active because not every spawned-agent/sample write reaches the invalidation bridge. | Finish the bridge for all tables/write seams that contribute to <code dir="auto">benchRunLive</code>, then remove the poll. Launch/grade/delete/export remain mutations or explicit downloads. This is a push-coverage gap, not a reason to abandon the named query. |
-| 13 | Installed plugin permissions → harness picker | The page GETs <code dir="auto">/api/harness/projects</code> while the rest of the shell uses <code dir="auto">harnessProjects.lite</code>; a harness created in another surface can leave this picker stale. | Read <code dir="auto">harnessProjects.lite</code> and project only the slug/name fields. The plugin manifest itself is plugin-runtime/filesystem state and can remain its existing on-open read. |
-| 14 | <code dir="auto">OperatorActionLog</code> boot prefetch | The rendered log is correctly <code dir="auto">userActions.byHarness</code>, but <code dir="auto">prefetchRecentActions</code> still seeds a second global cache through <code dir="auto">/api/user-actions/:slug</code>. It can briefly win with stale rows and duplicates the transport. | Prefetch the named query into the root QueryClient (or rely on the already-hoisted provider) and delete the bespoke REST cache/listener. Keep the relative-time UI timer. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Surface(s)</th><th>Original violation</th><th>Implemented shape</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">AdvConversationsTab</code> (Advanced → Conversations)</td><td><strong>Fixed in this change.</strong> It previously issued independent REST reads and an expensive <code dir="auto">conversations.unified</code> four-store aggregate. Selection changes could be overwritten by stale request completion, refresh blanked the list, and every source switch started cold.</td><td>Keep the shipped <code dir="auto">conversations.{questions,deliberation,agentChat,message}{List,Detail}</code> split. List rows are bounded summaries; detail is keyed by <code dir="auto">{id}</code> and enabled only for the selection. Table changes invalidate lists plus ID-scoped details where the changed parent ID is available. The unified view client-composes the same four list caches.</td></tr><tr><td>2</td><td><code dir="auto">OperatorConversationProvider</code> (global Papercup/operator chat history)</td><td>The live tail uses <code dir="auto">operatorTurns.byConversation</code>, but mount still GETs <code dir="auto">/api/operator/conversations</code>, and older-page loading uses REST. The initial REST response owns conversation identity and can race the live cache.</td><td>Add <code dir="auto">operatorConversations.current</code> (workspace/user keyed) and a cursor-capable <code dir="auto">operatorTurns.page</code>. Hydrate identity through sync first, let <code dir="auto">operatorTurns.byConversation</code> own the live 200-row tail, and fetch immutable older pages through a sync-client/infinite-query adapter. Keep token generation and voice audio on their stream transports.</td></tr><tr><td>3</td><td><code dir="auto">/coord</code> → <code dir="auto">CoordDashboard</code> and <code dir="auto">CoordHistory</code></td><td>Presence, inbox, plans, and history are polled at 5–15 s even though <code dir="auto">dev.coordPresence</code>, <code dir="auto">dev.coordFeed</code>, and plan named queries exist. The code comments still describe missing invalidation coverage.</td><td>Replace <code dir="auto">/coord/presence</code> with <code dir="auto">dev.coordPresence</code>; replace history with <code dir="auto">dev.coordFeed</code> using its existing <code dir="auto">kinds</code>, <code dir="auto">owner</code>, and <code dir="auto">plan_slug</code> args; use <code dir="auto">plans.list</code>/plan detail for plans; add a small <code dir="auto">coord.inbox</code> resolver for the human-facing projection. Do <strong>not</strong> add a high-churn row trigger to <code dir="auto">coord_event_log</code>; emit a coalesced <code dir="auto">notifySyncInvalidate('dev.coordFeed')</code> from the canonical append seam. Keep <code dir="auto">/api/su-locks/hook-health</code> as a process-health poll.</td></tr><tr><td>4</td><td><code dir="auto">ChatPanel</code>, <code dir="auto">PiTerminalsDock</code>, and <code dir="auto">PlanChat</code> agent-chat consumers</td><td><code dir="auto">ChatPanel</code> has an <code dir="auto">agentChats.byHarness</code> subscription but falls back to per-chat REST; <code dir="auto">PiTerminalsDock</code> re-lists chats over REST to clean dead panels. These duplicate caches are exactly the stale-transcript class the sync query is meant to remove.</td><td>Add <code dir="auto">agentChats.detail</code> keyed by <code dir="auto">{id}</code> and invalidate it from consolidated and legacy write seams. Pass the live <code dir="auto">agentChats.byHarness</code> ID set into dock cleanup. Creation/send/archive remain mutations; invalidate list + selected detail immediately after them. <code dir="auto">PlanChat</code> only creates chats today, so it needs no read migration unless it starts rendering a list.</td></tr><tr><td>5</td><td><code dir="auto">PiTerminalsDock</code> persisted layouts</td><td>GET <code dir="auto">/api/dock-layouts/:name</code> restores a Postgres <code dir="auto">harness_dock_layouts</code> row into an independent local cache. Concurrent tabs/devices do not converge through the root cache.</td><td>Add <code dir="auto">dockLayouts.byName</code> keyed by workspace, user, and layout name plus <code dir="auto">dockLayouts.list</code>; map <code dir="auto">harness_dock_layouts</code> changes to both. Keep localStorage as an instant/offline paint seed only. PUT with <code dir="auto">If-Match</code> stays REST and invalidates the exact name after success/conflict resolution.</td></tr><tr><td>6</td><td><code dir="auto">DetailPanel</code> feature steer notes</td><td>GET <code dir="auto">/features/:id/notes</code> bypasses the already-existing <code dir="auto">featureNotes.byHarness</code> named query; POST then appends only local state.</td><td>Read <code dir="auto">featureNotes.byHarness</code> once at the harness panel and derive the selected feature’s blocks, or add <code dir="auto">featureNotes.byFeature</code> if payload size justifies it. POST should invalidate the selected feature/list key; the existing <code dir="auto">harness_feature_notes</code> bridge remains the out-of-process guard.</td></tr><tr><td>7</td><td>Harness Tests → <code dir="auto">AcceptancePanel</code></td><td>The assertion list is Postgres <code dir="auto">harness_plan_assertions</code>, but the panel fetches it directly and reloads locally after toggles.</td><td>Add <code dir="auto">testing.assertionsByHarness</code> with optional plan arg, map <code dir="auto">harness_plan_assertions</code>, and render it with <code dir="auto">useSyncQuery</code>. Keep the toggle as POST with an optimistic cache patch followed by invalidation. Testing-domain discovery stays REST because it reads harness config/files, not live database state.</td></tr><tr><td>8</td><td>Settings → Operator (<code dir="auto">operator-config</code>, operator preferences, standing approvals, budget)</td><td>All four reads are Postgres operator-state tables. The page manually loads them, while <code dir="auto">operatorBudget.byWorkspace</code> already exists. A write calls <code dir="auto">loadAll</code>, producing avoidable serial work and cross-tab staleness.</td><td>Use existing <code dir="auto">operatorBudget.byWorkspace</code>; add <code dir="auto">operatorConfig.byWorkspace</code> and <code dir="auto">operatorPreferences.byWorkspace</code> (standing-approval candidates may be a derived query on the same row). Map <code dir="auto">operator_prompt_user</code>, <code dir="auto">operator_preferences</code>, and relevant candidate tables. Mutations update/invalidate only their concern. Keep <code dir="auto">operator-stats</code> as a snapshot query or short process metric only if it truly contains runtime counters.</td></tr><tr><td>9</td><td>Settings → User, Settings → Voice, <code dir="auto">PapercupTab</code>, <code dir="auto">OperatorActiveToggle</code>, <code dir="auto">OperatorDelegationListener</code>, <code dir="auto">AudienceModeSelector</code>, SetupWizard preference reads, and <code dir="auto">voice-prefs-client</code></td><td>These surfaces independently GET the same Postgres <code dir="auto">user_preferences</code> and <code dir="auto">operator_voice_prefs</code> blobs. The custom module cache only coheres inside one JS realm and is invisible to other tabs/processes.</td><td>Add <code dir="auto">userPreferences.current</code> and <code dir="auto">voicePrefs.effective</code>/<code dir="auto">voicePrefs.workspace</code> queries keyed by workspace and authenticated user. Map <code dir="auto">user_preferences</code> and <code dir="auto">operator_voice_prefs</code>; invalidate both effective and layer-specific keys after writes. Replace <code dir="auto">voice-prefs-client</code>’s fetch cache with a thin sync-cache selector. Engine health, voice catalog discovery, subscription/spend APIs, credential operations, previews, and audio streams stay outside this migration.</td></tr><tr><td>10</td><td>Advanced account controls → <code dir="auto">use-account-override</code></td><td>GET <code dir="auto">/admin/deploy-accounts/session-override</code> reads the Postgres <code dir="auto">operator_account_override</code> row into component state; other control surfaces can change it without updating this hook.</td><td>Add <code dir="auto">accounts.sessionOverride</code> keyed by workspace, map <code dir="auto">operator_account_override</code>, and invalidate after POST/reset. Keep the account-pool live-capacity gauge separate; it is runtime telemetry, not this durable override row.</td></tr><tr><td>11</td><td>Installed → KPIs</td><td><code dir="auto">/api/harness/all/kpis</code> is a cross-harness Postgres aggregate polled every 30 s. It is durable dashboard state, not an OS probe.</td><td>Move the existing loader behind <code dir="auto">kpis.all</code>, with a 30 s stale time and dependency mapping for the constituent tables (registry, messages, audit/actions, directives, and autoloop state). Coalesce invalidations because several sources are high-write. Keep the 1 s relative-duration timer; it only updates labels.</td></tr><tr><td>12</td><td>Advanced → Evaluations active-run live card</td><td>The page uses named queries, but <code dir="auto">evals.benchRunLive</code> still sets <code dir="auto">pollIntervalMs: 4000</code> while a run is active because not every spawned-agent/sample write reaches the invalidation bridge.</td><td>Finish the bridge for all tables/write seams that contribute to <code dir="auto">benchRunLive</code>, then remove the poll. Launch/grade/delete/export remain mutations or explicit downloads. This is a push-coverage gap, not a reason to abandon the named query.</td></tr><tr><td>13</td><td>Installed plugin permissions → harness picker</td><td>The page GETs <code dir="auto">/api/harness/projects</code> while the rest of the shell uses <code dir="auto">harnessProjects.lite</code>; a harness created in another surface can leave this picker stale.</td><td>Read <code dir="auto">harnessProjects.lite</code> and project only the slug/name fields. The plugin manifest itself is plugin-runtime/filesystem state and can remain its existing on-open read.</td></tr><tr><td>14</td><td><code dir="auto">OperatorActionLog</code> boot prefetch</td><td>The rendered log is correctly <code dir="auto">userActions.byHarness</code>, but <code dir="auto">prefetchRecentActions</code> still seeds a second global cache through <code dir="auto">/api/user-actions/:slug</code>. It can briefly win with stale rows and duplicates the transport.</td><td>Prefetch the named query into the root QueryClient (or rely on the already-hoisted provider) and delete the bespoke REST cache/listener. Keep the relative-time UI timer.</td></tr></tbody></table>
 <p>Rows 4 and 14 are cleanup of mixed paths rather than wholly unsynced pages,
 but they matter: a surface is only as coherent as its stale fallback. The
 preference family also includes the active <code dir="auto">PapercupTab</code> and Setup Wizard
@@ -129,18 +209,67 @@ REST solely for writes and credentials.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="reads-that-should-stay-outside-the-data-sync-cache">Reads that should stay outside the data-sync cache</h2><a class="sl-anchor-link" href="#reads-that-should-stay-outside-the-data-sync-cache"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Reads that should stay outside the data-sync cache”</span></a></div>
 <p>These are not violations. Migrating them to a Postgres named-query cache would
 either add no coherence or make a true stream/probe less correct.</p>
-<p>| Exception class | Current surfaces | Why it should stay |
-|---|---|---|
-| Token, audio, terminal, command, and thinking streams | <code dir="auto">OperatorPanel</code> scan stream, <code dir="auto">OperatorConversationProvider</code> generation/voice transports, <code dir="auto">PiPanel</code> PTY, <code dir="auto">TerminalTab</code>, <code dir="auto">AgentThinkingStream</code>, <code dir="auto">CommandCard</code>, voice bridges | The incremental event sequence is the product. SSE/WebSocket/IPC is the source; React Query invalidation would collapse ordering and partial output. Durable transcript rows may still have a parallel sync query. |
-| Runtime/process gauges | <code dir="auto">FleetRateControl</code>, hook health on <code dir="auto">/coord</code>, <code dir="auto">VersionBadge</code>, <code dir="auto">UpdateChip</code>, <code dir="auto">EnvSwitcherBar</code>, setup status steps, local-model/embedded-PG/process/Git/backup probes, dev right rail | These observe processes, sockets, binaries, Git, or the host filesystem. No database row change can invalidate them reliably. Visible-only polling with abort/supersede is appropriate until the runtime exposes a dedicated push event. |
-| Deploy/frame/VNC state | <code dir="auto">AdvFramesTab</code>, <code dir="auto">FrameScreenTrackView</code>, <code dir="auto">FrameVncView</code> | Frame output and VNC are external/runtime streams. Retain SSE plus a low-rate drift-repair poll where the producer can miss a disconnect. |
-| Filesystem and computed developer tools | Dev Routes/Tables/SQL/PG/Processes/Studio/Backups/Audit tabs, harness testing-domain/file discovery, Git graph, prompt studio, acceptance runner commands | These are inspectors or on-demand computations over arbitrary files/processes/tables. A fixed named schema would be misleading. Database-backed subpanels such as Acceptance assertions are called out separately above. |
-| User-triggered search, export, preview, and discovery | Global/user/transcript/GitHub/Cupboard searches, eval exports, TTS preview, ElevenLabs voice/catalog and subscription lookups, wiki backlinks | They run on explicit input and are not standing server-state subscriptions. Backlinks is a filesystem grep at view time. Cache locally by request if useful, but do not attach database invalidations. |
-| Authentication, setup, and security workflows | Login, auth/me bootstrap, password change, API keys/credentials, OS permissions, telemetry consent, mobile pairing, trust/P2P, publishing and backup actions | Most are one-time gates or sensitive commands. Re-read after the mutation or on navigation; do not put secrets or session negotiation in the general sync cache. A future non-secret <code dir="auto">auth.currentUser</code> identity projection is reasonable, but it is not required for page coherence today. |
-| Plugin runtime and manifests | Settings/Installed plugin runtime, permissions manifest, provisioning, plugin tools | The authority is the plugin host/manifest filesystem and live runtime. Use plugin lifecycle events when this needs push; do not pretend it is a Postgres table subscription. The harness picker on the permissions page is separately listed as a violation. |
-| Hybrid external insights | <code dir="auto">AdvHarnessPanelPage</code> / <code dir="auto">AdvInsightsPanel</code> | The response merges Postgres facts with GitHub API and README data and is intentionally cached per harness/on navigation. Splitting stable PG cards into named queries may be useful later, but making the whole expensive hybrid loader refetch on every constituent write would be worse. |
-| Per-user layout/presentation clocks | navigation progress, relative-time labels, lock countdowns, voice leader heartbeat, local autosave debounce | These are UI lifecycle timers, not data fetching. |
-| Lock queue | Plans lock banner (<code dir="auto">usePlanLock</code>) | Locks are an ephemeral coordination service with their own queue semantics, not durable application rows. Keep focus/visibility + low-rate polling until the lock service publishes a lock-change event. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Exception class</th><th>Current surfaces</th><th>Why it should stay</th></tr></thead><tbody><tr><td>Token, audio, terminal, command, and thinking streams</td><td><code dir="auto">OperatorPanel</code> scan stream, <code dir="auto">OperatorConversationProvider</code> generation/voice transports, <code dir="auto">PiPanel</code> PTY, <code dir="auto">TerminalTab</code>, <code dir="auto">AgentThinkingStream</code>, <code dir="auto">CommandCard</code>, voice bridges</td><td>The incremental event sequence is the product. SSE/WebSocket/IPC is the source; React Query invalidation would collapse ordering and partial output. Durable transcript rows may still have a parallel sync query.</td></tr><tr><td>Runtime/process gauges</td><td><code dir="auto">FleetRateControl</code>, hook health on <code dir="auto">/coord</code>, <code dir="auto">VersionBadge</code>, <code dir="auto">UpdateChip</code>, <code dir="auto">EnvSwitcherBar</code>, setup status steps, local-model/embedded-PG/process/Git/backup probes, dev right rail</td><td>These observe processes, sockets, binaries, Git, or the host filesystem. No database row change can invalidate them reliably. Visible-only polling with abort/supersede is appropriate until the runtime exposes a dedicated push event.</td></tr><tr><td>Deploy/frame/VNC state</td><td><code dir="auto">AdvFramesTab</code>, <code dir="auto">FrameScreenTrackView</code>, <code dir="auto">FrameVncView</code></td><td>Frame output and VNC are external/runtime streams. Retain SSE plus a low-rate drift-repair poll where the producer can miss a disconnect.</td></tr><tr><td>Filesystem and computed developer tools</td><td>Dev Routes/Tables/SQL/PG/Processes/Studio/Backups/Audit tabs, harness testing-domain/file discovery, Git graph, prompt studio, acceptance runner commands</td><td>These are inspectors or on-demand computations over arbitrary files/processes/tables. A fixed named schema would be misleading. Database-backed subpanels such as Acceptance assertions are called out separately above.</td></tr><tr><td>User-triggered search, export, preview, and discovery</td><td>Global/user/transcript/GitHub/Cupboard searches, eval exports, TTS preview, ElevenLabs voice/catalog and subscription lookups, wiki backlinks</td><td>They run on explicit input and are not standing server-state subscriptions. Backlinks is a filesystem grep at view time. Cache locally by request if useful, but do not attach database invalidations.</td></tr><tr><td>Authentication, setup, and security workflows</td><td>Login, auth/me bootstrap, password change, API keys/credentials, OS permissions, telemetry consent, mobile pairing, trust/P2P, publishing and backup actions</td><td>Most are one-time gates or sensitive commands. Re-read after the mutation or on navigation; do not put secrets or session negotiation in the general sync cache. A future non-secret <code dir="auto">auth.currentUser</code> identity projection is reasonable, but it is not required for page coherence today.</td></tr><tr><td>Plugin runtime and manifests</td><td>Settings/Installed plugin runtime, permissions manifest, provisioning, plugin tools</td><td>The authority is the plugin host/manifest filesystem and live runtime. Use plugin lifecycle events when this needs push; do not pretend it is a Postgres table subscription. The harness picker on the permissions page is separately listed as a violation.</td></tr><tr><td>Hybrid external insights</td><td><code dir="auto">AdvHarnessPanelPage</code> / <code dir="auto">AdvInsightsPanel</code></td><td>The response merges Postgres facts with GitHub API and README data and is intentionally cached per harness/on navigation. Splitting stable PG cards into named queries may be useful later, but making the whole expensive hybrid loader refetch on every constituent write would be worse.</td></tr><tr><td>Per-user layout/presentation clocks</td><td>navigation progress, relative-time labels, lock countdowns, voice leader heartbeat, local autosave debounce</td><td>These are UI lifecycle timers, not data fetching.</td></tr><tr><td>Lock queue</td><td>Plans lock banner (<code dir="auto">usePlanLock</code>)</td><td>Locks are an ephemeral coordination service with their own queue semantics, not durable application rows. Keep focus/visibility + low-rate polling until the lock service publishes a lock-change event.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-durable-conversations-boundary">The durable Conversations boundary</h2><a class="sl-anchor-link" href="#the-durable-conversations-boundary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The durable Conversations boundary”</span></a></div>
 <p>The durable fix is not a faster aggregate endpoint. It is a cache/invalidation
 boundary that matches what the user can select:</p>

@@ -117,15 +117,52 @@ these overrides when forking <code dir="auto">work</code>.</p>
 <p>All additive + <strong>optional</strong> on <code dir="auto">BlueprintSchema</code>
 (<code dir="auto">libs/papercusp/packages/orchestrator/src/blueprint/schema.ts</code>) — every pre-existing
 blueprint parses byte-identically, so the coding fleet is unchanged.</p>
-<p>| Field | Consumed by | Coding default (undefined ⇒) |
-| --- | --- | --- |
-| <code dir="auto">acceptance.kind</code> + <code dir="auto">rubric</code> | <code dir="auto">planFinalization</code> (<code dir="auto">dbos/orchestrator-finalize.ts</code>): <code dir="auto">human-gate</code> blocks DONE until approved; <code dir="auto">judge</code> inserts a <strong><code dir="auto">judge</code>-role</strong> step before the onDone recipe. Activated by <code dir="auto">harnessAcceptanceKind()</code> in <code dir="auto">orchestrator-runner.ts</code>. | <code dir="auto">tests</code> — the pipeline’s validator/smoke gates |
-| <code dir="auto">output.kind</code> | <code dir="auto">planFinalization</code> tags the documenter with <code dir="auto">OUTPUT_KIND=&#x3C;sink></code>; <code dir="auto">harnessOutputKind()</code> reads it. | <code dir="auto">repo-commit</code> — no extra |
-| <code dir="auto">affinity.kind</code> | <code dir="auto">fleet:place_batch</code>’s <code dir="auto">affinity_kind</code> arg → <code dir="auto">AFFINITY_WEIGHTS_BY_KIND</code> presets in <code dir="auto">fleet/placement-affinity.ts</code> (reweights the lexicographic ranker). | <code dir="auto">file-overlap</code> — today’s weights |
-| <code dir="auto">lexicon</code> | persona/UI noun overrides (feature/PR vs deliverable/report) | the built-in noun |
-| <code dir="auto">learning.{pack,loops}</code> | <code dir="auto">createHiveHarness</code> seeds <code dir="auto">knowledge.pack</code> as the default seed pack | the global default pack |
-| <code dir="auto">fleet</code> / <code dir="auto">wake</code> / <code dir="auto">placement</code> | declared; runtime reads are partial (see Gotchas) | global defaults |
-| <code dir="auto">dependencies.blueprints</code> | the spawned-blueprint dep + install-closure (blueprint-role-bundling P-007) | none |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Consumed by</th><th>Coding default (undefined ⇒)</th></tr></thead><tbody><tr><td><code dir="auto">acceptance.kind</code> + <code dir="auto">rubric</code></td><td><code dir="auto">planFinalization</code> (<code dir="auto">dbos/orchestrator-finalize.ts</code>): <code dir="auto">human-gate</code> blocks DONE until approved; <code dir="auto">judge</code> inserts a <strong><code dir="auto">judge</code>-role</strong> step before the onDone recipe. Activated by <code dir="auto">harnessAcceptanceKind()</code> in <code dir="auto">orchestrator-runner.ts</code>.</td><td><code dir="auto">tests</code> — the pipeline’s validator/smoke gates</td></tr><tr><td><code dir="auto">output.kind</code></td><td><code dir="auto">planFinalization</code> tags the documenter with <code dir="auto">OUTPUT_KIND=&#x3C;sink></code>; <code dir="auto">harnessOutputKind()</code> reads it.</td><td><code dir="auto">repo-commit</code> — no extra</td></tr><tr><td><code dir="auto">affinity.kind</code></td><td><code dir="auto">fleet:place_batch</code>’s <code dir="auto">affinity_kind</code> arg → <code dir="auto">AFFINITY_WEIGHTS_BY_KIND</code> presets in <code dir="auto">fleet/placement-affinity.ts</code> (reweights the lexicographic ranker).</td><td><code dir="auto">file-overlap</code> — today’s weights</td></tr><tr><td><code dir="auto">lexicon</code></td><td>persona/UI noun overrides (feature/PR vs deliverable/report)</td><td>the built-in noun</td></tr><tr><td><code dir="auto">learning.{pack,loops}</code></td><td><code dir="auto">createHiveHarness</code> seeds <code dir="auto">knowledge.pack</code> as the default seed pack</td><td>the global default pack</td></tr><tr><td><code dir="auto">fleet</code> / <code dir="auto">wake</code> / <code dir="auto">placement</code></td><td>declared; runtime reads are partial (see Gotchas)</td><td>global defaults</td></tr><tr><td><code dir="auto">dependencies.blueprints</code></td><td>the spawned-blueprint dep + install-closure (blueprint-role-bundling P-007)</td><td>none</td></tr></tbody></table>
 <p>The shared spawn preamble (<code dir="auto">prompt-build.ts</code> + <code dir="auto">testing-standard-policy.ts</code>) also swaps its
 hardcoded <code dir="auto">TESTING_STANDARD</code> for a domain-agnostic <code dir="auto">VERIFICATION_STANDARD</code> when
 <code dir="auto">acceptance.kind !== 'tests'</code> — so a generic cup isn’t told to write tests for a deliverable.</p>
@@ -147,12 +184,41 @@ persona embeds the default dimensions (accuracy/completeness/clarity), which mat
 one runtime path not yet exercised; everything up to <strong>live <code dir="auto">blueprint:validate</code></strong> is verified.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="source-map">Source map</h2><a class="sl-anchor-link" href="#source-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Source map”</span></a></div>
-<p>| Concern | Source |
-| --- | --- |
-| Blueprint + personas | <code dir="auto">libs/papercusp/packages/harness/blueprints/work/</code> |
-| Domain-profile schema | <code dir="auto">libs/papercusp/packages/orchestrator/src/blueprint/schema.ts</code> |
-| Acceptance/output gate | <code dir="auto">packages/operator-core/lib/dbos/orchestrator-finalize.ts</code> + <code dir="auto">orchestrator-runner.ts</code> |
-| Affinity presets | <code dir="auto">packages/operator-core/lib/fleet/placement-affinity.ts</code> + <code dir="auto">place_batch.ts</code> |
-| Preamble de-code | <code dir="auto">libs/papercusp/packages/orchestrator/src/prompt-build.ts</code> |
-| pot:create blueprintId | <code dir="auto">packages/operator-core/lib/agent-tools/hive/{create,_create}.ts</code> + <code dir="auto">lib/pot/wake.ts</code> |
-| Plan | <code dir="auto">pot-blueprint-generalization-2026-06-15</code> (D-009 split, D-010 runtime-correctness) |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:58.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/watchdog-tool-error-dedup-and-rate-limit-class.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Watchdog can SEE a tool failing yet file nothing — dedup masking + the rate-limit class</span> </span> </a> <a href="/internal/docs/agent-insights/substrate-flag-flip-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Substrate flag-flip runbook — what to do when you enable the Hyperbee substrate</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Source</th></tr></thead><tbody><tr><td>Blueprint + personas</td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/work/</code></td></tr><tr><td>Domain-profile schema</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/blueprint/schema.ts</code></td></tr><tr><td>Acceptance/output gate</td><td><code dir="auto">packages/operator-core/lib/dbos/orchestrator-finalize.ts</code> + <code dir="auto">orchestrator-runner.ts</code></td></tr><tr><td>Affinity presets</td><td><code dir="auto">packages/operator-core/lib/fleet/placement-affinity.ts</code> + <code dir="auto">place_batch.ts</code></td></tr><tr><td>Preamble de-code</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/prompt-build.ts</code></td></tr><tr><td>pot:create blueprintId</td><td><code dir="auto">packages/operator-core/lib/agent-tools/hive/{create,_create}.ts</code> + <code dir="auto">lib/pot/wake.ts</code></td></tr><tr><td>Plan</td><td><code dir="auto">pot-blueprint-generalization-2026-06-15</code> (D-009 split, D-010 runtime-correctness)</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:58.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/watchdog-tool-error-dedup-and-rate-limit-class.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Watchdog can SEE a tool failing yet file nothing — dedup masking + the rate-limit class</span> </span> </a> <a href="/internal/docs/agent-insights/substrate-flag-flip-runbook.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Substrate flag-flip runbook — what to do when you enable the Hyperbee substrate</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

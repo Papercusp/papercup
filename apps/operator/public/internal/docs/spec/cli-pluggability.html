@@ -86,11 +86,32 @@
 <p>For <strong>autonomous (fleet) spawns</strong> the substrate does <em>not</em> simply inherit the owner’s interactive session. It injects a dedicated, non-rotating Claude OAuth token via <code dir="auto">CLAUDE_CODE_OAUTH_TOKEN</code> (minted with <code dir="auto">claude setup-token</code>, staged at <code dir="auto">~/.papercusp/claude-token</code> — see <code dir="auto">fleet-claude-token.ts</code>). This keeps fleet token refreshes from invalidating the owner’s terminals; absent the token, the spawn falls back to the config-dir credentials unchanged.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="structured-output-modes">Structured output modes</h3><a class="sl-anchor-link" href="#structured-output-modes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Structured output modes”</span></a></div>
 <p>CLIs that satisfy item 5 expose richer integration. The reference runtime models these as a <code dir="auto">StreamFormat</code> enum in <code dir="auto">invoke.ts</code> — the values below are the actual enum members, not conceptual labels:</p>
-<p>| <code dir="auto">StreamFormat</code> | Use | Shape |
-|---|---|---|
-| <code dir="auto">none</code> (default) | Plain output to stdout — no flags injected. Parser scrapes the decision verb from the tail. | Loose. |
-| <code dir="auto">claude-stream-json</code> / <code dir="auto">omp-json</code> / <code dir="auto">codex-json</code> | One JSON event per line. Session header, then tool calls, message deltas, completion. <code dir="auto">claude</code> uses <code dir="auto">--output-format stream-json</code>; <code dir="auto">omp</code> (pi) uses <code dir="auto">--mode json --no-session</code>; <code dir="auto">codex</code> uses <code dir="auto">codex exec --json</code> (JSONL). | Tightly typed; substrate can plumb individual events into the audit log. |
-| <code dir="auto">rpc</code> (JSON-RPC) | Handshake-first bidirectional protocol. Driver sends method calls; CLI emits events with ids. | Strongest; lets the substrate steer mid-call (e.g. cancel a long-running tool). <em>Not yet implemented — future optimization.</em> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">StreamFormat</code></th><th>Use</th><th>Shape</th></tr></thead><tbody><tr><td><code dir="auto">none</code> (default)</td><td>Plain output to stdout — no flags injected. Parser scrapes the decision verb from the tail.</td><td>Loose.</td></tr><tr><td><code dir="auto">claude-stream-json</code> / <code dir="auto">omp-json</code> / <code dir="auto">codex-json</code></td><td>One JSON event per line. Session header, then tool calls, message deltas, completion. <code dir="auto">claude</code> uses <code dir="auto">--output-format stream-json</code>; <code dir="auto">omp</code> (pi) uses <code dir="auto">--mode json --no-session</code>; <code dir="auto">codex</code> uses <code dir="auto">codex exec --json</code> (JSONL).</td><td>Tightly typed; substrate can plumb individual events into the audit log.</td></tr><tr><td><code dir="auto">rpc</code> (JSON-RPC)</td><td>Handshake-first bidirectional protocol. Driver sends method calls; CLI emits events with ids.</td><td>Strongest; lets the substrate steer mid-call (e.g. cancel a long-running tool). <em>Not yet implemented — future optimization.</em></td></tr></tbody></table>
 <p><code dir="auto">selectStreamFormat()</code> picks the flag set per backend (and yields <code dir="auto">none</code> when the command is bare bash or already names its own mode). The reference runtime parses claude’s <code dir="auto">stream-json</code> today; pi emits a compatible JSONL event stream under <code dir="auto">--mode json</code> (verified empirically), and codex emits JSONL via <code dir="auto">codex exec --json</code>. The <code dir="auto">rpc</code> mode is a future optimization for richer driving — there is no <code dir="auto">rpc</code> <code dir="auto">StreamFormat</code> member yet.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="three-substitution-patterns">Three substitution patterns</h2><a class="sl-anchor-link" href="#three-substitution-patterns"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Three substitution patterns”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="whole-harness-substitution">Whole-harness substitution</h3><a class="sl-anchor-link" href="#whole-harness-substitution"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Whole-harness substitution”</span></a></div>
@@ -104,12 +125,42 @@
 <p>The harness UI can host an interactive instance of the CLI (alongside the autonomous loop) so a human operator can drop in mid-mission and steer. The mechanism is a PTY in the sidecar bridged to an <code dir="auto">xterm.js</code> pane in the dashboard. See <a href="/internal/docs/implementation/pi-integration">Pi integration</a> for the reference design — it generalizes to any CLI that ships a TUI.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="two-layer-pluggability-a-worked-example">Two-layer pluggability (a worked example)</h2><a class="sl-anchor-link" href="#two-layer-pluggability-a-worked-example"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Two-layer pluggability (a worked example)”</span></a></div>
 <p>Papercusp’s role-CLI substitution is the outer layer. Modern CLIs increasingly expose their <em>own</em> model-pluggability layer underneath. Pi (<code dir="auto">omp</code>) is the cleanest example — it has four model slots, each independently selectable:</p>
-<p>| Pi slot | Flag / env | Intent | Suggested papercusp pairing |
-|---|---|---|---|
-| Default model | <code dir="auto">--model</code> / (none) | The agent’s main reasoning model. | Worker role’s main calls. |
-| Smol model | <code dir="auto">--smol</code> / <code dir="auto">PI_SMOL_MODEL</code> | Cheap fast model for lightweight subtasks (file lookups, short tool plans). | Cost-sensitive roles like the orchestrator’s own tick or the validator’s verdict scan. |
-| Slow model | <code dir="auto">--slow</code> / <code dir="auto">PI_SLOW_MODEL</code> | Strong reasoning model for thorough analysis. | Architect role; debugger when feature attempts ≥ threshold. |
-| Plan model | <code dir="auto">--plan</code> / <code dir="auto">PI_PLAN_MODEL</code> | Architectural planning model. | Pre-loop scoper / planner role. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pi slot</th><th>Flag / env</th><th>Intent</th><th>Suggested papercusp pairing</th></tr></thead><tbody><tr><td>Default model</td><td><code dir="auto">--model</code> / (none)</td><td>The agent’s main reasoning model.</td><td>Worker role’s main calls.</td></tr><tr><td>Smol model</td><td><code dir="auto">--smol</code> / <code dir="auto">PI_SMOL_MODEL</code></td><td>Cheap fast model for lightweight subtasks (file lookups, short tool plans).</td><td>Cost-sensitive roles like the orchestrator’s own tick or the validator’s verdict scan.</td></tr><tr><td>Slow model</td><td><code dir="auto">--slow</code> / <code dir="auto">PI_SLOW_MODEL</code></td><td>Strong reasoning model for thorough analysis.</td><td>Architect role; debugger when feature attempts ≥ threshold.</td></tr><tr><td>Plan model</td><td><code dir="auto">--plan</code> / <code dir="auto">PI_PLAN_MODEL</code></td><td>Architectural planning model.</td><td>Pre-loop scoper / planner role.</td></tr></tbody></table>
 <p>The result: <strong>per-role CLI selection (papercusp) × per-slot model selection (pi) = a 16-cell cost/quality matrix</strong> the user controls without writing code. A user can run orchestrator + worker on pi (with cheap smol + expensive worker) and validator on claude (for decision-trace consistency), all via config.</p>
 <p>This pattern isn’t pi-specific. Any CLI that exposes role-flavored model selection composes the same way — papercusp’s substitution layer doesn’t need to know about it; the CLI’s own flags carry the meaning.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-this-isnt-in-the-harness-contract">Why this isn’t in the harness contract</h2><a class="sl-anchor-link" href="#why-this-isnt-in-the-harness-contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why this isn’t in the harness contract”</span></a></div>

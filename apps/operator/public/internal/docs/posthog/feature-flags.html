@@ -77,21 +77,96 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="the-flag-set">The flag set</h2><a class="sl-anchor-link" href="#the-flag-set"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The flag set”</span></a></div>
 <p>The canonical set lives in <code dir="auto">FLAGS</code> in <code dir="auto">libs/flags/src/types.ts</code>. As of this writing it holds <strong>101 flags</strong> (<code dir="auto">FLAG_DEFAULTS</code> is <strong>51 default-<code dir="auto">true</code> / 50 default-<code dir="auto">false</code></strong>) — the set grows continuously, so treat the live <code dir="auto">FLAGS</code> object as authoritative, not this page.</p>
 <p>The table below is a <strong>representative slice</strong> (roughly the original V1 cut-set + a few later additions), <strong>not</strong> the full set. The ~86 flags not shown here include the autonomy set (<code dir="auto">QUEEN_AUTONOMY_ARMED</code>, <code dir="auto">QUEEN_FULL_AUTONOMY</code>), <code dir="auto">OVERWATCH</code>, <code dir="auto">SCHEDULED_PLANS</code>, <code dir="auto">LOOPS</code>, <code dir="auto">WEDGE_AUTO_REAP</code>, <code dir="auto">CLAUDE_CRED_SYNC</code>, <code dir="auto">OPEN_SIGNUP</code>, <code dir="auto">ENDPOINT_AUTH_TIERS</code>, the entire self-learning-frontier set, and the workspace-isolation set. Run <code dir="auto">grep -E '"papercusp-' libs/flags/src/types.ts</code> for the complete list.</p>
-<p>| Key | TS constant | Default | What it gates |
-|---|---|---|---|
-| <code dir="auto">papercusp-cloudflare-publish</code> | <code dir="auto">FLAGS.CLOUDFLARE_PUBLISH</code> | <code dir="auto">false</code> | Publish-to-Cloudflare flow. |
-| <code dir="auto">papercusp-harness-phases</code> | <code dir="auto">FLAGS.HARNESS_PHASES</code> | <code dir="auto">false</code> | Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints. |
-| <code dir="auto">papercusp-design</code> | <code dir="auto">FLAGS.DESIGN</code> | <code dir="auto">false</code> | In-harness “design” tab + <code dir="auto">/design</code> route + <code dir="auto">/api/design/*</code> routes. |
-| <code dir="auto">papercusp-testing</code> | <code dir="auto">FLAGS.TESTING</code> | <code dir="auto">false</code> | Testing-only surfaces: the <code dir="auto">pi</code> tab + the “add plugin” button <strong>and</strong> the Oracle assistant (dock + <code dir="auto">/settings/oracle</code> + all <code dir="auto">/api/oracle/*</code> Hono endpoints, 404 when off). The separate <code dir="auto">papercusp-oracle</code> key was folded into this one by owner ask (2026-06-10) — the Oracle is now a testing surface. The server even filters the retired <code dir="auto">papercusp-oracle</code> key out of any stored PG override row. |
-| <code dir="auto">papercusp-inbox-durable-escalations</code> | <code dir="auto">FLAGS.INBOX_DURABLE_ESCALATIONS</code> | <code dir="auto">false</code> | Mirror chat decision cards to durable coord escalations (answer live or from the inbox). |
-| <code dir="auto">papercusp-improvement-auto-implement</code> | <code dir="auto">FLAGS.IMPROVEMENT_AUTO_IMPLEMENT</code> | <code dir="auto">false</code> | Master switch for auto-implementing captured improvements. Off = capture + triage only. |
-| <code dir="auto">papercusp-video-channels</code> | <code dir="auto">FLAGS.VIDEO_CHANNELS</code> | <code dir="auto">true</code> | Desktop P2P video channel (the workbench <code dir="auto">VideoGrid</code>). Owner-activated 2026-06-09 (alpha default-on policy); the live two-instance camera E2E is still outstanding. |
-| <code dir="auto">papercusp-voice-channels</code> | <code dir="auto">FLAGS.VOICE_CHANNELS</code> | <code dir="auto">true</code> | Desktop P2P voice-channel surface (<code dir="auto">VoiceChannelPanel</code>). Owner-activated 2026-06-09; the supervised live Tauri+mic pass is still outstanding. |
-| <code dir="auto">papercusp-the-hive</code> | <code dir="auto">FLAGS.THE_HIVE</code> | <code dir="auto">true</code> | Selects the active brand pack for the user-facing lexicon. On (default, owner-activated 2026-06-09) = the <code dir="auto">the-hive</code> cup pack; off = <code dir="auto">classic</code> Papercusp. Presentation only — code/DB/MCP are unchanged. |
-| <code dir="auto">papercusp-blueprint-aware-settings</code> | <code dir="auto">FLAGS.BLUEPRINT_AWARE_SETTINGS</code> | <code dir="auto">true</code> | The schema-driven harness settings panel (<code dir="auto">BlueprintSettingsPanel</code>) rendered from the blueprint’s declared <code dir="auto">params</code>. Off = the legacy <code dir="auto">HarnessSettingsPanel</code>. |
-| <code dir="auto">papercusp-prompt-studio</code> | <code dir="auto">FLAGS.PROMPT_STUDIO</code> | <code dir="auto">true</code> | The Prompt Studio surface at <code dir="auto">/settings/prompt-studio</code> (edit the playbook/persona prompt sources with a live assembled-prompt preview) <strong>and</strong> its <code dir="auto">/api/prompt-studio/*</code> routes. |
-| <code dir="auto">papercusp-pot-agent-tabs</code> | <code dir="auto">FLAGS.HIVE_AGENT_TABS</code> | <code dir="auto">true</code> | The unified agent-tabs dock (every agent surface as a real psu/Claude TUI session, per-agent wake-mode gate, per-type grouping). Off = the previous dock. |
-| <code dir="auto">papercusp-inference-gateway</code> | <code dir="auto">FLAGS.INFERENCE_GATEWAY</code> | <code dir="auto">false</code> | Points every cup spawn’s <code dir="auto">ANTHROPIC_BASE_URL</code> at the localhost pacing gateway (<code dir="auto">127.0.0.1:8788</code>) so the fleet egresses through one paced account. <strong>Deliberately default-off</strong> — hard-depends on the gateway service running; flip only after the deploy + load test pass. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>TS constant</th><th>Default</th><th>What it gates</th></tr></thead><tbody><tr><td><code dir="auto">papercusp-cloudflare-publish</code></td><td><code dir="auto">FLAGS.CLOUDFLARE_PUBLISH</code></td><td><code dir="auto">false</code></td><td>Publish-to-Cloudflare flow.</td></tr><tr><td><code dir="auto">papercusp-harness-phases</code></td><td><code dir="auto">FLAGS.HARNESS_PHASES</code></td><td><code dir="auto">false</code></td><td>Multi-phase harness (staging / testing / production) + the harness-tests Hono endpoints.</td></tr><tr><td><code dir="auto">papercusp-design</code></td><td><code dir="auto">FLAGS.DESIGN</code></td><td><code dir="auto">false</code></td><td>In-harness “design” tab + <code dir="auto">/design</code> route + <code dir="auto">/api/design/*</code> routes.</td></tr><tr><td><code dir="auto">papercusp-testing</code></td><td><code dir="auto">FLAGS.TESTING</code></td><td><code dir="auto">false</code></td><td>Testing-only surfaces: the <code dir="auto">pi</code> tab + the “add plugin” button <strong>and</strong> the Oracle assistant (dock + <code dir="auto">/settings/oracle</code> + all <code dir="auto">/api/oracle/*</code> Hono endpoints, 404 when off). The separate <code dir="auto">papercusp-oracle</code> key was folded into this one by owner ask (2026-06-10) — the Oracle is now a testing surface. The server even filters the retired <code dir="auto">papercusp-oracle</code> key out of any stored PG override row.</td></tr><tr><td><code dir="auto">papercusp-inbox-durable-escalations</code></td><td><code dir="auto">FLAGS.INBOX_DURABLE_ESCALATIONS</code></td><td><code dir="auto">false</code></td><td>Mirror chat decision cards to durable coord escalations (answer live or from the inbox).</td></tr><tr><td><code dir="auto">papercusp-improvement-auto-implement</code></td><td><code dir="auto">FLAGS.IMPROVEMENT_AUTO_IMPLEMENT</code></td><td><code dir="auto">false</code></td><td>Master switch for auto-implementing captured improvements. Off = capture + triage only.</td></tr><tr><td><code dir="auto">papercusp-video-channels</code></td><td><code dir="auto">FLAGS.VIDEO_CHANNELS</code></td><td><code dir="auto">true</code></td><td>Desktop P2P video channel (the workbench <code dir="auto">VideoGrid</code>). Owner-activated 2026-06-09 (alpha default-on policy); the live two-instance camera E2E is still outstanding.</td></tr><tr><td><code dir="auto">papercusp-voice-channels</code></td><td><code dir="auto">FLAGS.VOICE_CHANNELS</code></td><td><code dir="auto">true</code></td><td>Desktop P2P voice-channel surface (<code dir="auto">VoiceChannelPanel</code>). Owner-activated 2026-06-09; the supervised live Tauri+mic pass is still outstanding.</td></tr><tr><td><code dir="auto">papercusp-the-hive</code></td><td><code dir="auto">FLAGS.THE_HIVE</code></td><td><code dir="auto">true</code></td><td>Selects the active brand pack for the user-facing lexicon. On (default, owner-activated 2026-06-09) = the <code dir="auto">the-hive</code> cup pack; off = <code dir="auto">classic</code> Papercusp. Presentation only — code/DB/MCP are unchanged.</td></tr><tr><td><code dir="auto">papercusp-blueprint-aware-settings</code></td><td><code dir="auto">FLAGS.BLUEPRINT_AWARE_SETTINGS</code></td><td><code dir="auto">true</code></td><td>The schema-driven harness settings panel (<code dir="auto">BlueprintSettingsPanel</code>) rendered from the blueprint’s declared <code dir="auto">params</code>. Off = the legacy <code dir="auto">HarnessSettingsPanel</code>.</td></tr><tr><td><code dir="auto">papercusp-prompt-studio</code></td><td><code dir="auto">FLAGS.PROMPT_STUDIO</code></td><td><code dir="auto">true</code></td><td>The Prompt Studio surface at <code dir="auto">/settings/prompt-studio</code> (edit the playbook/persona prompt sources with a live assembled-prompt preview) <strong>and</strong> its <code dir="auto">/api/prompt-studio/*</code> routes.</td></tr><tr><td><code dir="auto">papercusp-pot-agent-tabs</code></td><td><code dir="auto">FLAGS.HIVE_AGENT_TABS</code></td><td><code dir="auto">true</code></td><td>The unified agent-tabs dock (every agent surface as a real psu/Claude TUI session, per-agent wake-mode gate, per-type grouping). Off = the previous dock.</td></tr><tr><td><code dir="auto">papercusp-inference-gateway</code></td><td><code dir="auto">FLAGS.INFERENCE_GATEWAY</code></td><td><code dir="auto">false</code></td><td>Points every cup spawn’s <code dir="auto">ANTHROPIC_BASE_URL</code> at the localhost pacing gateway (<code dir="auto">127.0.0.1:8788</code>) so the fleet egresses through one paced account. <strong>Deliberately default-off</strong> — hard-depends on the gateway service running; flip only after the deploy + load test pass.</td></tr></tbody></table>
 <blockquote>
 <p><code dir="auto">papercusp-templates</code> (<code dir="auto">FLAGS.TEMPLATES</code>) and <code dir="auto">papercusp-marketplace</code> (<code dir="auto">FLAGS.MARKETPLACE</code>) were <strong>retired</strong> (<code dir="auto">revive-cupboard-distribution</code> D-004): the legacy :3057 marketplace + <code dir="auto">/templates</code> routes/UI are deleted; distribution now lives in the (ungated) Cupboard. <code dir="auto">papercusp-snapshots</code> (<code dir="auto">FLAGS.SNAPSHOTS</code>) was <strong>retired</strong> (<code dir="auto">retire-snapshots-instance-spec</code> D-005): the harness-snapshot system + the Cupboard <code dir="auto">kind=snapshot</code> path are gone; the reproducible clone is the ungated, lightweight <code dir="auto">InstanceSpec</code> (<code dir="auto">packages/operator-core/lib/instance-spec/</code>). Their keys no longer exist in <code dir="auto">FLAGS</code>.</p>
 </blockquote>
@@ -115,11 +190,32 @@
 <p><strong>Knob 2 — individual flag values in PostHog</strong></p>
 <p>The actual per-flag on/off switches. Only consulted when <code dir="auto">testingFeatures: true</code>. With <code dir="auto">testingFeatures: false</code>, PostHog values are irrelevant; the operator never reads them.</p>
 <p>Combined behavior:</p>
-<p>| <code dir="auto">testingFeatures</code> | PostHog value | Effective |
-|---|---|---|
-| <code dir="auto">false</code> (default) | any | <code dir="auto">false</code> (bundled default) |
-| <code dir="auto">true</code> | <code dir="auto">false</code> | <code dir="auto">false</code> |
-| <code dir="auto">true</code> | <code dir="auto">true</code> | <code dir="auto">true</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">testingFeatures</code></th><th>PostHog value</th><th>Effective</th></tr></thead><tbody><tr><td><code dir="auto">false</code> (default)</td><td>any</td><td><code dir="auto">false</code> (bundled default)</td></tr><tr><td><code dir="auto">true</code></td><td><code dir="auto">false</code></td><td><code dir="auto">false</code></td></tr><tr><td><code dir="auto">true</code></td><td><code dir="auto">true</code></td><td><code dir="auto">true</code></td></tr></tbody></table>
 <p>You can’t get a flag to evaluate <code dir="auto">true</code> without <code dir="auto">testingFeatures: true</code>. That’s the privacy moat.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-to-flip-flags">How to flip flags</h2><a class="sl-anchor-link" href="#how-to-flip-flags"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How to flip flags”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="through-the-admin-ui">Through the admin UI</h3><a class="sl-anchor-link" href="#through-the-admin-ui"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Through the admin UI”</span></a></div>
@@ -148,22 +244,63 @@
 <p>Use this when you need targeting (cohort A/B, gradual rollout) beyond the binary on/off the admin UI exposes.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="through-mcp">Through MCP</h3><a class="sl-anchor-link" href="#through-mcp"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Through MCP”</span></a></div>
 <p>For agents:</p>
-<p>| Tool | Capability | Action |
-|---|---|---|
-| <code dir="auto">flags:list</code> | <code dir="auto">intel:read</code> | Lists all flags with current values (mirrors <code dir="auto">/api/flags/bootstrap</code>). |
-| <code dir="auto">flags:get</code> | <code dir="auto">intel:read</code> | Reads a single flag value. |
-| <code dir="auto">flags:set</code> | <code dir="auto">audit:write</code> | Flips a flag in PostHog. Requires a <code dir="auto">reason</code> arg (≥8 chars). Writes an audit row (<code dir="auto">action='flag:set'</code>) in <code dir="auto">harness_shared.audit_log</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Capability</th><th>Action</th></tr></thead><tbody><tr><td><code dir="auto">flags:list</code></td><td><code dir="auto">intel:read</code></td><td>Lists all flags with current values (mirrors <code dir="auto">/api/flags/bootstrap</code>).</td></tr><tr><td><code dir="auto">flags:get</code></td><td><code dir="auto">intel:read</code></td><td>Reads a single flag value.</td></tr><tr><td><code dir="auto">flags:set</code></td><td><code dir="auto">audit:write</code></td><td>Flips a flag in PostHog. Requires a <code dir="auto">reason</code> arg (≥8 chars). Writes an audit row (<code dir="auto">action='flag:set'</code>) in <code dir="auto">harness_shared.audit_log</code>.</td></tr></tbody></table>
 <p>All three are defined under <code dir="auto">packages/operator-core/lib/agent-tools/flags/</code>. <code dir="auto">flags:set</code> is exposed to the <code dir="auto">operator</code> / <code dir="auto">architect</code> roles; the read tools <code dir="auto">flags:list</code> / <code dir="auto">flags:get</code> are exposed more widely — to <code dir="auto">operator</code>, <code dir="auto">architect</code>, <code dir="auto">debugger</code>, <strong>and <code dir="auto">cup</code></strong>.</p>
 <p><code dir="auto">flags:set</code> runs with <code dir="auto">profile: 'engineer'</code> and <code dir="auto">crossWorkspace: true</code>: its only PG write is the no-workspace operator <code dir="auto">audit_log</code> INSERT (on the admin handle), which is why it isn’t a workspace-scoped RLS write.</p>
 <p><code dir="auto">flags:set</code> writes both <code dir="auto">active</code> and <code dir="auto">filters.groups[].rollout_percentage</code> so the binary on/off semantics work as expected — see “Bug 1” in the <a href="#wire-up-gotchas">Wire-up gotchas</a> section for why.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="through-env-vars">Through env vars</h3><a class="sl-anchor-link" href="#through-env-vars"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Through env vars”</span></a></div>
 <p>For CI and ephemeral overrides:</p>
-<p>| Env var | Effect |
-|---|---|
-| <code dir="auto">PAPERCUSP_POSTHOG_HOST</code> | Override the host. Must be paired with <code dir="auto">PAPERCUSP_POSTHOG_KEY</code>. |
-| <code dir="auto">PAPERCUSP_POSTHOG_KEY</code> | Override the project key. |
-| <code dir="auto">PAPERCUSP_POSTHOG_PERSONAL_KEY</code> | Override the personal API key. Defaults to <code dir="auto">KEY</code> if not set. |
-| <code dir="auto">PAPERCUSP_POSTHOG_TESTING_FEATURES</code> | Set to <code dir="auto">"true"</code> to flip the master switch on without touching the discovery file. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Env var</th><th>Effect</th></tr></thead><tbody><tr><td><code dir="auto">PAPERCUSP_POSTHOG_HOST</code></td><td>Override the host. Must be paired with <code dir="auto">PAPERCUSP_POSTHOG_KEY</code>.</td></tr><tr><td><code dir="auto">PAPERCUSP_POSTHOG_KEY</code></td><td>Override the project key.</td></tr><tr><td><code dir="auto">PAPERCUSP_POSTHOG_PERSONAL_KEY</code></td><td>Override the personal API key. Defaults to <code dir="auto">KEY</code> if not set.</td></tr><tr><td><code dir="auto">PAPERCUSP_POSTHOG_TESTING_FEATURES</code></td><td>Set to <code dir="auto">"true"</code> to flip the master switch on without touching the discovery file.</td></tr></tbody></table>
 <p>Env vars are checked <strong>before</strong> the discovery file. They never get written into the desktop binary at build time — that would defeat the privacy contract.</p>
 <p>There is also a <strong>per-flag</strong> dev override, independent of PostHog: <code dir="auto">PAPERCUSP_FLAG_&#x3C;KEY>=1</code> (or <code dir="auto">=true</code>) flips a single flag on without configuring PostHog at all. The key is uppercased with <code dir="auto">-</code>→<code dir="auto">_</code> — e.g. <code dir="auto">PAPERCUSP_FLAG_PAPERCUSP_DESIGN=1</code>. This override beats test overrides / PostHog / defaults and is applied to both the single-flag <code dir="auto">getFlag()</code> path and the all-flags bootstrap payload (so <code dir="auto">useFlag()</code> sees it too). Useful in dev for exercising a gated feature (e.g. running the Oracle, which gates on <code dir="auto">papercusp-testing</code> — <code dir="auto">PAPERCUSP_FLAG_PAPERCUSP_TESTING=1</code>) when PostHog isn’t configured.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-flags-are-enforced">How flags are enforced</h2><a class="sl-anchor-link" href="#how-flags-are-enforced"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How flags are enforced”</span></a></div>
@@ -194,27 +331,100 @@
 <p>The single source of truth for which surfaces each flag gates is <strong>not</strong> documented in code comments — it’s expressed in the gating itself. <code dir="auto">grep -rln "FLAGS.DESIGN" apps/operator</code> is the canonical answer.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="file-structure">File structure</h2><a class="sl-anchor-link" href="#file-structure"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “File structure”</span></a></div>
 <p>The system lives in three places:</p>
-<p>| Path | What |
-|---|---|
-| <code dir="auto">libs/flags/</code> | The package. Types + defaults (<code dir="auto">src/types.ts</code>), server SDK wrapper (<code dir="auto">src/server.ts</code>), client cache + <code dir="auto">useFlag</code> (<code dir="auto">src/client.ts</code>), test overrides (<code dir="auto">src/test.ts</code>). Exported as <code dir="auto">@papercusp/flags</code> (+ <code dir="auto">/server</code>, <code dir="auto">/client</code>, <code dir="auto">/test</code>). |
-| <code dir="auto">packages/operator-core/lib/flag-bus.ts</code> | In-process pub/sub + boot-time backend init. Wraps the <code dir="auto">@papercusp/sse</code> channel. |
-| <code dir="auto">packages/operator-core/lib/posthog-config.ts</code> | Discovery-file resolver + <code dir="auto">fs.watch</code> auto-reload. The env → file → unconfigured fallback lives here. |
-| <code dir="auto">packages/operator-core/lib/require-flag.ts</code> | The server-side <code dir="auto">gateApiRoute</code> helper used by Hono route handlers. |
-| <code dir="auto">apps/operator-vite/src/lib/require-flag.ts</code> | The SPA <code dir="auto">requireFlag</code> (TanStack <code dir="auto">beforeLoad</code> → <code dir="auto">notFound()</code>). |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/flags/*</code> | The Hono handlers: <code dir="auto">bootstrap</code>, <code dir="auto">stream</code>, <code dir="auto">webhook</code>, <code dir="auto">testing-features</code>, <code dir="auto">set</code>, <code dir="auto">preset</code>, <code dir="auto">dashboard-url</code>. |
-| <code dir="auto">packages/operator-core/lib/agent-tools/flags/*</code> | The MCP tools: <code dir="auto">list</code>, <code dir="auto">get</code>, <code dir="auto">set</code>. |
-| <code dir="auto">apps/operator/app/admin/features/FeaturesAdmin.tsx</code> | The admin UI component, mounted by the SPA route <code dir="auto">apps/operator-vite/src/routes/admin/features.tsx</code>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">libs/flags/</code></td><td>The package. Types + defaults (<code dir="auto">src/types.ts</code>), server SDK wrapper (<code dir="auto">src/server.ts</code>), client cache + <code dir="auto">useFlag</code> (<code dir="auto">src/client.ts</code>), test overrides (<code dir="auto">src/test.ts</code>). Exported as <code dir="auto">@papercusp/flags</code> (+ <code dir="auto">/server</code>, <code dir="auto">/client</code>, <code dir="auto">/test</code>).</td></tr><tr><td><code dir="auto">packages/operator-core/lib/flag-bus.ts</code></td><td>In-process pub/sub + boot-time backend init. Wraps the <code dir="auto">@papercusp/sse</code> channel.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/posthog-config.ts</code></td><td>Discovery-file resolver + <code dir="auto">fs.watch</code> auto-reload. The env → file → unconfigured fallback lives here.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/require-flag.ts</code></td><td>The server-side <code dir="auto">gateApiRoute</code> helper used by Hono route handlers.</td></tr><tr><td><code dir="auto">apps/operator-vite/src/lib/require-flag.ts</code></td><td>The SPA <code dir="auto">requireFlag</code> (TanStack <code dir="auto">beforeLoad</code> → <code dir="auto">notFound()</code>).</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/flags/*</code></td><td>The Hono handlers: <code dir="auto">bootstrap</code>, <code dir="auto">stream</code>, <code dir="auto">webhook</code>, <code dir="auto">testing-features</code>, <code dir="auto">set</code>, <code dir="auto">preset</code>, <code dir="auto">dashboard-url</code>.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/agent-tools/flags/*</code></td><td>The MCP tools: <code dir="auto">list</code>, <code dir="auto">get</code>, <code dir="auto">set</code>.</td></tr><tr><td><code dir="auto">apps/operator/app/admin/features/FeaturesAdmin.tsx</code></td><td>The admin UI component, mounted by the SPA route <code dir="auto">apps/operator-vite/src/routes/admin/features.tsx</code>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="http-api">HTTP API</h2><a class="sl-anchor-link" href="#http-api"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “HTTP API”</span></a></div>
-<p>| Method + path | Body | Returns |
-|---|---|---|
-| <code dir="auto">GET /api/flags/bootstrap</code> | — | <code dir="auto">{ flags: { [key]: bool }, evaluatedAt, source }</code>. The client’s main read endpoint. |
-| <code dir="auto">GET /api/flags/stream</code> | — | SSE stream of <code dir="auto">flag_changed</code> events. Used by the React client to refresh after flips. |
-| <code dir="auto">POST /api/flags/webhook</code> | PostHog webhook payload | Auth header <code dir="auto">X-Papercusp-Webhook-Secret</code>. Publishes a <code dir="auto">flag_changed</code> event on the SSE bus. |
-| <code dir="auto">GET /api/flags/testing-features</code> | — | <code dir="auto">{ testingFeatures: bool, source }</code> |
-| <code dir="auto">POST /api/flags/testing-features</code> | <code dir="auto">{ enabled: bool }</code> | Writes the discovery file, resets the in-process config cache, re-inits the flag backend. |
-| <code dir="auto">POST /api/flags/set</code> | <code dir="auto">{ key: FlagKey, enabled: bool }</code> | PATCHes the flag in PostHog. Sets <code dir="auto">active</code> + <code dir="auto">rollout_percentage</code> (100 or 0). |
-| <code dir="auto">POST /api/flags/preset</code> | <code dir="auto">{ name: 'production' \| 'testing' }</code> | Atomic preset apply (loopback-guarded). <code dir="auto">production</code> writes <code dir="auto">testingFeatures: false</code>; <code dir="auto">testing</code> sets <code dir="auto">testingFeatures: true</code> + flips every flag in <code dir="auto">ALL_FLAG_KEYS</code> on. |
-| <code dir="auto">GET /api/flags/dashboard-url</code> | — | Returns the PostHog UI URL for deep-linking out of the admin page. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Method + path</th><th>Body</th><th>Returns</th></tr></thead><tbody><tr><td><code dir="auto">GET /api/flags/bootstrap</code></td><td>—</td><td><code dir="auto">{ flags: { [key]: bool }, evaluatedAt, source }</code>. The client’s main read endpoint.</td></tr><tr><td><code dir="auto">GET /api/flags/stream</code></td><td>—</td><td>SSE stream of <code dir="auto">flag_changed</code> events. Used by the React client to refresh after flips.</td></tr><tr><td><code dir="auto">POST /api/flags/webhook</code></td><td>PostHog webhook payload</td><td>Auth header <code dir="auto">X-Papercusp-Webhook-Secret</code>. Publishes a <code dir="auto">flag_changed</code> event on the SSE bus.</td></tr><tr><td><code dir="auto">GET /api/flags/testing-features</code></td><td>—</td><td><code dir="auto">{ testingFeatures: bool, source }</code></td></tr><tr><td><code dir="auto">POST /api/flags/testing-features</code></td><td><code dir="auto">{ enabled: bool }</code></td><td>Writes the discovery file, resets the in-process config cache, re-inits the flag backend.</td></tr><tr><td><code dir="auto">POST /api/flags/set</code></td><td><code dir="auto">{ key: FlagKey, enabled: bool }</code></td><td>PATCHes the flag in PostHog. Sets <code dir="auto">active</code> + <code dir="auto">rollout_percentage</code> (100 or 0).</td></tr><tr><td><code dir="auto">POST /api/flags/preset</code></td><td><code dir="auto">{ name: 'production' | 'testing' }</code></td><td>Atomic preset apply (loopback-guarded). <code dir="auto">production</code> writes <code dir="auto">testingFeatures: false</code>; <code dir="auto">testing</code> sets <code dir="auto">testingFeatures: true</code> + flips every flag in <code dir="auto">ALL_FLAG_KEYS</code> on.</td></tr><tr><td><code dir="auto">GET /api/flags/dashboard-url</code></td><td>—</td><td>Returns the PostHog UI URL for deep-linking out of the admin page.</td></tr></tbody></table>
 <p>All of these are Hono <code dir="auto">endpoint-route</code> handlers (<code dir="auto">packages/operator-core/lib/endpoint-route/routes/flags/*</code>) authored via <code dir="auto">defineTool({ method, path, auth, … })</code> and served by the operator’s bundled Hono host on <code dir="auto">:3070</code>. They split across two declarative auth tiers:</p>
 <ul>
 <li><strong><code dir="auto">auth: 'public'</code></strong> — <code dir="auto">bootstrap</code>, <code dir="auto">stream</code>, <code dir="auto">webhook</code>, <code dir="auto">dashboard-url</code>, and the <strong>GET</strong> half of <code dir="auto">testing-features</code>. “Public” opts the route out of principal auth; <code dir="auto">webhook</code> then authenticates via the shared-secret header.</li>

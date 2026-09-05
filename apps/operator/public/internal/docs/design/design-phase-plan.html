@@ -357,13 +357,42 @@ classes, Qt XML, or any ecosystem-specific syntax.</p>
 parser/typechecker/LSP) versus a JSON schema. JSON wins
 unambiguously because the IR’s primary author and primary consumer
 are both LLMs:</p>
-<p>| | DSL (Slint-like) | JSON IR |
-|---|---|---|
-| Time to v0.1 | 3–4 months | 2–3 weeks |
-| LLM emission quality | Mid; needs many-shot | Native |
-| Free tooling | None (write parser/LSP/diff) | jq, JSON Patch, JSON Schema, IDE support |
-| Adapter complexity | Parse → AST → walk | Consume object directly |
-| Refactoring cost | Touches parser + adapters | Bump <code dir="auto">irVersion</code>, ship transformer |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>DSL (Slint-like)</th><th>JSON IR</th></tr></thead><tbody><tr><td>Time to v0.1</td><td>3–4 months</td><td>2–3 weeks</td></tr><tr><td>LLM emission quality</td><td>Mid; needs many-shot</td><td>Native</td></tr><tr><td>Free tooling</td><td>None (write parser/LSP/diff)</td><td>jq, JSON Patch, JSON Schema, IDE support</td></tr><tr><td>Adapter complexity</td><td>Parse → AST → walk</td><td>Consume object directly</td></tr><tr><td>Refactoring cost</td><td>Touches parser + adapters</td><td>Bump <code dir="auto">irVersion</code>, ship transformer</td></tr></tbody></table>
 <p>A DSL’s main benefit (human readability) doesn’t apply when humans
 aren’t the primary authors. Costs (parser, LSP, agent prompt
 overhead, two-layer adapter parsing) all do.</p>

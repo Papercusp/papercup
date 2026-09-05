@@ -74,6 +74,7 @@ import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected } from "../unanswered-directed";
 import { authoredFieldsMarker } from "../message-fields";
+import { annotateMessageAge } from "../message-age";
 import {
   DEFAULT_INBOX_LIMIT,
   INBOX_ENTRY_BUDGET,
@@ -1548,6 +1549,15 @@ export default defineTool({
     } catch {
       // Unmarked, but complete.
     }
+
+    // EI-20261012762389206: stamp `age` on rows old enough that a time-relative
+    // body ("sweeping in ~74s") has decayed into a false claim. This surface
+    // DOES render an absolute `ts`, which is exactly why the marker is still
+    // needed: the measured incident had the reader difference a 09:39Z stamp
+    // against a "now" it mis-estimated and act on a 5.6h-old countdown as live.
+    // Pure and last — no query, no failure mode, so unlike its siblings above
+    // it needs no try/catch.
+    entriesOut = annotateMessageAge(entriesOut, Date.now());
 
     return {
       content: [

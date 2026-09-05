@@ -88,28 +88,117 @@ for the full gap + proposed remedies.</p></div> </aside>
 <p>Hand-rolled UI controls (a <code dir="auto">&#x3C;div role="dialog"></code>, a <code dir="auto">&#x3C;select></code> styled to look custom, a <code dir="auto">title=</code> attribute used as a tooltip) consistently break in subtle ways: focus traps leak, ESC handling races with other listeners, scroll locks miss iOS, screen readers narrate the wrong thing, the dark theme fights the OS-native control. We’ve seen all of those in this codebase.</p>
 <p>The library set documented here was chosen, installed, and applied across the harness page in a multi-phase migration. Every centered modal goes through one wrapper. Every drawer goes through one library. Every command palette goes through one. <strong>If you find yourself writing <code dir="auto">position: 'fixed', inset: 0</code>, stop and read this page.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="decision-matrix--which-library-for-which-pattern">Decision matrix — which library for which pattern</h2><a class="sl-anchor-link" href="#decision-matrix--which-library-for-which-pattern"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Decision matrix — which library for which pattern”</span></a></div>
-<p>| You’re building… | Use | Wrapper / entry point |
-|---|---|---|
-| Hover/focus tooltip on a button or label | <code dir="auto">@radix-ui/react-tooltip</code> | <code dir="auto">&#x3C;Tooltip label="…">{button}&#x3C;/Tooltip></code> from <code dir="auto">app/harness/Tooltip.tsx</code> |
-| Centered modal dialog | <code dir="auto">@radix-ui/react-dialog</code> | <code dir="auto">&#x3C;Modal open onOpenChange title>…&#x3C;/Modal></code> from <code dir="auto">app/harness/Modal.tsx</code> |
-| Side-slide drawer (right- or left-anchored panel) | <code dir="auto">vaul</code> | <code dir="auto">&#x3C;Drawer.Root direction="right"></code> from <code dir="auto">vaul</code> |
-| Command palette / fuzzy launcher | <code dir="auto">cmdk</code> + <code dir="auto">@radix-ui/react-dialog</code> | See <code dir="auto">app/_components/CommandPalette.tsx</code> |
-| Tabs (real tabs with content panels) | <code dir="auto">@radix-ui/react-tabs</code> | <code dir="auto">&#x3C;Tabs.Root>&#x3C;Tabs.List>&#x3C;Tabs.Trigger>&#x3C;Tabs.Content></code> |
-| Filter pills / scoped filters | <code dir="auto">@radix-ui/react-tabs</code> (asChild) <strong>OR</strong> native button + <code dir="auto">aria-pressed</code> | See gotchas page |
-| Single-select dropdown (replacement for <code dir="auto">&#x3C;select></code>) | <code dir="auto">@radix-ui/react-select</code> | <code dir="auto">&#x3C;Select value onChange options></code> from <code dir="auto">app/harness/Select.tsx</code> |
-| Checkbox (replacement for <code dir="auto">&#x3C;input type=checkbox></code>) | <code dir="auto">@radix-ui/react-checkbox</code> | <code dir="auto">&#x3C;Checkbox checked onChange></code> from <code dir="auto">app/harness/Checkbox.tsx</code> (supports indeterminate) |
-| Text / number / email / search input | native <code dir="auto">&#x3C;input></code> (styled via global baseline) <strong>OR</strong> <code dir="auto">&#x3C;TextInput></code> for leading/trailing slots | <code dir="auto">&#x3C;TextInput></code> / <code dir="auto">&#x3C;TextArea></code> from <code dir="auto">app/harness/TextInput.tsx</code>; unwrapped <code dir="auto">&#x3C;input></code> inherits the same look from <code dir="auto">globals.css</code> |
-| Action button | native <code dir="auto">&#x3C;button></code> (neutral, baseline-styled) for inline form/grid actions; <code dir="auto">&#x3C;Button variant="primary"></code> for the page’s primary CTA; <code dir="auto">&#x3C;Button variant="destructive"></code> for delete/clear/forget; <code dir="auto">&#x3C;Button variant="ghost"></code> for low-emphasis | <code dir="auto">&#x3C;Button></code> from <code dir="auto">app/harness/Button.tsx</code>; unwrapped <code dir="auto">&#x3C;button></code> inherits the same look from <code dir="auto">globals.css</code> |
-| Expandable / collapsible section | <code dir="auto">@radix-ui/react-collapsible</code> | <code dir="auto">&#x3C;Collapsible.Root>&#x3C;Collapsible.Trigger>&#x3C;Collapsible.Content></code> |
-| Toast / notification | <code dir="auto">sonner</code> | <code dir="auto">import { toast } from 'sonner'</code> — <code dir="auto">toast.success()</code>, <code dir="auto">toast.error()</code> |
-| Hover card (rich content on hover) | <code dir="auto">@radix-ui/react-hover-card</code> | Direct import (installed but currently unused — no live consumer; re-source an example when you add the first one) |
-| Icons | <code dir="auto">lucide-react</code> | <code dir="auto">import { ChevronRight } from 'lucide-react'</code> |
-| Single-submit form (one Submit button, atomic persist) | <code dir="auto">react-hook-form</code> + <code dir="auto">zod</code> (or <code dir="auto">ajv</code> for plugin schemas) | <code dir="auto">useFormWith(schema)</code> + <code dir="auto">&#x3C;FormField></code> + <code dir="auto">&#x3C;SubmitButton></code> from <code dir="auto">@/lib/forms</code> |
-| Per-field auto-save settings page (no Submit button) | Independent <code dir="auto">useState</code> + debounced save | <code dir="auto">useDebouncedSave(value, persist)</code> from <code dir="auto">app/harness/useDebouncedSave.tsx</code> |
-| Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | <code dir="auto">@papercusp/grid-core</code> <code dir="auto">RichGrid</code> | <code dir="auto">&#x3C;RichGrid&#x3C;Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId /></code> |
-| Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | <code dir="auto">@papercusp/grid-core</code> <code dir="auto">GridTable</code> | <code dir="auto">&#x3C;GridTable headers data columnTypes={{ qty: 'stepper' }} /></code> |
-| 5000+ rows of mostly-scalar data, performance is the constraint | <code dir="auto">@papercusp/grid-core</code> <code dir="auto">DataGridShell</code> (canvas) | <code dir="auto">&#x3C;DataGridShell headers data formatters /></code> |
-| Kanban board (drag cards between status columns) | vendored Kibo UI primitives on <code dir="auto">@dnd-kit</code> | <code dir="auto">&#x3C;KanbanProvider columns data onDataChange overlay></code> + <code dir="auto">KanbanBoard</code>/<code dir="auto">KanbanHeader</code>/<code dir="auto">KanbanCards</code>/<code dir="auto">KanbanCard</code> from <code dir="auto">app/harness/Kanban.tsx</code> (token CSS in <code dir="auto">Kanban.css</code>; consumer example: <code dir="auto">app/admin/plans/PlanKanbanView.tsx</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You’re building…</th><th>Use</th><th>Wrapper / entry point</th></tr></thead><tbody><tr><td>Hover/focus tooltip on a button or label</td><td><code dir="auto">@radix-ui/react-tooltip</code></td><td><code dir="auto">&#x3C;Tooltip label="…">{button}&#x3C;/Tooltip></code> from <code dir="auto">app/harness/Tooltip.tsx</code></td></tr><tr><td>Centered modal dialog</td><td><code dir="auto">@radix-ui/react-dialog</code></td><td><code dir="auto">&#x3C;Modal open onOpenChange title>…&#x3C;/Modal></code> from <code dir="auto">app/harness/Modal.tsx</code></td></tr><tr><td>Side-slide drawer (right- or left-anchored panel)</td><td><code dir="auto">vaul</code></td><td><code dir="auto">&#x3C;Drawer.Root direction="right"></code> from <code dir="auto">vaul</code></td></tr><tr><td>Command palette / fuzzy launcher</td><td><code dir="auto">cmdk</code> + <code dir="auto">@radix-ui/react-dialog</code></td><td>See <code dir="auto">app/_components/CommandPalette.tsx</code></td></tr><tr><td>Tabs (real tabs with content panels)</td><td><code dir="auto">@radix-ui/react-tabs</code></td><td><code dir="auto">&#x3C;Tabs.Root>&#x3C;Tabs.List>&#x3C;Tabs.Trigger>&#x3C;Tabs.Content></code></td></tr><tr><td>Filter pills / scoped filters</td><td><code dir="auto">@radix-ui/react-tabs</code> (asChild) <strong>OR</strong> native button + <code dir="auto">aria-pressed</code></td><td>See gotchas page</td></tr><tr><td>Single-select dropdown (replacement for <code dir="auto">&#x3C;select></code>)</td><td><code dir="auto">@radix-ui/react-select</code></td><td><code dir="auto">&#x3C;Select value onChange options></code> from <code dir="auto">app/harness/Select.tsx</code></td></tr><tr><td>Checkbox (replacement for <code dir="auto">&#x3C;input type=checkbox></code>)</td><td><code dir="auto">@radix-ui/react-checkbox</code></td><td><code dir="auto">&#x3C;Checkbox checked onChange></code> from <code dir="auto">app/harness/Checkbox.tsx</code> (supports indeterminate)</td></tr><tr><td>Text / number / email / search input</td><td>native <code dir="auto">&#x3C;input></code> (styled via global baseline) <strong>OR</strong> <code dir="auto">&#x3C;TextInput></code> for leading/trailing slots</td><td><code dir="auto">&#x3C;TextInput></code> / <code dir="auto">&#x3C;TextArea></code> from <code dir="auto">app/harness/TextInput.tsx</code>; unwrapped <code dir="auto">&#x3C;input></code> inherits the same look from <code dir="auto">globals.css</code></td></tr><tr><td>Action button</td><td>native <code dir="auto">&#x3C;button></code> (neutral, baseline-styled) for inline form/grid actions; <code dir="auto">&#x3C;Button variant="primary"></code> for the page’s primary CTA; <code dir="auto">&#x3C;Button variant="destructive"></code> for delete/clear/forget; <code dir="auto">&#x3C;Button variant="ghost"></code> for low-emphasis</td><td><code dir="auto">&#x3C;Button></code> from <code dir="auto">app/harness/Button.tsx</code>; unwrapped <code dir="auto">&#x3C;button></code> inherits the same look from <code dir="auto">globals.css</code></td></tr><tr><td>Expandable / collapsible section</td><td><code dir="auto">@radix-ui/react-collapsible</code></td><td><code dir="auto">&#x3C;Collapsible.Root>&#x3C;Collapsible.Trigger>&#x3C;Collapsible.Content></code></td></tr><tr><td>Toast / notification</td><td><code dir="auto">sonner</code></td><td><code dir="auto">import { toast } from 'sonner'</code> — <code dir="auto">toast.success()</code>, <code dir="auto">toast.error()</code></td></tr><tr><td>Hover card (rich content on hover)</td><td><code dir="auto">@radix-ui/react-hover-card</code></td><td>Direct import (installed but currently unused — no live consumer; re-source an example when you add the first one)</td></tr><tr><td>Icons</td><td><code dir="auto">lucide-react</code></td><td><code dir="auto">import { ChevronRight } from 'lucide-react'</code></td></tr><tr><td>Single-submit form (one Submit button, atomic persist)</td><td><code dir="auto">react-hook-form</code> + <code dir="auto">zod</code> (or <code dir="auto">ajv</code> for plugin schemas)</td><td><code dir="auto">useFormWith(schema)</code> + <code dir="auto">&#x3C;FormField></code> + <code dir="auto">&#x3C;SubmitButton></code> from <code dir="auto">@/lib/forms</code></td></tr><tr><td>Per-field auto-save settings page (no Submit button)</td><td>Independent <code dir="auto">useState</code> + debounced save</td><td><code dir="auto">useDebouncedSave(value, persist)</code> from <code dir="auto">app/harness/useDebouncedSave.tsx</code></td></tr><tr><td>Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail)</td><td><code dir="auto">@papercusp/grid-core</code> <code dir="auto">RichGrid</code></td><td><code dir="auto">&#x3C;RichGrid&#x3C;Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId /></code></td></tr><tr><td>Static admin table with declarative cell types (text, stepper, price, checkbox, expand)</td><td><code dir="auto">@papercusp/grid-core</code> <code dir="auto">GridTable</code></td><td><code dir="auto">&#x3C;GridTable headers data columnTypes={{ qty: 'stepper' }} /></code></td></tr><tr><td>5000+ rows of mostly-scalar data, performance is the constraint</td><td><code dir="auto">@papercusp/grid-core</code> <code dir="auto">DataGridShell</code> (canvas)</td><td><code dir="auto">&#x3C;DataGridShell headers data formatters /></code></td></tr><tr><td>Kanban board (drag cards between status columns)</td><td>vendored Kibo UI primitives on <code dir="auto">@dnd-kit</code></td><td><code dir="auto">&#x3C;KanbanProvider columns data onDataChange overlay></code> + <code dir="auto">KanbanBoard</code>/<code dir="auto">KanbanHeader</code>/<code dir="auto">KanbanCards</code>/<code dir="auto">KanbanCard</code> from <code dir="auto">app/harness/Kanban.tsx</code> (token CSS in <code dir="auto">Kanban.css</code>; consumer example: <code dir="auto">app/admin/plans/PlanKanbanView.tsx</code>)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="token-quick-reference">Token quick-reference</h2><a class="sl-anchor-link" href="#token-quick-reference"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Token quick-reference”</span></a></div>
 <p>The design section <strong>does</strong> have a full token-system page: <a href="/internal/docs/design/tokens">design tokens</a>. Use that page when changing tokens or themes. This short version is for component authors:</p>
 <ul>
@@ -209,11 +298,40 @@ for the full gap + proposed remedies.</p></div> </aside>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="grids--richgrid-vs-gridtable-vs-datagridshell">Grids — <code dir="auto">RichGrid</code> vs <code dir="auto">GridTable</code> vs <code dir="auto">DataGridShell</code></h2><a class="sl-anchor-link" href="#grids--richgrid-vs-gridtable-vs-datagridshell"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Grids — RichGrid vs GridTable vs DataGridShell”</span></a></div>
 <p>Three grid components in <code dir="auto">@papercusp/grid-core</code>. Pick by what your cells need to do, not by row count alone.</p>
-<p>| Use… | When | Cell style | Virtualization | Examples |
-|---|---|---|---|---|
-| <strong><code dir="auto">RichGrid</code></strong> | You want JSX cells: status pills, hover popovers, action buttons, multi-line content, per-row expand | Anything you can render in React | Optional via <code dir="auto">virtualMode</code> | <code dir="auto">app/admin/plans/RunsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AcceptancePanel.tsx</code>, <code dir="auto">app/harness/insights/BootHistoryTable.tsx</code> |
-| <strong><code dir="auto">GridTable</code></strong> | Static admin page, low row count (under 200), declarative cell <em>types</em> (<code dir="auto">text</code>, <code dir="auto">stepper</code>, <code dir="auto">price</code>, <code dir="auto">checkbox</code>, <code dir="auto">expand</code>), SSR-rendered HTML matters | Built-in via column <code dir="auto">type:</code> | None | small admin tables, settings pages |
-| <strong><code dir="auto">DataGridShell</code></strong> | Catalog-style scrolling, 5000+ rows of mostly-scalar data, DOM perf hurts | Canvas pixels (cells aren’t React) | Built-in (canvas) | Exported from <code dir="auto">@papercusp/grid-core</code>; no live consumer in the operator app today |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Use…</th><th>When</th><th>Cell style</th><th>Virtualization</th><th>Examples</th></tr></thead><tbody><tr><td><strong><code dir="auto">RichGrid</code></strong></td><td>You want JSX cells: status pills, hover popovers, action buttons, multi-line content, per-row expand</td><td>Anything you can render in React</td><td>Optional via <code dir="auto">virtualMode</code></td><td><code dir="auto">app/admin/plans/RunsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AcceptancePanel.tsx</code>, <code dir="auto">app/harness/insights/BootHistoryTable.tsx</code></td></tr><tr><td><strong><code dir="auto">GridTable</code></strong></td><td>Static admin page, low row count (under 200), declarative cell <em>types</em> (<code dir="auto">text</code>, <code dir="auto">stepper</code>, <code dir="auto">price</code>, <code dir="auto">checkbox</code>, <code dir="auto">expand</code>), SSR-rendered HTML matters</td><td>Built-in via column <code dir="auto">type:</code></td><td>None</td><td>small admin tables, settings pages</td></tr><tr><td><strong><code dir="auto">DataGridShell</code></strong></td><td>Catalog-style scrolling, 5000+ rows of mostly-scalar data, DOM perf hurts</td><td>Canvas pixels (cells aren’t React)</td><td>Built-in (canvas)</td><td>Exported from <code dir="auto">@papercusp/grid-core</code>; no live consumer in the operator app today</td></tr></tbody></table>
 <p>Authoring style differs:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="tsx"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5D6376">// RichGrid — you write the cell render function</span></div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#8844AE">&#x3C;</span><span style="--0:#F78C6C;--1:#AA0982">RichGrid</span><span style="--0:#CAECE6;--1:#8844AE">&#x3C;</span><span style="--0:#FFCB8B;--1:#111111">Project</span><span style="--0:#CAECE6;--1:#8844AE">></span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">rows</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">projects</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">getRowId</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D9F5DD;--1:#111111">(</span><span style="--0:#D7DBE0;--1:#403F53">p</span><span style="--0:#D9F5DD;--1:#111111">)</span><span style="--1:#8844AE"><span style="--0:#7FDBCA"> </span><span style="--0:#C792EA">=></span><span style="--0:#7FDBCA"> </span></span><span style="--0:#D6DEEB;--1:#403F53">p</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">id</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">columns</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">[</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">{ key: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">name</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,   header: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">Project</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, width: </span><span style="--0:#F78C6C;--1:#AA0982">3</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#82AAFF;--1:#3B61B0">render</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">(</span><span style="--1:#403F53"><span style="--0:#D6DEEB">{ </span><span style="--0:#D7DBE0">row</span><span style="--0:#D6DEEB"> }</span></span><span style="--0:#D9F5DD;--1:#111111">)</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">=></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--1:#8844AE"><span style="--0:#7FDBCA">&#x3C;</span><span style="--0:#CAECE6">b</span><span style="--0:#7FDBCA">></span></span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">row</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">name</span><span style="--0:#E2817F;--1:#B23834">}</span><span style="--1:#8844AE"><span style="--0:#7FDBCA">&#x3C;/</span><span style="--0:#CAECE6">b</span><span style="--0:#7FDBCA">></span></span><span style="--0:#D6DEEB;--1:#403F53"> },</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">{ key: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">status</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, header: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">Status</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,  width: </span><span style="--0:#F78C6C;--1:#AA0982">1</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#82AAFF;--1:#3B61B0">render</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">(</span><span style="--1:#403F53"><span style="--0:#D6DEEB">{ </span><span style="--0:#D7DBE0">row</span><span style="--0:#D6DEEB"> }</span></span><span style="--0:#D9F5DD;--1:#111111">)</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">=></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#8844AE">&#x3C;</span><span style="--0:#F78C6C;--1:#AA0982">StatusPill</span><span style="--0:#7FDBCA;--1:#8844AE"> </span><span style="--0:#C5E478;--1:#3B61B0">value</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">row</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">status</span><span style="--0:#E2817F;--1:#B23834">}</span><span style="--0:#7FDBCA;--1:#8844AE"> /></span><span style="--0:#D6DEEB;--1:#403F53"> },</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">{ key: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">budget</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, header: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">Budget</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,  width: </span><span style="--0:#F78C6C;--1:#AA0982">1</span><span style="--0:#D6DEEB;--1:#403F53">, align: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">right</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#82AAFF;--1:#3B61B0">render</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">(</span><span style="--1:#403F53"><span style="--0:#D6DEEB">{ </span><span style="--0:#D7DBE0">row</span><span style="--0:#D6DEEB"> }</span></span><span style="--0:#D9F5DD;--1:#111111">)</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">=></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">formatCents</span><span style="--0:#D6DEEB;--1:#403F53">(row</span><span style="--0:#C792EA;--1:#8844AE">.</span><span style="--0:#7FDBCA;--1:#096E72">budgetCents</span><span style="--0:#D6DEEB;--1:#403F53">) },</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">]</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#8844AE">/></span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5D6376">// GridTable — declarative columns, one of a fixed set of cell types</span></div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#8844AE">&#x3C;</span><span style="--0:#F78C6C;--1:#AA0982">GridTable</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">headers</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">[</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">name</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">qty</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">priceCents</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">select</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">]</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">data</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#D6DEEB;--1:#403F53">items</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">columnTypes</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#E2817F;--1:#B23834">{</span><span style="--0:#7FDBCA;--1:#8844AE">{ qty: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">stepper</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#7FDBCA;--1:#8844AE">, priceCents: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">price</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#7FDBCA;--1:#8844AE">, select: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">checkbox</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#7FDBCA;--1:#8844AE"> }</span><span style="--0:#E2817F;--1:#B23834">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#7FDBCA;--1:#8844AE">/></span></div></div><div class="ec-line"><div class="code">
@@ -238,28 +356,96 @@ for the full gap + proposed remedies.</p></div> </aside>
 <p>For full sort, virtualization, multi-row expand, and theme-token reference, see <a href="https://github.com/..."><code dir="auto">libs/generic/papergrid/grid-core/README.md</code></a> — the canonical grid docs.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-to-look-for-examples">Where to look for examples</h2><a class="sl-anchor-link" href="#where-to-look-for-examples"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where to look for examples”</span></a></div>
 <p>All file paths below are live (relative to <code dir="auto">apps/operator/</code>). The pre-migration example files (<code dir="auto">FeatureList.tsx</code>, <code dir="auto">ProposalsPanel.tsx</code>, <code dir="auto">ArchivesPanel.tsx</code>, <code dir="auto">IssuesList.tsx</code>, <code dir="auto">SnapshotsPanel.tsx</code>, <code dir="auto">ArchitectInbox.tsx</code>, <code dir="auto">TriageQueue.tsx</code>, the <code dir="auto">*Banner</code>/<code dir="auto">*Dashboard</code> panels, <code dir="auto">FeatureLink.tsx</code>, etc.) were deleted as orphans during the adv-harness migration and now live only under <code dir="auto">libs/papercusp/_retired/apps-web/</code> — don’t reach for them.</p>
-<p>| Need an example of… | File |
-|---|---|
-| Tooltip on a button | <code dir="auto">app/harness/PiTerminalsDock.tsx</code>, <code dir="auto">app/admin/plans/PlanActions.tsx</code> |
-| Tooltip in the harness editor | <code dir="auto">app/harness/FeatureEditor.tsx</code> |
-| Modal with header / body / actions | <code dir="auto">app/admin/plans/PlanConflictModal.tsx</code>, <code dir="auto">app/admin/plans/RevisionDiffModal.tsx</code> |
-| Vaul side drawer | <code dir="auto">app/admin/plans/PlanDetail.tsx</code> |
-| cmdk command palette | <code dir="auto">app/_components/CommandPalette.tsx</code>, <code dir="auto">app/_components/GlobalCommandPalette.tsx</code> |
-| Real Radix Tabs (Tabs.List / Trigger) | <code dir="auto">app/adv/sessions/AdvSessionsClient.tsx</code> (session detail-panel tab strip) |
-| Radix Select wrapper | <code dir="auto">app/harness/FeatureEditor.tsx</code>, <code dir="auto">app/admin/plans/PlanActions.tsx</code>, <code dir="auto">app/_components/OperatorPanel.tsx</code> |
-| Radix Select with grouped options | <code dir="auto">app/admin/plans/PlansClient.tsx</code>, <code dir="auto">app/adv/harnesses/HarnessesWorkspace.tsx</code> |
-| Radix Checkbox | <code dir="auto">app/adv/harnesses/AcceptancePanel.tsx</code>, <code dir="auto">app/installed/plugins/[slug]/permissions/page.tsx</code> |
-| Sonner toast.success / toast.error | <code dir="auto">app/admin/plans/PlanActions.tsx</code>, <code dir="auto">app/admin/_components/TableAdmin.tsx</code> |
-| <code dir="auto">useFormWith</code> + Zod (single-submit form) | <code dir="auto">app/settings/profile/page.tsx</code>, <code dir="auto">app/settings/oracle/OracleClient.tsx</code>, <code dir="auto">app/settings/operator/page.tsx</code>, <code dir="auto">app/settings/api-keys/page.tsx</code> |
-| <code dir="auto">useDebouncedSave</code> (per-field settings) | <code dir="auto">app/settings/agent/page.tsx</code> (the sole live consumer) |
-| Per-field auto-save via bespoke callbacks | <code dir="auto">app/settings/voice/page.tsx</code> (<code dir="auto">savePrefsPatch</code>), <code dir="auto">app/settings/backups/page.tsx</code> |
-| <code dir="auto">useForm</code> + <code dir="auto">makeAjvResolver</code> (plugin JSON Schema) | <code dir="auto">app/settings/plugins/page.tsx</code>, <code dir="auto">app/harness/HarnessPluginsSection.tsx</code> |
-| <code dir="auto">Controller</code> for non-native widgets (MarkdownEditor, etc.) | <code dir="auto">app/settings/oracle/OracleClient.tsx</code> |
-| Radix Collapsible | <code dir="auto">app/harness/FeatureEditor.tsx</code>, <code dir="auto">app/admin/plans/PlanItemsList.tsx</code>, <code dir="auto">app/_components/SetupWizard/StepTelemetry.tsx</code> |
-| <code dir="auto">RichGrid</code> with built-in sort | <code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/admin/plans/RunsPanel.tsx</code> |
-| <code dir="auto">RichGrid</code> with per-column filters | <code dir="auto">app/adv/harnesses/AdvAgentsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AdvLogsPanel.tsx</code> |
-| <code dir="auto">RichGrid</code> with persisted column widths | <code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AdvAgentsPanel.tsx</code> |
-| Kanban board | <code dir="auto">app/admin/plans/PlanKanbanView.tsx</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Need an example of…</th><th>File</th></tr></thead><tbody><tr><td>Tooltip on a button</td><td><code dir="auto">app/harness/PiTerminalsDock.tsx</code>, <code dir="auto">app/admin/plans/PlanActions.tsx</code></td></tr><tr><td>Tooltip in the harness editor</td><td><code dir="auto">app/harness/FeatureEditor.tsx</code></td></tr><tr><td>Modal with header / body / actions</td><td><code dir="auto">app/admin/plans/PlanConflictModal.tsx</code>, <code dir="auto">app/admin/plans/RevisionDiffModal.tsx</code></td></tr><tr><td>Vaul side drawer</td><td><code dir="auto">app/admin/plans/PlanDetail.tsx</code></td></tr><tr><td>cmdk command palette</td><td><code dir="auto">app/_components/CommandPalette.tsx</code>, <code dir="auto">app/_components/GlobalCommandPalette.tsx</code></td></tr><tr><td>Real Radix Tabs (Tabs.List / Trigger)</td><td><code dir="auto">app/adv/sessions/AdvSessionsClient.tsx</code> (session detail-panel tab strip)</td></tr><tr><td>Radix Select wrapper</td><td><code dir="auto">app/harness/FeatureEditor.tsx</code>, <code dir="auto">app/admin/plans/PlanActions.tsx</code>, <code dir="auto">app/_components/OperatorPanel.tsx</code></td></tr><tr><td>Radix Select with grouped options</td><td><code dir="auto">app/admin/plans/PlansClient.tsx</code>, <code dir="auto">app/adv/harnesses/HarnessesWorkspace.tsx</code></td></tr><tr><td>Radix Checkbox</td><td><code dir="auto">app/adv/harnesses/AcceptancePanel.tsx</code>, <code dir="auto">app/installed/plugins/[slug]/permissions/page.tsx</code></td></tr><tr><td>Sonner toast.success / toast.error</td><td><code dir="auto">app/admin/plans/PlanActions.tsx</code>, <code dir="auto">app/admin/_components/TableAdmin.tsx</code></td></tr><tr><td><code dir="auto">useFormWith</code> + Zod (single-submit form)</td><td><code dir="auto">app/settings/profile/page.tsx</code>, <code dir="auto">app/settings/oracle/OracleClient.tsx</code>, <code dir="auto">app/settings/operator/page.tsx</code>, <code dir="auto">app/settings/api-keys/page.tsx</code></td></tr><tr><td><code dir="auto">useDebouncedSave</code> (per-field settings)</td><td><code dir="auto">app/settings/agent/page.tsx</code> (the sole live consumer)</td></tr><tr><td>Per-field auto-save via bespoke callbacks</td><td><code dir="auto">app/settings/voice/page.tsx</code> (<code dir="auto">savePrefsPatch</code>), <code dir="auto">app/settings/backups/page.tsx</code></td></tr><tr><td><code dir="auto">useForm</code> + <code dir="auto">makeAjvResolver</code> (plugin JSON Schema)</td><td><code dir="auto">app/settings/plugins/page.tsx</code>, <code dir="auto">app/harness/HarnessPluginsSection.tsx</code></td></tr><tr><td><code dir="auto">Controller</code> for non-native widgets (MarkdownEditor, etc.)</td><td><code dir="auto">app/settings/oracle/OracleClient.tsx</code></td></tr><tr><td>Radix Collapsible</td><td><code dir="auto">app/harness/FeatureEditor.tsx</code>, <code dir="auto">app/admin/plans/PlanItemsList.tsx</code>, <code dir="auto">app/_components/SetupWizard/StepTelemetry.tsx</code></td></tr><tr><td><code dir="auto">RichGrid</code> with built-in sort</td><td><code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/admin/plans/RunsPanel.tsx</code></td></tr><tr><td><code dir="auto">RichGrid</code> with per-column filters</td><td><code dir="auto">app/adv/harnesses/AdvAgentsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AdvLogsPanel.tsx</code></td></tr><tr><td><code dir="auto">RichGrid</code> with persisted column widths</td><td><code dir="auto">app/adv/harnesses/WorkItemsPanel.tsx</code>, <code dir="auto">app/adv/harnesses/AdvAgentsPanel.tsx</code></td></tr><tr><td>Kanban board</td><td><code dir="auto">app/admin/plans/PlanKanbanView.tsx</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="pages">Pages</h2><a class="sl-anchor-link" href="#pages"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pages”</span></a></div>
 <ul>
 <li><a href="/internal/docs/design/libraries">Library reference</a> — per-library notes, install location, version, and why we picked it</li>

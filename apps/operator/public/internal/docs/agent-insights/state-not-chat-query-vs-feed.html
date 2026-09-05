@@ -74,11 +74,32 @@
 <p>Three different needs, three different surfaces — mixing them is how the coord
 inbox became a ~360-events/6h state-replay log
 (<code dir="auto">state-not-chat-fleet-state-2026-06-05</code> D-001):</p>
-<p>| You want… | Use | Never |
-| --- | --- | --- |
-| to <strong>know</strong> current state (“who’s running / what is X doing / is anyone on plan P”) | <code dir="auto">fleet:assignments</code> / <code dir="auto">coord:presence</code> — one table query | scan/replay the coord inbox to derive it |
-| to be <strong>notified</strong> of a state change | the <code dir="auto">fleet_assignment</code> PG NOTIFY change-feed (<code dir="auto">packages/operator-core/lib/fleet-assignment-bus.ts</code>), or your scoped coord subscriptions | poll the message stream |
-| to <strong>say</strong> something genuinely unpredictable (a question, a design call, a SPLIT proposal) | <code dir="auto">coord:send</code> | encode state in prose (“DONE + tested…” — that’s <code dir="auto">work_items:complete</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You want…</th><th>Use</th><th>Never</th></tr></thead><tbody><tr><td>to <strong>know</strong> current state (“who’s running / what is X doing / is anyone on plan P”)</td><td><code dir="auto">fleet:assignments</code> / <code dir="auto">coord:presence</code> — one table query</td><td>scan/replay the coord inbox to derive it</td></tr><tr><td>to be <strong>notified</strong> of a state change</td><td>the <code dir="auto">fleet_assignment</code> PG NOTIFY change-feed (<code dir="auto">packages/operator-core/lib/fleet-assignment-bus.ts</code>), or your scoped coord subscriptions</td><td>poll the message stream</td></tr><tr><td>to <strong>say</strong> something genuinely unpredictable (a question, a design call, a SPLIT proposal)</td><td><code dir="auto">coord:send</code></td><td>encode state in prose (“DONE + tested…” — that’s <code dir="auto">work_items:complete</code>)</td></tr></tbody></table>
 <p>This is the “DB is not a transport” principle pointed the other way: <strong>the
 message bus is not a state store.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-canonical-state-query">The canonical state query</h2><a class="sl-anchor-link" href="#the-canonical-state-query"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The canonical state query”</span></a></div>

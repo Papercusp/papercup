@@ -114,12 +114,32 @@ its comments, and the message inbox hold the state a successor needs.</li>
 <p>The bash era replaced “remember our conversation” with files on disk; the
 current system replaces it with durable, queryable stores, re-injected into
 each fresh prompt:</p>
-<p>| Need | Carried by |
-|---|---|
-| What is the task? | The work item + plan context, injected per-spawn |
-| What happened before? | Feature history + the durable message inbox (<code dir="auto">messages:*</code>) |
-| Hard-won role lessons | Per-role identity files (<code dir="auto">identity/&#x3C;role>.md</code>) + curated memory (<code dir="auto">memory/summary.md</code>), both in the prompt preamble — see <a href="/internal/docs/harness/decisions/curator">Curator</a> |
-| “Try again” | A re-dispatch is simply a new fresh spawn with updated state |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Need</th><th>Carried by</th></tr></thead><tbody><tr><td>What is the task?</td><td>The work item + plan context, injected per-spawn</td></tr><tr><td>What happened before?</td><td>Feature history + the durable message inbox (<code dir="auto">messages:*</code>)</td></tr><tr><td>Hard-won role lessons</td><td>Per-role identity files (<code dir="auto">identity/&#x3C;role>.md</code>) + curated memory (<code dir="auto">memory/summary.md</code>), both in the prompt preamble — see <a href="/internal/docs/harness/decisions/curator">Curator</a></td></tr><tr><td>”Try again”</td><td>A re-dispatch is simply a new fresh spawn with updated state</td></tr></tbody></table>
 <p>Re-deriving state from durable stores stays safe across federation because
 peer-authored state is treated as data, not instruction. When a feature
 originates from a remote peer (<code dir="auto">featureOrigin === 'remote'</code>), the durable

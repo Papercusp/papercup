@@ -93,22 +93,87 @@ remaining bug + a couple of polish items.</p>
 <hr>
 <div class="sl-heading-wrapper level-h1"><h1 id="what-shipped--dont-churn">What shipped — don’t churn</h1><a class="sl-anchor-link" href="#what-shipped--dont-churn"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What shipped — don’t churn”</span></a></div>
 <p>Round-1 issues that are now resolved:</p>
-<p>| Round-1 § | What was wrong | Now |
-|---|---|---|
-| <strong>C1</strong> | Brainstorm + Architect inbox + Proposals queue all on one tab | Brainstorm + Architect inbox <strong>gone</strong> from this tab. Page is now <code dir="auto">proposals-sidebar</code> (queue) + <code dir="auto">proposal-detail</code> (detail). Two functional areas, one purpose. |
-| <strong>C2</strong> | Proposal titles were timestamp fragments (<code dir="auto">T22 58 32Z</code>) | Real titles: <em>“Cell merge / unmerge”</em>, <em>“R2 file upload + <code dir="auto">=IMAGE()</code> cell embedding”</em>, <em>“Drag-to-reorder rows and columns”</em>. |
-| <strong>C2 bonus</strong> | (no sub-line at all) | User-story sub-line on every row: <em>“As a user, I can select a range of cells and merge them…”</em> — fantastic addition not asked for. |
-| <strong>C3</strong> | Filter pill sub-labels at 8.5px (unreadable) | Sub-labels deleted. Pills now read <code dir="auto">All 9</code>, <code dir="auto">Pending 2</code>, <code dir="auto">Applied 7</code>, <code dir="auto">Rejected 0</code> — clean. |
-| <strong>C4</strong> | <code dir="auto">Pending · reviewer: accept (not applied) · 13d ago</code> jammed lifecycle + reviewer signal + redundant “(not applied)” | Detail pane now has two distinct sections: <strong>Lifecycle</strong> (<em>“Pending — Needs a product decision”</em>) and <strong>Reviewer signal</strong> (<em>“No signal — No reviewer recommendation has been recorded for this proposal.”</em>). Explicit, separable. |
-| <strong>C5</strong> | 3-step Generate → Review → Replan explainer was permanent | <em>“Got it”</em> dismiss button added. Power users can hide it. |
-| <strong>C6</strong> | Keyboard shortcut ribbon (<code dir="auto">j/k move…</code>) sat in the active band | Now behind a <code dir="auto">? shortcuts</code> button. Available without competing with content. |
-| <strong>C7</strong> | <code dir="auto">Queue 9/9 1/9</code> unparseable header | Now reads <em>“Proposal queue · 9 proposals · viewing 1 of 9”</em>. Clean. |
-| <strong>C8</strong> | Detail-pane title was the timestamp | Detail title is now the proposal’s actual name (e.g., <em>“Cell merge / unmerge”</em>). Timestamp moved to metadata as <em>“source: 2026-05-07T00-00-00Z.md”</em>. |
-| <strong>P2</strong> | Star icon was filled <code dir="auto">★</code> on all 9 rows | Now <code dir="auto">☆</code> outline + <code dir="auto">role="checkbox"</code> with <code dir="auto">aria-checked="false"</code>. The star IS the multi-select control (P3 below). |
-| <strong>P3</strong> | “Select 2 pending proposals” with no UI affordance | Now reads <em>“Select 2 pending for bulk review”</em> + the ☆ checkboxes are visible on every row. Discoverable. |
-| <strong>P4</strong> | “Sort · next pending · starred 0 visible” jammed three controls together | Now visually separated: <em>Sort: Newest first · next pending · star visible</em>. Still dense but cleaner separation. |
-| <strong>V1</strong> | Three “loading…” placeholders in brainstorm column | Brainstorm column is gone. Loading states gone with it. |
-| <strong>V2</strong> | Pending vs applied rows differed by 3-unit RGB shift | Now: pending = sky-blue border-left at 52% opacity; applied = same hue at 7.5% opacity. Real visual differentiation. (Could be stronger — see V2 below — but no longer “almost identical”.) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Round-1 §</th><th>What was wrong</th><th>Now</th></tr></thead><tbody><tr><td><strong>C1</strong></td><td>Brainstorm + Architect inbox + Proposals queue all on one tab</td><td>Brainstorm + Architect inbox <strong>gone</strong> from this tab. Page is now <code dir="auto">proposals-sidebar</code> (queue) + <code dir="auto">proposal-detail</code> (detail). Two functional areas, one purpose.</td></tr><tr><td><strong>C2</strong></td><td>Proposal titles were timestamp fragments (<code dir="auto">T22 58 32Z</code>)</td><td>Real titles: <em>“Cell merge / unmerge”</em>, <em>“R2 file upload + <code dir="auto">=IMAGE()</code> cell embedding”</em>, <em>“Drag-to-reorder rows and columns”</em>.</td></tr><tr><td><strong>C2 bonus</strong></td><td>(no sub-line at all)</td><td>User-story sub-line on every row: <em>“As a user, I can select a range of cells and merge them…”</em> — fantastic addition not asked for.</td></tr><tr><td><strong>C3</strong></td><td>Filter pill sub-labels at 8.5px (unreadable)</td><td>Sub-labels deleted. Pills now read <code dir="auto">All 9</code>, <code dir="auto">Pending 2</code>, <code dir="auto">Applied 7</code>, <code dir="auto">Rejected 0</code> — clean.</td></tr><tr><td><strong>C4</strong></td><td><code dir="auto">Pending · reviewer: accept (not applied) · 13d ago</code> jammed lifecycle + reviewer signal + redundant “(not applied)“</td><td>Detail pane now has two distinct sections: <strong>Lifecycle</strong> (<em>“Pending — Needs a product decision”</em>) and <strong>Reviewer signal</strong> (<em>“No signal — No reviewer recommendation has been recorded for this proposal.”</em>). Explicit, separable.</td></tr><tr><td><strong>C5</strong></td><td>3-step Generate → Review → Replan explainer was permanent</td><td><em>”Got it”</em> dismiss button added. Power users can hide it.</td></tr><tr><td><strong>C6</strong></td><td>Keyboard shortcut ribbon (<code dir="auto">j/k move…</code>) sat in the active band</td><td>Now behind a <code dir="auto">? shortcuts</code> button. Available without competing with content.</td></tr><tr><td><strong>C7</strong></td><td><code dir="auto">Queue 9/9 1/9</code> unparseable header</td><td>Now reads <em>“Proposal queue · 9 proposals · viewing 1 of 9”</em>. Clean.</td></tr><tr><td><strong>C8</strong></td><td>Detail-pane title was the timestamp</td><td>Detail title is now the proposal’s actual name (e.g., <em>“Cell merge / unmerge”</em>). Timestamp moved to metadata as <em>“source: 2026-05-07T00-00-00Z.md”</em>.</td></tr><tr><td><strong>P2</strong></td><td>Star icon was filled <code dir="auto">★</code> on all 9 rows</td><td>Now <code dir="auto">☆</code> outline + <code dir="auto">role="checkbox"</code> with <code dir="auto">aria-checked="false"</code>. The star IS the multi-select control (P3 below).</td></tr><tr><td><strong>P3</strong></td><td>”Select 2 pending proposals” with no UI affordance</td><td>Now reads <em>“Select 2 pending for bulk review”</em> + the ☆ checkboxes are visible on every row. Discoverable.</td></tr><tr><td><strong>P4</strong></td><td>”Sort · next pending · starred 0 visible” jammed three controls together</td><td>Now visually separated: <em>Sort: Newest first · next pending · star visible</em>. Still dense but cleaner separation.</td></tr><tr><td><strong>V1</strong></td><td>Three “loading…” placeholders in brainstorm column</td><td>Brainstorm column is gone. Loading states gone with it.</td></tr><tr><td><strong>V2</strong></td><td>Pending vs applied rows differed by 3-unit RGB shift</td><td>Now: pending = sky-blue border-left at 52% opacity; applied = same hue at 7.5% opacity. Real visual differentiation. (Could be stronger — see V2 below — but no longer “almost identical”.)</td></tr></tbody></table>
 <p><strong>New bonus content the designer added that I didn’t ask for:</strong></p>
 <ul>
 <li><strong>Header sub-line</strong> — <em>“2 pending decisions · 7 in SPEC.md · 6 auto-accepted · 1 reviewer accept signal still pending”</em>. Single-line summary of queue state. Surfaces the new auto-accept feature provenance + reviewer signals at a glance. Strong.</li>

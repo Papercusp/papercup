@@ -82,14 +82,40 @@
 <li><code dir="auto">tool_invocations_invoked_at_cov_idx</code> on <code dir="auto">(invoked_at DESC) INCLUDE (tool_name, duration_ms, status)</code> (migration 315) — covering index leading on <code dir="auto">invoked_at</code> so <code dir="auto">dev:telemetry</code>’s <strong>cross-workspace</strong> 24h rollup runs as an Index-Only Scan instead of broad-scanning the whole table (the quota index leads on <code dir="auto">workspace_id</code>, so it can’t range-scan <code dir="auto">invoked_at</code> across workspaces).</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-status-enum">The status enum</h2><a class="sl-anchor-link" href="#the-status-enum"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The status enum”</span></a></div>
-<p>| Status | Meaning |
-|---|---|
-| <code dir="auto">ok</code> | Function returned successfully. Counts against quota. |
-| <code dir="auto">error</code> | Function threw. Doesn’t count against quota. <code dir="auto">error_message</code> populated. |
-| <code dir="auto">timeout</code> | Dispatcher’s AbortController fired before function returned. |
-| <code dir="auto">quota-exceeded</code> | Pre-dispatch quota check rejected. Function never ran. |
-| <code dir="auto">role-not-allowed</code> | Pre-dispatch authorization rejected. Function never ran. Three dispatcher error codes collapse into this status: <code dir="auto">role_not_allowed</code>, <code dir="auto">missing_capability</code>, and <code dir="auto">capability_denied</code> (the resource-authorize / capability-envelope denial). |
-| <code dir="auto">invalid-input</code> | Function threw a typed input-validation error (<code dir="auto">invalid_input</code>). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">ok</code></td><td>Function returned successfully. Counts against quota.</td></tr><tr><td><code dir="auto">error</code></td><td>Function threw. Doesn’t count against quota. <code dir="auto">error_message</code> populated.</td></tr><tr><td><code dir="auto">timeout</code></td><td>Dispatcher’s AbortController fired before function returned.</td></tr><tr><td><code dir="auto">quota-exceeded</code></td><td>Pre-dispatch quota check rejected. Function never ran.</td></tr><tr><td><code dir="auto">role-not-allowed</code></td><td>Pre-dispatch authorization rejected. Function never ran. Three dispatcher error codes collapse into this status: <code dir="auto">role_not_allowed</code>, <code dir="auto">missing_capability</code>, and <code dir="auto">capability_denied</code> (the resource-authorize / capability-envelope denial).</td></tr><tr><td><code dir="auto">invalid-input</code></td><td>Function threw a typed input-validation error (<code dir="auto">invalid_input</code>).</td></tr></tbody></table>
 <p>Add a new status only by editing the dispatcher; do not let tool functions return arbitrary status values.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="error_code--the-un-collapsed-error-class"><code dir="auto">error_code</code> — the un-collapsed error class</h3><a class="sl-anchor-link" href="#error_code--the-un-collapsed-error-class"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “error_code — the un-collapsed error class”</span></a></div>
 <p><code dir="auto">status</code> is a <em>lossy</em> collapse: three codes fold into <code dir="auto">role-not-allowed</code>, a handful of distinct failure modes fold into <code dir="auto">error</code>. The <code dir="auto">error_code</code> column (migration 205, <code dir="auto">watchdog-robustness</code>) preserves the dispatcher’s full error CLASS that <code dir="auto">status</code> throws away. It’s a low-cardinality string, <code dir="auto">NULL</code> on success rows (and on legacy rows written before migration 205):</p>

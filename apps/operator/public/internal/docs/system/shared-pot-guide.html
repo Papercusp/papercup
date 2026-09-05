@@ -142,11 +142,32 @@ create-or-edit: call it again with the same <code dir="auto">hiveId</code> to ed
 description / visibility.</li>
 </ul>
 <p>The three visibilities mean exactly:</p>
-<p>| Visibility | What it does | Who can find it |
-|---|---|---|
-| <strong>public</strong> | Announced to the <strong>global directory topic</strong>. | Anyone browsing the directory (<a href="#3-discover-a-pot">step 3</a>). |
-| <strong>invite</strong> | Announced only on an <strong>invite-scoped topic</strong> derived from a secret you share. <strong>Requires <code dir="auto">inviteSecret</code>.</strong> | Only people you give the invite secret to. |
-| <strong>private</strong> | <strong>Never announced.</strong> Stays local-only. | No one — it doesn’t federate on the network at all. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Visibility</th><th>What it does</th><th>Who can find it</th></tr></thead><tbody><tr><td><strong>public</strong></td><td>Announced to the <strong>global directory topic</strong>.</td><td>Anyone browsing the directory (<a href="#3-discover-a-pot">step 3</a>).</td></tr><tr><td><strong>invite</strong></td><td>Announced only on an <strong>invite-scoped topic</strong> derived from a secret you share. <strong>Requires <code dir="auto">inviteSecret</code>.</strong></td><td>Only people you give the invite secret to.</td></tr><tr><td><strong>private</strong></td><td><strong>Never announced.</strong> Stays local-only.</td><td>No one — it doesn’t federate on the network at all.</td></tr></tbody></table>
 <aside aria-label="Private means dormant, not just hidden" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>Private means dormant, not just hidden </p>  <div class="starlight-aside__content"><p>A <code dir="auto">private</code> (or never-published) pot doesn’t announce on the DHT and <strong>doesn’t
 federate</strong> — the peer-to-peer machinery is a dormant, zero-risk path until you
 publish it <code dir="auto">public</code> or <code dir="auto">invite</code>. Setting a published pot back to <code dir="auto">private</code>
@@ -194,11 +215,28 @@ your next boot (or as soon as a peer comes online), so you don’t need to redo 
 <p>Whether you’re admitted immediately depends on the owner’s <strong>membership mode</strong>
 (an owner-signed policy on the pot). The default, and a pot with no policy, is
 <strong>open</strong>.</p>
-<p>| Mode | What happens to a joiner |
-|---|---|
-| <strong>open</strong> (default) | Admitted immediately. |
-| <strong>approval</strong> | Lands <strong>pending</strong> — held until the owner approves. You federate once approved. |
-| <strong>allowlist</strong> | Admitted only if your GitHub <strong>login</strong> is on the owner’s pre-approved list; otherwise refused. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Mode</th><th>What happens to a joiner</th></tr></thead><tbody><tr><td><strong>open</strong> (default)</td><td>Admitted immediately.</td></tr><tr><td><strong>approval</strong></td><td>Lands <strong>pending</strong> — held until the owner approves. You federate once approved.</td></tr><tr><td><strong>allowlist</strong></td><td>Admitted only if your GitHub <strong>login</strong> is on the owner’s pre-approved list; otherwise refused.</td></tr></tbody></table>
 <p>A <strong>banned</strong> GitHub account is refused in <strong>every</strong> mode (the ban is keyed to your
 stable numeric GitHub id, so renaming your login can’t slip you back in). If a
 peer ever sees a membership mode it doesn’t recognize, it fails <strong>safe</strong> to
@@ -339,28 +377,117 @@ to your install, never federated. Adding someone is a security grant (their
 per-item review.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="at-a-glance--the-tool-map">At a glance — the tool map</h2><a class="sl-anchor-link" href="#at-a-glance--the-tool-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “At a glance — the tool map”</span></a></div>
-<p>| Step | What you want | Tool(s) |
-|---|---|---|
-| Create | New pot | <code dir="auto">pot:create</code> |
-| Create | From a GitHub repo | <code dir="auto">pot:create_from_repo</code> |
-| Create | Add an existing harness | <code dir="auto">pot:add-member</code> |
-| Share | Publish / set visibility | <code dir="auto">discovery:set_pot</code> |
-| Share | Live status beacon (opt-in) | <code dir="auto">pot:beacon_consent</code> |
-| Discover | Browse shared pots | <code dir="auto">discovery:pots</code> |
-| Join | Find a pot’s status | <code dir="auto">pot:get</code> / <code dir="auto">pot:list</code> |
-| Join (owner) | Review join queue | <code dir="auto">pot:membership_pending</code> |
-| Join (owner) | Approve / deny | <code dir="auto">pot:membership_decide</code> |
-| Collaborate | Ask another pot | <code dir="auto">pot:ask</code> / <code dir="auto">pot:request_work</code> / <code dir="auto">pot:asks</code> |
-| Collaborate (owner) | Cross-pot grant | <code dir="auto">pot:cross_grant</code> |
-| Moderate | Report content / member | <code dir="auto">pot:report</code> |
-| Moderate (owner) | Review reports | <code dir="auto">pot:moderation_queue</code> |
-| Moderate (owner) | Hide content | <code dir="auto">pot:takedown</code> |
-| Moderate (owner) | Ban a member | <code dir="auto">pot:ban_member</code> |
-| Moderate (owner) | Close a report | <code dir="auto">pot:moderation_resolve</code> |
-| Leave | Leave a joined pot | <code dir="auto">pot:leave</code> |
-| Leave (owner) | Tear down your pot | <code dir="auto">pot:dissolve</code> |
-| Removal | Revoke a device | <code dir="auto">substrate:revoke_self_device</code> / <code dir="auto">substrate:revoke_contributor</code> |
-| Trust | Auto-run a peer’s work | <code dir="auto">trust:add</code> / <code dir="auto">trust:list</code> / <code dir="auto">trust:remove</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>What you want</th><th>Tool(s)</th></tr></thead><tbody><tr><td>Create</td><td>New pot</td><td><code dir="auto">pot:create</code></td></tr><tr><td>Create</td><td>From a GitHub repo</td><td><code dir="auto">pot:create_from_repo</code></td></tr><tr><td>Create</td><td>Add an existing harness</td><td><code dir="auto">pot:add-member</code></td></tr><tr><td>Share</td><td>Publish / set visibility</td><td><code dir="auto">discovery:set_pot</code></td></tr><tr><td>Share</td><td>Live status beacon (opt-in)</td><td><code dir="auto">pot:beacon_consent</code></td></tr><tr><td>Discover</td><td>Browse shared pots</td><td><code dir="auto">discovery:pots</code></td></tr><tr><td>Join</td><td>Find a pot’s status</td><td><code dir="auto">pot:get</code> / <code dir="auto">pot:list</code></td></tr><tr><td>Join (owner)</td><td>Review join queue</td><td><code dir="auto">pot:membership_pending</code></td></tr><tr><td>Join (owner)</td><td>Approve / deny</td><td><code dir="auto">pot:membership_decide</code></td></tr><tr><td>Collaborate</td><td>Ask another pot</td><td><code dir="auto">pot:ask</code> / <code dir="auto">pot:request_work</code> / <code dir="auto">pot:asks</code></td></tr><tr><td>Collaborate (owner)</td><td>Cross-pot grant</td><td><code dir="auto">pot:cross_grant</code></td></tr><tr><td>Moderate</td><td>Report content / member</td><td><code dir="auto">pot:report</code></td></tr><tr><td>Moderate (owner)</td><td>Review reports</td><td><code dir="auto">pot:moderation_queue</code></td></tr><tr><td>Moderate (owner)</td><td>Hide content</td><td><code dir="auto">pot:takedown</code></td></tr><tr><td>Moderate (owner)</td><td>Ban a member</td><td><code dir="auto">pot:ban_member</code></td></tr><tr><td>Moderate (owner)</td><td>Close a report</td><td><code dir="auto">pot:moderation_resolve</code></td></tr><tr><td>Leave</td><td>Leave a joined pot</td><td><code dir="auto">pot:leave</code></td></tr><tr><td>Leave (owner)</td><td>Tear down your pot</td><td><code dir="auto">pot:dissolve</code></td></tr><tr><td>Removal</td><td>Revoke a device</td><td><code dir="auto">substrate:revoke_self_device</code> / <code dir="auto">substrate:revoke_contributor</code></td></tr><tr><td>Trust</td><td>Auto-run a peer’s work</td><td><code dir="auto">trust:add</code> / <code dir="auto">trust:list</code> / <code dir="auto">trust:remove</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="see-also">See also</h2><a class="sl-anchor-link" href="#see-also"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “See also”</span></a></div>
 <ul>
 <li><a href="/security/shared-harnesses/">Shared harnesses — trust model</a> — why GitHub is

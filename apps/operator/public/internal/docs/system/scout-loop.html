@@ -92,13 +92,42 @@ sources.</p>
 are the divergence, the critics are the filter, and the <strong>Mug</strong> (not the owner)
 is the autonomy gate:</p>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">corpus synthesis → divergent generation → adversarial critics</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">→ debate + recombine → routing → (Mug-triage cadence)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="corpus synthesis → divergent generation → adversarial critics   → debate + recombine → routing → (Mug-triage cadence)"><div></div></button></div></figure></div>
-<p>| Stage | What it does | Module |
-|---|---|---|
-| <strong>1. Corpus synthesis</strong> | Roll up cross-corpus <em>meta-patterns</em> over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth <strong><code dir="auto">rubric-rating</code></strong> lane folding in structured rubric measurements grouped by <code dir="auto">(rubric, source-pot, criterion)</code> (rubric-driven-observations-2026-06-20), so ideators leap from <em>measurements</em>, not just free-text clusters — the introspection the idea queue can’t do (D-003). | <code dir="auto">corpus-digest.ts</code> (<code dir="auto">synthesizeStateOfHive</code>, <code dir="auto">buildRubricRatings</code>) + <code dir="auto">corpus-digest-deps.ts</code> |
-| <strong>2. Divergent generation</strong> | N ideators, each a <em>distinct</em> <code dir="auto">CreativeLens</code> (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one “be creative” prompt (D-004). Each call has a 180s wall-clock cap (<code dir="auto">DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS</code>); a cycle-level <code dir="auto">signal</code> propagates parent cancellation. When ALL ideators fail their LLM call and produce zero ideas, the cycle adapter raises <code dir="auto">ScoutIdeatorsTransportError</code> (total transport death — distinct from a healthy “no ideas” cycle). Partial failures never throw. | <code dir="auto">ideators.ts</code> (<code dir="auto">runIdeators</code>) + <code dir="auto">lenses.ts</code> |
-| <strong>3. Adversarial critics</strong> | A <strong>novelty</strong> critic (search-first vs the corpus — reject the already-tried) and a <strong>feasibility</strong> critic, in tension, plus a high-novelty/low-feasibility <strong>moonshot bucket</strong> so leaps survive (D-005). | <code dir="auto">critics.ts</code> (<code dir="auto">critiqueIdeas</code>) + <code dir="auto">critique-core.ts</code> (the pure spine) |
-| <strong>4. Debate + recombine</strong> | Merge surviving critiques (A’s mechanism + B’s framing) into proposals, each carrying a <strong>required, structured cheap experiment</strong> — the anti-bullshit gate (D-006). | <code dir="auto">recombine.ts</code> (<code dir="auto">recombineProposals</code>) |
-| <strong>5. Routing</strong> | Dispatch each proposal into exactly one rail: broad → <code dir="auto">plans:new</code> draft / testable <em>component</em> → the gym / concrete → <code dir="auto">improvements:capture</code> (D-007) / testable <em>whole-system</em> → the eval-battery <strong><code dir="auto">instance</code></strong> rail. | <code dir="auto">router.ts</code> (<code dir="auto">routeProposals</code>) + <code dir="auto">router-deps.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Stage</th><th>What it does</th><th>Module</th></tr></thead><tbody><tr><td><strong>1. Corpus synthesis</strong></td><td>Roll up cross-corpus <em>meta-patterns</em> over the change feed + completions + reverts — the four friction lanes (recurring friction, time/token sinks, chronic deferrals, capability gaps) plus a fifth <strong><code dir="auto">rubric-rating</code></strong> lane folding in structured rubric measurements grouped by <code dir="auto">(rubric, source-pot, criterion)</code> (rubric-driven-observations-2026-06-20), so ideators leap from <em>measurements</em>, not just free-text clusters — the introspection the idea queue can’t do (D-003).</td><td><code dir="auto">corpus-digest.ts</code> (<code dir="auto">synthesizeStateOfHive</code>, <code dir="auto">buildRubricRatings</code>) + <code dir="auto">corpus-digest-deps.ts</code></td></tr><tr><td><strong>2. Divergent generation</strong></td><td>N ideators, each a <em>distinct</em> <code dir="auto">CreativeLens</code> (analogical / first-principles / reframing / constraint-removal) with distant-domain priming — forced diversity, not one “be creative” prompt (D-004). Each call has a 180s wall-clock cap (<code dir="auto">DEFAULT_SCOUT_IDEATOR_TIMEOUT_MS</code>); a cycle-level <code dir="auto">signal</code> propagates parent cancellation. When ALL ideators fail their LLM call and produce zero ideas, the cycle adapter raises <code dir="auto">ScoutIdeatorsTransportError</code> (total transport death — distinct from a healthy “no ideas” cycle). Partial failures never throw.</td><td><code dir="auto">ideators.ts</code> (<code dir="auto">runIdeators</code>) + <code dir="auto">lenses.ts</code></td></tr><tr><td><strong>3. Adversarial critics</strong></td><td>A <strong>novelty</strong> critic (search-first vs the corpus — reject the already-tried) and a <strong>feasibility</strong> critic, in tension, plus a high-novelty/low-feasibility <strong>moonshot bucket</strong> so leaps survive (D-005).</td><td><code dir="auto">critics.ts</code> (<code dir="auto">critiqueIdeas</code>) + <code dir="auto">critique-core.ts</code> (the pure spine)</td></tr><tr><td><strong>4. Debate + recombine</strong></td><td>Merge surviving critiques (A’s mechanism + B’s framing) into proposals, each carrying a <strong>required, structured cheap experiment</strong> — the anti-bullshit gate (D-006).</td><td><code dir="auto">recombine.ts</code> (<code dir="auto">recombineProposals</code>)</td></tr><tr><td><strong>5. Routing</strong></td><td>Dispatch each proposal into exactly one rail: broad → <code dir="auto">plans:new</code> draft / testable <em>component</em> → the gym / concrete → <code dir="auto">improvements:capture</code> (D-007) / testable <em>whole-system</em> → the eval-battery <strong><code dir="auto">instance</code></strong> rail.</td><td><code dir="auto">router.ts</code> (<code dir="auto">routeProposals</code>) + <code dir="auto">router-deps.ts</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-contract-chain">The contract chain</h2><a class="sl-anchor-link" href="#the-contract-chain"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The contract chain”</span></a></div>
 <p>Each stage hands the next a typed value (<code dir="auto">scout/types.ts</code> is the single source of
 truth):</p>
@@ -248,13 +277,36 @@ full-tier operating-modes clause by <code dir="auto">operating-modes-policy.ts</
 (<code dir="auto">renderModesPolicy('full')</code>); the <strong>fleet tier stays IDEATE-free</strong> — grounding
 is a leader/interactive posture, not a fleet-member one.</p>
 <p>Each su pass is a <strong>loop, not a blank page</strong>, mirroring the cycle stage-for-stage:</p>
-<p>| Scout stage | su-ideate equivalent (IDEATE mode) |
-|---|---|
-| <strong>Corpus synthesis</strong> (<code dir="auto">corpus-digest.ts</code>) — meta-patterns + rubric ratings | <strong>GROUND</strong> on <code dir="auto">blender:ideation-feedback</code> — prior grades + realized outcomes + per-lens win-rates + the federated frontier read |
-| <strong>Divergent generation</strong> under forced <code dir="auto">CreativeLens</code> diversity (D-004) | run the pass <strong>under one lens</strong>, varying it across passes (cheap lens diversity) |
-| <strong>Debate + recombine</strong> → a bettable <code dir="auto">Proposal</code> with a required <code dir="auto">cheapExperiment</code> (D-006) | <strong>FILE</strong> lens-tagged via <code dir="auto">improvements:capture {kind:'feature'}</code>, adding a <strong>bet + cheapExperiment when the idea is a real bet</strong> |
-| <strong>Routing</strong> (<code dir="auto">router.ts</code>) — broad → plan draft | <strong>ROUTE</strong> the broad ones onward via <code dir="auto">blender:route-idea</code> |
-| <strong>Outcome feedback</strong> (<code dir="auto">routed-ledger.ts</code> / <code dir="auto">outcome-feedback.ts</code>) — grades weight winning lenses + prime the next cycle (D-009) | <strong>CLOSE</strong> with <code dir="auto">blender:ideate-pass-record</code> — a measurable su-ideate tick feeding the same per-lens weighting + priming |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Scout stage</th><th>su-ideate equivalent (IDEATE mode)</th></tr></thead><tbody><tr><td><strong>Corpus synthesis</strong> (<code dir="auto">corpus-digest.ts</code>) — meta-patterns + rubric ratings</td><td><strong>GROUND</strong> on <code dir="auto">blender:ideation-feedback</code> — prior grades + realized outcomes + per-lens win-rates + the federated frontier read</td></tr><tr><td><strong>Divergent generation</strong> under forced <code dir="auto">CreativeLens</code> diversity (D-004)</td><td>run the pass <strong>under one lens</strong>, varying it across passes (cheap lens diversity)</td></tr><tr><td><strong>Debate + recombine</strong> → a bettable <code dir="auto">Proposal</code> with a required <code dir="auto">cheapExperiment</code> (D-006)</td><td><strong>FILE</strong> lens-tagged via <code dir="auto">improvements:capture {kind:'feature'}</code>, adding a <strong>bet + cheapExperiment when the idea is a real bet</strong></td></tr><tr><td><strong>Routing</strong> (<code dir="auto">router.ts</code>) — broad → plan draft</td><td><strong>ROUTE</strong> the broad ones onward via <code dir="auto">blender:route-idea</code></td></tr><tr><td><strong>Outcome feedback</strong> (<code dir="auto">routed-ledger.ts</code> / <code dir="auto">outcome-feedback.ts</code>) — grades weight winning lenses + prime the next cycle (D-009)</td><td><strong>CLOSE</strong> with <code dir="auto">blender:ideate-pass-record</code> — a measurable su-ideate tick feeding the same per-lens weighting + priming</td></tr></tbody></table>
 <p><strong>The grade→wake→revise close.</strong> Where Scout’s outcome feedback is <em>passive</em> —
 the change feed plus owner/Mug grades weight lenses over time — su’s is
 <strong>active</strong>: grading an su-filed idea (<code dir="auto">blender:grade-idea</code>) with a low grade +

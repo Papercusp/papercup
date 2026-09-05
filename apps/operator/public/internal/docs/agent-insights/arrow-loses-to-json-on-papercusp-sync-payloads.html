@@ -92,11 +92,36 @@ the real payload. It is usually one <code dir="auto">curl</code> against the run
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="mistake-2--our-rows-are-not-tabular">Mistake 2 — our rows are not tabular</h2><a class="sl-anchor-link" href="#mistake-2--our-rows-are-not-tabular"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Mistake 2 — our rows are not tabular”</span></a></div>
 <p>Arrow’s advantage is a columnar layout over flat, typed columns. Ours are nested blobs:</p>
-<p>| query | rows | size | shape |
-|---|---|---|---|
-| <code dir="auto">plans.items</code> | 2,760 | 1.64 MB | 3 cols — <strong>92% of bytes is one nested <code dir="auto">item</code> dict per row</strong> |
-| <code dir="auto">plans.attention</code> | 153 | 1.53 MB | 7 cols — <strong>98% of bytes is a nested <code dir="auto">items</code> list</strong> (~10 KB/row) |
-| <code dir="auto">plans.list</code> | 880 | 0.80 MB | 22 cols — the most tabular, and the <strong>worst</strong> result |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>query</th><th>rows</th><th>size</th><th>shape</th></tr></thead><tbody><tr><td><code dir="auto">plans.items</code></td><td>2,760</td><td>1.64 MB</td><td>3 cols — <strong>92% of bytes is one nested <code dir="auto">item</code> dict per row</strong></td></tr><tr><td><code dir="auto">plans.attention</code></td><td>153</td><td>1.53 MB</td><td>7 cols — <strong>98% of bytes is a nested <code dir="auto">items</code> list</strong> (~10 KB/row)</td></tr><tr><td><code dir="auto">plans.list</code></td><td>880</td><td>0.80 MB</td><td>22 cols — the most tabular, and the <strong>worst</strong> result</td></tr></tbody></table>
 <p><code dir="auto">tableFromJSON</code> cannot infer heterogeneous nested structures, so they degrade to
 JSON-stringified strings held inside Arrow columns. That is still JSON parsing — just
 deferred to field-access time, after you have already paid Arrow’s encode.</p>

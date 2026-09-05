@@ -80,14 +80,40 @@ to edit. Changing a projection is silently overwritten the next time the source 
 (re-seed / rebuild). Never hand-edit a projection as if it were the source.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="canonical-sources-edit-here">Canonical sources (edit HERE)</h2><a class="sl-anchor-link" href="#canonical-sources-edit-here"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Canonical sources (edit HERE)”</span></a></div>
-<p>| Prompt | Canonical source |
-| --- | --- |
-| <strong>su base persona</strong> (domain-neutral, all clients/pots) | <code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code> |
-| <strong>papercup-pot su instance overlay</strong> (papercusp-specific su ops) | <code dir="auto">apps/operator/prompts/pot-instances/papercup-pot.su.md</code> |
-| psu playbooks | <code dir="auto">apps/operator/prompts/papercusp-su-{engineer,power}.tools.md</code> |
-| chat-surface roles (operator/oracle/…) | <code dir="auto">apps/operator/prompts/&#x3C;role>.{persona,tools}.md</code> |
-| harness spawn roles (scoper/worker/…) | <code dir="auto">libs/papercusp/packages/harness/blueprints/&#x3C;bp>/prompts/&#x3C;role>.md</code> |
-| per-tool guidance | the tool’s <code dir="auto">defineTool({ guidance })</code> in <code dir="auto">packages/operator-core/lib/agent-tools/**</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Prompt</th><th>Canonical source</th></tr></thead><tbody><tr><td><strong>su base persona</strong> (domain-neutral, all clients/pots)</td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/base/prompts/su.md</code></td></tr><tr><td><strong>papercup-pot su instance overlay</strong> (papercusp-specific su ops)</td><td><code dir="auto">apps/operator/prompts/pot-instances/papercup-pot.su.md</code></td></tr><tr><td>psu playbooks</td><td><code dir="auto">apps/operator/prompts/papercusp-su-{engineer,power}.tools.md</code></td></tr><tr><td>chat-surface roles (operator/oracle/…)</td><td><code dir="auto">apps/operator/prompts/&#x3C;role>.{persona,tools}.md</code></td></tr><tr><td>harness spawn roles (scoper/worker/…)</td><td><code dir="auto">libs/papercusp/packages/harness/blueprints/&#x3C;bp>/prompts/&#x3C;role>.md</code></td></tr><tr><td>per-tool guidance</td><td>the tool’s <code dir="auto">defineTool({ guidance })</code> in <code dir="auto">packages/operator-core/lib/agent-tools/**</code></td></tr></tbody></table>
 <p>A psu su launch is assembled by <code dir="auto">buildSuLaunchSpec</code> (<code dir="auto">packages/operator-core/lib/role-launch-spec.ts</code>)
 → <code dir="auto">prompt-build.ts</code>: <strong>base persona file</strong> + client overlay + wire/legend + the spliced
 papercup <code dir="auto">CLAUDE.md</code> (the Project guide) + the <strong>instance overlay</strong> — concatenated in that order.</p>

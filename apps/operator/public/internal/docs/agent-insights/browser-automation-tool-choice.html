@@ -103,13 +103,36 @@ with semantic element refs.</p>
 <p><strong>The whole detour was one command deep.</strong> If verdict shows you a login page, you
 have not hit a wall — you have hit <code dir="auto">handoff</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-decision-tree">The decision tree</h2><a class="sl-anchor-link" href="#the-decision-tree"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The decision tree”</span></a></div>
-<p>| Target                                                                               | Tool                                                                                                                   |
-| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| <strong>Any external / arbitrary web page — logged-in or not</strong>                             | <strong><code dir="auto">verdict</code></strong> (use the auth flow below when it needs a session)                                                        |
-| Operator UI (<code dir="auto">:3055</code> / <code dir="auto">:3070</code>)                                                      | <strong>Never a browser.</strong> The Tauri shell + <code dir="auto">tauri-agent-tools</code> — see <a href="/internal/docs/testing/agent-e2e">testing/agent-e2e</a> |
-| The committed e2e suite (<code dir="auto">apps/operator/e2e/*.spec.ts</code>)                              | Playwright — running/extending that suite only                                                                         |
-| Drag-and-drop, pixel-diff screenshots, or a plan that says <code dir="auto">QA Tool: PLAYWRIGHT_MCP</code> | Playwright MCP (verdict’s own documented fallback)                                                                     |
-| Desktop GUI apps in the clean-room VM                                                | See <a href="/internal/docs/agent-insights/linux-vm-desktop-testing-workflow">linux-vm-desktop-testing-workflow</a>               |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Target</th><th>Tool</th></tr></thead><tbody><tr><td><strong>Any external / arbitrary web page — logged-in or not</strong></td><td><strong><code dir="auto">verdict</code></strong> (use the auth flow below when it needs a session)</td></tr><tr><td>Operator UI (<code dir="auto">:3055</code> / <code dir="auto">:3070</code>)</td><td><strong>Never a browser.</strong> The Tauri shell + <code dir="auto">tauri-agent-tools</code> — see <a href="/internal/docs/testing/agent-e2e">testing/agent-e2e</a></td></tr><tr><td>The committed e2e suite (<code dir="auto">apps/operator/e2e/*.spec.ts</code>)</td><td>Playwright — running/extending that suite only</td></tr><tr><td>Drag-and-drop, pixel-diff screenshots, or a plan that says <code dir="auto">QA Tool: PLAYWRIGHT_MCP</code></td><td>Playwright MCP (verdict’s own documented fallback)</td></tr><tr><td>Desktop GUI apps in the clean-room VM</td><td>See <a href="/internal/docs/agent-insights/linux-vm-desktop-testing-workflow">linux-vm-desktop-testing-workflow</a></td></tr></tbody></table>
 <p>And the ones that are <strong>not</strong> options on this box:</p>
 <ul>
 <li><strong><code dir="auto">claude-in-chrome</code></strong> — the extension is <strong>not installed</strong>. Verified

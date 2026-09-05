@@ -77,10 +77,27 @@ workspace failed” — <strong>not</strong> GitHub, <strong>not</strong> the ne
 <p>The papercup→papercusp identity migration (owner-directed 2026-06-20) ran a
 blanket <code dir="auto">papercup</code>→<code dir="auto">papercusp</code> rename that <strong>overreached into <code dir="auto">.gitmodules</code></strong>
 and rewrote two submodule URLs:</p>
-<p>| path | URL after the bad rename (404) | real repo |
-| --- | --- | --- |
-| <code dir="auto">libs/papercusp-db</code> | <code dir="auto">Papercusp/papercusp-db.git</code> | <code dir="auto">Papercusp/papercup-db.git</code> |
-| <code dir="auto">libs/papercusp-shared</code> | <code dir="auto">Papercusp/papercusp-shared.git</code> | <code dir="auto">Papercusp/papercup-shared.git</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>URL after the bad rename (404)</th><th>real repo</th></tr></thead><tbody><tr><td><code dir="auto">libs/papercusp-db</code></td><td><code dir="auto">Papercusp/papercusp-db.git</code></td><td><code dir="auto">Papercusp/papercup-db.git</code></td></tr><tr><td><code dir="auto">libs/papercusp-shared</code></td><td><code dir="auto">Papercusp/papercusp-shared.git</code></td><td><code dir="auto">Papercusp/papercup-shared.git</code></td></tr></tbody></table>
 <p>The submodule <strong>paths</strong> were correctly renamed on disk, but the GitHub <strong>repos</strong>
 were never renamed — they still answer only at their <code dir="auto">papercup-*</code> names. So the
 rewritten URLs 404.</p>

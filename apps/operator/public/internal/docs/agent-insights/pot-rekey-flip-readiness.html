@@ -106,15 +106,52 @@ reserves for a “reversible CUTOVER kill-switch needing an attended live verify
 <div class="sl-heading-wrapper level-h2"><h2 id="what-is-wired-the-live-op-path">What is wired (the live op-path)</h2><a class="sl-anchor-link" href="#what-is-wired-the-live-op-path"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What is wired (the live op-path)”</span></a></div>
 <p>All flag-gated on <code dir="auto">papercusp-pot-rekey</code>; <strong>OFF ⇒ byte-identical to today</strong> (no encryption, the
 <code dir="auto">notImplementedHiveEpochCrypto</code> fail-closed stub).</p>
-<p>| Concern | Where | Note |
-|---|---|---|
-| Flag gate / crypto resolve | <code dir="auto">hive-epoch-serving.ts</code> <code dir="auto">resolveHiveEpochCrypto(enabled)</code> | <code dir="auto">true</code> ⇒ real <code dir="auto">createHiveEpochCrypto()</code> (sodium); <code dir="auto">false</code> ⇒ fail-closed stub (never silent plaintext) |
-| Boot composition (flag FIRST) | <code dir="auto">hive-epoch-boot-deps.ts</code> <code dir="auto">buildHiveRekeyBootDeps</code> | one cached flag read; <code dir="auto">null</code> for OFF / non-pot / no-device — cheap off-path |
-| Encrypt-on-write | <code dir="auto">wire-outbox.ts</code> → <code dir="auto">outbox-drain.ts</code> (<code dir="auto">epochEncrypt.encryptOp</code>) | exclude-set: <code dir="auto">shouldEncryptOpForRekey</code> encrypts all CONTENT, keeps admission/key/policy tags plaintext (<code dir="auto">REKEY_PLAINTEXT_TAGS</code>), fail-closed (new tag defaults to encrypted) |
-| Decrypt-on-read | <code dir="auto">boot.ts</code> <code dir="auto">rekeyDeps.epochGate(enforcedApply)</code> | op carries its <code dir="auto">epoch</code>; gate resolves epoch key → decrypt, else defers (pending-epoch buffer) |
-| Advance-on-boundary (revoke) | <code dir="auto">hive-revoke-contributor.ts</code> → <code dir="auto">advanceEpochOnHiveBoundary</code> | wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud <code dir="auto">rekey_boundary_skipped</code> boot event if it no-ops |
-| Advance-on-boundary (go-private) | <code dir="auto">hive-set-listing.ts</code> → <code dir="auto">advanceEpochOnHiveBoundary</code> | re-keys to all current members (no cutOff) |
-| Deferred-content drain | <code dir="auto">boot.ts</code> <code dir="auto">epochDrainQueue</code> / <code dir="auto">onEpochKeyApplied</code> | re-applies buffered content once a member’s key row arrives |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Where</th><th>Note</th></tr></thead><tbody><tr><td>Flag gate / crypto resolve</td><td><code dir="auto">hive-epoch-serving.ts</code> <code dir="auto">resolveHiveEpochCrypto(enabled)</code></td><td><code dir="auto">true</code> ⇒ real <code dir="auto">createHiveEpochCrypto()</code> (sodium); <code dir="auto">false</code> ⇒ fail-closed stub (never silent plaintext)</td></tr><tr><td>Boot composition (flag FIRST)</td><td><code dir="auto">hive-epoch-boot-deps.ts</code> <code dir="auto">buildHiveRekeyBootDeps</code></td><td>one cached flag read; <code dir="auto">null</code> for OFF / non-pot / no-device — cheap off-path</td></tr><tr><td>Encrypt-on-write</td><td><code dir="auto">wire-outbox.ts</code> → <code dir="auto">outbox-drain.ts</code> (<code dir="auto">epochEncrypt.encryptOp</code>)</td><td>exclude-set: <code dir="auto">shouldEncryptOpForRekey</code> encrypts all CONTENT, keeps admission/key/policy tags plaintext (<code dir="auto">REKEY_PLAINTEXT_TAGS</code>), fail-closed (new tag defaults to encrypted)</td></tr><tr><td>Decrypt-on-read</td><td><code dir="auto">boot.ts</code> <code dir="auto">rekeyDeps.epochGate(enforcedApply)</code></td><td>op carries its <code dir="auto">epoch</code>; gate resolves epoch key → decrypt, else defers (pending-epoch buffer)</td></tr><tr><td>Advance-on-boundary (revoke)</td><td><code dir="auto">hive-revoke-contributor.ts</code> → <code dir="auto">advanceEpochOnHiveBoundary</code></td><td>wraps the new epoch key to REMAINING members only; revoked device excluded forever (K-CUT). Loud <code dir="auto">rekey_boundary_skipped</code> boot event if it no-ops</td></tr><tr><td>Advance-on-boundary (go-private)</td><td><code dir="auto">hive-set-listing.ts</code> → <code dir="auto">advanceEpochOnHiveBoundary</code></td><td>re-keys to all current members (no cutOff)</td></tr><tr><td>Deferred-content drain</td><td><code dir="auto">boot.ts</code> <code dir="auto">epochDrainQueue</code> / <code dir="auto">onEpochKeyApplied</code></td><td>re-applies buffered content once a member’s key row arrives</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="witness-evidence-re-ran-2026-06-24-this-checkout-staging">Witness evidence (re-ran 2026-06-24, this checkout, staging)</h2><a class="sl-anchor-link" href="#witness-evidence-re-ran-2026-06-24-this-checkout-staging"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Witness evidence (re-ran 2026-06-24, this checkout, staging)”</span></a></div>
 <ul>
 <li><strong>Hermetic end-to-end content read-cut witness — <code dir="auto">hive-epoch-read-cut-witness.test.ts</code> 2/2 GREEN.</strong>

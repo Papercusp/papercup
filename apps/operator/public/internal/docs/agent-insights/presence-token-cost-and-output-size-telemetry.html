@@ -95,12 +95,42 @@ is the tool-result-size lever (#2). This is exactly what the weekly token report
 presence-v2-2026-06-14 P-016) so a richer presence can’t silently regress either.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="presence-cost-the-pot-scoped-read-really-is-an-inline-glance">Presence cost: the pot-scoped read really is an inline glance</h2><a class="sl-anchor-link" href="#presence-cost-the-pot-scoped-read-really-is-an-inline-glance"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Presence cost: the pot-scoped read really is an inline glance”</span></a></div>
 <p><code dir="auto">coord:presence</code> <code dir="auto">output_size</code> over 7d, by <code dir="auto">scope</code> arg (<code dir="auto">args_json->>'scope'</code>):</p>
-<p>| scope            | calls | p50    | avg     |
-|------------------|-------|--------|---------|
-| <code dir="auto">pot</code> (explicit)| 17    | 182 B  | ~4 KB   |
-| default (no arg) | 229   | 28 KB  | ~30 KB  |
-| <code dir="auto">workspace</code>      | 81    | 67 KB  | ~69 KB  |
-| <code dir="auto">all</code>            | 4     | 66 KB  | ~84 KB  |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>scope</th><th>calls</th><th>p50</th><th>avg</th></tr></thead><tbody><tr><td><code dir="auto">pot</code> (explicit)</td><td>17</td><td>182 B</td><td>~4 KB</td></tr><tr><td>default (no arg)</td><td>229</td><td>28 KB</td><td>~30 KB</td></tr><tr><td><code dir="auto">workspace</code></td><td>81</td><td>67 KB</td><td>~69 KB</td></tr><tr><td><code dir="auto">all</code></td><td>4</td><td>66 KB</td><td>~84 KB</td></tr></tbody></table>
 <p>The design (presence-v2 D-002: pot-scoped default) <strong>holds</strong> — an explicit
 pot-scoped read is ~182 B / ~46 tokens, a true inline glance. The large reads
 are <strong>SU/operator callers who have NO pot</strong>: <code dir="auto">resolvePresenceScope</code> falls back

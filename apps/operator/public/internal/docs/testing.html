@@ -115,12 +115,42 @@ plugs into.</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="10a-four-canonical-frameworks--convention-2026-05-24">1.0a Four canonical frameworks — convention (2026-05-24)</h2><a class="sl-anchor-link" href="#10a-four-canonical-frameworks--convention-2026-05-24"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1.0a Four canonical frameworks — convention (2026-05-24)”</span></a></div>
 <p>Per <code dir="auto">admin-testing-tab-restructure-2026-05-24</code> D-006: <strong>only four</strong>
 test frameworks ship new tests. Everything else is being migrated out.</p>
-<p>| Framework | File shape | Where | Discovered by |
-| --- | --- | --- | --- |
-| <strong>Vitest</strong> | <code dir="auto">*.test.ts</code> next to source | per-package | Tests-tab registry globs |
-| <strong>Playwright</strong> | <code dir="auto">*.spec.ts</code> | <code dir="auto">apps/operator/e2e/</code> | <code dir="auto">harness</code> / domain-specific E2E sections |
-| <strong>Cargo</strong> | <code dir="auto">#[cfg(test)] mod tests { … }</code> | <code dir="auto">&#x3C;crate>/src/</code> | <code dir="auto">rust</code> (<code dir="auto">Rust (Cargo)</code>) domain, via <code dir="auto">shell</code> runners (<code dir="auto">bash -c 'cd &#x3C;crate> &#x26;&#x26; cargo test'</code>) |
-| <strong>LLM scenarios</strong> | <code dir="auto">.ts</code> | <code dir="auto">packages/operator-core/lib/llm-testing/scenarios/</code> | LLM testing tab |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Framework</th><th>File shape</th><th>Where</th><th>Discovered by</th></tr></thead><tbody><tr><td><strong>Vitest</strong></td><td><code dir="auto">*.test.ts</code> next to source</td><td>per-package</td><td>Tests-tab registry globs</td></tr><tr><td><strong>Playwright</strong></td><td><code dir="auto">*.spec.ts</code></td><td><code dir="auto">apps/operator/e2e/</code></td><td><code dir="auto">harness</code> / domain-specific E2E sections</td></tr><tr><td><strong>Cargo</strong></td><td><code dir="auto">#[cfg(test)] mod tests { … }</code></td><td><code dir="auto">&#x3C;crate>/src/</code></td><td><code dir="auto">rust</code> (<code dir="auto">Rust (Cargo)</code>) domain, via <code dir="auto">shell</code> runners (<code dir="auto">bash -c 'cd &#x3C;crate> &#x26;&#x26; cargo test'</code>)</td></tr><tr><td><strong>LLM scenarios</strong></td><td><code dir="auto">.ts</code></td><td><code dir="auto">packages/operator-core/lib/llm-testing/scenarios/</code></td><td>LLM testing tab</td></tr></tbody></table>
 <p><strong>Where tests appear in the UI:</strong> drop a test file under one of the
 glob-matched paths in <code dir="auto">packages/operator-core/lib/testing-domains-registry.ts</code>
 and it shows up automatically in the matching subtab of the <code dir="auto">/adv</code> Tests
@@ -235,11 +265,40 @@ doesn’t try to generate them.</li>
 <p>Every project — every app, every lib — slots its tests into one of
 three layers. Layers differ in what they touch, how fast they run,
 and when CI gates on them.</p>
-<p>| Layer | Touches | Speed target | CI gate | File pattern |
-|---|---|---|---|---|
-| <strong>Unit</strong> | Pure logic only. No DB, no network, no filesystem beyond fixtures. | &#x3C; 10s per project | Per-PR | <code dir="auto">*.test.ts</code> |
-| <strong>Integration</strong> | Real Postgres (testcontainers), real internal-package calls, real Drizzle. No outbound network. | &#x3C; 60s per project | Per-PR (affected only) | <code dir="auto">*.integration.test.ts</code> |
-| <strong>End-to-end</strong> | Real running services + browser. Tests entire user flows. | &#x3C; 5 min per suite | Per-PR for critical paths; nightly for full | <code dir="auto">*.spec.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Touches</th><th>Speed target</th><th>CI gate</th><th>File pattern</th></tr></thead><tbody><tr><td><strong>Unit</strong></td><td>Pure logic only. No DB, no network, no filesystem beyond fixtures.</td><td>&#x3C; 10s per project</td><td>Per-PR</td><td><code dir="auto">*.test.ts</code></td></tr><tr><td><strong>Integration</strong></td><td>Real Postgres (testcontainers), real internal-package calls, real Drizzle. No outbound network.</td><td>&#x3C; 60s per project</td><td>Per-PR (affected only)</td><td><code dir="auto">*.integration.test.ts</code></td></tr><tr><td><strong>End-to-end</strong></td><td>Real running services + browser. Tests entire user flows.</td><td>&#x3C; 5 min per suite</td><td>Per-PR for critical paths; nightly for full</td><td><code dir="auto">*.spec.ts</code></td></tr></tbody></table>
 <p>The split is <strong>non-negotiable</strong>: do not mix layers in one file. A test
 that touches Postgres goes in <code dir="auto">*.integration.test.ts</code>; a test that
 spawns a browser goes in <code dir="auto">*.spec.ts</code>. Tests that mix DB and browser go
@@ -303,27 +362,132 @@ volume reduces this on subsequent runs. With four workers in CI on a
 <p>The shared <code dir="auto">libs/test-config</code> library (see §1.5) hides this boilerplate
 behind a single helper.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="14-the-oss-stack">1.4 The OSS stack</h2><a class="sl-anchor-link" href="#14-the-oss-stack"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1.4 The OSS stack”</span></a></div>
-<p>| Concern | Tool | Why this one | License |
-|---|---|---|---|
-| Test runner (all layers) | <strong>Vitest 4</strong> | Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode. | MIT |
-| Database for integration | <strong>testcontainers-node</strong> | Real Postgres; no mocking lies. ~2s startup per worker. | MIT |
-| API/HTTP mocking | <strong>MSW</strong> (Mock Service Worker) | Intercepts at fetch boundary; same handlers in node + browser. WebSocket handlers (added 2024) cover Zero sync. Industry standard. | MIT |
-| Browser / E2E | <strong>Playwright</strong> | Trace viewer, Chromium + Firefox + WebKit, parallel, <code dir="auto">--trace=on-first-retry</code>. Auth fixtures via <code dir="auto">storageState</code>; native <code dir="auto">toHaveScreenshot()</code> for ad-hoc visual diffs. | Apache 2.0 |
-| Accessibility | <strong>@axe-core/playwright</strong> + <strong>vitest-axe</strong> | One axe pass per E2E spec; component-level a11y assertions in Vitest. Catches what manual review misses. | MPL-2.0 |
-| Desktop (Tauri) E2E — automated suite | <strong>tauri-driver</strong> + Playwright WebDriver | The supported CI path for <code dir="auto">apps/papercusp-desktop</code>. Browser-only matrix doesn’t reach the Tauri shell. Linux + Windows; macOS still blocked on tauri-apps#7068. | Apache 2.0 / MIT |
-| Desktop (Tauri) E2E — agent-driven manual | <strong>tauri-agent-tools</strong> (<code dir="auto">npm i -g tauri-agent-tools</code>) | Primary tool when an AI agent verifies the operator UI ad-hoc. Talks to a debug-only Rust dev-bridge inside <code dir="auto">papercusp-desktop</code> (<code dir="auto">src-tauri/src/dev_bridge.rs</code>, <code dir="auto">#[cfg(debug_assertions)]</code>). Real DOM access, JS <code dir="auto">eval</code>, <code dir="auto">click</code>, <code dir="auto">type</code>, <code dir="auto">ipc-monitor</code>, console capture, Rust logs, <code dir="auto">check</code>-style assertions — without focus-stealing and without OCR. See <a href="/internal/docs/testing/agent-e2e">agent-e2e playbook</a>. | MIT |
-| Load / perf regression | <strong>k6</strong> (HTTP) + <strong>Vitest bench</strong> (micro) | k6 for nightly baseline on hot paths (wholesale grid, Typesense queries); Vitest bench for <code dir="auto">libs/papergrid</code> render-path micro-benchmarks. | AGPL-3.0 / MIT |
-| Test-data factories | <strong><code dir="auto">makeFixture</code> / <code dir="auto">makeFixtures</code></strong> (<code dir="auto">@papercusp/test-config</code>) | Shipped primitive — counter-keyed fixture builders in <code dir="auto">libs/test-config/src/make-fixture.ts</code>. <code dir="auto">drizzle-seed</code> / <code dir="auto">@snaplet/copycat</code> remain aspirational (not installed); see §1.16 Q2. | MIT |
-| Public-page / ad-hoc | <strong>verdict</strong> (already adopted) | Token-efficient agent-driven verification of <strong>arbitrary external web pages</strong> (marketing site, third-party links, MDX renderer hitting an external URL). For operator-side checks use <strong>tauri-agent-tools</strong> instead — the operator only renders correctly inside the Tauri shell. | — |
-| Component testing | <strong>Storybook 10 + Test addon</strong> | Components in isolation, doubles as “see all components” UI; addon runs Vitest in browser. | MIT |
-| Visual regression | <strong>Lost Pixel</strong> | OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in. | MIT |
-| React / DOM assertions | <strong>@testing-library/react</strong> + <strong>user-event</strong> | Standard React testing utilities. | MIT |
-| Property-based | <strong>fast-check</strong> | For payload encoders, validators, slug rewriters — anywhere example tests undercount. | MIT |
-| Mutation testing (quarterly) | <strong>Stryker</strong> | Health check on critical libs (<code dir="auto">libs/papergrid</code> and internal packages). Not in PR gate. | Apache 2.0 |
-| Dead-test detection | <strong>Knip</strong> | Finds unused exports, files, deps, tests. Soft warning in CI. | ISC |
-| Coverage | <strong>@vitest/coverage-v8</strong> | Native to Vitest, tracks trend without gating %. | MIT |
-| Orchestration | <strong>NX</strong> (<code dir="auto">nx affected -t test</code>) | Already adopted; computes the dependency graph. | MIT |
-| Best-practices reference | <strong>goldbergyoni/javascript-testing-best-practices</strong> | Style canon for <code dir="auto">CLAUDE.md</code> to cite. | CC-BY-SA |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Tool</th><th>Why this one</th><th>License</th></tr></thead><tbody><tr><td>Test runner (all layers)</td><td><strong>Vitest 4</strong></td><td>Already in repo. Workspaces fit NX. Native TS, Jest-compat API, browser mode.</td><td>MIT</td></tr><tr><td>Database for integration</td><td><strong>testcontainers-node</strong></td><td>Real Postgres; no mocking lies. ~2s startup per worker.</td><td>MIT</td></tr><tr><td>API/HTTP mocking</td><td><strong>MSW</strong> (Mock Service Worker)</td><td>Intercepts at fetch boundary; same handlers in node + browser. WebSocket handlers (added 2024) cover Zero sync. Industry standard.</td><td>MIT</td></tr><tr><td>Browser / E2E</td><td><strong>Playwright</strong></td><td>Trace viewer, Chromium + Firefox + WebKit, parallel, <code dir="auto">--trace=on-first-retry</code>. Auth fixtures via <code dir="auto">storageState</code>; native <code dir="auto">toHaveScreenshot()</code> for ad-hoc visual diffs.</td><td>Apache 2.0</td></tr><tr><td>Accessibility</td><td><strong>@axe-core/playwright</strong> + <strong>vitest-axe</strong></td><td>One axe pass per E2E spec; component-level a11y assertions in Vitest. Catches what manual review misses.</td><td>MPL-2.0</td></tr><tr><td>Desktop (Tauri) E2E — automated suite</td><td><strong>tauri-driver</strong> + Playwright WebDriver</td><td>The supported CI path for <code dir="auto">apps/papercusp-desktop</code>. Browser-only matrix doesn’t reach the Tauri shell. Linux + Windows; macOS still blocked on tauri-apps#7068.</td><td>Apache 2.0 / MIT</td></tr><tr><td>Desktop (Tauri) E2E — agent-driven manual</td><td><strong>tauri-agent-tools</strong> (<code dir="auto">npm i -g tauri-agent-tools</code>)</td><td>Primary tool when an AI agent verifies the operator UI ad-hoc. Talks to a debug-only Rust dev-bridge inside <code dir="auto">papercusp-desktop</code> (<code dir="auto">src-tauri/src/dev_bridge.rs</code>, <code dir="auto">#[cfg(debug_assertions)]</code>). Real DOM access, JS <code dir="auto">eval</code>, <code dir="auto">click</code>, <code dir="auto">type</code>, <code dir="auto">ipc-monitor</code>, console capture, Rust logs, <code dir="auto">check</code>-style assertions — without focus-stealing and without OCR. See <a href="/internal/docs/testing/agent-e2e">agent-e2e playbook</a>.</td><td>MIT</td></tr><tr><td>Load / perf regression</td><td><strong>k6</strong> (HTTP) + <strong>Vitest bench</strong> (micro)</td><td>k6 for nightly baseline on hot paths (wholesale grid, Typesense queries); Vitest bench for <code dir="auto">libs/papergrid</code> render-path micro-benchmarks.</td><td>AGPL-3.0 / MIT</td></tr><tr><td>Test-data factories</td><td><strong><code dir="auto">makeFixture</code> / <code dir="auto">makeFixtures</code></strong> (<code dir="auto">@papercusp/test-config</code>)</td><td>Shipped primitive — counter-keyed fixture builders in <code dir="auto">libs/test-config/src/make-fixture.ts</code>. <code dir="auto">drizzle-seed</code> / <code dir="auto">@snaplet/copycat</code> remain aspirational (not installed); see §1.16 Q2.</td><td>MIT</td></tr><tr><td>Public-page / ad-hoc</td><td><strong>verdict</strong> (already adopted)</td><td>Token-efficient agent-driven verification of <strong>arbitrary external web pages</strong> (marketing site, third-party links, MDX renderer hitting an external URL). For operator-side checks use <strong>tauri-agent-tools</strong> instead — the operator only renders correctly inside the Tauri shell.</td><td>—</td></tr><tr><td>Component testing</td><td><strong>Storybook 10 + Test addon</strong></td><td>Components in isolation, doubles as “see all components” UI; addon runs Vitest in browser.</td><td>MIT</td></tr><tr><td>Visual regression</td><td><strong>Lost Pixel</strong></td><td>OSS, integrates with Storybook + Playwright, runs locally; no SaaS lock-in.</td><td>MIT</td></tr><tr><td>React / DOM assertions</td><td><strong>@testing-library/react</strong> + <strong>user-event</strong></td><td>Standard React testing utilities.</td><td>MIT</td></tr><tr><td>Property-based</td><td><strong>fast-check</strong></td><td>For payload encoders, validators, slug rewriters — anywhere example tests undercount.</td><td>MIT</td></tr><tr><td>Mutation testing (quarterly)</td><td><strong>Stryker</strong></td><td>Health check on critical libs (<code dir="auto">libs/papergrid</code> and internal packages). Not in PR gate.</td><td>Apache 2.0</td></tr><tr><td>Dead-test detection</td><td><strong>Knip</strong></td><td>Finds unused exports, files, deps, tests. Soft warning in CI.</td><td>ISC</td></tr><tr><td>Coverage</td><td><strong>@vitest/coverage-v8</strong></td><td>Native to Vitest, tracks trend without gating %.</td><td>MIT</td></tr><tr><td>Orchestration</td><td><strong>NX</strong> (<code dir="auto">nx affected -t test</code>)</td><td>Already adopted; computes the dependency graph.</td><td>MIT</td></tr><tr><td>Best-practices reference</td><td><strong>goldbergyoni/javascript-testing-best-practices</strong></td><td>Style canon for <code dir="auto">CLAUDE.md</code> to cite.</td><td>CC-BY-SA</td></tr></tbody></table>
 <p><strong>Versions</strong>: pin to <code dir="auto">latest</code> at install time; renovate-bot or weekly
 dependabot keeps them current. We do not pin individual minor
 versions — the test stack moves as a unit.</p>
@@ -676,53 +840,206 @@ false positives.</p>
 <p>Phased delivery, each phase ships standalone value.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-1--libstest-config--reference-suite-1-week">Phase 1 — <code dir="auto">libs/test-config</code> + reference suite (~1 week)</h3><a class="sl-anchor-link" href="#phase-1--libstest-config--reference-suite-1-week"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 1 — libs/test-config + reference suite (~1 week)”</span></a></div>
 <p>Goal: one app has the full three-layer suite; pattern is portable.</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| Bootstrap <code dir="auto">libs/test-config</code> with <code dir="auto">defineVitestConfig</code> | 4h | Wraps existing Vitest config |
-| <code dir="auto">getTestPg</code> testcontainers helper | 4h | Includes worker-scoped lifecycle |
-| MSW shared handler registry | 4h | Empty handlers; per-project registers |
-| Convert <code dir="auto">apps/shop-api</code> Vitest config to use <code dir="auto">defineVitestConfig</code> | 2h | Smoke-test the shared config |
-| Add <code dir="auto">*.integration.test.ts</code> example to <code dir="auto">apps/shop-api</code> | 4h | Real DB call, real Drizzle |
-| Add Playwright config + first <code dir="auto">.spec.ts</code> to <code dir="auto">apps/shop-api</code> | 4h | Cover one critical flow |
-| Write <code dir="auto">apps/shop-api/TESTING.md</code> | 2h | Template for other projects |
-| <strong>Subtotal</strong> | <strong>~3 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>Bootstrap <code dir="auto">libs/test-config</code> with <code dir="auto">defineVitestConfig</code></td><td>4h</td><td>Wraps existing Vitest config</td></tr><tr><td><code dir="auto">getTestPg</code> testcontainers helper</td><td>4h</td><td>Includes worker-scoped lifecycle</td></tr><tr><td>MSW shared handler registry</td><td>4h</td><td>Empty handlers; per-project registers</td></tr><tr><td>Convert <code dir="auto">apps/shop-api</code> Vitest config to use <code dir="auto">defineVitestConfig</code></td><td>2h</td><td>Smoke-test the shared config</td></tr><tr><td>Add <code dir="auto">*.integration.test.ts</code> example to <code dir="auto">apps/shop-api</code></td><td>4h</td><td>Real DB call, real Drizzle</td></tr><tr><td>Add Playwright config + first <code dir="auto">.spec.ts</code> to <code dir="auto">apps/shop-api</code></td><td>4h</td><td>Cover one critical flow</td></tr><tr><td>Write <code dir="auto">apps/shop-api/TESTING.md</code></td><td>2h</td><td>Template for other projects</td></tr><tr><td><strong>Subtotal</strong></td><td><strong>~3 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-2--root-agent-instruction--ci-gate-3-days">Phase 2 — root agent instruction + CI gate (~3 days)</h3><a class="sl-anchor-link" href="#phase-2--root-agent-instruction--ci-gate-3-days"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 2 — root agent instruction + CI gate (~3 days)”</span></a></div>
 <p>Goal: PRs are gated by affected tests; agents know the command.</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| Add Tests-after-editing block to root <code dir="auto">CLAUDE.md</code> + <code dir="auto">AGENTS.md</code> | 1h | Single paragraph; cite §1.8 |
-| <code dir="auto">.github/workflows/test.yml</code> — per-PR affected pipeline | 4h | dorny/test-reporter for PR comments |
-| <code dir="auto">.github/workflows/test-nightly.yml</code> — full run | 2h | Coverage upload to artifacts |
-| Cache wiring (NX, Playwright, node_modules) | 4h | Cold→warm benchmarks |
-| <strong>Subtotal</strong> | <strong>~2 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>Add Tests-after-editing block to root <code dir="auto">CLAUDE.md</code> + <code dir="auto">AGENTS.md</code></td><td>1h</td><td>Single paragraph; cite §1.8</td></tr><tr><td><code dir="auto">.github/workflows/test.yml</code> — per-PR affected pipeline</td><td>4h</td><td>dorny/test-reporter for PR comments</td></tr><tr><td><code dir="auto">.github/workflows/test-nightly.yml</code> — full run</td><td>2h</td><td>Coverage upload to artifacts</td></tr><tr><td>Cache wiring (NX, Playwright, node_modules)</td><td>4h</td><td>Cold→warm benchmarks</td></tr><tr><td><strong>Subtotal</strong></td><td><strong>~2 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-3--coverage-rollout-to-remaining-projects-1-week">Phase 3 — coverage rollout to remaining projects (~1 week)</h3><a class="sl-anchor-link" href="#phase-3--coverage-rollout-to-remaining-projects-1-week"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 3 — coverage rollout to remaining projects (~1 week)”</span></a></div>
 <p>Goal: every existing project has at least unit + integration suites.</p>
 <p>For each of <code dir="auto">apps/web</code>, <code dir="auto">apps/shop</code>, <code dir="auto">apps/ingest-service</code>,
 <code dir="auto">apps/api-gateway</code>, <code dir="auto">libs/com</code>, <code dir="auto">libs/papergrid</code>:</p>
-<p>| Step per project | Estimated time | Notes |
-|---|---|---|
-| Convert Vitest config to <code dir="auto">defineVitestConfig</code> | 1h | |
-| Write 3–5 integration tests covering core paths | 4h | |
-| Write <code dir="auto">TESTING.md</code> | 1h | |
-| <strong>Subtotal per project</strong> | <strong>~1 day</strong> | |
-| <strong>Subtotal Phase 3</strong> | <strong>~6 days</strong> | 6 projects |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step per project</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>Convert Vitest config to <code dir="auto">defineVitestConfig</code></td><td>1h</td><td></td></tr><tr><td>Write 3–5 integration tests covering core paths</td><td>4h</td><td></td></tr><tr><td>Write <code dir="auto">TESTING.md</code></td><td>1h</td><td></td></tr><tr><td><strong>Subtotal per project</strong></td><td><strong>~1 day</strong></td><td></td></tr><tr><td><strong>Subtotal Phase 3</strong></td><td><strong>~6 days</strong></td><td>6 projects</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-4--storybook--lost-pixel-3-days">Phase 4 — Storybook + Lost Pixel (~3 days)</h3><a class="sl-anchor-link" href="#phase-4--storybook--lost-pixel-3-days"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 4 — Storybook + Lost Pixel (~3 days)”</span></a></div>
 <p>Goal: visual regression on UI apps.</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| Storybook 8 init in <code dir="auto">apps/web</code> + <code dir="auto">apps/shop</code> | 4h each | |
-| Move existing components into stories | <strong>2 days</strong> | Real work; varies wildly by app |
-| Lost Pixel config + first baselines | 4h | |
-| CI workflow: build Storybook static, run Lost Pixel | 2h | Behind <code dir="auto">run-visual</code> label |
-| <strong>Subtotal</strong> | <strong>~3 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>Storybook 8 init in <code dir="auto">apps/web</code> + <code dir="auto">apps/shop</code></td><td>4h each</td><td></td></tr><tr><td>Move existing components into stories</td><td><strong>2 days</strong></td><td>Real work; varies wildly by app</td></tr><tr><td>Lost Pixel config + first baselines</td><td>4h</td><td></td></tr><tr><td>CI workflow: build Storybook static, run Lost Pixel</td><td>2h</td><td>Behind <code dir="auto">run-visual</code> label</td></tr><tr><td><strong>Subtotal</strong></td><td><strong>~3 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="phase-5--fast-check--knip--flaky-quarantine-2-days">Phase 5 — fast-check + Knip + flaky quarantine (~2 days)</h3><a class="sl-anchor-link" href="#phase-5--fast-check--knip--flaky-quarantine-2-days"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Phase 5 — fast-check + Knip + flaky quarantine (~2 days)”</span></a></div>
 <p>Goal: opportunistic correctness improvements.</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| Add <code dir="auto">fast-check</code> to relevant lib(s); migrate 3–5 example-based tests | 4h | |
-| Add Knip config; address top 20 unused-export warnings | 4h | |
-| Quarantine workflow + <code dir="auto">quarantine.txt</code> reader in CI | 4h | |
-| <strong>Subtotal</strong> | <strong>~1.5 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>Add <code dir="auto">fast-check</code> to relevant lib(s); migrate 3–5 example-based tests</td><td>4h</td><td></td></tr><tr><td>Add Knip config; address top 20 unused-export warnings</td><td>4h</td><td></td></tr><tr><td>Quarantine workflow + <code dir="auto">quarantine.txt</code> reader in CI</td><td>4h</td><td></td></tr><tr><td><strong>Subtotal</strong></td><td><strong>~1.5 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="total-3-weeks">Total: ~3 weeks</h3><a class="sl-anchor-link" href="#total-3-weeks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Total: ~3 weeks”</span></a></div>
 <p>This is the realistic time for one engineer to ship the full stack.
 Two engineers in parallel can compress to ~2 weeks; agents can
@@ -782,18 +1099,56 @@ naming, documented in root <code dir="auto">CLAUDE.md</code>.</p>
 </li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="117-prior-art-and-references">1.17 Prior art and references</h2><a class="sl-anchor-link" href="#117-prior-art-and-references"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1.17 Prior art and references”</span></a></div>
-<p>| Pattern | Source |
-|---|---|
-| NX affected-graph for monorepo CI | NX docs |
-| Testcontainers for integration tests | testcontainers.com docs |
-| Vitest workspaces + per-project config | Vitest 3 release notes |
-| MSW handler-registry pattern | mswjs.io examples |
-| Playwright <code dir="auto">--trace=on-first-retry</code> | Playwright docs |
-| Storybook 8 Test addon (Vitest under the hood) | storybook.js.org |
-| Lost Pixel Storybook integration | lost-pixel.com docs |
-| Quarantine policy + flaky-test handling | Google Test Engineering blog series |
-| <code dir="auto">@vitest/coverage-v8</code> trend tracking | Vitest docs |
-| Three-export library limit pattern | informal; cf. <code dir="auto">libs/com</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pattern</th><th>Source</th></tr></thead><tbody><tr><td>NX affected-graph for monorepo CI</td><td>NX docs</td></tr><tr><td>Testcontainers for integration tests</td><td>testcontainers.com docs</td></tr><tr><td>Vitest workspaces + per-project config</td><td>Vitest 3 release notes</td></tr><tr><td>MSW handler-registry pattern</td><td>mswjs.io examples</td></tr><tr><td>Playwright <code dir="auto">--trace=on-first-retry</code></td><td>Playwright docs</td></tr><tr><td>Storybook 8 Test addon (Vitest under the hood)</td><td>storybook.js.org</td></tr><tr><td>Lost Pixel Storybook integration</td><td>lost-pixel.com docs</td></tr><tr><td>Quarantine policy + flaky-test handling</td><td>Google Test Engineering blog series</td></tr><tr><td><code dir="auto">@vitest/coverage-v8</code> trend tracking</td><td>Vitest docs</td></tr><tr><td>Three-export library limit pattern</td><td>informal; cf. <code dir="auto">libs/com</code></td></tr></tbody></table>
 <p><strong>Surveyed but not adopted, with reasoning:</strong></p>
 <ul>
 <li><em>Cypress</em>: Playwright covers the same use cases with better tooling.</li>

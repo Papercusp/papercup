@@ -101,12 +101,37 @@ also present at <code dir="auto">apps/operator/test/_pg-helpers.ts</code>; used 
 <code dir="auto">*.integration.test.ts</code>) binds JSONB params <strong>differently</strong> from the operator
 runtime client — despite <em>identical</em> postgres-js config (<code dir="auto">prepare:false</code>, same
 <code dir="auto">types:{bigint}</code>, same postgres 3.4.9):</p>
-<p>| form | <code dir="auto">getOrgPg</code> (runtime / production) | <code dir="auto">_pg-helpers</code> (testcontainer) |
-|---|---|---|
-| <code dir="auto">${JSON.stringify(obj)}::text::jsonb</code> | <strong>jsonb object</strong> ✓ | <strong>jsonb object</strong> ✓ ← <strong>USE THIS</strong> |
-| <code dir="auto">sql.json(obj)</code> | <strong>throws</strong> | works (jsonb object) |
-| <code dir="auto">${obj}</code> (bare) | <strong>throws</strong> | works (jsonb object) |
-| <code dir="auto">${JSON.stringify(obj)}::jsonb</code> | jsonb object ✓ | double-encodes → jsonb <strong>string</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>form</th><th><code dir="auto">getOrgPg</code> (runtime / production)</th><th><code dir="auto">_pg-helpers</code> (testcontainer)</th></tr></thead><tbody><tr><td><code dir="auto">${JSON.stringify(obj)}::text::jsonb</code></td><td><strong>jsonb object</strong> ✓</td><td><strong>jsonb object</strong> ✓ ← <strong>USE THIS</strong></td></tr><tr><td><code dir="auto">sql.json(obj)</code></td><td><strong>throws</strong></td><td>works (jsonb object)</td></tr><tr><td><code dir="auto">${obj}</code> (bare)</td><td><strong>throws</strong></td><td>works (jsonb object)</td></tr><tr><td><code dir="auto">${JSON.stringify(obj)}::jsonb</code></td><td>jsonb object ✓</td><td>double-encodes → jsonb <strong>string</strong></td></tr></tbody></table>
 <p>The root cause of the divergence is unexplained (configs match); it is likely a
 postgres-js protocol/connection nuance. The practical consequences:</p>
 <aside aria-label="Integration tests can't faithfully test JSONB binding here" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Integration tests can&#39;t faithfully test JSONB binding here </p>  <div class="starlight-aside__content"><p>A <code dir="auto">*.integration.test.ts</code> using <code dir="auto">_pg-helpers</code> will give the WRONG answer for

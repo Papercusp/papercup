@@ -158,24 +158,79 @@ harness UI was also restructured — there is no longer a <code dir="auto">Harne
 multi-pane / split-pane affordances the original phases deferred are present).
 The tables below give the current locations.</p></div> </aside>
 <div class="sl-heading-wrapper level-h4"><h4 id="new-files">New files</h4><a class="sl-anchor-link" href="#new-files"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “New files”</span></a></div>
-<p>| Path | Purpose |
-|---|---|
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/pty/index.ts</code> | Router mounted at <code dir="auto">/api/harness/:slug/pty/*</code> (+ <code dir="auto">/pi-sessions/audit/*</code>). Endpoints: <code dir="auto">POST /spawn</code>, <code dir="auto">POST /resolve</code>, <code dir="auto">POST /prewarm</code>, <code dir="auto">GET /:id/stream</code> (SSE), <code dir="auto">POST /:id/input</code>, <code dir="auto">POST /:id/resize</code>, <code dir="auto">POST /:id/kill</code>, <code dir="auto">GET /pty/tools</code>, <code dir="auto">GET /pi-sessions/audit[/:filename]</code>. Mutating routes are <code dir="auto">auth: 'loopback'</code>; the read/stream routes are <code dir="auto">auth: 'public'</code>. Handles live in a module-level <code dir="auto">Map</code> (in <code dir="auto">pty-bridge</code>) plus a prewarm pool. |
-| <code dir="auto">apps/operator/app/harness/PiPanel.tsx</code> | xterm.js React component (xterm + addon-fit + addon-web-links). SSE on mount, POST keystrokes on input, POST resize on container resize. Cleanup on unmount. |
-| <code dir="auto">apps/operator/app/harness/PiPanel.css</code> | Pane chrome (header bar, “open new”, spinner) + xterm theme matching papercusp dark colors. |
-| <code dir="auto">packages/operator-core/lib/pty-bridge.ts</code> | Server-side <code dir="auto">@lydell/node-pty</code> wrapper. <code dir="auto">spawnPty({command, args, cwd, env, cols, rows})</code> → typed handle with <code dir="auto">onData</code> / <code dir="auto">write</code> / <code dir="auto">resize</code> / <code dir="auto">kill</code>, an owner-SID tag, a 1 MB byte ring, and a per-handle <code dir="auto">xterm-headless</code> + <code dir="auto">SerializeAddon</code> mirror for bounded screen-state replay. Centralizes lifecycle, the host-scaled process-wide pty cap, and the 5-min idle reaper. |
-| <code dir="auto">packages/operator-core/lib/pty-ws.ts</code> | WebSocket server for the pty bridge (started from <code dir="auto">instrumentation.ts</code>). Client connects to <code dir="auto">ws://…/pty/&#x3C;id></code> after <code dir="auto">/spawn</code>; replaces the SSE-output + POST-input data channels with one full-duplex WS (binary frames, no base64), with VS Code-shape flow control. The HTTP control plane is unchanged. |
-| <code dir="auto">packages/operator-core/lib/pty-tauri.ts</code> | Native desktop data path — <code dir="auto">isTauriNative()</code> + <code dir="auto">openNativeSession()</code>. Inside the Tauri webview, forks the pty Rust-side and streams over Tauri IPC, bypassing HTTP/WS/SSE. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/pty/index.ts</code></td><td>Router mounted at <code dir="auto">/api/harness/:slug/pty/*</code> (+ <code dir="auto">/pi-sessions/audit/*</code>). Endpoints: <code dir="auto">POST /spawn</code>, <code dir="auto">POST /resolve</code>, <code dir="auto">POST /prewarm</code>, <code dir="auto">GET /:id/stream</code> (SSE), <code dir="auto">POST /:id/input</code>, <code dir="auto">POST /:id/resize</code>, <code dir="auto">POST /:id/kill</code>, <code dir="auto">GET /pty/tools</code>, <code dir="auto">GET /pi-sessions/audit[/:filename]</code>. Mutating routes are <code dir="auto">auth: 'loopback'</code>; the read/stream routes are <code dir="auto">auth: 'public'</code>. Handles live in a module-level <code dir="auto">Map</code> (in <code dir="auto">pty-bridge</code>) plus a prewarm pool.</td></tr><tr><td><code dir="auto">apps/operator/app/harness/PiPanel.tsx</code></td><td>xterm.js React component (xterm + addon-fit + addon-web-links). SSE on mount, POST keystrokes on input, POST resize on container resize. Cleanup on unmount.</td></tr><tr><td><code dir="auto">apps/operator/app/harness/PiPanel.css</code></td><td>Pane chrome (header bar, “open new”, spinner) + xterm theme matching papercusp dark colors.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/pty-bridge.ts</code></td><td>Server-side <code dir="auto">@lydell/node-pty</code> wrapper. <code dir="auto">spawnPty({command, args, cwd, env, cols, rows})</code> → typed handle with <code dir="auto">onData</code> / <code dir="auto">write</code> / <code dir="auto">resize</code> / <code dir="auto">kill</code>, an owner-SID tag, a 1 MB byte ring, and a per-handle <code dir="auto">xterm-headless</code> + <code dir="auto">SerializeAddon</code> mirror for bounded screen-state replay. Centralizes lifecycle, the host-scaled process-wide pty cap, and the 5-min idle reaper.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/pty-ws.ts</code></td><td>WebSocket server for the pty bridge (started from <code dir="auto">instrumentation.ts</code>). Client connects to <code dir="auto">ws://…/pty/&#x3C;id></code> after <code dir="auto">/spawn</code>; replaces the SSE-output + POST-input data channels with one full-duplex WS (binary frames, no base64), with VS Code-shape flow control. The HTTP control plane is unchanged.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/pty-tauri.ts</code></td><td>Native desktop data path — <code dir="auto">isTauriNative()</code> + <code dir="auto">openNativeSession()</code>. Inside the Tauri webview, forks the pty Rust-side and streams over Tauri IPC, bypassing HTTP/WS/SSE.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h4"><h4 id="modified-files">Modified files</h4><a class="sl-anchor-link" href="#modified-files"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Modified files”</span></a></div>
-<p>| Path | Change |
-|---|---|
-| <code dir="auto">apps/operator/package.json</code> | Added <code dir="auto">@lydell/node-pty</code> (the prebuilt-binary fork — chosen over plain <code dir="auto">node-pty</code>), <code dir="auto">@xterm/xterm</code>, <code dir="auto">@xterm/addon-fit</code>, <code dir="auto">@xterm/addon-web-links</code>, <code dir="auto">@xterm/addon-attach</code> (WS data path), <code dir="auto">@xterm/headless</code> + <code dir="auto">@xterm/addon-serialize</code> (server-side screen-state replay). |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code> | Register the pty router (flattened into the route table) so it mounts under <code dir="auto">/api/harness/:slug/pty</code>. |
-| <code dir="auto">apps/operator/app/harness/PiTerminalsDock.tsx</code> | Multi-pane (dockview) container that hosts the pi/omp terminals as draggable tabs/splits; each panel mounts a <code dir="auto">&#x3C;PiPanel></code>. (Replaces the original plan’s <code dir="auto">HarnessDashboard.tsx</code> <code dir="auto">MainPanel</code>-union single-tab integration after the harness-UI restructure.) |
-| <code dir="auto">apps/operator/app/harness/PiPanel.tsx</code> | Per-feature “open in pi” wiring: passes the feature id as <code dir="auto">laneId</code> so the pane spawns in that feature’s worktree. |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts</code> | <code dir="auto">pi</code> check (probes <code dir="auto">omp</code>, then well-known paths <code dir="auto">/usr/local/bin/omp</code>, <code dir="auto">/opt/homebrew/bin/omp</code>, … for the GUI no-login-shell PATH gotcha). |
-| <code dir="auto">papercusp-desktop/web/index.html</code> | Extend <code dir="auto">renderHint()</code> switch with a pi clause: install URL + recommended command. |
-| <code dir="auto">papercusp-desktop/README.md</code> | Document pi as optional prereq for the pi tab. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>Change</th></tr></thead><tbody><tr><td><code dir="auto">apps/operator/package.json</code></td><td>Added <code dir="auto">@lydell/node-pty</code> (the prebuilt-binary fork — chosen over plain <code dir="auto">node-pty</code>), <code dir="auto">@xterm/xterm</code>, <code dir="auto">@xterm/addon-fit</code>, <code dir="auto">@xterm/addon-web-links</code>, <code dir="auto">@xterm/addon-attach</code> (WS data path), <code dir="auto">@xterm/headless</code> + <code dir="auto">@xterm/addon-serialize</code> (server-side screen-state replay).</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code></td><td>Register the pty router (flattened into the route table) so it mounts under <code dir="auto">/api/harness/:slug/pty</code>.</td></tr><tr><td><code dir="auto">apps/operator/app/harness/PiTerminalsDock.tsx</code></td><td>Multi-pane (dockview) container that hosts the pi/omp terminals as draggable tabs/splits; each panel mounts a <code dir="auto">&#x3C;PiPanel></code>. (Replaces the original plan’s <code dir="auto">HarnessDashboard.tsx</code> <code dir="auto">MainPanel</code>-union single-tab integration after the harness-UI restructure.)</td></tr><tr><td><code dir="auto">apps/operator/app/harness/PiPanel.tsx</code></td><td>Per-feature “open in pi” wiring: passes the feature id as <code dir="auto">laneId</code> so the pane spawns in that feature’s worktree.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts</code></td><td><code dir="auto">pi</code> check (probes <code dir="auto">omp</code>, then well-known paths <code dir="auto">/usr/local/bin/omp</code>, <code dir="auto">/opt/homebrew/bin/omp</code>, … for the GUI no-login-shell PATH gotcha).</td></tr><tr><td><code dir="auto">papercusp-desktop/web/index.html</code></td><td>Extend <code dir="auto">renderHint()</code> switch with a pi clause: install URL + recommended command.</td></tr><tr><td><code dir="auto">papercusp-desktop/README.md</code></td><td>Document pi as optional prereq for the pi tab.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="io-protocol-http--ws--sse">I/O protocol (HTTP + WS / SSE)</h3><a class="sl-anchor-link" href="#io-protocol-http--ws--sse"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “I/O protocol (HTTP + WS / SSE)”</span></a></div>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">POST /api/harness/:slug/pty/spawn</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">body: { command?, args?, laneId?, cols?, rows?,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">          </span></span><span style="--0:#d6deeb;--1:#403f53">env?, resumePtyId? }</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">→ { id, command, args, cwd, pid }   // (+ prewarmed:true if adopted</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                                       </span></span><span style="--0:#d6deeb;--1:#403f53">//  from the pool, resumed:true</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">                                       </span></span><span style="--0:#d6deeb;--1:#403f53">//  if resumePtyId matched a live pty)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">cwd is derived from laneId (the lane's worktree if it exists, else the</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">project root) — there is no ctxPrompt or cwd field in the body.</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">POST /api/harness/:slug/pty/resolve</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">Same body shape; returns { command, args, cwd, env } WITHOUT spawning.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">Used by the Tauri-native path to build harness-aware args.</span></div></div><div class="ec-line"><div class="code">
@@ -188,13 +243,36 @@ The tables below give the current locations.</p></div> </aside>
 <p><strong>Reconnect / replay.</strong> The server keeps two replay sources per handle: an <code dir="auto">xterm-headless</code> mirror fed every byte (bounded screen-state serialization, ~tens of KB, VS Code’s approach — used for WS reconnect), and a 1 MB raw-byte ring (full-history replay, used by the SSE path). A dashboard tab switch therefore resumes the same pty with prior output intact rather than starting fresh.</p>
 <p><strong>Cross-agent wake routing.</strong> Each managed pty is tagged with its owner SID (<code dir="auto">PAPERCUSP_SID</code> from the spawn env) so the await-event wake executor can route a wake turn into the correct session. <code dir="auto">findPtyByPid</code> carries a recycled-pid guard (EI-151): a recorded pid recycled by the OS to a <em>different</em> owner’s live pty is not treated as a match.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="critical-files-to-read-first">Critical files to read first</h3><a class="sl-anchor-link" href="#critical-files-to-read-first"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Critical files to read first”</span></a></div>
-<p>| File | Why |
-|---|---|
-| <code dir="auto">apps/operator/app/harness/PiTerminalsDock.tsx</code> + <code dir="auto">PiPanel.tsx</code> | The current pi-pane surface — dockview multi-pane container + the xterm/SSE panel. (Supersedes the original <code dir="auto">HarnessDashboard.tsx</code> <code dir="auto">MainPanel</code>-union integration.) |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code> | Hono route-table assembly. The pty router registers the same way the harness/plugins routers do. |
-| <code dir="auto">papercusp-desktop/src-tauri/src/main.rs</code> | Sidecar spawn — confirms env passes through (<code dir="auto">PATH</code>, etc.) which pi needs. |
-| <code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts</code> | Pattern for prereq checks. The <code dir="auto">pi</code> check mirrors the <code dir="auto">claude</code> check (plus well-known-path probing). |
-| <code dir="auto">papercusp-desktop/web/index.html</code> | <code dir="auto">renderHint()</code> switch — the pi case. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File</th><th>Why</th></tr></thead><tbody><tr><td><code dir="auto">apps/operator/app/harness/PiTerminalsDock.tsx</code> + <code dir="auto">PiPanel.tsx</code></td><td>The current pi-pane surface — dockview multi-pane container + the xterm/SSE panel. (Supersedes the original <code dir="auto">HarnessDashboard.tsx</code> <code dir="auto">MainPanel</code>-union integration.)</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/index.ts</code></td><td>Hono route-table assembly. The pty router registers the same way the harness/plugins routers do.</td></tr><tr><td><code dir="auto">papercusp-desktop/src-tauri/src/main.rs</code></td><td>Sidecar spawn — confirms env passes through (<code dir="auto">PATH</code>, etc.) which pi needs.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts</code></td><td>Pattern for prereq checks. The <code dir="auto">pi</code> check mirrors the <code dir="auto">claude</code> check (plus well-known-path probing).</td></tr><tr><td><code dir="auto">papercusp-desktop/web/index.html</code></td><td><code dir="auto">renderHint()</code> switch — the pi case.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="verification">Verification</h3><a class="sl-anchor-link" href="#verification"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verification”</span></a></div>
 <p><strong>Phase 3a:</strong></p>
 <ol>
@@ -220,14 +298,40 @@ The tables below give the current locations.</p></div> </aside>
 <li>No stray pty processes survive sidecar shutdown.</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="risks">Risks</h3><a class="sl-anchor-link" href="#risks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Risks”</span></a></div>
-<p>| Risk | Mitigation |
-|---|---|
-| <code dir="auto">node-pty</code> native binding fails under Next.js <code dir="auto">output: 'standalone'</code> (Next traces deps and may miss the <code dir="auto">.node</code> file). | Verify on day 1. If <code dir="auto">next.config.js</code> <code dir="auto">outputFileTracingIncludes</code> doesn’t capture <code dir="auto">node_modules/node-pty/build/Release/*.node</code>, add an explicit include. Fallback: ship pty-bridge as a separate child process the Next handler shells out to. |
-| <code dir="auto">node-pty</code> Windows ConPTY initialization fails on older Win10. | Document min Windows version (10 1809+) in README. Surface a clear inline error in the pane. |
-| Pi binary not on <code dir="auto">PATH</code> despite being installed (Mac homebrew + Tauri-Cocoa launches without a login shell). | Probe <code dir="auto">/usr/local/bin/omp</code>, <code dir="auto">/opt/homebrew/bin/omp</code>, <code dir="auto">~/.cargo/bin/omp</code> in addition to <code dir="auto">which</code>. Fall back to user-configurable <code dir="auto">pi.binPath</code> in <code dir="auto">config.json</code>. |
-| Concurrent pi panes spawn many processes / use lots of memory. | A <strong>process-wide, host-scaled</strong> cap, not a fixed per-harness number: <code dir="auto">livePtyCap()</code> = <code dir="auto">min(host-scaled backstop, fleet maxSimultaneousAgents)</code>, where the backstop = <code dir="auto">min(2× the resource-profile agent budget, ceiling 16)</code>. Spawning past the cap throws <code dir="auto">pty cap reached (n/cap)</code>; the pane surfaces it inline. On a small box this floors low (a 4-core laptop’s backstop is ~2–4); on a typical box it sits well above 4. |
-| Pi’s nested PTY (its <code dir="auto">bash</code> tool) conflicts with the outer xterm.js PTY — terminal corruption or signal loss. | Spawn with <code dir="auto">--no-pty</code>. Pi degrades gracefully (loses interactive bash but keeps every other tool). |
-| Auth state drifts: user logged into Claude Code in their normal shell, but the desktop app launches without that env. | Surface <code dir="auto">ANTHROPIC_OAUTH_TOKEN</code> / <code dir="auto">ANTHROPIC_API_KEY</code> presence in the preflight UI; document the GUI-app-no-login-shell gotcha in the README. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Mitigation</th></tr></thead><tbody><tr><td><code dir="auto">node-pty</code> native binding fails under Next.js <code dir="auto">output: 'standalone'</code> (Next traces deps and may miss the <code dir="auto">.node</code> file).</td><td>Verify on day 1. If <code dir="auto">next.config.js</code> <code dir="auto">outputFileTracingIncludes</code> doesn’t capture <code dir="auto">node_modules/node-pty/build/Release/*.node</code>, add an explicit include. Fallback: ship pty-bridge as a separate child process the Next handler shells out to.</td></tr><tr><td><code dir="auto">node-pty</code> Windows ConPTY initialization fails on older Win10.</td><td>Document min Windows version (10 1809+) in README. Surface a clear inline error in the pane.</td></tr><tr><td>Pi binary not on <code dir="auto">PATH</code> despite being installed (Mac homebrew + Tauri-Cocoa launches without a login shell).</td><td>Probe <code dir="auto">/usr/local/bin/omp</code>, <code dir="auto">/opt/homebrew/bin/omp</code>, <code dir="auto">~/.cargo/bin/omp</code> in addition to <code dir="auto">which</code>. Fall back to user-configurable <code dir="auto">pi.binPath</code> in <code dir="auto">config.json</code>.</td></tr><tr><td>Concurrent pi panes spawn many processes / use lots of memory.</td><td>A <strong>process-wide, host-scaled</strong> cap, not a fixed per-harness number: <code dir="auto">livePtyCap()</code> = <code dir="auto">min(host-scaled backstop, fleet maxSimultaneousAgents)</code>, where the backstop = <code dir="auto">min(2× the resource-profile agent budget, ceiling 16)</code>. Spawning past the cap throws <code dir="auto">pty cap reached (n/cap)</code>; the pane surfaces it inline. On a small box this floors low (a 4-core laptop’s backstop is ~2–4); on a typical box it sits well above 4.</td></tr><tr><td>Pi’s nested PTY (its <code dir="auto">bash</code> tool) conflicts with the outer xterm.js PTY — terminal corruption or signal loss.</td><td>Spawn with <code dir="auto">--no-pty</code>. Pi degrades gracefully (loses interactive bash but keeps every other tool).</td></tr><tr><td>Auth state drifts: user logged into Claude Code in their normal shell, but the desktop app launches without that env.</td><td>Surface <code dir="auto">ANTHROPIC_OAUTH_TOKEN</code> / <code dir="auto">ANTHROPIC_API_KEY</code> presence in the preflight UI; document the GUI-app-no-login-shell gotcha in the README.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-is-explicitly-not-in-scope">What is explicitly NOT in scope</h2><a class="sl-anchor-link" href="#what-is-explicitly-not-in-scope"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What is explicitly NOT in scope”</span></a></div>
 <ul>
 <li>Replacing the <code dir="auto">vscode</code> tab — pi sits alongside it, not instead of it.</li>

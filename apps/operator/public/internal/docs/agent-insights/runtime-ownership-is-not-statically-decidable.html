@@ -97,12 +97,37 @@ weaker source of truth.</p>
 graph is too densely connected — because <em>the edges that decide ownership are largely not
 static import edges at all.</em> Four measured classes, each of which a static-graph walk gets
 wrong:</p>
-<p>| module | how it is really reached | what a static walk concludes |
-|---|---|---|
-| <code dir="auto">session-port/service.ts</code> | <code dir="auto">import()</code> <strong>inside an HTTP route</strong> — <code dir="auto">endpoint-route/routes/adv/sessions.ts:118</code> | “worker-only” — it is unambiguously operator-served |
-| <code dir="auto">sync/hyperbee/perf/runner.ts</code> | <strong>never imported</strong>; spawned as a <code dir="auto">tsx</code> CLI, <code dir="auto">testing-domains-registry.ts:821</code> | picks a host — <strong>neither</strong> host owns it |
-| <code dir="auto">pr-host/poll-daemon.ts</code> | bare <strong>side-effect registration</strong> into the system-action registry, <code dir="auto">register-system-actions.ts:259</code> | depends on which root you walk; <strong>both</strong> hosts load the registry |
-| <code dir="auto">dbos/routines-workflow.ts</code> | the worker boundary itself is dynamic — <code dir="auto">dbos/bootstrap.ts:289</code> <code dir="auto">await import('./routines-workflow')</code>, gated on <code dir="auto">BACKGROUND_WORKERS=1</code> | the operator’s static graph and its real load set differ <strong>exactly at the point that matters</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>module</th><th>how it is really reached</th><th>what a static walk concludes</th></tr></thead><tbody><tr><td><code dir="auto">session-port/service.ts</code></td><td><code dir="auto">import()</code> <strong>inside an HTTP route</strong> — <code dir="auto">endpoint-route/routes/adv/sessions.ts:118</code></td><td>”worker-only” — it is unambiguously operator-served</td></tr><tr><td><code dir="auto">sync/hyperbee/perf/runner.ts</code></td><td><strong>never imported</strong>; spawned as a <code dir="auto">tsx</code> CLI, <code dir="auto">testing-domains-registry.ts:821</code></td><td>picks a host — <strong>neither</strong> host owns it</td></tr><tr><td><code dir="auto">pr-host/poll-daemon.ts</code></td><td>bare <strong>side-effect registration</strong> into the system-action registry, <code dir="auto">register-system-actions.ts:259</code></td><td>depends on which root you walk; <strong>both</strong> hosts load the registry</td></tr><tr><td><code dir="auto">dbos/routines-workflow.ts</code></td><td>the worker boundary itself is dynamic — <code dir="auto">dbos/bootstrap.ts:289</code> <code dir="auto">await import('./routines-workflow')</code>, gated on <code dir="auto">BACKGROUND_WORKERS=1</code></td><td>the operator’s static graph and its real load set differ <strong>exactly at the point that matters</strong></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-this-confirms-the-current-design-instead-of-overturning-it">Why this confirms the current design instead of overturning it</h2><a class="sl-anchor-link" href="#why-this-confirms-the-current-design-instead-of-overturning-it"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why this confirms the current design instead of overturning it”</span></a></div>
 <p>The failure is asymmetric, and derivation fails in the bad direction.</p>
 <ul>

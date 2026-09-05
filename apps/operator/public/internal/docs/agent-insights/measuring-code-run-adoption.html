@@ -155,12 +155,52 @@ confirm the clean-adoption + token deltas on the real fleet model.</li>
 <p>Run on <strong>sonnet</strong> (SUT) with sim+judge on haiku to minimise sonnet-pool load, through the OAuth
 gateway pool in a clear window. The capability ceiling haiku hit is gone: sonnet realises the clean
 batch the whole tool exists for.</p>
-<p>| Scenario | arm | verdict | tool calls | cost | sequence |
-|---|---|---|---|---|---|
-| S13 (N=12 loop) | baseline | <strong>pass</strong> | <strong>2</strong> | $0.025 | <code dir="auto">work_items:list</code> → <strong><code dir="auto">code:run</code></strong> |
-| S13 (N=12 loop) | no-coderun | fail* | 7 | $0.058 | tried <code dir="auto">code:run</code>×3 (denied) → hand-looped <code dir="auto">work_items:get</code>×3 |
-| S14 (single/non-loop) | baseline | <strong>pass</strong> | 2 | $0.015 | <code dir="auto">harness:status</code>, <code dir="auto">issues:list</code> (NO code:run) |
-| S15 (N=3 loop) | baseline | fail | 3 | $0.012 | <code dir="auto">work_items:get</code>×3 (hand-looped, no batch) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Scenario</th><th>arm</th><th>verdict</th><th>tool calls</th><th>cost</th><th>sequence</th></tr></thead><tbody><tr><td>S13 (N=12 loop)</td><td>baseline</td><td><strong>pass</strong></td><td><strong>2</strong></td><td>$0.025</td><td><code dir="auto">work_items:list</code> → <strong><code dir="auto">code:run</code></strong></td></tr><tr><td>S13 (N=12 loop)</td><td>no-coderun</td><td>fail*</td><td>7</td><td>$0.058</td><td>tried <code dir="auto">code:run</code>×3 (denied) → hand-looped <code dir="auto">work_items:get</code>×3</td></tr><tr><td>S14 (single/non-loop)</td><td>baseline</td><td><strong>pass</strong></td><td>2</td><td>$0.015</td><td><code dir="auto">harness:status</code>, <code dir="auto">issues:list</code> (NO code:run)</td></tr><tr><td>S15 (N=3 loop)</td><td>baseline</td><td>fail</td><td>3</td><td>$0.012</td><td><code dir="auto">work_items:get</code>×3 (hand-looped, no batch)</td></tr></tbody></table>
 <p>What it establishes:</p>
 <ul>
 <li><strong>Clean adoption is real on the fleet model.</strong> On the N=12 task sonnet collapsed the per-item loop
@@ -312,12 +352,42 @@ and it is the closest methodological sibling to the code:run A/B at the top of t
 whether marking an <em>information asymmetry</em> in a handoff actually helps the receiver — i.e. whether a
 proposed feature is worth BUILDING at all. All four arms share one world
 (<code dir="auto">_S31-asymmetry-world.ts</code>), which holds the task constant and varies only the peer’s checkpoint:</p>
-<p>| arm | scenario | the checkpoint carries | what it isolates |
-|---|---|---|---|
-| A | <code dir="auto">su-S31a-asymmetry-control</code> | bare Did / Left / Next | the <strong>ceiling</strong>: expected to fail <code dir="auto">no-duplicate-rederivation</code>, since it must re-derive what it was never told |
-| B | <code dir="auto">su-S31b-asymmetry-prose</code> | every fact from arm C, as ordinary prose | <strong>information held constant</strong> — the load-bearing control |
-| C | <code dir="auto">su-S31c-asymmetry-field</code> | the same facts in a labeled <code dir="auto">knownToMe</code> / <code dir="auto">couldNotDetermine</code> field | the field’s <strong>structure</strong>, isolated against B |
-| D | <code dir="auto">su-S31d-asymmetry-provenance</code> | an auto-derived <code dir="auto">basedOn</code> trace of what the peer read and ran | <strong>zero authoring cost</strong> — no sender prediction at all |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>arm</th><th>scenario</th><th>the checkpoint carries</th><th>what it isolates</th></tr></thead><tbody><tr><td>A</td><td><code dir="auto">su-S31a-asymmetry-control</code></td><td>bare Did / Left / Next</td><td>the <strong>ceiling</strong>: expected to fail <code dir="auto">no-duplicate-rederivation</code>, since it must re-derive what it was never told</td></tr><tr><td>B</td><td><code dir="auto">su-S31b-asymmetry-prose</code></td><td>every fact from arm C, as ordinary prose</td><td><strong>information held constant</strong> — the load-bearing control</td></tr><tr><td>C</td><td><code dir="auto">su-S31c-asymmetry-field</code></td><td>the same facts in a labeled <code dir="auto">knownToMe</code> / <code dir="auto">couldNotDetermine</code> field</td><td>the field’s <strong>structure</strong>, isolated against B</td></tr><tr><td>D</td><td><code dir="auto">su-S31d-asymmetry-provenance</code></td><td>an auto-derived <code dir="auto">basedOn</code> trace of what the peer read and ran</td><td><strong>zero authoring cost</strong> — no sender prediction at all</td></tr></tbody></table>
 <p>Two things make this design worth copying:</p>
 <ul>
 <li><strong>Arm A’s failure rate is the point, not a defect.</strong> It measures the magnitude ceiling on what any

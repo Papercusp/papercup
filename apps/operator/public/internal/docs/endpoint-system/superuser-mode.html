@@ -124,11 +124,28 @@ vanilla; only <code dir="auto">psu</code> loads the playbook.</p>
 with the playbook + the <code dir="auto">papercusp-su</code> MCP + the right per-client flags
 assembled per launch (<code dir="auto">buildLaunchSpec</code>):</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">psu</span><span style="--0:#D6DEEB;--1:#403F53">                                                          </span><span style="--0:#919F9F;--1:#5F636F"># interactive picker</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">psu</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--no-picker</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--agent=claude</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--harness=papercup</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--no-plan</span><span style="--0:#D6DEEB;--1:#403F53">  </span><span style="--0:#919F9F;--1:#5F636F"># scripting</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">psu</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--resume</span><span style="--0:#D6DEEB;--1:#403F53">                                                 </span><span style="--0:#919F9F;--1:#5F636F"># resume a tracked session</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="psu                                                          # interactive pickerpsu --no-picker --agent=claude --harness=papercup --no-plan  # scriptingpsu --resume                                                 # resume a tracked session"><div></div></button></div></figure></div>
-<p>| Agent | Playbook injection |
-|---|---|
-| <code dir="auto">omp</code> | <code dir="auto">--append-system-prompt ~/.papercusp/&#x3C;profile>-collaborator.md</code> (+ <code dir="auto">-e ~/.papercusp/papercusp-coord.ts</code> for coordination) |
-| <code dir="auto">claude</code> | <code dir="auto">--append-system-prompt-file ~/.papercusp/&#x3C;profile>-collaborator.claude.md</code> |
-| <code dir="auto">codex</code> | a per-session <code dir="auto">CODEX_HOME</code> whose <code dir="auto">AGENTS.md</code> <em>is</em> the playbook |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Agent</th><th>Playbook injection</th></tr></thead><tbody><tr><td><code dir="auto">omp</code></td><td><code dir="auto">--append-system-prompt ~/.papercusp/&#x3C;profile>-collaborator.md</code> (+ <code dir="auto">-e ~/.papercusp/papercusp-coord.ts</code> for coordination)</td></tr><tr><td><code dir="auto">claude</code></td><td><code dir="auto">--append-system-prompt-file ~/.papercusp/&#x3C;profile>-collaborator.claude.md</code></td></tr><tr><td><code dir="auto">codex</code></td><td>a per-session <code dir="auto">CODEX_HOME</code> whose <code dir="auto">AGENTS.md</code> <em>is</em> the playbook</td></tr></tbody></table>
 <p><strong>One base, per-client overlays.</strong> The shared base playbook
 (<code dir="auto">prompts/papercusp-su-&#x3C;profile>.tools.md</code>) carries all client-neutral
 guidance. The client-specific task/workflow tooling — which differs by
@@ -223,17 +240,62 @@ direct-name call can’t bypass the listing restriction.</p>
 <code dir="auto">isSuperuser</code> short-circuits in both), per-window quota, and the
 spawn-URL signature check (superuser has its own bearer envelope).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="troubleshooting">Troubleshooting</h2><a class="sl-anchor-link" href="#troubleshooting"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Troubleshooting”</span></a></div>
-<p>| Symptom | Cause | Fix |
-|---|---|---|
-| <code dir="auto">request_rejected: superuser_invalid_bearer</code> on <code dir="auto">tools/call</code> (and an empty <code dir="auto">tools/list</code>) | Token mismatch, token file missing, or <code dir="auto">Authorization: Bearer &#x3C;token></code> header not sent | Re-run <code dir="auto">install-standalone-mcp.sh</code>; check the header is set in <code dir="auto">~/.omp/agent/mcp.json</code> / <code dir="auto">~/.claude.json</code> |
-| <code dir="auto">request_rejected: superuser_non_loopback</code> | Request didn’t originate from loopback (127.0.0.1 / ::1 / localhost) | Call the operator over loopback |
-| <code dir="auto">unknown_tool</code> 404 | Plugin didn’t load | <code dir="auto">curl /api/plugins/host/refresh</code> to see load errors |
-| <code dir="auto">harness_required</code> / <code dir="auto">workspace required</code> from a tool | Tool needs a real workspace/harness; <code dir="auto">*</code> doesn’t work for it | Pass <code dir="auto">workspace: "default"</code> (or other slug from <code dir="auto">list_workspaces</code>) explicitly |
-| <code dir="auto">unauthorized</code> 401 (<code dir="auto">built-in tool "..." requires a workspace-scoped call</code>) | A first-party tool needs a workspace tx and the session is unscoped (<code dir="auto">workspaceId='*'</code>) | Pass <code dir="auto">?superuser=1&#x26;workspace=&#x3C;slug></code> (or a per-call <code dir="auto">workspace</code> arg) |
-| <code dir="auto">request_timeout: tool "..." exceeded ...ms</code> | Tool ran past the 55s transport deadline (<code dir="auto">PAPERCUSP_MCP_DEADLINE_MS</code>); it keeps running server-side | Retry with the same <code dir="auto">_meta.idempotencyKey</code> to replay the result, or raise the env deadline |
-| <code dir="auto">tool_not_available_for_profile</code> | A <code dir="auto">?profile=power</code> session named an engineer-only (Group A) tool | Drop <code dir="auto">?profile=power</code> (full operator surface), or call a power-profile tool |
-| <code dir="auto">scoped_superuser_workspace_unresolved</code> | <code dir="auto">papercusp-scoped-superuser-clamp</code> is ON and the session resolved to no workspace | Pass <code dir="auto">?workspace=&#x3C;slug></code>, or opt into god-mode with <code dir="auto">?workspace=*</code> / <code dir="auto">?all_workspaces=1</code> |
-| <code dir="auto">workspace_forbidden</code> / <code dir="auto">harness_forbidden</code> | Clamp is ON and a scoped session tried to span workspaces, use <code dir="auto">harness:'all'</code>, or escape its pot | Use an unscoped (<code dir="auto">?workspace=*</code> / <code dir="auto">?all_workspaces=1</code>) session, or name a concrete in-scope harness |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead><tbody><tr><td><code dir="auto">request_rejected: superuser_invalid_bearer</code> on <code dir="auto">tools/call</code> (and an empty <code dir="auto">tools/list</code>)</td><td>Token mismatch, token file missing, or <code dir="auto">Authorization: Bearer &#x3C;token></code> header not sent</td><td>Re-run <code dir="auto">install-standalone-mcp.sh</code>; check the header is set in <code dir="auto">~/.omp/agent/mcp.json</code> / <code dir="auto">~/.claude.json</code></td></tr><tr><td><code dir="auto">request_rejected: superuser_non_loopback</code></td><td>Request didn’t originate from loopback (127.0.0.1 / ::1 / localhost)</td><td>Call the operator over loopback</td></tr><tr><td><code dir="auto">unknown_tool</code> 404</td><td>Plugin didn’t load</td><td><code dir="auto">curl /api/plugins/host/refresh</code> to see load errors</td></tr><tr><td><code dir="auto">harness_required</code> / <code dir="auto">workspace required</code> from a tool</td><td>Tool needs a real workspace/harness; <code dir="auto">*</code> doesn’t work for it</td><td>Pass <code dir="auto">workspace: "default"</code> (or other slug from <code dir="auto">list_workspaces</code>) explicitly</td></tr><tr><td><code dir="auto">unauthorized</code> 401 (<code dir="auto">built-in tool "..." requires a workspace-scoped call</code>)</td><td>A first-party tool needs a workspace tx and the session is unscoped (<code dir="auto">workspaceId='*'</code>)</td><td>Pass <code dir="auto">?superuser=1&#x26;workspace=&#x3C;slug></code> (or a per-call <code dir="auto">workspace</code> arg)</td></tr><tr><td><code dir="auto">request_timeout: tool "..." exceeded ...ms</code></td><td>Tool ran past the 55s transport deadline (<code dir="auto">PAPERCUSP_MCP_DEADLINE_MS</code>); it keeps running server-side</td><td>Retry with the same <code dir="auto">_meta.idempotencyKey</code> to replay the result, or raise the env deadline</td></tr><tr><td><code dir="auto">tool_not_available_for_profile</code></td><td>A <code dir="auto">?profile=power</code> session named an engineer-only (Group A) tool</td><td>Drop <code dir="auto">?profile=power</code> (full operator surface), or call a power-profile tool</td></tr><tr><td><code dir="auto">scoped_superuser_workspace_unresolved</code></td><td><code dir="auto">papercusp-scoped-superuser-clamp</code> is ON and the session resolved to no workspace</td><td>Pass <code dir="auto">?workspace=&#x3C;slug></code>, or opt into god-mode with <code dir="auto">?workspace=*</code> / <code dir="auto">?all_workspaces=1</code></td></tr><tr><td><code dir="auto">workspace_forbidden</code> / <code dir="auto">harness_forbidden</code></td><td>Clamp is ON and a scoped session tried to span workspaces, use <code dir="auto">harness:'all'</code>, or escape its pot</td><td>Use an unscoped (<code dir="auto">?workspace=*</code> / <code dir="auto">?all_workspaces=1</code>) session, or name a concrete in-scope harness</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="telemetry">Telemetry</h2><a class="sl-anchor-link" href="#telemetry"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Telemetry”</span></a></div>
 <p>Every superuser tool call writes a <code dir="auto">harness_shared.tool_invocations</code>
 row with:</p>

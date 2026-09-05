@@ -86,15 +86,52 @@ currently be verified live at all</strong>. All seven will bite anyone exercisin
 the <strong>pot-scoped</strong> form, or federated coordination generally, on a real
 multi-hive/multi-machine workspace.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="bugs-filed-repro--evidence-in-each">Bugs filed (repro + evidence in each)</h2><a class="sl-anchor-link" href="#bugs-filed-repro--evidence-in-each"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Bugs filed (repro + evidence in each)”</span></a></div>
-<p>| id          | Summary                                                                                                                                                                                                                                                                                                            | Where it bites                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| <strong>WI-5446</strong> | <strong>Cross-machine seat-offers do not federate at all</strong> between tower and iMac — donor delegate succeeds locally (<code dir="auto">hive</code> correctly passed), the offer never reaches the spender; zero P2P receipts on BOTH machines. Linked caused-by <strong>WI-953</strong> (same publish-succeeds/receiver-hears-nothing shape, one layer down) | the actual blocker behind P-011 — no cross-machine spend is currently verifiable live            |
-| <strong>WI-5445</strong> | <strong>Umbrella:</strong> four surfaces on the cross-machine path handle hive-disambiguation four different, inconsistent ways — <code dir="auto">coord:send</code> has no way to comply at all                                                                                                                                                      | the reusable framing for EI-16667/EI-16673 below, plus a <code dir="auto">coord:send</code> gap neither of them covers |
-| <strong>WI-5447</strong> | <code dir="auto">resource:delegate { remove:true }</code> deletes the local allotment but leaves the published seat-offer <code dir="auto">'open'</code>, so a revoked delegation still shadows the fleet’s offer picker                                                                                                                                       | contradicts P-001’s own “revoke works exactly like the fleet-scoped form” requirement            |
-| EI-16667    | <code dir="auto">resource:delegate</code> (potSlug+agent_slot) silently skips its P2P seat-offer publish on a multi-hive workspace when <code dir="auto">hive</code> is omitted                                                                                                                                                                               | write side of pot-scoped delegation                                                              |
-| EI-16673    | <code dir="auto">resource:offers</code> has no <code dir="auto">potSlug</code>/<code dir="auto">hive</code> disambiguation arg, so pot-wide <code dir="auto">potShared</code> visibility can never resolve on a multi-hive workspace                                                                                                                                                                       | read side of pot-scoped delegation                                                               |
-| EI-16693    | <code dir="auto">coord:send{wake:'required'}</code>’s liveness check disagreed with <code dir="auto">coord:presence</code> for a federated recipient — reported <code dir="auto">sessionState:'ended'</code>/<code dir="auto">recipient_absent:true</code> for a peer that was, in fact, alive and working                                                                                                 | any cross-machine wake/dispatch decision, not just seat-pools                                    |
-| EI-16685    | the always-armed inbox-wake repeatedly redelivered a backlog of stale/already-read messages with expired nonces across ~5 consecutive turns                                                                                                                                                                       | general session hygiene, surfaced during this drill                                              |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>id</th><th>Summary</th><th>Where it bites</th></tr></thead><tbody><tr><td><strong>WI-5446</strong></td><td><strong>Cross-machine seat-offers do not federate at all</strong> between tower and iMac — donor delegate succeeds locally (<code dir="auto">hive</code> correctly passed), the offer never reaches the spender; zero P2P receipts on BOTH machines. Linked caused-by <strong>WI-953</strong> (same publish-succeeds/receiver-hears-nothing shape, one layer down)</td><td>the actual blocker behind P-011 — no cross-machine spend is currently verifiable live</td></tr><tr><td><strong>WI-5445</strong></td><td><strong>Umbrella:</strong> four surfaces on the cross-machine path handle hive-disambiguation four different, inconsistent ways — <code dir="auto">coord:send</code> has no way to comply at all</td><td>the reusable framing for EI-16667/EI-16673 below, plus a <code dir="auto">coord:send</code> gap neither of them covers</td></tr><tr><td><strong>WI-5447</strong></td><td><code dir="auto">resource:delegate { remove:true }</code> deletes the local allotment but leaves the published seat-offer <code dir="auto">'open'</code>, so a revoked delegation still shadows the fleet’s offer picker</td><td>contradicts P-001’s own “revoke works exactly like the fleet-scoped form” requirement</td></tr><tr><td>EI-16667</td><td><code dir="auto">resource:delegate</code> (potSlug+agent_slot) silently skips its P2P seat-offer publish on a multi-hive workspace when <code dir="auto">hive</code> is omitted</td><td>write side of pot-scoped delegation</td></tr><tr><td>EI-16673</td><td><code dir="auto">resource:offers</code> has no <code dir="auto">potSlug</code>/<code dir="auto">hive</code> disambiguation arg, so pot-wide <code dir="auto">potShared</code> visibility can never resolve on a multi-hive workspace</td><td>read side of pot-scoped delegation</td></tr><tr><td>EI-16693</td><td><code dir="auto">coord:send{wake:'required'}</code>’s liveness check disagreed with <code dir="auto">coord:presence</code> for a federated recipient — reported <code dir="auto">sessionState:'ended'</code>/<code dir="auto">recipient_absent:true</code> for a peer that was, in fact, alive and working</td><td>any cross-machine wake/dispatch decision, not just seat-pools</td></tr><tr><td>EI-16685</td><td>the always-armed inbox-wake repeatedly redelivered a backlog of stale/already-read messages with expired nonces across ~5 consecutive turns</td><td>general session hygiene, surfaced during this drill</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="wi-5446--cross-machine-seat-offers-do-not-federate-likely--wi-953">WI-5446 — cross-machine seat-offers do not federate (likely = WI-953)</h3><a class="sl-anchor-link" href="#wi-5446--cross-machine-seat-offers-do-not-federate-likely--wi-953"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “WI-5446 — cross-machine seat-offers do not federate (likely = WI-953)”</span></a></div>
 <p>Staged correctly, as pot-seat-pools fleet leader: the donor-side
 delegation was fired <strong>on the iMac</strong> (via <code dir="auto">ssh 172.31.44.2</code> → its local
@@ -122,12 +159,37 @@ the P2P federation layer itself.</p>
 DIRECTORY ANNOUNCE never reaches the joiner”, major, open since
 2026-06-29) — stated as a strong hypothesis with reasoning, not
 established fact:</p>
-<p>|                | WI-953                                                                     | WI-5446 (this)                                                |
-| -------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| publisher side | owner creates + publishes hive, <code dir="auto">announced</code> reported                       | donor <code dir="auto">resource:delegate</code> returns ok, allotment active        |
-| wire           | peers connect on the topic, but ZERO slug-filter/announce lines processed  | zero P2P receipts AND zero refused-op counters, both machines |
-| joiner side    | <code dir="auto">/api/discovery/hives</code> stays <code dir="auto">count=0</code>; never admits the owner’s home core | tower never sees the offer; auto-select-of-one proves absence |
-| net            | 0 content federates                                                        | 0 offers federate                                             |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>WI-953</th><th>WI-5446 (this)</th></tr></thead><tbody><tr><td>publisher side</td><td>owner creates + publishes hive, <code dir="auto">announced</code> reported</td><td>donor <code dir="auto">resource:delegate</code> returns ok, allotment active</td></tr><tr><td>wire</td><td>peers connect on the topic, but ZERO slug-filter/announce lines processed</td><td>zero P2P receipts AND zero refused-op counters, both machines</td></tr><tr><td>joiner side</td><td><code dir="auto">/api/discovery/hives</code> stays <code dir="auto">count=0</code>; never admits the owner’s home core</td><td>tower never sees the offer; auto-select-of-one proves absence</td></tr><tr><td>net</td><td>0 content federates</td><td>0 offers federate</td></tr></tbody></table>
 <p>In both cases the local publish reports success and the remote side
 receives <strong>nothing at all</strong> — not a rejection, not a refusal receipt,
 silence. WI-953’s own analysis places the fault “UPSTREAM at the

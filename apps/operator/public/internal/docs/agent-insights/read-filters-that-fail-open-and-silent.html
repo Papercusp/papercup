@@ -84,15 +84,60 @@ never handed an empty result that screams “I am broken.” You are handed a sm
 reasonable-looking result. That is why these survive for hours and why they are
 discovered by coincidence rather than by the check that should have caught them.</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-seven-instances">The seven instances</h2><a class="sl-anchor-link" href="#the-seven-instances"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The seven instances”</span></a></div>
-<p>| # | The read side looked at | The write side actually used | What it cost |
-|---|---|---|---|
-| 1 | claim-spec <code dir="auto">field:'tags'</code> → the <code dir="auto">work_items.tags</code> <strong>column</strong> | <code dir="auto">payload.tags</code> | A fleet’s whole p2p exclusion leg matched nothing for hours. 282 open bugs: tags column populated on <strong>0</strong>, <code dir="auto">payload.tags</code> on 9. Four members independently reported excluded items being served; each report looked individually dismissible. |
-| 2 | completion audit read <code dir="auto">payload._completionEvidence</code> only | prose closes store <code dir="auto">terminal_completion_ref</code> | <strong>5 false bare-close accusations out of 43</strong> — nearly re-opened five legitimately-closed items. |
-| 3 | <code dir="auto">work_items:list { admissibleOnly:true }</code> treated as the claimable verdict | the real claim path applies ~12 floors | Overcounts claimable work ~13×. |
-| 4 | issue-family routing read <code dir="auto">needs_human_review</code> (a <strong>feature-family</strong> column) | issue-family uses <code dir="auto">payload.needsHuman</code> | Human-routing silently never triggered for issues. |
-| 5 | <code dir="auto">testing:run</code> with files from two workspaces | ran <strong>one</strong> workspace’s files, returned <code dir="auto">ok:true</code> | 2 files requested → <code dir="auto">files:1, passed:4, failures:[]</code>. A green result having never run half the tests — a false completion-evidence generator. (<code dir="auto">EI-18816219270453131</code>) |
-| 6 | <code dir="auto">dev:pipeline_position</code> <code dir="auto">missingReason:'newer-commit'</code> | identical string for a genuine miss <strong>and</strong> a peer-commit false alarm | ~2h of a fleet-wide outage spent re-firing a gate whose every candidate already carried the fix. |
-| 7 | <code dir="auto">lint:tsc --mine</code> infers “your” files from <code dir="auto">git status</code> | one shared tree, every agent’s edits unstaged | Reports a file you never opened as “1 file(s) YOU changed” — and buries your real regression in peer noise. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>The read side looked at</th><th>The write side actually used</th><th>What it cost</th></tr></thead><tbody><tr><td>1</td><td>claim-spec <code dir="auto">field:'tags'</code> → the <code dir="auto">work_items.tags</code> <strong>column</strong></td><td><code dir="auto">payload.tags</code></td><td>A fleet’s whole p2p exclusion leg matched nothing for hours. 282 open bugs: tags column populated on <strong>0</strong>, <code dir="auto">payload.tags</code> on 9. Four members independently reported excluded items being served; each report looked individually dismissible.</td></tr><tr><td>2</td><td>completion audit read <code dir="auto">payload._completionEvidence</code> only</td><td>prose closes store <code dir="auto">terminal_completion_ref</code></td><td><strong>5 false bare-close accusations out of 43</strong> — nearly re-opened five legitimately-closed items.</td></tr><tr><td>3</td><td><code dir="auto">work_items:list { admissibleOnly:true }</code> treated as the claimable verdict</td><td>the real claim path applies ~12 floors</td><td>Overcounts claimable work ~13×.</td></tr><tr><td>4</td><td>issue-family routing read <code dir="auto">needs_human_review</code> (a <strong>feature-family</strong> column)</td><td>issue-family uses <code dir="auto">payload.needsHuman</code></td><td>Human-routing silently never triggered for issues.</td></tr><tr><td>5</td><td><code dir="auto">testing:run</code> with files from two workspaces</td><td>ran <strong>one</strong> workspace’s files, returned <code dir="auto">ok:true</code></td><td>2 files requested → <code dir="auto">files:1, passed:4, failures:[]</code>. A green result having never run half the tests — a false completion-evidence generator. (<code dir="auto">EI-18816219270453131</code>)</td></tr><tr><td>6</td><td><code dir="auto">dev:pipeline_position</code> <code dir="auto">missingReason:'newer-commit'</code></td><td>identical string for a genuine miss <strong>and</strong> a peer-commit false alarm</td><td>~2h of a fleet-wide outage spent re-firing a gate whose every candidate already carried the fix.</td></tr><tr><td>7</td><td><code dir="auto">lint:tsc --mine</code> infers “your” files from <code dir="auto">git status</code></td><td>one shared tree, every agent’s edits unstaged</td><td>Reports a file you never opened as “1 file(s) YOU changed” — and buries your real regression in peer noise.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-detection-heuristic">The detection heuristic</h2><a class="sl-anchor-link" href="#the-detection-heuristic"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The detection heuristic”</span></a></div>
 <p><strong>1. A check over a multi-part predicate must exercise EACH part independently — and a
 carried claim must name WHICH part it exercised.</strong></p>

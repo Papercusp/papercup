@@ -230,15 +230,60 @@ orchestrator, swaps state, restarts. Acceptable downtime is seconds.</li>
 Federation between instances is v2+.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="152-the-ontological-split--three-concepts">15.2 The ontological split — three concepts</h2><a class="sl-anchor-link" href="#152-the-ontological-split--three-concepts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.2 The ontological split — three concepts”</span></a></div>
-<p>| | <strong>Template</strong> | <strong>Snapshot</strong> | <strong>Plugin</strong> |
-|---|---|---|---|
-| What it is | A recipe (config + initial files) | A frozen harness instance (template + state) | A horizontal capability |
-| Contains state? | No | <strong>Yes</strong> — DB rows, repo files, agent decisions | No |
-| Marketplace concept | “Install fresh” | “Fork this in-progress work” | “Enable on existing harness” |
-| Versioned? | Yes (semver) | Yes (immutable per-publish) | Yes (semver) |
-| Default visibility | Public | <strong>Private</strong> | Public |
-| Lifecycle | Stable, evolving | Snapshot is immutable; new snapshots are new artifacts | Stable, evolving |
-| Storage size (typical) | ~50 KB | 50 MB – 500 MB | ~100 KB |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th><strong>Template</strong></th><th><strong>Snapshot</strong></th><th><strong>Plugin</strong></th></tr></thead><tbody><tr><td>What it is</td><td>A recipe (config + initial files)</td><td>A frozen harness instance (template + state)</td><td>A horizontal capability</td></tr><tr><td>Contains state?</td><td>No</td><td><strong>Yes</strong> — DB rows, repo files, agent decisions</td><td>No</td></tr><tr><td>Marketplace concept</td><td>”Install fresh"</td><td>"Fork this in-progress work"</td><td>"Enable on existing harness”</td></tr><tr><td>Versioned?</td><td>Yes (semver)</td><td>Yes (immutable per-publish)</td><td>Yes (semver)</td></tr><tr><td>Default visibility</td><td>Public</td><td><strong>Private</strong></td><td>Public</td></tr><tr><td>Lifecycle</td><td>Stable, evolving</td><td>Snapshot is immutable; new snapshots are new artifacts</td><td>Stable, evolving</td></tr><tr><td>Storage size (typical)</td><td>~50 KB</td><td>50 MB – 500 MB</td><td>~100 KB</td></tr></tbody></table>
 <p>Templates and plugins are about <em>capabilities</em>. Snapshots are about
 <em>outcomes</em> — the thing the system actually produced. The marketplace value
 of 50 well-curated snapshots is much higher than 50 templates, because
@@ -332,11 +377,32 @@ filesystem walk isn’t. Without a freeze, a worker writing to disk
 during the walk produces a snapshot where the DB rows say “F-FIX-016
 is in progress” but the filesystem already has the worker’s commit
 applied — incoherent state for the consumer.</p>
-<p>| Mode | Trigger | Drain policy |
-|---|---|---|
-| <strong>Interactive</strong> | User clicks “Save snapshot” in dashboard | User-decision UX — no fixed cap; show progress for in-flight workers (“Worker on F-FIX-016: claude generating, 12s elapsed”); buttons: Wait / Cancel / Snapshot anyway |
-| <strong>Autosave / scheduled</strong> | Substrate-initiated (e.g., pre-publish auto-checkpoint, periodic save-game ticks) | Bounded wait (5 min). On timeout → skip and retry on next interval. <strong>Never</strong> silent <code dir="auto">partial=true</code> — autosaves silently flagged partial defeat the save-game value. |
-| <strong>Autonomous one-shot</strong> | <code dir="auto">papercusp snapshot create --autonomous</code> CLI flag (CI/scripted use) | Bounded wait (5 min). On timeout → <code dir="auto">partial=true</code> with clear log message; exit 0 with warning. The autonomous caller has explicitly chosen “ship something even if not perfectly coherent.” |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Mode</th><th>Trigger</th><th>Drain policy</th></tr></thead><tbody><tr><td><strong>Interactive</strong></td><td>User clicks “Save snapshot” in dashboard</td><td>User-decision UX — no fixed cap; show progress for in-flight workers (“Worker on F-FIX-016: claude generating, 12s elapsed”); buttons: Wait / Cancel / Snapshot anyway</td></tr><tr><td><strong>Autosave / scheduled</strong></td><td>Substrate-initiated (e.g., pre-publish auto-checkpoint, periodic save-game ticks)</td><td>Bounded wait (5 min). On timeout → skip and retry on next interval. <strong>Never</strong> silent <code dir="auto">partial=true</code> — autosaves silently flagged partial defeat the save-game value.</td></tr><tr><td><strong>Autonomous one-shot</strong></td><td><code dir="auto">papercusp snapshot create --autonomous</code> CLI flag (CI/scripted use)</td><td>Bounded wait (5 min). On timeout → <code dir="auto">partial=true</code> with clear log message; exit 0 with warning. The autonomous caller has explicitly chosen “ship something even if not perfectly coherent.”</td></tr></tbody></table>
 <p><code dir="auto">partial=true</code> only sets when the user (or <code dir="auto">--autonomous</code> caller)
 explicitly accepted it. Consumer’s restore pass refuses to install
 a <code dir="auto">partial=true</code> snapshot without explicit <code dir="auto">--accept-partial</code> flag.</p>
@@ -838,18 +904,67 @@ it remains listable but takes ~24h to reactivate. Click to reactivate.”</li>
 <div class="sl-heading-wrapper level-h2"><h2 id="1513-snapshots-vs-publishing--the-relationship">15.13 Snapshots vs Publishing — the relationship</h2><a class="sl-anchor-link" href="#1513-snapshots-vs-publishing--the-relationship"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.13 Snapshots vs Publishing — the relationship”</span></a></div>
 <p>Two sibling features. Same auth fabric, same redaction pipeline, same
 audit log. Different artifact, different audience, different lifecycle.</p>
-<p>| Concern | Publishing (§16) | Snapshots (this spec) |
-|---|---|---|
-| Artifact | Built site (HTML/CSS/JS in <code dir="auto">out/</code>) | Source + DB rows + .papercusp/ + git history |
-| Audience | Anyone with the URL — non-technical end users | Operators with substrate installed |
-| Consumed how | Browser request → CF Pages | <code dir="auto">papercusp install --from-snapshot</code> |
-| Hosting | Cloudflare Pages | Gitea OCI registry |
-| Lifecycle | Latest replaces in-place | Versioned + immutable |
-| Default visibility | Public | Private |
-| Build step required | Yes (<code dir="auto">npm run build</code>) | No |
-| Restore pass on consumer | None (browser request) | Heavy (DB + plugins + caps) |
-| Forking | “View source” only | Real fork = independent harness |
-| Size | 1-25 MB | 50-500 MB |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Publishing (§16)</th><th>Snapshots (this spec)</th></tr></thead><tbody><tr><td>Artifact</td><td>Built site (HTML/CSS/JS in <code dir="auto">out/</code>)</td><td>Source + DB rows + .papercusp/ + git history</td></tr><tr><td>Audience</td><td>Anyone with the URL — non-technical end users</td><td>Operators with substrate installed</td></tr><tr><td>Consumed how</td><td>Browser request → CF Pages</td><td><code dir="auto">papercusp install --from-snapshot</code></td></tr><tr><td>Hosting</td><td>Cloudflare Pages</td><td>Gitea OCI registry</td></tr><tr><td>Lifecycle</td><td>Latest replaces in-place</td><td>Versioned + immutable</td></tr><tr><td>Default visibility</td><td>Public</td><td>Private</td></tr><tr><td>Build step required</td><td>Yes (<code dir="auto">npm run build</code>)</td><td>No</td></tr><tr><td>Restore pass on consumer</td><td>None (browser request)</td><td>Heavy (DB + plugins + caps)</td></tr><tr><td>Forking</td><td>”View source” only</td><td>Real fork = independent harness</td></tr><tr><td>Size</td><td>1-25 MB</td><td>50-500 MB</td></tr></tbody></table>
 <p><strong>Shared infrastructure</strong> (the <code dir="auto">papercusp-publish-auth</code> library — see
 §15.21):</p>
 <ul>
@@ -1025,44 +1140,183 @@ plugins without one produce a warning at install time. The broader
 <p>Deliverable: “I can save my harness, experiment with breaking changes,
 restore the saved state if it goes wrong.” A backup/restore tool, useful
 even before the marketplace exists.</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| 1. <code dir="auto">papercusp-export-state</code> library skeleton | 4h | Walks harness, produces tarball |
-| 2. Per-harness pg_dump + filter-registry-driven shared tables | 6h | Includes registry plus ~4 starter entries |
-| 3. Filesystem walk + denylist + agent_chats opt-out | 4h | Substrate-specific |
-| 4. trufflehog + gitleaks integration with two-tier scan | 6h | Block on verified, warn on high-recall |
-| 5. Pre-publish review UI (file list, redactions, warnings) | 6h | Substrate-specific |
-| 6. Manifest schema implementation + canonical sha256 | 4h | RFC 8785 JCS canonicalizer |
-| 7. tar+gzip+zstd packaging | 2h | Standard library |
-| 8. Local restore: ALTER SCHEMA flow + integrity verify | <strong>3-4 days</strong> | Production-grade port of Discourse’s <code dir="auto">database_restorer.rb</code> |
-| 9. Forward-migration runner | 4h | Calls existing substrate migrations |
-| 10. Slug rewrite pass over text artifacts | 4h | Substrate-specific |
-| 11. Batch consent UI for plugin re-enable | 6h | Substrate-specific |
-| 12. <code dir="auto">papercusp snapshot create/list/get/delete/install</code> CLI | 6h | Mirror Daytona’s API surface |
-| 13. <code dir="auto">papercusp snapshot info &#x3C;id></code> compat-info CLI | 2h | Reads manifest, compares versions |
-| 14. End-to-end test: capture → restore on same machine | <strong>2-3 days</strong> | Real data, real round trip |
-| <strong>Subtotal v1.0</strong> | <strong>~10-12 days</strong> | Realistic with testing |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>1. <code dir="auto">papercusp-export-state</code> library skeleton</td><td>4h</td><td>Walks harness, produces tarball</td></tr><tr><td>2. Per-harness pg_dump + filter-registry-driven shared tables</td><td>6h</td><td>Includes registry plus ~4 starter entries</td></tr><tr><td>3. Filesystem walk + denylist + agent_chats opt-out</td><td>4h</td><td>Substrate-specific</td></tr><tr><td>4. trufflehog + gitleaks integration with two-tier scan</td><td>6h</td><td>Block on verified, warn on high-recall</td></tr><tr><td>5. Pre-publish review UI (file list, redactions, warnings)</td><td>6h</td><td>Substrate-specific</td></tr><tr><td>6. Manifest schema implementation + canonical sha256</td><td>4h</td><td>RFC 8785 JCS canonicalizer</td></tr><tr><td>7. tar+gzip+zstd packaging</td><td>2h</td><td>Standard library</td></tr><tr><td>8. Local restore: ALTER SCHEMA flow + integrity verify</td><td><strong>3-4 days</strong></td><td>Production-grade port of Discourse’s <code dir="auto">database_restorer.rb</code></td></tr><tr><td>9. Forward-migration runner</td><td>4h</td><td>Calls existing substrate migrations</td></tr><tr><td>10. Slug rewrite pass over text artifacts</td><td>4h</td><td>Substrate-specific</td></tr><tr><td>11. Batch consent UI for plugin re-enable</td><td>6h</td><td>Substrate-specific</td></tr><tr><td>12. <code dir="auto">papercusp snapshot create/list/get/delete/install</code> CLI</td><td>6h</td><td>Mirror Daytona’s API surface</td></tr><tr><td>13. <code dir="auto">papercusp snapshot info &#x3C;id></code> compat-info CLI</td><td>2h</td><td>Reads manifest, compares versions</td></tr><tr><td>14. End-to-end test: capture → restore on same machine</td><td><strong>2-3 days</strong></td><td>Real data, real round trip</td></tr><tr><td><strong>Subtotal v1.0</strong></td><td><strong>~10-12 days</strong></td><td>Realistic with testing</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="v11--cross-machine-marketplace-1-week">v1.1 — cross-machine marketplace (~1 week)</h3><a class="sl-anchor-link" href="#v11--cross-machine-marketplace-1-week"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “v1.1 — cross-machine marketplace (~1 week)”</span></a></div>
 <p>Deliverable: “I can share a snapshot for someone else to fork.”</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| 1. Stand up Gitea/Forgejo on R2-backed storage + skin | <strong>1-2 days</strong> | Forgejo S3 backend has rough edges per their docs |
-| 2. Marketplace API (proxy to Gitea + add snapshot affordances) | 4h | Routes split from §16 publish |
-| 3. ORAS push to Gitea via marketplace | 4h | Signed-URLs direct to blobs |
-| 4. Cosign signing + Sigstore wiring (or HMAC fallback for v1) | 4h | Reuse §16 patterns |
-| 5. ORAS pull on consumer + signature verify | 2h | Mirror of push |
-| 6. Cross-machine end-to-end test | <strong>2 days</strong> | Two machines, real capture+install |
-| <strong>Subtotal v1.1</strong> | <strong>~5-7 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>1. Stand up Gitea/Forgejo on R2-backed storage + skin</td><td><strong>1-2 days</strong></td><td>Forgejo S3 backend has rough edges per their docs</td></tr><tr><td>2. Marketplace API (proxy to Gitea + add snapshot affordances)</td><td>4h</td><td>Routes split from §16 publish</td></tr><tr><td>3. ORAS push to Gitea via marketplace</td><td>4h</td><td>Signed-URLs direct to blobs</td></tr><tr><td>4. Cosign signing + Sigstore wiring (or HMAC fallback for v1)</td><td>4h</td><td>Reuse §16 patterns</td></tr><tr><td>5. ORAS pull on consumer + signature verify</td><td>2h</td><td>Mirror of push</td></tr><tr><td>6. Cross-machine end-to-end test</td><td><strong>2 days</strong></td><td>Two machines, real capture+install</td></tr><tr><td><strong>Subtotal v1.1</strong></td><td><strong>~5-7 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="v12--marketplace-ui-polish-3-5-days">v1.2 — marketplace UI polish (~3-5 days)</h3><a class="sl-anchor-link" href="#v12--marketplace-ui-polish-3-5-days"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “v1.2 — marketplace UI polish (~3-5 days)”</span></a></div>
 <p>Deliverable: “I can browse snapshots.”</p>
-<p>| Step | Estimated time | Notes |
-|---|---|---|
-| 1. Custom marketplace UI (snapshot detail + fork button) | <strong>2 days</strong> | Thin layer on Gitea API |
-| 2. Typesense indexing of snapshot metadata | 4h | Reuse template-marketplace indexer |
-| 3. Cost-to-continue estimation + provenance display | 4h | Reads manifest, renders in UI |
-| 4. Provenance chain UI (<code dir="auto">derivedFrom</code> rendering) | 2h | Marketplace UI affordance |
-| 5. Polish + UX testing | <strong>1 day</strong> | Real users, real feedback |
-| <strong>Subtotal v1.2</strong> | <strong>~3-5 days</strong> | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Estimated time</th><th>Notes</th></tr></thead><tbody><tr><td>1. Custom marketplace UI (snapshot detail + fork button)</td><td><strong>2 days</strong></td><td>Thin layer on Gitea API</td></tr><tr><td>2. Typesense indexing of snapshot metadata</td><td>4h</td><td>Reuse template-marketplace indexer</td></tr><tr><td>3. Cost-to-continue estimation + provenance display</td><td>4h</td><td>Reads manifest, renders in UI</td></tr><tr><td>4. Provenance chain UI (<code dir="auto">derivedFrom</code> rendering)</td><td>2h</td><td>Marketplace UI affordance</td></tr><tr><td>5. Polish + UX testing</td><td><strong>1 day</strong></td><td>Real users, real feedback</td></tr><tr><td><strong>Subtotal v1.2</strong></td><td><strong>~3-5 days</strong></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="total-3-4-weeks">Total: ~3-4 weeks</h3><a class="sl-anchor-link" href="#total-3-4-weeks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Total: ~3-4 weeks”</span></a></div>
 <p>This is materially longer than the v1.0 spec’s “6 days” estimate, which
 was best-case-everything-works. Real engineering on substrate-spanning
@@ -1081,26 +1335,107 @@ path running with no upload</li>
 </ol>
 <div class="sl-heading-wrapper level-h2"><h2 id="1517-prior-art-studied">15.17 Prior art studied</h2><a class="sl-anchor-link" href="#1517-prior-art-studied"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.17 Prior art studied”</span></a></div>
 <p>Architectural patterns adopted, with sources:</p>
-<p>| Pattern | Source | Location in source |
-|---|---|---|
-| Schema swap + forward migrations | Discourse | <code dir="auto">lib/backup_restore/database_restorer.rb</code> |
-| <code dir="auto">--single-transaction --variable=ON_ERROR_STOP=1</code> | Discourse | same |
-| Sed-based pg_dump SQL massaging across versions | Discourse | same, lines 103-122 |
-| DB-resident metadata captured via dump | Discourse | <code dir="auto">BackupMetadata</code> model |
-| Filename-encoded version pattern | Discourse | <code dir="auto">meta_data_handler.rb</code> |
-| Pluggable storage backend abstraction | Discourse | <code dir="auto">backup_store.rb</code> family |
-| Token-based async backup flow | Sandstorm | <code dir="auto">shell/imports/server/backup.js:46-115</code> |
-| Quota check before restore | Sandstorm | same, line 130 |
-| Refuse-if-app-not-installed | Sandstorm | same, line 160 |
-| <code dir="auto">minUpgradableAppVersion</code> field | Sandstorm | <code dir="auto">package.capnp:96</code> |
-| App vs grain separation | Sandstorm | the SPK/grain split, our template/snapshot split |
-| OCI-image-as-snapshot model | Daytona | snapshot API |
-| Snapshot lifecycle states | Daytona | <code dir="auto">Pending → Building → Pulling → Active → Inactive → Failed</code> |
-| API surface (<code dir="auto">create/get/list/delete/activate</code>) | Daytona | their SDK |
-| <code dir="auto">BLAKE3-verified streams</code> for content addressing | OCI artifacts ecosystem | reference |
-| Two-tier secret scan (verified vs high-recall) | trufflehog + gitleaks combination | their docs |
-| 72-hour unpublish cooldown | npm | their unpublish policy |
-| Postinstall binary download to substrate-private dir | esbuild, sharp, ripgrep, swc, biome | their npm install hooks |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pattern</th><th>Source</th><th>Location in source</th></tr></thead><tbody><tr><td>Schema swap + forward migrations</td><td>Discourse</td><td><code dir="auto">lib/backup_restore/database_restorer.rb</code></td></tr><tr><td><code dir="auto">--single-transaction --variable=ON_ERROR_STOP=1</code></td><td>Discourse</td><td>same</td></tr><tr><td>Sed-based pg_dump SQL massaging across versions</td><td>Discourse</td><td>same, lines 103-122</td></tr><tr><td>DB-resident metadata captured via dump</td><td>Discourse</td><td><code dir="auto">BackupMetadata</code> model</td></tr><tr><td>Filename-encoded version pattern</td><td>Discourse</td><td><code dir="auto">meta_data_handler.rb</code></td></tr><tr><td>Pluggable storage backend abstraction</td><td>Discourse</td><td><code dir="auto">backup_store.rb</code> family</td></tr><tr><td>Token-based async backup flow</td><td>Sandstorm</td><td><code dir="auto">shell/imports/server/backup.js:46-115</code></td></tr><tr><td>Quota check before restore</td><td>Sandstorm</td><td>same, line 130</td></tr><tr><td>Refuse-if-app-not-installed</td><td>Sandstorm</td><td>same, line 160</td></tr><tr><td><code dir="auto">minUpgradableAppVersion</code> field</td><td>Sandstorm</td><td><code dir="auto">package.capnp:96</code></td></tr><tr><td>App vs grain separation</td><td>Sandstorm</td><td>the SPK/grain split, our template/snapshot split</td></tr><tr><td>OCI-image-as-snapshot model</td><td>Daytona</td><td>snapshot API</td></tr><tr><td>Snapshot lifecycle states</td><td>Daytona</td><td><code dir="auto">Pending → Building → Pulling → Active → Inactive → Failed</code></td></tr><tr><td>API surface (<code dir="auto">create/get/list/delete/activate</code>)</td><td>Daytona</td><td>their SDK</td></tr><tr><td><code dir="auto">BLAKE3-verified streams</code> for content addressing</td><td>OCI artifacts ecosystem</td><td>reference</td></tr><tr><td>Two-tier secret scan (verified vs high-recall)</td><td>trufflehog + gitleaks combination</td><td>their docs</td></tr><tr><td>72-hour unpublish cooldown</td><td>npm</td><td>their unpublish policy</td></tr><tr><td>Postinstall binary download to substrate-private dir</td><td>esbuild, sharp, ripgrep, swc, biome</td><td>their npm install hooks</td></tr></tbody></table>
 <p><strong>OSS dependencies actually used:</strong></p>
 <ul>
 <li>Gitea or Forgejo (marketplace backend)</li>
@@ -1264,13 +1599,42 @@ of the snapshot system; it lives at
 (<code dir="auto">libs/papercusp-publish-auth/</code>) is genuinely live.</strong></p>
 <div class="sl-heading-wrapper level-h3"><h3 id="why-three-libraries-instead-of-one">Why three libraries instead of one</h3><a class="sl-anchor-link" href="#why-three-libraries-instead-of-one"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why three libraries instead of one”</span></a></div>
 <p>Looking at the divergence:</p>
-<p>| Concern | Publishing | Snapshot |
-|---|---|---|
-| File selection | <code dir="auto">&#x3C;exportDir>/</code> only | Whole harness, sans denylist |
-| Redaction aggression | Light (build artifacts rarely leak secrets) | Heavy (source + .papercusp/) |
-| Artifact format | Tarball of files | Tarball of files + DB dump + shared CSVs |
-| Size target | 5-25 MB | 50-500 MB |
-| Auth | JWT against <code dir="auto">publish.papercuspai.com</code> | JWT against <code dir="auto">papercuspai.com/snapshots</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Publishing</th><th>Snapshot</th></tr></thead><tbody><tr><td>File selection</td><td><code dir="auto">&#x3C;exportDir>/</code> only</td><td>Whole harness, sans denylist</td></tr><tr><td>Redaction aggression</td><td>Light (build artifacts rarely leak secrets)</td><td>Heavy (source + .papercusp/)</td></tr><tr><td>Artifact format</td><td>Tarball of files</td><td>Tarball of files + DB dump + shared CSVs</td></tr><tr><td>Size target</td><td>5-25 MB</td><td>50-500 MB</td></tr><tr><td>Auth</td><td>JWT against <code dir="auto">publish.papercuspai.com</code></td><td>JWT against <code dir="auto">papercuspai.com/snapshots</code></td></tr></tbody></table>
 <p>Five of six concerns diverge. The shared concern (auth) extracts cleanly.
 A single library with a <code dir="auto">kind: 'for-publish' | 'for-snapshot'</code> parameter
 forces every read to branch on <code dir="auto">kind</code>, which adds complexity without
@@ -1465,7 +1829,7 @@ captured strings</li>
 that touch snapshot staging or restored artifacts fails the build.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="takedown-process">Takedown process</h3><a class="sl-anchor-link" href="#takedown-process"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Takedown process”</span></a></div>
 <ul>
-<li><strong>Public abuse@papercuspai.com mailbox</strong>, monitored. 48-hour SLA for
+<li><strong>Public <a href="mailto:abuse@papercuspai.com">abuse@papercuspai.com</a> mailbox</strong>, monitored. 48-hour SLA for
 initial response on legal-content takedowns; 1-week SLA for terms-of-
 service complaints.</li>
 <li><strong>Marketplace UI report button</strong> on every public snapshot detail

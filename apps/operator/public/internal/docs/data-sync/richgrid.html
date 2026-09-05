@@ -158,18 +158,67 @@ param), and <code dir="auto">filterChipLabel</code> (render an active-filter chi
 this is small-dataset oriented — push the predicate into the data source
 for very large sets.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="common-props">Common props</h2><a class="sl-anchor-link" href="#common-props"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Common props”</span></a></div>
-<p>| Prop | Type | Notes |
-|---|---|---|
-| <code dir="auto">rows</code> | <code dir="auto">Row[]</code> | Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results. |
-| <code dir="auto">columns</code> | <code dir="auto">ColumnDef&#x3C;Row>[]</code> | Wrap in <code dir="auto">useMemo</code> to avoid rebuilding on every render. |
-| <code dir="auto">getRowId</code> | <code dir="auto">(row: Row) => string</code> | Required. Used as React key + selection set. |
-| <code dir="auto">onRowClick</code> | <code dir="auto">(row: Row, index, e) => void</code> | Optional. Whole row becomes click target. |
-| <code dir="auto">getRowBg</code> | <code dir="auto">(row, rowIndex, isSelected) => string \| undefined</code> | Per-row background override; return <code dir="auto">undefined</code> to fall back to default striping. |
-| <code dir="auto">rowProps</code> | <code dir="auto">(ctx: CellRenderContext&#x3C;Row>) => HTMLAttributes</code> | Per-row class/style — <strong>receives the ctx, not the row</strong> (use <code dir="auto">ctx.row</code>). <strong>See pitfall below.</strong> |
-| <code dir="auto">inline</code> | <code dir="auto">boolean</code> | Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this — but see the caveat below. |
-| <code dir="auto">virtualMode</code> | <code dir="auto">{ virtualizer, totalRows, rowAt, measureAll? }</code> | Opt-in virtualization. Pass instead of <code dir="auto">rows</code>; flip on for >500 rows. <code dir="auto">measureAll</code> measures every visible row (only needed for genuinely variable-height rows). |
-| <code dir="auto">empty</code> | <code dir="auto">ReactNode</code> | Shown when rows is empty / virtual total is 0. |
-| <code dir="auto">sortState</code> / <code dir="auto">onSortChange</code> | <code dir="auto">SortState \| null</code> / <code dir="auto">(next) => void</code> | Controlled sort — see above. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Prop</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">rows</code></td><td><code dir="auto">Row[]</code></td><td>Source data (legacy/non-virtual mode). Memoize upstream if mapping from sync results.</td></tr><tr><td><code dir="auto">columns</code></td><td><code dir="auto">ColumnDef&#x3C;Row>[]</code></td><td>Wrap in <code dir="auto">useMemo</code> to avoid rebuilding on every render.</td></tr><tr><td><code dir="auto">getRowId</code></td><td><code dir="auto">(row: Row) => string</code></td><td>Required. Used as React key + selection set.</td></tr><tr><td><code dir="auto">onRowClick</code></td><td><code dir="auto">(row: Row, index, e) => void</code></td><td>Optional. Whole row becomes click target.</td></tr><tr><td><code dir="auto">getRowBg</code></td><td><code dir="auto">(row, rowIndex, isSelected) => string | undefined</code></td><td>Per-row background override; return <code dir="auto">undefined</code> to fall back to default striping.</td></tr><tr><td><code dir="auto">rowProps</code></td><td><code dir="auto">(ctx: CellRenderContext&#x3C;Row>) => HTMLAttributes</code></td><td>Per-row class/style — <strong>receives the ctx, not the row</strong> (use <code dir="auto">ctx.row</code>). <strong>See pitfall below.</strong></td></tr><tr><td><code dir="auto">inline</code></td><td><code dir="auto">boolean</code></td><td>Skip the outer flex + scroll wrapper; render header/body as siblings for parent-owned scroll. Almost always pass this — but see the caveat below.</td></tr><tr><td><code dir="auto">virtualMode</code></td><td><code dir="auto">{ virtualizer, totalRows, rowAt, measureAll? }</code></td><td>Opt-in virtualization. Pass instead of <code dir="auto">rows</code>; flip on for >500 rows. <code dir="auto">measureAll</code> measures every visible row (only needed for genuinely variable-height rows).</td></tr><tr><td><code dir="auto">empty</code></td><td><code dir="auto">ReactNode</code></td><td>Shown when rows is empty / virtual total is 0.</td></tr><tr><td><code dir="auto">sortState</code> / <code dir="auto">onSortChange</code></td><td><code dir="auto">SortState | null</code> / <code dir="auto">(next) => void</code></td><td>Controlled sort — see above.</td></tr></tbody></table>
 <aside aria-label="inline skips copy, print, and load-more" class="starlight-aside starlight-aside--caution"><p class="starlight-aside__title" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" class="starlight-aside__icon"><path d="M12 16C11.8022 16 11.6089 16.0587 11.4444 16.1686C11.28 16.2784 11.1518 16.4346 11.0761 16.6173C11.0004 16.8001 10.9806 17.0011 11.0192 17.1951C11.0578 17.3891 11.153 17.5673 11.2929 17.7071C11.4327 17.847 11.6109 17.9422 11.8049 17.9808C11.9989 18.0194 12.2 17.9996 12.3827 17.9239C12.5654 17.8482 12.7216 17.72 12.8315 17.5556C12.9413 17.3911 13 17.1978 13 17C13 16.7348 12.8946 16.4805 12.7071 16.2929C12.5196 16.1054 12.2652 16 12 16ZM22.67 17.47L14.62 3.47003C14.3598 3.00354 13.9798 2.61498 13.5192 2.3445C13.0586 2.07401 12.5341 1.9314 12 1.9314C11.4659 1.9314 10.9414 2.07401 10.4808 2.3445C10.0202 2.61498 9.64019 3.00354 9.38 3.47003L1.38 17.47C1.11079 17.924 0.966141 18.441 0.960643 18.9688C0.955144 19.4966 1.089 20.0166 1.34868 20.4761C1.60837 20.9356 1.9847 21.3185 2.43968 21.5861C2.89466 21.8536 3.41218 21.9964 3.94 22H20.06C20.5921 22.0053 21.1159 21.8689 21.5779 21.6049C22.0399 21.341 22.4234 20.9589 22.689 20.4978C22.9546 20.0368 23.0928 19.5134 23.0895 18.9814C23.0862 18.4493 22.9414 17.9277 22.67 17.47ZM20.94 19.47C20.8523 19.626 20.7245 19.7556 20.5697 19.8453C20.4149 19.935 20.2389 19.9815 20.06 19.98H3.94C3.76111 19.9815 3.5851 19.935 3.43032 19.8453C3.27553 19.7556 3.14765 19.626 3.06 19.47C2.97223 19.318 2.92602 19.1456 2.92602 18.97C2.92602 18.7945 2.97223 18.622 3.06 18.47L11.06 4.47003C11.1439 4.30623 11.2714 4.16876 11.4284 4.07277C11.5855 3.97678 11.766 3.92599 11.95 3.92599C12.134 3.92599 12.3145 3.97678 12.4716 4.07277C12.6286 4.16876 12.7561 4.30623 12.84 4.47003L20.89 18.47C20.9892 18.6199 21.0462 18.7937 21.055 18.9732C21.0638 19.1527 21.0241 19.3312 20.94 19.49V19.47ZM12 8.00003C11.7348 8.00003 11.4804 8.10538 11.2929 8.29292C11.1054 8.48046 11 8.73481 11 9.00003V13C11 13.2652 11.1054 13.5196 11.2929 13.7071C11.4804 13.8947 11.7348 14 12 14C12.2652 14 12.5196 13.8947 12.7071 13.7071C12.8946 13.5196 13 13.2652 13 13V9.00003C13 8.73481 12.8946 8.48046 12.7071 8.29292C12.5196 8.10538 12.2652 8.00003 12 8.00003Z"></path></svg><code dir="auto">inline</code> skips copy, print, and load-more</p><div class="starlight-aside__content"><p><code dir="auto">inline</code> mode renders only <code dir="auto">[topSlot, header, body, footerSlot]</code> as
 siblings, so the consumer owns the scroll element. As a consequence, inline
 mode <strong>skips the Ctrl+C copy handler, the print mirror, and
@@ -177,23 +226,92 @@ mode <strong>skips the Ctrl+C copy handler, the print mirror, and
 infinite scroll, don’t use <code dir="auto">inline</code> (or wrap the grid in your own outer
 element and handle those yourself).</p></div></aside>
 <div class="sl-heading-wrapper level-h3"><h3 id="advanced-props">Advanced props</h3><a class="sl-anchor-link" href="#advanced-props"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Advanced props”</span></a></div>
-<p>| Prop | Type | Notes |
-|---|---|---|
-| <code dir="auto">selectable</code> | <code dir="auto">boolean</code> | Render a left checkbox column with a select-all header — see <a href="#multi-select">Multi-select</a>. |
-| <code dir="auto">selectedRowIds</code> / <code dir="auto">onSelectedRowIdsChange</code> | <code dir="auto">ReadonlySet&#x3C;string></code> / <code dir="auto">(next) => void</code> | Controlled selection. Omit both for uncontrolled. |
-| <code dir="auto">resizableColumns</code> | <code dir="auto">boolean</code> | Enable drag-to-resize header handles — see <a href="#resizable-columns">Resizable columns</a>. |
-| <code dir="auto">columnWidths</code> / <code dir="auto">onColumnWidthsChange</code> | <code dir="auto">Record&#x3C;string, number></code> / <code dir="auto">(next) => void</code> | Controlled drag-resized widths (px, keyed by column key). |
-| <code dir="auto">onLoadMore</code> | <code dir="auto">() => void</code> | Fires when scrolled near the bottom (legacy mode only; ignored when <code dir="auto">inline</code>). |
-| <code dir="auto">loadMoreThreshold</code> | <code dir="auto">number</code> | Pixels-from-bottom that triggers <code dir="auto">onLoadMore</code>. Default <code dir="auto">1500</code>. |
-| <code dir="auto">isLoadingMore</code> | <code dir="auto">boolean</code> | Renders a “Loading…” affordance at the bottom of the list. |
-| <code dir="auto">onRowHover</code> | <code dir="auto">(row \| null, index \| null) => void</code> | <code dir="auto">mouseenter</code> / <code dir="auto">mouseleave</code> per row (both <code dir="auto">null</code> on leave). |
-| <code dir="auto">topSlot</code> / <code dir="auto">footerSlot</code> | <code dir="auto">ReactNode</code> | Content rendered above / below the body (summary bar, footer, pagination). |
-| <code dir="auto">headerStyle</code> / <code dir="auto">headerHeight</code> | <code dir="auto">CSSProperties</code> / <code dir="auto">number</code> | Extra style merged onto the sticky header; header height in px (default <code dir="auto">36</code>). |
-| <code dir="auto">scrollContainerRef</code> | <code dir="auto">MutableRefObject&#x3C;HTMLDivElement \| null></code> | Captures RichGrid’s internal scroll element (e.g. to tie an external virtualizer). Ignored when <code dir="auto">inline</code>. |
-| <code dir="auto">renderLoadingRow</code> | <code dir="auto">(rowIndex, gridTemplateColumns) => ReactNode</code> | Virtual-mode placeholder for a not-yet-loaded row. Defaults to a “loading…” line. |
-| <code dir="auto">getRowBg</code> | <code dir="auto">(row, rowIndex, isSelected) => string \| undefined</code> | Per-row background override; <code dir="auto">undefined</code> falls back to default striping. |
-| <code dir="auto">rowMinHeight</code> | <code dir="auto">number</code> | Min row height in px. Default <code dir="auto">36</code>. |
-| <code dir="auto">printRows</code> / <code dir="auto">disablePrintMirror</code> / <code dir="auto">disableCopySupport</code> | — | Copy &#x26; print toggles — see <a href="#copy--print">Copy &#x26; print</a>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Prop</th><th>Type</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">selectable</code></td><td><code dir="auto">boolean</code></td><td>Render a left checkbox column with a select-all header — see <a href="#multi-select">Multi-select</a>.</td></tr><tr><td><code dir="auto">selectedRowIds</code> / <code dir="auto">onSelectedRowIdsChange</code></td><td><code dir="auto">ReadonlySet&#x3C;string></code> / <code dir="auto">(next) => void</code></td><td>Controlled selection. Omit both for uncontrolled.</td></tr><tr><td><code dir="auto">resizableColumns</code></td><td><code dir="auto">boolean</code></td><td>Enable drag-to-resize header handles — see <a href="#resizable-columns">Resizable columns</a>.</td></tr><tr><td><code dir="auto">columnWidths</code> / <code dir="auto">onColumnWidthsChange</code></td><td><code dir="auto">Record&#x3C;string, number></code> / <code dir="auto">(next) => void</code></td><td>Controlled drag-resized widths (px, keyed by column key).</td></tr><tr><td><code dir="auto">onLoadMore</code></td><td><code dir="auto">() => void</code></td><td>Fires when scrolled near the bottom (legacy mode only; ignored when <code dir="auto">inline</code>).</td></tr><tr><td><code dir="auto">loadMoreThreshold</code></td><td><code dir="auto">number</code></td><td>Pixels-from-bottom that triggers <code dir="auto">onLoadMore</code>. Default <code dir="auto">1500</code>.</td></tr><tr><td><code dir="auto">isLoadingMore</code></td><td><code dir="auto">boolean</code></td><td>Renders a “Loading…” affordance at the bottom of the list.</td></tr><tr><td><code dir="auto">onRowHover</code></td><td><code dir="auto">(row | null, index | null) => void</code></td><td><code dir="auto">mouseenter</code> / <code dir="auto">mouseleave</code> per row (both <code dir="auto">null</code> on leave).</td></tr><tr><td><code dir="auto">topSlot</code> / <code dir="auto">footerSlot</code></td><td><code dir="auto">ReactNode</code></td><td>Content rendered above / below the body (summary bar, footer, pagination).</td></tr><tr><td><code dir="auto">headerStyle</code> / <code dir="auto">headerHeight</code></td><td><code dir="auto">CSSProperties</code> / <code dir="auto">number</code></td><td>Extra style merged onto the sticky header; header height in px (default <code dir="auto">36</code>).</td></tr><tr><td><code dir="auto">scrollContainerRef</code></td><td><code dir="auto">MutableRefObject&#x3C;HTMLDivElement | null></code></td><td>Captures RichGrid’s internal scroll element (e.g. to tie an external virtualizer). Ignored when <code dir="auto">inline</code>.</td></tr><tr><td><code dir="auto">renderLoadingRow</code></td><td><code dir="auto">(rowIndex, gridTemplateColumns) => ReactNode</code></td><td>Virtual-mode placeholder for a not-yet-loaded row. Defaults to a “loading…” line.</td></tr><tr><td><code dir="auto">getRowBg</code></td><td><code dir="auto">(row, rowIndex, isSelected) => string | undefined</code></td><td>Per-row background override; <code dir="auto">undefined</code> falls back to default striping.</td></tr><tr><td><code dir="auto">rowMinHeight</code></td><td><code dir="auto">number</code></td><td>Min row height in px. Default <code dir="auto">36</code>.</td></tr><tr><td><code dir="auto">printRows</code> / <code dir="auto">disablePrintMirror</code> / <code dir="auto">disableCopySupport</code></td><td>—</td><td>Copy &#x26; print toggles — see <a href="#copy--print">Copy &#x26; print</a>.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="pitfall-rowprops--a-css-class-with-display-grid">Pitfall: <code dir="auto">rowProps</code> + a CSS class with <code dir="auto">display: grid</code></h2><a class="sl-anchor-link" href="#pitfall-rowprops--a-css-class-with-display-grid"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Pitfall: rowProps + a CSS class with display: grid”</span></a></div>
 <p>If <code dir="auto">rowProps</code> returns <code dir="auto">{ className: 'h-issue' }</code> and the legacy class has
 its own <code dir="auto">display: grid</code>, that grid clashes with RichGrid’s internal cell

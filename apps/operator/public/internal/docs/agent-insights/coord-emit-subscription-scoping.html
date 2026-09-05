@@ -106,12 +106,32 @@ expander, used by fleet-scoped broadcasts rather than lifecycle emits.</li>
 </ul>
 <p>Plain ownerIds, <code dir="auto">*</code>, and <code dir="auto">human</code> pass through untouched (a normal <code dir="auto">coord:send</code> is
 zero-overhead). Which category emits which selectors:</p>
-<p>| Lifecycle | selectors |
-|---|---|
-| intent | <code dir="auto">@plan:&#x3C;slug></code> + one <code dir="auto">@file:&#x3C;path></code> per file in scope |
-| completion | <code dir="auto">@plan:&#x3C;slug></code> + <code dir="auto">@object:&#x3C;ref></code> |
-| claim | <code dir="auto">@object:&#x3C;ref></code> |
-| finding (bug) | <code dir="auto">@object:&#x3C;ref></code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Lifecycle</th><th>selectors</th></tr></thead><tbody><tr><td>intent</td><td><code dir="auto">@plan:&#x3C;slug></code> + one <code dir="auto">@file:&#x3C;path></code> per file in scope</td></tr><tr><td>completion</td><td><code dir="auto">@plan:&#x3C;slug></code> + <code dir="auto">@object:&#x3C;ref></code></td></tr><tr><td>claim</td><td><code dir="auto">@object:&#x3C;ref></code></td></tr><tr><td>finding (bug)</td><td><code dir="auto">@object:&#x3C;ref></code></td></tr></tbody></table>
 <p>An empty resolution (no subscribers, nobody present on the plan) → empty <code dir="auto">to</code> →
 the row still persists (queryable plan history) but reaches <strong>no inbox</strong>. We never
 fall back to <code dir="auto">*</code> — that would re-open the firehose. <code dir="auto">coord:emit</code>’s <code dir="auto">to</code> therefore

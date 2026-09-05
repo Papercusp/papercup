@@ -146,13 +146,36 @@ see the coupling gotcha below.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-importance-map-what-the-high-gate-includes">The importance map (what the ≥high gate includes)</h2><a class="sl-anchor-link" href="#the-importance-map-what-the-high-gate-includes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The importance map (what the ≥high gate includes)”</span></a></div>
 <p>P-020 pushes only at importance <strong>≥ high</strong>. The per-kind importance lives in
 <code dir="auto">packages/operator-core/lib/attention/adapters.ts</code>:</p>
-<p>| Kind | importance |
-|---|---|
-| smoke-fail | <code dir="auto">high</code> (fixed) |
-| plan-review | <code dir="auto">high</code> (fixed) |
-| coord escalation | <code dir="auto">severityToImportance(sev)</code> — blocker→<code dir="auto">urgent</code>, question→<code dir="auto">high</code>, advisory→<code dir="auto">low</code> |
-| coord message-to-human | <code dir="auto">normal</code> |
-| plan item | the item’s own <code dir="auto">importance:</code> keyword |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Kind</th><th>importance</th></tr></thead><tbody><tr><td>smoke-fail</td><td><code dir="auto">high</code> (fixed)</td></tr><tr><td>plan-review</td><td><code dir="auto">high</code> (fixed)</td></tr><tr><td>coord escalation</td><td><code dir="auto">severityToImportance(sev)</code> — blocker→<code dir="auto">urgent</code>, question→<code dir="auto">high</code>, advisory→<code dir="auto">low</code></td></tr><tr><td>coord message-to-human</td><td><code dir="auto">normal</code></td></tr><tr><td>plan item</td><td>the item’s own <code dir="auto">importance:</code> keyword</td></tr></tbody></table>
 <p>Note <code dir="auto">harness_escalations</code> (the table the watcher polls) has <strong>no severity
 column</strong> — it’s a harness-level escalation, distinct from a <em>coord</em> escalation.
 Treat it as inherently high. Net: the watcher’s three triggers are all already
@@ -160,12 +183,37 @@ high, so the watcher never pushed low-importance noise to begin with.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-producer-call-sites--their-once-per-event-gating">The four producer call-sites + their once-per-event gating</h2><a class="sl-anchor-link" href="#the-four-producer-call-sites--their-once-per-event-gating"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four producer call-sites + their once-per-event gating”</span></a></div>
 <p><code dir="auto">notifyAttention()</code> is called at exactly the points that <em>create</em> a ≥high
 attention item — there’s no poll, so each must fire <strong>once per genuine event</strong>:</p>
-<p>| Source | Where | Fire condition |
-|---|---|---|
-| escalation | <code dir="auto">endpoint-route/routes/internal/escalation-event.ts</code> | <code dir="auto">escalation != null</code> (skip notes-only updates) |
-| smoke-fail | <code dir="auto">endpoint-route/routes/internal/smoke-test-event.ts</code> | <strong>transition</strong> into failing — reads prior <code dir="auto">status</code>, fires only on <code dir="auto">pass→fail</code> / first fail |
-| plan-review | <code dir="auto">internal/plan-review-event.ts</code> | every call (the producer posts once per completed review) |
-| needs-human | <code dir="auto">plans:set-status</code> | transition INTO <code dir="auto">needs-human</code> at importance ≥ high (<code dir="auto">shouldPushNeedsHuman</code> + <code dir="auto">itemImportance</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Source</th><th>Where</th><th>Fire condition</th></tr></thead><tbody><tr><td>escalation</td><td><code dir="auto">endpoint-route/routes/internal/escalation-event.ts</code></td><td><code dir="auto">escalation != null</code> (skip notes-only updates)</td></tr><tr><td>smoke-fail</td><td><code dir="auto">endpoint-route/routes/internal/smoke-test-event.ts</code></td><td><strong>transition</strong> into failing — reads prior <code dir="auto">status</code>, fires only on <code dir="auto">pass→fail</code> / first fail</td></tr><tr><td>plan-review</td><td><code dir="auto">internal/plan-review-event.ts</code></td><td>every call (the producer posts once per completed review)</td></tr><tr><td>needs-human</td><td><code dir="auto">plans:set-status</code></td><td>transition INTO <code dir="auto">needs-human</code> at importance ≥ high (<code dir="auto">shouldPushNeedsHuman</code> + <code dir="auto">itemImportance</code>)</td></tr></tbody></table>
 <p>Why this was safe to do at once: each source is its own chokepoint, so there’s
 <strong>no double-fire</strong> (the poll that used to also push escalation/smoke/plan-review
 is gone). The gating above prevents re-pushing on idempotent re-writes. The

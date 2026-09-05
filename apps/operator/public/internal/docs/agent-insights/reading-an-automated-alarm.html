@@ -82,12 +82,32 @@ those three things before you act, or you will debug a subsystem that was never 
 <strong>your coord delivery hooks may be broken</strong>.</p>
 </blockquote>
 <p>Every emphasised claim above was false, and the leader burned a real detour on them:</p>
-<p>| the alarm said | the truth |
-|---|---|
-| 19 unread | <strong>2</strong> unread. 17 had been read <em>and acted on</em> — an entire bug-fix came out of them |
-| oldest 88m | oldest genuinely-unread was <strong>~9m</strong> |
-| “has not called coord:inbox/coord:orient” | <code dir="auto">coord:orient</code> had been called <strong>twice</strong>, after the mail landed |
-| “your hooks may be broken” | hooks were <strong>fine</strong>; this line is emitted unconditionally |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>the alarm said</th><th>the truth</th></tr></thead><tbody><tr><td>19 unread</td><td><strong>2</strong> unread. 17 had been read <em>and acted on</em> — an entire bug-fix came out of them</td></tr><tr><td>oldest 88m</td><td>oldest genuinely-unread was <strong>~9m</strong></td></tr><tr><td>”has not called coord:inbox/coord:orient”</td><td><code dir="auto">coord:orient</code> had been called <strong>twice</strong>, after the mail landed</td></tr><tr><td>”your hooks may be broken”</td><td>hooks were <strong>fine</strong>; this line is emitted unconditionally</td></tr></tbody></table>
 <p>And yet — <strong>the alarm was RIGHT to fire.</strong> Two messages genuinely were unread. The verdict
 was correct; everything it said <em>about</em> the verdict was wrong.</p>
 <p>That is the most dangerous shape an alarm can have, and it is worth naming: a monitor that

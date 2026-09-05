@@ -136,11 +136,36 @@ cosine); cosine wins paraphrase. Complementary failure modes → hybrid.</p>
 <li>
 <p>Live A/B (2026-07-13, 40 known-item pairs from post-June memories,
 <code dir="auto">bench/ab-live-recall-cli.ts</code>, <strong>post-token-cap-fix</strong>):</p>
-<p>| backend | recall@10 (admitted) | retrieval@10 | p50 |
-| --- | --- | --- | --- |
-| mem0 | 21/40 (53%) | 63% | 1023ms |
-| old <code dir="auto">hybrid</code> | 22/40 (55%) | 63% | 1061ms |
-| <strong><code dir="auto">hybrid-pg</code></strong> | <strong>39/40 (98%)</strong> | <strong>100%</strong> | 1288ms |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>backend</th><th>recall@10 (admitted)</th><th>retrieval@10</th><th>p50</th></tr></thead><tbody><tr><td>mem0</td><td>21/40 (53%)</td><td>63%</td><td>1023ms</td></tr><tr><td>old <code dir="auto">hybrid</code></td><td>22/40 (55%)</td><td>63%</td><td>1061ms</td></tr><tr><td><strong><code dir="auto">hybrid-pg</code></strong></td><td><strong>39/40 (98%)</strong></td><td><strong>100%</strong></td><td>1288ms</td></tr></tbody></table>
 <p>The old hybrid’s file leg only saw write-through projections; the PG lexical
 leg sees every canonical row. <strong>Read the p50 honestly</strong>: hybrid-pg is the
 <em>slowest</em> of the three (+21% over hybrid), not the fastest — it buys ~78% more
@@ -176,10 +201,27 @@ field — so <strong>recall cannot change by construction</strong>; only the pla
 migration <strong>594</strong>: <code dir="auto">pg_trgm</code> + GIN <code dir="auto">gin_trgm_ops</code> indexes on the three payload
 expressions.</p>
 <p>Result — the plan flips to a <code dir="auto">BitmapOr</code> over the trigram indexes:</p>
-<p>| query class | before | after |
-| --- | --- | --- |
-| <strong>rare identifier</strong> (this leg’s whole purpose) | 775ms | <strong>1.2ms</strong> |
-| broad common-token paraphrase | 776ms | ~630ms |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>query class</th><th>before</th><th>after</th></tr></thead><tbody><tr><td><strong>rare identifier</strong> (this leg’s whole purpose)</td><td>775ms</td><td><strong>1.2ms</strong></td></tr><tr><td>broad common-token paraphrase</td><td>776ms</td><td>~630ms</td></tr></tbody></table>
 <p>Common tokens genuinely match ~9.5% of the store (1287 rows), and each survivor
 still re-ILIKEs a large <code dir="auto">data</code> field — an index cannot shrink a candidate set that
 is really that big. That residue is what fix #2 hides.</p>

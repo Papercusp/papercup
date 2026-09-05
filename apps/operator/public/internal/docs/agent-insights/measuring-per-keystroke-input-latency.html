@@ -183,12 +183,37 @@ input <em>cost</em>. Assert <code dir="auto">event.isTrusted</code> on every sam
 measured real keys and not your own synthetic ones. Never point this at
 <code dir="auto">DISPLAY=:0</code> — that is the owner’s desktop.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="metrics-that-are-retired-and-why">Metrics that are retired, and why</h3><a class="sl-anchor-link" href="#metrics-that-are-retired-and-why"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Metrics that are retired, and why”</span></a></div>
-<p>| metric | status | why |
-| --- | --- | --- |
-| single-keystroke worst frame | <strong>retired</strong> | Had real power once (it resolved 43-55ms vs a 17ms sham and detected two CSS fixes at −11/−10ms). After those fixes it reads the vsync floor for <em>everything</em>, so any new ablation using it returns null trivially and proves nothing. Old eliminations made with it still stand; the metric does not. |
-| <code dir="auto">over33</code> (frames over 33ms) | <strong>not evidence</strong> | The probe drives mutations at 33ms, so frames land at ~33ms+ε with zero work. It read 14/22 in <em>every</em> typing arm including the cheapest ones. |
-| <code dir="auto">max</code> frame | <strong>not evidence</strong> | The <strong>sham</strong> — no typing at all — produced max frames of 49–54ms in 2 of 12 rounds under fleet load. Long frames are ambient here, not typing-caused. |
-| raw drift vs ideal | <strong>not evidence</strong> | Dominated by the probe’s own floor (see above). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>metric</th><th>status</th><th>why</th></tr></thead><tbody><tr><td>single-keystroke worst frame</td><td><strong>retired</strong></td><td>Had real power once (it resolved 43-55ms vs a 17ms sham and detected two CSS fixes at −11/−10ms). After those fixes it reads the vsync floor for <em>everything</em>, so any new ablation using it returns null trivially and proves nothing. Old eliminations made with it still stand; the metric does not.</td></tr><tr><td><code dir="auto">over33</code> (frames over 33ms)</td><td><strong>not evidence</strong></td><td>The probe drives mutations at 33ms, so frames land at ~33ms+ε with zero work. It read 14/22 in <em>every</em> typing arm including the cheapest ones.</td></tr><tr><td><code dir="auto">max</code> frame</td><td><strong>not evidence</strong></td><td>The <strong>sham</strong> — no typing at all — produced max frames of 49–54ms in 2 of 12 rounds under fleet load. Long frames are ambient here, not typing-caused.</td></tr><tr><td>raw drift vs ideal</td><td><strong>not evidence</strong></td><td>Dominated by the probe’s own floor (see above).</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="counterbalance-arm-order--this-one-invented-a-regression">Counterbalance arm order — this one invented a regression</h2><a class="sl-anchor-link" href="#counterbalance-arm-order--this-one-invented-a-regression"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Counterbalance arm order — this one invented a regression”</span></a></div>
 <p>Whichever arm runs <strong>second</strong> in a round is penalised. Measured on WI-6502 run19,
 comparing the chat composer against a bare <code dir="auto">&#x3C;input></code>:</p>
@@ -270,13 +295,36 @@ comparison, not a stopwatch.</p>
 <p>Every wrong turn on WI-6502 — five of them — was the same failure: a probe silently
 attached to something other than what it claimed to measure, then returned a clean,
 confident <strong>zero</strong> that read as a finding.</p>
-<p>| the probe | why it read zero |
-| --- | --- |
-| react-query cache census | bound to a <strong>decoy</strong> <code dir="auto">QueryClient</code> in the tree → <code dir="auto">queries: 0</code> |
-| <code dir="auto">EventSource</code> wrapper | <code dir="auto">SSEAdapter</code> builds its <code dir="auto">EventSource</code> at boot, <em>before</em> the patch → undercounted ~10× |
-| <code dir="auto">fetch</code> wrapper | URL regex missed half the traffic |
-| callback attribution keyed on a bundle hash | a rebuild changed <code dir="auto">index-AZ22_Xh1</code> → <code dir="auto">index-CilycHws</code>; the key matched nothing |
-| single-keystroke worst frame | measured a programmatic <code dir="auto">node.value=</code> set (44ms), not typing (16ms = sham) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>the probe</th><th>why it read zero</th></tr></thead><tbody><tr><td>react-query cache census</td><td>bound to a <strong>decoy</strong> <code dir="auto">QueryClient</code> in the tree → <code dir="auto">queries: 0</code></td></tr><tr><td><code dir="auto">EventSource</code> wrapper</td><td><code dir="auto">SSEAdapter</code> builds its <code dir="auto">EventSource</code> at boot, <em>before</em> the patch → undercounted ~10×</td></tr><tr><td><code dir="auto">fetch</code> wrapper</td><td>URL regex missed half the traffic</td></tr><tr><td>callback attribution keyed on a bundle hash</td><td>a rebuild changed <code dir="auto">index-AZ22_Xh1</code> → <code dir="auto">index-CilycHws</code>; the key matched nothing</td></tr><tr><td>single-keystroke worst frame</td><td>measured a programmatic <code dir="auto">node.value=</code> set (44ms), not typing (16ms = sham)</td></tr></tbody></table>
 <p>A zero is the most dangerous reading an instrument can produce, because “the thing
 I suspected isn’t happening” and “I am not looking at the thing” are indistinguishable
 from the output alone. Two defences, and you want both:</p>

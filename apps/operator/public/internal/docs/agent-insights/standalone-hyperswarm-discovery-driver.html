@@ -86,14 +86,40 @@ standalone hyperswarm transport in this repo.</p>
 <code dir="auto">swarm.join(topic)</code> <strong>reliably misses</strong> on a fresh DHT node, and nothing internal
 retries for minutes. Probe matrix (throwaway vitest on a 3-node loopback testnet —
 note a standalone <code dir="auto">npx tsx</code> script can’t reach the testnet, run probes as vitest):</p>
-<p>| Driver after <code dir="auto">join(topic, {server:true, client:true})</code> (both peers)         | Result                      |
-| ---------------------------------------------------------------------------- | --------------------------- |
-| per-topic <code dir="auto">discovery.refresh()</code> on a 1–2.5s interval                          | <strong>CONNECTED in ~1.1s</strong> ✅   |
-| nothing (bare join)                                                           | 0 connections after 8s ❌   |
-| <code dir="auto">void discovery.flushed()</code> (the old directory-swarm driver)                  | 0 connections ❌            |
-| <code dir="auto">await discovery.flushed()</code>                                                   | resolves, still 0 conns ❌  |
-| <code dir="auto">swarm.flush()</code> once or looped (the old cross-pot driver, since rotted)      | 0 connections ❌            |
-| <code dir="auto">await swarm.dht.ready()</code> then join                                           | 0 connections ❌            |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Driver after <code dir="auto">join(topic, {server:true, client:true})</code> (both peers)</th><th>Result</th></tr></thead><tbody><tr><td>per-topic <code dir="auto">discovery.refresh()</code> on a 1–2.5s interval</td><td><strong>CONNECTED in ~1.1s</strong> ✅</td></tr><tr><td>nothing (bare join)</td><td>0 connections after 8s ❌</td></tr><tr><td><code dir="auto">void discovery.flushed()</code> (the old directory-swarm driver)</td><td>0 connections ❌</td></tr><tr><td><code dir="auto">await discovery.flushed()</code></td><td>resolves, still 0 conns ❌</td></tr><tr><td><code dir="auto">swarm.flush()</code> once or looped (the old cross-pot driver, since rotted)</td><td>0 connections ❌</td></tr><tr><td><code dir="auto">await swarm.dht.ready()</code> then join</td><td>0 connections ❌</td></tr></tbody></table>
 <p>The corestore path (<code dir="auto">joinHarnessSwarm</code> + <code dir="auto">corestore.replicate</code>) still connects in
 ~525ms with <code dir="auto">void discovery.flushed()</code> — only <strong>standalone</strong> transports are
 affected. Both standalone transports now run the refresh loop:

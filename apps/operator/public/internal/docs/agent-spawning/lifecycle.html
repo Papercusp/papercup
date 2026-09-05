@@ -100,14 +100,40 @@ the one spawn engine every launch path shares, including the live ones above.</p
 <div class="sl-heading-wrapper level-h2"><h2 id="fleettree--spawn_id-"><code dir="auto">fleet:tree { spawn_id }</code></h2><a class="sl-anchor-link" href="#fleettree--spawn_id-"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “fleet:tree { spawn_id }”</span></a></div>
 <p>Reads the durable subtree rooted at a node directly from <code dir="auto">spawned_agents</code> (via <code dir="auto">getSubtree</code>) — every descendant with its status, owner, role, and the work it serves — plus the completion gate (<code dir="auto">can_complete</code> / <code dir="auto">open_children</code>: whether the root has any live child).</p>
 <p>Status field is the single source of truth:</p>
-<p>| Status | Meaning |
-|---|---|
-| <code dir="auto">running</code> | Promise hasn’t resolved yet. AbortController is live (on the launching host). |
-| <code dir="auto">restarting</code> | Supervised restart in flight (one_for_one / one_for_all / rest_for_one). Counts as ACTIVE. |
-| <code dir="auto">done</code> | Promise resolved, child subprocess exited with code 0. |
-| <code dir="auto">failed</code> | Non-zero exit code, the invoke threw, OR a stale-heartbeat orphan was reclaimed. |
-| <code dir="auto">cancelled</code> | Aborted via <code dir="auto">fleet:cancel</code> (or the subtree flip). |
-| <code dir="auto">reaped</code> | Legacy terminal status for a startup-swept orphan; today orphans are reclaimed to <code dir="auto">failed</code> by the heartbeat sweep. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">running</code></td><td>Promise hasn’t resolved yet. AbortController is live (on the launching host).</td></tr><tr><td><code dir="auto">restarting</code></td><td>Supervised restart in flight (one_for_one / one_for_all / rest_for_one). Counts as ACTIVE.</td></tr><tr><td><code dir="auto">done</code></td><td>Promise resolved, child subprocess exited with code 0.</td></tr><tr><td><code dir="auto">failed</code></td><td>Non-zero exit code, the invoke threw, OR a stale-heartbeat orphan was reclaimed.</td></tr><tr><td><code dir="auto">cancelled</code></td><td>Aborted via <code dir="auto">fleet:cancel</code> (or the subtree flip).</td></tr><tr><td><code dir="auto">reaped</code></td><td>Legacy terminal status for a startup-swept orphan; today orphans are reclaimed to <code dir="auto">failed</code> by the heartbeat sweep.</td></tr></tbody></table>
 <p>Each node also carries <code dir="auto">feature</code>, <code dir="auto">plan_item</code>, <code dir="auto">owner</code> (<code dir="auto">session_owner</code>), and <code dir="auto">restart_strategy</code>. Per-node <code dir="auto">depth</code> is the lineage depth within the queried subtree (root = 0). Terminal-row detail (<code dir="auto">exit_code</code>, <code dir="auto">output_tail</code>, <code dir="auto">error_message</code>) lives on the <code dir="auto">spawned_agents</code> row directly — query it or read it off the death-notice payload the parent is woken with.</p>
 <p><code dir="auto">fleet:tree</code> also flags wedges. A node that is <strong>alive + heartbeating but stream-silent</strong> past <code dir="auto">WEDGE_SILENT_MS</code> (10 min) — cups stream partial messages, so a long silence with a live process means hung, not thinking — is annotated <code dir="auto">possibly_wedged: true</code>. That annotation is display/triage only. The flag-gated reaper (<code dir="auto">WEDGE_AUTO_REAP</code>, default ON — D-006, 2026-06-11) takes the next step: it cancels a <em>local</em> spawn that has been stream-silent past <code dir="auto">WEDGE_REAP_SILENT_MS</code> (30 min) through the same durable <code dir="auto">cancelSubtree</code> engine <code dir="auto">fleet:cancel</code> uses — so a wedged <code dir="auto">running</code> cup becomes <code dir="auto">cancelled</code>, a real terminal transition. Only the host holding the spawn’s handle reaps it, and a spawn that has never produced output is never reaped (absence of signal ≠ a wedge).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="fleetcancel--spawn_id-reason-"><code dir="auto">fleet:cancel { spawn_id, reason? }</code></h2><a class="sl-anchor-link" href="#fleetcancel--spawn_id-reason-"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “fleet:cancel { spawn_id, reason? }”</span></a></div>
@@ -121,22 +147,72 @@ the one spawn engine every launch path shares, including the live ones above.</p
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌─────────────┐  ←→  ┌──────────────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│   running   │      │  restarting  │  (supervised restart; still ACTIVE)</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└──┬───┬───┬──┘      └──────────────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">      </span></span><span style="--0:#d6deeb;--1:#403f53">│   │   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">.then  .catch  abort()</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">      </span></span><span style="--0:#d6deeb;--1:#403f53">│   │   │</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">┌──↓─┐ │   ┌─↓─────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">│done│ │   │failed │ ← also: stale-heartbeat orphan reclaimed here</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">└────┘ │   └───────┘</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">          </span></span><span style="--0:#d6deeb;--1:#403f53">│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">┌──↓──────┐</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">│cancelled│</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">       </span></span><span style="--0:#d6deeb;--1:#403f53">└─────────┘</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="   ┌─────────────┐  ←→  ┌──────────────┐   │   running   │      │  restarting  │  (supervised restart; still ACTIVE)   └──┬───┬───┬──┘      └──────────────┘      │   │   │   .then  .catch  abort()      │   │   │   ┌──↓─┐ │   ┌─↓─────┐   │done│ │   │failed │ ← also: stale-heartbeat orphan reclaimed here   └────┘ │   └───────┘          │       ┌──↓──────┐       │cancelled│       └─────────┘"><div></div></button></div></figure></div>
 <p><code dir="auto">running</code> and <code dir="auto">restarting</code> are the two ACTIVE statuses; <code dir="auto">done | failed | cancelled | reaped</code> are terminal. Once a row is terminal it stays there — no re-runs (a supervised restart is a fresh attempt, not a terminal-row revival). <code dir="auto">reaped</code> is a legacy terminal status: today an orphaned row is reclaimed to <code dir="auto">failed</code>, not <code dir="auto">reaped</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="cross-restart-durability">Cross-restart durability</h2><a class="sl-anchor-link" href="#cross-restart-durability"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cross-restart durability”</span></a></div>
-<p>| Action | Pre-restart spawn (this host) | Post-restart spawn (prior host) |
-|---|---|---|
-| <code dir="auto">fleet:tree</code> | ✅ reads the PG row | ✅ reads the PG row (the nursery is fully durable) |
-| concurrency count | ✅ counted live | ✅ counted until reclaimed |
-| <code dir="auto">fleet:cancel</code> | ✅ durable flip <strong>+</strong> real SIGTERM (local AbortController) | ⚠️ durable flip only — no local handle to kill the OS process; the heartbeat sweep reclaims it |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Action</th><th>Pre-restart spawn (this host)</th><th>Post-restart spawn (prior host)</th></tr></thead><tbody><tr><td><code dir="auto">fleet:tree</code></td><td>✅ reads the PG row</td><td>✅ reads the PG row (the nursery is fully durable)</td></tr><tr><td>concurrency count</td><td>✅ counted live</td><td>✅ counted until reclaimed</td></tr><tr><td><code dir="auto">fleet:cancel</code></td><td>✅ durable flip <strong>+</strong> real SIGTERM (local AbortController)</td><td>⚠️ durable flip only — no local handle to kill the OS process; the heartbeat sweep reclaims it</td></tr></tbody></table>
 <p>A <code dir="auto">running</code> row whose launching operator host died is no longer left to zombie forever. The live host heartbeats <code dir="auto">heartbeat_at</code> for its in-flight spawns; once a row’s heartbeat goes stale past <code dir="auto">RECLAIM_STALE_MS</code> (5 min), the reclaim sweep (<code dir="auto">reclaimOrphanedSpawns</code>, run opportunistically on each spawn and periodically) flips it to <code dir="auto">status='failed'</code> with an explanatory <code dir="auto">error_message</code> and frees the concurrency ceiling. That sweep also wakes the dead child’s parent.</p>
 <p>Reclaim is <strong>not</strong> purely heartbeat-age, though (EI-85): a stale-heartbeat row whose recorded OS pid is still alive on <code dir="auto">/proc</code> on the <strong>same</strong> host is deliberately <strong>left running</strong> — the host was only briefly paused, not dead, and its row just gets its heartbeat bumped. Only a genuinely-gone process (or a row on a <em>different</em> host, which this one can’t liveness-check) is reclaimed. The recorded pid + launcher host land on the row via migration 228.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-runs-in-the-child">What runs in the child</h2><a class="sl-anchor-link" href="#what-runs-in-the-child"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What runs in the child”</span></a></div>
 <p><code dir="auto">spawnInvokeOnce</code> (<code dir="auto">packages/operator-core/lib/dbos/orchestrator-runner.ts</code>) launches the child as a detached subprocess (its own process group, so a group-kill reaps the wrapper + invoke-once + agent together on cancel/timeout) — the same invoke-once code path the harness uses. The engine threads:</p>
-<p>| Passed to the child | Source |
-|---|---|
-| <code dir="auto">project.path</code> (cwd) | <code dir="auto">resolveProject(harness)</code> — the registered harness’s project dir |
-| <code dir="auto">role</code> | the spawn input’s <code dir="auto">role</code> |
-| <code dir="auto">extras[]</code> | the input’s <code dir="auto">extras</code>, with <code dir="auto">FEATURE_ID=&#x3C;id></code> / <code dir="auto">CHUNK_ID=&#x3C;id></code> appended when set |
-| <code dir="auto">PAPERCUSP_SPAWN_ID</code> | the durable <code dir="auto">s-…</code> spawnId (the umbilical — becomes the child’s stable MCP <code dir="auto">client</code>/owner) |
-| <code dir="auto">PAPERCUSP_PARENT_SPAWN_ID</code> | the parent’s spawnId, when this spawn has a parent (lineage) |
-| <code dir="auto">QUEEN_BRIEF</code> | the spawn input’s <code dir="auto">brief</code>, when set (P-060) — injected into the cup’s prompt |
-| pipeline env | <code dir="auto">buildPipelineExtraEnv</code> (workspace, harness, idempotency key, PG DSN) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Passed to the child</th><th>Source</th></tr></thead><tbody><tr><td><code dir="auto">project.path</code> (cwd)</td><td><code dir="auto">resolveProject(harness)</code> — the registered harness’s project dir</td></tr><tr><td><code dir="auto">role</code></td><td>the spawn input’s <code dir="auto">role</code></td></tr><tr><td><code dir="auto">extras[]</code></td><td>the input’s <code dir="auto">extras</code>, with <code dir="auto">FEATURE_ID=&#x3C;id></code> / <code dir="auto">CHUNK_ID=&#x3C;id></code> appended when set</td></tr><tr><td><code dir="auto">PAPERCUSP_SPAWN_ID</code></td><td>the durable <code dir="auto">s-…</code> spawnId (the umbilical — becomes the child’s stable MCP <code dir="auto">client</code>/owner)</td></tr><tr><td><code dir="auto">PAPERCUSP_PARENT_SPAWN_ID</code></td><td>the parent’s spawnId, when this spawn has a parent (lineage)</td></tr><tr><td><code dir="auto">QUEEN_BRIEF</code></td><td>the spawn input’s <code dir="auto">brief</code>, when set (P-060) — injected into the cup’s prompt</td></tr><tr><td>pipeline env</td><td><code dir="auto">buildPipelineExtraEnv</code> (workspace, harness, idempotency key, PG DSN)</td></tr></tbody></table>
 <p>The orchestrator’s <code dir="auto">spawn-mcp.ts</code> writes a per-child, HMAC-signed <code dir="auto">.mcp.json</code> (<code dir="auto">packages/operator-core/lib/spawn-signing.ts</code>) with the per-spawn URL params, including <code dir="auto">parent_spawn</code> set to the parent’s spawnId — so any tool calls the child makes carry <code dir="auto">parent_spawn_id</code> automatically. (See <a href="/internal/docs/agent-spawning/schema#url-plumbing--the-spawn-params">Schema</a> for the full param list.)</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:38.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-spawning/overview.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Overview</span> </span> </a> <a href="/internal/docs/agent-spawning/allowlist-and-caps.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Admission &amp; the concurrency ceiling</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

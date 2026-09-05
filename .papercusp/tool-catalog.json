@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 852,
+  "count": 853,
   "tools": [
     {
       "name": "ablation:report",
@@ -26418,6 +26418,44 @@
         "when": "You are an independent reviewer (or the owner/su) reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].",
         "notWhen": "Authoring or revising content — rubrics:propose. If you are the proposer, leave it proposed for another reviewer; do not self-ratify.",
         "chaining": "rubrics:list { status: \"proposed\" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest."
+      }
+    },
+    {
+      "name": "rubrics:retire",
+      "http": {
+        "path": "/api/agent-tools/rubrics/retire",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Retire one OR many STANDARD rubrics → status \"retired\" (the inverse of rubrics:ratify). Single: { rubricRef }. Many: { rubricRefs:[…] }, optional { reason } recorded on the audit revision. Returns { ok, results:[{ ok, rubricRef, rubric? | error }], counts } — correlate by rubricRef, not position; one bad ref never fails the rest. Idempotent: an already-retired rubric succeeds unchanged. REFUSES acceptance-kind rubrics — those archive with their subject plan, never by hand. Reversible via rubrics:ratify.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A standard rubric's subject is gone or superseded and it should stop being graded — its subsystem was deleted, or a replacement rubric now covers it. Retiring drops it from the staleness watchdog, which watches every active rubric and otherwise nags forever for scorecards nobody can emit.",
+        "notWhen": "Changing criteria (rubrics:amend / rubrics:propose). Marking where an old contract ended while keeping it live (rubrics:set-history-reset). An acceptance rubric — ship or supersede its subject plan instead.",
+        "chaining": "rubrics:list { status:\"active\" } → rubrics:get → confirm the subject is really dead → rubrics:retire { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }."
       }
     },
     {

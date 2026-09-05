@@ -163,12 +163,32 @@ is unrecoverable this way.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="route-4-the-session-directory--transcript-walk">Route 4: the session-directory / transcript walk</h2><a class="sl-anchor-link" href="#route-4-the-session-directory--transcript-walk"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Route 4: the session-directory / transcript walk”</span></a></div>
 <p>Once you know <strong>which CLI</strong> hosted the session (<code dir="auto">command</code> from Route 1, or
 infer <code dir="auto">claude</code> by default), the transcript lives at a CLI-specific path:</p>
-<p>| CLI | Path pattern |
-|---|---|
-| <code dir="auto">claude</code> (psu-isolated) | <code dir="auto">~/.papercusp/session-claude/&#x3C;ownerId>/projects/**/&#x3C;sessionId>.jsonl</code> — the <strong>directory name IS the coord ownerId</strong> |
-| <code dir="auto">claude</code> (non-isolated / raw interactive) | <code dir="auto">~/.claude/projects/**/&#x3C;sessionId>.jsonl</code> (global, not owner-keyed) |
-| <code dir="auto">omp</code> | <code dir="auto">~/.omp/agent/sessions/&#x3C;munged-cwd>/&#x3C;ts>_&#x3C;uuid>.jsonl</code> |
-| <code dir="auto">codex</code> | <code dir="auto">~/.codex/sessions/YYYY/MM/DD/rollout-&#x3C;ts>-&#x3C;uuid>.jsonl</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>CLI</th><th>Path pattern</th></tr></thead><tbody><tr><td><code dir="auto">claude</code> (psu-isolated)</td><td><code dir="auto">~/.papercusp/session-claude/&#x3C;ownerId>/projects/**/&#x3C;sessionId>.jsonl</code> — the <strong>directory name IS the coord ownerId</strong></td></tr><tr><td><code dir="auto">claude</code> (non-isolated / raw interactive)</td><td><code dir="auto">~/.claude/projects/**/&#x3C;sessionId>.jsonl</code> (global, not owner-keyed)</td></tr><tr><td><code dir="auto">omp</code></td><td><code dir="auto">~/.omp/agent/sessions/&#x3C;munged-cwd>/&#x3C;ts>_&#x3C;uuid>.jsonl</code></td></tr><tr><td><code dir="auto">codex</code></td><td><code dir="auto">~/.codex/sessions/YYYY/MM/DD/rollout-&#x3C;ts>-&#x3C;uuid>.jsonl</code></td></tr></tbody></table>
 <p>If you already have a <code dir="auto">sessionId</code> (from Route 1’s <code dir="auto">args</code> or Route 3’s
 <code dir="auto">session_id</code>/<code dir="auto">omp_thread_id</code>), go straight to the matching file — for
 <code dir="auto">omp</code>/<code dir="auto">codex</code> this is <strong>required</strong>, since neither has a per-owner isolation
@@ -179,12 +199,37 @@ this is exactly what <code dir="auto">resolveSelfSession()</code> (<code dir="au
 re-implementing the walk.</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># claude, psu-isolated, don't know the uuid — newest wins:</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">find</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">~/.papercusp/session-claude/&#x3C;ownerId>/projects</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-name</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">*.jsonl</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-printf</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">%T@ %p\n</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">sort</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-rn</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">head</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-1</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="find ~/.papercusp/session-claude/<ownerId>/projects -name &#x27;*.jsonl&#x27; -printf &#x27;%T@ %p\n&#x27; | sort -rn | head -1"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="summary-which-route-for-which-question">Summary: which route for which question</h2><a class="sl-anchor-link" href="#summary-which-route-for-which-question"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Summary: which route for which question”</span></a></div>
-<p>| You have | You want | Route |
-|---|---|---|
-| ownerId | live pid, launch argv, control socket | 1 (psu-pty file) |
-| a terminal/window pid only | the agent process inside it | 2 (cmdline marker grep, NOT <code dir="auto">pgrep -P</code>) |
-| ownerId (maybe ended) | session id(s), plan, cwd, activity history | 3 (<code dir="auto">dev:resolve_owner</code>) |
-| ownerId or sessionId | the transcript jsonl to read | 4 (session-dir walk, CLI-specific) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You have</th><th>You want</th><th>Route</th></tr></thead><tbody><tr><td>ownerId</td><td>live pid, launch argv, control socket</td><td>1 (psu-pty file)</td></tr><tr><td>a terminal/window pid only</td><td>the agent process inside it</td><td>2 (cmdline marker grep, NOT <code dir="auto">pgrep -P</code>)</td></tr><tr><td>ownerId (maybe ended)</td><td>session id(s), plan, cwd, activity history</td><td>3 (<code dir="auto">dev:resolve_owner</code>)</td></tr><tr><td>ownerId or sessionId</td><td>the transcript jsonl to read</td><td>4 (session-dir walk, CLI-specific)</td></tr></tbody></table>
 <p>All four are fail-soft / best-effort by design (a missing file, a NULL column,
 an empty directory all just mean “try the next route” or “this session predates
 that mechanism”) — none of them throws on a miss, so chain them rather than

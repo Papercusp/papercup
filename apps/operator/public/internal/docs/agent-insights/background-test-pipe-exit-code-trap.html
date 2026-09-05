@@ -152,12 +152,42 @@ inside the pipeline whose exit code you care about, so it can’t mask anything.
 <p>The original write-up framed this as a <em>test-running</em> trap. That framing is what let it
 recur. A mac-leg agent hit the identical failure <strong>four times in one session</strong> while
 shipping release artifacts — none of them a test run:</p>
-<p>| what actually ran | harness said | real exit | consequence |
-| --- | --- | --- | --- |
-| <code dir="auto">npm run test:affected … \| tail</code> | completed, exit 0 | <strong>1</strong> | a red suite read as green |
-| <code dir="auto">rsync … \| tail</code> (hand-escaped spaces) | completed, exit 0 | <strong>23</strong> | nothing transferred |
-| <code dir="auto">rsync -s … \| tail</code> (Apple rsync 2.6.9) | completed, exit 0 | <strong>12</strong> | nothing transferred |
-| <code dir="auto">ssh … \| grep</code> | completed, exit 0 | non-zero | absence read as evidence |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>what actually ran</th><th>harness said</th><th>real exit</th><th>consequence</th></tr></thead><tbody><tr><td><code dir="auto">npm run test:affected … | tail</code></td><td>completed, exit 0</td><td><strong>1</strong></td><td>a red suite read as green</td></tr><tr><td><code dir="auto">rsync … | tail</code> (hand-escaped spaces)</td><td>completed, exit 0</td><td><strong>23</strong></td><td>nothing transferred</td></tr><tr><td><code dir="auto">rsync -s … | tail</code> (Apple rsync 2.6.9)</td><td>completed, exit 0</td><td><strong>12</strong></td><td>nothing transferred</td></tr><tr><td><code dir="auto">ssh … | grep</code></td><td>completed, exit 0</td><td>non-zero</td><td>absence read as evidence</td></tr></tbody></table>
 <p>Two of those reported success while transferring <strong>zero bytes</strong>. The reason the existing
 doc did not prevent them is worth stating plainly: an agent grepping for help with a
 broken <code dir="auto">rsync</code> does not search for a <em>testing</em> insight. The trap lives in <code dir="auto">bash</code>’s

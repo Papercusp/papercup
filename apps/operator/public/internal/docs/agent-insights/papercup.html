@@ -134,12 +134,37 @@ Papercup exists to avoid). <code dir="auto">papercup-context.ts</code> follows t
 pattern exactly: a <strong>pure deterministic renderer</strong> (<code dir="auto">renderSentinelContext</code>) over
 already-shaped input + a <strong>fail-soft deps adapter</strong> (<code dir="auto">gatherSentinelContext</code>, one
 flaky leg degrades to an empty section, never throws). The four sources:</p>
-<p>| Section | Source digest | Module |
-|---|---|---|
-| Live signals (escalations / blockers / decisions / completions, salience-ranked) | <code dir="auto">curation:feed</code> | <code dir="auto">gatherFleetSignals</code> + <code dir="auto">rankFleetFeed</code> |
-| Anomalies (detected drift + suggested action, severity-ordered) | Overwatch compute-brief | <code dir="auto">computeOverwatchBrief</code> |
-| Standing patterns + headline (recurring friction / sinks / deferrals / gaps) | <code dir="auto">curation:state-of-pot</code> | <code dir="auto">synthesizeStateOfHive</code> |
-| Progress (live fleet load + liveness) | <code dir="auto">fleet:assignments</code> | <code dir="auto">listFleetAssignments</code> + <code dir="auto">groupByAgent</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Section</th><th>Source digest</th><th>Module</th></tr></thead><tbody><tr><td>Live signals (escalations / blockers / decisions / completions, salience-ranked)</td><td><code dir="auto">curation:feed</code></td><td><code dir="auto">gatherFleetSignals</code> + <code dir="auto">rankFleetFeed</code></td></tr><tr><td>Anomalies (detected drift + suggested action, severity-ordered)</td><td>Overwatch compute-brief</td><td><code dir="auto">computeOverwatchBrief</code></td></tr><tr><td>Standing patterns + headline (recurring friction / sinks / deferrals / gaps)</td><td><code dir="auto">curation:state-of-pot</code></td><td><code dir="auto">synthesizeStateOfHive</code></td></tr><tr><td>Progress (live fleet load + liveness)</td><td><code dir="auto">fleet:assignments</code></td><td><code dir="auto">listFleetAssignments</code> + <code dir="auto">groupByAgent</code></td></tr></tbody></table>
 <p>It is a <strong>Papercup slice</strong> of the mug-brief — escalations/anomalies/progress +
 “what’s worth surfacing,” <strong>not</strong> placement rank (the Mug owns placement; the
 Papercup owns surfacing). Each section is capped (<code dir="auto">DEFAULT_SENTINEL_CONTEXT_CAPS</code>) so

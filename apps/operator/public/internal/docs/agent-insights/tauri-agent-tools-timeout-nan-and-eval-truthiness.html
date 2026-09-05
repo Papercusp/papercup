@@ -145,14 +145,47 @@ isn’t valid JSON (e.g. an arbitrary string return value). Both <code dir="auto
 call sites (<code dir="auto">selector</code> and <code dir="auto">eval</code> modes) now use it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="verified-live-not-just-unit-level">Verified live (not just unit-level)</h2><a class="sl-anchor-link" href="#verified-live-not-just-unit-level"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verified live (not just unit-level)”</span></a></div>
 <p>Against a live Tauri bridge (<code dir="auto">--pid &#x3C;papercusp-desktop pid></code>):</p>
-<p>| command | before | after |
-|---|---|---|
-| <code dir="auto">check --no-errors --duration 3000</code> | passes in ~1ms | passes in ~3.39s |
-| <code dir="auto">wait --eval "false" --timeout 3000</code> | “Timed out” in ~0.06s | “Timed out” in ~3.40s (correctly never matches) |
-| <code dir="auto">wait --eval "true" --timeout 5000</code> | (masked by NaN bug) | matches in ~86ms |
-| <code dir="auto">wait --selector "body" --timeout 5000</code> | “Timed out” in ~5s even though <code dir="auto">body</code> exists | matches in ~102ms |
-| <code dir="auto">wait --selector ".nonexistent" --timeout 3000</code> | “Timed out” in ~0.06s (right answer, wrong reason) | “Timed out” in ~3.40s (right answer, right mechanism) |
-| <code dir="auto">dom --depth abc</code> (garbage input) | silently became <code dir="auto">NaN</code>, no error | rejected: <code dir="auto">error: option '--depth &#x3C;number>' argument 'abc' is invalid</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>command</th><th>before</th><th>after</th></tr></thead><tbody><tr><td><code dir="auto">check --no-errors --duration 3000</code></td><td>passes in ~1ms</td><td>passes in ~3.39s</td></tr><tr><td><code dir="auto">wait --eval "false" --timeout 3000</code></td><td>”Timed out” in ~0.06s</td><td>”Timed out” in ~3.40s (correctly never matches)</td></tr><tr><td><code dir="auto">wait --eval "true" --timeout 5000</code></td><td>(masked by NaN bug)</td><td>matches in ~86ms</td></tr><tr><td><code dir="auto">wait --selector "body" --timeout 5000</code></td><td>”Timed out” in ~5s even though <code dir="auto">body</code> exists</td><td>matches in ~102ms</td></tr><tr><td><code dir="auto">wait --selector ".nonexistent" --timeout 3000</code></td><td>”Timed out” in ~0.06s (right answer, wrong reason)</td><td>“Timed out” in ~3.40s (right answer, right mechanism)</td></tr><tr><td><code dir="auto">dom --depth abc</code> (garbage input)</td><td>silently became <code dir="auto">NaN</code>, no error</td><td>rejected: <code dir="auto">error: option '--depth &#x3C;number>' argument 'abc' is invalid</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="takeaway-for-anyone-touching-this-class-of-code">Takeaway for anyone touching this class of code</h2><a class="sl-anchor-link" href="#takeaway-for-anyone-touching-this-class-of-code"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Takeaway for anyone touching this class of code”</span></a></div>
 <ul>
 <li>Never pass a bare <code dir="auto">parseInt</code> (or any 2-arg function whose 2nd param isn’t

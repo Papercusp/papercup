@@ -161,11 +161,28 @@ its change-streamer port to <code dir="auto">ZERO_PORT + 1 = 4849</code>, which 
 the harness zero-cache main port.</p>
 <p><strong>Fix</strong>: set <code dir="auto">ZERO_CHANGE_STREAMER_PORT=4847</code> on the shop zero-cache
 unit. The current allocation is:</p>
-<p>| Port | Service |
-|---|---|
-| 4849 | harness zero-cache main |
-| 4850 | harness change-streamer |
-| 4847 | shop change-streamer (override) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Port</th><th>Service</th></tr></thead><tbody><tr><td>4849</td><td>harness zero-cache main</td></tr><tr><td>4850</td><td>harness change-streamer</td></tr><tr><td>4847</td><td>shop change-streamer (override)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="8-sync-hook-outside-the-provider">8. Sync hook outside the provider</h2><a class="sl-anchor-link" href="#8-sync-hook-outside-the-provider"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “8. Sync hook outside the provider”</span></a></div>
 <p><strong>Symptom</strong>: a panel using <code dir="auto">useSyncQuery</code> shows no data and never loads —
 <code dir="auto">data</code> is <code dir="auto">undefined</code>, <code dir="auto">loading</code> is <code dir="auto">false</code>. Or, if you used
@@ -279,11 +296,32 @@ writes the derived rows; the resolver becomes a plain <code dir="auto">SELECT</c
 implemented: <code dir="auto">harness_shared.derived_read_snapshots</code> + the producer registry in
 <code dir="auto">packages/operator-core/lib/derived-reads/</code>, refreshed by the
 <code dir="auto">system:precompute-derived-reads</code> routine. Measured on <code dir="auto">:3170</code> after the change:</p>
-<p>| query | before | after |
-|---|---|---|
-| <code dir="auto">learning.soakReport</code> | 27.3s | <strong>0.091s</strong> |
-| <code dir="auto">storage.usage</code> | 20.0s | <strong>0.092s</strong> |
-| <code dir="auto">plans.lint</code> | 13.8s | <strong>0.130s</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>query</th><th>before</th><th>after</th></tr></thead><tbody><tr><td><code dir="auto">learning.soakReport</code></td><td>27.3s</td><td><strong>0.091s</strong></td></tr><tr><td><code dir="auto">storage.usage</code></td><td>20.0s</td><td><strong>0.092s</strong></td></tr><tr><td><code dir="auto">plans.lint</code></td><td>13.8s</td><td><strong>0.130s</strong></td></tr></tbody></table>
 <p>And the amplifier, measured directly at the time: a batch requesting all three
 together returned in <strong>0.54s</strong>, where before it took as long as its slowest
 member — over 27 seconds — because <code dir="auto">Promise.all</code> waits for the last one. (The

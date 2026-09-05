@@ -78,11 +78,36 @@ different underlying condition. An agent who hits it once (say, the Mug throughp
 breach) and generalizes that fix to the next occurrence (say, a gateway admission
 starvation) will diagnose the wrong layer. This doc is the missing index.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-layers">The three layers</h2><a class="sl-anchor-link" href="#the-three-layers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three layers”</span></a></div>
-<p>| Layer | Where it fires | Watchdog key | What it actually means |
-|---|---|---|---|
-| <strong>1. Mug/cup placement throughput</strong> | <code dir="auto">pot/throughput.ts</code> <code dir="auto">detectThroughputBreaches</code> (<code dir="auto">kind:'starvation'</code>) | <code dir="auto">governor-starvation:&#x3C;potSlug></code> | Every cup slot in this <strong>pot</strong> is busy (<code dir="auto">utilization>=1</code>) while its own <strong>ready</strong> frontier (<code dir="auto">frontierDepth</code>) is >0 — the pot can’t place more work until a cup frees a slot. |
-| <strong>2. Work-item self-select claiming</strong> | <code dir="auto">work_items/claim_next.ts</code> / <code dir="auto">work-items.ts</code> <code dir="auto">diagnoseClaimNextMiss</code> (EI-5803/EI-5919) | n/a (a per-call diagnosis, not a standing alarm) | A bee’s <code dir="auto">claim_next</code>/<code dir="auto">scheduler:get_next</code> came back empty, but the backlog is <strong>not actually drained</strong> — items exist, they’re just gated (blocked / affinity-elsewhere / redundant-fanned / a lost race), so idling is WRONG. |
-| <strong>3. LLM inference-gateway admission</strong> | <code dir="auto">inference-gateway/gateway-wedge.ts</code> + <a href="/internal/docs/agent-insights/gateway-admission-starvation-below-ceiling">gateway-admission-starvation-below-ceiling</a> (WI-3565) | <code dir="auto">admissionStarved</code> (health panel / overwatch anomaly <code dir="auto">gateway-admission-starved</code>) | The gateway’s own admission queue is deep while <code dir="auto">inFlight</code> sits <strong>below</strong> <code dir="auto">maxConcurrent</code> — a provider/account floor is pinning concurrency low even though idle healthy accounts exist. Nothing to do with work-item claiming at all; agents are already claimed and RUNNING but their LLM calls themselves are queued. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Where it fires</th><th>Watchdog key</th><th>What it actually means</th></tr></thead><tbody><tr><td><strong>1. Mug/cup placement throughput</strong></td><td><code dir="auto">pot/throughput.ts</code> <code dir="auto">detectThroughputBreaches</code> (<code dir="auto">kind:'starvation'</code>)</td><td><code dir="auto">governor-starvation:&#x3C;potSlug></code></td><td>Every cup slot in this <strong>pot</strong> is busy (<code dir="auto">utilization>=1</code>) while its own <strong>ready</strong> frontier (<code dir="auto">frontierDepth</code>) is >0 — the pot can’t place more work until a cup frees a slot.</td></tr><tr><td><strong>2. Work-item self-select claiming</strong></td><td><code dir="auto">work_items/claim_next.ts</code> / <code dir="auto">work-items.ts</code> <code dir="auto">diagnoseClaimNextMiss</code> (EI-5803/EI-5919)</td><td>n/a (a per-call diagnosis, not a standing alarm)</td><td>A bee’s <code dir="auto">claim_next</code>/<code dir="auto">scheduler:get_next</code> came back empty, but the backlog is <strong>not actually drained</strong> — items exist, they’re just gated (blocked / affinity-elsewhere / redundant-fanned / a lost race), so idling is WRONG.</td></tr><tr><td><strong>3. LLM inference-gateway admission</strong></td><td><code dir="auto">inference-gateway/gateway-wedge.ts</code> + <a href="/internal/docs/agent-insights/gateway-admission-starvation-below-ceiling">gateway-admission-starvation-below-ceiling</a> (WI-3565)</td><td><code dir="auto">admissionStarved</code> (health panel / overwatch anomaly <code dir="auto">gateway-admission-starved</code>)</td><td>The gateway’s own admission queue is deep while <code dir="auto">inFlight</code> sits <strong>below</strong> <code dir="auto">maxConcurrent</code> — a provider/account floor is pinning concurrency low even though idle healthy accounts exist. Nothing to do with work-item claiming at all; agents are already claimed and RUNNING but their LLM calls themselves are queued.</td></tr></tbody></table>
 <p>These are genuinely different resources being exhausted (cup slots vs. claimable-item
 gates vs. LLM-call admission slots) — a fix at one layer does nothing for the others.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="layer-1--mugcup-throughput-starvation-already-hardened-against-4-false-positive-classes">Layer 1 — Mug/cup throughput starvation: already hardened against 4 false-positive classes</h2><a class="sl-anchor-link" href="#layer-1--mugcup-throughput-starvation-already-hardened-against-4-false-positive-classes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Layer 1 — Mug/cup throughput starvation: already hardened against 4 false-positive classes”</span></a></div>

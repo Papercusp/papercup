@@ -116,19 +116,60 @@
 </ul>
 <p>There is <strong>no</strong> <code dir="auto">snapshots:*</code> group — full-workspace snapshot tooling lives under <code dir="auto">backup:*</code> (e.g. <code dir="auto">backup:snapshot_create</code>, <code dir="auto">backup:snapshot_list</code>).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="singletons">Singletons</h3><a class="sl-anchor-link" href="#singletons"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Singletons”</span></a></div>
-<p>| Tool                        | Description                                                                                                                                                                                                 |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <code dir="auto">agents:list</code>               | Active agent sessions                                                                                                                                                                                       |
-| <code dir="auto">agent_tools:list</code>          | Introspection: every projected tool with <code dir="auto">{capability, roles, allowed, reason}</code> for the caller’s ctx. The “what can I call?” primitive — pass <code dir="auto">onlyAllowed: false</code> to also see denied tools with the reason |
-| <code dir="auto">audit:list</code>                | Audit log (recent actions)                                                                                                                                                                                  |
-| <code dir="auto">actions:recent</code>            | Recent agent actions                                                                                                                                                                                        |
-| <code dir="auto">hooks:known</code>               | Static hook-event allowlist                                                                                                                                                                                 |
-| <code dir="auto">notifications:recent</code>      | Recent notifications                                                                                                                                                                                        |
-| <code dir="auto">omp:config</code>                | Read/set OMP CLI config keys                                                                                                                                                                                |
-| <code dir="auto">pending_events:list</code>       | Pending hook events                                                                                                                                                                                         |
-| <code dir="auto">papercusp:list_workspaces</code> | Discovery helper for <a href="./superuser-mode">superuser</a> shells                                                                                                                                                   |
-| <code dir="auto">search:query</code>              | Cross-resource search (tasks, goals, projects, audit, messages)                                                                                                                                             |
-| <code dir="auto">wiki:backlinks</code>            | Find markdown files referencing <code dir="auto">[[target]]</code>                                                                                                                                                                |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description</th></tr></thead><tbody><tr><td><code dir="auto">agents:list</code></td><td>Active agent sessions</td></tr><tr><td><code dir="auto">agent_tools:list</code></td><td>Introspection: every projected tool with <code dir="auto">{capability, roles, allowed, reason}</code> for the caller’s ctx. The “what can I call?” primitive — pass <code dir="auto">onlyAllowed: false</code> to also see denied tools with the reason</td></tr><tr><td><code dir="auto">audit:list</code></td><td>Audit log (recent actions)</td></tr><tr><td><code dir="auto">actions:recent</code></td><td>Recent agent actions</td></tr><tr><td><code dir="auto">hooks:known</code></td><td>Static hook-event allowlist</td></tr><tr><td><code dir="auto">notifications:recent</code></td><td>Recent notifications</td></tr><tr><td><code dir="auto">omp:config</code></td><td>Read/set OMP CLI config keys</td></tr><tr><td><code dir="auto">pending_events:list</code></td><td>Pending hook events</td></tr><tr><td><code dir="auto">papercusp:list_workspaces</code></td><td>Discovery helper for <a href="./superuser-mode">superuser</a> shells</td></tr><tr><td><code dir="auto">search:query</code></td><td>Cross-resource search (tasks, goals, projects, audit, messages)</td></tr><tr><td><code dir="auto">wiki:backlinks</code></td><td>Find markdown files referencing <code dir="auto">[[target]]</code></td></tr></tbody></table>
 <p>Two former singletons are gone. <strong><code dir="auto">dev:hello-card</code></strong> (the Phase E mcp-ui
 fixture) and the dead <code dir="auto">hindsight:recall</code> were REMOVED from the catalog
 (audit P-047) — see <code dir="auto">packages/agent-mcp/src/bootstrap.ts</code>; bring a real
@@ -140,54 +181,168 @@ rather than round-tripping a tool), not as its own top-level singleton.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="plugin-tools-36">Plugin tools (36)</h2><a class="sl-anchor-link" href="#plugin-tools-36"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Plugin tools (36)”</span></a></div>
 <p>In-repo plugins under <code dir="auto">libs/papercusp/plugins/&#x3C;name>/</code>. They run without a principal (URL-baked spawn context); gates: role allowlist, capability tier, per-window quota. The <strong>(36)</strong> here is a snapshot that mixes static manifest tools (repomix 1 + firecrawl 3 + code2prompt 2 + fetch-plus 1 + design-phase 12 + example-tool-pack 2 = 21), the dynamically-registered gitnexus bridge (13), and historical entries — so it drifts from the live runtime count. Several in-repo plugin dirs (<code dir="auto">cloudflare-pages</code>, <code dir="auto">cloudflare-stack</code>, <code dir="auto">example-tui-pane</code>, <code dir="auto">github-repo</code>, <code dir="auto">jira-sync</code>, <code dir="auto">linear-sync</code>, <code dir="auto">markdown-preview</code>, <code dir="auto">notion-export</code>, <code dir="auto">pi-coding</code>, <code dir="auto">postgres-manager</code>, <code dir="auto">pythonista</code>, <code dir="auto">slack-notifier</code>, <code dir="auto">starlight</code>) currently ship <strong>0</strong> tools. Treat the runtime <code dir="auto">/api/plugins/tools</code> count as authoritative.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupairepomix-1"><code dir="auto">@papercupai/repomix</code> (1)</h3><a class="sl-anchor-link" href="#papercupairepomix-1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/repomix (1)”</span></a></div>
-<p>| Tool           | What                                                                                                                                                                             |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <code dir="auto">repomix.pack</code> | Pack a project (or subset) into a single LLM-friendly XML doc. <code dir="auto">&#x3C;50k</code> chars inline; <code dir="auto">≥50k</code> written to <code dir="auto">&#x3C;stateDir>/scratch/</code> (threshold configurable via <code dir="auto">inlineThresholdChars</code>). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">repomix.pack</code></td><td>Pack a project (or subset) into a single LLM-friendly XML doc. <code dir="auto">&#x3C;50k</code> chars inline; <code dir="auto">≥50k</code> written to <code dir="auto">&#x3C;stateDir>/scratch/</code> (threshold configurable via <code dir="auto">inlineThresholdChars</code>).</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaigitnexus-bridge-13"><code dir="auto">@papercupai/gitnexus-bridge</code> (13)</h3><a class="sl-anchor-link" href="#papercupaigitnexus-bridge-13"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/gitnexus-bridge (13)”</span></a></div>
 <p>Code-graph queries proxied to a long-lived <code dir="auto">gitnexus mcp</code> subprocess. Tools registered dynamically via <code dir="auto">getDynamicTools()</code>.</p>
-<p>| Tool                      | What                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <code dir="auto">gitnexus.list_repos</code>     | List indexed repos with stats (files, nodes, edges, communities, processes)                                                                                                                                                                                                                                                                                            |
-| <code dir="auto">gitnexus.context</code>        | Repo overview + entrypoints                                                                                                                                                                                                                                                                                                                                            |
-| <code dir="auto">gitnexus.query</code> | <strong>UNAVAILABLE / fail-closed before dispatch.</strong> Historical builds returned empty or unranked noise; current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065). The bridge refuses this call locally so it cannot take down sibling tools. Use <code dir="auto">rg</code> for keywords, <code dir="auto">gitnexus.context</code> for a known symbol, or <code dir="auto">graph:query</code> for callers/callees/topology. |
-| <code dir="auto">gitnexus.cypher</code>         | Raw Cypher against the graph                                                                                                                                                                                                                                                                                                                                           |
-| <code dir="auto">gitnexus.detect_changes</code> | Diff vs last index, surface impacted regions                                                                                                                                                                                                                                                                                                                           |
-| <code dir="auto">gitnexus.impact</code>         | Find downstream impact of a symbol/file — an unrecognized <code dir="auto">direction</code> silently falls back to <code dir="auto">downstream</code> and self-reports <code dir="auto">epistemic:"exact"</code> (WI-2142910); for “who calls this” use <code dir="auto">graph:query { op:'callers' }</code> instead.                                                                                                                                          |
-| <code dir="auto">gitnexus.api_impact</code>     | API-surface change impact                                                                                                                                                                                                                                                                                                                                              |
-| <code dir="auto">gitnexus.route_map</code>      | HTTP routes + handlers                                                                                                                                                                                                                                                                                                                                                 |
-| <code dir="auto">gitnexus.tool_map</code>       | MCP tools + handlers                                                                                                                                                                                                                                                                                                                                                   |
-| <code dir="auto">gitnexus.shape_check</code>    | Validate input/output shapes against types                                                                                                                                                                                                                                                                                                                             |
-| <code dir="auto">gitnexus.rename</code>         | Symbol-aware rename plan (read-only suggestion)                                                                                                                                                                                                                                                                                                                        |
-| <code dir="auto">gitnexus.group_list</code>     | List logical code groups                                                                                                                                                                                                                                                                                                                                               |
-| <code dir="auto">gitnexus.group_sync</code>     | Re-sync a group’s membership                                                                                                                                                                                                                                                                                                                                           |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">gitnexus.list_repos</code></td><td>List indexed repos with stats (files, nodes, edges, communities, processes)</td></tr><tr><td><code dir="auto">gitnexus.context</code></td><td>Repo overview + entrypoints</td></tr><tr><td><code dir="auto">gitnexus.query</code></td><td><strong>UNAVAILABLE / fail-closed before dispatch.</strong> Historical builds returned empty or unranked noise; current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065). The bridge refuses this call locally so it cannot take down sibling tools. Use <code dir="auto">rg</code> for keywords, <code dir="auto">gitnexus.context</code> for a known symbol, or <code dir="auto">graph:query</code> for callers/callees/topology.</td></tr><tr><td><code dir="auto">gitnexus.cypher</code></td><td>Raw Cypher against the graph</td></tr><tr><td><code dir="auto">gitnexus.detect_changes</code></td><td>Diff vs last index, surface impacted regions</td></tr><tr><td><code dir="auto">gitnexus.impact</code></td><td>Find downstream impact of a symbol/file — an unrecognized <code dir="auto">direction</code> silently falls back to <code dir="auto">downstream</code> and self-reports <code dir="auto">epistemic:"exact"</code> (WI-2142910); for “who calls this” use <code dir="auto">graph:query { op:'callers' }</code> instead.</td></tr><tr><td><code dir="auto">gitnexus.api_impact</code></td><td>API-surface change impact</td></tr><tr><td><code dir="auto">gitnexus.route_map</code></td><td>HTTP routes + handlers</td></tr><tr><td><code dir="auto">gitnexus.tool_map</code></td><td>MCP tools + handlers</td></tr><tr><td><code dir="auto">gitnexus.shape_check</code></td><td>Validate input/output shapes against types</td></tr><tr><td><code dir="auto">gitnexus.rename</code></td><td>Symbol-aware rename plan (read-only suggestion)</td></tr><tr><td><code dir="auto">gitnexus.group_list</code></td><td>List logical code groups</td></tr><tr><td><code dir="auto">gitnexus.group_sync</code></td><td>Re-sync a group’s membership</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaiorchestrator-spawn--retired-2026-06-06"><code dir="auto">@papercupai/orchestrator-spawn</code> — <strong>retired (2026-06-06)</strong></h3><a class="sl-anchor-link" href="#papercupaiorchestrator-spawn--retired-2026-06-06"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/orchestrator-spawn — retired (2026-06-06)”</span></a></div>
 <p>The Phase-9 “spawn agents as tool calls” plugin was never installed (its <code dir="auto">/api/plugins/orchestrator/spawn</code> path 404’d) and is now retired — moved to <code dir="auto">libs/papercusp/_retired/orchestrator-spawn-plugin/</code> and superseded by <code dir="auto">packages/operator-core/lib/fleet/operator-spawn.ts</code>. Spawn agents via the built-in <code dir="auto">fleet:*</code> tools (<code dir="auto">cup:spawn</code>, <code dir="auto">fleet:supervise</code>, <code dir="auto">fleet:tree</code>, …) instead.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaifirecrawl-bridge-3"><code dir="auto">@papercupai/firecrawl-bridge</code> (3)</h3><a class="sl-anchor-link" href="#papercupaifirecrawl-bridge-3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/firecrawl-bridge (3)”</span></a></div>
 <p>Managed scrape via Firecrawl API. Requires <code dir="auto">FIRECRAWL_API_KEY</code>.</p>
-<p>| Tool                | What                                                   |
-| ------------------- | ------------------------------------------------------ |
-| <code dir="auto">firecrawl.scrape</code>  | Single-page scrape → markdown + HTML + metadata        |
-| <code dir="auto">firecrawl.extract</code> | JSON-schema-driven structured extraction across N URLs |
-| <code dir="auto">firecrawl.map</code>     | Crawl a domain and return all reachable URLs           |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">firecrawl.scrape</code></td><td>Single-page scrape → markdown + HTML + metadata</td></tr><tr><td><code dir="auto">firecrawl.extract</code></td><td>JSON-schema-driven structured extraction across N URLs</td></tr><tr><td><code dir="auto">firecrawl.map</code></td><td>Crawl a domain and return all reachable URLs</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaicode2prompt-2"><code dir="auto">@papercupai/code2prompt</code> (2)</h3><a class="sl-anchor-link" href="#papercupaicode2prompt-2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/code2prompt (2)”</span></a></div>
 <p>Diff-aware reviewer prompts via the <code dir="auto">code2prompt</code> CLI.</p>
-<p>| Tool               | What                                                                                                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| <code dir="auto">code2prompt.diff</code> | Build a review prompt from a git diff vs the configured base (defaults to <code dir="auto">main</code>; override per-call with <code dir="auto">base</code> or via <code dir="auto">defaultBase</code> config) |
-| <code dir="auto">code2prompt.pack</code> | Build a review prompt from a path + template (<code dir="auto">code-review</code>, <code dir="auto">security-audit</code>, <code dir="auto">refactor-prep</code>)                                              |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">code2prompt.diff</code></td><td>Build a review prompt from a git diff vs the configured base (defaults to <code dir="auto">main</code>; override per-call with <code dir="auto">base</code> or via <code dir="auto">defaultBase</code> config)</td></tr><tr><td><code dir="auto">code2prompt.pack</code></td><td>Build a review prompt from a path + template (<code dir="auto">code-review</code>, <code dir="auto">security-audit</code>, <code dir="auto">refactor-prep</code>)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaifetch-plus-1"><code dir="auto">@papercupai/fetch-plus</code> (1)</h3><a class="sl-anchor-link" href="#papercupaifetch-plus-1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/fetch-plus (1)”</span></a></div>
 <p>URL → clean markdown via Jina Reader (<code dir="auto">r.jina.ai/</code>). Optional <code dir="auto">JINA_API_KEY</code> for higher rate limits.</p>
-<p>| Tool                     | What                                                      |
-| ------------------------ | --------------------------------------------------------- |
-| <code dir="auto">fetch_plus.fetch_clean</code> | Fetch a URL, strip nav/ads/junk, return readable markdown |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">fetch_plus.fetch_clean</code></td><td>Fetch a URL, strip nav/ads/junk, return readable markdown</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaidesign-phase-12"><code dir="auto">@papercupai/design-phase</code> (12)</h3><a class="sl-anchor-link" href="#papercupaidesign-phase-12"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/design-phase (12)”</span></a></div>
 <p>First-party plugin for the design-spec workflow. Built by another agent; documented elsewhere.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="papercupaiexample-tool-pack-2"><code dir="auto">@papercupai/example-tool-pack</code> (2)</h3><a class="sl-anchor-link" href="#papercupaiexample-tool-pack-2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “@papercupai/example-tool-pack (2)”</span></a></div>
 <p>Self-contained fixture plugin (no network, no filesystem) used as the canonical plugin example.</p>
-<p>| Tool                           | What                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| <code dir="auto">example-tool-pack.word_count</code> | Count words, lines, and characters in a text                             |
-| <code dir="auto">example-tool-pack.slugify</code>    | Turn a title into a kebab-case slug (<code dir="auto">maxLength</code> truncation, default 80) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What</th></tr></thead><tbody><tr><td><code dir="auto">example-tool-pack.word_count</code></td><td>Count words, lines, and characters in a text</td></tr><tr><td><code dir="auto">example-tool-pack.slugify</code></td><td>Turn a title into a kebab-case slug (<code dir="auto">maxLength</code> truncation, default 80)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="search-provider-keys">Search-provider keys</h2><a class="sl-anchor-link" href="#search-provider-keys"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Search-provider keys”</span></a></div>
 <p>Not tools — env vars. Set in <code dir="auto">/settings/api-keys</code> → “Search providers”; orchestrator injects the decrypted env into every spawned agent’s <code dir="auto">process.env</code>. 14 supported providers:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">TAVILY_API_KEY, PERPLEXITY_API_KEY, BRAVE_API_KEY, JINA_API_KEY,</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">MOONSHOT_SEARCH_API_KEY (Kimi), ANTHROPIC_API_KEY (search), GEMINI_API_KEY,</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">CODEX_API_KEY, ZAI_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, KAGI_API_KEY,</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">SYNTHETIC_API_KEY, SEARXNG_ENDPOINT (+ TOKEN / BASIC_USERNAME / BASIC_PASSWORD)</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="TAVILY_API_KEY, PERPLEXITY_API_KEY, BRAVE_API_KEY, JINA_API_KEY,MOONSHOT_SEARCH_API_KEY (Kimi), ANTHROPIC_API_KEY (search), GEMINI_API_KEY,CODEX_API_KEY, ZAI_API_KEY, EXA_API_KEY, PARALLEL_API_KEY, KAGI_API_KEY,SYNTHETIC_API_KEY, SEARXNG_ENDPOINT (+ TOKEN / BASIC_USERNAME / BASIC_PASSWORD)"><div></div></button></div></figure></div>

@@ -110,12 +110,37 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="gate-event-parking">Gate-event parking</h2><a class="sl-anchor-link" href="#gate-event-parking"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Gate-event parking”</span></a></div>
 <p>Declare the critical-path gate in the kickoff so every parked lane has a key from minute one. Use exact-match event keys and await the returned key. The event emitter owns the completion: a peer’s message saying “green” is not the gate. When the gate opens, emit the returned key once; late awaiters receive the latched <code dir="auto">already_fired</code> result and proceed.</p>
 <p>Useful custody gates include:</p>
-<p>| Condition | Park on | Read-back before proceeding |
-| --- | --- | --- |
-| clean VM-rig sample complete | <code dir="auto">p008:vm-rig-custody-safe</code> | parity output + probe timestamps on both hosts |
-| claim returned to pool | <code dir="auto">fleet:claim-released:&#x3C;fleet></code> or <code dir="auto">claim:released:&#x3C;id></code> | <code dir="auto">fleet:assignments</code> shows no stale holder |
-| seeded artifact committed | <code dir="auto">git-sync:committed:&#x3C;sha></code> | <code dir="auto">dev:pipeline_position</code> for the artifact path |
-| staging service restarted | <code dir="auto">service:up:&#x3C;name></code> | <code dir="auto">dev:service_health</code> on <code dir="auto">:3170</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Condition</th><th>Park on</th><th>Read-back before proceeding</th></tr></thead><tbody><tr><td>clean VM-rig sample complete</td><td><code dir="auto">p008:vm-rig-custody-safe</code></td><td>parity output + probe timestamps on both hosts</td></tr><tr><td>claim returned to pool</td><td><code dir="auto">fleet:claim-released:&#x3C;fleet></code> or <code dir="auto">claim:released:&#x3C;id></code></td><td><code dir="auto">fleet:assignments</code> shows no stale holder</td></tr><tr><td>seeded artifact committed</td><td><code dir="auto">git-sync:committed:&#x3C;sha></code></td><td><code dir="auto">dev:pipeline_position</code> for the artifact path</td></tr><tr><td>staging service restarted</td><td><code dir="auto">service:up:&#x3C;name></code></td><td><code dir="auto">dev:service_health</code> on <code dir="auto">:3170</code></td></tr></tbody></table>
 <p>If a timeout wakes the witness, diagnose the producer. A dead/parked owner, unchanged ledger, or missing emit is a stalled dependency to fix or take over—not a reason to sleep indefinitely.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="session-death-claim-release">Session-death claim release</h2><a class="sl-anchor-link" href="#session-death-claim-release"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Session-death claim release”</span></a></div>
 <p>Two backstops are active and intentionally complementary:</p>

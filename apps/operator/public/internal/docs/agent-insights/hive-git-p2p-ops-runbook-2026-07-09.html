@@ -252,12 +252,42 @@ phase <code dir="auto">github-bridge</code>, kind <code dir="auto">github-bridge
 (<code dir="auto">classifyDivergence</code> in <code dir="auto">github-divergence.ts</code>). <strong>GitHub is never treated as
 authority and the bridge never force-pushes</strong> — every signal is
 reported-not-applied. Four signal kinds, each with its own resolution lever:</p>
-<p>| signal | meaning | lever | needs owner? |
-|---|---|---|---|
-| <code dir="auto">egress-non-ff</code> | origin diverged from hive canonical (a human pushed / an old merge landed on GitHub) | self-heals: next ingress brings the origin head into the synthetic github-origin namespace, the integrator merges it like any member head, egress FFs cleanly once canonical descends from it | no |
-| <code dir="auto">ingress-non-ff</code> | origin REWROTE history (would rewind the synthetic namespace) | owner-authorized <code dir="auto">allowNonFF</code> ingress — explicit, audited, <strong>never automatic</strong> | <strong>yes</strong> |
-| <code dir="auto">admission-blocked</code> | a revoked contributor’s commits (or a fail-closed admission error) sit in the origin range | revocation review / re-run admission | <strong>yes</strong> |
-| <code dir="auto">egress-secret-block</code> | the secrets gate refused to publish a ref (nothing left the machine) | scrub the secret + re-egress | no |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>signal</th><th>meaning</th><th>lever</th><th>needs owner?</th></tr></thead><tbody><tr><td><code dir="auto">egress-non-ff</code></td><td>origin diverged from hive canonical (a human pushed / an old merge landed on GitHub)</td><td>self-heals: next ingress brings the origin head into the synthetic github-origin namespace, the integrator merges it like any member head, egress FFs cleanly once canonical descends from it</td><td>no</td></tr><tr><td><code dir="auto">ingress-non-ff</code></td><td>origin REWROTE history (would rewind the synthetic namespace)</td><td>owner-authorized <code dir="auto">allowNonFF</code> ingress — explicit, audited, <strong>never automatic</strong></td><td><strong>yes</strong></td></tr><tr><td><code dir="auto">admission-blocked</code></td><td>a revoked contributor’s commits (or a fail-closed admission error) sit in the origin range</td><td>revocation review / re-run admission</td><td><strong>yes</strong></td></tr><tr><td><code dir="auto">egress-secret-block</code></td><td>the secrets gate refused to publish a ref (nothing left the machine)</td><td>scrub the secret + re-egress</td><td>no</td></tr></tbody></table>
 <p>Triage steps:</p>
 <ol>
 <li>Read <code dir="auto">metadata->'github_bridge'</code> on the hive’s <code dir="auto">system:git-sync</code> routine row
@@ -305,16 +335,66 @@ silent green) — the SKIP census IS the release evidence for what’s still
 unproven. Run it locally against a throwaway test hive:</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">cd</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">papercusp-desktop</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">bin/hive-git-drill.sh</span><span style="--0:#D6DEEB;--1:#403F53">                 </span><span style="--0:#919F9F;--1:#5F636F"># uses the newest built .deb by default</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">KEEP_UP</span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#ECC48D;--1:#3B61B0">1</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">bin/hive-git-drill.sh</span><span style="--0:#D6DEEB;--1:#403F53">        </span><span style="--0:#919F9F;--1:#5F636F"># leave the sidecar(s) up for inspection after</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="cd papercusp-desktopbin/hive-git-drill.sh                 # uses the newest built .deb by defaultKEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection after"><div></div></button></div></figure></div>
 <p><strong>Current acceptance boundary (reconciled 2026-08-26; the script table is capability coverage, not a signed GO):</strong></p>
-<p>| leg | plan item | status | proves |
-|---|---|---|---|
-| MODE | — | live | <code dir="auto">hiveGit.mode</code> round-trip legacy → bridged → rollback → legacy (the fail-open delete) |
-| A | P-302 | live | G-8 cold-clone bootstrap: a fresh joiner seeds every namespace a peer holds, over a real socket duplex |
-| B | P-303 | live | G-3 announce-driven fetch: announce → fetch → sigrefs accept → heads reconcile, over a real socket duplex |
-| C | P-304 | live | trust/tamper drill: relay-lie detection, rollback refusal (G-4b), non-member scope-serve-gate refusal |
-| D | P-305 | live | integrator computes + publishes canonical staging; a non-steer head lands in the real PG integration-requests queue; the other machine’s worktree ff-advances |
-| E | P-306 | <strong>SKIP</strong> | GitHub bridge live under REAL multi-machine wall-clock/network timing — needs the 2nd rig machine; the commit-only watchdog analysis below is static-verified only |
-| F | P-307 | live | G-9 gc keep-work/last-N/departed-member archival + G-10 secrets/oversized-blob guard, real bare repos |
-| G | P-308 | <strong>SKIP</strong> | chaos (integrator-kill mid-advance, PG blip, lease failover) — needs A-F live under ONE genuine multi-machine run first |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>plan item</th><th>status</th><th>proves</th></tr></thead><tbody><tr><td>MODE</td><td>—</td><td>live</td><td><code dir="auto">hiveGit.mode</code> round-trip legacy → bridged → rollback → legacy (the fail-open delete)</td></tr><tr><td>A</td><td>P-302</td><td>live</td><td>G-8 cold-clone bootstrap: a fresh joiner seeds every namespace a peer holds, over a real socket duplex</td></tr><tr><td>B</td><td>P-303</td><td>live</td><td>G-3 announce-driven fetch: announce → fetch → sigrefs accept → heads reconcile, over a real socket duplex</td></tr><tr><td>C</td><td>P-304</td><td>live</td><td>trust/tamper drill: relay-lie detection, rollback refusal (G-4b), non-member scope-serve-gate refusal</td></tr><tr><td>D</td><td>P-305</td><td>live</td><td>integrator computes + publishes canonical staging; a non-steer head lands in the real PG integration-requests queue; the other machine’s worktree ff-advances</td></tr><tr><td>E</td><td>P-306</td><td><strong>SKIP</strong></td><td>GitHub bridge live under REAL multi-machine wall-clock/network timing — needs the 2nd rig machine; the commit-only watchdog analysis below is static-verified only</td></tr><tr><td>F</td><td>P-307</td><td>live</td><td>G-9 gc keep-work/last-N/departed-member archival + G-10 secrets/oversized-blob guard, real bare repos</td></tr><tr><td>G</td><td>P-308</td><td><strong>SKIP</strong></td><td>chaos (integrator-kill mid-advance, PG blip, lease failover) — needs A-F live under ONE genuine multi-machine run first</td></tr></tbody></table>
 <p>Legs MODE/A-D/F run <strong>single-box, in-process</strong> (real production code paths,
 fake/local transport) — sufficient to prove the mechanics, not sufficient to
 close E/G, which need the actual 2-machine rig

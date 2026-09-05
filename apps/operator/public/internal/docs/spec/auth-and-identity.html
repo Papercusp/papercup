@@ -128,12 +128,37 @@ surfaces are intentionally <strong>not</strong> in that plane; see
 <p>The local voice stack has several routes and sockets that are <strong>not harness
 writes</strong> and therefore do not use <code dir="auto">Authorization: Bearer &#x3C;harness_token></code>.</p>
 <p>They use transport-local trust instead:</p>
-<p>| Surface | Trust model | Why |
-|---|---|---|
-| <code dir="auto">POST /api/operator/papercup-input</code> | <code dir="auto">auth: 'loopback'</code> + allowed-origin check | Types into the local Papercup pane; local app-user surface, not a harness admin write |
-| <code dir="auto">GET /api/desktop/voice-config</code> | <code dir="auto">auth: 'public'</code> | Returns loopback runtime config (chosen WS port + framing constants), not owner data |
-| <code dir="auto">/api/desktop/voice</code> WebSocket | loopback-only remote-address check in <code dir="auto">desktop-voice-ws.ts</code> | Dumb byte-pipe from the Tauri webview into the local voice socket |
-| <code dir="auto">/api/device/voice</code> WebSocket | device JWT (<code dir="auto">verifyDeviceToken</code>) | Device-session auth, not harness identity |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Trust model</th><th>Why</th></tr></thead><tbody><tr><td><code dir="auto">POST /api/operator/papercup-input</code></td><td><code dir="auto">auth: 'loopback'</code> + allowed-origin check</td><td>Types into the local Papercup pane; local app-user surface, not a harness admin write</td></tr><tr><td><code dir="auto">GET /api/desktop/voice-config</code></td><td><code dir="auto">auth: 'public'</code></td><td>Returns loopback runtime config (chosen WS port + framing constants), not owner data</td></tr><tr><td><code dir="auto">/api/desktop/voice</code> WebSocket</td><td>loopback-only remote-address check in <code dir="auto">desktop-voice-ws.ts</code></td><td>Dumb byte-pipe from the Tauri webview into the local voice socket</td></tr><tr><td><code dir="auto">/api/device/voice</code> WebSocket</td><td>device JWT (<code dir="auto">verifyDeviceToken</code>)</td><td>Device-session auth, not harness identity</td></tr></tbody></table>
 <p>The important boundary: <strong>per-harness bearer identity seals cross-harness admin
 writes; local voice surfaces are transport- or device-authenticated runtime
 surfaces.</strong> Do not try to model them as <code dir="auto">execute-action</code> callers, and do not

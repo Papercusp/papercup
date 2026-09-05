@@ -84,11 +84,28 @@ template. The machine schema lives in <code dir="auto">@papercusp/template-kit</
 <li>
 <p><strong><code dir="auto">scope: app</code></strong> — a whole application. There are exactly <strong>three app-scope roots</strong>, and
 picking between them is the first decision in any “build me an app” request:</p>
-<p>| root | shape |
-|---|---|
-| <code dir="auto">papercusp-webapp</code> | a web app (browser; <code dir="auto">papercusp-web-host</code> chassis) |
-| <code dir="auto">papercusp-desktop-app</code> | a standard Tauri desktop app, <strong>no</strong> embedded agents |
-| <code dir="auto">papercusp-agentic-desktop-app</code> | a desktop app that embeds an agent/pot plane |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>root</th><th>shape</th></tr></thead><tbody><tr><td><code dir="auto">papercusp-webapp</code></td><td>a web app (browser; <code dir="auto">papercusp-web-host</code> chassis)</td></tr><tr><td><code dir="auto">papercusp-desktop-app</code></td><td>a standard Tauri desktop app, <strong>no</strong> embedded agents</td></tr><tr><td><code dir="auto">papercusp-agentic-desktop-app</code></td><td>a desktop app that embeds an agent/pot plane</td></tr></tbody></table>
 </li>
 <li>
 <p><strong><code dir="auto">scope: aspect</code></strong> — a capability layer that composes <em>onto</em> a root: <code dir="auto">papercusp-ui</code>,
@@ -159,10 +176,33 @@ install. The path is per-install and the product reports it: <code dir="auto">te
 answer — that install has no tree (the macOS GUI app and cross-built macOS bundles are the known
 cases), and the honest response is to build with what the template vendors, not to invent a path.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-to-look">Where to look</h2><a class="sl-anchor-link" href="#where-to-look"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where to look”</span></a></div>
-<p>| you want | go to |
-|---|---|
-| the manifest schema | <code dir="auto">agent-insights/templates-template-yaml</code> |
-| what components exist | <code dir="auto">agent-insights/templates-component-catalog</code> |
-| the supply chain in full | <code dir="auto">templates/README.md</code> § Supply chain |
-| the resolver | <code dir="auto">packages/operator-core/lib/cupboard/generic-libs-root.ts</code> |
-| materialize semantics | <code dir="auto">packages/operator-core/lib/cupboard/materialize-template-core.ts</code> |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T19:14:43.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The component catalog — what templates are allowed to compose</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">template.yaml — the app-template manifest schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>you want</th><th>go to</th></tr></thead><tbody><tr><td>the manifest schema</td><td><code dir="auto">agent-insights/templates-template-yaml</code></td></tr><tr><td>what components exist</td><td><code dir="auto">agent-insights/templates-component-catalog</code></td></tr><tr><td>the supply chain in full</td><td><code dir="auto">templates/README.md</code> § Supply chain</td></tr><tr><td>the resolver</td><td><code dir="auto">packages/operator-core/lib/cupboard/generic-libs-root.ts</code></td></tr><tr><td>materialize semantics</td><td><code dir="auto">packages/operator-core/lib/cupboard/materialize-template-core.ts</code></td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T19:14:43.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/templates-component-catalog.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">The component catalog — what templates are allowed to compose</span> </span> </a> <a href="/internal/docs/agent-insights/templates-template-yaml.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">template.yaml — the app-template manifest schema</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

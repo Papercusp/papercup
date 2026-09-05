@@ -116,11 +116,36 @@ not the baseline redactor.)</p>
 <p>Plugins declare per-field share semantics directly in <code dir="auto">configSchema</code>:</p>
 <div class="expressive-code"><link rel="stylesheet" href="/internal/docs/_astro/ec.v4551.css"><script type="module" src="/internal/docs/_astro/ec.0vx5m.js"></script><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="json"><code><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">object</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"required"</span><span style="--0:#D6DEEB;--1:#403F53">: [</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">github_token</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">],</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"properties"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"github_token"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"secret"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"oauth"</span><span style="--0:#D6DEEB;--1:#403F53">: { </span><span style="--0:#7FDBCA;--1:#096E72">"provider"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">github</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#7FDBCA;--1:#096E72">"scopes"</span><span style="--0:#D6DEEB;--1:#403F53">: [</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">repo</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">] },</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"description"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">GitHub PAT or OAuth token. Stripped from snapshots; users re-authorize on fork.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">},</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"owner"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"shareable"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">false</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"description"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">GitHub user or org. Different per forker — stripped from snapshots.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">},</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"repo"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"description"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">Repo name. Defaults to harness slug. Travels with the snapshot.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">},</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"visibility"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"enum"</span><span style="--0:#D6DEEB;--1:#403F53">: [</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">private</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">public</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">],</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"default"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">private</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">},</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"defaultBranch"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">      </span><span style="--0:#7FDBCA;--1:#096E72">"default"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">main</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">    </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="{  &#x22;type&#x22;: &#x22;object&#x22;,  &#x22;required&#x22;: [&#x22;github_token&#x22;],  &#x22;properties&#x22;: {    &#x22;github_token&#x22;: {      &#x22;type&#x22;: &#x22;string&#x22;,      &#x22;secret&#x22;: true,      &#x22;oauth&#x22;: { &#x22;provider&#x22;: &#x22;github&#x22;, &#x22;scopes&#x22;: [&#x22;repo&#x22;] },      &#x22;description&#x22;: &#x22;GitHub PAT or OAuth token. Stripped from snapshots; users re-authorize on fork.&#x22;    },    &#x22;owner&#x22;: {      &#x22;type&#x22;: &#x22;string&#x22;,      &#x22;shareable&#x22;: false,      &#x22;description&#x22;: &#x22;GitHub user or org. Different per forker — stripped from snapshots.&#x22;    },    &#x22;repo&#x22;: {      &#x22;type&#x22;: &#x22;string&#x22;,      &#x22;description&#x22;: &#x22;Repo name. Defaults to harness slug. Travels with the snapshot.&#x22;    },    &#x22;visibility&#x22;: {      &#x22;type&#x22;: &#x22;string&#x22;,      &#x22;enum&#x22;: [&#x22;private&#x22;, &#x22;public&#x22;],      &#x22;default&#x22;: &#x22;private&#x22;    },    &#x22;defaultBranch&#x22;: {      &#x22;type&#x22;: &#x22;string&#x22;,      &#x22;default&#x22;: &#x22;main&#x22;    }  }}"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="three-semantics">Three semantics</h3><a class="sl-anchor-link" href="#three-semantics"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Three semantics”</span></a></div>
-<p>| Flag | Meaning | Snapshot behavior | Fork behavior |
-|---|---|---|---|
-| <code dir="auto">secret: true</code> (default <code dir="auto">snapshotPolicy: "strip"</code>) | Credential — stripped from snapshot | Stripped | User re-authorizes (OAuth) or pastes |
-| <code dir="auto">shareable: false</code> | Environment-specific identifier (account ID, owner name, project slug, region) | Stripped | User must supply their own value |
-| (neither flag) | Pure config (default branch, retry count, output dir, format choice) | Included verbatim | Inherited as-is |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Flag</th><th>Meaning</th><th>Snapshot behavior</th><th>Fork behavior</th></tr></thead><tbody><tr><td><code dir="auto">secret: true</code> (default <code dir="auto">snapshotPolicy: "strip"</code>)</td><td>Credential — stripped from snapshot</td><td>Stripped</td><td>User re-authorizes (OAuth) or pastes</td></tr><tr><td><code dir="auto">shareable: false</code></td><td>Environment-specific identifier (account ID, owner name, project slug, region)</td><td>Stripped</td><td>User must supply their own value</td></tr><tr><td>(neither flag)</td><td>Pure config (default branch, retry count, output dir, format choice)</td><td>Included verbatim</td><td>Inherited as-is</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="secret-policy-when-secrets-should-travel">Secret policy: when secrets <em>should</em> travel</h3><a class="sl-anchor-link" href="#secret-policy-when-secrets-should-travel"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Secret policy: when secrets should travel”</span></a></div>
 <p>There are real cases where a publisher wants a credential to travel with
 the snapshot:</p>
@@ -134,11 +159,28 @@ project files — which then leak via git history. Better: surface this as
 a first-class capability with safety rails.</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="json"><code><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">{</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">"demo_webhook"</span><span style="--0:#D6DEEB;--1:#403F53">: {</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"type"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">string</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"secret"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6A83;--1:#A24848">true</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"snapshotPolicy"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">include</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">"description"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">Test-mode Slack webhook. Travels with snapshot for demos.</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="{  &#x22;demo_webhook&#x22;: {    &#x22;type&#x22;: &#x22;string&#x22;,    &#x22;secret&#x22;: true,    &#x22;snapshotPolicy&#x22;: &#x22;include&#x22;,    &#x22;description&#x22;: &#x22;Test-mode Slack webhook. Travels with snapshot for demos.&#x22;  }}"><div></div></button></div></figure></div>
 <p>Three policies for <code dir="auto">secret: true</code> fields:</p>
-<p>| <code dir="auto">snapshotPolicy</code> | Snapshot behavior |
-|---|---|
-| <code dir="auto">"strip"</code> (default) | Field stripped from snapshot. Forker must supply their own. |
-| <code dir="auto">"include"</code> | Field included in snapshot. <strong>Publish CLI requires <code dir="auto">--include-secrets</code> flag and a per-secret confirmation prompt naming each included secret.</strong> |
-| <code dir="auto">"warn-and-prompt"</code> | Publish CLI prompts the publisher per-snapshot: include this credential or strip it? |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">snapshotPolicy</code></th><th>Snapshot behavior</th></tr></thead><tbody><tr><td><code dir="auto">"strip"</code> (default)</td><td>Field stripped from snapshot. Forker must supply their own.</td></tr><tr><td><code dir="auto">"include"</code></td><td>Field included in snapshot. <strong>Publish CLI requires <code dir="auto">--include-secrets</code> flag and a per-secret confirmation prompt naming each included secret.</strong></td></tr><tr><td><code dir="auto">"warn-and-prompt"</code></td><td>Publish CLI prompts the publisher per-snapshot: include this credential or strip it?</td></tr></tbody></table>
 <p>Without the explicit <code dir="auto">--include-secrets</code> flag and per-secret
 confirmation, no secret is ever embedded in a snapshot tarball — even
 when the plugin’s manifest declares <code dir="auto">snapshotPolicy: "include"</code>. The
@@ -202,12 +244,37 @@ groups missing-fields by plugin, and shows them in the fork-completion UI:</p>
 </div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">  </span></span><span style="--0:#d6deeb;--1:#403f53">[ Save and continue ]   [ Skip — I'll configure manually later ]</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="Snapshot fork: my-store ← from ecommerce-stripe-aws─────────────────────────────────────────────────────The following plugins need additional configuration before they can run:  @papercupai/github-repo    github_token  [ Connect with GitHub ]      ← oauth-flagged, button instead of paste    owner         [____________________]       ← shareable:false, plain input  @papercupai/cloudflare-pages    api_token     [ Paste token… ]              ← secret-flagged but no oauth, paste field    accountId     [____________________]       ← shareable:false, plain input    projectName   [my-store_____________]      ← shareable:false but defaulted to harness slug  [ Save and continue ]   [ Skip — I&#x27;ll configure manually later ]"><div></div></button></div></figure></div>
 <p>The “Connect with GitHub” buttons go through the OAuth flow (see <a href="./oauth-integration">OAuth integration</a>). Plain inputs save through the same <code dir="auto">PUT /api/plugins/config</code> we already have.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="implementation">Implementation</h2><a class="sl-anchor-link" href="#implementation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Implementation”</span></a></div>
-<p>| Surface | Change | LOC |
-|---|---|---|
-| <code dir="auto">@papercusp/plugin-sdk</code> | Document field-level extensions (<code dir="auto">secret</code>, <code dir="auto">snapshotPolicy</code>, <code dir="auto">shareable</code>, <code dir="auto">oauth</code>, <code dir="auto">aliases</code>) on the manifest’s <code dir="auto">configSchema</code>. | ~15 |
-| <code dir="auto">_retired/snapshot-system/operator-core/snapshot-shape.ts</code> | <code dir="auto">extractShape()</code> — walk configSchema and apply the share-semantics filter, returning redacted config + shape contents. | ~80 |
-| <code dir="auto">_retired/snapshot-system/operator-core/endpoint-route-routes-snapshots/instantiate.ts</code> | Apply <code dir="auto">resolveAliases()</code> and return list of missing-fields per plugin in the fork response. | ~30 |
-| <code dir="auto">_retired/snapshot-system/operator-app-ui/snapshots/[id]/fork/ForkClient.tsx</code> | The fork-completion UI shown above. Reuses <code dir="auto">/settings/plugins</code>’s field renderer. | ~120 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Change</th><th>LOC</th></tr></thead><tbody><tr><td><code dir="auto">@papercusp/plugin-sdk</code></td><td>Document field-level extensions (<code dir="auto">secret</code>, <code dir="auto">snapshotPolicy</code>, <code dir="auto">shareable</code>, <code dir="auto">oauth</code>, <code dir="auto">aliases</code>) on the manifest’s <code dir="auto">configSchema</code>.</td><td>~15</td></tr><tr><td><code dir="auto">_retired/snapshot-system/operator-core/snapshot-shape.ts</code></td><td><code dir="auto">extractShape()</code> — walk configSchema and apply the share-semantics filter, returning redacted config + shape contents.</td><td>~80</td></tr><tr><td><code dir="auto">_retired/snapshot-system/operator-core/endpoint-route-routes-snapshots/instantiate.ts</code></td><td>Apply <code dir="auto">resolveAliases()</code> and return list of missing-fields per plugin in the fork response.</td><td>~30</td></tr><tr><td><code dir="auto">_retired/snapshot-system/operator-app-ui/snapshots/[id]/fork/ForkClient.tsx</code></td><td>The fork-completion UI shown above. Reuses <code dir="auto">/settings/plugins</code>’s field renderer.</td><td>~120</td></tr></tbody></table>
 <p>Total: <strong>~265 lines.</strong> Smaller than the build-script work; closer to the OAuth scope.</p>
 <aside aria-label="Retired (was: Implemented)" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Retired (was: Implemented) </p>  <div class="starlight-aside__content"><p>This section once landed: <code dir="auto">extractShape</code> + <code dir="auto">resolveAliases</code>, the exporter that
 called it, the shape route, and the fork-completion UI all shipped. They were
@@ -224,19 +291,84 @@ pattern-based redactor as today. Plugin authors <em>opt in</em> to explicit flag
 when they update their schemas.</p>
 <p>For papercusp’s reference plugins, we’d update their schemas in the same PR
 that introduces share-semantics:</p>
-<p>| Plugin | Field | Current behavior | New flag |
-|---|---|---|---|
-| github-repo | <code dir="auto">github_token</code> | redacted (matches <code dir="auto">/token/</code>) | <code dir="auto">secret: true, oauth: {provider: github, scopes: [repo]}</code> |
-| github-repo | <code dir="auto">owner</code> | leaks | <code dir="auto">shareable: false</code> |
-| github-repo | <code dir="auto">repo</code> | leaks (becomes harness slug for forker) | (default — shareable) |
-| cloudflare-pages | <code dir="auto">accountId</code> | leaks | <code dir="auto">shareable: false</code> |
-| cloudflare-pages | <code dir="auto">projectName</code> | leaks | <code dir="auto">shareable: false</code> |
-| cloudflare-pages | <code dir="auto">branch</code> | leaks | (default — shareable) |
-| linear-sync | <code dir="auto">LINEAR_API_KEY</code> | redacted (matches <code dir="auto">/key/</code>) | <code dir="auto">secret: true, oauth: {provider: linear, scopes: [...]}</code> (when OAuth ships) |
-| linear-sync | <code dir="auto">defaultTeamKey</code> | leaks | <code dir="auto">shareable: false</code> |
-| jira-sync | <code dir="auto">JIRA_API_TOKEN</code> | redacted | <code dir="auto">secret: true</code> |
-| jira-sync | <code dir="auto">JIRA_BASE_URL</code> | leaks | <code dir="auto">shareable: false</code> (the publisher’s atlassian.net is theirs) |
-| slack-notifier | <code dir="auto">SLACK_WEBHOOK_URL</code> | leaks | <code dir="auto">secret: true</code> (webhook URL contains the secret token) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Plugin</th><th>Field</th><th>Current behavior</th><th>New flag</th></tr></thead><tbody><tr><td>github-repo</td><td><code dir="auto">github_token</code></td><td>redacted (matches <code dir="auto">/token/</code>)</td><td><code dir="auto">secret: true, oauth: {provider: github, scopes: [repo]}</code></td></tr><tr><td>github-repo</td><td><code dir="auto">owner</code></td><td>leaks</td><td><code dir="auto">shareable: false</code></td></tr><tr><td>github-repo</td><td><code dir="auto">repo</code></td><td>leaks (becomes harness slug for forker)</td><td>(default — shareable)</td></tr><tr><td>cloudflare-pages</td><td><code dir="auto">accountId</code></td><td>leaks</td><td><code dir="auto">shareable: false</code></td></tr><tr><td>cloudflare-pages</td><td><code dir="auto">projectName</code></td><td>leaks</td><td><code dir="auto">shareable: false</code></td></tr><tr><td>cloudflare-pages</td><td><code dir="auto">branch</code></td><td>leaks</td><td>(default — shareable)</td></tr><tr><td>linear-sync</td><td><code dir="auto">LINEAR_API_KEY</code></td><td>redacted (matches <code dir="auto">/key/</code>)</td><td><code dir="auto">secret: true, oauth: {provider: linear, scopes: [...]}</code> (when OAuth ships)</td></tr><tr><td>linear-sync</td><td><code dir="auto">defaultTeamKey</code></td><td>leaks</td><td><code dir="auto">shareable: false</code></td></tr><tr><td>jira-sync</td><td><code dir="auto">JIRA_API_TOKEN</code></td><td>redacted</td><td><code dir="auto">secret: true</code></td></tr><tr><td>jira-sync</td><td><code dir="auto">JIRA_BASE_URL</code></td><td>leaks</td><td><code dir="auto">shareable: false</code> (the publisher’s atlassian.net is theirs)</td></tr><tr><td>slack-notifier</td><td><code dir="auto">SLACK_WEBHOOK_URL</code></td><td>leaks</td><td><code dir="auto">secret: true</code> (webhook URL contains the secret token)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="schema-evolution">Schema evolution</h2><a class="sl-anchor-link" href="#schema-evolution"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Schema evolution”</span></a></div>
 <p>The <code dir="auto">.shape.json</code> baked into a snapshot is frozen at publish time. If the
 plugin’s <code dir="auto">configSchema</code> changes between publish and fork, the substrate
@@ -321,12 +453,32 @@ fork-completion UI surfaces a loud prompt:</p>
 loud, persistent (returns on next operator boot until acknowledged),
 and uncircumventable.</p>
 <p>Severity tiers map to UI prominence:</p>
-<p>| Severity | Prompt behavior |
-|---|---|
-| <code dir="auto">critical</code> | Modal blocking the fork until addressed |
-| <code dir="auto">high</code> | Prominent banner on fork-completion; recommends upgrade |
-| <code dir="auto">moderate</code> | Standard advisory prompt as above |
-| <code dir="auto">low</code> | Listed in the fork’s audit log; no prompt |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Severity</th><th>Prompt behavior</th></tr></thead><tbody><tr><td><code dir="auto">critical</code></td><td>Modal blocking the fork until addressed</td></tr><tr><td><code dir="auto">high</code></td><td>Prominent banner on fork-completion; recommends upgrade</td></tr><tr><td><code dir="auto">moderate</code></td><td>Standard advisory prompt as above</td></tr><tr><td><code dir="auto">low</code></td><td>Listed in the fork’s audit log; no prompt</td></tr></tbody></table>
 <aside aria-label="The advisory-check helper survived as live code" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>The advisory-check helper survived as live code </p>  <div class="starlight-aside__content"><p>This is the one piece of the design that outlived the snapshot retirement.
 <code dir="auto">checkPinnedVersionAdvisories</code> lives at
 <code dir="auto">packages/operator-core/lib/security-advisories.ts</code> and is wired to

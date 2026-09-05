@@ -107,11 +107,28 @@ That red gate was itself what kept the first-half fix from ever deploying.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-rule">The rule</h2><a class="sl-anchor-link" href="#the-rule"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The rule”</span></a></div>
 <p>Tier 3’s whole purpose is to <strong>widen past the feature-family <code dir="auto">kind</code> constraint</strong>. So:</p>
-<p>| leg | compile it into the issue query? |
-|---|---|
-| <code dir="auto">kind = 'feature'</code> / <code dir="auto">kind in ['feature','chunk']</code> (no issue kind) | <strong>No</strong> — strip it. That is the constraint the tier exists to widen past. |
-| <code dir="auto">kind in ['bug','change']</code>, <code dir="auto">kind != 'feature'</code>, a <code dir="auto">kind</code> glob | <strong>Yes</strong> — a genuine lane constraint; compiling it is the narrowing you want. |
-| everything else — <code dir="auto">title</code>, <code dir="auto">paths</code>, <code dir="auto">plan</code>, <code dir="auto">tags</code>, <code dir="auto">not</code>, <code dir="auto">any</code> | <strong>Yes</strong> — this is the half that was missing and caused the false drains. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>compile it into the issue query?</th></tr></thead><tbody><tr><td><code dir="auto">kind = 'feature'</code> / <code dir="auto">kind in ['feature','chunk']</code> (no issue kind)</td><td><strong>No</strong> — strip it. That is the constraint the tier exists to widen past.</td></tr><tr><td><code dir="auto">kind in ['bug','change']</code>, <code dir="auto">kind != 'feature'</code>, a <code dir="auto">kind</code> glob</td><td><strong>Yes</strong> — a genuine lane constraint; compiling it is the narrowing you want.</td></tr><tr><td>everything else — <code dir="auto">title</code>, <code dir="auto">paths</code>, <code dir="auto">plan</code>, <code dir="auto">tags</code>, <code dir="auto">not</code>, <code dir="auto">any</code></td><td><strong>Yes</strong> — this is the half that was missing and caused the false drains.</td></tr></tbody></table>
 <p><code dir="auto">stripFeatureOnlyKindLeaves()</code> implements exactly that, at the same conservative shapes as its
 sibling <code dir="auto">widenPastKind</code> (a bare leaf, or one directly inside a top-level <code dir="auto">all</code>). A <code dir="auto">kind</code> leaf
 nested under <code dir="auto">any</code>/<code dir="auto">not</code> is left compiled — dropping it would change OR/NOT semantics, and

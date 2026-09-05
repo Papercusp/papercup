@@ -582,6 +582,32 @@ describe("workspace-host release provenance", () => {
 describe("canonical workspace-host artifact URLs", () => {
   const SHA = "a".repeat(64);
 
+  // RECURRENCE GUARD for WI-38321 — the sibling of the same assertion on DEFAULT_CUPBOARD_URL in
+  // packages/operator-core/lib/cupboard/base-url.test.ts.
+  //
+  // A Cloudflare Worker's own `*.workers.dev` origin embeds the ACCOUNT SUBDOMAIN, which here is
+  // the release owner's personal GitHub handle. This constant is bundled into the shipped host, so
+  // naming that origin compiles a personal identity string into every release and forces an
+  // acceptance in the release identity gate (papercusp-desktop/bin/audit-release-bundle.py). Both
+  // names route to the SAME Worker and serve identical bytes, so there is never a functional
+  // reason to reach for the account-bearing one.
+  //
+  // The regression this catches is specific and plausible: from the papercusp dev box the branded
+  // host cannot be reached at all (EI-16742 — a local SNI blackhole, NOT an outage), so a local
+  // timeout here reads exactly like a broken origin and invites "fixing" it by pointing this back
+  // at workers.dev. That has already been done and reverted once.
+  it("names an origin that carries no Cloudflare account identity", () => {
+    // CALIBRATION first: a guard that has never fired is a guard nobody has tested, and a
+    // tree-mutating probe is not an option here (git-sync sweeps this checkout on a timer and
+    // would commit the mutant). The control is a synthetic account-bearing origin carrying no real
+    // identity — if the predicate below stops rejecting THIS, it is broken, not satisfied.
+    const accountBearing = "https://example-worker.example-account.workers.dev";
+    expect(new URL(accountBearing).hostname.endsWith(".workers.dev")).toBe(true);
+
+    expect(new URL(WORKSPACE_HOST_ARTIFACT_ORIGIN).hostname.endsWith(".workers.dev")).toBe(false);
+    expect(WORKSPACE_HOST_ARTIFACT_ORIGIN.startsWith("https://")).toBe(true);
+  });
+
   it("derives the bundle, signature, and manifest paths from the digest", () => {
     expect(deriveWorkspaceHostCanonicalArtifactUrls(SHA)).toEqual({
       bundleUrl: `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA}/server.tgz`,

@@ -75,21 +75,82 @@
 <code dir="auto">@papercusp/template-kit</code> (<code dir="auto">src/template-manifest.ts</code>), which is the authority if this page ever
 disagrees with it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="fields">Fields</h2><a class="sl-anchor-link" href="#fields"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Fields”</span></a></div>
-<p>| field | required | notes |
-|---|---|---|
-| <code dir="auto">id</code> | yes | kebab-case; matches the directory name |
-| <code dir="auto">version</code> | yes | semver |
-| <code dir="auto">scope</code> | yes | <code dir="auto">app</code> | <code dir="auto">aspect</code> — see the system-design page; exactly one <code dir="auto">app</code> per composition |
-| <code dir="auto">category</code> | yes | <code dir="auto">app</code> <code dir="auto">agentic</code> <code dir="auto">shell</code> <code dir="auto">data</code> <code dir="auto">search</code> <code dir="auto">ui</code> <code dir="auto">release</code> <code dir="auto">design</code> |
-| <code dir="auto">summary</code> | yes | one paragraph; what the template is for |
-| <code dir="auto">components</code> | yes | <code dir="auto">[{ id, version }]</code> — catalog components this template contributes. <strong><code dir="auto">[]</code> is normal for an app root</strong> (roots are thin) |
-| <code dir="auto">contracts</code> | yes | typed-contract ids; may be <code dir="auto">[]</code> |
-| <code dir="auto">decisionPoints</code> | yes | <code dir="auto">[{ id, prompt }]</code> — questions the builder must answer before composing |
-| <code dir="auto">composesWith</code> | yes | template ids this stacks with. Advisory, may be <code dir="auto">[]</code> |
-| <code dir="auto">requires</code> | no | <code dir="auto">[{ id, version }]</code> — <strong>HARD pinned</strong> cross-template deps; pulls in the whole closure |
-| <code dir="auto">docs</code> | no | <code dir="auto">/internal/docs</code> page slugs the builder should consult when the GUIDE is not enough |
-| <code dir="auto">checks</code> | yes | <code dir="auto">[{ id, run, summary }]</code> — <strong>non-empty</strong>; the acceptance suite |
-| <code dir="auto">musts</code> | no | <code dir="auto">[{ id, rule, enforcedBy }]</code> — structured invariants |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>field</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code dir="auto">id</code></td><td>yes</td><td>kebab-case; matches the directory name</td></tr><tr><td><code dir="auto">version</code></td><td>yes</td><td>semver</td></tr><tr><td><code dir="auto">scope</code></td><td>yes</td><td><code dir="auto">app</code> | <code dir="auto">aspect</code> — see the system-design page; exactly one <code dir="auto">app</code> per composition</td></tr><tr><td><code dir="auto">category</code></td><td>yes</td><td><code dir="auto">app</code> <code dir="auto">agentic</code> <code dir="auto">shell</code> <code dir="auto">data</code> <code dir="auto">search</code> <code dir="auto">ui</code> <code dir="auto">release</code> <code dir="auto">design</code></td></tr><tr><td><code dir="auto">summary</code></td><td>yes</td><td>one paragraph; what the template is for</td></tr><tr><td><code dir="auto">components</code></td><td>yes</td><td><code dir="auto">[{ id, version }]</code> — catalog components this template contributes. <strong><code dir="auto">[]</code> is normal for an app root</strong> (roots are thin)</td></tr><tr><td><code dir="auto">contracts</code></td><td>yes</td><td>typed-contract ids; may be <code dir="auto">[]</code></td></tr><tr><td><code dir="auto">decisionPoints</code></td><td>yes</td><td><code dir="auto">[{ id, prompt }]</code> — questions the builder must answer before composing</td></tr><tr><td><code dir="auto">composesWith</code></td><td>yes</td><td>template ids this stacks with. Advisory, may be <code dir="auto">[]</code></td></tr><tr><td><code dir="auto">requires</code></td><td>no</td><td><code dir="auto">[{ id, version }]</code> — <strong>HARD pinned</strong> cross-template deps; pulls in the whole closure</td></tr><tr><td><code dir="auto">docs</code></td><td>no</td><td><code dir="auto">/internal/docs</code> page slugs the builder should consult when the GUIDE is not enough</td></tr><tr><td><code dir="auto">checks</code></td><td>yes</td><td><code dir="auto">[{ id, run, summary }]</code> — <strong>non-empty</strong>; the acceptance suite</td></tr><tr><td><code dir="auto">musts</code></td><td>no</td><td><code dir="auto">[{ id, rule, enforcedBy }]</code> — structured invariants</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="requires-vs-composeswith"><code dir="auto">requires</code> vs <code dir="auto">composesWith</code></h2><a class="sl-anchor-link" href="#requires-vs-composeswith"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “requires vs composesWith”</span></a></div>
 <p>The distinction decides resolution, so do not blur it:</p>
 <ul>

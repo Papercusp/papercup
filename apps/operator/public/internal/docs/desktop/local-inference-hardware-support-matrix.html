@@ -81,14 +81,47 @@ the <em>policy</em> behind the code is legible in one place instead of buried in
 edit the code below, then update this doc’s table. If they ever disagree, the code wins; file a
 doc-drift fix.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-matrix">The matrix</h2><a class="sl-anchor-link" href="#the-matrix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The matrix”</span></a></div>
-<p>| Hardware tier | Recommendation | Notes |
-|---|---|---|
-| <strong>NVIDIA, ≥24GB VRAM</strong> | <code dir="auto">vLLM</code> + AWQ/GPTQ (managed container) preferred for max concurrency; <code dir="auto">llama-server</code> GGUF as the no-container fallback | The pipeline (<code dir="auto">recommend.ts</code>/<code dir="auto">provision.ts</code>/<code dir="auto">vllm-container.ts</code>) is fully wired for the vLLM lane — including downgrading to <code dir="auto">llama-server</code> when no working Docker/Podman runtime is found (D-009 #3) — but as of this writing <code dir="auto">CERTIFIED_CATALOG</code> (catalog.ts) has only ONE entry for this tier, <code dir="auto">llama-server</code>-backed. It cleared the P-006/P-007 certification battery on 2026-07-02 (<code dir="auto">status: 'certified'</code>, 3/3 critical probes, 0% mangling) — see its <code dir="auto">certification</code> record in catalog.ts. So today’s actual recommendation at this tier is still <code dir="auto">llama-server</code>, now CERTIFIED rather than provisional; the vLLM lane activates automatically the moment a <code dir="auto">backend: 'vllm'</code> entry is added to the catalog — no wizard/recommend code changes needed |
-| <strong>NVIDIA, &#x3C;24GB VRAM</strong> (the <code dir="auto">nvidia-mid</code> / <code dir="auto">nvidia-low</code> tiers) | <code dir="auto">llama-server</code> GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable <code dir="auto">num_ctx</code> | No vLLM lane at this tier (concurrency isn’t the point; fitting in VRAM is). <code dir="auto">nvidia-low</code> now has a CERTIFIED combo: <code dir="auto">qwen3-8b-q4km-llama-server</code> (Qwen3-8B Q4_K_M, minVram 10GB, serve flags <code dir="auto">--jinja --reasoning-budget 0</code>) — cleared the P-006 battery 2026-07-03, 3/3 critical probes, 0% mangling (WI-1596). <code dir="auto">nvidia-mid</code> still has no entry (a 12–23GB card falls through with the honest “no combo yet” reason) |
-| <strong>Apple Silicon (Metal)</strong> | <code dir="auto">llama-server</code> built with the Metal backend, single/low-stream concurrency | No vLLM lane — vLLM is CUDA-only (D-004). A PROVISIONAL entry exists (<code dir="auto">qwen3-8b-q4km-llama-server-metal</code>, same model+quant+flags combo as the certified nvidia-low entry) — it flips to <code dir="auto">certified</code> once the battery runs against a real Metal serve (mac lane; WI-1596) |
-| <strong>CPU-only (no GPU)</strong> | <code dir="auto">llama-server</code> CPU build, smallest certified quant | The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning |
-| <strong>AMD GPU</strong> (detected via <code dir="auto">rocm-smi</code>, no catalog entry targets it yet) | Route to the <strong>cloud gateway</strong> lane, same as CPU-only | <code dir="auto">hardware-detect.ts</code> DOES detect AMD (vendor + best-effort VRAM) — it is not lumped in with “detection failure”. <code dir="auto">recommend.ts</code>’s <code dir="auto">tierOf()</code> has no AMD tier yet, so it falls through to <code dir="auto">cpu-only</code>, but <code dir="auto">recommendCombo()</code>’s <code dir="auto">reason</code> string is honest about <em>why</em>: <code dir="auto">"detected a amd GPU the catalog doesn't target yet"</code>, distinct from the plain “no GPU detected” case |
-| <strong>No usable local hardware</strong> (no GPU detected, detection failure, etc.) | Route to the <strong>cloud gateway</strong> lane (the existing Claude/Codex account pool) | This is a <em>routing</em> decision the gateway abstraction (D-002) already covers — not a new local-backend kind |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Hardware tier</th><th>Recommendation</th><th>Notes</th></tr></thead><tbody><tr><td><strong>NVIDIA, ≥24GB VRAM</strong></td><td><code dir="auto">vLLM</code> + AWQ/GPTQ (managed container) preferred for max concurrency; <code dir="auto">llama-server</code> GGUF as the no-container fallback</td><td>The pipeline (<code dir="auto">recommend.ts</code>/<code dir="auto">provision.ts</code>/<code dir="auto">vllm-container.ts</code>) is fully wired for the vLLM lane — including downgrading to <code dir="auto">llama-server</code> when no working Docker/Podman runtime is found (D-009 #3) — but as of this writing <code dir="auto">CERTIFIED_CATALOG</code> (catalog.ts) has only ONE entry for this tier, <code dir="auto">llama-server</code>-backed. It cleared the P-006/P-007 certification battery on 2026-07-02 (<code dir="auto">status: 'certified'</code>, 3/3 critical probes, 0% mangling) — see its <code dir="auto">certification</code> record in catalog.ts. So today’s actual recommendation at this tier is still <code dir="auto">llama-server</code>, now CERTIFIED rather than provisional; the vLLM lane activates automatically the moment a <code dir="auto">backend: 'vllm'</code> entry is added to the catalog — no wizard/recommend code changes needed</td></tr><tr><td><strong>NVIDIA, &#x3C;24GB VRAM</strong> (the <code dir="auto">nvidia-mid</code> / <code dir="auto">nvidia-low</code> tiers)</td><td><code dir="auto">llama-server</code> GGUF only — a certified 7–14B quant sized to fit VRAM at a serviceable <code dir="auto">num_ctx</code></td><td>No vLLM lane at this tier (concurrency isn’t the point; fitting in VRAM is). <code dir="auto">nvidia-low</code> now has a CERTIFIED combo: <code dir="auto">qwen3-8b-q4km-llama-server</code> (Qwen3-8B Q4_K_M, minVram 10GB, serve flags <code dir="auto">--jinja --reasoning-budget 0</code>) — cleared the P-006 battery 2026-07-03, 3/3 critical probes, 0% mangling (WI-1596). <code dir="auto">nvidia-mid</code> still has no entry (a 12–23GB card falls through with the honest “no combo yet” reason)</td></tr><tr><td><strong>Apple Silicon (Metal)</strong></td><td><code dir="auto">llama-server</code> built with the Metal backend, single/low-stream concurrency</td><td>No vLLM lane — vLLM is CUDA-only (D-004). A PROVISIONAL entry exists (<code dir="auto">qwen3-8b-q4km-llama-server-metal</code>, same model+quant+flags combo as the certified nvidia-low entry) — it flips to <code dir="auto">certified</code> once the battery runs against a real Metal serve (mac lane; WI-1596)</td></tr><tr><td><strong>CPU-only (no GPU)</strong></td><td><code dir="auto">llama-server</code> CPU build, smallest certified quant</td><td>The wizard surfaces a warning about materially lower throughput rather than silently under-provisioning</td></tr><tr><td><strong>AMD GPU</strong> (detected via <code dir="auto">rocm-smi</code>, no catalog entry targets it yet)</td><td>Route to the <strong>cloud gateway</strong> lane, same as CPU-only</td><td><code dir="auto">hardware-detect.ts</code> DOES detect AMD (vendor + best-effort VRAM) — it is not lumped in with “detection failure”. <code dir="auto">recommend.ts</code>’s <code dir="auto">tierOf()</code> has no AMD tier yet, so it falls through to <code dir="auto">cpu-only</code>, but <code dir="auto">recommendCombo()</code>’s <code dir="auto">reason</code> string is honest about <em>why</em>: <code dir="auto">"detected a amd GPU the catalog doesn't target yet"</code>, distinct from the plain “no GPU detected” case</td></tr><tr><td><strong>No usable local hardware</strong> (no GPU detected, detection failure, etc.)</td><td>Route to the <strong>cloud gateway</strong> lane (the existing Claude/Codex account pool)</td><td>This is a <em>routing</em> decision the gateway abstraction (D-002) already covers — not a new local-backend kind</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-this-lives-in-code-the-actual-source-of-truth">Where this lives in code (the actual source of truth)</h2><a class="sl-anchor-link" href="#where-this-lives-in-code-the-actual-source-of-truth"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where this lives in code (the actual source of truth)”</span></a></div>
 <p>The wizard’s hardware-detection → recommendation step is wired straight through this chain —
 there is <strong>no separate hardcoded copy of the matrix in the UI</strong>:</p>

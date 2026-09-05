@@ -119,9 +119,30 @@ CORS.</strong> Check <code dir="auto">curl -w "%{time_total}"</code> against the
 the fix is to pre-warm the slow route before the webview fetches it (first-hit dev
 compile latency), not to chase ACAO headers.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="trichotomy-summary">Trichotomy summary</h2><a class="sl-anchor-link" href="#trichotomy-summary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Trichotomy summary”</span></a></div>
-<p>| Surface | Catches | Misses |
-|---|---|---|
-| <code dir="auto">toastLog.recent</code> | <code dir="auto">toast.error()</code> / <code dir="auto">addToast()</code> | everything else |
-| <code dir="auto">__papercuspPerfRecorder</code> | JS <code dir="auto">console.error</code> / <code dir="auto">window.error</code> / rejections (only on <code dir="auto">/admin/testing</code>) | WebKit’s direct devtools logs |
-| <code dir="auto">console-monitor</code> (bridge) | the entire webview console feed | anything before its start window |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Catches</th><th>Misses</th></tr></thead><tbody><tr><td><code dir="auto">toastLog.recent</code></td><td><code dir="auto">toast.error()</code> / <code dir="auto">addToast()</code></td><td>everything else</td></tr><tr><td><code dir="auto">__papercuspPerfRecorder</code></td><td>JS <code dir="auto">console.error</code> / <code dir="auto">window.error</code> / rejections (only on <code dir="auto">/admin/testing</code>)</td><td>WebKit’s direct devtools logs</td></tr><tr><td><code dir="auto">console-monitor</code> (bridge)</td><td>the entire webview console feed</td><td>anything before its start window</td></tr></tbody></table>
 <p>For “is the console clean now?”, query <strong>all three</strong> and reconcile.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T14:54:59.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/connection-closed-6432-is-an-idle-tx-kill-not-pgbouncer.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">`write CONNECTION_CLOSED 127.0.0.1:6432` is an idle-tx kill, not a PgBouncer bug — and how to prove a fix with a :3170-vs-:3070 A/B</span> </span> </a> <a href="/internal/docs/agent-insights/consolidated-view-literal-workspace-default.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">A literal workspace_id DEFAULT on a consolidated view silently mis-tenants every write</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

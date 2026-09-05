@@ -134,11 +134,28 @@ omp↔ollama tool-schema bug — <code dir="auto">cannot unmarshal bool into Too
 server or a working cloud/meridian provider.) So under <code dir="auto">PAPERCUSP_FLEET_SANDBOX</code>
 <strong>all three backends are contained.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="knobs-env-read-per-spawn-from-the-trusted-orchestrator-env">Knobs (env, read per-spawn from the trusted orchestrator env)</h2><a class="sl-anchor-link" href="#knobs-env-read-per-spawn-from-the-trusted-orchestrator-env"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Knobs (env, read per-spawn from the trusted orchestrator env)”</span></a></div>
-<p>| Env var | Effect |
-|---|---|
-| <code dir="auto">PAPERCUSP_FLEET_SANDBOX=0</code> (or <code dir="auto">false</code>/<code dir="auto">off</code>) | <strong>Opt out</strong> — run the fleet unsandboxed (the pre-2026-06-01 behavior). |
-| <code dir="auto">PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS</code> | Comma/space-separated hosts <strong>appended</strong> to the base egress allowlist (a private registry, an internal mirror, an extra CDN). Deduped. |
-| <code dir="auto">PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS=1</code> | <strong>Lockdown</strong> — emit <code dir="auto">[]</code> for the allowlist (block ALL sandboxed-Bash egress). Wins over the append var. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Env var</th><th>Effect</th></tr></thead><tbody><tr><td><code dir="auto">PAPERCUSP_FLEET_SANDBOX=0</code> (or <code dir="auto">false</code>/<code dir="auto">off</code>)</td><td><strong>Opt out</strong> — run the fleet unsandboxed (the pre-2026-06-01 behavior).</td></tr><tr><td><code dir="auto">PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS</code></td><td>Comma/space-separated hosts <strong>appended</strong> to the base egress allowlist (a private registry, an internal mirror, an extra CDN). Deduped.</td></tr><tr><td><code dir="auto">PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS=1</code></td><td><strong>Lockdown</strong> — emit <code dir="auto">[]</code> for the allowlist (block ALL sandboxed-Bash egress). Wins over the append var.</td></tr></tbody></table>
 <p>Changes take effect on the <strong>next <code dir="auto">:3070</code> operator restart</strong> — the Hono host has
 no hot-reload.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-breaks-and-the-fix">What breaks, and the fix</h2><a class="sl-anchor-link" href="#what-breaks-and-the-fix"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What breaks, and the fix”</span></a></div>

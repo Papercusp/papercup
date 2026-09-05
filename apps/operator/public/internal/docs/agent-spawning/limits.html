@@ -97,12 +97,38 @@
 <p><strong>Workaround:</strong> treat post-restart spawns as immutable history. Launch a fresh spawn if you need new work done.</p>
 <p><strong>Partial mitigation (EI-85, <code dir="auto">shouldRelaunchReclaimedSpawn</code>):</strong> the boot reconcile can now RE-LAUNCH — not resume, a genuinely NEW spawn — a reclaimed row whose role is <code dir="auto">mug</code> (the per-workspace hive driver: re-launches unconditionally, re-firing its hive blueprint) or <code dir="auto">cup</code> (a worker: re-launches iff it carried a work-item that is still non-terminal at reclaim time; a work-item-less or already-terminal cup is reclaimed with nothing to resume, same as before). Every other role still just reclaims to <code dir="auto">failed</code>. This closes the gap between “the host restarted, the Queen died” and “the next routine cadence tick notices” — it does not change the read-only-history fact above (the OLD spawn row/stream/output is still gone forever); it just means a NEW spawn may pick the dropped thread back up automatically, sooner than the ordinary re-placement cadence would.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="status-of-each-edge">Status of each edge</h2><a class="sl-anchor-link" href="#status-of-each-edge"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Status of each edge”</span></a></div>
-<p>| Edge | Status |
-|---|---|
-| Subtree cancel | ✅ Done — <code dir="auto">fleet:cancel</code> is transitive over the durable subtree |
-| Cluster-wide caps | ✅ Done — the ceiling is a live PG count, shared across operator processes |
-| Over-ceiling queue | ✅ Built as queue+await (<code dir="auto">await_event</code>); a granted-ticket FIFO is the only remaining want |
-| Cross-restart cancel (kill the orphan OS process) | ⚠️ Local wedged spawns are auto-killed by the wedge-reaper (<code dir="auto">WEDGE_AUTO_REAP</code>); a survived-restart orphan is only reclaimed to <code dir="auto">failed</code> by heartbeat (frees the ceiling), not killed |
-| Post-restart continuity | ⚠️ Partially built (EI-85) — a reclaimed <code dir="auto">mug</code>/<code dir="auto">cup</code> row with unfinished work auto-RE-LAUNCHES (a new spawn); the old spawn’s row/stream/output is still gone forever (unchanged) |
-| Larger output | Open — stream to a scratch file, store path in <code dir="auto">output_ref</code> instead of the ~2 KB <code dir="auto">output_tail</code> (~0.5 day) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Edge</th><th>Status</th></tr></thead><tbody><tr><td>Subtree cancel</td><td>✅ Done — <code dir="auto">fleet:cancel</code> is transitive over the durable subtree</td></tr><tr><td>Cluster-wide caps</td><td>✅ Done — the ceiling is a live PG count, shared across operator processes</td></tr><tr><td>Over-ceiling queue</td><td>✅ Built as queue+await (<code dir="auto">await_event</code>); a granted-ticket FIFO is the only remaining want</td></tr><tr><td>Cross-restart cancel (kill the orphan OS process)</td><td>⚠️ Local wedged spawns are auto-killed by the wedge-reaper (<code dir="auto">WEDGE_AUTO_REAP</code>); a survived-restart orphan is only reclaimed to <code dir="auto">failed</code> by heartbeat (frees the ceiling), not killed</td></tr><tr><td>Post-restart continuity</td><td>⚠️ Partially built (EI-85) — a reclaimed <code dir="auto">mug</code>/<code dir="auto">cup</code> row with unfinished work auto-RE-LAUNCHES (a new spawn); the old spawn’s row/stream/output is still gone forever (unchanged)</td></tr><tr><td>Larger output</td><td>Open — stream to a scratch file, store path in <code dir="auto">output_ref</code> instead of the ~2 KB <code dir="auto">output_tail</code> (~0.5 day)</td></tr></tbody></table>
 <p>The spawn primitive is the resting state until a real workflow demands one of the open items.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:38.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-spawning/observability.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Observability</span> </span> </a> <a href="/internal/docs/agent-spawning/terminal-wrappers.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">psu — the engineer-collaborator launcher</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

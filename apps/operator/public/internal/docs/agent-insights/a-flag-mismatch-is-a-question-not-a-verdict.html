@@ -89,13 +89,36 @@ the whole <code dir="auto">PENDING_MISMATCHES</code> list without re-derivation.
 <p>Of the ten mismatches outstanding on 2026-07-12, <strong>five were the inverse</strong> — the code was
 right and the <em>comment</em> was stale archaeology. For those, “restoring the documented dark
 baseline” is not a fix. It is a regression, and in two cases a catastrophic one.</p>
-<p>| flag | what OFF actually does |
-|---|---|
-| <code dir="auto">COORD_PER_WORKSPACE</code> | Re-points every coord read/write at the legacy <code dir="auto">default</code> partition. <strong>67,468</strong> live coord events sit in the workspace partition; <code dir="auto">default</code> holds <strong>74</strong>. |
-| <code dir="auto">ISSUES_PER_WORKSPACE</code> | Same swing for issues. <strong>11,730</strong> live rows vs a <strong>2,443</strong>-row corpus whose last write was <strong>2026-06-22</strong>. Flipping OFF hides the entire work-item backlog — <em>including the tickets describing the bug</em>. |
-| <code dir="auto">SCOPED_SUPERUSER_CLAMP</code> | OFF restores the <strong>unscoped <code dir="auto">*</code> superuser</strong>. ON is the narrower state. “Restoring the baseline” <em>relaxes</em> auth. |
-| <code dir="auto">UI_WORKSPACE_GUARD</code> | OFF = <strong>no cross-workspace check at all</strong>. ON blocks it. |
-| <code dir="auto">ROUTINES_PER_WORKSPACE</code> | OFF re-opens the cross-workspace routine clobber the flag exists to close. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>flag</th><th>what OFF actually does</th></tr></thead><tbody><tr><td><code dir="auto">COORD_PER_WORKSPACE</code></td><td>Re-points every coord read/write at the legacy <code dir="auto">default</code> partition. <strong>67,468</strong> live coord events sit in the workspace partition; <code dir="auto">default</code> holds <strong>74</strong>.</td></tr><tr><td><code dir="auto">ISSUES_PER_WORKSPACE</code></td><td>Same swing for issues. <strong>11,730</strong> live rows vs a <strong>2,443</strong>-row corpus whose last write was <strong>2026-06-22</strong>. Flipping OFF hides the entire work-item backlog — <em>including the tickets describing the bug</em>.</td></tr><tr><td><code dir="auto">SCOPED_SUPERUSER_CLAMP</code></td><td>OFF restores the <strong>unscoped <code dir="auto">*</code> superuser</strong>. ON is the narrower state. “Restoring the baseline” <em>relaxes</em> auth.</td></tr><tr><td><code dir="auto">UI_WORKSPACE_GUARD</code></td><td>OFF = <strong>no cross-workspace check at all</strong>. ON blocks it.</td></tr><tr><td><code dir="auto">ROUTINES_PER_WORKSPACE</code></td><td>OFF re-opens the cross-workspace routine clobber the flag exists to close.</td></tr></tbody></table>
 <p>Two work-items (<code dir="auto">WI-4238</code>, <code dir="auto">WI-4239</code>) and one critical needs-human escalation (<code dir="auto">EI-9769</code>)
 each presented that action to the owner as <strong>the safe, conservative option</strong>. <code dir="auto">EI-9769</code>
 called it “a planned, attended rollback.” It was three hops from approval.</p>

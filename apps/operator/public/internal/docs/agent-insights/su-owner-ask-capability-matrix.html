@@ -97,11 +97,32 @@ anywhere the owner is looking.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-enforcement-cant-be-uniform-the-per-client-hook-reality-verified-2026-07-17">Why enforcement can’t be uniform: the per-client hook reality (verified 2026-07-17)</h2><a class="sl-anchor-link" href="#why-enforcement-cant-be-uniform-the-per-client-hook-reality-verified-2026-07-17"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why enforcement can’t be uniform: the per-client hook reality (verified 2026-07-17)”</span></a></div>
 <p>The three su backends expose genuinely different hook surfaces — this was
 verified in-repo, not assumed, before D-002 was written:</p>
-<p>| Client | Turn-end / Stop hook? | What it can do about an unstructured ask |
-| --- | --- | --- |
-| <strong>Claude Code</strong> | Yes — <code dir="auto">Stop</code> hook (blockable), plus <code dir="auto">Notification</code> and the full <code dir="auto">PreToolUse</code>/<code dir="auto">PostToolUse</code> set (<code dir="auto">apps/operator/scripts/hooks/cc/*</code>) | <strong>Hard enforce.</strong> Parse the final turn for a structured mirror; if a question-shaped ending has none, <strong>BOUNCE the stop</strong> with a corrective reason (narrow, loop-guarded — P-001). <code dir="auto">PreToolUse</code> also mirrors <code dir="auto">AskUserQuestion</code>/<code dir="auto">ExitPlanMode</code> dialogs into a coord escalation directly. |
-| <strong>OMP</strong> | Yes — <code dir="auto">turn_end</code> (<code dir="auto">apps/operator/scripts/hooks/omp/coord-hook.ts</code>) | <strong>Soft enforce.</strong> No blocking primitive at turn boundary, but <code dir="auto">turn_end</code> can capture the final turn text, ingest it (P-002’s endpoint), and inject a <code dir="auto">followUp</code> nudge (<code dir="auto">deliverAs:'followUp'</code>) on the <em>next</em> turn when the prior one ended in an unstructured ask. |
-| <strong>Codex</strong> | <strong>No.</strong> <code dir="auto">role-codex-home.ts</code> / the codex hook surface is <code dir="auto">PreToolUse</code>/<code dir="auto">PostToolUse</code> only — there is no turn-end/Stop-equivalent event today. (An upstream <code dir="auto">notify</code> turn-complete channel reportedly exists but is <strong>unverified against our pin</strong>.) | <strong>Convention only.</strong> Nothing mirrors or bounces an unstructured Codex ask; the watcher (P-002, transcript-based) is the <em>only</em> backstop — it detects a pending <code dir="auto">AskUserQuestion</code>/permission <code dir="auto">tool_use</code> with no <code dir="auto">tool_result</code> and surfaces “session blocked on owner” client-agnostically, but that’s a liveness signal, not an ask-quality enforcement. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Client</th><th>Turn-end / Stop hook?</th><th>What it can do about an unstructured ask</th></tr></thead><tbody><tr><td><strong>Claude Code</strong></td><td>Yes — <code dir="auto">Stop</code> hook (blockable), plus <code dir="auto">Notification</code> and the full <code dir="auto">PreToolUse</code>/<code dir="auto">PostToolUse</code> set (<code dir="auto">apps/operator/scripts/hooks/cc/*</code>)</td><td><strong>Hard enforce.</strong> Parse the final turn for a structured mirror; if a question-shaped ending has none, <strong>BOUNCE the stop</strong> with a corrective reason (narrow, loop-guarded — P-001). <code dir="auto">PreToolUse</code> also mirrors <code dir="auto">AskUserQuestion</code>/<code dir="auto">ExitPlanMode</code> dialogs into a coord escalation directly.</td></tr><tr><td><strong>OMP</strong></td><td>Yes — <code dir="auto">turn_end</code> (<code dir="auto">apps/operator/scripts/hooks/omp/coord-hook.ts</code>)</td><td><strong>Soft enforce.</strong> No blocking primitive at turn boundary, but <code dir="auto">turn_end</code> can capture the final turn text, ingest it (P-002’s endpoint), and inject a <code dir="auto">followUp</code> nudge (<code dir="auto">deliverAs:'followUp'</code>) on the <em>next</em> turn when the prior one ended in an unstructured ask.</td></tr><tr><td><strong>Codex</strong></td><td><strong>No.</strong> <code dir="auto">role-codex-home.ts</code> / the codex hook surface is <code dir="auto">PreToolUse</code>/<code dir="auto">PostToolUse</code> only — there is no turn-end/Stop-equivalent event today. (An upstream <code dir="auto">notify</code> turn-complete channel reportedly exists but is <strong>unverified against our pin</strong>.)</td><td><strong>Convention only.</strong> Nothing mirrors or bounces an unstructured Codex ask; the watcher (P-002, transcript-based) is the <em>only</em> backstop — it detects a pending <code dir="auto">AskUserQuestion</code>/permission <code dir="auto">tool_use</code> with no <code dir="auto">tool_result</code> and surfaces “session blocked on owner” client-agnostically, but that’s a liveness signal, not an ask-quality enforcement.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="d-002-this-asymmetry-is-a-decision-not-a-bug">D-002: this asymmetry is a decision, not a bug</h2><a class="sl-anchor-link" href="#d-002-this-asymmetry-is-a-decision-not-a-bug"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “D-002: this asymmetry is a decision, not a bug”</span></a></div>
 <blockquote>
 <p><strong>Enforcement is PER-CLIENT-CAPABILITY; the convention is UNIVERSAL.</strong>

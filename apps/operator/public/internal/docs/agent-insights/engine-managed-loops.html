@@ -93,11 +93,32 @@ host explicitly turns it OFF does <code dir="auto">loop:arm</code> return <code 
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="three-words-plan--schedule--loop">Three words: plan · schedule · loop</h2><a class="sl-anchor-link" href="#three-words-plan--schedule--loop"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Three words: plan · schedule · loop”</span></a></div>
 <p>The routines engine fires on a trigger. There are now three recurrence shapes:</p>
-<p>| Word | Cadence | Example |
-| --- | --- | --- |
-| <strong>schedule</strong> | a fixed <strong>wall-clock</strong> time (cron / RRULE) | “every weekday at 9am” → <code dir="auto">plans:set-schedule</code> |
-| <strong>loop</strong> | <strong>N sec AFTER the previous turn COMPLETES</strong> | “keep at it every ~5 min” → <code dir="auto">loop:arm</code> |
-| (one-shot) | once, at an explicit time | a dragged-onto-a-day plan run |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Word</th><th>Cadence</th><th>Example</th></tr></thead><tbody><tr><td><strong>schedule</strong></td><td>a fixed <strong>wall-clock</strong> time (cron / RRULE)</td><td>“every weekday at 9am” → <code dir="auto">plans:set-schedule</code></td></tr><tr><td><strong>loop</strong></td><td><strong>N sec AFTER the previous turn COMPLETES</strong></td><td>”keep at it every ~5 min” → <code dir="auto">loop:arm</code></td></tr><tr><td>(one-shot)</td><td>once, at an explicit time</td><td>a dragged-onto-a-day plan run</td></tr></tbody></table>
 <p>Rule of thumb: <strong>“schedule” = fixed clock; “loop” = N sec after the last turn
 finished.</strong> A loop is the <em>third</em> recurrence kind in <code dir="auto">harness_shared.routines</code>: it
 carries neither a cron nor an RRULE, just a <code dir="auto">reschedule_interval_sec</code> and a
@@ -199,17 +220,52 @@ via the <code dir="auto">/settings/pot-customization</code> editor) for the live
 the file-based playbooks + overlay propagate on the next su launch.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="code-map">Code map</h2><a class="sl-anchor-link" href="#code-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Code map”</span></a></div>
-<p>| Piece | File |
-| --- | --- |
-| Schema (B-LOOP-1): <code dir="auto">reschedule_interval_sec</code> + <code dir="auto">target_owner_id</code> cols | <code dir="auto">libs/papercusp/libs/db/sql/323-loop-routines-reschedule-interval.sql</code> |
-| <code dir="auto">RoutineRow</code> + <code dir="auto">upsertRoutine</code> threading + the <code dir="auto">'infinity'</code> parked-Date papercup | <code dir="auto">libs/papercusp/libs/db/src/routines-runtime.ts</code> |
-| Claim third-kind (park at <code dir="auto">'infinity'</code>) | <code dir="auto">packages/operator-core/lib/harness/routines/claim.ts</code> |
-| Loop row materialization + the wakeup-prompt template (the surface) | <code dir="auto">packages/operator-core/lib/harness/routines/loop.ts</code> |
-| Completion-rebase (B-LOOP-2) | <code dir="auto">packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts</code> |
-| Warm-wake fire + cost-cap (B-LOOP-3) | <code dir="auto">packages/operator-core/lib/harness/routines/loop-fire.ts</code>, <code dir="auto">loop-cost-cap.ts</code> |
-| Fire dispatch (routes a loop by <code dir="auto">reschedule_interval_sec != null &#x26;&#x26; target_owner_id</code>) | <code dir="auto">packages/operator-core/lib/dbos/routines-workflow.ts</code> |
-| The verbs | <code dir="auto">packages/operator-core/lib/agent-tools/loop/{arm,end,status}.ts</code> |
-| Atomic create+self-assign | <code dir="auto">packages/operator-core/lib/agent-tools/work_items/create.ts</code> (<code dir="auto">assign_to</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Piece</th><th>File</th></tr></thead><tbody><tr><td>Schema (B-LOOP-1): <code dir="auto">reschedule_interval_sec</code> + <code dir="auto">target_owner_id</code> cols</td><td><code dir="auto">libs/papercusp/libs/db/sql/323-loop-routines-reschedule-interval.sql</code></td></tr><tr><td><code dir="auto">RoutineRow</code> + <code dir="auto">upsertRoutine</code> threading + the <code dir="auto">'infinity'</code> parked-Date papercup</td><td><code dir="auto">libs/papercusp/libs/db/src/routines-runtime.ts</code></td></tr><tr><td>Claim third-kind (park at <code dir="auto">'infinity'</code>)</td><td><code dir="auto">packages/operator-core/lib/harness/routines/claim.ts</code></td></tr><tr><td>Loop row materialization + the wakeup-prompt template (the surface)</td><td><code dir="auto">packages/operator-core/lib/harness/routines/loop.ts</code></td></tr><tr><td>Completion-rebase (B-LOOP-2)</td><td><code dir="auto">packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts</code></td></tr><tr><td>Warm-wake fire + cost-cap (B-LOOP-3)</td><td><code dir="auto">packages/operator-core/lib/harness/routines/loop-fire.ts</code>, <code dir="auto">loop-cost-cap.ts</code></td></tr><tr><td>Fire dispatch (routes a loop by <code dir="auto">reschedule_interval_sec != null &#x26;&#x26; target_owner_id</code>)</td><td><code dir="auto">packages/operator-core/lib/dbos/routines-workflow.ts</code></td></tr><tr><td>The verbs</td><td><code dir="auto">packages/operator-core/lib/agent-tools/loop/{arm,end,status}.ts</code></td></tr><tr><td>Atomic create+self-assign</td><td><code dir="auto">packages/operator-core/lib/agent-tools/work_items/create.ts</code> (<code dir="auto">assign_to</code>)</td></tr></tbody></table>
 <p>Plan: <code dir="auto">loop-routines-interval-recurrence-2026-06-20</code>. Phase C (scale to hundreds of
 concurrent loops) is <strong>demand-gated</strong> (D-004) — not built on spec; the
 lightweight-fire-record work it implies is exactly the <code dir="auto">workflow_status</code>-bloat risk

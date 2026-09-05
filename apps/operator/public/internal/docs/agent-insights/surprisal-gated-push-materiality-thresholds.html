@@ -117,22 +117,67 @@ a blind spot.</p>
 <em>not</em> a fourth kind of unknown — it is a <strong>positive</strong> verdict. The raw value
 moved, the declared material answer did not, and we know both. So it does not
 block a clean roll-up the way <code dir="auto">undeterminable</code> does.</p>
-<p>| verdict | when | in the fold |
-|---|---|---|
-| <code dir="auto">fresh</code> | raw digest unchanged | the existing line |
-| <code dir="auto">immaterial</code> | raw moved, material answer held | one short clause; raw values <strong>dropped</strong> |
-| <code dir="auto">changed</code> | material answer moved (<strong>or</strong> no material anchor) | the full loud paragraph |
-| <code dir="auto">undeterminable</code> | could not compare | unchanged |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>verdict</th><th>when</th><th>in the fold</th></tr></thead><tbody><tr><td><code dir="auto">fresh</code></td><td>raw digest unchanged</td><td>the existing line</td></tr><tr><td><code dir="auto">immaterial</code></td><td>raw moved, material answer held</td><td>one short clause; raw values <strong>dropped</strong></td></tr><tr><td><code dir="auto">changed</code></td><td>material answer moved (<strong>or</strong> no material anchor)</td><td>the full loud paragraph</td></tr><tr><td><code dir="auto">undeterminable</code></td><td>could not compare</td><td>unchanged</td></tr></tbody></table>
 <p>There is <strong>no fourth roll-up status</strong>. <code dir="auto">cell-contract.ts</code> states the rule for its
 sibling enum: adding a code is a contract change, because every caller’s branch
 set changes with it. A materially-unchanged fact is not stale, so it rolls up as
 <code dir="auto">fresh</code>, and the news travels in <code dir="auto">immaterial[]</code> plus the note.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-measurement">The measurement</h3><a class="sl-anchor-link" href="#the-measurement"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The measurement”</span></a></div>
 <p>Per fact, per orient, for one candidate step:</p>
-<p>| | note | deps | total |
-|---|---|---|---|
-| ungated (today) | 412 | 192 | <strong>719</strong> |
-| materiality-gated | 55 | 179 | <strong>349</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>note</th><th>deps</th><th>total</th></tr></thead><tbody><tr><td>ungated (today)</td><td>412</td><td>192</td><td><strong>719</strong></td></tr><tr><td>materiality-gated</td><td>55</td><td>179</td><td><strong>349</strong></td></tr></tbody></table>
 <p><strong>51% smaller</strong>, and it scales linearly: a fold carrying 12 such facts drops from
 8628 to 4188 bytes <em>per orient, per agent</em>. Asserted as a test, not a claim —
 <code dir="auto">dependency-staleness.test.ts</code> → “P-021 measurement”.</p>

@@ -106,14 +106,40 @@ probing — operator = the loopback port answering <code dir="auto">GET /api/des
 <code dir="auto">harness_admin</code> psql to <code dir="auto">papercusp</code>. Discovered ports are cached per-VM under
 <code dir="auto">~/.papercusp/fed-rig-ports.&#x3C;vm></code> for <code dir="auto">FED_PORT_TTL</code> (default 600s) and auto-rediscovered
 when a target port stops answering. It survives app/VM restarts with <strong>no edits</strong>.</p>
-<p>| Subcommand | What it does |
-| --- | --- |
-| <code dir="auto">fed.sh &#x3C;a\|b> ports</code> | Show the discovered <code dir="auto">operator=</code> / <code dir="auto">pg=</code> ports (pass <code dir="auto">1</code> to force a probe). |
-| <code dir="auto">fed.sh &#x3C;a\|b> rediscover</code> | Clear the port cache and re-probe. Run this FIRST after any restart. |
-| <code dir="auto">fed.sh &#x3C;a\|b> sql "&#x3C;SQL>"</code> | <code dir="auto">psql</code> against the VM’s embedded PG as <code dir="auto">harness_admin</code> / <code dir="auto">papercusp</code>. |
-| <code dir="auto">fed.sh &#x3C;a\|b> api &#x3C;METHOD> &#x3C;path> [json-body]</code> | Superuser HTTP route (Bearer from the operator’s actual <code dir="auto">$HOME/.papercusp/superuser-token</code>). |
-| <code dir="auto">fed.sh &#x3C;a\|b> mcp &#x3C;tool> [json-args]</code> | Superuser MCP tool over <code dir="auto">/api/mcp?superuser=1</code> (returns just the <code dir="auto">data:</code> SSE payload). |
-| <code dir="auto">fed.sh &#x3C;a\|b> ssh &#x3C;cmd…></code> | Raw SSH into the VM (e.g. <code dir="auto">ssh 'tail papercusp-app.log'</code>). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Subcommand</th><th>What it does</th></tr></thead><tbody><tr><td><code dir="auto">fed.sh &#x3C;a|b> ports</code></td><td>Show the discovered <code dir="auto">operator=</code> / <code dir="auto">pg=</code> ports (pass <code dir="auto">1</code> to force a probe).</td></tr><tr><td><code dir="auto">fed.sh &#x3C;a|b> rediscover</code></td><td>Clear the port cache and re-probe. Run this FIRST after any restart.</td></tr><tr><td><code dir="auto">fed.sh &#x3C;a|b> sql "&#x3C;SQL>"</code></td><td><code dir="auto">psql</code> against the VM’s embedded PG as <code dir="auto">harness_admin</code> / <code dir="auto">papercusp</code>.</td></tr><tr><td><code dir="auto">fed.sh &#x3C;a|b> api &#x3C;METHOD> &#x3C;path> [json-body]</code></td><td>Superuser HTTP route (Bearer from the operator’s actual <code dir="auto">$HOME/.papercusp/superuser-token</code>).</td></tr><tr><td><code dir="auto">fed.sh &#x3C;a|b> mcp &#x3C;tool> [json-args]</code></td><td>Superuser MCP tool over <code dir="auto">/api/mcp?superuser=1</code> (returns just the <code dir="auto">data:</code> SSE payload).</td></tr><tr><td><code dir="auto">fed.sh &#x3C;a|b> ssh &#x3C;cmd…></code></td><td>Raw SSH into the VM (e.g. <code dir="auto">ssh 'tail papercusp-app.log'</code>).</td></tr></tbody></table>
 <p>Two footguns the script already handles, but you must know:</p>
 <ul>
 <li><strong><code dir="auto">$HOME</code> is workspace-scoped on a VM whose operator runs workspace-scoped</strong>

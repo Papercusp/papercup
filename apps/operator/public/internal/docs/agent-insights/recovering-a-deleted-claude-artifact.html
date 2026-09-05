@@ -84,11 +84,32 @@ artifact URL returns <code dir="auto">artifact not found — it may have been de
 artifact goes missing, the three places an agent naturally looks are the git tree, the plan
 store, and the session transcripts. <strong>All three correctly return nothing</strong>, and the resulting
 agreement reads as proof of loss:</p>
-<p>| where you look | what it holds | why it misses |
-|---|---|---|
-| the repo (<code dir="auto">grep -rn &#x3C;id></code>) | committed source | the artifact was never written into the tree |
-| the plan (<code dir="auto">harness_plans.content</code>) | the plan body + <code dir="auto">## Now</code> | the plan cites the <strong>URL</strong>, never the content |
-| <code dir="auto">sessions:search</code> | conversation turns | the turn says <em>“published: <code dir="auto">&#x3C;url></code>”</em> — the 250 KB body was a tool <strong>argument</strong>, not a turn |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>where you look</th><th>what it holds</th><th>why it misses</th></tr></thead><tbody><tr><td>the repo (<code dir="auto">grep -rn &#x3C;id></code>)</td><td>committed source</td><td>the artifact was never written into the tree</td></tr><tr><td>the plan (<code dir="auto">harness_plans.content</code>)</td><td>the plan body + <code dir="auto">## Now</code></td><td>the plan cites the <strong>URL</strong>, never the content</td></tr><tr><td><code dir="auto">sessions:search</code></td><td>conversation turns</td><td>the turn says <em>“published: <code dir="auto">&#x3C;url></code>”</em> — the 250 KB body was a tool <strong>argument</strong>, not a turn</td></tr></tbody></table>
 <p>Three independent negatives, one shared blind spot: none of them indexes the publishing
 agent’s filesystem. Two agents on this fleet reached “unrecoverable” from exactly this evidence
 within a minute of each other on 2026-08-04 (WI-10730). The generalisable form: <strong>agreement

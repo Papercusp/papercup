@@ -286,6 +286,8 @@
     "lint:cell-matrix": "npx tsx scripts/check-cell-live-matrix.ts",
     "lint:plane-guards": "node scripts/test-files.mjs packages/operator-core/lib/cell-assessment-reality.test.ts packages/operator-core/lib/no-bespoke-state-read-guard.test.ts packages/operator-core/lib/cell-registrations.test.ts packages/operator-core/lib/declared-consumed-sweep.test.ts packages/operator-core/lib/agent-tools/coordination/holder-context-parity.test.ts packages/operator-core/lib/derived-signal-firings-probe.test.ts packages/operator-core/lib/coord/derived-signal-census.test.ts",
     "lint:timer-classification": "node scripts/check-timer-classification.mjs",
+    "lint:test-timing-budgets": "node scripts/check-test-timing-budgets.mjs",
+    "lint:test-timing-budgets:list": "node scripts/check-test-timing-budgets.mjs --list",
     "lint:no-wire-compression": "node scripts/check-no-wire-compression.mjs",
     "lint:no-eager-execfile-promisify": "node scripts/check-no-eager-execfile-promisify.mjs",
     "lint:no-module-scope-flag-subscribe": "node scripts/check-no-module-scope-flag-subscribe.mjs",

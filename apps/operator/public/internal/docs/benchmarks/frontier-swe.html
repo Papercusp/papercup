@@ -84,14 +84,47 @@ each task ships its OWN verifier (<code dir="auto">tests/test.sh</code> → <cod
 <code dir="auto">/logs/verifier/reward.txt</code>). We <strong>do not author a verifier</strong> — every arm hits the
 byte-identical task scorer (the fairness invariant).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-the-integration-is-shaped">How the integration is shaped</h2><a class="sl-anchor-link" href="#how-the-integration-is-shaped"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How the integration is shaped”</span></a></div>
-<p>| Concern | Where | Notes |
-|---|---|---|
-| Suite vocab | <code dir="auto">external-bench/types.ts</code> (<code dir="auto">BenchmarkFamily</code>), <code dir="auto">bench-metrics/schema.ts</code> (<code dir="auto">BenchSuite</code>), <code dir="auto">gym/report-set-firewall.ts</code> (<code dir="auto">REPORT_ON_SUITES</code>) | <code dir="auto">'frontier-swe'</code> in all 3 lock-step places — a published, gym-fenced suite. |
-| Grader | <code dir="auto">external-bench/grader/frontier-swe.ts</code> | <code dir="auto">OfficialGrader</code>, modality <strong><code dir="auto">in-container</code></strong>. Runs the task’s own <code dir="auto">test.sh</code> against the arm’s container, reads <code dir="auto">reward.txt</code> (bare scalar) / <code dir="auto">reward.json</code> (fallback) → <code dir="auto">GradeResult.score ∈ [0,1]</code>; <code dir="auto">resolved = (score === 1)</code> is degenerate. |
-| Live binding | <code dir="auto">external-bench/grader/frontier-swe-live.ts</code> | <code dir="auto">resolveFrontierSweConfigFromEnv</code> + <code dir="auto">buildLiveFrontierSweGrader</code> + <code dir="auto">preflightFrontierSwe</code> + <code dir="auto">describeFrontierSweRun</code>. Drives <code dir="auto">docker exec</code> shell-free. |
-| Task sets | <code dir="auto">external-bench/task-sets.ts</code> | <code dir="auto">frontier-swe</code> (full 17) · <code dir="auto">frontier-swe-pilot</code> (1/bucket → <strong>3 tasks</strong>) · <code dir="auto">frontier-swe-cpu</code> (GPU-free) · <code dir="auto">frontier-swe-custom</code>. Corpus at <code dir="auto">~/.papercusp/bench-results/frontier-swe/tasks.jsonl</code>. |
-| Aggregation | <code dir="auto">@papercusp/bench-metrics</code> <code dir="auto">frontier-rank.ts</code> | <code dir="auto">meanAtK</code> / <code dir="auto">bestAtK</code> (unbiased), <code dir="auto">avgRank</code>, <code dir="auto">dominance</code>, <code dir="auto">frontierRankReport</code>. New — <code dir="auto">pass-k</code> is binary, <code dir="auto">pareto</code> is cost/accuracy. |
-| Arms | the shared coordination-topology runtime (su-37e53a76) | FrontierSWE supplies only its task-set + clone/grade; it does NOT roll its own arms (D-007). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Where</th><th>Notes</th></tr></thead><tbody><tr><td>Suite vocab</td><td><code dir="auto">external-bench/types.ts</code> (<code dir="auto">BenchmarkFamily</code>), <code dir="auto">bench-metrics/schema.ts</code> (<code dir="auto">BenchSuite</code>), <code dir="auto">gym/report-set-firewall.ts</code> (<code dir="auto">REPORT_ON_SUITES</code>)</td><td><code dir="auto">'frontier-swe'</code> in all 3 lock-step places — a published, gym-fenced suite.</td></tr><tr><td>Grader</td><td><code dir="auto">external-bench/grader/frontier-swe.ts</code></td><td><code dir="auto">OfficialGrader</code>, modality <strong><code dir="auto">in-container</code></strong>. Runs the task’s own <code dir="auto">test.sh</code> against the arm’s container, reads <code dir="auto">reward.txt</code> (bare scalar) / <code dir="auto">reward.json</code> (fallback) → <code dir="auto">GradeResult.score ∈ [0,1]</code>; <code dir="auto">resolved = (score === 1)</code> is degenerate.</td></tr><tr><td>Live binding</td><td><code dir="auto">external-bench/grader/frontier-swe-live.ts</code></td><td><code dir="auto">resolveFrontierSweConfigFromEnv</code> + <code dir="auto">buildLiveFrontierSweGrader</code> + <code dir="auto">preflightFrontierSwe</code> + <code dir="auto">describeFrontierSweRun</code>. Drives <code dir="auto">docker exec</code> shell-free.</td></tr><tr><td>Task sets</td><td><code dir="auto">external-bench/task-sets.ts</code></td><td><code dir="auto">frontier-swe</code> (full 17) · <code dir="auto">frontier-swe-pilot</code> (1/bucket → <strong>3 tasks</strong>) · <code dir="auto">frontier-swe-cpu</code> (GPU-free) · <code dir="auto">frontier-swe-custom</code>. Corpus at <code dir="auto">~/.papercusp/bench-results/frontier-swe/tasks.jsonl</code>.</td></tr><tr><td>Aggregation</td><td><code dir="auto">@papercusp/bench-metrics</code> <code dir="auto">frontier-rank.ts</code></td><td><code dir="auto">meanAtK</code> / <code dir="auto">bestAtK</code> (unbiased), <code dir="auto">avgRank</code>, <code dir="auto">dominance</code>, <code dir="auto">frontierRankReport</code>. New — <code dir="auto">pass-k</code> is binary, <code dir="auto">pareto</code> is cost/accuracy.</td></tr><tr><td>Arms</td><td>the shared coordination-topology runtime (su-37e53a76)</td><td>FrontierSWE supplies only its task-set + clone/grade; it does NOT roll its own arms (D-007).</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="scoring--the-headline">Scoring &#x26; the headline</h2><a class="sl-anchor-link" href="#scoring--the-headline"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Scoring &#x26; the headline”</span></a></div>
 <p>Each task’s verifier emits a continuous reward in <code dir="auto">[0,1]</code>. Per task we report <strong>mean@5</strong>
 (expected mean of a random 5-subset = the trial mean) and <strong>best@5</strong> (the unbiased

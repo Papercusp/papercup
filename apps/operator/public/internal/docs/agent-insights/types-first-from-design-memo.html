@@ -88,14 +88,40 @@
 <p><strong>(3) The user reviewing the memo can see types in tree.</strong> “Does the <code dir="auto">BindingRecord</code> shape make sense?” → the user can navigate to the file, scroll through the comments, see how <code dir="auto">composeBindingId</code> encodes things, run the tests. Reviewing a memo with a real types file open is qualitatively different from reviewing a memo with no code at all. The review becomes “is the implementation I see in tree what I want?” — a more concrete question than “is the design as written what I want?”</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-not-to-do">What NOT to do</h2><a class="sl-anchor-link" href="#what-not-to-do"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What NOT to do”</span></a></div>
 <p>Don’t ship anything that requires user judgment:</p>
-<p>| Safe to ship | Wait for memo acceptance |
-|---|---|
-| Type declarations | Service implementations |
-| Pure functions (parsers, predicates, encoders) | Functions that perform I/O |
-| Error union variants | Error-handling policies (retry counts, backoff) |
-| Constant tables (e.g. required permissions) | Wiring those tables into UI behavior |
-| Tests for the pure functions | Tests that assert behavior the memo hasn’t pinned |
-| New SQL columns (additive only) | New SQL tables that imply a new domain |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Safe to ship</th><th>Wait for memo acceptance</th></tr></thead><tbody><tr><td>Type declarations</td><td>Service implementations</td></tr><tr><td>Pure functions (parsers, predicates, encoders)</td><td>Functions that perform I/O</td></tr><tr><td>Error union variants</td><td>Error-handling policies (retry counts, backoff)</td></tr><tr><td>Constant tables (e.g. required permissions)</td><td>Wiring those tables into UI behavior</td></tr><tr><td>Tests for the pure functions</td><td>Tests that assert behavior the memo hasn’t pinned</td></tr><tr><td>New SQL columns (additive only)</td><td>New SQL tables that imply a new domain</td></tr></tbody></table>
 <p>The line is: <em>would the user reading the diff say “that’s what I’d have written”?</em> If yes, ship. If they’d say “wait, that’s a decision,” wait.</p>
 <aside aria-label="Tip" class="starlight-aside starlight-aside--tip"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path fill-rule="evenodd" d="M1.44 8.855v-.001l3.527-3.516c.34-.344.802-.541 1.285-.548h6.649l.947-.947c3.07-3.07 6.207-3.072 7.62-2.868a1.821 1.821 0 0 1 1.557 1.557c.204 1.413.203 4.55-2.868 7.62l-.946.946v6.649a1.845 1.845 0 0 1-.549 1.286l-3.516 3.528a1.844 1.844 0 0 1-3.11-.944l-.858-4.275-4.52-4.52-2.31-.463-1.964-.394A1.847 1.847 0 0 1 .98 10.693a1.843 1.843 0 0 1 .46-1.838Zm5.379 2.017-3.873-.776L6.32 6.733h4.638l-4.14 4.14Zm8.403-5.655c2.459-2.46 4.856-2.463 5.89-2.33.134 1.035.13 3.432-2.329 5.891l-6.71 6.71-3.561-3.56 6.71-6.711Zm-1.318 15.837-.776-3.873 4.14-4.14v4.639l-3.364 3.374Z" clip-rule="evenodd"/><path d="M9.318 18.345a.972.972 0 0 0-1.86-.561c-.482 1.435-1.687 2.204-2.934 2.619a8.22 8.22 0 0 1-1.23.302c.062-.365.157-.79.303-1.229.415-1.247 1.184-2.452 2.62-2.935a.971.971 0 1 0-.62-1.842c-.12.04-.236.084-.35.13-2.02.828-3.012 2.588-3.493 4.033a10.383 10.383 0 0 0-.51 2.845l-.001.016v.063c0 .536.434.972.97.972H2.24a7.21 7.21 0 0 0 .878-.065c.527-.063 1.248-.19 2.02-.447 1.445-.48 3.205-1.472 4.033-3.494a5.828 5.828 0 0 0 .147-.407Z"/></svg>Tip </p>  <div class="starlight-aside__content"><p>The commit message matters. State clearly: “types-only — implementation gated on memo acceptance.” Reviewers should know this is groundwork, not a service launch. Use phrasing that signals reversibility: “If you revise the memo, the types change; downstream consumers get typecheck errors to update.”</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-this-is-not">What this is NOT</h2><a class="sl-anchor-link" href="#what-this-is-not"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What this is NOT”</span></a></div>

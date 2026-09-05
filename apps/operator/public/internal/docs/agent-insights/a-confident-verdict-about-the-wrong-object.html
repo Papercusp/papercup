@@ -93,11 +93,36 @@ rediscovered from scratch, with no canonical runbook.</p>
 <p>I reproduced that zero result and nearly wrote the page cold. Then I ran <code dir="auto">ls</code> on the directory:
 <strong>622 agent-insights pages exist, four of them substantially overlapping.</strong></p>
 <p>The cause, confirmed by probing four queries that each near-title a page known to exist:</p>
-<p>| call | corpus searched | hits | agent-insights returned |
-|---|---|---|---|
-| <code dir="auto">docs:search { query, harness: 'all' }</code> | Papercusp framework docs | 801 | ✅ target page is hit #1 |
-| <code dir="auto">docs:search { query, harness: 'papercusp' }</code> | project docs, plans, briefs | 37 | ❌ <strong>zero</strong> |
-| <code dir="auto">docs:search { query }</code> (no harness) | same project-docs surface | 37 | ❌ <strong>zero</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>call</th><th>corpus searched</th><th>hits</th><th>agent-insights returned</th></tr></thead><tbody><tr><td><code dir="auto">docs:search { query, harness: 'all' }</code></td><td>Papercusp framework docs</td><td>801</td><td>✅ target page is hit #1</td></tr><tr><td><code dir="auto">docs:search { query, harness: 'papercusp' }</code></td><td>project docs, plans, briefs</td><td>37</td><td>❌ <strong>zero</strong></td></tr><tr><td><code dir="auto">docs:search { query }</code> (no harness)</td><td>same project-docs surface</td><td>37</td><td>❌ <strong>zero</strong></td></tr></tbody></table>
 <p>Naming <em>the harness you are actually in</em> silently swaps the corpus and returns a plausible ranked
 list from the wrong one. No error. No warning. A zero result that means <strong>“not on this surface”</strong>
 is indistinguishable from one that means <strong>“does not exist”</strong> — and the second reading is the one
@@ -168,29 +193,106 @@ named.</strong> Two surfaces describing the same wrong object agree perfectly.</
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-substitution-axes-and-the-probe-for-each">The four substitution axes (and the probe for each)</h2><a class="sl-anchor-link" href="#the-four-substitution-axes-and-the-probe-for-each"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four substitution axes (and the probe for each)”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="1-scope-substitution--a-different-tree-checkout-corpus-or-process">1. Scope substitution — a different tree, checkout, corpus or process</h3><a class="sl-anchor-link" href="#1-scope-substitution--a-different-tree-checkout-corpus-or-process"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1. Scope substitution — a different tree, checkout, corpus or process”</span></a></div>
-<p>| surface | judged instead | the tell | probe that answers about YOUR object |
-|---|---|---|---|
-| <code dir="auto">docs:search { harness: '&#x3C;your own slug>' }</code> | the project-docs corpus | plausible plan hits, zero insights | <code dir="auto">harness: 'all'</code>; confirm with <code dir="auto">ls</code>/<code dir="auto">grep</code> |
-| <code dir="auto">testing:run</code> / <code dir="auto">build:typecheck</code> on <code dir="auto">:3070</code> | the <strong>release</strong> checkout (root from <code dir="auto">process.cwd()</code>) | <code dir="auto">ok:true, 30/30</code> while local is <code dir="auto">2 failed</code>; <em>“test file does not exist”</em> for a file you just wrote | <code dir="auto">npm run test:file -- &#x3C;paths></code> locally and compare counts |
-| verifying a server change in the Tauri shell | a long-lived sidecar the shell restart never replaced | shell shows pre-fix, <code dir="auto">curl :3170</code> shows post-fix, same query | probe the shell’s own API <strong>and</strong> <code dir="auto">:3170</code>, compare |
-| <code dir="auto">npx tsc -p .</code> from the repo root | <strong>zero files</strong> (TS5057/5058 — there is no root tsconfig) | a <code dir="auto">grep</code> over the one-line error prints nothing, reading as clean | <code dir="auto">build:typecheck { project }</code> — it refuses a zero-file run |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>surface</th><th>judged instead</th><th>the tell</th><th>probe that answers about YOUR object</th></tr></thead><tbody><tr><td><code dir="auto">docs:search { harness: '&#x3C;your own slug>' }</code></td><td>the project-docs corpus</td><td>plausible plan hits, zero insights</td><td><code dir="auto">harness: 'all'</code>; confirm with <code dir="auto">ls</code>/<code dir="auto">grep</code></td></tr><tr><td><code dir="auto">testing:run</code> / <code dir="auto">build:typecheck</code> on <code dir="auto">:3070</code></td><td>the <strong>release</strong> checkout (root from <code dir="auto">process.cwd()</code>)</td><td><code dir="auto">ok:true, 30/30</code> while local is <code dir="auto">2 failed</code>; <em>“test file does not exist”</em> for a file you just wrote</td><td><code dir="auto">npm run test:file -- &#x3C;paths></code> locally and compare counts</td></tr><tr><td>verifying a server change in the Tauri shell</td><td>a long-lived sidecar the shell restart never replaced</td><td>shell shows pre-fix, <code dir="auto">curl :3170</code> shows post-fix, same query</td><td>probe the shell’s own API <strong>and</strong> <code dir="auto">:3170</code>, compare</td></tr><tr><td><code dir="auto">npx tsc -p .</code> from the repo root</td><td><strong>zero files</strong> (TS5057/5058 — there is no root tsconfig)</td><td>a <code dir="auto">grep</code> over the one-line error prints nothing, reading as clean</td><td><code dir="auto">build:typecheck { project }</code> — it refuses a zero-file run</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="2-time-substitution--a-different-commit-or-moment">2. Time substitution — a different commit or moment</h3><a class="sl-anchor-link" href="#2-time-substitution--a-different-commit-or-moment"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “2. Time substitution — a different commit or moment”</span></a></div>
-<p>| surface | judged instead | the tell | probe |
-|---|---|---|---|
-| green-gate verdict | the <strong>working tree</strong> it executed, stamped with <code dir="auto">HEAD</code> | the failing test’s name does not exist in the sha it blames | trust the run log’s <code dir="auto">checkpointing candidate &#x3C;sha></code> over <code dir="auto">judgingSha</code> |
-| <code dir="auto">judgingContainsPath: false</code> + <code dir="auto">missingReason: 'newer-commit'</code> | the path’s <strong>current</strong> content vs the candidate | flips false the instant any peer commits to that file — so it is permanently false on a shared file | <code dir="auto">git merge-base --is-ancestor &#x3C;commit carrying your change> &#x3C;candidate></code> |
-| a quiet-cut candidate | a candidate carrying your failing test but <strong>excluding</strong> its fix | guaranteed red, knowable ~2.9h before the verdict | confirm <strong>both</strong> commits are ancestors of the candidate |
-| <code dir="auto">positions.deployed</code> | a git fact, not a process fact | “deployed ✓” while the process serves older code | <code dir="auto">serving.startedSinceCodeChange</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>surface</th><th>judged instead</th><th>the tell</th><th>probe</th></tr></thead><tbody><tr><td>green-gate verdict</td><td>the <strong>working tree</strong> it executed, stamped with <code dir="auto">HEAD</code></td><td>the failing test’s name does not exist in the sha it blames</td><td>trust the run log’s <code dir="auto">checkpointing candidate &#x3C;sha></code> over <code dir="auto">judgingSha</code></td></tr><tr><td><code dir="auto">judgingContainsPath: false</code> + <code dir="auto">missingReason: 'newer-commit'</code></td><td>the path’s <strong>current</strong> content vs the candidate</td><td>flips false the instant any peer commits to that file — so it is permanently false on a shared file</td><td><code dir="auto">git merge-base --is-ancestor &#x3C;commit carrying your change> &#x3C;candidate></code></td></tr><tr><td>a quiet-cut candidate</td><td>a candidate carrying your failing test but <strong>excluding</strong> its fix</td><td>guaranteed red, knowable ~2.9h before the verdict</td><td>confirm <strong>both</strong> commits are ancestors of the candidate</td></tr><tr><td><code dir="auto">positions.deployed</code></td><td>a git fact, not a process fact</td><td>”deployed ✓” while the process serves older code</td><td><code dir="auto">serving.startedSinceCodeChange</code></td></tr></tbody></table>
 <p>⚠ The <code dir="auto">newer-commit</code> row cost roughly two hours during the 2026-07-27 fleet-wide <code dir="auto">facts:assert</code>
 outage: two wakes re-fired a ~55-minute gate because the tool exonerated a candidate that already
 carried the fix. <code dir="auto">uncommitted</code> and <code dir="auto">absent</code> are the honest misses; <code dir="auto">newer-commit</code> is not.</p>
 <p>⚠⚠ <strong>The gate’s whole RED LIST is a time substitution — and it is the highest-volume one.</strong> The gate
 judges a <strong>frozen candidate sha</strong>; the shared tree keeps moving under a whole fleet. So by the time
 you read a red list, most of it can already be fixed. Measured 2026-08-02, twice in one hour:</p>
-<p>| candidate | reds listed | genuinely still red |
-|---|---|---|
-| <code dir="auto">f5c6be24</code> | 17 | 3 |
-| <code dir="auto">1a9e8a1f8e</code> (cut 06:21:42Z) | 5 | 1 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>candidate</th><th>reds listed</th><th>genuinely still red</th></tr></thead><tbody><tr><td><code dir="auto">f5c6be24</code></td><td>17</td><td>3</td></tr><tr><td><code dir="auto">1a9e8a1f8e</code> (cut 06:21:42Z)</td><td>5</td><td>1</td></tr></tbody></table>
 <p>Twelve files predicted “already fixed in tree” from the first list were confirmed <strong>12/12</strong> when the
 next candidate simply dropped every one of them; a peer independently re-ran all five of the second
 list at tip and found four already passing. <strong>Default to “probably already fixed” and prove
@@ -208,25 +310,100 @@ never re-run anything at tip, and with the <code dir="auto">[]</code> simply wro
 changed in <code dir="auto">candidate..tip</code>). Filed as <code dir="auto">EI-19324146335802876</code>.</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="3-population-substitution--a-subset-not-the-whole-set">3. Population substitution — a subset, not the whole set</h3><a class="sl-anchor-link" href="#3-population-substitution--a-subset-not-the-whole-set"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3. Population substitution — a subset, not the whole set”</span></a></div>
-<p>| surface | judged instead | the tell | probe |
-|---|---|---|---|
-| a revert / “demonstrated teeth” test | the one path the test drives | only one of N assertions fired | read <em>which</em> assertion fired; parameterise across all outcomes |
-| <code dir="auto">lint:tsc --files=…</code> | only the files you named | stale construction sites elsewhere stay silently broken | after changing a shared interface, grep the <strong>type name</strong> tree-wide |
-| <code dir="auto">test:affected</code> | a type-blind subset (vitest never runs <code dir="auto">tsc</code>) | green run, type-broken tree, gate reds hours later | <code dir="auto">npm run lint:tsc -- --files=…</code>; <code dir="auto">build:typecheck</code> outside operator-core |
-| <code dir="auto">test:affected</code> exit code | the wrapper’s exit, not the suite’s | notification says <code dir="auto">completed exit 0</code>; the log says <code dir="auto">1 non-quarantined task(s) failed</code> | read the run log, never the exit code alone |
-| <code dir="auto">tauri-agent-tools screenshot</code> | a <strong>blank</strong> window grab, exit 0, path printed | image is empty while the DOM is demonstrably alive | open the image; assert via <code dir="auto">check</code>/DOM, never a path |
-| <code dir="auto">work_items:claimable</code> floors vs <code dir="auto">status='open'</code> | ~13× overcount | — | <code dir="auto">work_items:claimable { harness }</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>surface</th><th>judged instead</th><th>the tell</th><th>probe</th></tr></thead><tbody><tr><td>a revert / “demonstrated teeth” test</td><td>the one path the test drives</td><td>only one of N assertions fired</td><td>read <em>which</em> assertion fired; parameterise across all outcomes</td></tr><tr><td><code dir="auto">lint:tsc --files=…</code></td><td>only the files you named</td><td>stale construction sites elsewhere stay silently broken</td><td>after changing a shared interface, grep the <strong>type name</strong> tree-wide</td></tr><tr><td><code dir="auto">test:affected</code></td><td>a type-blind subset (vitest never runs <code dir="auto">tsc</code>)</td><td>green run, type-broken tree, gate reds hours later</td><td><code dir="auto">npm run lint:tsc -- --files=…</code>; <code dir="auto">build:typecheck</code> outside operator-core</td></tr><tr><td><code dir="auto">test:affected</code> exit code</td><td>the wrapper’s exit, not the suite’s</td><td>notification says <code dir="auto">completed exit 0</code>; the log says <code dir="auto">1 non-quarantined task(s) failed</code></td><td>read the run log, never the exit code alone</td></tr><tr><td><code dir="auto">tauri-agent-tools screenshot</code></td><td>a <strong>blank</strong> window grab, exit 0, path printed</td><td>image is empty while the DOM is demonstrably alive</td><td>open the image; assert via <code dir="auto">check</code>/DOM, never a path</td></tr><tr><td><code dir="auto">work_items:claimable</code> floors vs <code dir="auto">status='open'</code></td><td>~13× overcount</td><td>—</td><td><code dir="auto">work_items:claimable { harness }</code></td></tr></tbody></table>
 <p>The screenshot row has a second half worth stating: the completion-integrity guard accepted the
 screenshot <strong>path</strong> as proof. A guard that checks an artifact <em>exists</em> has substituted the artifact’s
 existence for its content — the same substitution, one layer up.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="4-identity-substitution--someone-elses-work-not-yours">4. Identity substitution — someone else’s work, not yours</h3><a class="sl-anchor-link" href="#4-identity-substitution--someone-elses-work-not-yours"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “4. Identity substitution — someone else’s work, not yours”</span></a></div>
-<p>| surface | judged instead | the tell | probe |
-|---|---|---|---|
-| a failing test’s <strong>name</strong> | what the test was written to check | the name points squarely at another agent’s area | read the matcher — a swallowing <code dir="auto">catch</code> turns a broken assertion into a plausible missing-write |
-| <code dir="auto">git blame</code> | git-sync’s single squash identity | every line attributed to one committer | the commissioning work-item / plan-item; else say <strong>“not attributable”</strong> |
-| <code dir="auto">lint:tsc --mine</code> | every dirty file in the shared tree | <em>“1 file(s) YOU changed”</em> for a file you never opened | <code dir="auto">--files=&#x3C;explicit list></code> |
-| <code dir="auto">pgrep -f &#x3C;script></code> | any peer running the identical command | — | your own PID, or <code dir="auto">capability:bash</code> + the checkpointed <code dir="auto">bash_id</code> |
-| <code dir="auto">dev:pg_query</code> on a bigint id | a JSON-<strong>rounded</strong> id that matches nothing | <code dir="auto">rowCount: 0</code>, which reads as the legitimate answer <em>“stale debris — close it”</em> | cast to text / compare as text |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>surface</th><th>judged instead</th><th>the tell</th><th>probe</th></tr></thead><tbody><tr><td>a failing test’s <strong>name</strong></td><td>what the test was written to check</td><td>the name points squarely at another agent’s area</td><td>read the matcher — a swallowing <code dir="auto">catch</code> turns a broken assertion into a plausible missing-write</td></tr><tr><td><code dir="auto">git blame</code></td><td>git-sync’s single squash identity</td><td>every line attributed to one committer</td><td>the commissioning work-item / plan-item; else say <strong>“not attributable”</strong></td></tr><tr><td><code dir="auto">lint:tsc --mine</code></td><td>every dirty file in the shared tree</td><td><em>”1 file(s) YOU changed”</em> for a file you never opened</td><td><code dir="auto">--files=&#x3C;explicit list></code></td></tr><tr><td><code dir="auto">pgrep -f &#x3C;script></code></td><td>any peer running the identical command</td><td>—</td><td>your own PID, or <code dir="auto">capability:bash</code> + the checkpointed <code dir="auto">bash_id</code></td></tr><tr><td><code dir="auto">dev:pg_query</code> on a bigint id</td><td>a JSON-<strong>rounded</strong> id that matches nothing</td><td><code dir="auto">rowCount: 0</code>, which reads as the legitimate answer <em>“stale debris — close it”</em></td><td>cast to text / compare as text</td></tr></tbody></table>
 <p>The <code dir="auto">git blame</code> row is not hypothetical: trusting it once sent a <strong>false blocker accusation to the
 owner</strong> (“confirmed by git blame: YOUR migration”) for an agent’s own incomplete work.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-asymmetry-a-green-is-worth-less-than-a-red">The asymmetry: a green is worth less than a red</h2><a class="sl-anchor-link" href="#the-asymmetry-a-green-is-worth-less-than-a-red"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The asymmetry: a green is worth less than a red”</span></a></div>

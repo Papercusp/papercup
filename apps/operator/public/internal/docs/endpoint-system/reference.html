@@ -78,19 +78,72 @@
 <p>If <code dir="auto">expose.*</code> is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one. (<code dir="auto">expose.slash</code> defaults ON whenever the tool is MCP-exposed — it is a catalog projection, not a transport; see <a href="/internal/docs/endpoint-system/transports#slash-exposure--the-tool-catalog-as-slash-commands">Transports → Slash exposure</a>.)</p>
 <p>Built-in <code dir="auto">defineTool</code> calls accept the same fields as TS/Zod (<code dir="auto">state: z.object({...})</code>, <code dir="auto">events: { delta: z.string(), ... }</code>, etc.). The <code dir="auto">RoleToolDefinitionInput</code> shape is the canonical authority — see <code dir="auto">libs/generic/tooldef/src/types.ts</code>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="error-codes">Error codes</h2><a class="sl-anchor-link" href="#error-codes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Error codes”</span></a></div>
-<p>| Code | HTTP | Meaning |
-|---|---|---|
-| <code dir="auto">unauthorized</code> | 401 | Built-in tool, no bearer / invalid bearer |
-| <code dir="auto">role_not_allowed</code> | 403 | Plugin tool, role not in allowlist |
-| <code dir="auto">missing_capability</code> | 403 | Built-in tool, principal missing required capability |
-| <code dir="auto">quota_exceeded</code> | 429 | Window count ≥ limit |
-| <code dir="auto">invalid_input</code> | 400 | Function threw a typed input-validation error |
-| <code dir="auto">timeout</code> | 504 | AbortController fired before function returned |
-| <code dir="auto">unknown_tool</code> | 404 | No projection registered at this path/name |
-| <code dir="auto">method_not_allowed</code> | 405 | HTTP method not in <code dir="auto">expose.http.methods</code> |
-| <code dir="auto">handler_error</code> | 500 | Function threw an unhandled error |
-| <code dir="auto">invalid_request_context</code> | 400 | MCP call missing required URL spawn params |
-| <code dir="auto">invalid_bearer</code> | 401 | (MCP) Bearer didn’t resolve to a principal |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Code</th><th>HTTP</th><th>Meaning</th></tr></thead><tbody><tr><td><code dir="auto">unauthorized</code></td><td>401</td><td>Built-in tool, no bearer / invalid bearer</td></tr><tr><td><code dir="auto">role_not_allowed</code></td><td>403</td><td>Plugin tool, role not in allowlist</td></tr><tr><td><code dir="auto">missing_capability</code></td><td>403</td><td>Built-in tool, principal missing required capability</td></tr><tr><td><code dir="auto">quota_exceeded</code></td><td>429</td><td>Window count ≥ limit</td></tr><tr><td><code dir="auto">invalid_input</code></td><td>400</td><td>Function threw a typed input-validation error</td></tr><tr><td><code dir="auto">timeout</code></td><td>504</td><td>AbortController fired before function returned</td></tr><tr><td><code dir="auto">unknown_tool</code></td><td>404</td><td>No projection registered at this path/name</td></tr><tr><td><code dir="auto">method_not_allowed</code></td><td>405</td><td>HTTP method not in <code dir="auto">expose.http.methods</code></td></tr><tr><td><code dir="auto">handler_error</code></td><td>500</td><td>Function threw an unhandled error</td></tr><tr><td><code dir="auto">invalid_request_context</code></td><td>400</td><td>MCP call missing required URL spawn params</td></tr><tr><td><code dir="auto">invalid_bearer</code></td><td>401</td><td>(MCP) Bearer didn’t resolve to a principal</td></tr></tbody></table>
 <p>For MCP transport, errors return <code dir="auto">{ result: { content: [{ type: 'text', text: 'code: message' }], isError: true } }</code> rather than HTTP status codes. The codes are the same.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="capability-conventions">Capability conventions</h2><a class="sl-anchor-link" href="#capability-conventions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Capability conventions”</span></a></div>
 <p>Capability strings should namespace by intent. Existing patterns:</p>
@@ -105,17 +158,62 @@
 <p>Don’t consolidate capabilities into a single <code dir="auto">secrets:*</code> or <code dir="auto">compute:*</code> namespace. Granular grants exist so a future principal/auth model can selectively allow <code dir="auto">secrets:read:FIRECRAWL_API_KEY</code> without granting access to all secrets.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="role-names">Role names</h2><a class="sl-anchor-link" href="#role-names"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Role names”</span></a></div>
 <p>Agents pass one of these as the <code dir="auto">?role=</code> URL param:</p>
-<p>| Role | Quota window | Typical use |
-|---|---|---|
-| <code dir="auto">worker</code> | <code dir="auto">chunk:&#x3C;id></code> | Implements one feature per chunk |
-| <code dir="auto">validator</code> | <code dir="auto">run:&#x3C;id></code> | Tests the worker’s output |
-| <code dir="auto">scoper</code> | <code dir="auto">run:&#x3C;id></code> | Generates feature plans + validation contracts |
-| <code dir="auto">architect</code> | <code dir="auto">run:&#x3C;id></code> | Routes work, owns the loop |
-| <code dir="auto">reviewer</code> | <code dir="auto">run:&#x3C;id></code> | Code review pass |
-| <code dir="auto">debugger</code> | <code dir="auto">run:&#x3C;id></code> | Debugs failing validations |
-| <code dir="auto">operator</code> | <code dir="auto">run:&#x3C;id></code> | UI-mode reads/writes |
-| <code dir="auto">documenter</code> | <code dir="auto">run:&#x3C;id></code> | Doc generation |
-| <code dir="auto">curator</code> | <code dir="auto">run:&#x3C;id></code> | Curates artifacts |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Role</th><th>Quota window</th><th>Typical use</th></tr></thead><tbody><tr><td><code dir="auto">worker</code></td><td><code dir="auto">chunk:&#x3C;id></code></td><td>Implements one feature per chunk</td></tr><tr><td><code dir="auto">validator</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Tests the worker’s output</td></tr><tr><td><code dir="auto">scoper</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Generates feature plans + validation contracts</td></tr><tr><td><code dir="auto">architect</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Routes work, owns the loop</td></tr><tr><td><code dir="auto">reviewer</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Code review pass</td></tr><tr><td><code dir="auto">debugger</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Debugs failing validations</td></tr><tr><td><code dir="auto">operator</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>UI-mode reads/writes</td></tr><tr><td><code dir="auto">documenter</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Doc generation</td></tr><tr><td><code dir="auto">curator</code></td><td><code dir="auto">run:&#x3C;id></code></td><td>Curates artifacts</td></tr></tbody></table>
 <p>The framework doesn’t care if you invent a new role — <code dir="auto">tool.roles[]</code> is a string list, not a typed enum at runtime. But sticking to the established set keeps quotas comparable across runs.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="window-keys">Window keys</h2><a class="sl-anchor-link" href="#window-keys"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Window keys”</span></a></div>
 <p><code dir="auto">window_key</code> (and the quota ceiling) in <code dir="auto">tool_invocations</code> is computed by the
@@ -138,82 +236,309 @@ is run-scoped / <code dir="auto">perRun</code>; Papercusp’s policy (<code dir=
 deps + re-exports the engine surface). Paths below reflect that split.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h3"><h3 id="dispatcher--projection--transports">Dispatcher / projection / transports</h3><a class="sl-anchor-link" href="#dispatcher--projection--transports"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Dispatcher / projection / transports”</span></a></div>
-<p>| Concern | Module |
-|---|---|
-| Projection registry (3 Maps) | <code dir="auto">libs/generic/tooldef/src/tool-projection.ts</code> |
-| Built-in <code dir="auto">defineTool</code> + auto-projection | <code dir="auto">libs/generic/tooldef/src/define-tool.ts</code> |
-| Plugin loader + <code dir="auto">registerPluginTools</code> | <code dir="auto">packages/plugin-loader/src/index.ts</code> |
-| Plugin host + lifecycle | <code dir="auto">packages/operator-core/lib/plugin-host-runtime.ts</code> |
-| HTTP catch-all (plugins) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts</code> |
-| HTTP catch-all (built-ins) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts</code> |
-| MCP transport (both pipelines) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts</code> |
-| Dispatcher (gates + record) | <code dir="auto">libs/generic/tooldef/src/dispatch-projected.ts</code> (+ <code dir="auto">dispatch-stack.ts</code>) |
-| HTTP request → context builder | <code dir="auto">libs/generic/tooldef-http/src/http-projection.ts</code> |
-| Replay buffer (Last-Event-ID resume) | <code dir="auto">libs/generic/tooldef/src/replay-buffer.ts</code> |
-| Spawn-mcp <code dir="auto">.mcp.json</code> writer | <code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-mcp.ts</code> |
-| Per-spawn URL → ctx parser | <code dir="auto">packages/agent-mcp/src/spawn-context.ts</code> |
-| Host deps (PG quota/telemetry, policies) | <code dir="auto">packages/operator-core/lib/projected-tool-deps.ts</code> + <code dir="auto">packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts</code> |
-| Shared subprocess + secret impls | <code dir="auto">packages/operator-core/lib/plugin-spawn-impl.ts</code> |
-| Harness path resolver (PG-backed) | <code dir="auto">packages/operator-core/lib/resolve-harness-paths.ts</code> |
-| IPC adapter (Unix socket / named pipe) | <code dir="auto">libs/generic/ipc-endpoint-server/</code> + <code dir="auto">packages/operator-core/lib/endpoint-ipc/</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Module</th></tr></thead><tbody><tr><td>Projection registry (3 Maps)</td><td><code dir="auto">libs/generic/tooldef/src/tool-projection.ts</code></td></tr><tr><td>Built-in <code dir="auto">defineTool</code> + auto-projection</td><td><code dir="auto">libs/generic/tooldef/src/define-tool.ts</code></td></tr><tr><td>Plugin loader + <code dir="auto">registerPluginTools</code></td><td><code dir="auto">packages/plugin-loader/src/index.ts</code></td></tr><tr><td>Plugin host + lifecycle</td><td><code dir="auto">packages/operator-core/lib/plugin-host-runtime.ts</code></td></tr><tr><td>HTTP catch-all (plugins)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts</code></td></tr><tr><td>HTTP catch-all (built-ins)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts</code></td></tr><tr><td>MCP transport (both pipelines)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts</code></td></tr><tr><td>Dispatcher (gates + record)</td><td><code dir="auto">libs/generic/tooldef/src/dispatch-projected.ts</code> (+ <code dir="auto">dispatch-stack.ts</code>)</td></tr><tr><td>HTTP request → context builder</td><td><code dir="auto">libs/generic/tooldef-http/src/http-projection.ts</code></td></tr><tr><td>Replay buffer (Last-Event-ID resume)</td><td><code dir="auto">libs/generic/tooldef/src/replay-buffer.ts</code></td></tr><tr><td>Spawn-mcp <code dir="auto">.mcp.json</code> writer</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-mcp.ts</code></td></tr><tr><td>Per-spawn URL → ctx parser</td><td><code dir="auto">packages/agent-mcp/src/spawn-context.ts</code></td></tr><tr><td>Host deps (PG quota/telemetry, policies)</td><td><code dir="auto">packages/operator-core/lib/projected-tool-deps.ts</code> + <code dir="auto">packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts</code></td></tr><tr><td>Shared subprocess + secret impls</td><td><code dir="auto">packages/operator-core/lib/plugin-spawn-impl.ts</code></td></tr><tr><td>Harness path resolver (PG-backed)</td><td><code dir="auto">packages/operator-core/lib/resolve-harness-paths.ts</code></td></tr><tr><td>IPC adapter (Unix socket / named pipe)</td><td><code dir="auto">libs/generic/ipc-endpoint-server/</code> + <code dir="auto">packages/operator-core/lib/endpoint-ipc/</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="cards--state-channel-bespoke-card-improvements-arc">Cards + state channel (bespoke-card-improvements arc)</h3><a class="sl-anchor-link" href="#cards--state-channel-bespoke-card-improvements-arc"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cards + state channel (bespoke-card-improvements arc)”</span></a></div>
-<p>| Concern | Module |
-|---|---|
-| State channel (per-run snapshot map + subscribers) | <code dir="auto">libs/generic/tooldef/src/state-channel.ts</code> |
-| Card correlator (PENDING map + deferred lifecycle) | <code dir="auto">libs/generic/tooldef/src/card-correlator.ts</code> |
-| <code dir="auto">ctx.askUser</code> state machine + install | <code dir="auto">libs/generic/tooldef/src/card-correlator.ts</code> (+ install site in <code dir="auto">dispatch-stack.ts</code>) |
-| Workspace-switch lifecycle hook | <code dir="auto">libs/generic/tooldef/src/workspace-lifecycle.ts</code> |
-| State-snapshot SSE route | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/state-snapshot.ts</code> |
-| Card-response endpoint | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/card-response.ts</code> |
-| Run-cancel endpoint | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/run-cancel.ts</code> |
-| Workspace-switch endpoint (fires lifecycle hook) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/workspaces/switch.ts</code> |
-| Rate-limit bucket (30 RPS per session user) | <code dir="auto">packages/operator-core/lib/card-response-rate-limit.ts</code> |
-| Client-side state-snapshot hook | <code dir="auto">apps/operator/lib/use-state-snapshots.ts</code> |
-| Client-side card renderers (radio/checkbox/text/date/slider) | <code dir="auto">apps/operator/app/_components/chat/{AskChoiceCard,InputCard,PendingCardsBar,LocalCardHost}.tsx</code> |
-| <code dir="auto">askUserLocal</code> client transport | <code dir="auto">apps/operator/lib/chat-cards/ask-user-local.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Module</th></tr></thead><tbody><tr><td>State channel (per-run snapshot map + subscribers)</td><td><code dir="auto">libs/generic/tooldef/src/state-channel.ts</code></td></tr><tr><td>Card correlator (PENDING map + deferred lifecycle)</td><td><code dir="auto">libs/generic/tooldef/src/card-correlator.ts</code></td></tr><tr><td><code dir="auto">ctx.askUser</code> state machine + install</td><td><code dir="auto">libs/generic/tooldef/src/card-correlator.ts</code> (+ install site in <code dir="auto">dispatch-stack.ts</code>)</td></tr><tr><td>Workspace-switch lifecycle hook</td><td><code dir="auto">libs/generic/tooldef/src/workspace-lifecycle.ts</code></td></tr><tr><td>State-snapshot SSE route</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/state-snapshot.ts</code></td></tr><tr><td>Card-response endpoint</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/card-response.ts</code></td></tr><tr><td>Run-cancel endpoint</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/operator/run-cancel.ts</code></td></tr><tr><td>Workspace-switch endpoint (fires lifecycle hook)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/workspaces/switch.ts</code></td></tr><tr><td>Rate-limit bucket (30 RPS per session user)</td><td><code dir="auto">packages/operator-core/lib/card-response-rate-limit.ts</code></td></tr><tr><td>Client-side state-snapshot hook</td><td><code dir="auto">apps/operator/lib/use-state-snapshots.ts</code></td></tr><tr><td>Client-side card renderers (radio/checkbox/text/date/slider)</td><td><code dir="auto">apps/operator/app/_components/chat/{AskChoiceCard,InputCard,PendingCardsBar,LocalCardHost}.tsx</code></td></tr><tr><td><code dir="auto">askUserLocal</code> client transport</td><td><code dir="auto">apps/operator/lib/chat-cards/ask-user-local.ts</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="secrets--telemetry--catalog">Secrets / telemetry / catalog</h3><a class="sl-anchor-link" href="#secrets--telemetry--catalog"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Secrets / telemetry / catalog”</span></a></div>
-<p>| Concern | Module |
-|---|---|
-| Search-provider key reader (orchestrator-side) | <code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts</code> |
-| Search-provider key reader (operator-side) | <code dir="auto">packages/operator-core/lib/search-provider-credentials.ts</code> |
-| Telemetry schema (<code dir="auto">harness_shared.tool_invocations</code>, incl. <code dir="auto">event_count</code>) | <code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (the old <code dir="auto">046</code>/<code dir="auto">066</code> migrations were squashed into the baseline; see <code dir="auto">self-contained-migration-baseline-2026-06-02</code>) |
-| Search-provider keys schema (<code dir="auto">operator_search_provider_credentials</code>) | <code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (squashed from old <code dir="auto">047</code>) |
-| <code dir="auto">system:operator</code> <code dir="auto">chat:write</code> grant (new principals) | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts</code> (in the default capability list) |
-| <code dir="auto">system:operator</code> <code dir="auto">chat:write</code> backfill (one-time, pre-existing principals) | <code dir="auto">libs/papercusp/libs/db/sql/archive/067-operator-chat-write-cap.sql</code> (a data <code dir="auto">UPDATE</code>, <strong>not</strong> in the baseline — a row backfill isn’t schema, so the squash didn’t capture it) |
-| Read-only catalog page | <code dir="auto">apps/operator/app/settings/plugins/tools/page.tsx</code> (served at <code dir="auto">/settings/plugins/tools</code>) |
-| Host status / refresh endpoint | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/host-refresh.ts</code> |
-| Tool catalog endpoint | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/tools.ts</code> |
-| Provision system principals | <code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts</code> (calls <code dir="auto">provisionSystemPrincipal</code> in <code dir="auto">packages/agent-mcp/src/provisioning.ts</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Module</th></tr></thead><tbody><tr><td>Search-provider key reader (orchestrator-side)</td><td><code dir="auto">libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts</code></td></tr><tr><td>Search-provider key reader (operator-side)</td><td><code dir="auto">packages/operator-core/lib/search-provider-credentials.ts</code></td></tr><tr><td>Telemetry schema (<code dir="auto">harness_shared.tool_invocations</code>, incl. <code dir="auto">event_count</code>)</td><td><code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (the old <code dir="auto">046</code>/<code dir="auto">066</code> migrations were squashed into the baseline; see <code dir="auto">self-contained-migration-baseline-2026-06-02</code>)</td></tr><tr><td>Search-provider keys schema (<code dir="auto">operator_search_provider_credentials</code>)</td><td><code dir="auto">libs/papercusp/libs/db/sql/000-baseline.sql</code> (squashed from old <code dir="auto">047</code>)</td></tr><tr><td><code dir="auto">system:operator</code> <code dir="auto">chat:write</code> grant (new principals)</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts</code> (in the default capability list)</td></tr><tr><td><code dir="auto">system:operator</code> <code dir="auto">chat:write</code> backfill (one-time, pre-existing principals)</td><td><code dir="auto">libs/papercusp/libs/db/sql/archive/067-operator-chat-write-cap.sql</code> (a data <code dir="auto">UPDATE</code>, <strong>not</strong> in the baseline — a row backfill isn’t schema, so the squash didn’t capture it)</td></tr><tr><td>Read-only catalog page</td><td><code dir="auto">apps/operator/app/settings/plugins/tools/page.tsx</code> (served at <code dir="auto">/settings/plugins/tools</code>)</td></tr><tr><td>Host status / refresh endpoint</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/host-refresh.ts</code></td></tr><tr><td>Tool catalog endpoint</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/plugins/tools.ts</code></td></tr><tr><td>Provision system principals</td><td><code dir="auto">packages/operator-core/lib/endpoint-route/routes/agent-mcp/provision.ts</code> (calls <code dir="auto">provisionSystemPrincipal</code> in <code dir="auto">packages/agent-mcp/src/provisioning.ts</code>)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="url-spawn-params">URL spawn params</h2><a class="sl-anchor-link" href="#url-spawn-params"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “URL spawn params”</span></a></div>
 <p>Read by <code dir="auto">buildHttpSpawnContext</code> in <code dir="auto">http-projection.ts</code> and the equivalent on the MCP route.</p>
-<p>| Query param | Header | Field |
-|---|---|---|
-| <code dir="auto">workspace</code> | <code dir="auto">X-Papercusp-Workspace</code> | <code dir="auto">ctx.workspaceId</code> |
-| <code dir="auto">harness</code> | <code dir="auto">X-Papercusp-Harness</code> | <code dir="auto">ctx.harnessSlug</code> (also drives <code dir="auto">projectDir</code> resolution) |
-| <code dir="auto">role</code> | <code dir="auto">X-Papercusp-Role</code> | <code dir="auto">ctx.role</code> |
-| <code dir="auto">feature</code> | <code dir="auto">X-Papercusp-Feature</code> | <code dir="auto">ctx.featureId</code> |
-| <code dir="auto">chunk</code> | <code dir="auto">X-Papercusp-Chunk</code> | <code dir="auto">ctx.chunkId</code> |
-| <code dir="auto">run</code> | <code dir="auto">X-Papercusp-Run</code> | <code dir="auto">ctx.runId</code> |
-| <code dir="auto">spawn</code> | <code dir="auto">X-Papercusp-Spawn</code> | <code dir="auto">ctx.spawnId</code> |
-| <code dir="auto">parent_spawn</code> | <code dir="auto">X-Papercusp-Parent-Spawn</code> | <code dir="auto">ctx.parentSpawnId</code> |
-| <code dir="auto">client</code> | <code dir="auto">X-Papercusp-Client</code> | <code dir="auto">ctx.uiClientId</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Query param</th><th>Header</th><th>Field</th></tr></thead><tbody><tr><td><code dir="auto">workspace</code></td><td><code dir="auto">X-Papercusp-Workspace</code></td><td><code dir="auto">ctx.workspaceId</code></td></tr><tr><td><code dir="auto">harness</code></td><td><code dir="auto">X-Papercusp-Harness</code></td><td><code dir="auto">ctx.harnessSlug</code> (also drives <code dir="auto">projectDir</code> resolution)</td></tr><tr><td><code dir="auto">role</code></td><td><code dir="auto">X-Papercusp-Role</code></td><td><code dir="auto">ctx.role</code></td></tr><tr><td><code dir="auto">feature</code></td><td><code dir="auto">X-Papercusp-Feature</code></td><td><code dir="auto">ctx.featureId</code></td></tr><tr><td><code dir="auto">chunk</code></td><td><code dir="auto">X-Papercusp-Chunk</code></td><td><code dir="auto">ctx.chunkId</code></td></tr><tr><td><code dir="auto">run</code></td><td><code dir="auto">X-Papercusp-Run</code></td><td><code dir="auto">ctx.runId</code></td></tr><tr><td><code dir="auto">spawn</code></td><td><code dir="auto">X-Papercusp-Spawn</code></td><td><code dir="auto">ctx.spawnId</code></td></tr><tr><td><code dir="auto">parent_spawn</code></td><td><code dir="auto">X-Papercusp-Parent-Spawn</code></td><td><code dir="auto">ctx.parentSpawnId</code></td></tr><tr><td><code dir="auto">client</code></td><td><code dir="auto">X-Papercusp-Client</code></td><td><code dir="auto">ctx.uiClientId</code></td></tr></tbody></table>
 <p>Header form takes precedence over query form when both are present. The orchestrator uses query form when writing per-spawn <code dir="auto">.mcp.json</code> because mcp-handler clients don’t have a clean way to attach custom headers.</p>
 <p><code dir="auto">client</code> carries the per-session SID used for coordination ownership (locks, plan edits, <code dir="auto">agent_chats</code>). It is required for superuser / power-user identity attribution: a client-less superuser/power-user call reaches <code dir="auto">resolveAgentIdentity</code> with <code dir="auto">uiClientId=null</code> and <strong>throws</strong>, so identity-resolving tools fail for those callers. It follows the same header-first precedence as the others (the <code dir="auto">X-Papercusp-Client</code> header overrides a static <code dir="auto">?client=</code> query value).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="operations-endpoints">Operations endpoints</h2><a class="sl-anchor-link" href="#operations-endpoints"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Operations endpoints”</span></a></div>
-<p>| Endpoint | Purpose |
-|---|---|
-| <code dir="auto">GET /api/plugins/tools</code> | List every projected tool. Used by <code dir="auto">/settings/plugins/tools</code>. |
-| <code dir="auto">POST /api/plugins/host/refresh</code> | Re-run discovery. Returns full host status. |
-| <code dir="auto">GET /api/credentials/search-providers</code> | Read masked search-provider keys + provider list (UI-only). |
-| <code dir="auto">POST /api/credentials/search-providers</code> | Update keys (UI-only). |
-| <code dir="auto">POST /api/agent-tools/&#x3C;scope>/&#x3C;verb></code> | Built-in tool catch-all. |
-| <code dir="auto">POST /api/plugins/&#x3C;plugin>/&#x3C;tool></code> | Plugin tool catch-all (HTTP). |
-| <code dir="auto">GET/POST /api/mcp</code> | MCP transport (Streamable HTTP). |
-| <code dir="auto">GET /api/sse</code> | MCP transport (SSE). Same handler. |
-| <code dir="auto">GET /api/operator/state-snapshot</code> | SSE stream of <code dir="auto">state-snapshot</code> events for the active workspace. Carries <code dir="auto">openCards</code> (from <code dir="auto">ctx.askUser</code>) + <code dir="auto">toolState</code> (from <code dir="auto">ctx.publishState</code>). Session-cookie required (401). |
-| <code dir="auto">POST /api/operator/conversations/:id/card-response</code> | Resolves a pending <code dir="auto">ctx.askUser</code> card. Body: <code dir="auto">{ correlationId, action: 'submit'\|'decline'\|'cancel', workspaceId, payload?, reason? }</code>. 30 RPS per session user. 404 on cross-workspace replay (defense-in-depth). |
-| <code dir="auto">POST /api/operator/conversations/:id/run-cancel</code> | Cancels every pending card under a <code dir="auto">runId</code>. Body: <code dir="auto">{ runId, workspaceId }</code>. Same auth + rate limit + cross-workspace gate as <code dir="auto">/card-response</code>. |
-| <code dir="auto">POST /api/workspaces/switch</code> | Body <code dir="auto">{ id }</code>. Captures <code dir="auto">leaving = reg.current</code>, writes new current, fires <code dir="auto">dispatchWorkspaceSwitch(leaving)</code> — drops state snapshots + cancels every pending card under the leaving workspace. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead><tbody><tr><td><code dir="auto">GET /api/plugins/tools</code></td><td>List every projected tool. Used by <code dir="auto">/settings/plugins/tools</code>.</td></tr><tr><td><code dir="auto">POST /api/plugins/host/refresh</code></td><td>Re-run discovery. Returns full host status.</td></tr><tr><td><code dir="auto">GET /api/credentials/search-providers</code></td><td>Read masked search-provider keys + provider list (UI-only).</td></tr><tr><td><code dir="auto">POST /api/credentials/search-providers</code></td><td>Update keys (UI-only).</td></tr><tr><td><code dir="auto">POST /api/agent-tools/&#x3C;scope>/&#x3C;verb></code></td><td>Built-in tool catch-all.</td></tr><tr><td><code dir="auto">POST /api/plugins/&#x3C;plugin>/&#x3C;tool></code></td><td>Plugin tool catch-all (HTTP).</td></tr><tr><td><code dir="auto">GET/POST /api/mcp</code></td><td>MCP transport (Streamable HTTP).</td></tr><tr><td><code dir="auto">GET /api/sse</code></td><td>MCP transport (SSE). Same handler.</td></tr><tr><td><code dir="auto">GET /api/operator/state-snapshot</code></td><td>SSE stream of <code dir="auto">state-snapshot</code> events for the active workspace. Carries <code dir="auto">openCards</code> (from <code dir="auto">ctx.askUser</code>) + <code dir="auto">toolState</code> (from <code dir="auto">ctx.publishState</code>). Session-cookie required (401).</td></tr><tr><td><code dir="auto">POST /api/operator/conversations/:id/card-response</code></td><td>Resolves a pending <code dir="auto">ctx.askUser</code> card. Body: <code dir="auto">{ correlationId, action: 'submit'|'decline'|'cancel', workspaceId, payload?, reason? }</code>. 30 RPS per session user. 404 on cross-workspace replay (defense-in-depth).</td></tr><tr><td><code dir="auto">POST /api/operator/conversations/:id/run-cancel</code></td><td>Cancels every pending card under a <code dir="auto">runId</code>. Body: <code dir="auto">{ runId, workspaceId }</code>. Same auth + rate limit + cross-workspace gate as <code dir="auto">/card-response</code>.</td></tr><tr><td><code dir="auto">POST /api/workspaces/switch</code></td><td>Body <code dir="auto">{ id }</code>. Captures <code dir="auto">leaving = reg.current</code>, writes new current, fires <code dir="auto">dispatchWorkspaceSwitch(leaving)</code> — drops state snapshots + cancels every pending card under the leaving workspace.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="result-envelope">Result envelope</h2><a class="sl-anchor-link" href="#result-envelope"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Result envelope”</span></a></div>
 <p>Tool functions return <code dir="auto">ToolResult</code>:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="ts"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">interface</span><span style="--0:#D6DEEB;--1:#403F53"> ToolResult {</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">content</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#FFCB8B;--1:#111111">Array</span><span style="--0:#D6DEEB;--1:#403F53">&#x3C;</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> { type</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">text</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">; text</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53"> }</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> { type</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">image</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">; data</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53">; mimeType</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53"> }</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#D6DEEB;--1:#403F53"> { type</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">resource</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">; resource</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> { uri</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53">; </span><span style="--0:#7FDBCA;--1:#096E72">...</span><span style="--0:#FFCB8B;--1:#111111">etc</span><span style="--0:#D6DEEB;--1:#403F53"> } }</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">>;</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">isError</span><span style="--0:#7FDBCA;--1:#096E72">?:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">boolean</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="interface ToolResult {  content: Array<    | { type: &#x27;text&#x27;; text: string }    | { type: &#x27;image&#x27;; data: string; mimeType: string }    | { type: &#x27;resource&#x27;; resource: { uri: string; ...etc } }  >;  isError?: boolean;}"><div></div></button></div></figure></div>

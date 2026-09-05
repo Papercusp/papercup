@@ -112,11 +112,32 @@ shrinks (the ratchet) while <code dir="auto">VERDICTS</code> accumulates the his
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-verdicts">The three verdicts</h2><a class="sl-anchor-link" href="#the-three-verdicts"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three verdicts”</span></a></div>
 <p>They are deliberately non-overlapping, and they are D-038 axis 5 (“one derivation, many
 lenses”) applied per tool.</p>
-<p>| verdict | meaning | what happens |
-|---|---|---|
-| <code dir="auto">cell</code> | the tool <strong>owns</strong> a live-state derivation that other surfaces re-derive | register the cell(s) here; the tool declares <code dir="auto">@cell-lens</code> over its own resolver |
-| <code dir="auto">delegates</code> | the tool <strong>re-derives</strong> a value another tool owns | it must consume the cell instead of computing a second answer |
-| <code dir="auto">bespoke</code> | stays as it is | with a stated reason |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>verdict</th><th>meaning</th><th>what happens</th></tr></thead><tbody><tr><td><code dir="auto">cell</code></td><td>the tool <strong>owns</strong> a live-state derivation that other surfaces re-derive</td><td>register the cell(s) here; the tool declares <code dir="auto">@cell-lens</code> over its own resolver</td></tr><tr><td><code dir="auto">delegates</code></td><td>the tool <strong>re-derives</strong> a value another tool owns</td><td>it must consume the cell instead of computing a second answer</td></tr><tr><td><code dir="auto">bespoke</code></td><td>stays as it is</td><td>with a stated reason</td></tr></tbody></table>
 <p><code dir="auto">cell</code> tools are the <strong>resolvers</strong>. <code dir="auto">delegates</code> tools are the <strong>duplication sites</strong>, and
 therefore the refactor and retirement candidates. If you are looking for where the work
 is, it is the <code dir="auto">delegates</code> column.</p>
@@ -143,17 +164,62 @@ be the failure mode, not the goal.</p>
 <p>Two dimensions, both measured rather than judged.</p>
 <p><strong>Call volume</strong> (<code dir="auto">tool_invocations</code>, 30d, 2026-07-27 — note the table’s retention is
 about 30 days, so <code dir="auto">calls_all == calls_30d</code> for every row):</p>
-<p>| tool | calls | distinct callers |
-|---|---|---|
-| <code dir="auto">coord:presence</code> | 648 | 635 |
-| <code dir="auto">dev:pipeline_position</code> | 310 | 288 |
-| <code dir="auto">fleet:status</code> | 263 | 256 |
-| <code dir="auto">pot:status</code> | 202 | 202 |
-| <code dir="auto">accounts:status</code> | 179 | 179 |
-| <code dir="auto">fleet:capacity</code> | 144 | 144 |
-| <code dir="auto">dev:service_health</code> | 134 | 126 |
-| <code dir="auto">events:status</code> | 121 | 121 |
-| …29 more, tailing to 0 | | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>tool</th><th>calls</th><th>distinct callers</th></tr></thead><tbody><tr><td><code dir="auto">coord:presence</code></td><td>648</td><td>635</td></tr><tr><td><code dir="auto">dev:pipeline_position</code></td><td>310</td><td>288</td></tr><tr><td><code dir="auto">fleet:status</code></td><td>263</td><td>256</td></tr><tr><td><code dir="auto">pot:status</code></td><td>202</td><td>202</td></tr><tr><td><code dir="auto">accounts:status</code></td><td>179</td><td>179</td></tr><tr><td><code dir="auto">fleet:capacity</code></td><td>144</td><td>144</td></tr><tr><td><code dir="auto">dev:service_health</code></td><td>134</td><td>126</td></tr><tr><td><code dir="auto">events:status</code></td><td>121</td><td>121</td></tr><tr><td>…29 more, tailing to 0</td><td></td><td></td></tr></tbody></table>
 <p><strong>The shape that matters is the ratio.</strong> <code dir="auto">calls ≈ distinct callers</code> on nearly every hot
 entry — 202/202, 179/179, 144/144, 121/121. These are <strong>once-per-session orientation
 reads</strong>: every agent asks exactly once, on waking, and never again. That is the cell
@@ -184,16 +250,66 @@ its resolver answers <code dir="auto">{}</code> — or it registers dead, and a 
 error is worse than no registration.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-finding-38-tools-8-questions">The finding: 38 tools, ~8 questions</h2><a class="sl-anchor-link" href="#the-finding-38-tools-8-questions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The finding: 38 tools, ~8 questions”</span></a></div>
-<p>| # | the question agents are actually asking | doors | calls/30d |
-|---|---|---|---|
-| A | can I get inference capacity right now? | <code dir="auto">fleet:capacity</code> · <code dir="auto">accounts:status</code> · <code dir="auto">gateway:status</code> · <code dir="auto">dev:rate_governor_status</code> · <code dir="auto">egress:health</code> · <code dir="auto">accounts:link-status</code> · <code dir="auto">setup:status</code> | 431 |
-| B | who is alive, and on what? | <code dir="auto">coord:presence</code> · <code dir="auto">fleet:status</code> · <code dir="auto">scheduler:running</code> · <code dir="auto">plan_items:status</code> (+ the annex below) | 963 |
-| C | is my code live? | <code dir="auto">dev:pipeline_position</code> · <code dir="auto">dev:build_status</code> · <code dir="auto">deploy:status</code> | 390 |
-| D | is the box / service healthy? | <code dir="auto">dev:service_health</code> · <code dir="auto">dev:pg_health</code> · <code dir="auto">dev:processes</code> · <code dir="auto">dev:dogfood_substrate_status</code> · <code dir="auto">harness:health</code> · <code dir="auto">storage:usage</code> · <code dir="auto">dev:listening_ports</code> | 170 |
-| E | is the background machinery running? | <code dir="auto">events:status</code> · <code dir="auto">watchdog:status</code> · <code dir="auto">schedule:inventory</code> · <code dir="auto">autoloop:status</code> · <code dir="auto">improvements:watchdog-status</code> · <code dir="auto">dev:stall_waker_status</code> · <code dir="auto">operator:trigger_state</code> · <code dir="auto">plugins:runtime_status</code> | 216 |
-| F | what is the pot / harness doing? | <code dir="auto">pot:status</code> · <code dir="auto">harness:status</code> · <code dir="auto">curation:state-of-pot</code> · <code dir="auto">autonomy:graduation_status</code> | 225 |
-| G | local / UI / demo | <code dir="auto">ui:get_state</code> · <code dir="auto">operator:credentials_status</code> · <code dir="auto">voice:status</code> · <code dir="auto">dev:state_counter</code> | 15 |
-| H | work-item hygiene | <code dir="auto">work_items:redundancy_status</code> | 1 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>the question agents are actually asking</th><th>doors</th><th>calls/30d</th></tr></thead><tbody><tr><td>A</td><td>can I get inference capacity right now?</td><td><code dir="auto">fleet:capacity</code> · <code dir="auto">accounts:status</code> · <code dir="auto">gateway:status</code> · <code dir="auto">dev:rate_governor_status</code> · <code dir="auto">egress:health</code> · <code dir="auto">accounts:link-status</code> · <code dir="auto">setup:status</code></td><td>431</td></tr><tr><td>B</td><td>who is alive, and on what?</td><td><code dir="auto">coord:presence</code> · <code dir="auto">fleet:status</code> · <code dir="auto">scheduler:running</code> · <code dir="auto">plan_items:status</code> (+ the annex below)</td><td>963</td></tr><tr><td>C</td><td>is my code live?</td><td><code dir="auto">dev:pipeline_position</code> · <code dir="auto">dev:build_status</code> · <code dir="auto">deploy:status</code></td><td>390</td></tr><tr><td>D</td><td>is the box / service healthy?</td><td><code dir="auto">dev:service_health</code> · <code dir="auto">dev:pg_health</code> · <code dir="auto">dev:processes</code> · <code dir="auto">dev:dogfood_substrate_status</code> · <code dir="auto">harness:health</code> · <code dir="auto">storage:usage</code> · <code dir="auto">dev:listening_ports</code></td><td>170</td></tr><tr><td>E</td><td>is the background machinery running?</td><td><code dir="auto">events:status</code> · <code dir="auto">watchdog:status</code> · <code dir="auto">schedule:inventory</code> · <code dir="auto">autoloop:status</code> · <code dir="auto">improvements:watchdog-status</code> · <code dir="auto">dev:stall_waker_status</code> · <code dir="auto">operator:trigger_state</code> · <code dir="auto">plugins:runtime_status</code></td><td>216</td></tr><tr><td>F</td><td>what is the pot / harness doing?</td><td><code dir="auto">pot:status</code> · <code dir="auto">harness:status</code> · <code dir="auto">curation:state-of-pot</code> · <code dir="auto">autonomy:graduation_status</code></td><td>225</td></tr><tr><td>G</td><td>local / UI / demo</td><td><code dir="auto">ui:get_state</code> · <code dir="auto">operator:credentials_status</code> · <code dir="auto">voice:status</code> · <code dir="auto">dev:state_counter</code></td><td>15</td></tr><tr><td>H</td><td>work-item hygiene</td><td><code dir="auto">work_items:redundancy_status</code></td><td>1</td></tr></tbody></table>
 <p>Cluster A is the clearest case: <strong>six doors onto one question</strong>, four of which read the
 same gateway <code dir="auto">/stats</code> oracle. Cluster C is the one already solved — all five registered
 cells project <code dir="auto">dev:pipeline_position</code>, which is what the answer looks like when it works.</p>

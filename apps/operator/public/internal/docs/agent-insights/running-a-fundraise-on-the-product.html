@@ -76,15 +76,52 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="what-is-built">What is built</h2><a class="sl-anchor-link" href="#what-is-built"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What is built”</span></a></div>
 <p><strong>The <code dir="auto">pipeline-deal</code> datatype</strong> (registry, <code dir="auto">generic-kind</code>) — one tracked counterparty conversation with a stage, a tier, a warm path, and an outreach-approval record. It is deliberately domain-neutral: a sales, BD, or hiring pipeline uses the same type with a different stage vocabulary, because canonical shapes belong in the registry rather than being reinvented per app. People are referenced as canonical <code dir="auto">contact</code> instances and conversations as <code dir="auto">email-message</code> / <code dir="auto">calendar-event</code> refs — this build invents no investor-flavoured copy of any of them.</p>
 <p><strong>The <code dir="auto">fundraise-pipeline</code> trigger pack</strong> (<code dir="auto">libs/papercusp/plugins/fundraise-pipeline/</code>) — seven plan targets and seven bindings:</p>
-<p>| Target | Binding | Fires |
-|---|---|---|
-| <code dir="auto">fund-research-brief</code> | <code dir="auto">research-enrichment</code> | manual, per batch |
-| <code dir="auto">first-touch-draft</code> | <code dir="auto">first-touch-outreach</code> | manual, always deliberate |
-| <code dir="auto">classify-and-draft-reply</code> | <code dir="auto">investor-reply-to-pipeline</code> | <code dir="auto">ext:gmail:message.received</code> |
-| <code dir="auto">no-reply-follow-up</code> | <code dir="auto">follow-up-ladder</code> | manual + per-deal cadence |
-| <code dir="auto">investor-meeting-prep</code> | <code dir="auto">meeting-to-investor-prep</code> | <code dir="auto">ext:gcal:event-upcoming</code> |
-| <code dir="auto">post-meeting-followup</code> | <code dir="auto">meeting-to-post-followup</code> | internal edge, <code dir="auto">plan-completed</code> |
-| <code dir="auto">weekly-pipeline-review</code> | <code dir="auto">weekly-review</code> | manual + weekly cadence |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Target</th><th>Binding</th><th>Fires</th></tr></thead><tbody><tr><td><code dir="auto">fund-research-brief</code></td><td><code dir="auto">research-enrichment</code></td><td>manual, per batch</td></tr><tr><td><code dir="auto">first-touch-draft</code></td><td><code dir="auto">first-touch-outreach</code></td><td>manual, always deliberate</td></tr><tr><td><code dir="auto">classify-and-draft-reply</code></td><td><code dir="auto">investor-reply-to-pipeline</code></td><td><code dir="auto">ext:gmail:message.received</code></td></tr><tr><td><code dir="auto">no-reply-follow-up</code></td><td><code dir="auto">follow-up-ladder</code></td><td>manual + per-deal cadence</td></tr><tr><td><code dir="auto">investor-meeting-prep</code></td><td><code dir="auto">meeting-to-investor-prep</code></td><td><code dir="auto">ext:gcal:event-upcoming</code></td></tr><tr><td><code dir="auto">post-meeting-followup</code></td><td><code dir="auto">meeting-to-post-followup</code></td><td>internal edge, <code dir="auto">plan-completed</code></td></tr><tr><td><code dir="auto">weekly-pipeline-review</code></td><td><code dir="auto">weekly-review</code></td><td>manual + weekly cadence</td></tr></tbody></table>
 <p><strong>The send-approval gate</strong> (<code dir="auto">packages/operator-core/lib/fundraise/outreach-approval.ts</code>) and <strong>the tiering rule</strong> (<code dir="auto">pipeline-tiering.ts</code>), both pure, both tested.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="three-properties-that-are-structural-not-promised">Three properties that are structural, not promised</h2><a class="sl-anchor-link" href="#three-properties-that-are-structural-not-promised"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Three properties that are structural, not promised”</span></a></div>
 <p><strong>It cannot send mail.</strong> The pack requests <code dir="auto">gmail.readonly</code> and <code dir="auto">gmail.compose</code> and deliberately no <code dir="auto">gmail.send</code>. Every outbound path ends at <code dir="auto">gmail:create-draft</code>. This is a property of the granted scopes, not of the agent following instructions — which is the difference between a safeguard and a request. A test fails loudly if a future edit adds a send scope.</p>

@@ -122,24 +122,76 @@ take incoming · keep both). Defaults skip clashes: existing content
 outranks the incoming pack.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-things-live">Where things live</h2><a class="sl-anchor-link" href="#where-things-live"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where things live”</span></a></div>
-<p>| Piece | Location |
-| --- | --- |
-| Built-in packs | <code dir="auto">libs/papercusp/packages/harness/knowledge-packs/&#x3C;pack-id>/</code> (manifest.yaml + one-learning-per-file md; renamed from <code dir="auto">harness/learnings/</code> — the loader hard-fails on a missing builtin dir, never a soft miss) — two ship: <code dir="auto">coding</code>, <code dir="auto">work</code> |
-| Comb-installed packs | per-workspace <code dir="auto">papercuspRoot()/knowledge-packs/&#x3C;pack-id>/</code> (the legacy <code dir="auto">learning-packs/</code> root is migrated on boot) |
-| The <code dir="auto">fleet-lessons</code> pack | <strong>shared root</strong> <code dir="auto">workspacesRoot()/shared/knowledge-packs/fleet-lessons/</code> — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged |
-| A pot’s live learnings | mem0 rows, scope <code dir="auto">pot:&#x3C;home-slug></code> |
-| Pack mute state | pot setting <code dir="auto">knowledge-packs:disabled</code> (federated hive_settings) |
-| Domain targeting | item frontmatter <code dir="auto">domains: [...]</code> (open kebab-case vocabulary) + pot setting <code dir="auto">knowledge-packs:domains</code> — a domain-tagged item seeds/delivers only to pots declaring an intersecting domain; untagged items are unaffected and a pot with no declaration receives untagged items only (<code dir="auto">filterByDomains</code>, conservative like the repo-less shape posture) |
-| Seeding | <code dir="auto">pot:create</code> step 6b (flag <code dir="auto">KNOWLEDGE_PACKS</code>, default ON; undo-stacked, best-effort) |
-| Pre-turn injection | <code dir="auto">buildMemoryContextBlock</code> — pot pool resolved member→pot via the registry’s <code dir="auto">hive_slug</code>; token-budgeted (~4k default, <code dir="auto">PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS</code>), priority user > harness > pot-organic > pot-pack; muted packs filtered |
-| Runtime recall scope | <code dir="auto">memory:search</code> default fan-out is <strong>confined to the session’s pot subtree</strong> (P-018, <code dir="auto">narrowHarnessSlugsToSessionHive</code>, <code dir="auto">lib/memory/pot-scope.ts</code>). A pot-scoped agent never cross-recalls sibling pots’ harness pools. Workspace-spanning sessions (<code dir="auto">harness='*'</code>) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by <code dir="auto">FLAGS.SCOPED_SUPERUSER_CLAMP</code>; fail-open (flag read error → full fan-out retained). <code dir="auto">memory:list</code> is unaffected (it only adds explicitly-passed pot pools). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Piece</th><th>Location</th></tr></thead><tbody><tr><td>Built-in packs</td><td><code dir="auto">libs/papercusp/packages/harness/knowledge-packs/&#x3C;pack-id>/</code> (manifest.yaml + one-learning-per-file md; renamed from <code dir="auto">harness/learnings/</code> — the loader hard-fails on a missing builtin dir, never a soft miss) — two ship: <code dir="auto">coding</code>, <code dir="auto">work</code></td></tr><tr><td>Comb-installed packs</td><td>per-workspace <code dir="auto">papercuspRoot()/knowledge-packs/&#x3C;pack-id>/</code> (the legacy <code dir="auto">learning-packs/</code> root is migrated on boot)</td></tr><tr><td>The <code dir="auto">fleet-lessons</code> pack</td><td><strong>shared root</strong> <code dir="auto">workspacesRoot()/shared/knowledge-packs/fleet-lessons/</code> — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged</td></tr><tr><td>A pot’s live learnings</td><td>mem0 rows, scope <code dir="auto">pot:&#x3C;home-slug></code></td></tr><tr><td>Pack mute state</td><td>pot setting <code dir="auto">knowledge-packs:disabled</code> (federated hive_settings)</td></tr><tr><td>Domain targeting</td><td>item frontmatter <code dir="auto">domains: [...]</code> (open kebab-case vocabulary) + pot setting <code dir="auto">knowledge-packs:domains</code> — a domain-tagged item seeds/delivers only to pots declaring an intersecting domain; untagged items are unaffected and a pot with no declaration receives untagged items only (<code dir="auto">filterByDomains</code>, conservative like the repo-less shape posture)</td></tr><tr><td>Seeding</td><td><code dir="auto">pot:create</code> step 6b (flag <code dir="auto">KNOWLEDGE_PACKS</code>, default ON; undo-stacked, best-effort)</td></tr><tr><td>Pre-turn injection</td><td><code dir="auto">buildMemoryContextBlock</code> — pot pool resolved member→pot via the registry’s <code dir="auto">hive_slug</code>; token-budgeted (~4k default, <code dir="auto">PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS</code>), priority user > harness > pot-organic > pot-pack; muted packs filtered</td></tr><tr><td>Runtime recall scope</td><td><code dir="auto">memory:search</code> default fan-out is <strong>confined to the session’s pot subtree</strong> (P-018, <code dir="auto">narrowHarnessSlugsToSessionHive</code>, <code dir="auto">lib/memory/pot-scope.ts</code>). A pot-scoped agent never cross-recalls sibling pots’ harness pools. Workspace-spanning sessions (<code dir="auto">harness='*'</code>) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by <code dir="auto">FLAGS.SCOPED_SUPERUSER_CLAMP</code>; fail-open (flag read error → full fan-out retained). <code dir="auto">memory:list</code> is unaffected (it only adds explicitly-passed pot pools).</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="built-in-packs-two-of-them">Built-in packs (two of them)</h2><a class="sl-anchor-link" href="#built-in-packs-two-of-them"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Built-in packs (two of them)”</span></a></div>
 <p>Two packs ship under the builtin root, each seeded by the blueprint-driven
 priority above (D-010, <code dir="auto">domain-generic-pot-architecture</code>):</p>
-<p>| Pack | Seeded for | Shape |
-| --- | --- | --- |
-| <code dir="auto">coding</code> | a coding pot (<code dir="auto">extends: coding</code>) <strong>and</strong> the global fallback (no blueprint <code dir="auto">knowledge.pack</code>, no explicit arg) | shape-conditional items (<code dir="auto">ui\|service\|library\|cli\|any</code>) — generic engineering discovery rules |
-| <code dir="auto">work</code> | a work pot (<code dir="auto">extends: work</code>) | fully <code dir="auto">any</code> (repo-less) — coordination discipline + rubric-judged deliverables |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pack</th><th>Seeded for</th><th>Shape</th></tr></thead><tbody><tr><td><code dir="auto">coding</code></td><td>a coding pot (<code dir="auto">extends: coding</code>) <strong>and</strong> the global fallback (no blueprint <code dir="auto">knowledge.pack</code>, no explicit arg)</td><td>shape-conditional items (<code dir="auto">ui|service|library|cli|any</code>) — generic engineering discovery rules</td></tr><tr><td><code dir="auto">work</code></td><td>a work pot (<code dir="auto">extends: work</code>)</td><td>fully <code dir="auto">any</code> (repo-less) — coordination discipline + rubric-judged deliverables</td></tr></tbody></table>
 <p><code dir="auto">coding</code> and <code dir="auto">work</code> carry only generic <em>discovery rules</em>, never stack
 bindings; project specifics belong in the per-pot override and a separate
 project pack. A coding pot defaults to <code dir="auto">coding</code> and a work pot to <code dir="auto">work</code>, so

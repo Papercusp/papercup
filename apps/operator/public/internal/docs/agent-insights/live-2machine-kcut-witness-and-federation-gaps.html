@@ -102,11 +102,36 @@ author or federate, so it can never reach the cut member.</li>
 </ul>
 <p>Verified live on fed-a (fresh isolated pot <code dir="auto">wi560k-pot</code>, member ← a public repo), epoch
 × device wrap matrix:</p>
-<p>| epoch | owner device | revoked device | event |
-|---|---|---|---|
-| 0 | ✓ | ✓ | admit/grant |
-| 1 | ✓ | ✓ | owner re-key (go-private) |
-| 2 | ✓ | <strong>✗</strong> | ban → cut |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>epoch</th><th>owner device</th><th>revoked device</th><th>event</th></tr></thead><tbody><tr><td>0</td><td>✓</td><td>✓</td><td>admit/grant</td></tr><tr><td>1</td><td>✓</td><td>✓</td><td>owner re-key (go-private)</td></tr><tr><td>2</td><td>✓</td><td><strong>✗</strong></td><td>ban → cut</td></tr></tbody></table>
 <p>The owner-side cut is the thing the flag actually gates, and it composes with the already
 -green hermetic content read-cut witness (<code dir="auto">pot-epoch-read-cut-witness.test.ts</code>).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="gap-1--admitting-the-joiner-the-live-announceadmit-needs-gh-attestation">Gap 1 — admitting the joiner: the live announce→admit needs gh attestation</h2><a class="sl-anchor-link" href="#gap-1--admitting-the-joiner-the-live-announceadmit-needs-gh-attestation"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Gap 1 — admitting the joiner: the live announce→admit needs gh attestation”</span></a></div>

@@ -79,22 +79,75 @@
 <li>a held or red shared gate never freezes unrelated, non-final work.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-plane-model">The four-plane model</h2><a class="sl-anchor-link" href="#the-four-plane-model"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four-plane model”</span></a></div>
-<p>| Plane | Concrete surface | What it proves | Default use |
-| --- | --- | --- | --- |
-| <strong>1. Source/edit</strong> | The canonical staging checkout, then <code dir="auto">origin/staging</code> after git-sync | The intended source and tests exist in the current working build | Implement, inspect diffs, run focused tests |
-| <strong>2. Current-build acceptance</strong> | Staging <code dir="auto">:3170</code> or an isolated instance built from the same current source | The behavior works before promotion | Focused verification, live user-journey acceptance, non-final P-NNN closure |
-| <strong>3. Green promotion</strong> | A successful green-checkpoint fast-forwards <code dir="auto">main</code> to the tested staging commit | The shared gate accepted that commit | Final promotion evidence |
-| <strong>4. Shipped runtime</strong> | Release-trigger deploys green <code dir="auto">main</code> to <code dir="auto">:3070</code> with rollback protection | The promoted commit is actually serving users | Final shipment and deployed-only acceptance |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Plane</th><th>Concrete surface</th><th>What it proves</th><th>Default use</th></tr></thead><tbody><tr><td><strong>1. Source/edit</strong></td><td>The canonical staging checkout, then <code dir="auto">origin/staging</code> after git-sync</td><td>The intended source and tests exist in the current working build</td><td>Implement, inspect diffs, run focused tests</td></tr><tr><td><strong>2. Current-build acceptance</strong></td><td>Staging <code dir="auto">:3170</code> or an isolated instance built from the same current source</td><td>The behavior works before promotion</td><td>Focused verification, live user-journey acceptance, non-final P-NNN closure</td></tr><tr><td><strong>3. Green promotion</strong></td><td>A successful green-checkpoint fast-forwards <code dir="auto">main</code> to the tested staging commit</td><td>The shared gate accepted that commit</td><td>Final promotion evidence</td></tr><tr><td><strong>4. Shipped runtime</strong></td><td>Release-trigger deploys green <code dir="auto">main</code> to <code dir="auto">:3070</code> with rollback protection</td><td>The promoted commit is actually serving users</td><td>Final shipment and deployed-only acceptance</td></tr></tbody></table>
 <p>The bridges are asynchronous: git-sync carries plane 1 to <code dir="auto">origin/staging</code>; green-checkpoint carries a tested staging commit to plane 3; release-trigger carries plane 3 to plane 4. A delay in a later bridge does not invalidate evidence already established on an earlier plane.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="acceptance-defaults-and-narrow-exceptions">Acceptance defaults and narrow exceptions</h2><a class="sl-anchor-link" href="#acceptance-defaults-and-narrow-exceptions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Acceptance defaults and narrow exceptions”</span></a></div>
 <p>Ordinary implementation, focused tests, prompt renders, documentation projection, current-build service checks, and non-final plan-item closure happen on planes 1–2. Do not make <code dir="auto">main</code>, <code dir="auto">:3070</code>, “green checkpoint,” or “deployed” a prerequisite for that work.</p>
-<p>| Work | Correct acceptance plane |
-| --- | --- |
-| A source change with focused project tests | Plane 1; add plane 2 when behavior needs a running service |
-| A UI or API journey available on staging | Plane 2 (<code dir="auto">:3170</code> or an isolated current-build instance) |
-| A prompt or generated-doc contract | Plane 1 render/projection tests and the canonical docs read/search surface |
-| Final release, promotion, or shipped-status item | Planes 3–4 |
-| Rollback, release packaging, or deploy-order behavior | Plane 4 only when the item states why the current-build plane cannot exercise the property |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Work</th><th>Correct acceptance plane</th></tr></thead><tbody><tr><td>A source change with focused project tests</td><td>Plane 1; add plane 2 when behavior needs a running service</td></tr><tr><td>A UI or API journey available on staging</td><td>Plane 2 (<code dir="auto">:3170</code> or an isolated current-build instance)</td></tr><tr><td>A prompt or generated-doc contract</td><td>Plane 1 render/projection tests and the canonical docs read/search surface</td></tr><tr><td>Final release, promotion, or shipped-status item</td><td>Planes 3–4</td></tr><tr><td>Rollback, release packaging, or deploy-order behavior</td><td>Plane 4 only when the item states why the current-build plane cannot exercise the property</td></tr></tbody></table>
 <p>A non-final item may require deployed <code dir="auto">main</code> only when it names the <strong>deployed-only property</strong> and gives a concrete reason staging/current-build cannot exercise it. “Need to see it live,” “wait for green,” or “verify on <code dir="auto">:3070</code>” alone are not reasons. Valid narrow cases include final shipment, rollback behavior, release packaging, and migration ordering that depends on the distinct release host. If staging or an isolated current build can exercise the behavior, use it.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-pipeline-remains-automatic">The pipeline remains automatic</h2><a class="sl-anchor-link" href="#the-pipeline-remains-automatic"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The pipeline remains automatic”</span></a></div>
 <p>You leave an edit in the canonical tree. Then:</p>
@@ -130,11 +183,36 @@
 <p>If your own next action does not require planes 3–4, keep working on staging. If the next action genuinely requires the deployed-only property, remove the wait by driving the blocked hop.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-fire-now-levers">The three fire-now levers</h2><a class="sl-anchor-link" href="#the-three-fire-now-levers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three fire-now levers”</span></a></div>
 <p>Fixing code does not recolor the periodic gate verdict. Each pipeline bridge has a separate lever:</p>
-<p>| Hop | Automatic path | Fire-now lever | Use when |
-| --- | --- | --- | --- |
-| <strong>Commit</strong> (edit → staging branch) | git-sync cadence | <code dir="auto">git-sync:run</code> | The current source must be committed now |
-| <strong>Verdict</strong> (staging → green <code dir="auto">main</code>) | green-checkpoint cadence | <code dir="auto">release:checkpoint-run</code> | The red cause is fixed and you need a fresh verdict now |
-| <strong>Ship</strong> (green <code dir="auto">main</code> → <code dir="auto">:3070</code>) | release-trigger | <code dir="auto">release:deploy { op:'trigger', confirm:true }</code> | A green pin exists but deployment is stalled |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Hop</th><th>Automatic path</th><th>Fire-now lever</th><th>Use when</th></tr></thead><tbody><tr><td><strong>Commit</strong> (edit → staging branch)</td><td>git-sync cadence</td><td><code dir="auto">git-sync:run</code></td><td>The current source must be committed now</td></tr><tr><td><strong>Verdict</strong> (staging → green <code dir="auto">main</code>)</td><td>green-checkpoint cadence</td><td><code dir="auto">release:checkpoint-run</code></td><td>The red cause is fixed and you need a fresh verdict now</td></tr><tr><td><strong>Ship</strong> (green <code dir="auto">main</code> → <code dir="auto">:3070</code>)</td><td>release-trigger</td><td><code dir="auto">release:deploy { op:'trigger', confirm:true }</code></td><td>A green pin exists but deployment is stalled</td></tr></tbody></table>
 <p>When live deployment is genuinely required, diagnose first with <code dir="auto">release:deploy { op:'status' }</code>. The normal red-gate recovery is:</p>
 <ol>
 <li>fix the actual failing checks;</li>

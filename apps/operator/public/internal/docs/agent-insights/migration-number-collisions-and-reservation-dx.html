@@ -109,7 +109,7 @@ boot-apply semantics.</p>
 allocator (advisory lock + <code dir="auto">harness_shared.migration_reservations</code>,
 GREATEST(max-on-disk across the serving + staging trees, max-reserved, max-applied)+1)
 lives in <code dir="auto">next_migration.ts</code> as a <code dir="auto">defineTool</code> agent-tool.
-~~There is <strong>no <code dir="auto">npm run db:next-migration</code></strong> script.~~ <strong>Fixed (2026-06-20)</strong> — see
+<del>There is <strong>no <code dir="auto">npm run db:next-migration</code></strong> script.</del> <strong>Fixed (2026-06-20)</strong> — see
 the “How to allocate a number now” section and item #1 in the Recommended fix section.
 An agent (or human) who isn’t wired into the harness MCP still does <code dir="auto">ls | tail</code>
 and hand-picks — exactly the racing path the tool was built to replace.
@@ -139,7 +139,7 @@ path” — the collisions this doc otherwise documents are all from agents who
 bypassed <code dir="auto">db:next-migration</code>/the CLI entirely.</p>
 </li>
 <li>
-<p>~~<strong>The MCP client is currently dropped.</strong>~~ <strong>Historical note (2026-06-20):</strong> At the
+<p><del><strong>The MCP client is currently dropped.</strong></del> <strong>Historical note (2026-06-20):</strong> At the
 time of discovery the harness MCP client was dropped, so even MCP-aware agents
 couldn’t reach <code dir="auto">db:next-migration</code> and fell back to hand-picking. The npm CLI
 (<code dir="auto">npm run db:next-migration</code>) was added precisely to fix this (gap #1 fix). The
@@ -217,15 +217,15 @@ when PG is unreachable (an unreserved number re-opens the race).</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="recommended-fix-plan">Recommended fix (plan)</h2><a class="sl-anchor-link" href="#recommended-fix-plan"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Recommended fix (plan)”</span></a></div>
 <p>Small, mostly additive; each item is independent:</p>
 <ol>
-<li>~~<strong>Add <code dir="auto">npm run db:next-migration</code>.</strong>~~ <strong>DONE (<code dir="auto">2026-06-20</code>)</strong> —
+<li><del><strong>Add <code dir="auto">npm run db:next-migration</code>.</strong></del> <strong>DONE (<code dir="auto">2026-06-20</code>)</strong> —
 <code dir="auto">scripts/next-migration.mjs</code> + the <code dir="auto">db:next-migration</code> npm script. Reservation
 now works without the MCP client (the highest-leverage gap — it kills the
 <code dir="auto">ls | tail</code> path at the source). Mirrors the MCP tool via the shared ledger +
-advisory key. ~~A follow-up could DRY the two onto one exported core~~ — see
+advisory key. <del>A follow-up could DRY the two onto one exported core</del> — see
 item 4 below (still open). <strong>Also DONE (<code dir="auto">2026-07-03</code>, EI-6852):</strong> both
 allocators now read the on-disk max <strong>inside</strong> the advisory-lock transaction
 instead of before it, closing the TOCTOU window described above.</li>
-<li>~~<strong>Gate <code dir="auto">lint:migrations</code></strong>~~ <strong>DONE for the PG-free checks (<code dir="auto">2026-07-04</code>,
+<li><del><strong>Gate <code dir="auto">lint:migrations</code></strong></del> <strong>DONE for the PG-free checks (<code dir="auto">2026-07-04</code>,
 EI-6843)</strong> — not via <code dir="auto">.github/</code>/<code dir="auto">.husky</code> but via the vitest suite:
 <code dir="auto">packages/operator-core/lib/lint-migrations.test.ts</code> scans the real sql/ dir
 for duplicate numbers + raw tx-control on every <code dir="auto">test:affected</code> /

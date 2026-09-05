@@ -83,11 +83,28 @@ provider is available.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="implemented--feature-surface">§Implemented — feature surface</h2><a class="sl-anchor-link" href="#implemented--feature-surface"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “§Implemented — feature surface”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="persona-injection-pr-1-commit-2368d33">Persona injection (PR 1, commit <code dir="auto">2368d33</code>)</h3><a class="sl-anchor-link" href="#persona-injection-pr-1-commit-2368d33"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Persona injection (PR 1, commit 2368d33)”</span></a></div>
 <p>Provider-agnostic persona prompt loaded at session start:</p>
-<p>| Path | Where the persona lands |
-|---|---|
-| EL Conv AI | <code dir="auto">overrides.agent.prompt.prompt</code> at session-start (requires “Override prompt” enabled on the EL dashboard; see §EL setup) |
-| OpenAI Realtime | <code dir="auto">RealtimeAgent.instructions</code> (set in code, no dashboard config needed) |
-| Legacy STT+Claude+TTS | Claude system prompt; <code dir="auto">prepareForTTS</code> enforces length caps + anti-pattern stripping |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Path</th><th>Where the persona lands</th></tr></thead><tbody><tr><td>EL Conv AI</td><td><code dir="auto">overrides.agent.prompt.prompt</code> at session-start (requires “Override prompt” enabled on the EL dashboard; see §EL setup)</td></tr><tr><td>OpenAI Realtime</td><td><code dir="auto">RealtimeAgent.instructions</code> (set in code, no dashboard config needed)</td></tr><tr><td>Legacy STT+Claude+TTS</td><td>Claude system prompt; <code dir="auto">prepareForTTS</code> enforces length caps + anti-pattern stripping</td></tr></tbody></table>
 <p>Source of truth: <code dir="auto">apps/operator/prompts/operator.persona.md</code> (the full
 character + behavior doc, ~19 KB). The runtime constant
 <code dir="auto">OPERATOR_PERSONA_PROMPT</code> in <code dir="auto">packages/operator-core/lib/operator-persona.ts</code>
@@ -120,15 +137,68 @@ callers for replan, cleanup, supervisor, provision, smokeTest, or scan
 anywhere in source. The only live narration caller is the delegate row
 (<code dir="auto">OperatorDelegationListener</code>). The other rows are policy that’s defined and
 ready, awaiting a caller.</p>
-<p>| Op | Wired | Kickoff | Mid (cadence) | Completion |
-|---|---|---|---|---|
-| Replan | <em>no live caller</em> (<code dir="auto">HarnessDashboard</code> deleted 2026-05-30) | <code dir="auto">"Replanning {slug}."</code> | “Still scoping.” (30s, 1×) | “Replan done — N added, M deprecated.” (with PG counts from <code dir="auto">GET /api/harness/:slug/scoper-result/:invocationId</code>) |
-| Cleanup | <em>no live caller</em> (<code dir="auto">HarnessDashboard</code> deleted 2026-05-30) | “Cleaning up.” | “Still pruning.” (30s, 1×) | “Cleanup done — M deprecated.” |
-| Supervisor | <em>no live caller</em> | “Running supervisor.” | “Still reviewing.” (30s, 1×) | <code dir="auto">Supervisor: &#x26;lt;outcome&#x26;gt;.</code> |
-| Provision | <em>no live caller</em> (<code dir="auto">ForkProvisioningProgress</code> retired 2026-06-10 with the snapshot system; policy kind kept in <code dir="auto">op-narration-policy.ts</code>) | <code dir="auto">"Provisioning {plugin}."</code> | “Still working.” (60s, max 4×) | “Provisioning complete.” / <code dir="auto">Provisioning failed: &#x26;lt;reason&#x26;gt;.</code> |
-| Smoke test | <em>no live caller</em> | (silent) | — | “Smoke test passed.” / <code dir="auto">Smoke test failed: &#x26;lt;reason&#x26;gt;.</code> |
-| Scan | <em>no live caller</em> | (silent) | — | (silent unless suggestions surfaced) |
-| Delegate | <code dir="auto">OperatorDelegationListener</code> (<strong>only wired caller</strong>) | (silent — voice already said “looking into that”) | “Still researching.” → “Still on it.” → “Still working through it.” (30s, max 3×) | “Delegate finished — details in the panel.” |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Op</th><th>Wired</th><th>Kickoff</th><th>Mid (cadence)</th><th>Completion</th></tr></thead><tbody><tr><td>Replan</td><td><em>no live caller</em> (<code dir="auto">HarnessDashboard</code> deleted 2026-05-30)</td><td><code dir="auto">"Replanning {slug}."</code></td><td>”Still scoping.” (30s, 1×)</td><td>“Replan done — N added, M deprecated.” (with PG counts from <code dir="auto">GET /api/harness/:slug/scoper-result/:invocationId</code>)</td></tr><tr><td>Cleanup</td><td><em>no live caller</em> (<code dir="auto">HarnessDashboard</code> deleted 2026-05-30)</td><td>“Cleaning up."</td><td>"Still pruning.” (30s, 1×)</td><td>“Cleanup done — M deprecated.”</td></tr><tr><td>Supervisor</td><td><em>no live caller</em></td><td>”Running supervisor."</td><td>"Still reviewing.” (30s, 1×)</td><td><code dir="auto">Supervisor: &#x26;lt;outcome&#x26;gt;.</code></td></tr><tr><td>Provision</td><td><em>no live caller</em> (<code dir="auto">ForkProvisioningProgress</code> retired 2026-06-10 with the snapshot system; policy kind kept in <code dir="auto">op-narration-policy.ts</code>)</td><td><code dir="auto">"Provisioning {plugin}."</code></td><td>”Still working.” (60s, max 4×)</td><td>“Provisioning complete.” / <code dir="auto">Provisioning failed: &#x26;lt;reason&#x26;gt;.</code></td></tr><tr><td>Smoke test</td><td><em>no live caller</em></td><td>(silent)</td><td>—</td><td>“Smoke test passed.” / <code dir="auto">Smoke test failed: &#x26;lt;reason&#x26;gt;.</code></td></tr><tr><td>Scan</td><td><em>no live caller</em></td><td>(silent)</td><td>—</td><td>(silent unless suggestions surfaced)</td></tr><tr><td>Delegate</td><td><code dir="auto">OperatorDelegationListener</code> (<strong>only wired caller</strong>)</td><td>(silent — voice already said “looking into that”)</td><td>“Still researching.” → “Still on it.” → “Still working through it.” (30s, max 3×)</td><td>“Delegate finished — details in the panel.”</td></tr></tbody></table>
 <p>Templates + policy (<code dir="auto">OP_POLICIES</code>, <code dir="auto">kickoffText</code>/<code dir="auto">midText</code>/<code dir="auto">completionText</code>) in <code dir="auto">packages/operator-core/lib/op-narration-policy.ts</code>. API in <code dir="auto">packages/operator-core/lib/voice-narration.ts</code>: <code dir="auto">announceOpStart(kind, ctx)</code> returns a <code dir="auto">NarrationHandle</code>; <code dir="auto">announceOpEnd(kind, ctx, handle?)</code> cancels pending mid timers and speaks completion. Failure narration is sober + concrete reason; never apologetic.</p>
 <p><strong>Side-channel narration self-disables under full-agent engines.</strong> When a
 full-agent engine (EL Conv AI or OpenAI Realtime) is active, <code dir="auto">voice-narration.ts</code>
@@ -193,11 +263,36 @@ no longer pushes them — don’t re-add them without re-registering the
 <code dir="auto">browser:'required'</code> defs first.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="cost-controls">Cost controls</h3><a class="sl-anchor-link" href="#cost-controls"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cost controls”</span></a></div>
 <p>Three layers of defense, all wired into <code dir="auto">voice-mode.ts</code>:</p>
-<p>| Layer | Default | Pref | What |
-|---|---|---|---|
-| Per-session idle disconnect | 2 min | <code dir="auto">fullAgentIdleTimeoutMin</code> | Mic streams continuously while connected; idle timer counts USER silence only (the agent talking doesn’t reset it). On expiry: end session, toast “voice idle Nm — disconnecting to save minutes.” (Default was lowered 5→2 as an EL credit-burn fix.) |
-| Per-session 80% warning | — | (auto, derived from cap) | At session start, if <code dir="auto">pct_used >= 0.8</code>, info toast: “EL usage 87% of monthly cap (520/600 min). Auto-disconnect after idle keeps the meter down.” |
-| Hard monthly cap | 600 min | <code dir="auto">fullAgentMonthlyMinuteCap</code> | Sessions refuse to start when <code dir="auto">pct_used >= 1.0</code>. PG-backed (migration 005, <code dir="auto">harness_shared.el_conv_calls</code>). The post-call webhook records <code dir="auto">metadata.call_duration_secs</code> per conversation; <code dir="auto">/api/agent-mcp/operator-el-spend</code> aggregates by month. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Default</th><th>Pref</th><th>What</th></tr></thead><tbody><tr><td>Per-session idle disconnect</td><td>2 min</td><td><code dir="auto">fullAgentIdleTimeoutMin</code></td><td>Mic streams continuously while connected; idle timer counts USER silence only (the agent talking doesn’t reset it). On expiry: end session, toast “voice idle Nm — disconnecting to save minutes.” (Default was lowered 5→2 as an EL credit-burn fix.)</td></tr><tr><td>Per-session 80% warning</td><td>—</td><td>(auto, derived from cap)</td><td>At session start, if <code dir="auto">pct_used >= 0.8</code>, info toast: “EL usage 87% of monthly cap (520/600 min). Auto-disconnect after idle keeps the meter down.”</td></tr><tr><td>Hard monthly cap</td><td>600 min</td><td><code dir="auto">fullAgentMonthlyMinuteCap</code></td><td>Sessions refuse to start when <code dir="auto">pct_used >= 1.0</code>. PG-backed (migration 005, <code dir="auto">harness_shared.el_conv_calls</code>). The post-call webhook records <code dir="auto">metadata.call_duration_secs</code> per conversation; <code dir="auto">/api/agent-mcp/operator-el-spend</code> aggregates by month.</td></tr></tbody></table>
 <p>Live status visible in <code dir="auto">/settings/voice</code> via the inline <code dir="auto">&#x3C;ElSpendStatus /></code> widget.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="privacy-modes-commit-7785ced">Privacy modes (commit <code dir="auto">7785ced</code>)</h3><a class="sl-anchor-link" href="#privacy-modes-commit-7785ced"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Privacy modes (commit 7785ced)”</span></a></div>
 <p><code dir="auto">voicePrivacyMode</code> pref:</p>

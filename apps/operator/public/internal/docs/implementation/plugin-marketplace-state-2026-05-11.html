@@ -95,20 +95,64 @@ systems. See the repo <code dir="auto">CLAUDE.md</code> “Branch discipline” 
 <p>Three publishable kinds (<code dir="auto">plugin</code>, <code dir="auto">template</code>, <code dir="auto">snapshot</code>) share one marketplace pipeline. Operator at <code dir="auto">localhost:3055</code> serves the install/discover surface; marketplace-api at <code dir="auto">localhost:3057</code> is the registry. Plugins run in-process under a two-tier capability check (manifest ∩ user-granted). Tests cover every helper and DB-backed function shipped in this session.</p>
 <p><em>As of today:</em> the <code dir="auto">snapshot</code> publishable kind was <strong>retired</strong> (see the snapshot note below); the <code dir="auto">:3057</code>/<code dir="auto">papercuspai.com</code> registry was superseded by the in-app <strong>Cupboard</strong>; plugins also load as <strong>WASM</strong> or <strong>daemon</strong> runtimes, not only in-process JS.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="source-layout">Source layout</h2><a class="sl-anchor-link" href="#source-layout"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Source layout”</span></a></div>
-<p>| What | Where |
-|---|---|
-| Plugin SDK (types, capability strings, manifest schema) | <code dir="auto">packages/plugin-sdk/</code> |
-| Plugin loader (manifest validate, capability check, reaction rules, action registry, audit) | <code dir="auto">packages/plugin-loader/</code> |
-| Plugin host runtime in operator | <code dir="auto">apps/operator/lib/plugin-host-runtime.ts</code> |
-| Per-(plugin, harness) grants | <code dir="auto">apps/operator/lib/plugin-grants.ts</code> + <code dir="auto">harness_shared.plugin_capability_grants</code> in <code dir="auto">000-baseline.sql</code> |
-| Audit log (PG writer) | <code dir="auto">apps/operator/lib/plugin-audit-writer.ts</code> |
-| Marketplace API routes | <code dir="auto">apps/operator/app/api/{marketplace,plugins,templates,snapshots,harness/[slug]/save-as-template}/</code> |
-| Marketplace UI components | <code dir="auto">libs/marketplace-public-ui/src/</code> (shared with public site) |
-| Operator-side marketplace pages | <code dir="auto">apps/operator/app/marketplace/{,templates,plugins,snapshots}/</code> |
-| Operator-side installed pages | <code dir="auto">apps/operator/app/installed/{harnesses,plugins,snapshots,templates}/</code> |
-| Marketplace registry server | <code dir="auto">../papercusp-registry/apps/marketplace-api/</code> (separate repo <code dir="auto">papercupai/papercusp-registry</code>) |
-| CLI (<code dir="auto">papercusp install</code>, <code dir="auto">plugin enable/disable/lint/init/doctor</code>, <code dir="auto">snapshot {fork,publish}</code>) | <code dir="auto">libs/papercusp/packages/cli/src/</code> |
-| Snapshot capture / restore | <code dir="auto">libs/papercusp-export-state/src/</code> — <strong>RETIRED</strong>, moved to <code dir="auto">_retired/snapshot-system/papercusp-export-state</code> (see snapshot note below) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>What</th><th>Where</th></tr></thead><tbody><tr><td>Plugin SDK (types, capability strings, manifest schema)</td><td><code dir="auto">packages/plugin-sdk/</code></td></tr><tr><td>Plugin loader (manifest validate, capability check, reaction rules, action registry, audit)</td><td><code dir="auto">packages/plugin-loader/</code></td></tr><tr><td>Plugin host runtime in operator</td><td><code dir="auto">apps/operator/lib/plugin-host-runtime.ts</code></td></tr><tr><td>Per-(plugin, harness) grants</td><td><code dir="auto">apps/operator/lib/plugin-grants.ts</code> + <code dir="auto">harness_shared.plugin_capability_grants</code> in <code dir="auto">000-baseline.sql</code></td></tr><tr><td>Audit log (PG writer)</td><td><code dir="auto">apps/operator/lib/plugin-audit-writer.ts</code></td></tr><tr><td>Marketplace API routes</td><td><code dir="auto">apps/operator/app/api/{marketplace,plugins,templates,snapshots,harness/[slug]/save-as-template}/</code></td></tr><tr><td>Marketplace UI components</td><td><code dir="auto">libs/marketplace-public-ui/src/</code> (shared with public site)</td></tr><tr><td>Operator-side marketplace pages</td><td><code dir="auto">apps/operator/app/marketplace/{,templates,plugins,snapshots}/</code></td></tr><tr><td>Operator-side installed pages</td><td><code dir="auto">apps/operator/app/installed/{harnesses,plugins,snapshots,templates}/</code></td></tr><tr><td>Marketplace registry server</td><td><code dir="auto">../papercusp-registry/apps/marketplace-api/</code> (separate repo <code dir="auto">papercupai/papercusp-registry</code>)</td></tr><tr><td>CLI (<code dir="auto">papercusp install</code>, <code dir="auto">plugin enable/disable/lint/init/doctor</code>, <code dir="auto">snapshot {fork,publish}</code>)</td><td><code dir="auto">libs/papercusp/packages/cli/src/</code></td></tr><tr><td>Snapshot capture / restore</td><td><code dir="auto">libs/papercusp-export-state/src/</code> — <strong>RETIRED</strong>, moved to <code dir="auto">_retired/snapshot-system/papercusp-export-state</code> (see snapshot note below)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-runs-end-to-end-today">What runs end-to-end today</h2><a class="sl-anchor-link" href="#what-runs-end-to-end-today"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What runs end-to-end today”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="plugin-lifecycle">Plugin lifecycle</h3><a class="sl-anchor-link" href="#plugin-lifecycle"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Plugin lifecycle”</span></a></div>
 <ol>

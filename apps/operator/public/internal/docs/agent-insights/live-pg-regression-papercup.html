@@ -120,17 +120,62 @@ globalThis flag in <code dir="auto">&#x3C;200ms</code>.</li>
 <p>Total: ~180 LOC. Runs in ~2s wall-clock. Catches the entire class of
 bugs unit tests can’t.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-it-catches-that-unit-tests-dont">What it catches that unit tests don’t</h2><a class="sl-anchor-link" href="#what-it-catches-that-unit-tests-dont"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What it catches that unit tests don’t”</span></a></div>
-<p>| Bug class | Unit test | Live-PG papercup |
-|---|---|---|
-| Column missing from CREATE TABLE | ❌ | ✅ |
-| CHECK constraint syntax error | ❌ | ✅ (PG rejects on CREATE) |
-| Wrong column count in array default | ❌ | ✅ |
-| <code dir="auto">BIGINT[]</code> vs <code dir="auto">BIGINT</code> typo | ❌ | ✅ |
-| PG18 incompatibility (e.g. <code dir="auto">IF NOT EXISTS</code> on a syntax that PG14 accepted) | ❌ | ✅ |
-| Trigger function reference to nonexistent table | ❌ | ✅ |
-| <code dir="auto">ON CONFLICT</code> target column not in PK | ❌ | ✅ |
-| Idempotence broken by a missing flag | partial | ✅ (timing assertion) |
-| Renamed column not propagated to a partial index | ❌ | ✅ |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Bug class</th><th>Unit test</th><th>Live-PG papercup</th></tr></thead><tbody><tr><td>Column missing from CREATE TABLE</td><td>❌</td><td>✅</td></tr><tr><td>CHECK constraint syntax error</td><td>❌</td><td>✅ (PG rejects on CREATE)</td></tr><tr><td>Wrong column count in array default</td><td>❌</td><td>✅</td></tr><tr><td><code dir="auto">BIGINT[]</code> vs <code dir="auto">BIGINT</code> typo</td><td>❌</td><td>✅</td></tr><tr><td>PG18 incompatibility (e.g. <code dir="auto">IF NOT EXISTS</code> on a syntax that PG14 accepted)</td><td>❌</td><td>✅</td></tr><tr><td>Trigger function reference to nonexistent table</td><td>❌</td><td>✅</td></tr><tr><td><code dir="auto">ON CONFLICT</code> target column not in PK</td><td>❌</td><td>✅</td></tr><tr><td>Idempotence broken by a missing flag</td><td>partial</td><td>✅ (timing assertion)</td></tr><tr><td>Renamed column not propagated to a partial index</td><td>❌</td><td>✅</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="wire-it-as-a-discoverable-script">Wire it as a discoverable script</h2><a class="sl-anchor-link" href="#wire-it-as-a-discoverable-script"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Wire it as a discoverable script”</span></a></div>
 <p>Add a <code dir="auto">verify:&#x3C;name></code> entry to <code dir="auto">package.json</code> so it surfaces under
 <code dir="auto">npm run</code>:</p>

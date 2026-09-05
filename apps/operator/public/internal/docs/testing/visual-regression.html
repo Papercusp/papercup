@@ -78,13 +78,48 @@ diff against the committed baseline is the assertion.</p>
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># Local — regenerate baselines (intentional change only)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">npm</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">run</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">lostpixel:update</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">--workspace</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">libs/generic/ui-primitives</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># CI — runs automatically on `run-visual` PR label or push to main</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="npm run lostpixel --workspace libs/generic/ui-primitivesnpm run lostpixel:update --workspace libs/generic/ui-primitives"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="whats-covered-today">What’s covered today</h2><a class="sl-anchor-link" href="#whats-covered-today"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What’s covered today”</span></a></div>
-<p>| Package | Stories | Baselines | Storybook port |
-|---|---|---|---|
-| <code dir="auto">libs/generic/ui-primitives</code> | 6 components | 33 PNGs | <code dir="auto">:6006</code> |
-| <code dir="auto">libs/marketplace-public-ui</code> | 3 components | 14 PNGs | <code dir="auto">:6007</code> |
-| <code dir="auto">libs/agent-chat</code> | 2 components | 7 PNGs | <code dir="auto">:6008</code> |
-| <code dir="auto">apps/operator</code> | 3 components | 10 PNGs | <code dir="auto">:6009</code> |
-| <code dir="auto">libs/generic/papergrid/grid-core</code> | 1 component | 5 PNGs | <code dir="auto">:6009</code> ⚠ |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Package</th><th>Stories</th><th>Baselines</th><th>Storybook port</th></tr></thead><tbody><tr><td><code dir="auto">libs/generic/ui-primitives</code></td><td>6 components</td><td>33 PNGs</td><td><code dir="auto">:6006</code></td></tr><tr><td><code dir="auto">libs/marketplace-public-ui</code></td><td>3 components</td><td>14 PNGs</td><td><code dir="auto">:6007</code></td></tr><tr><td><code dir="auto">libs/agent-chat</code></td><td>2 components</td><td>7 PNGs</td><td><code dir="auto">:6008</code></td></tr><tr><td><code dir="auto">apps/operator</code></td><td>3 components</td><td>10 PNGs</td><td><code dir="auto">:6009</code></td></tr><tr><td><code dir="auto">libs/generic/papergrid/grid-core</code></td><td>1 component</td><td>5 PNGs</td><td><code dir="auto">:6009</code> ⚠</td></tr></tbody></table>
 <p><code dir="auto">libs/generic/papergrid/grid-core</code> is fully wired <strong>locally</strong> (its own
 <code dir="auto">.storybook/</code>, <code dir="auto">lostpixel.config.ts</code> at threshold <code dir="auto">0.05</code>, one
 <code dir="auto">RichGrid.stories.tsx</code>, 5 committed baselines) but has <strong>no step in the

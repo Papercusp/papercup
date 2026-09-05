@@ -131,12 +131,32 @@
 <div class="sl-heading-wrapper level-h2"><h2 id="when-a-module-spans-categories">When a module spans categories</h2><a class="sl-anchor-link" href="#when-a-module-spans-categories"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “When a module spans categories”</span></a></div>
 <p>Some modules naturally span. <code dir="auto">contributor-file-types.ts</code> is <strong>both</strong> a wire type (signed JSON over git) <strong>and</strong> a key format (<code dir="auto">.papercusp/contributors/&#x3C;login>.json</code> path). That’s fine — split the test file into per-category sections so the predicate-vs-round-trip-vs-edge-case coverage is visible.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-18-from-this-loop-categorized">The 18 from this loop, categorized</h2><a class="sl-anchor-link" href="#the-18-from-this-loop-categorized"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The 18 from this loop, categorized”</span></a></div>
-<p>| Category | Modules |
-|---|---|
-| Wire types | <code dir="auto">cupboard/types</code>, <code dir="auto">contributor-file-types</code>, <code dir="auto">harness-link-types</code>, <code dir="auto">pr-host/types</code>, <code dir="auto">contributor-usage-event-types</code>, <code dir="auto">attestation-types</code>, <code dir="auto">binding-types</code>, <code dir="auto">completion-ref-types</code>, <code dir="auto">harness-shared-config-types</code>, <code dir="auto">feature-claim-types</code> |
-| Pure decision | <code dir="auto">auto-review-decision-types</code>, <code dir="auto">retry-policy-types</code>, <code dir="auto">binding-verifier-types</code> |
-| PG-mirror | <code dir="auto">contributor-row-types</code>, <code dir="auto">feature-queue-row-types</code>, <code dir="auto">harness-feature-pr-row-types</code>, <code dir="auto">pr-reviewer-settings-types</code> |
-| Key-format | <code dir="auto">hyperbee-key-types</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Category</th><th>Modules</th></tr></thead><tbody><tr><td>Wire types</td><td><code dir="auto">cupboard/types</code>, <code dir="auto">contributor-file-types</code>, <code dir="auto">harness-link-types</code>, <code dir="auto">pr-host/types</code>, <code dir="auto">contributor-usage-event-types</code>, <code dir="auto">attestation-types</code>, <code dir="auto">binding-types</code>, <code dir="auto">completion-ref-types</code>, <code dir="auto">harness-shared-config-types</code>, <code dir="auto">feature-claim-types</code></td></tr><tr><td>Pure decision</td><td><code dir="auto">auto-review-decision-types</code>, <code dir="auto">retry-policy-types</code>, <code dir="auto">binding-verifier-types</code></td></tr><tr><td>PG-mirror</td><td><code dir="auto">contributor-row-types</code>, <code dir="auto">feature-queue-row-types</code>, <code dir="auto">harness-feature-pr-row-types</code>, <code dir="auto">pr-reviewer-settings-types</code></td></tr><tr><td>Key-format</td><td><code dir="auto">hyperbee-key-types</code></td></tr></tbody></table>
 <p>(Total > 18 because some modules span — <code dir="auto">contributor-file-types</code> is in two; <code dir="auto">harness-link-types</code>, <code dir="auto">cupboard/types</code>, <code dir="auto">pr-host/types</code> are also dual-category.)</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="see-also">See also</h2><a class="sl-anchor-link" href="#see-also"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “See also”</span></a></div>
 <ul>

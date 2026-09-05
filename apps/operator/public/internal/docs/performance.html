@@ -79,25 +79,95 @@
 <aside aria-label="Latest update — 2026-05-03" class="starlight-aside starlight-aside--note"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 11a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0v-4a1 1 0 0 0-1-1Zm.38-3.92a1 1 0 0 0-.76 0 1 1 0 0 0-.33.21 1.15 1.15 0 0 0-.21.33 1 1 0 0 0 .21 1.09c.097.088.209.16.33.21A1 1 0 0 0 13 8a1.05 1.05 0 0 0-.29-.71 1 1 0 0 0-.33-.21ZM12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 18a8 8 0 1 1 0-16.001A8 8 0 0 1 12 20Z"/></svg>Latest update — 2026-05-03 </p>  <div class="starlight-aside__content"><p>A focused perf audit on <code dir="auto">/harness</code> reduced warm TTFB from <strong>18.7s to 83ms (225×)</strong> across 14 commits. Eight separate slow endpoints were reduced to two repeating root patterns (serial fs/PG in loops; repeated reads of the same file). A new rule <strong>A15</strong> covers the request-scoped readJson cache pattern that produced the last 100× speedup. The “Audit findings” table further down shows every endpoint’s before/after with the fix applied. Two <code dir="auto">&#x3C;body></code>-frozen incidents during the session are also captured under <strong>A8</strong> (duplicate React keys → infinite Fast Refresh loop) and <strong>A10</strong> (Radix <code dir="auto">pointer-events</code> leak on <code dir="auto">&#x3C;body></code>).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-fast-actually-means-here">What “fast” actually means here</h2><a class="sl-anchor-link" href="#what-fast-actually-means-here"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What “fast” actually means here”</span></a></div>
 <p>The targets are stricter than the typical web app baseline:</p>
-<p>| Metric | Target | Why |
-|---|---|---|
-| Time to interactive (TTI) on the harness page | &#x3C; 1.5 s on a warm cache | Operators sit on this page all day |
-| Frame rate during list updates / animation | 60fps minimum, 120fps when transform-only | Anything below 60 feels sluggish |
-| Re-renders per keystroke in a 50-row form | ≤ 1 per field | Anything more is a re-render storm |
-| Bundle delta per new feature | &#x3C; 10 KB gzip / route | Death-by-a-thousand-cuts kills warm-cache TTI |
-| Web Vitals (LCP / INP / CLS) | “Good” (2.5s / 200ms / 0.1) | Google’s standard; passes user perception threshold |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Metric</th><th>Target</th><th>Why</th></tr></thead><tbody><tr><td>Time to interactive (TTI) on the harness page</td><td>&#x3C; 1.5 s on a warm cache</td><td>Operators sit on this page all day</td></tr><tr><td>Frame rate during list updates / animation</td><td>60fps minimum, 120fps when transform-only</td><td>Anything below 60 feels sluggish</td></tr><tr><td>Re-renders per keystroke in a 50-row form</td><td>≤ 1 per field</td><td>Anything more is a re-render storm</td></tr><tr><td>Bundle delta per new feature</td><td>&#x3C; 10 KB gzip / route</td><td>Death-by-a-thousand-cuts kills warm-cache TTI</td></tr><tr><td>Web Vitals (LCP / INP / CLS)</td><td>“Good” (2.5s / 200ms / 0.1)</td><td>Google’s standard; passes user perception threshold</td></tr></tbody></table>
 <p>You can verify the first three locally with React DevTools’ Profiler. The last two need Lighthouse or Web Vitals in production.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="lessons-from-the-apps-that-feel-fastest">Lessons from the apps that feel fastest</h2><a class="sl-anchor-link" href="#lessons-from-the-apps-that-feel-fastest"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Lessons from the apps that feel fastest”</span></a></div>
-<p>| App | What they do | What you can copy |
-|---|---|---|
-| <strong>Linear</strong> | Local-first sync — every action mutates the local store first, then syncs to the server in the background. Zero “loading…” spinners on normal operations. Fine-grained subscriptions: components only re-render when <em>their slice</em> of state changes. | Use <code dir="auto">useSyncQuery</code> (<code dir="auto">libs/generic/sync</code>) the way it’s already wired — it’s <strong>transport-agnostic</strong>, so local-first/optimistic behavior is what you get on the Zero/WebSocket transport, with REST fallback on polling/SSE. Optimistic UI for every mutation that runs on WS. Don’t subscribe to whole tables when one row is enough. |
-| <strong>Notion</strong> | Block-level memoization in the editor — every block is a <code dir="auto">React.memo</code> with a stable identity, and they avoid re-rendering ancestors when a block changes. Service worker for offline. View Transitions API for sidebar nav. | Memoize list items by stable key. Use <code dir="auto">React.memo</code> + <code dir="auto">areEqual</code> on FeatureList row, IssuesList row, ProposalsPanel item. |
-| <strong>Vercel</strong> | Server Components by default; <code dir="auto">'use client'</code> only at leaves. Streaming SSR with Suspense boundaries around slow data. Edge-runtime for routes that don’t need Node. | <em>(RSC/SSR pattern — not applicable: the operator is a Vite SPA with no Server Components.)</em> What still transfers: keep route chunks lean and code-split heavy pieces, and wrap slow client data-fetching in <code dir="auto">&#x3C;Suspense></code> with <code dir="auto">React.lazy</code>. |
-| <strong>Figma</strong> | UI is React (chrome only). The canvas is custom Rust→WebAssembly. They explicitly <em>don’t</em> try to make React fast enough for the design surface — they use the right tool for the right surface. | When you have a hot rendering loop (canvas, graph), don’t reach for React. Drop down to imperative DOM / canvas / WebGL. |
-| <strong>Discord</strong> | Virtualized chat list. Workers for syntax highlighting and search indexing. Replaced setState chains with Flux to avoid double-renders. | Virtualize any list > 50 rows (<code dir="auto">@tanstack/react-virtual</code> already in deps). Move CPU-heavy work off the main thread (Web Workers). |
-| <strong>Stripe</strong> | Inline critical CSS. Defer all non-critical JS. <code dir="auto">preconnect</code> to API hosts. Prerender hot paths. | Eager-load (don’t lazy/defer) above-the-fold images and set explicit dimensions. <code dir="auto">&#x3C;link rel="preconnect"></code> for cross-origin APIs (Anthropic, Cloudflare, etc.) in <code dir="auto">apps/operator-vite/index.html</code>. |
-| <strong>Airtable</strong> | Virtualized grid. WebWorker for formula compute. Optimistic UI everywhere. | Same patterns. We already use <code dir="auto">RichGrid</code> virtualization — keep it. |
-| <strong>GitHub</strong> | Turbo (HTML over the wire) for many surfaces, replacing SPA. View Transitions for navigation. Aggressive HTTP caching. | <em>(The operator is deliberately a SPA — the “prefer SSR + native nav” half doesn’t apply here.)</em> What transfers: aggressive HTTP caching on the Hono API, and the View Transitions / WAAPI approach for cross-route animation (see <code dir="auto">RouteTransitionProvider</code>’s jump-gate warp). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>App</th><th>What they do</th><th>What you can copy</th></tr></thead><tbody><tr><td><strong>Linear</strong></td><td>Local-first sync — every action mutates the local store first, then syncs to the server in the background. Zero “loading…” spinners on normal operations. Fine-grained subscriptions: components only re-render when <em>their slice</em> of state changes.</td><td>Use <code dir="auto">useSyncQuery</code> (<code dir="auto">libs/generic/sync</code>) the way it’s already wired — it’s <strong>transport-agnostic</strong>, so local-first/optimistic behavior is what you get on the Zero/WebSocket transport, with REST fallback on polling/SSE. Optimistic UI for every mutation that runs on WS. Don’t subscribe to whole tables when one row is enough.</td></tr><tr><td><strong>Notion</strong></td><td>Block-level memoization in the editor — every block is a <code dir="auto">React.memo</code> with a stable identity, and they avoid re-rendering ancestors when a block changes. Service worker for offline. View Transitions API for sidebar nav.</td><td>Memoize list items by stable key. Use <code dir="auto">React.memo</code> + <code dir="auto">areEqual</code> on FeatureList row, IssuesList row, ProposalsPanel item.</td></tr><tr><td><strong>Vercel</strong></td><td>Server Components by default; <code dir="auto">'use client'</code> only at leaves. Streaming SSR with Suspense boundaries around slow data. Edge-runtime for routes that don’t need Node.</td><td><em>(RSC/SSR pattern — not applicable: the operator is a Vite SPA with no Server Components.)</em> What still transfers: keep route chunks lean and code-split heavy pieces, and wrap slow client data-fetching in <code dir="auto">&#x3C;Suspense></code> with <code dir="auto">React.lazy</code>.</td></tr><tr><td><strong>Figma</strong></td><td>UI is React (chrome only). The canvas is custom Rust→WebAssembly. They explicitly <em>don’t</em> try to make React fast enough for the design surface — they use the right tool for the right surface.</td><td>When you have a hot rendering loop (canvas, graph), don’t reach for React. Drop down to imperative DOM / canvas / WebGL.</td></tr><tr><td><strong>Discord</strong></td><td>Virtualized chat list. Workers for syntax highlighting and search indexing. Replaced setState chains with Flux to avoid double-renders.</td><td>Virtualize any list > 50 rows (<code dir="auto">@tanstack/react-virtual</code> already in deps). Move CPU-heavy work off the main thread (Web Workers).</td></tr><tr><td><strong>Stripe</strong></td><td>Inline critical CSS. Defer all non-critical JS. <code dir="auto">preconnect</code> to API hosts. Prerender hot paths.</td><td>Eager-load (don’t lazy/defer) above-the-fold images and set explicit dimensions. <code dir="auto">&#x3C;link rel="preconnect"></code> for cross-origin APIs (Anthropic, Cloudflare, etc.) in <code dir="auto">apps/operator-vite/index.html</code>.</td></tr><tr><td><strong>Airtable</strong></td><td>Virtualized grid. WebWorker for formula compute. Optimistic UI everywhere.</td><td>Same patterns. We already use <code dir="auto">RichGrid</code> virtualization — keep it.</td></tr><tr><td><strong>GitHub</strong></td><td>Turbo (HTML over the wire) for many surfaces, replacing SPA. View Transitions for navigation. Aggressive HTTP caching.</td><td><em>(The operator is deliberately a SPA — the “prefer SSR + native nav” half doesn’t apply here.)</em> What transfers: aggressive HTTP caching on the Hono API, and the View Transitions / WAAPI approach for cross-route animation (see <code dir="auto">RouteTransitionProvider</code>’s jump-gate warp).</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="hard-rules--must-follow">Hard rules — must follow</h2><a class="sl-anchor-link" href="#hard-rules--must-follow"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Hard rules — must follow”</span></a></div>
 <p>These are non-negotiable. CI / review will reject violations.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="1-historical--rsc-no-longer-applies-keep-the-js-you-ship-small">1. (Historical — RSC no longer applies) Keep the JS you ship small</h3><a class="sl-anchor-link" href="#1-historical--rsc-no-longer-applies-keep-the-js-you-ship-small"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “1. (Historical — RSC no longer applies) Keep the JS you ship small”</span></a></div>
@@ -165,13 +235,42 @@
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="css"><code><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">.h-tab-content</span><span style="--0:#C792EA;--1:#8844AE">[</span><span style="--0:#C5E478;--1:#3B61B0">data-state</span><span style="--0:#7FDBCA;--1:#096E72">=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">inactive</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C792EA;--1:#8844AE">]</span><span style="--0:#D6DEEB;--1:#403F53"> {</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#80CBC4;--1:#096E72">content-visibility</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#FF6D6D;--1:#984E4D">auto</span><span style="--0:#D6DEEB;--1:#403F53">;          </span><span style="--0:#919F9F;--1:#5F636F">/* skip rendering when off-screen */</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#80CBC4;--1:#096E72">contain-intrinsic-size</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--1:#AA0982"><span style="--0:#F78C6C">800</span><span style="--0:#FFEB95">px</span></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--1:#AA0982"><span style="--0:#F78C6C">600</span><span style="--0:#FFEB95">px</span></span><span style="--0:#D6DEEB;--1:#403F53">; </span><span style="--0:#919F9F;--1:#5F636F">/* reserve space so scroll position doesn't jump */</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code=".h-tab-content[data-state=&#x22;inactive&#x22;] {  content-visibility: auto;          /* skip rendering when off-screen */  contain-intrinsic-size: 800px 600px; /* reserve space so scroll position doesn&#x27;t jump */}"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h2"><h2 id="animation-rules">Animation rules</h2><a class="sl-anchor-link" href="#animation-rules"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Animation rules”</span></a></div>
 <p>Adopting the <a href="#">animation strategy</a> (see also <code dir="auto">lib/forms</code> style guide for forms):</p>
-<p>| Need | Use | Reach for it because |
-|---|---|---|
-| Modal / popover / dropdown / tab open/close | <strong>CSS keyframes on Radix <code dir="auto">data-state</code></strong> | Native compositor; zero JS cost. The <code dir="auto">--ease-out</code> / <code dir="auto">--ease-in</code> / <code dir="auto">--dur-fast</code> / <code dir="auto">--dur-normal</code> / <code dir="auto">--dur-slow</code> tokens in <code dir="auto">globals.css</code> are the standard. |
-| List item add / remove / reorder | <strong><code dir="auto">@formkit/auto-animate</code></strong> | One-line <code dir="auto">useAutoAnimate</code>. WAAPI direct; zero React re-renders. |
-| Counter tweens, choreography, drag, layout | <strong><code dir="auto">motion</code></strong> | WAAPI-backed since v10. <code dir="auto">&#x3C;motion.div></code>, <code dir="auto">AnimatePresence</code>, <code dir="auto">LayoutGroup</code>. |
-| Cross-route page transitions | <strong>plain TanStack <code dir="auto">&#x3C;Link></code></strong> (+ the Web Animations API for the two jump-gate links) | <code dir="auto">next-transition-router</code> was removed as pure overhead when the app moved to TanStack Router. Ordinary navigation is now a plain TSR <code dir="auto">&#x3C;Link></code> (instant, no transition machine); <code dir="auto">RouteTransitionProvider</code> only plays a WAAPI transform/opacity “warp” on the two <code dir="auto">jump-gate</code> anchors (<code dir="auto">/</code> and <code dir="auto">/adv</code>). The route progress bar is driven by <code dir="auto">@bprogress/react</code>, not <code dir="auto">next-transition-router</code>. |
-| <strong>Don’t use</strong> | GSAP, Theatre, react-spring, popmotion | Either overkill, abandoned, or duplicates of what we already have. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Need</th><th>Use</th><th>Reach for it because</th></tr></thead><tbody><tr><td>Modal / popover / dropdown / tab open/close</td><td><strong>CSS keyframes on Radix <code dir="auto">data-state</code></strong></td><td>Native compositor; zero JS cost. The <code dir="auto">--ease-out</code> / <code dir="auto">--ease-in</code> / <code dir="auto">--dur-fast</code> / <code dir="auto">--dur-normal</code> / <code dir="auto">--dur-slow</code> tokens in <code dir="auto">globals.css</code> are the standard.</td></tr><tr><td>List item add / remove / reorder</td><td><strong><code dir="auto">@formkit/auto-animate</code></strong></td><td>One-line <code dir="auto">useAutoAnimate</code>. WAAPI direct; zero React re-renders.</td></tr><tr><td>Counter tweens, choreography, drag, layout</td><td><strong><code dir="auto">motion</code></strong></td><td>WAAPI-backed since v10. <code dir="auto">&#x3C;motion.div></code>, <code dir="auto">AnimatePresence</code>, <code dir="auto">LayoutGroup</code>.</td></tr><tr><td>Cross-route page transitions</td><td><strong>plain TanStack <code dir="auto">&#x3C;Link></code></strong> (+ the Web Animations API for the two jump-gate links)</td><td><code dir="auto">next-transition-router</code> was removed as pure overhead when the app moved to TanStack Router. Ordinary navigation is now a plain TSR <code dir="auto">&#x3C;Link></code> (instant, no transition machine); <code dir="auto">RouteTransitionProvider</code> only plays a WAAPI transform/opacity “warp” on the two <code dir="auto">jump-gate</code> anchors (<code dir="auto">/</code> and <code dir="auto">/adv</code>). The route progress bar is driven by <code dir="auto">@bprogress/react</code>, not <code dir="auto">next-transition-router</code>.</td></tr><tr><td><strong>Don’t use</strong></td><td>GSAP, Theatre, react-spring, popmotion</td><td>Either overkill, abandoned, or duplicates of what we already have.</td></tr></tbody></table>
 <p><strong>Reduced-motion is mandatory</strong>:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="css"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">@media</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">(</span><span style="--0:#D6DEEB;--1:#403F53">prefers-reduced-motion: reduce</span><span style="--0:#D9F5DD;--1:#111111">)</span><span style="--0:#D6DEEB;--1:#403F53"> {</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#7FDBCA;--1:#096E72">*</span><span style="--0:#C792EA;--1:#8844AE">, </span><span style="--0:#7FDBCA;--1:#096E72">*</span><span style="--0:#C5E478;--1:#3B61B0">::before</span><span style="--0:#C792EA;--1:#8844AE">, </span><span style="--0:#7FDBCA;--1:#096E72">*</span><span style="--0:#C5E478;--1:#3B61B0">::after</span><span style="--0:#D6DEEB;--1:#403F53"> {</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#80CBC4;--1:#096E72">animation-duration</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--1:#AA0982"><span style="--0:#F78C6C">0.01</span><span style="--0:#FFEB95">ms</span></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">!important</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#80CBC4;--1:#096E72">transition-duration</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--1:#AA0982"><span style="--0:#F78C6C">0.01</span><span style="--0:#FFEB95">ms</span></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">!important</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="@media (prefers-reduced-motion: reduce) {  *, *::before, *::after {    animation-duration: 0.01ms !important;    transition-duration: 0.01ms !important;  }}"><div></div></button></div></figure></div>
 <p>For motion-driven JS animations, wrap the dashboard tree in <code dir="auto">&#x3C;MotionConfig reducedMotion="user"></code>.</p>
@@ -354,18 +453,78 @@ is ready, not on a fade-timer).</p>
 <p>The <code dir="auto">hint</code> field is the high-leverage one — server has cross-call context the agent doesn’t.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="audit-findings--measured-2026-05-03">Audit findings — measured (2026-05-03)</h2><a class="sl-anchor-link" href="#audit-findings--measured-2026-05-03"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Audit findings — measured (2026-05-03)”</span></a></div>
 <p>The following measurements were taken on <code dir="auto">localhost:3055/harness</code> during a fresh visit. All on localhost (no network latency); all should be a small fraction of these numbers.</p>
-<p>| Endpoint / metric | Before any fix | After all fixes | Fix(es) applied |
-|---|---|---|---|
-| Initial page TTFB (warm) | 18.7s | <strong>83ms</strong> | sum of all fixes below |
-| Initial domReady (warm) | 21.9s | <strong>116ms</strong> | sum of all fixes below |
-| <code dir="auto">/api/plugins/enabled</code> (4KB) | 18-26s | <strong>92ms</strong> | A1: parallelize fs reads |
-| <code dir="auto">/api/harness/projects</code> | 5-8s | <strong>2.6s</strong> | A1+A9: parallelize fs reads + merge passes |
-| <code dir="auto">/api/harness/projects/lite</code> | n/a (added) | <strong>0.15-0.6s</strong> | A3: hot paths migrated to /lite |
-| <code dir="auto">/api/harness/&#x3C;slug>/log/stream?tail=500</code> | 6.6s | <strong>0.3-2s</strong> | tail-only file read + batched SSE write |
-| <code dir="auto">/api/harness/&#x3C;slug>/branch/&#x3C;x>/actions</code> | 6-10s | <strong>30-590ms</strong> | A1+A15: parallelize discovery + dedup’d resolveEnv reads via shared cache |
-| <code dir="auto">/api/templates</code> | slow (loop) | <strong>53ms</strong> | A1: parallelize template manifest scan |
-| Dashboard freeze (“7 issues”) | infinite loop | <strong>clean</strong> | A8: dedup’d <code dir="auto">replan</code> key |
-| Click responsiveness | 5s timeout | <strong>instant</strong> | A10: Radix <code dir="auto">pointer-events: none !important</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Endpoint / metric</th><th>Before any fix</th><th>After all fixes</th><th>Fix(es) applied</th></tr></thead><tbody><tr><td>Initial page TTFB (warm)</td><td>18.7s</td><td><strong>83ms</strong></td><td>sum of all fixes below</td></tr><tr><td>Initial domReady (warm)</td><td>21.9s</td><td><strong>116ms</strong></td><td>sum of all fixes below</td></tr><tr><td><code dir="auto">/api/plugins/enabled</code> (4KB)</td><td>18-26s</td><td><strong>92ms</strong></td><td>A1: parallelize fs reads</td></tr><tr><td><code dir="auto">/api/harness/projects</code></td><td>5-8s</td><td><strong>2.6s</strong></td><td>A1+A9: parallelize fs reads + merge passes</td></tr><tr><td><code dir="auto">/api/harness/projects/lite</code></td><td>n/a (added)</td><td><strong>0.15-0.6s</strong></td><td>A3: hot paths migrated to /lite</td></tr><tr><td><code dir="auto">/api/harness/&#x3C;slug>/log/stream?tail=500</code></td><td>6.6s</td><td><strong>0.3-2s</strong></td><td>tail-only file read + batched SSE write</td></tr><tr><td><code dir="auto">/api/harness/&#x3C;slug>/branch/&#x3C;x>/actions</code></td><td>6-10s</td><td><strong>30-590ms</strong></td><td>A1+A15: parallelize discovery + dedup’d resolveEnv reads via shared cache</td></tr><tr><td><code dir="auto">/api/templates</code></td><td>slow (loop)</td><td><strong>53ms</strong></td><td>A1: parallelize template manifest scan</td></tr><tr><td>Dashboard freeze (“7 issues”)</td><td>infinite loop</td><td><strong>clean</strong></td><td>A8: dedup’d <code dir="auto">replan</code> key</td></tr><tr><td>Click responsiveness</td><td>5s timeout</td><td><strong>instant</strong></td><td>A10: Radix <code dir="auto">pointer-events: none !important</code></td></tr></tbody></table>
 <p><strong>Compounded result: ~225× speedup on warm-cache TTFB (18.7s → 83ms); the dashboard now feels native on localhost.</strong> Patterns codified into a CI-enforced lint test at <code dir="auto">packages/operator-core/lib/perf-anti-patterns.test.ts</code> — see “Compliance” below.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="recurring-patterns-observed-across-all-the-fixes">Recurring patterns observed across all the fixes</h3><a class="sl-anchor-link" href="#recurring-patterns-observed-across-all-the-fixes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Recurring patterns observed across all the fixes”</span></a></div>
 <p>Eight separate slow endpoints reduced to <strong>two</strong> root patterns:</p>
@@ -397,14 +556,40 @@ is ready, not on a fade-timer).</p>
 </ol>
 <div class="sl-heading-wrapper level-h3"><h3 id="automated-guard">Automated guard</h3><a class="sl-anchor-link" href="#automated-guard"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Automated guard”</span></a></div>
 <p><code dir="auto">packages/operator-core/lib/perf-anti-patterns.test.ts</code> is a vitest CI guard that codifies the regex-detectable rules. As of the latest update, it covers:</p>
-<p>| Rule | What it catches |
-|---|---|
-| <strong>A1</strong> | <code dir="auto">for { … await fs.readFile … }</code> — serial fs reads in a loop |
-| <strong>A2</strong> | <code dir="auto">for { … getHarnessPg(…) … }</code> — per-slug PG pool open in a loop |
-| <strong>A4</strong> | <code dir="auto">spawn('psql' / 'pg_dump', …)</code> — runtime shell-out to PG client binaries |
-| <strong>A6</strong> | <code dir="auto">&#x3C;details></code> wrapping a heavy JSX component (use <code dir="auto">LazyDetails</code>) |
-| <strong>A7</strong> | <code dir="auto">setInterval(…, 500)</code> — 500 ms “safety” polling |
-| <strong>A9</strong> | <code dir="auto">for { … await import("…") … }</code> — dynamic import inside a hot loop |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Rule</th><th>What it catches</th></tr></thead><tbody><tr><td><strong>A1</strong></td><td><code dir="auto">for { … await fs.readFile … }</code> — serial fs reads in a loop</td></tr><tr><td><strong>A2</strong></td><td><code dir="auto">for { … getHarnessPg(…) … }</code> — per-slug PG pool open in a loop</td></tr><tr><td><strong>A4</strong></td><td><code dir="auto">spawn('psql' / 'pg_dump', …)</code> — runtime shell-out to PG client binaries</td></tr><tr><td><strong>A6</strong></td><td><code dir="auto">&#x3C;details></code> wrapping a heavy JSX component (use <code dir="auto">LazyDetails</code>)</td></tr><tr><td><strong>A7</strong></td><td><code dir="auto">setInterval(…, 500)</code> — 500 ms “safety” polling</td></tr><tr><td><strong>A9</strong></td><td><code dir="auto">for { … await import("…") … }</code> — dynamic import inside a hot loop</td></tr></tbody></table>
 <p>Rules NOT regex-detectable (and so checked manually / via runtime symptoms): A3, A5, A8, A10, A11, A12, A13, A14, A15.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="ratchet-pattern">Ratchet pattern</h3><a class="sl-anchor-link" href="#ratchet-pattern"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Ratchet pattern”</span></a></div>
 <p>The test ratchets via a <code dir="auto">BASELINE</code> constant — existing offenders are grandfathered, only NEW occurrences fail CI. The baseline shrinks over time as offenders are fixed; a paired stale-baseline check forces the list to actually shrink (BASELINE entries that no longer match real hits also fail the test).</p>

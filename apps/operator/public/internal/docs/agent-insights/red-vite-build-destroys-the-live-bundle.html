@@ -82,12 +82,37 @@ minutes earlier and nobody deleted anything. This took the owner’s desktop dow
 is written. So <strong>whether a failed build destroys your bundle depends on which phase
 it dies in.</strong> Measured on vite 8.0.16 (the version this app builds with), with a
 previous good bundle sitting in <code dir="auto">dist/</code>:</p>
-<p>| failure mode | exit | previous <code dir="auto">dist/</code> |
-| --- | --- | --- |
-| unresolvable import | 1 | <strong>SURVIVES</strong> — dies before the empty |
-| syntax error | 1 | <strong>SURVIVES</strong> — dies before the empty |
-| <strong>missing named export</strong> (<code dir="auto">MISSING_EXPORT</code>) | 1 | <strong>DESTROYED</strong> — dies after the empty |
-| killed / OOM mid-write | ≠0 | <strong>DESTROYED</strong> — half-written |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>failure mode</th><th>exit</th><th>previous <code dir="auto">dist/</code></th></tr></thead><tbody><tr><td>unresolvable import</td><td>1</td><td><strong>SURVIVES</strong> — dies before the empty</td></tr><tr><td>syntax error</td><td>1</td><td><strong>SURVIVES</strong> — dies before the empty</td></tr><tr><td><strong>missing named export</strong> (<code dir="auto">MISSING_EXPORT</code>)</td><td>1</td><td><strong>DESTROYED</strong> — dies after the empty</td></tr><tr><td>killed / OOM mid-write</td><td>≠0</td><td><strong>DESTROYED</strong> — half-written</td></tr></tbody></table>
 <p>This is why the bug survived so long: a casual repro (typo an import) shows <code dir="auto">dist/</code>
 surviving and “proves” there is no bug. The destructive column is the <strong>link-time</strong>
 one — and that is exactly the class our browser shims produce.</p>

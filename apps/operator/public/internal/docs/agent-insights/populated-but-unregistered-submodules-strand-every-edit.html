@@ -96,10 +96,27 @@ and had to retract it twice. The distinction is not pedantry: it <em>is</em> the
 is also the fix (<code dir="auto">git submodule init</code> writes exactly the missing <code dir="auto">.git/config</code> line).</p>
 <p><code dir="auto">discoverSubmodulesRecursive</code> (<code dir="auto">run-git-sync.ts</code>) had two code paths with
 inconsistent initialization tests:</p>
-<p>| path | when it runs | test used |
-|---|---|---|
-| primary | <code dir="auto">git submodule status</code> exits 0 — the normal case | drop every row prefixed <code dir="auto">-</code> |
-| fallback | discovery <strong>fails</strong> (non-zero exit) | <code dir="auto">lstat(&#x3C;path>/.git)</code> — is the worktree populated? |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>path</th><th>when it runs</th><th>test used</th></tr></thead><tbody><tr><td>primary</td><td><code dir="auto">git submodule status</code> exits 0 — the normal case</td><td>drop every row prefixed <code dir="auto">-</code></td></tr><tr><td>fallback</td><td>discovery <strong>fails</strong> (non-zero exit)</td><td><code dir="auto">lstat(&#x3C;path>/.git)</code> — is the worktree populated?</td></tr></tbody></table>
 <p>The fallback’s test is strictly better, and it only ever ran when the primary had
 already failed. So in the normal case the weak test governed: a populated submodule
 full of real work was classified “uninitialized” and skipped. git-sync never visited
@@ -144,11 +161,32 @@ and self-clearing on the first pass that measures a clean tree.</li>
 well-meaning later edit.</p>
 <p>An escalation that clears itself needs the measurement to distinguish <strong>three</strong>
 states, not two:</p>
-<p>| value | meaning | action |
-|---|---|---|
-| <code dir="auto">null</code> | this pass did <strong>not measure</strong> (discovery never ran, or an early return bypassed it) | do nothing — neither write nor clear |
-| <code dir="auto">[]</code> | measured, and nothing is stranded | <strong>clear</strong> any existing escalation |
-| non-empty | measured, and this is what is stranded | write/refresh the escalation |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>value</th><th>meaning</th><th>action</th></tr></thead><tbody><tr><td><code dir="auto">null</code></td><td>this pass did <strong>not measure</strong> (discovery never ran, or an early return bypassed it)</td><td>do nothing — neither write nor clear</td></tr><tr><td><code dir="auto">[]</code></td><td>measured, and nothing is stranded</td><td><strong>clear</strong> any existing escalation</td></tr><tr><td>non-empty</td><td>measured, and this is what is stranded</td><td>write/refresh the escalation</td></tr></tbody></table>
 <p>Collapse <code dir="auto">null</code> into <code dir="auto">[]</code> — the tempting one-character <code dir="auto">?? []</code> — and an <em>unmeasured</em>
 pass silently retires a live warning. The escalation vanishes on the first tick that
 took an early return, while the work is still stranded, and the operator now has

@@ -109,14 +109,47 @@ the canonical list; don’t trust an inline copy here to stay in sync with it.
 The four core per-harness entities are still slug-agnostic consolidated
 tables in <code dir="auto">harness_shared</code>, each read by a <code dir="auto">.bySlug</code> query keyed on
 <code dir="auto">harnessSlug</code> (a column, not a schema name):</p>
-<p>| Query | Returns | Args |
-|---|---|---|
-| <code dir="auto">featuresConsolidated.bySlug</code> | <code dir="auto">FeatureRow[]</code> | <code dir="auto">{ harnessSlug }</code> |
-| <code dir="auto">issuesConsolidated.bySlug</code> | <code dir="auto">IssueRow[]</code> | <code dir="auto">{ harnessSlug }</code> |
-| <code dir="auto">agentRunsConsolidated.bySlug</code> (or <code dir="auto">agentRunsConsolidated.recent</code>) | <code dir="auto">AgentRunRow[]</code> | <code dir="auto">{ harnessSlug }</code> |
-| <code dir="auto">snapshotsConsolidated.bySlug</code> | <code dir="auto">SnapshotRow[]</code> | <code dir="auto">{ harnessSlug }</code> |
-| <code dir="auto">harnessProjects.lite</code> | <code dir="auto">ProjectRow[]</code> | (none) |
-| <code dir="auto">harnessWorkspaces.byHarness</code> | <code dir="auto">WorkspaceRow[]</code> | <code dir="auto">{ harnessSlug }</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Query</th><th>Returns</th><th>Args</th></tr></thead><tbody><tr><td><code dir="auto">featuresConsolidated.bySlug</code></td><td><code dir="auto">FeatureRow[]</code></td><td><code dir="auto">{ harnessSlug }</code></td></tr><tr><td><code dir="auto">issuesConsolidated.bySlug</code></td><td><code dir="auto">IssueRow[]</code></td><td><code dir="auto">{ harnessSlug }</code></td></tr><tr><td><code dir="auto">agentRunsConsolidated.bySlug</code> (or <code dir="auto">agentRunsConsolidated.recent</code>)</td><td><code dir="auto">AgentRunRow[]</code></td><td><code dir="auto">{ harnessSlug }</code></td></tr><tr><td><code dir="auto">snapshotsConsolidated.bySlug</code></td><td><code dir="auto">SnapshotRow[]</code></td><td><code dir="auto">{ harnessSlug }</code></td></tr><tr><td><code dir="auto">harnessProjects.lite</code></td><td><code dir="auto">ProjectRow[]</code></td><td>(none)</td></tr><tr><td><code dir="auto">harnessWorkspaces.byHarness</code></td><td><code dir="auto">WorkspaceRow[]</code></td><td><code dir="auto">{ harnessSlug }</code></td></tr></tbody></table>
 <p><code dir="auto">featuresConsolidated</code> also carries <code dir="auto">featuresConsolidated.byHive</code> (cross-member browse, WI-259 P-006/D-010) and <code dir="auto">featuresConsolidated.byPlanSlug</code>.</p>
 <p>The doc text claiming a <code dir="auto">needsReview</code> variant, a <code dir="auto">bySourcePlan</code> form, or an <code dir="auto">all</code> form is drift —
 those queries do not exist in the registry. Adding a new harness still doesn’t add a query — the slug

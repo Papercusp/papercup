@@ -104,11 +104,32 @@ not verify.</p>
 <p>Wave, platforms, and the wall are <strong>derived from the platform registry</strong>
 (<code dir="auto">packages/operator-core/lib/external-triggers/social/platform-registry.ts</code>) —
 if a row below disagrees with that file, the file is right.</p>
-<p>| Wave | Platforms | What blocks the LIVE half |
-|---|---|---|
-| <strong>A</strong> | Bluesky, Mastodon, Reddit | <strong>Owner credentials only</strong> — a Bluesky app password, a Mastodon instance account, a Reddit app registration. No external review. This is the cheapest wave to take live. |
-| <strong>B</strong> | YouTube, Facebook Pages, Instagram, Threads | YouTube: owner approves the <strong>Google incremental consent</strong> screen once (scopes are additive on the existing Workspace connection). Facebook Pages / Instagram / Threads: <strong>Meta app review</strong> — identity, legal and business verification, multi-week lead time. |
-| <strong>C</strong> | LinkedIn, TikTok, X (Twitter) | LinkedIn: <strong>partner review</strong> for organization/page access. TikTok: <strong>TikTok audit</strong> — unaudited apps cannot direct-publish, so v1 targets the draft/inbox path. X: <strong>paid-tier purchase authorization</strong>, a recurring cost outside agent authority under any mode (D-002). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Wave</th><th>Platforms</th><th>What blocks the LIVE half</th></tr></thead><tbody><tr><td><strong>A</strong></td><td>Bluesky, Mastodon, Reddit</td><td><strong>Owner credentials only</strong> — a Bluesky app password, a Mastodon instance account, a Reddit app registration. No external review. This is the cheapest wave to take live.</td></tr><tr><td><strong>B</strong></td><td>YouTube, Facebook Pages, Instagram, Threads</td><td>YouTube: owner approves the <strong>Google incremental consent</strong> screen once (scopes are additive on the existing Workspace connection). Facebook Pages / Instagram / Threads: <strong>Meta app review</strong> — identity, legal and business verification, multi-week lead time.</td></tr><tr><td><strong>C</strong></td><td>LinkedIn, TikTok, X (Twitter)</td><td>LinkedIn: <strong>partner review</strong> for organization/page access. TikTok: <strong>TikTok audit</strong> — unaudited apps cannot direct-publish, so v1 targets the draft/inbox path. X: <strong>paid-tier purchase authorization</strong>, a recurring cost outside agent authority under any mode (D-002).</td></tr></tbody></table>
 <p>Wave A is the only wave whose wall is purely a credential. Waves B and C need
 someone with legal/business standing to file with the vendor, so their code halves
 are built and verified against fixtures and stay that way until the owner clears
@@ -128,10 +149,24 @@ boots a throwaway migrated Postgres so every write is discarded at teardown. It
 boots into first-run onboarding with an empty DB, so it is the wrong choice when
 you need to see existing rows.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="routes-and-params">Routes and params</h3><a class="sl-anchor-link" href="#routes-and-params"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Routes and params”</span></a></div>
-<p>| Surface | URL |
-|---|---|
-| Social sources pane | <code dir="auto">/admin/triggers?view=sources&#x26;sources=social</code> |
-| Plan binding composer | <code dir="auto">/admin/plans?plan=&#x3C;plan-slug>&#x26;ptab=triggers</code> → <strong>Attach event</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>URL</th></tr></thead><tbody><tr><td>Social sources pane</td><td><code dir="auto">/admin/triggers?view=sources&#x26;sources=social</code></td></tr><tr><td>Plan binding composer</td><td><code dir="auto">/admin/plans?plan=&#x3C;plan-slug>&#x26;ptab=triggers</code> → <strong>Attach event</strong></td></tr></tbody></table>
 <p>Two params bite:</p>
 <ul>
 <li>The plan-detail tab key is <strong><code dir="auto">ptab</code></strong>, not <code dir="auto">tab</code> — on <code dir="auto">/adv</code> the shell owns <code dir="auto">tab</code>, and sharing the key clobbered it.</li>
@@ -158,12 +193,32 @@ recognisable <code dir="auto">created_by</code>, and delete them by that stamp a
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="ts"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">await</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">createOwnedExternalTriggerSource</span><span style="--0:#D6DEEB;--1:#403F53">(sql, {</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">workspaceId: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">papercusp-workspace</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">kind: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">reddit</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,                       </span><span style="--0:#919F9F;--1:#5D6376">// the source's `kind` IS the platform id</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">ownerUserId: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">&#x3C;owner uuid></span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">status: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">connected</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">cursor: { newestFullname: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">t3_1p028ab</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> },</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">config: { seededBy: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">p028-e2e-fixture</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> },</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">createdBy: </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">p028-e2e-fixture</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">});</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="await createOwnedExternalTriggerSource(sql, {  workspaceId: &#x27;papercusp-workspace&#x27;,  kind: &#x27;reddit&#x27;,                       // the source&#x27;s &#x60;kind&#x60; IS the platform id  ownerUserId: &#x27;<owner uuid>&#x27;,  status: &#x27;connected&#x27;,  cursor: { newestFullname: &#x27;t3_1p028ab&#x27; },  config: { seededBy: &#x27;p028-e2e-fixture&#x27; },  createdBy: &#x27;p028-e2e-fixture&#x27;,});"><div></div></button></div></figure></div>
 <p>Seeding one source per cursor shape is what makes the four freshness states
 visible in one pane:</p>
-<p>| Seed cursor | State rendered |
-|---|---|
-| <code dir="auto">{ seq, lastEventAt }</code> | <code dir="auto">synced · 3m ago</code> |
-| <code dir="auto">{ newestFullname }</code> | <code dir="auto">advancing · … · no timestamp on this platform</code> |
-| <code dir="auto">{}</code> | <code dir="auto">never synced — no cursor persisted yet</code> |
-| <code dir="auto">{ bogusUnknownField }</code> | <code dir="auto">unreadable cursor — matches no known social cursor shape</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Seed cursor</th><th>State rendered</th></tr></thead><tbody><tr><td><code dir="auto">{ seq, lastEventAt }</code></td><td><code dir="auto">synced · 3m ago</code></td></tr><tr><td><code dir="auto">{ newestFullname }</code></td><td><code dir="auto">advancing · … · no timestamp on this platform</code></td></tr><tr><td><code dir="auto">{}</code></td><td><code dir="auto">never synced — no cursor persisted yet</code></td></tr><tr><td><code dir="auto">{ bogusUnknownField }</code></td><td><code dir="auto">unreadable cursor — matches no known social cursor shape</code></td></tr></tbody></table>
 <p>The third and fourth rows are the ones worth keeping in any future run: a healthy
 Reddit source carries no timestamp <strong>by design</strong>, and collapsing that into “never
 synced” is a false alarm the pane exists to avoid.</p>

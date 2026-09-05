@@ -74,11 +74,36 @@
 <p>When an account “fails” at the gateway, it is <strong>one of three different things</strong>.
 They look similar (a paused account, a non-200, a hang) but have <em>opposite</em> correct
 responses. Conflating them is the bug class this doc prevents.</p>
-<p>| Signal | What it is | Correct response | The wrong response (the bug) |
-|---|---|---|---|
-| <strong>Transport stall</strong> | the account’s egress PROXY hangs (a Rayobyte squid CONNECT-hangs ~60s) — the request never reaches Anthropic | route AROUND the proxy (egress circuit + half-open probe); the account’s QUOTA is fine | counting it as a rate penalty → falsely marks a quota-healthy account “exhausted” + triggers paid scale-out |
-| <strong>Rate 429</strong> | a per-minute / burst throttle (<code dir="auto">x-should-retry:true</code>, no window headers) — capacity exists, the account is just going too fast right now | AIMD-decrease the account’s LEARNED rpm and PACE to it; retry at the paced rate | pace at a STATIC floor that can’t learn down → re-walk into the same 429 forever |
-| <strong>Usage cap</strong> | a token-budget rolling window (5h / 7d, <code dir="auto">x-should-retry:false</code> + window reset) — the account is genuinely out for hours | pause to the (bounded, re-probed) reset and SWITCH to another account | wait on the same account for hours, or treat it as transient |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Signal</th><th>What it is</th><th>Correct response</th><th>The wrong response (the bug)</th></tr></thead><tbody><tr><td><strong>Transport stall</strong></td><td>the account’s egress PROXY hangs (a Rayobyte squid CONNECT-hangs ~60s) — the request never reaches Anthropic</td><td>route AROUND the proxy (egress circuit + half-open probe); the account’s QUOTA is fine</td><td>counting it as a rate penalty → falsely marks a quota-healthy account “exhausted” + triggers paid scale-out</td></tr><tr><td><strong>Rate 429</strong></td><td>a per-minute / burst throttle (<code dir="auto">x-should-retry:true</code>, no window headers) — capacity exists, the account is just going too fast right now</td><td>AIMD-decrease the account’s LEARNED rpm and PACE to it; retry at the paced rate</td><td>pace at a STATIC floor that can’t learn down → re-walk into the same 429 forever</td></tr><tr><td><strong>Usage cap</strong></td><td>a token-budget rolling window (5h / 7d, <code dir="auto">x-should-retry:false</code> + window reset) — the account is genuinely out for hours</td><td>pause to the (bounded, re-probed) reset and SWITCH to another account</td><td>wait on the same account for hours, or treat it as transient</td></tr></tbody></table>
 <p>The tell that separates <strong>transport</strong> from <strong>account</strong>: <code dir="auto">curl -x http://&#x3C;proxy> https://api.anthropic.com/v1/messages -X POST -d '{}'</code>.
 A <strong>fast 401</strong> (~1–2s) = the proxy is healthy ⇒ any 60s “no activity” stall is <strong>account-side</strong>
 (Anthropic holding the request — a soft-throttle), NOT a dead proxy. (A genuinely dead proxy

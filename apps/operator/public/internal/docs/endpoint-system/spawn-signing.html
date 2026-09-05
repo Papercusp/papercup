@@ -183,16 +183,48 @@ already rejects those once <em>it</em> re-reads the rotated key.</p></div> </asi
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F">-- Most-recently failed spawns</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">SELECT</span><span style="--0:#D6DEEB;--1:#403F53"> ts, reason, claimed_role, claimed_harness, claimed_spawn</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">FROM</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">harness_shared</span><span style="--0:#D6DEEB;--1:#403F53">.</span><span style="--0:#82AAFF;--1:#3B61B0">spawn_sig_verification_failures</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">ORDER BY</span><span style="--0:#D6DEEB;--1:#403F53"> ts </span><span style="--0:#C792EA;--1:#8844AE">DESC</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">LIMIT</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">20</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="-- Recent failures by reason (last 24h)SELECT reason, count(*) FROM harness_shared.spawn_sig_verification_failuresWHERE ts > now() - interval &#x27;24 hours&#x27;GROUP BY reason ORDER BY 2 DESC;-- Most-recently failed spawnsSELECT ts, reason, claimed_role, claimed_harness, claimed_spawnFROM harness_shared.spawn_sig_verification_failuresORDER BY ts DESC LIMIT 20;"><div></div></button></div></figure></div>
 <p>A non-zero rate of <code dir="auto">invalid_signature</code> outside explicit test runs is a real signal. Correlate <code dir="auto">claimed_spawn</code> with the orchestrator’s spawn IDs to identify which spawn produced the forgery.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="reason-codes">Reason codes</h2><a class="sl-anchor-link" href="#reason-codes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Reason codes”</span></a></div>
-<p>| reason | When |
-|---|---|
-| <code dir="auto">missing_sig</code> | URL has <code dir="auto">exp</code> but no <code dir="auto">sig</code>. Once a URL carries <code dir="auto">exp</code> (or <code dir="auto">sig</code>), <code dir="auto">verifySpawnParams</code> runs and any failure is logged <strong>and</strong> hard-rejected, regardless of strict vs soft-warn mode. (The soft-warn logged-only-accept path only fires when <em>neither</em> <code dir="auto">sig</code> nor <code dir="auto">exp</code> is present, and that path emits no reason code.) |
-| <code dir="auto">missing_exp</code> | URL has <code dir="auto">sig</code> but no <code dir="auto">exp</code> |
-| <code dir="auto">invalid_exp</code> | <code dir="auto">exp</code> not parseable as a non-negative integer |
-| <code dir="auto">expired</code> | <code dir="auto">exp &#x3C; now()</code> — only reachable when the mint used a <code dir="auto">ttlSec > 0</code> override; the default <code dir="auto">exp=0</code> (permanent, since 2026-07-01) skips this check entirely |
-| <code dir="auto">invalid_sig_encoding</code> | <code dir="auto">sig</code> isn’t valid base64url |
-| <code dir="auto">invalid_signature</code> | HMAC mismatch — the realistic forgery signal |
-| <code dir="auto">duplicate_param:&#x3C;k></code> | Same allowlisted key appears twice (forger appending <code dir="auto">&#x26;role=operator</code> after the signed one) |
-| <code dir="auto">missing_sig_required_mode</code> | Unsigned URL hit the verifier with <code dir="auto">PAPERCUSP_REQUIRE_SPAWN_SIG=1</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>reason</th><th>When</th></tr></thead><tbody><tr><td><code dir="auto">missing_sig</code></td><td>URL has <code dir="auto">exp</code> but no <code dir="auto">sig</code>. Once a URL carries <code dir="auto">exp</code> (or <code dir="auto">sig</code>), <code dir="auto">verifySpawnParams</code> runs and any failure is logged <strong>and</strong> hard-rejected, regardless of strict vs soft-warn mode. (The soft-warn logged-only-accept path only fires when <em>neither</em> <code dir="auto">sig</code> nor <code dir="auto">exp</code> is present, and that path emits no reason code.)</td></tr><tr><td><code dir="auto">missing_exp</code></td><td>URL has <code dir="auto">sig</code> but no <code dir="auto">exp</code></td></tr><tr><td><code dir="auto">invalid_exp</code></td><td><code dir="auto">exp</code> not parseable as a non-negative integer</td></tr><tr><td><code dir="auto">expired</code></td><td><code dir="auto">exp &#x3C; now()</code> — only reachable when the mint used a <code dir="auto">ttlSec > 0</code> override; the default <code dir="auto">exp=0</code> (permanent, since 2026-07-01) skips this check entirely</td></tr><tr><td><code dir="auto">invalid_sig_encoding</code></td><td><code dir="auto">sig</code> isn’t valid base64url</td></tr><tr><td><code dir="auto">invalid_signature</code></td><td>HMAC mismatch — the realistic forgery signal</td></tr><tr><td><code dir="auto">duplicate_param:&#x3C;k></code></td><td>Same allowlisted key appears twice (forger appending <code dir="auto">&#x26;role=operator</code> after the signed one)</td></tr><tr><td><code dir="auto">missing_sig_required_mode</code></td><td>Unsigned URL hit the verifier with <code dir="auto">PAPERCUSP_REQUIRE_SPAWN_SIG=1</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="threat-model">Threat model</h2><a class="sl-anchor-link" href="#threat-model"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Threat model”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="defends-against">Defends against</h3><a class="sl-anchor-link" href="#defends-against"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Defends against”</span></a></div>
 <ul>
@@ -217,13 +249,42 @@ already rejects those once <em>it</em> re-reads the rotated key.</p></div> </asi
 <p>The suites are Vitest, under <code dir="auto">packages/operator-core/lib/</code>. The
 integration ones need Docker (testcontainers Postgres); run them from
 the package dir (e.g. <code dir="auto">cd packages/operator-core &#x26;&#x26; npx vitest run &#x3C;name></code>):</p>
-<p>| Test | Kind | What it proves |
-|---|---|---|
-| <code dir="auto">spawn-signing.test.ts</code> | unit | sign/verify canonicalization + every reason code |
-| <code dir="auto">__tests__/spawn-signing-e2e.integration.test.ts</code> | integration | full path through the MCP boundary |
-| <code dir="auto">__tests__/mint-roundtrip.integration.test.ts</code> | integration | orchestrator’s <code dir="auto">writeSignedSpawnMcp</code> ↔ operator’s verifier agree on HMAC |
-| <code dir="auto">__tests__/admin-rotate.integration.test.ts</code> | integration | rotation endpoint auth + revocation semantics |
-| <code dir="auto">__tests__/admin-failures.integration.test.ts</code> | integration | audit-read endpoint (filter + summary) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Test</th><th>Kind</th><th>What it proves</th></tr></thead><tbody><tr><td><code dir="auto">spawn-signing.test.ts</code></td><td>unit</td><td>sign/verify canonicalization + every reason code</td></tr><tr><td><code dir="auto">__tests__/spawn-signing-e2e.integration.test.ts</code></td><td>integration</td><td>full path through the MCP boundary</td></tr><tr><td><code dir="auto">__tests__/mint-roundtrip.integration.test.ts</code></td><td>integration</td><td>orchestrator’s <code dir="auto">writeSignedSpawnMcp</code> ↔ operator’s verifier agree on HMAC</td></tr><tr><td><code dir="auto">__tests__/admin-rotate.integration.test.ts</code></td><td>integration</td><td>rotation endpoint auth + revocation semantics</td></tr><tr><td><code dir="auto">__tests__/admin-failures.integration.test.ts</code></td><td>integration</td><td>audit-read endpoint (filter + summary)</td></tr></tbody></table>
 <p>Run them before promoting any change to the signing pipeline.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="file-map">File map</h2><a class="sl-anchor-link" href="#file-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “File map”</span></a></div>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/spawn-signing.ts                                 — sign/verify/rotate/log</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts  — verifier wired into tryBuildSpawnContext</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-rotate.ts    — POST: rotate + bump cache</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/endpoint-route/routes/admin/spawn-signing-failures.ts  — GET: audit read</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">apps/operator/scripts/rotate-spawn-signing-key.mjs                          — CLI wrapper</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">apps/operator/docs/spawn-signing-threat-model.md                            — long-form threat model</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/__tests__/mint-roundtrip.integration.test.ts</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/__tests__/admin-rotate.integration.test.ts</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">packages/operator-core/lib/__tests__/admin-failures.integration.test.ts</span></div></div><div class="ec-line"><div class="code">

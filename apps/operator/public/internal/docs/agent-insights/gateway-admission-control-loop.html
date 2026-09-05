@@ -81,10 +81,30 @@ still being throttled at the source: today it is not.</p></div></aside>
 things must happen: scarce capacity must go to the RIGHT work, and the fleet must stop generating work the
 pool can’t serve. Those are the two ends of one control loop, and they read the SAME oracle — the gateway
 <code dir="auto">/stats</code> (the only process that sees <code dir="auto">anthropic-ratelimit-*</code>).</p>
-<p>| Side | Flag | Where | What it does |
-|---|---|---|---|
-| <strong>SINK</strong> (allocate) | <code dir="auto">GATEWAY_PRIORITY_TIERS</code> | gateway admission | per-tier in-flight caps + a reserved <strong>tier-1 floor</strong> — mug/scout/overwatch/interactive (tier 1) are never fully crowded out by batch cups (tier 3) |
-| <strong>SOURCE</strong> (reduce inflow) | <code dir="auto">QUEEN_CAPACITY_DISPATCH</code> | Mug <code dir="auto">fleet:place_batch</code> | clamp FRESH-cup placement to what the pool can sustain, so the Mug stops flooding a saturated gateway with cup requests that just park/fail |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Side</th><th>Flag</th><th>Where</th><th>What it does</th></tr></thead><tbody><tr><td><strong>SINK</strong> (allocate)</td><td><code dir="auto">GATEWAY_PRIORITY_TIERS</code></td><td>gateway admission</td><td>per-tier in-flight caps + a reserved <strong>tier-1 floor</strong> — mug/scout/overwatch/interactive (tier 1) are never fully crowded out by batch cups (tier 3)</td></tr><tr><td><strong>SOURCE</strong> (reduce inflow)</td><td><code dir="auto">QUEEN_CAPACITY_DISPATCH</code></td><td>Mug <code dir="auto">fleet:place_batch</code></td><td>clamp FRESH-cup placement to what the pool can sustain, so the Mug stops flooding a saturated gateway with cup requests that just park/fail</td></tr></tbody></table>
 <p><strong>Neither creates capacity.</strong> Under total exhaustion even tier-1 gets little; the durable lever is more
 accounts / window resets (an owner action). These just stop the waste and protect the important lane.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="sink-side--gateway-priority-tiers">SINK side — gateway priority tiers</h2><a class="sl-anchor-link" href="#sink-side--gateway-priority-tiers"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “SINK side — gateway priority tiers”</span></a></div>

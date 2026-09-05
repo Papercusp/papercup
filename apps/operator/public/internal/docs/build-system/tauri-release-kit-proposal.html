@@ -94,11 +94,32 @@ the whole design.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-the-pipeline-does-today">What the pipeline does today</h2><a class="sl-anchor-link" href="#what-the-pipeline-does-today"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What the pipeline does today”</span></a></div>
 <p>The canonical tree is the <strong><code dir="auto">papercup/papercusp-desktop/</code> git submodule</strong>
 (v0.0.2). It builds three platform families, all driven from <code dir="auto">bin/</code>:</p>
-<p>| Layer | Driver | Where it runs |
-|---|---|---|
-| Linux <code dir="auto">.deb</code> / <code dir="auto">.AppImage</code> / <code dir="auto">.rpm</code> (x86_64, opt. arm64) | <code dir="auto">bin/release-local.sh</code> → <code dir="auto">tauri build</code> | dev host, locally |
-| macOS universal <code dir="auto">.dmg</code> | <code dir="auto">bin/mac-vm-build.sh</code> → <code dir="auto">tauri build --target universal-apple-darwin</code> | macOS VM over SSH (<code dir="auto">:2222</code>) |
-| Windows Inno Setup <code dir="auto">.exe</code> | <code dir="auto">bin/build-windows-cross.sh</code> (WI-5651, 2026-07-20, retired the VM leg this row originally described) | cross-compiled on THIS Linux host — no VM, no SSH; WSL2 runtime distro from <code dir="auto">scripts/build-rootfs.sh</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Driver</th><th>Where it runs</th></tr></thead><tbody><tr><td>Linux <code dir="auto">.deb</code> / <code dir="auto">.AppImage</code> / <code dir="auto">.rpm</code> (x86_64, opt. arm64)</td><td><code dir="auto">bin/release-local.sh</code> → <code dir="auto">tauri build</code></td><td>dev host, locally</td></tr><tr><td>macOS universal <code dir="auto">.dmg</code></td><td><code dir="auto">bin/mac-vm-build.sh</code> → <code dir="auto">tauri build --target universal-apple-darwin</code></td><td>macOS VM over SSH (<code dir="auto">:2222</code>)</td></tr><tr><td>Windows Inno Setup <code dir="auto">.exe</code></td><td><code dir="auto">bin/build-windows-cross.sh</code> (WI-5651, 2026-07-20, retired the VM leg this row originally described)</td><td>cross-compiled on THIS Linux host — no VM, no SSH; WSL2 runtime distro from <code dir="auto">scripts/build-rootfs.sh</code></td></tr></tbody></table>
 <p><code dir="auto">bin/release-local.sh</code> is the spine. Its steps:</p>
 <ol>
 <li><strong>Version bump</strong> across <code dir="auto">package.json</code>, <code dir="auto">src-tauri/tauri.conf.json</code>,
@@ -132,17 +153,62 @@ harness + orchestrator + MCP server + node-pty + embedded-postgres + pgvector
 <p>So the library owns the <em>dance</em>; each app supplies a <code dir="auto">buildSidecar()</code> plugin and
 a config object.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="generic-vs-injected-boundary">Generic vs injected boundary</h3><a class="sl-anchor-link" href="#generic-vs-injected-boundary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Generic vs injected boundary”</span></a></div>
-<p>| Concern | Generic (in the kit) | Injected per-app (seam) |
-|---|---|---|
-| Version bump | ✅ field-path-driven updater | which files/fields |
-| <code dir="auto">tauri build</code> matrix | ✅ Linux x64/arm64, Win cross, Mac universal | which targets enabled |
-| Signing | ✅ already an env-var seam | key path / passphrase |
-| <code dir="auto">latest.json</code> / updater manifest | ✅ generator | GH download base URL |
-| <code dir="auto">gh release</code> create/upload | ✅ idempotent driver | owner/repo, tag pattern, channel→prerelease |
-| Mac/Windows <strong>VM orchestration</strong> | ✅ SSH/SCP/rsync boilerplate | VM host/port/user/key, build dir |
-| WSL rootfs builder | ✅ Docker bootstrap algorithm | pkg list, output path |
-| <strong>Sidecar build</strong> | ❌ stays per-app | the whole <code dir="auto">buildSidecar()</code> impl |
-| App metadata | ❌ | name, id, bundle targets, category, publisher |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Generic (in the kit)</th><th>Injected per-app (seam)</th></tr></thead><tbody><tr><td>Version bump</td><td>✅ field-path-driven updater</td><td>which files/fields</td></tr><tr><td><code dir="auto">tauri build</code> matrix</td><td>✅ Linux x64/arm64, Win cross, Mac universal</td><td>which targets enabled</td></tr><tr><td>Signing</td><td>✅ already an env-var seam</td><td>key path / passphrase</td></tr><tr><td><code dir="auto">latest.json</code> / updater manifest</td><td>✅ generator</td><td>GH download base URL</td></tr><tr><td><code dir="auto">gh release</code> create/upload</td><td>✅ idempotent driver</td><td>owner/repo, tag pattern, channel→prerelease</td></tr><tr><td>Mac/Windows <strong>VM orchestration</strong></td><td>✅ SSH/SCP/rsync boilerplate</td><td>VM host/port/user/key, build dir</td></tr><tr><td>WSL rootfs builder</td><td>✅ Docker bootstrap algorithm</td><td>pkg list, output path</td></tr><tr><td><strong>Sidecar build</strong></td><td>❌ stays per-app</td><td>the whole <code dir="auto">buildSidecar()</code> impl</td></tr><tr><td>App metadata</td><td>❌</td><td>name, id, bundle targets, category, publisher</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="where-it-would-live-and-how-its-consumed">Where it would live, and how it’s consumed</h2><a class="sl-anchor-link" href="#where-it-would-live-and-how-its-consumed"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Where it would live, and how it’s consumed”</span></a></div>
 <p>MyApp already consumes the shared <code dir="auto">@papercusp/*</code> libs (<code dir="auto">@papercusp/sse</code>,
 <code dir="auto">@papercusp/sync</code>, <code dir="auto">@papercusp/ui-primitives</code>, <code dir="auto">@papercusp/embedded-pg-discovery</code>,

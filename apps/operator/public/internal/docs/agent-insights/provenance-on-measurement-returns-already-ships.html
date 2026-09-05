@@ -78,12 +78,37 @@
 <p>The diagnosis of the <em>symptom</em> is right. The premise is false, and it has been independently re-derived at least twice (most recently EI-20288508326973012, a Scout idea independently graded 4/5).</p>
 <p><strong>Every measurement surface named in that proposal already returns its provenance attached to the result.</strong> Each one uses a name adapted to what can actually go wrong on that surface, which is why a keyword search for <code dir="auto">provenance</code> or <code dir="auto">measured_at</code> finds only some of them and reads as absence.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-already-ships">What already ships</h2><a class="sl-anchor-link" href="#what-already-ships"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What already ships”</span></a></div>
-<p>| failure mode | the marker that already exists | where |
-|---|---|---|
-| gate verdict staleness | <code dir="auto">gateFailingTestsMeasurement()</code> → <code dir="auto">{ failingTests, measured: boolean \| null, provenance: 'measured' \| 'carried' \| 'not-measured' \| 'unknown' }</code> — <code dir="auto">null</code> means UNKNOWN, never <code dir="auto">false</code> | <code dir="auto">operator-core/lib/git-pipeline-stats.ts</code> |
-| candidate freshness | <code dir="auto">source: { value, authoritative, why }</code>; <code dir="auto">candidateSource:'run-probe'</code> is explicitly labelled non-authoritative, and the CRON degradation (“the checkpoint checkout’s live HEAD, an inference that can change between two reads”) is modelled in the cell’s own explanatory string | <code dir="auto">operator-core/lib/cell-registrations.ts</code> |
-| coverage fidelity | <code dir="auto">fidelity: FidelityMarker</code> — <em>“the WEAKEST fidelity present, the honest ceiling on how much this number means”</em>; <em>“numeric zero is interpreted only with its population provenance”</em> | <code dir="auto">operator-core/lib/agent-tools/testing/coverage.ts</code> |
-| run isolation | <code dir="auto">test_runs.worktree_dirty</code> + <code dir="auto">commit_sha</code> + <code dir="auto">source</code>, stamped per run; the <code dir="auto">TEST_FILE_PROVENANCE … uncommitted=N</code> banner with per-path <code dir="auto">[DIRTY]</code> / <code dir="auto">[UNTRACKED]</code> labels | <code dir="auto">operator-core/lib/testing-run-store.ts</code>, <code dir="auto">scripts/test-files.mjs</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>failure mode</th><th>the marker that already exists</th><th>where</th></tr></thead><tbody><tr><td>gate verdict staleness</td><td><code dir="auto">gateFailingTestsMeasurement()</code> → <code dir="auto">{ failingTests, measured: boolean | null, provenance: 'measured' | 'carried' | 'not-measured' | 'unknown' }</code> — <code dir="auto">null</code> means UNKNOWN, never <code dir="auto">false</code></td><td><code dir="auto">operator-core/lib/git-pipeline-stats.ts</code></td></tr><tr><td>candidate freshness</td><td><code dir="auto">source: { value, authoritative, why }</code>; <code dir="auto">candidateSource:'run-probe'</code> is explicitly labelled non-authoritative, and the CRON degradation (“the checkpoint checkout’s live HEAD, an inference that can change between two reads”) is modelled in the cell’s own explanatory string</td><td><code dir="auto">operator-core/lib/cell-registrations.ts</code></td></tr><tr><td>coverage fidelity</td><td><code dir="auto">fidelity: FidelityMarker</code> — <em>“the WEAKEST fidelity present, the honest ceiling on how much this number means”</em>; <em>“numeric zero is interpreted only with its population provenance”</em></td><td><code dir="auto">operator-core/lib/agent-tools/testing/coverage.ts</code></td></tr><tr><td>run isolation</td><td><code dir="auto">test_runs.worktree_dirty</code> + <code dir="auto">commit_sha</code> + <code dir="auto">source</code>, stamped per run; the <code dir="auto">TEST_FILE_PROVENANCE … uncommitted=N</code> banner with per-path <code dir="auto">[DIRTY]</code> / <code dir="auto">[UNTRACKED]</code> labels</td><td><code dir="auto">operator-core/lib/testing-run-store.ts</code>, <code dir="auto">scripts/test-files.mjs</code></td></tr></tbody></table>
 <p>Related markers in the same family: <code dir="auto">stillBrokenCount</code> vs <code dir="auto">stillBrokenNeedsRunCount</code> (confirmed vs merely presumed broken), <code dir="auto">truncatedByLimit</code> on bounded aggregates, and <code dir="auto">_partial</code> on trimmed tool payloads.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="why-the-names-differ--and-why-that-is-correct">Why the names differ — and why that is correct</h2><a class="sl-anchor-link" href="#why-the-names-differ--and-why-that-is-correct"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why the names differ — and why that is correct”</span></a></div>
 <p>The envelope proposal assumes the fields should be uniform. They are not, because each surface’s real failure mode is different, and the adapted marker is <strong>stronger</strong> than the generic one would be:</p>

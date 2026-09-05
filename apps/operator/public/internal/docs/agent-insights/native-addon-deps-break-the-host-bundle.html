@@ -94,10 +94,24 @@ green the commit and promote a host that <strong>cannot build</strong>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-fix-externalize-dont-inline">The fix: externalize, don’t inline</h2><a class="sl-anchor-link" href="#the-fix-externalize-dont-inline"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The fix: externalize, don’t inline”</span></a></div>
 <p>Add the package to <code dir="auto">NATIVE_PKGS</code> in <strong>both</strong> build scripts — they are separate lists
 and both matter:</p>
-<p>| script | why it matters |
-| --- | --- |
-| <code dir="auto">apps/operator/bin/bundle-host.sh</code> | the dev/release <strong>host</strong> (<code dir="auto">:3070</code>/<code dir="auto">:3170</code>) |
-| <code dir="auto">papercusp-desktop/bin/build-desktop-sidecar.sh</code> | the <strong>packaged desktop app</strong> — the shipping product |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>script</th><th>why it matters</th></tr></thead><tbody><tr><td><code dir="auto">apps/operator/bin/bundle-host.sh</code></td><td>the dev/release <strong>host</strong> (<code dir="auto">:3070</code>/<code dir="auto">:3170</code>)</td></tr><tr><td><code dir="auto">papercusp-desktop/bin/build-desktop-sidecar.sh</code></td><td>the <strong>packaged desktop app</strong> — the shipping product</td></tr></tbody></table>
 <p>Externalizing <code dir="auto">@huggingface/transformers</code> also stops esbuild <strong>at the package
 boundary</strong>, so the whole onnxruntime graph leaves the bundle. The sidecar build then
 closure-copies the real package in, so it still resolves at runtime.</p>

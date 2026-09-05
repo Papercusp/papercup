@@ -136,12 +136,32 @@ passes on a dead feature. Both checks above are effect checks.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-habit">The habit</h2><a class="sl-anchor-link" href="#the-habit"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The habit”</span></a></div>
 <p><strong>For anything with a runtime effect, name what would BREAK if the change were incomplete,
 then check THAT.</strong></p>
-<p>| Artifact check (weak) | Effect check (what to run) |
-|---|---|
-| the migration file exists | <code dir="auto">to_regclass(...)</code> <strong>and</strong> the <code dir="auto">db:migrations</code> ledger verdict |
-| my write returned ok | can the work actually be <strong>claimed</strong> now? |
-| the symbols are in the file | does the wired timer/handler actually fire without throwing? |
-| the leaf row says no deadline | what does the <strong>root node</strong> say? |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Artifact check (weak)</th><th>Effect check (what to run)</th></tr></thead><tbody><tr><td>the migration file exists</td><td><code dir="auto">to_regclass(...)</code> <strong>and</strong> the <code dir="auto">db:migrations</code> ledger verdict</td></tr><tr><td>my write returned ok</td><td>can the work actually be <strong>claimed</strong> now?</td></tr><tr><td>the symbols are in the file</td><td>does the wired timer/handler actually fire without throwing?</td></tr><tr><td>the leaf row says no deadline</td><td>what does the <strong>root node</strong> say?</td></tr></tbody></table>
 <p>Two corollaries earned the same afternoon:</p>
 <ul>
 <li><strong>Read the source before implementing anything a task says to “add.”</strong> On a fleet where

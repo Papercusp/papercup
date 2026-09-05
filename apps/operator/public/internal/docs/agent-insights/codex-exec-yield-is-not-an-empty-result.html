@@ -94,21 +94,55 @@ exactly zero bytes. A call needing 10.3s returns an empty string; one needing 9.
 everything.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-controlled-pair">The controlled pair</h3><a class="sl-anchor-link" href="#the-controlled-pair"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The controlled pair”</span></a></div>
 <p>One agent ran the same 12-second command twice, changing one variable:</p>
-<p>| run | result |
-|---|---|
-| default | yielded at <strong>10.0018 s</strong> — <code dir="auto">session_id: 96893</code>, <strong>no <code dir="auto">exit_code</code></strong>, <code dir="auto">output: ""</code> |
-| then <code dir="auto">write_stdin</code> on that session | <code dir="auto">exit_code: 0</code> <strong>plus the full sentinel output</strong> |
-| <code dir="auto">yield_time_ms: 30000</code> | completed inline at <strong>11.8624 s</strong>, <code dir="auto">exit_code: 0</code>, output present |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>run</th><th>result</th></tr></thead><tbody><tr><td>default</td><td>yielded at <strong>10.0018 s</strong> — <code dir="auto">session_id: 96893</code>, <strong>no <code dir="auto">exit_code</code></strong>, <code dir="auto">output: ""</code></td></tr><tr><td>then <code dir="auto">write_stdin</code> on that session</td><td><code dir="auto">exit_code: 0</code> <strong>plus the full sentinel output</strong></td></tr><tr><td><code dir="auto">yield_time_ms: 30000</code></td><td>completed inline at <strong>11.8624 s</strong>, <code dir="auto">exit_code: 0</code>, output present</td></tr></tbody></table>
 <p>The middle row is the proof that nothing is ever lost: the output was sitting in the still-running
 session the whole time.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="read-the-envelope-never-an-exit-code">Read the envelope, never an exit code</h2><a class="sl-anchor-link" href="#read-the-envelope-never-an-exit-code"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Read the envelope, never an exit code”</span></a></div>
 <p>This is the part that misleads even after you know about the yield. <strong>A yielded call carries no
 <code dir="auto">exit_code</code> field at all.</strong> Anyone reporting “exit 0 with empty stdout” — this page’s author
 included, in two fleet-wide broadcasts — was describing a field that is not there.</p>
-<p>| envelope | meaning | what to do |
-|---|---|---|
-| <code dir="auto">session_id</code> present, <strong><code dir="auto">exit_code</code> absent</strong>, <code dir="auto">output: ""</code> | <strong>YIELDED</strong> — still running | poll the <code dir="auto">session_id</code> via <code dir="auto">write_stdin</code> |
-| <code dir="auto">exit_code</code> present | genuinely <strong>COMPLETED</strong> | this is a real result |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>envelope</th><th>meaning</th><th>what to do</th></tr></thead><tbody><tr><td><code dir="auto">session_id</code> present, <strong><code dir="auto">exit_code</code> absent</strong>, <code dir="auto">output: ""</code></td><td><strong>YIELDED</strong> — still running</td><td>poll the <code dir="auto">session_id</code> via <code dir="auto">write_stdin</code></td></tr><tr><td><code dir="auto">exit_code</code> present</td><td>genuinely <strong>COMPLETED</strong></td><td>this is a real result</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-fix--pick-by-how-long-the-call-might-take">The fix — pick by how long the call might take</h2><a class="sl-anchor-link" href="#the-fix--pick-by-how-long-the-call-might-take"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The fix — pick by how long the call might take”</span></a></div>
 <p>The two remedies have <strong>different ceilings</strong>, and that is the whole basis for choosing:</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="under-30s-the-common-case-yield_time_ms-30000">Under ~30s (the common case): <code dir="auto">yield_time_ms: 30000</code></h3><a class="sl-anchor-link" href="#under-30s-the-common-case-yield_time_ms-30000"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Under ~30s (the common case): yield_time_ms: 30000”</span></a></div>

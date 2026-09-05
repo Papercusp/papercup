@@ -76,11 +76,36 @@ same capability is reachable under two names, a guard on one of them is not a gu
 speed bump with a documented detour.</strong></p>
 <p>This has now bitten three times independently, which is why it is written down as a class rather
 than a third bug report:</p>
-<p>| # | surface | narrow spelling | what was exempt |
-|---|---|---|---|
-| WI-38363 | file writers | <code dir="auto">Edit\|Write\|MultiEdit</code> | every <code dir="auto">capability:edit/write</code> call |
-| EI-18695939815676668 | OMP shell | <code dir="auto">startsWith('bash')</code> | OMP’s <code dir="auto">shell</code> spelling |
-| EI-21971958067151594 | Claude shell | <code dir="auto">Bash</code> | <strong>every deny in the 5,815-line bash gate</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>surface</th><th>narrow spelling</th><th>what was exempt</th></tr></thead><tbody><tr><td>WI-38363</td><td>file writers</td><td><code dir="auto">Edit|Write|MultiEdit</code></td><td>every <code dir="auto">capability:edit/write</code> call</td></tr><tr><td>EI-18695939815676668</td><td>OMP shell</td><td><code dir="auto">startsWith('bash')</code></td><td>OMP’s <code dir="auto">shell</code> spelling</td></tr><tr><td>EI-21971958067151594</td><td>Claude shell</td><td><code dir="auto">Bash</code></td><td><strong>every deny in the 5,815-line bash gate</strong></td></tr></tbody></table>
 <p>The third one is the instructive one, because the <em>fix for the first one</em> is what left it behind.
 WI-38363 widened the file-writer matchers to <code dir="auto">mcp__.*__capability_(edit|write|multi_?edit)</code> for
 exactly this reason — and nobody walked the remaining matchers. The shell gate kept
@@ -90,10 +115,24 @@ exactly this reason — and nobody walked the remaining matchers. The shell gate
 <div class="sl-heading-wrapper level-h2"><h2 id="why-this-class-is-nastier-than-it-looks">Why this class is nastier than it looks</h2><a class="sl-anchor-link" href="#why-this-class-is-nastier-than-it-looks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why this class is nastier than it looks”</span></a></div>
 <p><strong>It fails toward ALLOW, silently, and the same command is denied one line earlier in the
 transcript.</strong> Measured live on 2026-08-31 with three Tauri bridges up, the <em>identical</em> command:</p>
-<p>| spelling | result |
-|---|---|
-| <code dir="auto">Bash</code> | DENIED — the tauri target guard named all three candidate bridges |
-| <code dir="auto">capability:bash</code> | RAN — dumped a foreign webview, <code dir="auto">body</code> 2669x1391 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>spelling</th><th>result</th></tr></thead><tbody><tr><td><code dir="auto">Bash</code></td><td>DENIED — the tauri target guard named all three candidate bridges</td></tr><tr><td><code dir="auto">capability:bash</code></td><td>RAN — dumped a foreign webview, <code dir="auto">body</code> 2669x1391</td></tr></tbody></table>
 <p>An agent that hits the deny, reaches for the MCP shell because that is the tool it happens to be
 holding, and succeeds, has been <em>taught</em> that the deny was advisory. Nothing warns anyone.</p>
 <p><strong>And the docs push you onto the ungated spelling.</strong> CLAUDE.md’s “Long jobs: background them at

@@ -81,15 +81,52 @@ the map that pointer should have been.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="two-axes-four-questions">Two axes, four questions</h2><a class="sl-anchor-link" href="#two-axes-four-questions"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Two axes, four questions”</span></a></div>
 <p>There is <strong>one</strong> underlying coordination model, but you query it along two axes. Pick
 the door by the question you are actually asking:</p>
-<p>| Question you are asking | Axis | Door (today) |
-|---|---|---|
-| Is agent X <strong>alive right now</strong>? (live / parked / ended / recorded, wakeable?) | STATE — <em>now</em> | <code dir="auto">coord:presence</code> |
-| <strong>Who holds which work-item / plan-item</strong> right now? (claims, orphaned, stalled) | STATE — <em>now</em> | <code dir="auto">fleet:assignments</code> |
-| One-glance <strong>fleet health</strong> (wake mode, cups in flight, paused governors, tips) | STATE — <em>now, digest</em> | <code dir="auto">coord:glance</code> |
-| <strong>Who was <em>ever</em> in this fleet / topic / plan</strong>, and <strong>what was said</strong>? | HISTORY — <em>ever</em> | <code dir="auto">coord:catch-up</code> (member) / <code dir="auto">coord:feed</code> (firehose) |
-| <strong>What did I miss</strong> while I was asleep, or before I joined? | HISTORY — <em>ever</em> | <code dir="auto">coord:catch-up</code> with an <code dir="auto">audience</code> |
-| My own identity + fleet membership | STATE — <em>self</em> | <code dir="auto">coord:whoami</code> |
-| Full wake bootstrap (assignments + claimable + inbox + plan-events + recall) | STATE — <em>now, composed</em> | <code dir="auto">coord:orient</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Question you are asking</th><th>Axis</th><th>Door (today)</th></tr></thead><tbody><tr><td>Is agent X <strong>alive right now</strong>? (live / parked / ended / recorded, wakeable?)</td><td>STATE — <em>now</em></td><td><code dir="auto">coord:presence</code></td></tr><tr><td><strong>Who holds which work-item / plan-item</strong> right now? (claims, orphaned, stalled)</td><td>STATE — <em>now</em></td><td><code dir="auto">fleet:assignments</code></td></tr><tr><td>One-glance <strong>fleet health</strong> (wake mode, cups in flight, paused governors, tips)</td><td>STATE — <em>now, digest</em></td><td><code dir="auto">coord:glance</code></td></tr><tr><td><strong>Who was <em>ever</em> in this fleet / topic / plan</strong>, and <strong>what was said</strong>?</td><td>HISTORY — <em>ever</em></td><td><code dir="auto">coord:catch-up</code> (member) / <code dir="auto">coord:feed</code> (firehose)</td></tr><tr><td><strong>What did I miss</strong> while I was asleep, or before I joined?</td><td>HISTORY — <em>ever</em></td><td><code dir="auto">coord:catch-up</code> with an <code dir="auto">audience</code></td></tr><tr><td>My own identity + fleet membership</td><td>STATE — <em>self</em></td><td><code dir="auto">coord:whoami</code></td></tr><tr><td>Full wake bootstrap (assignments + claimable + inbox + plan-events + recall)</td><td>STATE — <em>now, composed</em></td><td><code dir="auto">coord:orient</code></td></tr></tbody></table>
 <p><strong>Rule of thumb:</strong> if your question contains the word <em>ever</em>, <em>was</em>, <em>missed</em>,
 <em>history</em>, or <em>who has been</em> — you want the <strong>HISTORY</strong> door, not a state tool. State
 tools answer <em>now</em>; only the append-only log answers <em>ever</em>.</p>
@@ -170,17 +207,72 @@ zombie-await ceiling, the local <code dir="auto">kill(pid,0)</code> probe, the a
 recorded-session rescue, claims-held (suspect vs ended), and — opt-in for
 known-psu-hosted cohorts — the psu-pty host authority. A cross-surface parity
 test (<code dir="auto">liveness-parity.test.ts</code>, P-001) pins the contract.</p>
-<p>| Surface | Verdict field | Raw-freshness field | Notes |
-|---|---|---|---|
-| <code dir="auto">coord:presence</code> / coord:inbox re-bootstrap / sync <code dir="auto">presence</code> query | <code dir="auto">sessionState</code> | <code dir="auto">stale</code> (row flag) | The reference read; never emitted <code dir="auto">alive</code>. |
-| <code dir="auto">fleet:status</code> members[] | <code dir="auto">sessionState</code> | <code dir="auto">heartbeatFresh</code> | <code dir="auto">alive</code> RETIRED from this payload (P-008). |
-| <code dir="auto">fleet:assignments</code> / coord:orient <code dir="auto">me</code> fold | <code dir="auto">sessionState</code> | <code dir="auto">heartbeatFresh</code> | <code dir="auto">alive</code> kept as the verdict-gated boolean projection (TUI compat) — never heartbeat-only anymore. |
-| <code dir="auto">coord:roster</code> view=live | <code dir="auto">sessionState</code> | <code dir="auto">stale</code> | Same snapshot as coord:presence. |
-| <code dir="auto">coord:roster</code> view=claims | <code dir="auto">sessionState</code> | <code dir="auto">heartbeatFresh</code> | Now reconciled through the same oracle (was heartbeat-only — F1). |
-| <code dir="auto">fleet:leader-brief</code> | <code dir="auto">sessionState</code> + <code dir="auto">verdict</code> | — | Its psu-host rule now lives IN the oracle (<code dir="auto">applyPsuHostAuthority</code>). |
-| coord:send / handoff / dispatch MISS report | <code dir="auto">sessionState</code> | — | Full-leg oracle with per-id presence hydration (was <code dir="auto">parked</code>-for-zombies — F2). |
-| fleet:list availability + <code dir="auto">@fleet:</code> audience expansion | (filtered) | — | Oracle-dead owners excluded: counts drop ended/suspect/draining; audience drops ended/suspect only (a draining agent still gets durable sends). |
-| hive roster / Queen survey / spawn dossier | <code dir="auto">sessionState</code> | <code dir="auto">heartbeatFresh</code> | Was heartbeat-only <code dir="auto">alive</code> (F6). |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Verdict field</th><th>Raw-freshness field</th><th>Notes</th></tr></thead><tbody><tr><td><code dir="auto">coord:presence</code> / coord:inbox re-bootstrap / sync <code dir="auto">presence</code> query</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">stale</code> (row flag)</td><td>The reference read; never emitted <code dir="auto">alive</code>.</td></tr><tr><td><code dir="auto">fleet:status</code> members[]</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">heartbeatFresh</code></td><td><code dir="auto">alive</code> RETIRED from this payload (P-008).</td></tr><tr><td><code dir="auto">fleet:assignments</code> / coord:orient <code dir="auto">me</code> fold</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">heartbeatFresh</code></td><td><code dir="auto">alive</code> kept as the verdict-gated boolean projection (TUI compat) — never heartbeat-only anymore.</td></tr><tr><td><code dir="auto">coord:roster</code> view=live</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">stale</code></td><td>Same snapshot as coord:presence.</td></tr><tr><td><code dir="auto">coord:roster</code> view=claims</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">heartbeatFresh</code></td><td>Now reconciled through the same oracle (was heartbeat-only — F1).</td></tr><tr><td><code dir="auto">fleet:leader-brief</code></td><td><code dir="auto">sessionState</code> + <code dir="auto">verdict</code></td><td>—</td><td>Its psu-host rule now lives IN the oracle (<code dir="auto">applyPsuHostAuthority</code>).</td></tr><tr><td>coord:send / handoff / dispatch MISS report</td><td><code dir="auto">sessionState</code></td><td>—</td><td>Full-leg oracle with per-id presence hydration (was <code dir="auto">parked</code>-for-zombies — F2).</td></tr><tr><td>fleet:list availability + <code dir="auto">@fleet:</code> audience expansion</td><td>(filtered)</td><td>—</td><td>Oracle-dead owners excluded: counts drop ended/suspect/draining; audience drops ended/suspect only (a draining agent still gets durable sends).</td></tr><tr><td>hive roster / Queen survey / spawn dossier</td><td><code dir="auto">sessionState</code></td><td><code dir="auto">heartbeatFresh</code></td><td>Was heartbeat-only <code dir="auto">alive</code> (F6).</td></tr></tbody></table>
 <p>Reading rules: <strong><code dir="auto">sessionState</code> is the ONLY liveness verdict.</strong> Any
 <code dir="auto">heartbeatFresh</code> (or legacy <code dir="auto">stale</code>) field is process-keepalive recency — a
 warm-dead session reads <code dir="auto">heartbeatFresh: true</code> + <code dir="auto">sessionState: 'ended'</code>.

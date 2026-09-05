@@ -82,13 +82,42 @@ outlives the pot as a zombie. So every <strong>agent</strong> launch is locked o
 those surfaces (plan <code dir="auto">native-scheduler-lockout-2026-06-09</code>). The owner’s own
 <code dir="auto">psu su</code> sessions are untouched.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-enforcement-map">The enforcement map</h2><a class="sl-anchor-link" href="#the-enforcement-map"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The enforcement map”</span></a></div>
-<p>| Layer | Mechanism | Where |
-|---|---|---|
-| claude T1 (its scheduler tools + skills) | <code dir="auto">--disallowedTools=…</code> at launch | <code dir="auto">invoke.ts</code> extraFlags (every headless spawn) · <code dir="auto">wake-executor.ts</code> resume leg · <code dir="auto">psu-launcher.mjs</code> <code dir="auto">roleLaunchArgs</code> + brain legs |
-| claude T2 (OS schedulers via Bash) | <code dir="auto">Bash(crontab:*)</code>-style deny patterns in the same flag (works hook-less, i.e. for headless cups) + the bash-resource-gate hook (catches compound forms) | canonical list: <code dir="auto">@papercusp/orchestrator/native-scheduler-deny</code> · hook: <code dir="auto">apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh</code> |
-| omp (no T1 surface — toolset audited 2026-06-09) | coord-hook <code dir="auto">tool_call</code> block on OS-scheduler commands | <code dir="auto">apps/operator/scripts/hooks/omp/coord-hook.ts</code> (<code dir="auto">OS_SCHEDULER_CMD_RE</code>) |
-| codex (no T1 surface — toolset probed 2026-06-09) | gate hook wired into the role home’s <code dir="auto">hooks.json</code>; current Codex supports <code dir="auto">PreToolUse</code> matchers for Bash and <code dir="auto">apply_patch</code>/<code dir="auto">Edit</code>/<code dir="auto">Write</code> | <code dir="auto">role-codex-home.ts</code> <code dir="auto">writeCodexLockHooks({ agentSession: true })</code> |
-| All backends, intent layer | explicit prohibition in the prompts | <code dir="auto">mug.md</code> wake section · <code dir="auto">cup.md</code> Don’ts |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Layer</th><th>Mechanism</th><th>Where</th></tr></thead><tbody><tr><td>claude T1 (its scheduler tools + skills)</td><td><code dir="auto">--disallowedTools=…</code> at launch</td><td><code dir="auto">invoke.ts</code> extraFlags (every headless spawn) · <code dir="auto">wake-executor.ts</code> resume leg · <code dir="auto">psu-launcher.mjs</code> <code dir="auto">roleLaunchArgs</code> + brain legs</td></tr><tr><td>claude T2 (OS schedulers via Bash)</td><td><code dir="auto">Bash(crontab:*)</code>-style deny patterns in the same flag (works hook-less, i.e. for headless cups) + the bash-resource-gate hook (catches compound forms)</td><td>canonical list: <code dir="auto">@papercusp/orchestrator/native-scheduler-deny</code> · hook: <code dir="auto">apps/operator/scripts/hooks/cc/pretooluse-bash-resource-gate.sh</code></td></tr><tr><td>omp (no T1 surface — toolset audited 2026-06-09)</td><td>coord-hook <code dir="auto">tool_call</code> block on OS-scheduler commands</td><td><code dir="auto">apps/operator/scripts/hooks/omp/coord-hook.ts</code> (<code dir="auto">OS_SCHEDULER_CMD_RE</code>)</td></tr><tr><td>codex (no T1 surface — toolset probed 2026-06-09)</td><td>gate hook wired into the role home’s <code dir="auto">hooks.json</code>; current Codex supports <code dir="auto">PreToolUse</code> matchers for Bash and <code dir="auto">apply_patch</code>/<code dir="auto">Edit</code>/<code dir="auto">Write</code></td><td><code dir="auto">role-codex-home.ts</code> <code dir="auto">writeCodexLockHooks({ agentSession: true })</code></td></tr><tr><td>All backends, intent layer</td><td>explicit prohibition in the prompts</td><td><code dir="auto">mug.md</code> wake section · <code dir="auto">cup.md</code> Don’ts</td></tr></tbody></table>
 <p>The hook layers key off <strong><code dir="auto">PAPERCUSP_AGENT_SESSION=1</code></strong>, set by every agent
 launch path (orchestrator spawn env, wake-executor resumes, psu role panes,
 the brain) and never by human sessions — the guard fails open for the owner.</p>

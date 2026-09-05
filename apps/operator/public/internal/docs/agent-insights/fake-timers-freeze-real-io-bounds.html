@@ -138,11 +138,32 @@ component. Run the cold-cache fake-timer probe <strong>first</strong>, or isolat
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="ruling-out-the-look-alikes">Ruling out the look-alikes</h2><a class="sl-anchor-link" href="#ruling-out-the-look-alikes"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Ruling out the look-alikes”</span></a></div>
 <p>All three present as <code dir="auto">Hook timed out</code>. Distinguish before fixing:</p>
-<p>| Class | Tell | Fix |
-| --- | --- | --- |
-| <strong>Frozen real-I/O bound</strong> (this doc) | Test uses <code dir="auto">vi.useFakeTimers()</code> <em>and</em> the path touches PG/fs/sockets. Hangs indefinitely; real-timer control arm passes. | <code dir="auto">{ shouldAdvanceTime: true }</code>, or don’t fake timers on that path. |
-| <strong>Timeout-budget asymmetry</strong> (EI-10634) | <code dir="auto">beforeAll</code> has bespoke headroom, <code dir="auto">afterAll</code> inherits the default. Fails near a budget boundary, worse under fleet load. | Align the hook budgets. |
-| <strong>Unbounded teardown</strong> (EI-10726) | Hand-rolled <code dir="auto">afterEach</code> cleanup loop with no bound. | Use the shared rig teardown helper. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Class</th><th>Tell</th><th>Fix</th></tr></thead><tbody><tr><td><strong>Frozen real-I/O bound</strong> (this doc)</td><td>Test uses <code dir="auto">vi.useFakeTimers()</code> <em>and</em> the path touches PG/fs/sockets. Hangs indefinitely; real-timer control arm passes.</td><td><code dir="auto">{ shouldAdvanceTime: true }</code>, or don’t fake timers on that path.</td></tr><tr><td><strong>Timeout-budget asymmetry</strong> (EI-10634)</td><td><code dir="auto">beforeAll</code> has bespoke headroom, <code dir="auto">afterAll</code> inherits the default. Fails near a budget boundary, worse under fleet load.</td><td>Align the hook budgets.</td></tr><tr><td><strong>Unbounded teardown</strong> (EI-10726)</td><td>Hand-rolled <code dir="auto">afterEach</code> cleanup loop with no bound.</td><td>Use the shared rig teardown helper.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-not-to-do">What NOT to do</h2><a class="sl-anchor-link" href="#what-not-to-do"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What NOT to do”</span></a></div>
 <p>Widening the timeout, <code dir="auto">--no-threads</code>, retrying the file, or hand-advancing
 timers at one call site are all mitigations: they leave the disarmed bound in

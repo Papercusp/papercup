@@ -186,13 +186,42 @@ produced.</strong> For a build/pack pipeline, trace back to the compile step’s
 own timestamp or a content hash — never the container/artifact’s mtime.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-mechanical-guards-by-claim-type">The mechanical guards, by claim type</h2><a class="sl-anchor-link" href="#the-mechanical-guards-by-claim-type"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The mechanical guards, by claim type”</span></a></div>
-<p>| Claim | Don’t trust | Check instead |
-|---|---|---|
-| “X never happened” (grep count = 0) | the raw zero | a positive control: grep something known-present in the same file/vocabulary first |
-| “these are two separate runs” | the filename/stamp | the file’s own first content timestamp — do the two overlap or nest? |
-| “the emitter/field is missing” | a grep for the <em>source</em> identifier | the log’s actual output vocabulary at the point it’s written (renames, wrapping) |
-| “this artifact was built at mtime T” | the artifact’s mtime | the compile/build step’s own timestamp, or a content hash |
-| “record A belongs to record B” | that A sits next to B in the log | a field the records actually share — check whether the record is already self-contained |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Claim</th><th>Don’t trust</th><th>Check instead</th></tr></thead><tbody><tr><td>”X never happened” (grep count = 0)</td><td>the raw zero</td><td>a positive control: grep something known-present in the same file/vocabulary first</td></tr><tr><td>”these are two separate runs”</td><td>the filename/stamp</td><td>the file’s own first content timestamp — do the two overlap or nest?</td></tr><tr><td>“the emitter/field is missing”</td><td>a grep for the <em>source</em> identifier</td><td>the log’s actual output vocabulary at the point it’s written (renames, wrapping)</td></tr><tr><td>“this artifact was built at mtime T”</td><td>the artifact’s mtime</td><td>the compile/build step’s own timestamp, or a content hash</td></tr><tr><td>”record A belongs to record B”</td><td>that A sits next to B in the log</td><td>a field the records actually share — check whether the record is already self-contained</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="generalize">Generalize</h2><a class="sl-anchor-link" href="#generalize"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Generalize”</span></a></div>
 <p><strong>Nothing in a log’s output announces its own scope.</strong> Before a read/grep
 result becomes a claim — especially a claim of <em>absence</em>, or a claim that
@@ -234,6 +263,19 @@ retraction of a real fix. It is the temporal counterpart to the positive-control
 rule above: calibration proves that the instrument can distinguish the case,
 while freshness proves that it measured the case that was actually filed.</p>
 <p>Add this row to the claim table:</p>
-<p>| Claim | Don’t trust | Check instead |
-|---|---|---|
-| “the filed bug does not reproduce” | a current pass against an unverified or newer artifact | work-item <code dir="auto">createdAt</code> versus Git history / UTC mtime and the exact revision or content identity |</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-20T07:52:06.000Z">Aug 20, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/esm-dirname-tsx-file-mode-dbos-stall.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">__dirname in a type:module package only breaks under tsx FILE-mode — and a swallowed DBOS boot error stalls every routine (deploy train included)</span> </span> </a> <a href="/internal/docs/agent-insights/events-await-vs-poll.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Stop polling — await the event (events:catalog + sugar verbs)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Claim</th><th>Don’t trust</th><th>Check instead</th></tr></thead><tbody><tr><td>”the filed bug does not reproduce”</td><td>a current pass against an unverified or newer artifact</td><td>work-item <code dir="auto">createdAt</code> versus Git history / UTC mtime and the exact revision or content identity</td></tr></tbody></table> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-20T07:52:06.000Z">Aug 20, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr"> <a href="/internal/docs/agent-insights/esm-dirname-tsx-file-mode-dbos-stall.html" rel="prev" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17 11H9.41l3.3-3.29a1.004 1.004 0 1 0-1.42-1.42l-5 5a1 1 0 0 0-.21.33 1 1 0 0 0 0 .76 1 1 0 0 0 .21.33l5 5a1.002 1.002 0 0 0 1.639-.325 1 1 0 0 0-.219-1.095L9.41 13H17a1 1 0 0 0 0-2Z"/></svg> <span class="astro-td3zbozv"> Previous <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">__dirname in a type:module package only breaks under tsx FILE-mode — and a swallowed DBOS boot error stalls every routine (deploy train included)</span> </span> </a> <a href="/internal/docs/agent-insights/events-await-vs-poll.html" rel="next" class="astro-td3zbozv"> <svg aria-hidden="true" class="astro-td3zbozv astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1.5rem;"><path d="M17.92 11.62a1.001 1.001 0 0 0-.21-.33l-5-5a1.003 1.003 0 1 0-1.42 1.42l3.3 3.29H7a1 1 0 0 0 0 2h7.59l-3.3 3.29a1.002 1.002 0 0 0 .325 1.639 1 1 0 0 0 1.095-.219l5-5a1 1 0 0 0 .21-.33 1 1 0 0 0 0-.76Z"/></svg> <span class="astro-td3zbozv"> Next <br class="astro-td3zbozv"> <span class="link-title astro-td3zbozv">Stop polling — await the event (events:catalog + sugar verbs)</span> </span> </a> </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

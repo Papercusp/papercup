@@ -131,10 +131,24 @@ comes up, and the pane waits forever on the original id.</li>
 </ol>
 <p>Both are pinned by tests, and it is worth knowing which test catches which — a change
 that defeats one is not caught by the other:</p>
-<p>| the edit | the test that fails |
-|---|---|
-| <code dir="auto">fork: true</code> on the gui path | <code dir="auto">POSTs the SAME resume with headless:true (no window, never a fork) and hands the owner id to the host</code> — asserts the wire body with <code dir="auto">toEqual({ …, fork: false, headless: true })</code> |
-| loosening the render gate | <code dir="auto">is hidden with no coord owner id to key the conversation on</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>the edit</th><th>the test that fails</th></tr></thead><tbody><tr><td><code dir="auto">fork: true</code> on the gui path</td><td><code dir="auto">POSTs the SAME resume with headless:true (no window, never a fork) and hands the owner id to the host</code> — asserts the wire body with <code dir="auto">toEqual({ …, fork: false, headless: true })</code></td></tr><tr><td>loosening the render gate</td><td><code dir="auto">is hidden with no coord owner id to key the conversation on</code></td></tr></tbody></table>
 <p>The transferable form: <strong>when a UI affordance depends on an invariant that only holds
 under some condition, gate the affordance on that same condition</strong> — not on a proxy for
 it, and not on a second id that “usually” agrees. A proxy makes the alignment a

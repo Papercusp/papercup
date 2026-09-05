@@ -91,13 +91,42 @@ find fully-present evidence because they searched for a comment-shaped field. Al
 owning plan’s <strong>Decisions</strong> (<code dir="auto">plans:get { slug, heading: 'Decisions' }</code>), which is where
 research findings usually end up.</p>
 </blockquote>
-<p>| how it was closed | where the evidence lands | what <code dir="auto">terminal_completion_ref</code> says |
-|---|---|---|
-| <code dir="auto">work_items:comment</code> (any time) | <code dir="auto">harness_shared.coord_thread_posts</code>, <code dir="auto">thread_id = 'work-item-thread-&#x3C;WI-id>'</code>; read it via <code dir="auto">work_items:get { detail:true }</code> → <strong><code dir="auto">workItem.posts[]</code></strong> | unchanged — the row is <strong>not touched at all</strong> |
-| <code dir="auto">plans:add-decision</code> (the usual home for research findings) | <code dir="auto">harness_shared.plan_decisions</code>, on the <strong>plan</strong>, not the item | unchanged — and <strong>no link is written from the item to the decision</strong> |
-| <code dir="auto">work_items:complete</code> on a <strong>non-terminal</strong> item | <code dir="auto">payload._completionEvidence</code> on the row | your completion summary |
-| <code dir="auto">work_items:complete</code> on an <strong>already-terminal</strong> item | <code dir="auto">payload._completionAttestations</code> (appended) | <strong>unchanged</strong> — and your prose summary is dropped |
-| plan-item flipped to <code dir="auto">done</code> (reconciler closes it) | nothing | <code dir="auto">"Reconciled via plan-item status: &#x3C;plan>#P-NNN completed"</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>how it was closed</th><th>where the evidence lands</th><th>what <code dir="auto">terminal_completion_ref</code> says</th></tr></thead><tbody><tr><td><code dir="auto">work_items:comment</code> (any time)</td><td><code dir="auto">harness_shared.coord_thread_posts</code>, <code dir="auto">thread_id = 'work-item-thread-&#x3C;WI-id>'</code>; read it via <code dir="auto">work_items:get { detail:true }</code> → <strong><code dir="auto">workItem.posts[]</code></strong></td><td>unchanged — the row is <strong>not touched at all</strong></td></tr><tr><td><code dir="auto">plans:add-decision</code> (the usual home for research findings)</td><td><code dir="auto">harness_shared.plan_decisions</code>, on the <strong>plan</strong>, not the item</td><td>unchanged — and <strong>no link is written from the item to the decision</strong></td></tr><tr><td><code dir="auto">work_items:complete</code> on a <strong>non-terminal</strong> item</td><td><code dir="auto">payload._completionEvidence</code> on the row</td><td>your completion summary</td></tr><tr><td><code dir="auto">work_items:complete</code> on an <strong>already-terminal</strong> item</td><td><code dir="auto">payload._completionAttestations</code> (appended)</td><td><strong>unchanged</strong> — and your prose summary is dropped</td></tr><tr><td>plan-item flipped to <code dir="auto">done</code> (reconciler closes it)</td><td>nothing</td><td><code dir="auto">"Reconciled via plan-item status: &#x3C;plan>#P-NNN completed"</code></td></tr></tbody></table>
 <p>The last row is the trap’s origin. Flipping a plan item to <code dir="auto">done</code> is <em>not</em> a completion — the
 reconciler fills the field in on your behalf, stamps <code dir="auto">terminal_owner = 'system:plan-item-reconcile'</code>,
 and records no evidence, because you supplied none. An item closed that way looks identical in the

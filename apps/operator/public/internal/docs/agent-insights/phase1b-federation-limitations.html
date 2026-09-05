@@ -176,11 +176,28 @@ publishing/verification surfaces have since moved: <code dir="auto">ensure-my-bi
 (and <code dir="auto">ensureMyBindingPublished</code> / <code dir="auto">buildSignedContributorFile</code>) no longer exist —
 see the superseded banner at the top of this page.</p>
 </blockquote>
-<p>| File (2026-06-01) | Role |
-| ---- | ---- |
-| <code dir="auto">apps/operator/lib/identity/ensure-my-binding-published.ts</code> <em>(removed)</em> | Calls <code dir="auto">createOrUpdateFileContents</code>; idempotent on no-op (same pubkey already present). |
-| <code dir="auto">packages/operator-core/lib/identity/contributor-file-types.ts</code> | <code dir="auto">buildSignedContributorFile</code> — builds + signs the body <em>(this symbol was since removed; the file remains for the contributor-file types + path helpers)</em>. |
-| <code dir="auto">packages/operator-core/lib/identity/two-channel-verifier.ts</code> | <code dir="auto">verifyContributorFileSignature</code> — the body-signature check <em>(this symbol now lives in <code dir="auto">packages/operator-core/lib/sync/hyperbee/local-announce-identity.ts</code> + <code dir="auto">announce.ts</code>)</em>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>File (2026-06-01)</th><th>Role</th></tr></thead><tbody><tr><td><code dir="auto">apps/operator/lib/identity/ensure-my-binding-published.ts</code> <em>(removed)</em></td><td>Calls <code dir="auto">createOrUpdateFileContents</code>; idempotent on no-op (same pubkey already present).</td></tr><tr><td><code dir="auto">packages/operator-core/lib/identity/contributor-file-types.ts</code></td><td><code dir="auto">buildSignedContributorFile</code> — builds + signs the body <em>(this symbol was since removed; the file remains for the contributor-file types + path helpers)</em>.</td></tr><tr><td><code dir="auto">packages/operator-core/lib/identity/two-channel-verifier.ts</code></td><td><code dir="auto">verifyContributorFileSignature</code> — the body-signature check <em>(this symbol now lives in <code dir="auto">packages/operator-core/lib/sync/hyperbee/local-announce-identity.ts</code> + <code dir="auto">announce.ts</code>)</em>.</td></tr></tbody></table>
 <aside aria-label="Caution" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Caution </p>  <div class="starlight-aside__content"><p><code dir="auto">buildSignedContributorFile</code> produces the <em>signed body bytes</em> — it does not push
 anything. The API call that makes the commit GitHub-verified is in
 <code dir="auto">ensureMyBindingPublished</code>. Do not pull the push logic out of that function.</p></div> </aside>

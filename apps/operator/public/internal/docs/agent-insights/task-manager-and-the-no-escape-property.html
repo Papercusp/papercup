@@ -77,15 +77,44 @@
 <p>The reconciler therefore resolves the <strong>nearest valid <code dir="auto">pc-*</code> ancestor</strong>, scanning from the leaf toward the slice root. Looking only at the leaf falsely reports nested build descendants as unaccounted.</p>
 <p>A managed scope name carries the ledger key, but it proves only managed launch provenance. It does <strong>not</strong> prove a ledger row was ever committed: synchronous enrollment chooses the task id and launches the scope before its fire-and-forget database write settles.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="what-you-actually-use">What you actually use</h2><a class="sl-anchor-link" href="#what-you-actually-use"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What you actually use”</span></a></div>
-<p>| You want | Call |
-|---|---|
-| What is running and why | <code dir="auto">processes:list</code> |
-| Cross-check the ledger against the kernel now | <code dir="auto">processes:list { live: true }</code> |
-| What a work item cost | <code dir="auto">processes:list { workItemId, includeEnded: true }</code> |
-| End one task and its whole subtree | <code dir="auto">processes:kill { taskId }</code> |
-| Relieve pressure without losing work | <code dir="auto">processes:freeze { taskId }</code> and <code dir="auto">resume: true</code> |
-| Cap a runaway without killing it | <code dir="auto">processes:limit { taskId, memoryMaxMb }</code> |
-| Human surface | <code dir="auto">/admin/tasks</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>You want</th><th>Call</th></tr></thead><tbody><tr><td>What is running and why</td><td><code dir="auto">processes:list</code></td></tr><tr><td>Cross-check the ledger against the kernel now</td><td><code dir="auto">processes:list { live: true }</code></td></tr><tr><td>What a work item cost</td><td><code dir="auto">processes:list { workItemId, includeEnded: true }</code></td></tr><tr><td>End one task and its whole subtree</td><td><code dir="auto">processes:kill { taskId }</code></td></tr><tr><td>Relieve pressure without losing work</td><td><code dir="auto">processes:freeze { taskId }</code> and <code dir="auto">resume: true</code></td></tr><tr><td>Cap a runaway without killing it</td><td><code dir="auto">processes:limit { taskId, memoryMaxMb }</code></td></tr><tr><td>Human surface</td><td><code dir="auto">/admin/tasks</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="reading-process-provenance">Reading process provenance</h2><a class="sl-anchor-link" href="#reading-process-provenance"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Reading process provenance”</span></a></div>
 <p>The public process view uses four evidence-based buckets:</p>
 <ul>

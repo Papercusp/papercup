@@ -162,22 +162,117 @@ signatures, and substrate op-auth — is currently dead code, unwired, or self-a
 on a small primitive set: <strong>sign every replicated write and verify it on receipt; gate
 membership cryptographically; anchor identity to keys or an external authority; and accept
 that true deletion is impossible in an append-only log.</strong></p>
-<p>| System | Identity anchor | Per-op authorization | Membership / removal | Verdict for Papercusp |
-|---|---|---|---|---|
-| <strong>Hypercore</strong> | per-device Ed25519 key (our model) | signed merkle tree per log (integrity, single-writer) | — | <strong>Maps</strong> — proves you authored <em>your</em> log, not that you’re allowed |
-| <strong>Autobase</strong> | — | <strong>none built in</strong>; <em>“optimistic blocks should self-verify in the apply handler”</em> | <code dir="auto">addWriter</code>/<code dir="auto">removeWriter</code> are app calls inside <code dir="auto">apply</code> | <strong>Maps / confirms the gap</strong> — per-op verification is the app’s job |
-| <strong>Hyperswarm / HyperDHT</strong> | connecting peer’s Noise key | Noise authenticates the <em>connection</em>, not ops | only <code dir="auto">firewall(remotePublicKey)</code> | <strong>Maps / confirms threat</strong> — public topic; connection-auth ≠ op-auth |
-| <strong>blind-pairing</strong> (Keet) | invite secret | candidate signs with invite key; member verifies | admit-by-invite; app-evaluated <code dir="auto">userData</code> | <strong>Partial</strong> — a ready admission handshake; put the GitHub proof in <code dir="auto">userData</code> |
-| <strong>Radicle</strong> <em>(closest analog)</em> | self-sovereign <code dir="auto">did:key</code> (opposite of ours) | <strong>signs every write</strong> (<code dir="auto">refs/rad/sigref</code>); <strong>rejects invalid before storing</strong>; signed collaborative objects | delegate threshold/quorum | <strong>Mechanism maps, anchor doesn’t</strong> — proves the sign-and-verify-before-store pattern |
-| <strong>Radicle COBs</strong> | content-addressed | exposes each change’s author → filter a bad author at view-build | filter at materialization | <strong>Maps</strong> — our <code dir="auto">revoked_pubkeys</code> is this <em>local projection filter</em>, not network rejection |
-| <strong>Kleppmann (BFT-CRDT)</strong> | — | <strong>signatures necessary but NOT sufficient</strong> — a signed <em>equivocation</em> breaks version vectors | a replicated ACL must itself be a BFT CRDT | <strong>Decisive</strong> — don’t try to make advisory state Byzantine-trustworthy |
-| <strong>Keyhive / BeeKEM</strong> (Ink &#x26; Switch) | <strong>deliberately excludes</strong> identity binding | capability chains + per-op Ed25519 sig; BeeKEM needs only <strong>causal</strong> order → fits Autobase | coordination-free removal with <strong>real post-compromise security</strong> | <strong>Authz maps; complements (≠ replaces) the GitHub binding</strong> — see <a href="#does-keyhivebeekem-fit-our-stack">Keyhive</a> |
-| <strong>MLS / RFC 9420</strong> | — | TreeKEM epoch chain | needs <strong>one linear chain of agreed Commits</strong>; concurrent commits fork a DAG it can’t merge | <strong>Does not map</strong> over Autobase’s concurrent merge |
-| <strong>Keybase</strong> <em>(two-channel analog)</em> | per-user signed <strong>sigchain</strong>; key↔GitHub via a GitHub-hosted signed proof | each link signed, <code dir="auto">seqno</code> + <code dir="auto">prev</code> hash | revocation = a <strong>signed revoke link</strong>; sibkeys for device-loss recovery | <strong>Maps — improves the binding</strong>: model two-channel as a signed link; revoke-as-signed-statement beats a side-list |
-| <strong>Sigstore / SLSA / in-toto</strong> | short-lived <strong>OIDC</strong> identity (Fulcio) | keyless sig + <strong>Rekor transparency log</strong>; in-toto/DSSE | no revocation (short-lived certs); compromise caught by <strong>monitoring</strong> | <strong>Partial — provenance pattern</strong>: a signature proves <em>authenticated-at-a-time</em>, <strong>not</strong> authorization or “good.” Confirms “shipped” must be <strong>GitHub-derived</strong> |
-| <strong>AT Proto <code dir="auto">did:plc</code></strong> | hybrid: self-cert keys + a directory | signed repo commits | <strong>rotation-key priority list + 72h recovery window</strong> | <strong>Partial — recovery lesson</strong>: for us, GitHub <em>is</em> the recovery anchor |
-| <strong>Nostr NIP-05</strong> | pubkey ↔ <code dir="auto">name@domain</code> via a <code dir="auto">.well-known</code> file | per-event Schnorr sig | — | <strong>Partial</strong> — a GitHub-hosted well-known file is a lighter binding variant |
-| <strong>Secure Scuttlebutt</strong> | per-identity signed append-only feed (≈ Hypercore) | every message signed | <strong>invite + follow-graph</strong> bounds replication &#x26; Sybils | <strong>Partial — admission analog</strong>: Pot membership + revocation bounds shared-pot replication; GitHub permission is reserved for decision-bearing actions |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>System</th><th>Identity anchor</th><th>Per-op authorization</th><th>Membership / removal</th><th>Verdict for Papercusp</th></tr></thead><tbody><tr><td><strong>Hypercore</strong></td><td>per-device Ed25519 key (our model)</td><td>signed merkle tree per log (integrity, single-writer)</td><td>—</td><td><strong>Maps</strong> — proves you authored <em>your</em> log, not that you’re allowed</td></tr><tr><td><strong>Autobase</strong></td><td>—</td><td><strong>none built in</strong>; <em>“optimistic blocks should self-verify in the apply handler”</em></td><td><code dir="auto">addWriter</code>/<code dir="auto">removeWriter</code> are app calls inside <code dir="auto">apply</code></td><td><strong>Maps / confirms the gap</strong> — per-op verification is the app’s job</td></tr><tr><td><strong>Hyperswarm / HyperDHT</strong></td><td>connecting peer’s Noise key</td><td>Noise authenticates the <em>connection</em>, not ops</td><td>only <code dir="auto">firewall(remotePublicKey)</code></td><td><strong>Maps / confirms threat</strong> — public topic; connection-auth ≠ op-auth</td></tr><tr><td><strong>blind-pairing</strong> (Keet)</td><td>invite secret</td><td>candidate signs with invite key; member verifies</td><td>admit-by-invite; app-evaluated <code dir="auto">userData</code></td><td><strong>Partial</strong> — a ready admission handshake; put the GitHub proof in <code dir="auto">userData</code></td></tr><tr><td><strong>Radicle</strong> <em>(closest analog)</em></td><td>self-sovereign <code dir="auto">did:key</code> (opposite of ours)</td><td><strong>signs every write</strong> (<code dir="auto">refs/rad/sigref</code>); <strong>rejects invalid before storing</strong>; signed collaborative objects</td><td>delegate threshold/quorum</td><td><strong>Mechanism maps, anchor doesn’t</strong> — proves the sign-and-verify-before-store pattern</td></tr><tr><td><strong>Radicle COBs</strong></td><td>content-addressed</td><td>exposes each change’s author → filter a bad author at view-build</td><td>filter at materialization</td><td><strong>Maps</strong> — our <code dir="auto">revoked_pubkeys</code> is this <em>local projection filter</em>, not network rejection</td></tr><tr><td><strong>Kleppmann (BFT-CRDT)</strong></td><td>—</td><td><strong>signatures necessary but NOT sufficient</strong> — a signed <em>equivocation</em> breaks version vectors</td><td>a replicated ACL must itself be a BFT CRDT</td><td><strong>Decisive</strong> — don’t try to make advisory state Byzantine-trustworthy</td></tr><tr><td><strong>Keyhive / BeeKEM</strong> (Ink &#x26; Switch)</td><td><strong>deliberately excludes</strong> identity binding</td><td>capability chains + per-op Ed25519 sig; BeeKEM needs only <strong>causal</strong> order → fits Autobase</td><td>coordination-free removal with <strong>real post-compromise security</strong></td><td><strong>Authz maps; complements (≠ replaces) the GitHub binding</strong> — see <a href="#does-keyhivebeekem-fit-our-stack">Keyhive</a></td></tr><tr><td><strong>MLS / RFC 9420</strong></td><td>—</td><td>TreeKEM epoch chain</td><td>needs <strong>one linear chain of agreed Commits</strong>; concurrent commits fork a DAG it can’t merge</td><td><strong>Does not map</strong> over Autobase’s concurrent merge</td></tr><tr><td><strong>Keybase</strong> <em>(two-channel analog)</em></td><td>per-user signed <strong>sigchain</strong>; key↔GitHub via a GitHub-hosted signed proof</td><td>each link signed, <code dir="auto">seqno</code> + <code dir="auto">prev</code> hash</td><td>revocation = a <strong>signed revoke link</strong>; sibkeys for device-loss recovery</td><td><strong>Maps — improves the binding</strong>: model two-channel as a signed link; revoke-as-signed-statement beats a side-list</td></tr><tr><td><strong>Sigstore / SLSA / in-toto</strong></td><td>short-lived <strong>OIDC</strong> identity (Fulcio)</td><td>keyless sig + <strong>Rekor transparency log</strong>; in-toto/DSSE</td><td>no revocation (short-lived certs); compromise caught by <strong>monitoring</strong></td><td><strong>Partial — provenance pattern</strong>: a signature proves <em>authenticated-at-a-time</em>, <strong>not</strong> authorization or “good.” Confirms “shipped” must be <strong>GitHub-derived</strong></td></tr><tr><td><strong>AT Proto <code dir="auto">did:plc</code></strong></td><td>hybrid: self-cert keys + a directory</td><td>signed repo commits</td><td><strong>rotation-key priority list + 72h recovery window</strong></td><td><strong>Partial — recovery lesson</strong>: for us, GitHub <em>is</em> the recovery anchor</td></tr><tr><td><strong>Nostr NIP-05</strong></td><td>pubkey ↔ <code dir="auto">name@domain</code> via a <code dir="auto">.well-known</code> file</td><td>per-event Schnorr sig</td><td>—</td><td><strong>Partial</strong> — a GitHub-hosted well-known file is a lighter binding variant</td></tr><tr><td><strong>Secure Scuttlebutt</strong></td><td>per-identity signed append-only feed (≈ Hypercore)</td><td>every message signed</td><td><strong>invite + follow-graph</strong> bounds replication &#x26; Sybils</td><td><strong>Partial — admission analog</strong>: Pot membership + revocation bounds shared-pot replication; GitHub permission is reserved for decision-bearing actions</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-decisive-constraints">The decisive constraints</h3><a class="sl-anchor-link" href="#the-decisive-constraints"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The decisive constraints”</span></a></div>
 <ol>
 <li><strong>Autobase will not authenticate ops for us</strong> — per-op signing and <code dir="auto">addWriter</code> gating
@@ -269,13 +364,42 @@ authority, but it is not the read-admission allow-list.</li>
 </ol>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-advisory-vs-trusted-boundary">The advisory-vs-trusted boundary</h3><a class="sl-anchor-link" href="#the-advisory-vs-trusted-boundary"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The advisory-vs-trusted boundary”</span></a></div>
 <p>The central decision: which synced surfaces are advisory vs must-re-derive-from-GitHub.</p>
-<p>| Synced surface | Advisory (peer-supplied cache)? | Decision-bearing → re-derive from GitHub? |
-|---|---|---|
-| Feature queue / status | yes — display &#x26; coordination | a “shipped” decision → GitHub merge state |
-| PR status | yes — display | merge / approval authority → GitHub |
-| Contributor list | yes — display | “is X a real contributor / has write access” → GitHub collaborators |
-| Feature claims | yes — coordination/UX only | (advisory by nature; no hard authority needed) |
-| Completion / “shipped ✓” | no | <strong>GitHub-derived only</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Synced surface</th><th>Advisory (peer-supplied cache)?</th><th>Decision-bearing → re-derive from GitHub?</th></tr></thead><tbody><tr><td>Feature queue / status</td><td>yes — display &#x26; coordination</td><td>a “shipped” decision → GitHub merge state</td></tr><tr><td>PR status</td><td>yes — display</td><td>merge / approval authority → GitHub</td></tr><tr><td>Contributor list</td><td>yes — display</td><td>”is X a real contributor / has write access” → GitHub collaborators</td></tr><tr><td>Feature claims</td><td>yes — coordination/UX only</td><td>(advisory by nature; no hard authority needed)</td></tr><tr><td>Completion / “shipped ✓“</td><td>no</td><td><strong>GitHub-derived only</strong></td></tr></tbody></table>
 <p>Anything in the right column must never be acted on from peer state alone.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="confirmation-pass--2026-06-13-p-017-every-decision-bearing-fact-re-derives">Confirmation pass — 2026-06-13 (P-017): every decision-bearing fact re-derives</h3><a class="sl-anchor-link" href="#confirmation-pass--2026-06-13-p-017-every-decision-bearing-fact-re-derives"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Confirmation pass — 2026-06-13 (P-017): every decision-bearing fact re-derives”</span></a></div>
 <p>The shipped substrate uses <strong>per-log</strong> admission: a peer is admitted on a verified
@@ -292,19 +416,84 @@ PR state is <strong>not</strong> federated: <code dir="auto">harness_feature_prs
 store-of-record and federation is redundant; it has no projection producer and is not a
 registered projection tag. (This is why the auto-merge row below correctly reads the <code dir="auto">Pr</code>
 object from a live GitHub poll, not from a federated row.)</p>
-<p>| Call-site | Authorization decision | Reads | Re-derives from GitHub? |
-|---|---|---|---|
-| <code dir="auto">harness/binding-service.ts</code> · <code dir="auto">claimBinding</code> | claim a repo binding (needs maintain/admin) | local cache + <strong>live</strong> <code dir="auto">getRepoPermission</code> | <strong>Yes</strong> — <code dir="auto">getRepoPermission(owner,repo,login)</code> at point of action |
-| <code dir="auto">harness/binding-service.ts</code> · <code dir="auto">supersedeBinding</code> | supersede a binding (needs admin) | local cache + <strong>live</strong> <code dir="auto">getRepoPermission</code> | <strong>Yes</strong> — live permission check, admin required |
-| <code dir="auto">harness/binding-service.ts</code> · claimant re-verify sweep | demote a claimant who lost write access | cached claimants | <strong>Yes</strong> — per-claimant live permission check |
-| <code dir="auto">sync/hyperbee/revoke-contributor.ts</code> | revoke a contributor’s device key | <code dir="auto">contributors</code> row | <strong>Yes</strong> — <code dir="auto">repos.get → permissions.admin</code> gate before any write |
-| <code dir="auto">sync/hyperbee/read-admission.ts</code> (+ <code dir="auto">boot.ts</code>) | admit a peer’s log to the substrate | signed announce + local Pot membership projection | <strong>Yes</strong> — announce-sig verify + <code dir="auto">verifyBinding</code> (GitHub-hosted attestation); <code dir="auto">revoked_pubkeys</code> veto; same-Pot scope uses <code dir="auto">hive_members</code> / pending retry, not repo collaborator permission |
-| <code dir="auto">harness/fork-pr-on-feature-pass.ts</code> | fork-PR vs direct-push mode on feature pass | local pipeline pass event | <strong>Yes</strong> — <strong>live</strong> <code dir="auto">getPermission</code> (fork iff <code dir="auto">read</code>/<code dir="auto">none</code>) |
-| <code dir="auto">pr-host/auto-merge.ts</code> · <code dir="auto">tryAutoMerge</code> → <code dir="auto">host.merge</code> | merge a PR | <code dir="auto">Pr</code> object from <strong>GitHub</strong> poll (<code dir="auto">PrHost</code>/<code dir="auto">github.ts</code>) | <strong>Yes</strong> — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection |
-| <code dir="auto">pr-host/auto-approve.ts</code> · <code dir="auto">tryAutoApprove</code> | post an approving review | <strong>local</strong> <code dir="auto">trusted_authors</code> + GitHub PR author | <strong>N/A</strong> — trust list is local config (not federated); approval still doesn’t bypass GitHub’s merge authority |
-| <code dir="auto">harness/completion-ref-verifier.ts</code> | stamp the “shipped ✓” verified tier | <code dir="auto">completion_ref</code> on the feature row | <strong>Yes</strong> — <code dir="auto">git ls-remote &#x3C;remote> &#x3C;sha></code> (GitHub native auth) confirms the SHA is on the remote |
-| <code dir="auto">dbos/orchestrator-finalize.ts</code> · <code dir="auto">reconcileDoneStatus</code> | flip a feature <code dir="auto">validating</code>/<code dir="auto">in_progress → passed</code> | <code dir="auto">harness_features_consolidated.status</code> (federated) | <strong>N/A — advisory.</strong> Fires only from the <strong>local</strong> orchestrator’s own pipeline reaching an unblocked DONE (<code dir="auto">outcome==='done'</code>); a peer’s forged row cannot make the local pipeline run a feature to DONE. <code dir="auto">passed</code> is internal pipeline coordination, <strong>not</strong> a “shipped”/authz fact — every downstream effect (push/PR/merge) is independently GitHub-gated. (Completion-integrity update, <code dir="auto">fleet-backlog-lessons-2026-07-01</code> P-001/WI-1542: the same local-only write now also stamps <code dir="auto">terminal_owner='system:dbos-orchestrator-finalize'</code> and a <code dir="auto">terminal_completion_ref</code> — an auditability fix for the genuine-completions metric, not a change to who may write or to the trust boundary.) |
-| <code dir="auto">contributors</code> / <code dir="auto">claims</code> / <code dir="auto">queue</code> / <code dir="auto">working-set</code> readers (claim avatars, status badges, queue UI) | display &#x26; coordination only | federated rows | <strong>N/A</strong> — advisory by design; gate no action |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Call-site</th><th>Authorization decision</th><th>Reads</th><th>Re-derives from GitHub?</th></tr></thead><tbody><tr><td><code dir="auto">harness/binding-service.ts</code> · <code dir="auto">claimBinding</code></td><td>claim a repo binding (needs maintain/admin)</td><td>local cache + <strong>live</strong> <code dir="auto">getRepoPermission</code></td><td><strong>Yes</strong> — <code dir="auto">getRepoPermission(owner,repo,login)</code> at point of action</td></tr><tr><td><code dir="auto">harness/binding-service.ts</code> · <code dir="auto">supersedeBinding</code></td><td>supersede a binding (needs admin)</td><td>local cache + <strong>live</strong> <code dir="auto">getRepoPermission</code></td><td><strong>Yes</strong> — live permission check, admin required</td></tr><tr><td><code dir="auto">harness/binding-service.ts</code> · claimant re-verify sweep</td><td>demote a claimant who lost write access</td><td>cached claimants</td><td><strong>Yes</strong> — per-claimant live permission check</td></tr><tr><td><code dir="auto">sync/hyperbee/revoke-contributor.ts</code></td><td>revoke a contributor’s device key</td><td><code dir="auto">contributors</code> row</td><td><strong>Yes</strong> — <code dir="auto">repos.get → permissions.admin</code> gate before any write</td></tr><tr><td><code dir="auto">sync/hyperbee/read-admission.ts</code> (+ <code dir="auto">boot.ts</code>)</td><td>admit a peer’s log to the substrate</td><td>signed announce + local Pot membership projection</td><td><strong>Yes</strong> — announce-sig verify + <code dir="auto">verifyBinding</code> (GitHub-hosted attestation); <code dir="auto">revoked_pubkeys</code> veto; same-Pot scope uses <code dir="auto">hive_members</code> / pending retry, not repo collaborator permission</td></tr><tr><td><code dir="auto">harness/fork-pr-on-feature-pass.ts</code></td><td>fork-PR vs direct-push mode on feature pass</td><td>local pipeline pass event</td><td><strong>Yes</strong> — <strong>live</strong> <code dir="auto">getPermission</code> (fork iff <code dir="auto">read</code>/<code dir="auto">none</code>)</td></tr><tr><td><code dir="auto">pr-host/auto-merge.ts</code> · <code dir="auto">tryAutoMerge</code> → <code dir="auto">host.merge</code></td><td>merge a PR</td><td><code dir="auto">Pr</code> object from <strong>GitHub</strong> poll (<code dir="auto">PrHost</code>/<code dir="auto">github.ts</code>)</td><td><strong>Yes</strong> — PR state read live from GitHub; merge enforced by GitHub write-access + branch protection</td></tr><tr><td><code dir="auto">pr-host/auto-approve.ts</code> · <code dir="auto">tryAutoApprove</code></td><td>post an approving review</td><td><strong>local</strong> <code dir="auto">trusted_authors</code> + GitHub PR author</td><td><strong>N/A</strong> — trust list is local config (not federated); approval still doesn’t bypass GitHub’s merge authority</td></tr><tr><td><code dir="auto">harness/completion-ref-verifier.ts</code></td><td>stamp the “shipped ✓” verified tier</td><td><code dir="auto">completion_ref</code> on the feature row</td><td><strong>Yes</strong> — <code dir="auto">git ls-remote &#x3C;remote> &#x3C;sha></code> (GitHub native auth) confirms the SHA is on the remote</td></tr><tr><td><code dir="auto">dbos/orchestrator-finalize.ts</code> · <code dir="auto">reconcileDoneStatus</code></td><td>flip a feature <code dir="auto">validating</code>/<code dir="auto">in_progress → passed</code></td><td><code dir="auto">harness_features_consolidated.status</code> (federated)</td><td><strong>N/A — advisory.</strong> Fires only from the <strong>local</strong> orchestrator’s own pipeline reaching an unblocked DONE (<code dir="auto">outcome==='done'</code>); a peer’s forged row cannot make the local pipeline run a feature to DONE. <code dir="auto">passed</code> is internal pipeline coordination, <strong>not</strong> a “shipped”/authz fact — every downstream effect (push/PR/merge) is independently GitHub-gated. (Completion-integrity update, <code dir="auto">fleet-backlog-lessons-2026-07-01</code> P-001/WI-1542: the same local-only write now also stamps <code dir="auto">terminal_owner='system:dbos-orchestrator-finalize'</code> and a <code dir="auto">terminal_completion_ref</code> — an auditability fix for the genuine-completions metric, not a change to who may write or to the trust boundary.)</td></tr><tr><td><code dir="auto">contributors</code> / <code dir="auto">claims</code> / <code dir="auto">queue</code> / <code dir="auto">working-set</code> readers (claim avatars, status badges, queue UI)</td><td>display &#x26; coordination only</td><td>federated rows</td><td><strong>N/A</strong> — advisory by design; gate no action</td></tr></tbody></table>
 <p><strong>Why the federated feature <code dir="auto">status</code> is not a gap (the one row worth tracing).</strong>
 <code dir="auto">harness_features_consolidated.status</code> <em>is</em> a federated projection target (tag
 <code dir="auto">features-by-id</code>), so an admitted peer can write a <code dir="auto">status</code> value into another peer’s PG.

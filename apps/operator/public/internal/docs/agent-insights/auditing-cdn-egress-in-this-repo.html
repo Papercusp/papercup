@@ -81,12 +81,32 @@ which is easy to do here in <strong>both</strong> directions.</p>
 <p>The instinct is to grep the source. That structurally cannot work, and knowing
 why tells you where to look instead.</p>
 <p>Every one of these URLs is a <strong>default baked into a dependency</strong>:</p>
-<p>| library | the default it carries |
-| --- | --- |
-| <code dir="auto">@monaco-editor/loader</code> | <code dir="auto">https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs</code> |
-| <code dir="auto">vditor</code> | <code dir="auto">https://unpkg.com/vditor@&#x3C;ver></code> |
-| <code dir="auto">@excalidraw/excalidraw</code> | <code dir="auto">ASSETS_FALLBACK_URL</code> on <code dir="auto">esm.sh</code> |
-| <code dir="auto">emoji-mart</code> | <code dir="auto">https://cdn.jsdelivr.net/npm/@emoji-mart/data@latest/...</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>library</th><th>the default it carries</th></tr></thead><tbody><tr><td><code dir="auto">@monaco-editor/loader</code></td><td><code dir="auto">https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs</code></td></tr><tr><td><code dir="auto">vditor</code></td><td><code dir="auto">https://unpkg.com/vditor@&#x3C;ver></code></td></tr><tr><td><code dir="auto">@excalidraw/excalidraw</code></td><td><code dir="auto">ASSETS_FALLBACK_URL</code> on <code dir="auto">esm.sh</code></td></tr><tr><td><code dir="auto">emoji-mart</code></td><td><code dir="auto">https://cdn.jsdelivr.net/npm/@emoji-mart/data@latest/...</code></td></tr></tbody></table>
 <p>Our code’s only involvement is <em>failing to override</em> it. So the string appears
 in our repo for the first time in the built bundle. That is why
 <code dir="auto">lint:no-cdn-egress</code> (<code dir="auto">scripts/check-no-cdn-egress.mjs</code>) scans
@@ -178,11 +198,32 @@ JSON-Schema <code dir="auto">$id</code>, used as a registry key and never derefe
 <div class="sl-heading-wrapper level-h2"><h2 id="the-three-legs-are-complementary-not-alternatives">The three legs are complementary, not alternatives</h2><a class="sl-anchor-link" href="#the-three-legs-are-complementary-not-alternatives"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The three legs are complementary, not alternatives”</span></a></div>
 <p>Each covers a blind spot the others structurally cannot. Shipping one and
 calling it done leaves a hole:</p>
-<p>| leg | catches | blind to |
-| --- | --- | --- |
-| <strong>static bundle scan</strong> (<code dir="auto">lint:no-cdn-egress</code>) | code <strong>nobody ran</strong> | whether the URL is actually fetched |
-| <strong>runtime egress monitor</strong> (<code dir="auto">egress-monitor.ts</code>) | dynamically-built URLs; proves <strong>liveness</strong> | any path no test exercised |
-| <strong>CSP</strong> (<code dir="auto">tauri.conf.json</code>) | <strong>prevents</strong> rather than observes | only the packaged shell |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>leg</th><th>catches</th><th>blind to</th></tr></thead><tbody><tr><td><strong>static bundle scan</strong> (<code dir="auto">lint:no-cdn-egress</code>)</td><td>code <strong>nobody ran</strong></td><td>whether the URL is actually fetched</td></tr><tr><td><strong>runtime egress monitor</strong> (<code dir="auto">egress-monitor.ts</code>)</td><td>dynamically-built URLs; proves <strong>liveness</strong></td><td>any path no test exercised</td></tr><tr><td><strong>CSP</strong> (<code dir="auto">tauri.conf.json</code>)</td><td><strong>prevents</strong> rather than observes</td><td>only the packaged shell</td></tr></tbody></table>
 <p>The static leg exists because Monaco fetched 0.55.1 from jsdelivr for months and
 <strong>no monitor ever saw it</strong> — nobody opened the Gym while a monitor was installed.</p>
 <p>Conversely the runtime leg exists because the static one cannot decide liveness,

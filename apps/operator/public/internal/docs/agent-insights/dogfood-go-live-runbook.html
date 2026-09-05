@@ -142,15 +142,15 @@ Verify via the operator UI (tier-B ✓ badge appears) or
 <code dir="auto">curl -s http://localhost:3070/api/harness/papercup/features/F-DOGFOOD-002 | jq '.feature.completion_ref'</code>.</li>
 </ol>
 <div class="sl-heading-wrapper level-h3"><h3 id="verification-checklist-p-026ae">Verification checklist (P-026a–e)</h3><a class="sl-anchor-link" href="#verification-checklist-p-026ae"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verification checklist (P-026a–e)”</span></a></div>
-<ul>
-<li>[ ] P-026a — orchestrator picked the feature within 5 min OR I
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> P-026a — orchestrator picked the feature within 5 min OR I
 manually triggered it.</li>
-<li>[ ] P-026b — worker run completed with a real diff.</li>
-<li>[ ] P-026c — PR opened (auto or manual).</li>
-<li>[ ] P-026d — PR merged on GitHub by me.</li>
-<li>[ ] P-026e — <code dir="auto">completion_ref</code> populated + status flipped to shipped
+<li class="task-list-item"><input type="checkbox" disabled> P-026b — worker run completed with a real diff.</li>
+<li class="task-list-item"><input type="checkbox" disabled> P-026c — PR opened (auto or manual).</li>
+<li class="task-list-item"><input type="checkbox" disabled> P-026d — PR merged on GitHub by me.</li>
+<li class="task-list-item"><input type="checkbox" disabled> P-026e — <code dir="auto">completion_ref</code> populated + status flipped to shipped
 within 60s of merge.</li>
-<li>[ ] P-026f — record total wall-clock time as a data point.</li>
+<li class="task-list-item"><input type="checkbox" disabled> P-026f — record total wall-clock time as a data point.</li>
 </ul>
 <div class="sl-heading-wrapper level-h3"><h3 id="likely-friction-points">Likely friction points</h3><a class="sl-anchor-link" href="#likely-friction-points"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Likely friction points”</span></a></div>
 <ul>
@@ -194,12 +194,12 @@ on Cloudflare Workers + D1, 18 server tests + 14 indexer tests).</p>
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># 6. Wire the desktop operator to point at the deployment.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C5E478;--1:#3B61B0">echo</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">PAPERCUSP_CUPBOARD_URL="https://cupboard.papercusp.dev"</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#7FDBCA;--1:#096E72">>></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">~/.papercusp/env</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F"># 7. Verify.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">curl</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-s</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">https://cupboard.papercusp.dev/healthz</span><span style="--0:#D6DEEB;--1:#403F53">   </span><span style="--0:#919F9F;--1:#5F636F"># → {"ok": true}</span></div></div><div class="ec-line"><div class="code"><span style="--0:#82AAFF;--1:#3B61B0">curl</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">-s</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#ECC48D;--1:#3B61B0">https://cupboard.papercusp.dev/harnesses</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#919F9F;--1:#5F636F"># → {"harnesses": [], "next_cursor": null}</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="cd apps/operator-publicwrangler d1 create papercusp-cupboardwrangler kv:namespace create papercusp-cupboard-countersnpm run d1:apply:remotewrangler secret put GITHUB_CLIENT_IDwrangler secret put GITHUB_CLIENT_SECRETwrangler secret put IP_HASH_PEPPER   # random 32+ charsnpm run deployecho &#x27;PAPERCUSP_CUPBOARD_URL=&#x22;https://cupboard.papercusp.dev&#x22;&#x27; >> ~/.papercusp/envcurl -s https://cupboard.papercusp.dev/healthz   # → {&#x22;ok&#x22;: true}curl -s https://cupboard.papercusp.dev/harnesses # → {&#x22;harnesses&#x22;: [], &#x22;next_cursor&#x22;: null}"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="verification-checklist-p-051b-123">Verification checklist (P-051b-1/2/3)</h3><a class="sl-anchor-link" href="#verification-checklist-p-051b-123"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Verification checklist (P-051b-1/2/3)”</span></a></div>
-<ul>
-<li>[ ] P-051b-1 — Worker live at chosen hostname with TLS (<code dir="auto">curl https://&#x3C;hostname>/healthz</code> returns 200).</li>
-<li>[ ] P-051b-2 — D1 backups: D1 has automatic point-in-time recovery
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> P-051b-1 — Worker live at chosen hostname with TLS (<code dir="auto">curl https://&#x3C;hostname>/healthz</code> returns 200).</li>
+<li class="task-list-item"><input type="checkbox" disabled> P-051b-2 — D1 backups: D1 has automatic point-in-time recovery
 enabled by default; verify in CF dashboard. No additional config
 needed for v1 volumes.</li>
-<li>[ ] P-051b-3 — <code dir="auto">PAPERCUSP_CUPBOARD_URL</code> set + desktop operator
+<li class="task-list-item"><input type="checkbox" disabled> P-051b-3 — <code dir="auto">PAPERCUSP_CUPBOARD_URL</code> set + desktop operator
 picks it up. Test by opening the ShareWizard, picking
 <code dir="auto">shared-public</code>, and confirming the publish goes through.</li>
 </ul>

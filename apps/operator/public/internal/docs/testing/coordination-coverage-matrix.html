@@ -79,14 +79,47 @@ adversarial suite that closes those classes (plan <code dir="auto">coordination-
 It lists every failure-mode cell, whether it was covered before, and where it is
 covered now — <strong>no silent gaps</strong> (a silent gap is exactly what shipped EI-152).</p></div> </aside>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-four-test-classes-that-were-missing">The four test classes that were missing</h2><a class="sl-anchor-link" href="#the-four-test-classes-that-were-missing"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The four test classes that were missing”</span></a></div>
-<p>| Class | What it asserts | Would have caught |
-|---|---|---|
-| <strong>C1 — Cross-agent isolation (adversarial)</strong> | For <em>every</em> channel (wake, <code dir="auto">coord:send</code>, inbox, presence, locks, work-item claims): A’s traffic <strong>cannot</strong> reach or affect B. | EI-153 |
-| <strong>C2 — Real-seam integration</strong> | The <strong>real</strong> socket inject, the <strong>real</strong> resume (isolated config dir), the <strong>real</strong> PG — not mocked deps. | EI-152 + EI-153 |
-| <strong>C3 — Multi-session concurrency</strong> | N live isolated sessions; concurrent wakes / sends / claims / locks → no <strong>lost / duplicated / misrouted</strong> delivery. | both |
-| <strong>C4 — Liveness/lifecycle matrix</strong> | Every (alive / exited / stale / pid-reuse / no-pid / ended) × (handle? / live-socket?) → the <strong>correct</strong> outcome. | EI-152 |
-| <strong>C5 — Identity invariants</strong> | <code dir="auto">PAPERCUSP_SID</code> / coord ownerId / config-dir correct across launch <strong>and</strong> resume; zero identity/conversation bleed. | EI-153 |
-| <strong>C6 — Idempotency / coalescing / retry</strong> | Re-arm idempotency; coalescing windows; retry/backoff; no duplicate deliveries; <code dir="auto">once=false</code> standing semantics. | — |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Class</th><th>What it asserts</th><th>Would have caught</th></tr></thead><tbody><tr><td><strong>C1 — Cross-agent isolation (adversarial)</strong></td><td>For <em>every</em> channel (wake, <code dir="auto">coord:send</code>, inbox, presence, locks, work-item claims): A’s traffic <strong>cannot</strong> reach or affect B.</td><td>EI-153</td></tr><tr><td><strong>C2 — Real-seam integration</strong></td><td>The <strong>real</strong> socket inject, the <strong>real</strong> resume (isolated config dir), the <strong>real</strong> PG — not mocked deps.</td><td>EI-152 + EI-153</td></tr><tr><td><strong>C3 — Multi-session concurrency</strong></td><td>N live isolated sessions; concurrent wakes / sends / claims / locks → no <strong>lost / duplicated / misrouted</strong> delivery.</td><td>both</td></tr><tr><td><strong>C4 — Liveness/lifecycle matrix</strong></td><td>Every (alive / exited / stale / pid-reuse / no-pid / ended) × (handle? / live-socket?) → the <strong>correct</strong> outcome.</td><td>EI-152</td></tr><tr><td><strong>C5 — Identity invariants</strong></td><td><code dir="auto">PAPERCUSP_SID</code> / coord ownerId / config-dir correct across launch <strong>and</strong> resume; zero identity/conversation bleed.</td><td>EI-153</td></tr><tr><td><strong>C6 — Idempotency / coalescing / retry</strong></td><td>Re-arm idempotency; coalescing windows; retry/backoff; no duplicate deliveries; <code dir="auto">once=false</code> standing semantics.</td><td>—</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-keystone">The keystone</h2><a class="sl-anchor-link" href="#the-keystone"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The keystone”</span></a></div>
 <p><code dir="auto">packages/operator-core/test/_multi-session-testbed.ts</code> — <code dir="auto">MultiSessionTestbed</code>
 mints N genuinely-isolated sessions (own coord identity + own <code dir="auto">CLAUDE_CONFIG_DIR</code>
@@ -98,152 +131,661 @@ how a test proves <code dir="auto">findLiveHost(A)</code> never returns B’s so
 <p>Legend: ✅ covered (new) · 🟢 covered (pre-existing) · 🔴 was a gap, now closed ·
 ⚪ accepted gap (logged below).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="wake-system--the-liveness-ladder-c4--ei-152-c2">Wake system — the liveness ladder (C4) + EI-152 (C2)</h3><a class="sl-anchor-link" href="#wake-system--the-liveness-ladder-c4--ei-152-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Wake system — the liveness ladder (C4) + EI-152 (C2)”</span></a></div>
-<p>| Cell | Before | Now | Where |
-|---|---|---|---|
-| no-handle + <strong>live psu socket</strong> → socket-inject <em>(EI-152)</em> | mocked-only | 🔴 real socket | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| no-handle + socket + inject fails → park | ❌ | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| no-handle + no socket + presence live → park | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| no-handle + no socket + presence stale/revoked → drop | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| adv-session alive + live socket → socket beats pty | ❌ | 🔴 real socket | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| adv-session alive + managed pty → pty-inject | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| <strong>pid-reuse</strong>: pid alive, not our pty → park (no misroute) | ❌ | 🔴 | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| alive + no recorded pid → park (avoid concurrent resume) | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| <strong>ended row</strong> + pid reused-alive → resume (not inject) | ❌ | 🔴 | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| exited + resumable claude → resume-headless | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| exited + claude w/o native id → park (never <code dir="auto">--continue</code>) | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| exited + not resumable + presence gone → drop | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| resume spawn fails → error (pump retries) | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| plan-run handle → plan-run-resume / error | mocked | ✅ | <code dir="auto">wake-executor-matrix.test.ts</code> |
-| <strong>real psu-pty-host</strong> idle-gate + <code dir="auto">mode:'turn'</code> CR-submit + discovery | partial (raw only) | 🔴 | <code dir="auto">apps/operator/lib/psu-pty-host-turn.integration.test.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th><th>Where</th></tr></thead><tbody><tr><td>no-handle + <strong>live psu socket</strong> → socket-inject <em>(EI-152)</em></td><td>mocked-only</td><td>🔴 real socket</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>no-handle + socket + inject fails → park</td><td>❌</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>no-handle + no socket + presence live → park</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>no-handle + no socket + presence stale/revoked → drop</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>adv-session alive + live socket → socket beats pty</td><td>❌</td><td>🔴 real socket</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>adv-session alive + managed pty → pty-inject</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td><strong>pid-reuse</strong>: pid alive, not our pty → park (no misroute)</td><td>❌</td><td>🔴</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>alive + no recorded pid → park (avoid concurrent resume)</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td><strong>ended row</strong> + pid reused-alive → resume (not inject)</td><td>❌</td><td>🔴</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>exited + resumable claude → resume-headless</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>exited + claude w/o native id → park (never <code dir="auto">--continue</code>)</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>exited + not resumable + presence gone → drop</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>resume spawn fails → error (pump retries)</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td>plan-run handle → plan-run-resume / error</td><td>mocked</td><td>✅</td><td><code dir="auto">wake-executor-matrix.test.ts</code></td></tr><tr><td><strong>real psu-pty-host</strong> idle-gate + <code dir="auto">mode:'turn'</code> CR-submit + discovery</td><td>partial (raw only)</td><td>🔴</td><td><code dir="auto">apps/operator/lib/psu-pty-host-turn.integration.test.ts</code></td></tr></tbody></table>
 <p><strong>EI-152 red-on-pre-fix verified</strong>: reverting the no-handle <code dir="auto">findPsuHost</code> block in
 <code dir="auto">wake-executor.ts</code> flips <code dir="auto">no-handle + live socket → delivered</code> to <code dir="auto">park</code> (red).</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="wake-system--pump--coalescing--retry-c6">Wake system — pump / coalescing / retry (C6)</h3><a class="sl-anchor-link" href="#wake-system--pump--coalescing--retry-c6"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Wake system — pump / coalescing / retry (C6)”</span></a></div>
 <p>File: <code dir="auto">events/await/wake-pump-isolation.integration.test.ts</code> (+ <code dir="auto">await-store.integration.test.ts</code>, <code dir="auto">engine.test.ts</code> for the pre-existing store/pump mechanics; <code dir="auto">events/await/wake-on-message.integration.test.ts</code> for the coord-e2e P-009 verb-to-socket composition).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| <code dir="auto">armInboxWake</code> re-arm idempotency (one standing row) | 🟢 store-level | ✅ arm-level (real PG) |
-| per-subscriber coalescing (no duplicate turn) | mocked | 🟢 store + 🟢 engine |
-| retry/backoff → dead at max attempts | 🟢 store-level | 🟢 |
-| <strong>cross-agent</strong>: A’s emit never delivered to B (real <code dir="auto">emitAwaitedEvent</code>) | ❌ | 🔴 |
-| end-to-end pump delivers via live socket, not peer | ❌ | 🔴 |
-| <strong>wake-on-message, UNMOCKED verb→socket</strong> (P-009): real <code dir="auto">coord:send {wake:true}</code> → real engine/store/pump → addressee’s live socket gets the turn; bystander (armed + socketed) untouched; message durably in the inbox | ❌ engine mocked at the verb | 🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>) |
-| wake-on-message, inject-only contract: <code dir="auto">wake:false</code> enqueues but never touches the socket and never consumes the standing watch | ❌ | 🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>) |
-| <strong>wake-on-message, RESUME path</strong> (P-009): real <code dir="auto">claude</code> resume in the EI-155 isolated config dir carries the REAL <code dir="auto">wakeTurnText</code> (coord message reference) into the resumed turn’s transcript | ❌ | 🔴 gated live-smoke (<code dir="auto">resume-spawn-live.ts</code> claude leg — PASS 2026-06-10, transcript 14→26 lines, wake text present) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><code dir="auto">armInboxWake</code> re-arm idempotency (one standing row)</td><td>🟢 store-level</td><td>✅ arm-level (real PG)</td></tr><tr><td>per-subscriber coalescing (no duplicate turn)</td><td>mocked</td><td>🟢 store + 🟢 engine</td></tr><tr><td>retry/backoff → dead at max attempts</td><td>🟢 store-level</td><td>🟢</td></tr><tr><td><strong>cross-agent</strong>: A’s emit never delivered to B (real <code dir="auto">emitAwaitedEvent</code>)</td><td>❌</td><td>🔴</td></tr><tr><td>end-to-end pump delivers via live socket, not peer</td><td>❌</td><td>🔴</td></tr><tr><td><strong>wake-on-message, UNMOCKED verb→socket</strong> (P-009): real <code dir="auto">coord:send {wake:true}</code> → real engine/store/pump → addressee’s live socket gets the turn; bystander (armed + socketed) untouched; message durably in the inbox</td><td>❌ engine mocked at the verb</td><td>🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>)</td></tr><tr><td>wake-on-message, inject-only contract: <code dir="auto">wake:false</code> enqueues but never touches the socket and never consumes the standing watch</td><td>❌</td><td>🔴 (<code dir="auto">wake-on-message.integration.test.ts</code>)</td></tr><tr><td><strong>wake-on-message, RESUME path</strong> (P-009): real <code dir="auto">claude</code> resume in the EI-155 isolated config dir carries the REAL <code dir="auto">wakeTurnText</code> (coord message reference) into the resumed turn’s transcript</td><td>❌</td><td>🔴 gated live-smoke (<code dir="auto">resume-spawn-live.ts</code> claude leg — PASS 2026-06-10, transcript 14→26 lines, wake text present)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="coord-substrate-c1">Coord substrate (C1)</h3><a class="sl-anchor-link" href="#coord-substrate-c1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Coord substrate (C1)”</span></a></div>
 <p>File: <code dir="auto">agent-tools/coordination/__tests__/cross-agent-isolation.integration.test.ts</code> (10 tests, real <code dir="auto">PgCoordLog</code>/<code dir="auto">PgPresenceStore</code>).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| <code dir="auto">coord:send</code> A→B reaches B and <strong>no one else</strong> | 🟢 in-mem | 🔴 real PG |
-| inbox is owner-scoped; A can’t read B’s | 🟢 in-mem | ✅ |
-| A cannot ack/suppress B’s broadcast | 🟢 | ✅ |
-| workspace_id isolation (A can’t reach B cross-workspace) | ❌ | 🔴 |
-| presence staleness / revoked transitions | partial | ✅ |
-| subscribe→inject only reaches subscribers | 🟢 | ✅ |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><code dir="auto">coord:send</code> A→B reaches B and <strong>no one else</strong></td><td>🟢 in-mem</td><td>🔴 real PG</td></tr><tr><td>inbox is owner-scoped; A can’t read B’s</td><td>🟢 in-mem</td><td>✅</td></tr><tr><td>A cannot ack/suppress B’s broadcast</td><td>🟢</td><td>✅</td></tr><tr><td>workspace_id isolation (A can’t reach B cross-workspace)</td><td>❌</td><td>🔴</td></tr><tr><td>presence staleness / revoked transitions</td><td>partial</td><td>✅</td></tr><tr><td>subscribe→inject only reaches subscribers</td><td>🟢</td><td>✅</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="watermark-crash-restart-c2">Watermark crash-restart (C2)</h3><a class="sl-anchor-link" href="#watermark-crash-restart-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Watermark crash-restart (C2)”</span></a></div>
 <p>File: <code dir="auto">agent-tools/coordination/__tests__/watermark-crash-restart.integration.test.ts</code> (4, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-002 — real PG; a “process” is a dedicated connection + fresh <code dir="auto">PgCoordLog</code>/<code dir="auto">PgWatermarkStore</code> bound into the host seams, and a hard kill discards every in-memory object).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| LINE (<code dir="auto">messages</code>): consume to N, hard-kill, restart → resumes at exactly N+1 (no replay after a committed turn, no skip) | ❌ | 🔴 |
-| EVENT (<code dir="auto">escalations</code>): same exact-N+1 resume; re-put on an existing msg_id mints no second record | ❌ | 🔴 |
-| crash BEFORE the turn-end commit → aborted turn’s entries re-seen in full (at-least-once, never a skip) | ❌ | 🔴 |
-| SAME-TS boundary: committing a partially-consumed same-ts group skips its siblings (the ts-cursor sharp edge) + the safe-commit rule (commit the previous distinct ts → re-seen, never skipped) | ❌ silent | ⚪ pinned (logged below) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>LINE (<code dir="auto">messages</code>): consume to N, hard-kill, restart → resumes at exactly N+1 (no replay after a committed turn, no skip)</td><td>❌</td><td>🔴</td></tr><tr><td>EVENT (<code dir="auto">escalations</code>): same exact-N+1 resume; re-put on an existing msg_id mints no second record</td><td>❌</td><td>🔴</td></tr><tr><td>crash BEFORE the turn-end commit → aborted turn’s entries re-seen in full (at-least-once, never a skip)</td><td>❌</td><td>🔴</td></tr><tr><td>SAME-TS boundary: committing a partially-consumed same-ts group skips its siblings (the ts-cursor sharp edge) + the safe-commit rule (commit the previous distinct ts → re-seen, never skipped)</td><td>❌ silent</td><td>⚪ pinned (logged below)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="locks-c1">Locks (C1)</h3><a class="sl-anchor-link" href="#locks-c1"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Locks (C1)”</span></a></div>
 <p>Files: <code dir="auto">agent-tools/locks/__tests__/cross-agent-isolation.integration.test.ts</code> (7 tests, live <code dir="auto">papercusp_su</code>) + the <code dir="auto">PreToolUse</code> file-lock hook: <code dir="auto">apps/operator/scripts/hooks/cc/__tests__/cc-hooks.test.ts</code> (fail-open) + <code dir="auto">pretooluse-locks-decision.test.ts</code> (decision rendering, stub operator) + <code dir="auto">pretooluse-locks-live.integration.test.ts</code> (the LIVE-operator rung, coord-e2e P-008 — live-gated, skips when no operator answers).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| A cannot release/heartbeat B’s lock (lock_id keying) | 🟢 aba | ✅ adversarial (replay B’s lock_id) |
-| store-layer block-on-held (B’s acquire on A’s path → busy) | partial | ✅ |
-| ABA stale-handle no-op | 🟢 | ✅ |
-| named-resource drain (exclusive vs shared) | 🟢 | ✅ |
-| lock-authority election (lowest live pubkey, failover) | 🟢 | ✅ pure <code dir="auto">decideAuthority</code> |
-| <strong>file-lock hook fail-open</strong> (operator unreachable → allow + marker; bounded retry) | partial | ✅ (<code dir="auto">cc-hooks.test.ts</code>) |
-| <strong>file-lock hook block-on-held → <code dir="auto">permissionDecision:deny</code></strong> (busy → reason the model sees) | ❌ live-smoke only | 🔴 stub operator (<code dir="auto">pretooluse-locks-decision.test.ts</code>) + 🔴 LIVE operator: deny names holder label + declared intent + the queue-and-sleep guidance (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>) |
-| file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing) | ❌ | 🔴 + LIVE full cycle: deny → <code dir="auto">wake_on_grant</code> queue → release → grant cascade → hook allows + caches <code dir="auto">&#x3C;tool_use_id>.lock</code> → PostToolUse release frees the path (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>, 5 tests) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>A cannot release/heartbeat B’s lock (lock_id keying)</td><td>🟢 aba</td><td>✅ adversarial (replay B’s lock_id)</td></tr><tr><td>store-layer block-on-held (B’s acquire on A’s path → busy)</td><td>partial</td><td>✅</td></tr><tr><td>ABA stale-handle no-op</td><td>🟢</td><td>✅</td></tr><tr><td>named-resource drain (exclusive vs shared)</td><td>🟢</td><td>✅</td></tr><tr><td>lock-authority election (lowest live pubkey, failover)</td><td>🟢</td><td>✅ pure <code dir="auto">decideAuthority</code></td></tr><tr><td><strong>file-lock hook fail-open</strong> (operator unreachable → allow + marker; bounded retry)</td><td>partial</td><td>✅ (<code dir="auto">cc-hooks.test.ts</code>)</td></tr><tr><td><strong>file-lock hook block-on-held → <code dir="auto">permissionDecision:deny</code></strong> (busy → reason the model sees)</td><td>❌ live-smoke only</td><td>🔴 stub operator (<code dir="auto">pretooluse-locks-decision.test.ts</code>) + 🔴 LIVE operator: deny names holder label + declared intent + the queue-and-sleep guidance (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>)</td></tr><tr><td>file-lock hook allow-on-grant caches lock_id for release (+ SSE-framed parsing)</td><td>❌</td><td>🔴 + LIVE full cycle: deny → <code dir="auto">wake_on_grant</code> queue → release → grant cascade → hook allows + caches <code dir="auto">&#x3C;tool_use_id>.lock</code> → PostToolUse release frees the path (<code dir="auto">pretooluse-locks-live.integration.test.ts</code>, 5 tests)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="lock-authority--remote-leg-over-http-c2">Lock authority — remote leg over HTTP (C2)</h3><a class="sl-anchor-link" href="#lock-authority--remote-leg-over-http-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Lock authority — remote leg over HTTP (C2)”</span></a></div>
 <p>Files: <code dir="auto">lib/authority/__tests__/file-lock-authority-e2e.integration.test.ts</code> (6, real PG su-lock store + real loopback HTTP, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-006) + <code dir="auto">lib/authority/__tests__/transport-wiring.test.ts</code> (9) + the pre-existing <code dir="auto">peer-rpc-transport.integration.test.ts</code> / <code dir="auto">two-instance-authority.integration.test.ts</code> (+ pot variant).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| generic remote dispatch over real HTTP (<code dir="auto">routeToAuthority</code> → transport → <code dir="auto">handleAuthorityRpc</code>) | 🟢 | ✅ |
-| transport REGISTERED at boot + addressing precedence (configured resolver > env map > null → fail-open) | ❌ production transport never registered (D-002 blocker) | 🔴 <code dir="auto">transport-wiring.ts</code> + tests |
-| REAL file-lock chain: <code dir="auto">routeFileLockOp</code> → boot-wired <code dir="auto">HttpPeerRpcTransport</code> → boot-registered <code dir="auto">lock.*</code> handlers → real PG store | ❌ fake store + hand-registered kinds only | 🔴 |
-| cross-wire mutual exclusion (B busy on A’s held path) + cross-wire release frees the contender | partial (fake store) | 🔴 |
-| <code dir="auto">not_authority</code> refusal during a failover gap → fail-open with loud warning | ❌ | 🔴 |
-| authority unreachable → fail-open, local advisory grant | 🟢 generic leg | ✅ file-lock leg |
-| unmanaged domain → pure local, zero wire traffic | 🟢 | ✅ |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>generic remote dispatch over real HTTP (<code dir="auto">routeToAuthority</code> → transport → <code dir="auto">handleAuthorityRpc</code>)</td><td>🟢</td><td>✅</td></tr><tr><td>transport REGISTERED at boot + addressing precedence (configured resolver > env map > null → fail-open)</td><td>❌ production transport never registered (D-002 blocker)</td><td>🔴 <code dir="auto">transport-wiring.ts</code> + tests</td></tr><tr><td>REAL file-lock chain: <code dir="auto">routeFileLockOp</code> → boot-wired <code dir="auto">HttpPeerRpcTransport</code> → boot-registered <code dir="auto">lock.*</code> handlers → real PG store</td><td>❌ fake store + hand-registered kinds only</td><td>🔴</td></tr><tr><td>cross-wire mutual exclusion (B busy on A’s held path) + cross-wire release frees the contender</td><td>partial (fake store)</td><td>🔴</td></tr><tr><td><code dir="auto">not_authority</code> refusal during a failover gap → fail-open with loud warning</td><td>❌</td><td>🔴</td></tr><tr><td>authority unreachable → fail-open, local advisory grant</td><td>🟢 generic leg</td><td>✅ file-lock leg</td></tr><tr><td>unmanaged domain → pure local, zero wire traffic</td><td>🟢</td><td>✅</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="lock-authority--failover-mid-hold--fencing-c2c3">Lock authority — failover mid-hold + fencing (C2/C3)</h3><a class="sl-anchor-link" href="#lock-authority--failover-mid-hold--fencing-c2c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Lock authority — failover mid-hold + fencing (C2/C3)”</span></a></div>
 <p>Files: <code dir="auto">lib/authority/__tests__/cross-machine-lock-failover.integration.test.ts</code> (8, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-007 — the two-instances-one-box rung; the two-physical-box variant is P-010, owner-gated) + <code dir="auto">authority-failover-flood.integration.test.ts</code> (2, P-003 — sustained flood across a mid-flood authority crash). Shared rig <code dir="auto">_two-instance-authority-rig.ts</code>: two simulated machines with per-instance stores + the REAL handlers (<code dir="auto">buildFileLockAuthorityHandlers</code>), hardened verification (<code dir="auto">resolveHardenedAuthority</code>), and the D-005 <code dir="auto">LockSetReconstructor</code> handover, driven over real loopback HTTP via the boot-wired transport; injected clock + roster (deterministic, no sleeps).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire | ❌ pure parts only | 🔴 composed over the wire |
-| epoch bumps on takeover; deposed authority’s stale-epoch grant fenced out downstream (<code dir="auto">fenceValid</code>) | 🟢 pure | ✅ E2E |
-| a deposed authority’s stale-epoch <strong>re-assert</strong> at the NEW authority is fenced out (a late heartbeat minted under the old epoch cannot clobber the new authority’s truth — B1, D-006) | ❌ | 🔴 |
-| deposed authority refuses mis-routed ops (<code dir="auto">not_authority</code>) → requester fails open loud | ❌ | 🔴 |
-| optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such) | ❌ | 🔴 |
-| cross-wire release at the NEW authority frees the contender post-rebuild | ❌ | 🔴 |
-| anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after | 🟢 pure | ✅ E2E |
-| FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover) | ❌ | 🔴 flood test |
-| re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after | ❌ | 🔴 flood test |
-| fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable) | ❌ | 🔴 flood test |
-| holder→authority heartbeat re-assert op over the production transport | ❌ | ⚪ rig-local <code dir="auto">lock.assert</code> op kind — the production heartbeat-op wiring is a residual (logged below) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>authority failover MID-HOLD → holder re-asserts to the new authority; contender refused across the wire</td><td>❌ pure parts only</td><td>🔴 composed over the wire</td></tr><tr><td>epoch bumps on takeover; deposed authority’s stale-epoch grant fenced out downstream (<code dir="auto">fenceValid</code>)</td><td>🟢 pure</td><td>✅ E2E</td></tr><tr><td>a deposed authority’s stale-epoch <strong>re-assert</strong> at the NEW authority is fenced out (a late heartbeat minted under the old epoch cannot clobber the new authority’s truth — B1, D-006)</td><td>❌</td><td>🔴</td></tr><tr><td>deposed authority refuses mis-routed ops (<code dir="auto">not_authority</code>) → requester fails open loud</td><td>❌</td><td>🔴</td></tr><tr><td>optimistic grant of UNCONTENDED paths during the rebuild window (the designed D-004 gap, asserted as such)</td><td>❌</td><td>🔴</td></tr><tr><td>cross-wire release at the NEW authority frees the contender post-rebuild</td><td>❌</td><td>🔴</td></tr><tr><td>anti-flap: returning lower peer cannot preempt within cooldown (no double grant); clean preemption + fresh epoch after</td><td>🟢 pure</td><td>✅ E2E</td></tr><tr><td>FLOOD across a crash: zero contender grants on a contended path over 30 rounds × concurrent traffic (before/during/after failover)</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>re-election within the staleness window under flood — fail-open window starts at the crash, bounded by staleMs, full remote service resumes after</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>fencing under flood: remote grant epochs non-decreasing across the takeover; liveness (workers keep getting granted whenever an authority is reachable)</td><td>❌</td><td>🔴 flood test</td></tr><tr><td>holder→authority heartbeat re-assert op over the production transport</td><td>❌</td><td>⚪ rig-local <code dir="auto">lock.assert</code> op kind — the production heartbeat-op wiring is a residual (logged below)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="federation-c2c3">Federation (C2/C3)</h3><a class="sl-anchor-link" href="#federation-c2c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Federation (C2/C3)”</span></a></div>
 <p>File: <code dir="auto">sync/hyperbee/__tests__/federation-adversarial.integration.test.ts</code> (8 tests, real two-peer DHT).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| peer-log → projection → PG round-trip (no loss) | 🟢 | ✅ |
-| <strong>wrong tableTag silently dropped</strong> (pins op-key invariant) | ❌ | 🔴 |
-| admission gate (rejecting peer never federates) | partial | ✅ |
-| revocation drops a peer mid-session | partial | 🔴 |
-| no duplication (one op merged twice → one row) | 🟢 | ✅ |
-| <strong>poisoning/DoS resilience</strong> — a malformed-op barrage (NaN ts / oversized payload / junk schema / null value) cannot crash or wedge an honest peer’s merge pipeline; a later valid op still federates | ❌ | 🔴 |
-| <strong>3-peer partition/rejoin</strong> (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo) | ❌ 2-peer only | 🔴 <code dir="auto">three-peer-partition-rejoin.test.ts</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>peer-log → projection → PG round-trip (no loss)</td><td>🟢</td><td>✅</td></tr><tr><td><strong>wrong tableTag silently dropped</strong> (pins op-key invariant)</td><td>❌</td><td>🔴</td></tr><tr><td>admission gate (rejecting peer never federates)</td><td>partial</td><td>✅</td></tr><tr><td>revocation drops a peer mid-session</td><td>partial</td><td>🔴</td></tr><tr><td>no duplication (one op merged twice → one row)</td><td>🟢</td><td>✅</td></tr><tr><td><strong>poisoning/DoS resilience</strong> — a malformed-op barrage (NaN ts / oversized payload / junk schema / null value) cannot crash or wedge an honest peer’s merge pipeline; a later valid op still federates</td><td>❌</td><td>🔴</td></tr><tr><td><strong>3-peer partition/rejoin</strong> (P-001): minority keeps appending; heal → 3-way convergence, no loss/dup, cross-partition LWW conflict resolves identically everywhere, per-log merge watermarks monotonic throughout, quiescent pass applies zero (no echo)</td><td>❌ 2-peer only</td><td>🔴 <code dir="auto">three-peer-partition-rejoin.test.ts</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="coord-verb-lifecycle-across-instances-c2c3">Coord verb lifecycle ACROSS instances (C2/C3)</h3><a class="sl-anchor-link" href="#coord-verb-lifecycle-across-instances-c2c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Coord verb lifecycle ACROSS instances (C2/C3)”</span></a></div>
 <p>File: <code dir="auto">shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts</code> (5 tests, plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-005 — the brief-11 composition rig + the real coord_event_log (mig-150 capture verbatim) + the real coord-messages projection + the real PgWatermarkStore; real Hyperswarm over a local testnet DHT, own PG per cell).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| <strong>send → handoff/ACCEPT → escalate/RESOLVE federate BOTH directions</strong> between two cells of one Pot (LINE + EVENT surfaces, origin=‘remote’ on arrival, body intact) | ❌ nothing ran verbs across instances | 🔴 |
-| EVENT immutability across the wire: replays mint no second record on the peer | 🟢 single-PG only | 🔴 cross-cell |
-| per-surface order of remote-fed rows preserved (send order = arrival order) | ❌ | 🔴 |
-| partition (convergence withheld) → heal: every message exactly once, batch order kept; a re-converge is a FIXED POINT (EI-117 no-double-application class) | ❌ | 🔴 |
-| watermark commit on REMOTE-fed rows survives a store restart; resume strictly past the cursor sees exactly the new traffic | ❌ | 🔴 |
-| workspace isolation across the wire (another workspace’s rows never surface in WS reads on the peer) | ❌ | 🔴 |
-| cross-instance deliver-and-WAKE (remote-origin message fires the recipient’s local inbox-wake) | ❌ | 🔴 EI-279 fixed 2026-06-11: <code dir="auto">coord:send {wake:true}</code> persists <code dir="auto">body.wake</code>, which federates; the coord-message projection fans <code dir="auto">wakeRecipients</code> on a FRESH remote-origin insert (once per msg_id — re-applies/replays never re-wake). Trigger contract pinned here (P-005 ‘EI-279 liveness’ cell) + <code dir="auto">coord-message-federation.integration.test.ts</code> (fan-once, no-intent/local-origin no-ops, fail-soft) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><strong>send → handoff/ACCEPT → escalate/RESOLVE federate BOTH directions</strong> between two cells of one Pot (LINE + EVENT surfaces, origin=‘remote’ on arrival, body intact)</td><td>❌ nothing ran verbs across instances</td><td>🔴</td></tr><tr><td>EVENT immutability across the wire: replays mint no second record on the peer</td><td>🟢 single-PG only</td><td>🔴 cross-cell</td></tr><tr><td>per-surface order of remote-fed rows preserved (send order = arrival order)</td><td>❌</td><td>🔴</td></tr><tr><td>partition (convergence withheld) → heal: every message exactly once, batch order kept; a re-converge is a FIXED POINT (EI-117 no-double-application class)</td><td>❌</td><td>🔴</td></tr><tr><td>watermark commit on REMOTE-fed rows survives a store restart; resume strictly past the cursor sees exactly the new traffic</td><td>❌</td><td>🔴</td></tr><tr><td>workspace isolation across the wire (another workspace’s rows never surface in WS reads on the peer)</td><td>❌</td><td>🔴</td></tr><tr><td>cross-instance deliver-and-WAKE (remote-origin message fires the recipient’s local inbox-wake)</td><td>❌</td><td>🔴 EI-279 fixed 2026-06-11: <code dir="auto">coord:send {wake:true}</code> persists <code dir="auto">body.wake</code>, which federates; the coord-message projection fans <code dir="auto">wakeRecipients</code> on a FRESH remote-origin insert (once per msg_id — re-applies/replays never re-wake). Trigger contract pinned here (P-005 ‘EI-279 liveness’ cell) + <code dir="auto">coord-message-federation.integration.test.ts</code> (fan-once, no-intent/local-origin no-ops, fail-soft)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="swarm-path-chaos--real-hyperswarm-under-churn-c2">Swarm-path chaos — real Hyperswarm under churn (C2)</h3><a class="sl-anchor-link" href="#swarm-path-chaos--real-hyperswarm-under-churn-c2"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Swarm-path chaos — real Hyperswarm under churn (C2)”</span></a></div>
 <p>File: <code dir="auto">sync/hyperbee/__tests__/swarm-chaos.test.ts</code> (plan <code dir="auto">coord-system-e2e-testing-2026-06-10</code> P-004; ~2.6s, seeded LCG kill schedule, offline testnet DHT). Chaos = repeated mid-replication CONNECTION KILLS + reconnect churn — the only failure shape a reliable UDX transport can surface to the substrate (loss/reorder are absorbed below the byte stream; injecting them in-stream would fabricate impossible corruption). History: landed red and held the gate (EI-272) — root causes were rig-level (the IP-keyed DoS conn-rate ceiling cross-bans one-box peers sharing 127.0.0.1; in-process testnet RELAY streams take unguarded resets when <code dir="auto">forceRelaying</code> engages); both documented in-file.</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| <strong>unhandled socket <code dir="auto">'error'</code> on swarm connections = host-CRASH class</strong> — an unclean peer disconnect raised an uncaught ECONNRESET; guards now first-line in both connection handlers (<code dir="auto">swarm.ts</code>, <code dir="auto">directory-swarm.ts</code>) | ❌ crash | 🔴 found + fixed by this test |
-| convergence under seeded kill-reconnect churn: every honest op exactly once per key on both peers (no loss, no dup) | ❌ | 🔴 |
-| admission enforced across churn: a failing channel-2 binding re-announces on every reconnect, never admitted, ops never merge | partial (single connect) | 🔴 |
-| MID-SESSION revocation survives reconnect churn (re-announce refused), with a live-wire positive control op proving the assertion isn’t vacuous | ❌ | 🔴 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td><strong>unhandled socket <code dir="auto">'error'</code> on swarm connections = host-CRASH class</strong> — an unclean peer disconnect raised an uncaught ECONNRESET; guards now first-line in both connection handlers (<code dir="auto">swarm.ts</code>, <code dir="auto">directory-swarm.ts</code>)</td><td>❌ crash</td><td>🔴 found + fixed by this test</td></tr><tr><td>convergence under seeded kill-reconnect churn: every honest op exactly once per key on both peers (no loss, no dup)</td><td>❌</td><td>🔴</td></tr><tr><td>admission enforced across churn: a failing channel-2 binding re-announces on every reconnect, never admitted, ops never merge</td><td>partial (single connect)</td><td>🔴</td></tr><tr><td>MID-SESSION revocation survives reconnect churn (re-announce refused), with a live-wire positive control op proving the assertion isn’t vacuous</td><td>❌</td><td>🔴</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="work_items-claimlease-c3">work_items claim/lease (C3)</h3><a class="sl-anchor-link" href="#work_items-claimlease-c3"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “work_items claim/lease (C3)”</span></a></div>
 <p>File: <code dir="auto">work-item-claims-concurrency.integration.test.ts</code> (12 tests, real PG).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| N swarms claim one item → <strong>no double-claim</strong> | 🟢 2-inst | 🔴 8-way |
-| N>M over a backlog (SKIP LOCKED) → each item once | 🟢 | ✅ |
-| lease ttl expiry → reclaimable (claim_id rotates) | 🟢 | ✅ |
-| heartbeat extends lease; foreign heartbeat no-op | 🟢 | ✅ |
-| fail-open reconcile under partition (deterministic) | 🟢 pure | ✅ partition-heal |
-| <strong>G16 — REAL-clock lease expiry</strong>: a short ttl lapses on the wall clock (no manual DB edit) and is then stealable | ❌ | 🔴 |
-| <strong>G17 — heartbeat renewal blocks a steal</strong>: a renewing owner holds against concurrent steals, then loses only after heartbeats stop | ❌ | 🔴 |
-| <strong>G18 — priority-ordered claiming</strong>: equal <code dir="auto">feature_order</code> tie-breaks on <code dir="auto">created_ts</code> (oldest first); N claimers over M priorities drain in priority order, all distinct; serial claiming drains strictly lowest-<code dir="auto">feature_order</code> first | ❌ | 🔴 |
-| <strong>caller-standing gate (EI-284)</strong>: a REVOKED swarm’s acquire/heartbeat RPC is refused (<code dir="auto">refused:'caller_revoked'</code> / <code dir="auto">reason:'caller_revoked'</code>); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004) | ❌ revoked swarm stole leases + blocked live swarms | 🔴 <code dir="auto">work-item-claim-authority-ops.test.ts</code> (6 gate cells) + the flipped <code dir="auto">shared-pot-loop/revoked-swarm.integration.test.ts</code> |
-| caller-standing residual: the RPC envelope is UNAUTHENTICATED — <code dir="auto">holderPubkey</code> is self-reported, so the gate is defense-in-depth against well-behaved-but-revoked peers, not spoofing | — | ⚪ on EI-284’s thread (authenticated-envelope follow-on) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>N swarms claim one item → <strong>no double-claim</strong></td><td>🟢 2-inst</td><td>🔴 8-way</td></tr><tr><td>N>M over a backlog (SKIP LOCKED) → each item once</td><td>🟢</td><td>✅</td></tr><tr><td>lease ttl expiry → reclaimable (claim_id rotates)</td><td>🟢</td><td>✅</td></tr><tr><td>heartbeat extends lease; foreign heartbeat no-op</td><td>🟢</td><td>✅</td></tr><tr><td>fail-open reconcile under partition (deterministic)</td><td>🟢 pure</td><td>✅ partition-heal</td></tr><tr><td><strong>G16 — REAL-clock lease expiry</strong>: a short ttl lapses on the wall clock (no manual DB edit) and is then stealable</td><td>❌</td><td>🔴</td></tr><tr><td><strong>G17 — heartbeat renewal blocks a steal</strong>: a renewing owner holds against concurrent steals, then loses only after heartbeats stop</td><td>❌</td><td>🔴</td></tr><tr><td><strong>G18 — priority-ordered claiming</strong>: equal <code dir="auto">feature_order</code> tie-breaks on <code dir="auto">created_ts</code> (oldest first); N claimers over M priorities drain in priority order, all distinct; serial claiming drains strictly lowest-<code dir="auto">feature_order</code> first</td><td>❌</td><td>🔴</td></tr><tr><td><strong>caller-standing gate (EI-284)</strong>: a REVOKED swarm’s acquire/heartbeat RPC is refused (<code dir="auto">refused:'caller_revoked'</code> / <code dir="auto">reason:'caller_revoked'</code>); release stays ungated (zombie relinquish is wanted); no-pubkey + check-error fail open (D-004)</td><td>❌ revoked swarm stole leases + blocked live swarms</td><td>🔴 <code dir="auto">work-item-claim-authority-ops.test.ts</code> (6 gate cells) + the flipped <code dir="auto">shared-pot-loop/revoked-swarm.integration.test.ts</code></td></tr><tr><td>caller-standing residual: the RPC envelope is UNAUTHENTICATED — <code dir="auto">holderPubkey</code> is self-reported, so the gate is defense-in-depth against well-behaved-but-revoked peers, not spoofing</td><td>—</td><td>⚪ on EI-284’s thread (authenticated-envelope follow-on)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="multi-session-concurrency-e2e-c3--the-capstone">Multi-session concurrency E2E (C3) — the capstone</h3><a class="sl-anchor-link" href="#multi-session-concurrency-e2e-c3--the-capstone"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Multi-session concurrency E2E (C3) — the capstone”</span></a></div>
 <p>File: <code dir="auto">multi-session-concurrency.integration.test.ts</code> (4 channels, N isolated testbed sessions).</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| N concurrent wakes → each lands on its OWN socket, none on a peer | ❌ | 🔴 |
-| N concurrent directed sends → each reaches exactly its addressee | ❌ | 🔴 |
-| N×M concurrent claims → one winner per item | ❌ | 🔴 |
-| N concurrent lock races → one grant/path; distinct paths all granted | ❌ | 🔴 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>N concurrent wakes → each lands on its OWN socket, none on a peer</td><td>❌</td><td>🔴</td></tr><tr><td>N concurrent directed sends → each reaches exactly its addressee</td><td>❌</td><td>🔴</td></tr><tr><td>N×M concurrent claims → one winner per item</td><td>❌</td><td>🔴</td></tr><tr><td>N concurrent lock races → one grant/path; distinct paths all granted</td><td>❌</td><td>🔴</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="agent-protocol-use-under-lock-contention--llm-judged-layer-c">Agent protocol use under lock contention — LLM-judged (Layer C)</h3><a class="sl-anchor-link" href="#agent-protocol-use-under-lock-contention--llm-judged-layer-c"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Agent protocol use under lock contention — LLM-judged (Layer C)”</span></a></div>
 <p>File: <code dir="auto">lib/llm-testing/scenarios/su/S11-lock-contention-protocol.ts</code> (llm-testing lane, coord-e2e P-011 — deny text is the live hook’s exact rendering, verified by <code dir="auto">pretooluse-locks-live.integration.test.ts</code>). Cost-capped: single scenario per run (<code dir="auto">--no-matrix</code>), D-003.</p>
-<p>| Cell | Before | Now |
-|---|---|---|
-| hook-denied edit → protocol response (<code dir="auto">locks:acquire {wake_on_grant:true}</code> / <code dir="auto">locks:queue</code> / <code dir="auto">coord:send</code> to holder), ERROR-gated assert | ❌ | 🔴 first scored run 2026-06-12: assert green |
-| NO bypass — no <code dir="auto">mv</code>/<code dir="auto">cp</code>/<code dir="auto">--force</code> on the contested path, no sibling-copy edit, no blind retry loop (>2 re-denied attempts), ERROR-gated assert | ❌ | 🔴 same run: assert green |
-| grounding while waiting — no narrated/fictional peer reply after <code dir="auto">coord:send</code> (judge groundedness axis) | ❌ silent | 🔴 judged — first run FAILED this axis (real finding: SUT narrated an anticipated reply before checking <code dir="auto">coord:inbox</code>; filed as an improvement) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Cell</th><th>Before</th><th>Now</th></tr></thead><tbody><tr><td>hook-denied edit → protocol response (<code dir="auto">locks:acquire {wake_on_grant:true}</code> / <code dir="auto">locks:queue</code> / <code dir="auto">coord:send</code> to holder), ERROR-gated assert</td><td>❌</td><td>🔴 first scored run 2026-06-12: assert green</td></tr><tr><td>NO bypass — no <code dir="auto">mv</code>/<code dir="auto">cp</code>/<code dir="auto">--force</code> on the contested path, no sibling-copy edit, no blind retry loop (>2 re-denied attempts), ERROR-gated assert</td><td>❌</td><td>🔴 same run: assert green</td></tr><tr><td>grounding while waiting — no narrated/fictional peer reply after <code dir="auto">coord:send</code> (judge groundedness axis)</td><td>❌ silent</td><td>🔴 judged — first run FAILED this axis (real finding: SUT narrated an anticipated reply before checking <code dir="auto">coord:inbox</code>; filed as an improvement)</td></tr></tbody></table>
 <p>Run recipe (the 429 trap): <code dir="auto">LLM_TEST_BACKEND=claude-code</code> is the knob that escapes the saturated raw-OAuth bucket (<code dir="auto">AGENT_BACKEND</code> alone only picks the stateless credential) — see the <code dir="auto">llm-429-check-the-transport-not-the-account</code> insight.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="closed-since-first-publication">Closed since first publication</h2><a class="sl-anchor-link" href="#closed-since-first-publication"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Closed since first publication”</span></a></div>
 <aside aria-label="EI-155 — interactive-claude config isolation: CLOSED" class="starlight-aside starlight-aside--tip"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path fill-rule="evenodd" d="M1.44 8.855v-.001l3.527-3.516c.34-.344.802-.541 1.285-.548h6.649l.947-.947c3.07-3.07 6.207-3.072 7.62-2.868a1.821 1.821 0 0 1 1.557 1.557c.204 1.413.203 4.55-2.868 7.62l-.946.946v6.649a1.845 1.845 0 0 1-.549 1.286l-3.516 3.528a1.844 1.844 0 0 1-3.11-.944l-.858-4.275-4.52-4.52-2.31-.463-1.964-.394A1.847 1.847 0 0 1 .98 10.693a1.843 1.843 0 0 1 .46-1.838Zm5.379 2.017-3.873-.776L6.32 6.733h4.638l-4.14 4.14Zm8.403-5.655c2.459-2.46 4.856-2.463 5.89-2.33.134 1.035.13 3.432-2.329 5.891l-6.71 6.71-3.561-3.56 6.71-6.711Zm-1.318 15.837-.776-3.873 4.14-4.14v4.639l-3.364 3.374Z" clip-rule="evenodd"/><path d="M9.318 18.345a.972.972 0 0 0-1.86-.561c-.482 1.435-1.687 2.204-2.934 2.619a8.22 8.22 0 0 1-1.23.302c.062-.365.157-.79.303-1.229.415-1.247 1.184-2.452 2.62-2.935a.971.971 0 1 0-.62-1.842c-.12.04-.236.084-.35.13-2.02.828-3.012 2.588-3.493 4.033a10.383 10.383 0 0 0-.51 2.845l-.001.016v.063c0 .536.434.972.97.972H2.24a7.21 7.21 0 0 0 .878-.065c.527-.063 1.248-.19 2.02-.447 1.445-.48 3.205-1.472 4.033-3.494a5.828 5.828 0 0 0 .147-.407Z"/></svg>EI-155 — interactive-claude config isolation: CLOSED </p>  <div class="starlight-aside__content"><p><strong>Interactive psu/SU + role claude config isolation (EI-155) is now implemented

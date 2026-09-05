@@ -96,11 +96,28 @@ reads via <code dir="auto">@papercusp/sync</code> (<code dir="auto">evals.benchR
 exists long before any reproducibility card.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="subtabs">Subtabs</h2><a class="sl-anchor-link" href="#subtabs"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Subtabs”</span></a></div>
-<p>| Subtab | What it does |
-| --- | --- |
-| <strong>Launch</strong> | Pick arm / task set / cap / <code dir="auto">$</code>-budget, see a cost+time estimate, owner-confirm when the estimate is <code dir="auto">>= $20</code> of opus (<code dir="auto">OWNER_CONFIRM_USD</code>), launch. opus is pinned (fail-closed). Arms: <code dir="auto">hive-realqueen</code> (treatment), <code dir="auto">fifo-noqueen</code> (no-Mug control), <code dir="auto">mini-swe-agent</code> (reference harness); task sets: 11-task pilot, full ~731, custom ids. |
-| <strong>Preserved runs</strong> | Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline. |
-| <strong>Compare</strong> | Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Subtab</th><th>What it does</th></tr></thead><tbody><tr><td><strong>Launch</strong></td><td>Pick arm / task set / cap / <code dir="auto">$</code>-budget, see a cost+time estimate, owner-confirm when the estimate is <code dir="auto">>= $20</code> of opus (<code dir="auto">OWNER_CONFIRM_USD</code>), launch. opus is pinned (fail-closed). Arms: <code dir="auto">hive-realqueen</code> (treatment), <code dir="auto">fifo-noqueen</code> (no-Mug control), <code dir="auto">mini-swe-agent</code> (reference harness); task sets: 11-task pilot, full ~731, custom ids.</td></tr><tr><td><strong>Preserved runs</strong></td><td>Browse runs (imports + live) — id · arm · resolved% · status. Per-run: Grade, Export, Re-run, Delete. Validity badges, live fleet panel, coordination timeline.</td></tr><tr><td><strong>Compare</strong></td><td>Arm-vs-arm over the same task set: resolved% delta + Frontier + per-task table + the honest-caveats panel.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="launch-a-run-p-004--p-005">Launch a run (P-004 / P-005)</h2><a class="sl-anchor-link" href="#launch-a-run-p-004--p-005"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Launch a run (P-004 / P-005)”</span></a></div>
 <p>The launch form posts to <code dir="auto">POST /api/external-bench/runs/launch</code>. The run goes
 through the <strong>real bench engine</strong> (not a <code dir="auto">/tmp</code> launcher) as a detached managed

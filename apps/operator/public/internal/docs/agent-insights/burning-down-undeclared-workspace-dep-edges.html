@@ -159,10 +159,24 @@ verification, not a pass.</p>
 structurally un-fixable were closed simply by <em>measuring</em> the two reasons they were filed under.
 Both were wrong. Both are recorded here because each is plausible enough to be re-derived by the
 next reader:</p>
-<p>| the claim | what measurement showed |
-|---|---|
-| <code dir="auto">operator-core->agent-mcp</code> and <code dir="auto">plugin-loader->agent-mcp</code> are true cycles, so this is a design question rather than a declaration | A cycle is harmless — see the section above. Declared as ordinary <code dir="auto">dependencies</code>; npm exit 0, the walk terminates, routing improved. |
-| <code dir="auto">operator-core->file-claim</code>, <code dir="auto">operator-core->sse</code>, <code dir="auto">operator-vite->sse</code> target a non-root workspace, so <code dir="auto">"*"</code> cannot resolve and <code dir="auto">npm ci</code> breaks | <strong>Falsified by the tree itself</strong>: <code dir="auto">"@papercusp/sse": "*"</code> was ALREADY in use by 5 packages (<code dir="auto">flags</code>, <code dir="auto">agent-chat</code>, <code dir="auto">tooldef-http</code>, <code dir="auto">sync</code>, <code dir="auto">desktop-ipc</code>), and <code dir="auto">file-claim</code> by 2 (<code dir="auto">orchestrator</code>, <code dir="auto">locks</code>). One grep settles it. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>the claim</th><th>what measurement showed</th></tr></thead><tbody><tr><td><code dir="auto">operator-core->agent-mcp</code> and <code dir="auto">plugin-loader->agent-mcp</code> are true cycles, so this is a design question rather than a declaration</td><td>A cycle is harmless — see the section above. Declared as ordinary <code dir="auto">dependencies</code>; npm exit 0, the walk terminates, routing improved.</td></tr><tr><td><code dir="auto">operator-core->file-claim</code>, <code dir="auto">operator-core->sse</code>, <code dir="auto">operator-vite->sse</code> target a non-root workspace, so <code dir="auto">"*"</code> cannot resolve and <code dir="auto">npm ci</code> breaks</td><td><strong>Falsified by the tree itself</strong>: <code dir="auto">"@papercusp/sse": "*"</code> was ALREADY in use by 5 packages (<code dir="auto">flags</code>, <code dir="auto">agent-chat</code>, <code dir="auto">tooldef-http</code>, <code dir="auto">sync</code>, <code dir="auto">desktop-ipc</code>), and <code dir="auto">file-claim</code> by 2 (<code dir="auto">orchestrator</code>, <code dir="auto">locks</code>). One grep settles it.</td></tr></tbody></table>
 <p>The 3 non-root-target edges were declared with <code dir="auto">file:</code> specifiers anyway — <strong>not</strong> because <code dir="auto">"*"</code>
 fails, but to match what <code dir="auto">apps/operator</code> and <code dir="auto">packages/agent-mcp</code> already use for those exact
 targets (checklist rule 4).</p>

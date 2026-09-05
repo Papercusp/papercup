@@ -111,11 +111,32 @@ the range over the 500 MB cap; five days later the guard was still refusing, and
 the measured total had grown from 2261 MB to 2415 MB. Deleting the files did
 nothing — the guard enumerates objects introduced <em>anywhere</em> in the range.</p>
 <p>The same shape, with three different baselines, in three guards:</p>
-<p>| guard | baseline | advances on |
-|---|---|---|
-| <code dir="auto">own_head_publish</code> | the namespace ref | its own successful publish |
-| <code dir="auto">ref_announce</code> | sigrefs | its own successful announce |
-| GitHub egress | <code dir="auto">origin/staging</code> | its own successful push |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>guard</th><th>baseline</th><th>advances on</th></tr></thead><tbody><tr><td><code dir="auto">own_head_publish</code></td><td>the namespace ref</td><td>its own successful publish</td></tr><tr><td><code dir="auto">ref_announce</code></td><td>sigrefs</td><td>its own successful announce</td></tr><tr><td>GitHub egress</td><td><code dir="auto">origin/staging</code></td><td>its own successful push</td></tr></tbody></table>
 <p>Because the baselines are <em>different objects</em>, unwedging one by hand did not
 unwedge the others — the manual namespace-ref re-base left <code dir="auto">ref_announce</code> (which
 reads sigrefs) refusing for hours afterwards. Full incident:
@@ -180,10 +201,30 @@ against the wrong branch:</p>
 <p>The bridge <em>egresses</em> to <code dir="auto">staging</code>; <code dir="auto">main</code> is the branch it ingests. And <code dir="auto">main</code>
 is fast-forwarded hourly by the <strong>release pipeline</strong> — a completely unrelated
 mechanism — so both signals were structurally pinned healthy:</p>
-<p>| signal | threshold | actual | why |
-|---|---|---|---|
-| <code dir="auto">aheadCount</code> | ≥ 50 | 24 | measured against <code dir="auto">main</code>, kept fresh by the release pipeline |
-| <code dir="auto">originTipAgeMs</code> | > 3h | ~0 | <code dir="auto">main</code> moved hourly, restarting the clock every sweep |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>signal</th><th>threshold</th><th>actual</th><th>why</th></tr></thead><tbody><tr><td><code dir="auto">aheadCount</code></td><td>≥ 50</td><td>24</td><td>measured against <code dir="auto">main</code>, kept fresh by the release pipeline</td></tr><tr><td><code dir="auto">originTipAgeMs</code></td><td>> 3h</td><td>~0</td><td><code dir="auto">main</code> moved hourly, restarting the clock every sweep</td></tr></tbody></table>
 <p><strong>A detector pointed at a signal kept fresh by an unrelated mechanism is
 structurally blind.</strong> It does not report a false negative — it reports
 <em>correctly, about the wrong thing</em>, which is much harder to notice.</p>
@@ -225,13 +266,42 @@ each one for liveness.</em> But the failure mode that matters is <strong>a log t
 attached</strong> — which is, by construction, not in the loop.</p>
 <p>Both frames ran on the same host on the same build (run <code dir="auto">20260725-153415</code>),
 which makes the asymmetry the whole finding:</p>
-<p>| | frame a (owner path) | frame b (member / join path) |
-|---|---|---|
-| swarm connections | live | live (14 <code dir="auto">peer_connected</code> per harness) |
-| received the peer’s announce | yes | <strong>yes</strong> — <code dir="auto">recv log=5fe26c2e0135</code> ×7 |
-| peer log admitted | yes | <strong>no</strong> |
-| detector lines emitted | 3 | <strong>0</strong> |
-| detector fired + repaired | yes | — |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>frame a (owner path)</th><th>frame b (member / join path)</th></tr></thead><tbody><tr><td>swarm connections</td><td>live</td><td>live (14 <code dir="auto">peer_connected</code> per harness)</td></tr><tr><td>received the peer’s announce</td><td>yes</td><td><strong>yes</strong> — <code dir="auto">recv log=5fe26c2e0135</code> ×7</td></tr><tr><td>peer log admitted</td><td>yes</td><td><strong>no</strong></td></tr><tr><td>detector lines emitted</td><td>3</td><td><strong>0</strong></td></tr><tr><td>detector fired + repaired</td><td>yes</td><td>—</td></tr></tbody></table>
 <p>Frame b is not a false negative. <strong>The detector never executed.</strong></p>
 <p><strong>Why the member and not the owner.</strong> The asymmetry is one line in
 <code dir="auto">classifySameHiveMember</code> (<code dir="auto">boot.ts</code>):</p>
@@ -448,13 +518,48 @@ once” it would still have produced a line — for a pot in the wrong workspace
 The enumeration was the right shape, aimed at an empty room.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="provenance">Provenance</h2><a class="sl-anchor-link" href="#provenance"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Provenance”</span></a></div>
 <p>Four instances, four agents, four lanes, one day:</p>
-<p>| # | Instance | Shape | Found by |
-|---|---|---|---|
-| 1 | pot-git publish guards (×3) | A | su-a8ea9 |
-| 2 | replication-liveness alarm latch | A (reset path) | su-e3b21 |
-| 3 | <code dir="auto">restart_settle_barrier</code> (EI-18645423267952485) | C | su-48ed7a |
-| 4 | replication-liveness call site (WI-5781) | C | su-055ae |
-| 5 | <code dir="auto">origin-freshness-watchdog</code> swept workspace <code dir="auto">'default'</code> (WI-5791) | D | su-a8ea9 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Instance</th><th>Shape</th><th>Found by</th></tr></thead><tbody><tr><td>1</td><td>pot-git publish guards (×3)</td><td>A</td><td>su-a8ea9</td></tr><tr><td>2</td><td>replication-liveness alarm latch</td><td>A (reset path)</td><td>su-e3b21</td></tr><tr><td>3</td><td><code dir="auto">restart_settle_barrier</code> (EI-18645423267952485)</td><td>C</td><td>su-48ed7a</td></tr><tr><td>4</td><td>replication-liveness call site (WI-5781)</td><td>C</td><td>su-055ae</td></tr><tr><td>5</td><td><code dir="auto">origin-freshness-watchdog</code> swept workspace <code dir="auto">'default'</code> (WI-5791)</td><td>D</td><td>su-a8ea9</td></tr></tbody></table>
 <p>Shape B and the <code dir="auto">origin-freshness-watchdog</code> latch leak: su-a8ea9.</p>
 <p>Shape D was added the day after, from WI-5791 — which is the sharpest evidence
 for this whole doc’s thesis. WI-5791 was filed as a cautious follow-up to the

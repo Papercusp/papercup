@@ -94,11 +94,32 @@ query param the client could spoof.</p>
 <p>Trust tiers (A = merged PRs, B = features shipped, C = activity) appear in the user
 profile (P-072b), the Contributors tab (P-048), and the Insights People card. <strong>They
 must agree.</strong> The trap: there are two candidate source sets, and one is inert.</p>
-<p>| Tier | USE (populated) | DO NOT use (inert outside the gated substrate) |
-|---|---|---|
-| A — merged PRs | <code dir="auto">auto_review_audit</code> WHERE <code dir="auto">author_github_id</code> AND <code dir="auto">action IN ('auto_merge','manual_merge')</code> | <code dir="auto">harness_feature_prs</code> (no producer → always 0) |
-| B — features shipped | <code dir="auto">harness_features_consolidated</code> WHERE <code dir="auto">status='shipped'</code> AND <code dir="auto">taken_by = &#x3C;id>::text</code> | <code dir="auto">harness_features.shipped_by_github_id</code> / <code dir="auto">completion_ref</code> (unpopulated) |
-| C — activity | <code dir="auto">contributor_usage_events</code> WHERE <code dir="auto">harness_slug</code> + <code dir="auto">github_user_id</code> (the §7.1 source of truth) | filtering it by <code dir="auto">workspace_id</code> — <strong>that column does not exist on this table</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tier</th><th>USE (populated)</th><th>DO NOT use (inert outside the gated substrate)</th></tr></thead><tbody><tr><td>A — merged PRs</td><td><code dir="auto">auto_review_audit</code> WHERE <code dir="auto">author_github_id</code> AND <code dir="auto">action IN ('auto_merge','manual_merge')</code></td><td><code dir="auto">harness_feature_prs</code> (no producer → always 0)</td></tr><tr><td>B — features shipped</td><td><code dir="auto">harness_features_consolidated</code> WHERE <code dir="auto">status='shipped'</code> AND <code dir="auto">taken_by = &#x3C;id>::text</code></td><td><code dir="auto">harness_features.shipped_by_github_id</code> / <code dir="auto">completion_ref</code> (unpopulated)</td></tr><tr><td>C — activity</td><td><code dir="auto">contributor_usage_events</code> WHERE <code dir="auto">harness_slug</code> + <code dir="auto">github_user_id</code> (the §7.1 source of truth)</td><td>filtering it by <code dir="auto">workspace_id</code> — <strong>that column does not exist on this table</strong></td></tr></tbody></table>
 <p>The authoritative per-user definitions live in <code dir="auto">packages/operator-core/lib/user-profile/load.ts</code> (P-072b); the
 per-contributor (one-harness, GROUP BY contributor) inversion is
 <code dir="auto">packages/operator-core/lib/harness-insights/load-contributors-tab.ts</code>. A Contributors-tab endpoint built

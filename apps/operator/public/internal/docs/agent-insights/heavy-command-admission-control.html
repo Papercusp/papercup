@@ -111,13 +111,42 @@ outside the canonical shared tree) — never gated.</li>
 <p>Only raw, uncoordinated <strong>agent</strong> heavy commands get staggered — exactly the
 load that piles up.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="tunables--kill-switch">Tunables &#x26; kill-switch</h2><a class="sl-anchor-link" href="#tunables--kill-switch"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Tunables &#x26; kill-switch”</span></a></div>
-<p>| Env | Default | Effect |
-| --- | --- | --- |
-| <code dir="auto">PC_HEAVY_ADMISSION=off</code> | on | <strong>Kill-switch</strong> — disables the deny entirely. |
-| <code dir="auto">PC_HEAVY_MAX_LOAD1</code> | <code dir="auto">round(1.5 × cores)</code> | Load1 above which heavy commands are denied. |
-| <code dir="auto">PC_HEAVY_SLOTS</code> | <code dir="auto">max(2, cores/32)</code> | Concurrent heavy runs <code dir="auto">pc-heavy</code> allows. |
-| <code dir="auto">PC_HEAVY_TIMEOUT_SEC</code> | <code dir="auto">900</code> | Max seconds <code dir="auto">pc-heavy</code> waits for a slot before running anyway. |
-| <code dir="auto">PC_HEAVY_NICE</code> / <code dir="auto">PC_HEAVY_IONICE</code> | <code dir="auto">10</code> / <code dir="auto">best-effort 7</code> | Priority of a wrapped run. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Env</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code dir="auto">PC_HEAVY_ADMISSION=off</code></td><td>on</td><td><strong>Kill-switch</strong> — disables the deny entirely.</td></tr><tr><td><code dir="auto">PC_HEAVY_MAX_LOAD1</code></td><td><code dir="auto">round(1.5 × cores)</code></td><td>Load1 above which heavy commands are denied.</td></tr><tr><td><code dir="auto">PC_HEAVY_SLOTS</code></td><td><code dir="auto">max(2, cores/32)</code></td><td>Concurrent heavy runs <code dir="auto">pc-heavy</code> allows.</td></tr><tr><td><code dir="auto">PC_HEAVY_TIMEOUT_SEC</code></td><td><code dir="auto">900</code></td><td>Max seconds <code dir="auto">pc-heavy</code> waits for a slot before running anyway.</td></tr><tr><td><code dir="auto">PC_HEAVY_NICE</code> / <code dir="auto">PC_HEAVY_IONICE</code></td><td><code dir="auto">10</code> / <code dir="auto">best-effort 7</code></td><td>Priority of a wrapped run.</td></tr></tbody></table>
 <p>The gate is <strong>fail-open</strong>: any error (can’t read load, bad env, parse failure)
 allows the command. It lands fleet-wide via git-sync with no review, so a
 fail-closed bug would wedge every agent’s bash — every path errs toward

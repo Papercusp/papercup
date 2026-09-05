@@ -17,10 +17,19 @@
  * "finish the job" by adding `refuseIfMugKettleRetired` here — that would be the
  * backwards cut, twice over:
  *
- *  1. THIS VERB CANNOT ENTER THE RETIRED AXIS. The `AND op_status IS NOT NULL`
- *     guard below means it only ever rewrites a row ALREADY on the axis; it can
- *     move a plan from 'started' to 'paused', never from null to anything. P-047
+ *  1. THIS VERB CANNOT ENTER THE RETIRED AXIS. The
+ *     `AND op_status IN ('started','paused')` guard below means it only ever
+ *     rewrites a row ALREADY on the axis; it can move a plan from 'started' to
+ *     'paused', never from null — or from the 'done' EXIT — to anything. P-047
  *     retires the axis by stopping new ENTRIES (plans:start), and this is an EXIT.
+ *
+ *     ⚠ That guard used to read `op_status IS NOT NULL`, which was WIDER than the
+ *     claim above and made it false: 'done' is the value `clearStartedForTerminalPlan`
+ *     writes to take a plan OFF the axis, and it is not null — so pause could move a
+ *     retired plan 'done' → 'paused', putting it back on a RESERVING value
+ *     (`reservedPlanLaneExclusionSql` reserves 'started' AND 'paused') with no way
+ *     back off, because the only re-entry verb, plans:start, is gated by P-047.
+ *     Re-entry-by-stopper is not a stopper. WI-38301 / D-055.
  *  2. IT IS A STOPPER, and _mug-kettle-gate.ts's own scope note excludes stoppers
  *     for exactly this reason: "refusing a stop is never the safe direction". The
  *     DBOS orchestrator frontier (dbos/orchestrator-loop.ts) still reads
@@ -52,7 +61,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:pause',
   description:
-    "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } if the plan was never started (op_status is null).",
+    "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } when the plan is not operationally started — either never started (op_status null) or already finished on that axis (op_status 'done'); neither is re-entered.",
   guidance: {
     when: "User pauses work on a plan from the UI, or an agent needs to suspend a plan without marking it done.",
     notWhen:
@@ -87,9 +96,13 @@ export default defineTool({
       slugs,
       async (slug) => {
         const now = new Date().toISOString();
-        // op_status is null until a plan has been started — so a pause that matches
-        // no started/paused/done op_status means "never started" (the row exists as
-        // the plan itself, but it was never operationally started).
+        // op_status is null until a plan has been started, and 'done' once it has
+        // LEFT the axis (clearStartedForTerminalPlan) — so a pause that matches
+        // neither 'started' nor 'paused' means "not operationally started right
+        // now" (the row exists as the plan itself). Matching 'done' here would
+        // RE-ENTER the retired axis on a reserving value with no exit; see the
+        // header. The set is spelled out rather than written `IS NOT NULL`
+        // precisely so 'done' cannot drift back in.
         const rows = await withWorkspace(workspaceId, async (tx) => {
           return tx<{ op_status: string; op_updated_at: string }[]>`
             UPDATE harness_shared.harness_plans
@@ -97,7 +110,7 @@ export default defineTool({
              WHERE workspace_id = ${workspaceId}
                AND harness_slug  = ${harnessSlug}
                AND plan_slug     = ${slug}
-               AND op_status IS NOT NULL
+               AND op_status IN ('started', 'paused')
             RETURNING op_status, op_updated_at
           `;
         });

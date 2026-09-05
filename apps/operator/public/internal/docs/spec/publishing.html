@@ -131,13 +131,42 @@ enforcement of paid limits comes later.</li>
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F">-- Replay protection — atomic via PRIMARY KEY (D1's serializable per-DB transactions)</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">TABLE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">jti_used</span><span style="--0:#D6DEEB;--1:#403F53"> (</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">jti  </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">primary key</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">exp  </span><span style="--0:#C792EA;--1:#8844AE">int</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">not null</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">);</span></div></div><div class="ec-line"><div class="code">
 </div></div><div class="ec-line"><div class="code"><span style="--0:#919F9F;--1:#5F636F">-- Audit log — kept indefinitely for CF abuse responses</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">TABLE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">audit_publishes</span><span style="--0:#D6DEEB;--1:#403F53"> (</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">id              </span><span style="--0:#C792EA;--1:#8844AE">integer</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">primary key</span><span style="--0:#D6DEEB;--1:#403F53"> autoincrement,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">tenant_id       </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">not null</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">harness_slug    </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">not null</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">deployment_id   </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">ip              </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">ua              </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">manifest_sha    </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">bytes_total     </span><span style="--0:#C792EA;--1:#8844AE">int</span><span style="--0:#D6DEEB;--1:#403F53">,</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">outcome         </span><span style="--0:#C792EA;--1:#8844AE">text</span><span style="--0:#D6DEEB;--1:#403F53">,                       </span><span style="--0:#919F9F;--1:#5F636F">-- ok | rate_limited | invalid_jwt | banned | upload_failed | cf_error</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">ts              </span><span style="--0:#C792EA;--1:#8844AE">int</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">not null</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">);</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">INDEX</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">idx_audit_ts</span><span style="--0:#D6DEEB;--1:#403F53">             </span><span style="--0:#C792EA;--1:#8844AE">ON</span><span style="--0:#D6DEEB;--1:#403F53"> audit_publishes(ts);</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">INDEX</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">idx_audit_tenant_ts</span><span style="--0:#D6DEEB;--1:#403F53">      </span><span style="--0:#C792EA;--1:#8844AE">ON</span><span style="--0:#D6DEEB;--1:#403F53"> audit_publishes(tenant_id, ts);</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">INDEX</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">idx_audit_harness_ts</span><span style="--0:#D6DEEB;--1:#403F53">     </span><span style="--0:#C792EA;--1:#8844AE">ON</span><span style="--0:#D6DEEB;--1:#403F53"> audit_publishes(harness_slug, ts);</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">CREATE</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">INDEX</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#82AAFF;--1:#3B61B0">idx_audit_ip_ts</span><span style="--0:#D6DEEB;--1:#403F53">          </span><span style="--0:#C792EA;--1:#8844AE">ON</span><span style="--0:#D6DEEB;--1:#403F53"> audit_publishes(ip, ts);</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="CREATE TABLE tenants (  id              text primary key,           -- tnt_<10-base32>  secret_b64      text not null,              -- raw tenantSecret (base64url, 32 bytes); stored directly, NOT hashed  secret_v        int  not null default 1,    -- secret-format version, for rotation  rotated_from    text,                       -- previous tenant id, audit  created_at      int  not null,              -- epoch ms  last_used_at    int,  last_ip         text,  status          text default &#x27;active&#x27;,      -- active | revoked | banned  tier            text default &#x27;free&#x27;,        -- free | paid | self-host-byo  notes           text                        -- admin notes);-- secret_b64 stores the secret in cleartext (base64url), relying on D1&#x27;s-- at-rest encryption. The spec&#x27;s earlier HMAC(secret, HASH_PEPPER) design-- is one-way and can&#x27;t verify the per-publish JWT (HMAC-signed with the-- secret), so v1 stores the secret directly. v1.1 hardening: AES-GCM-- envelope keyed by HASH_PEPPER.CREATE TABLE projects (  tenant_id        text not null references tenants(id),  harness_slug     text not null,  cf_project_name  text not null,             -- sha256(secret||harness)[:16] + &#x22;-&#x22; + sanitize(harness)  cf_subdomain     text,  vanity_subdomain text,                       -- &#x22;<harness>-<rand>&#x22; on preview.papercuspai.com  created_at       int not null,  primary key (tenant_id, harness_slug));CREATE TABLE deployments (  id               text primary key,           -- dep_<8-base32>  tenant_id        text not null references tenants(id),  harness_slug     text not null,  cf_deployment_id text,                        -- nullable: row inserted at /publish/start (status=&#x27;uploading&#x27;); filled at /publish/finalize once CF returns  vanity_url       text,  manifest_sha     text,                       -- canonical manifest sha256, audit + dedup  archive_path     text,                       -- R2 key: &#x22;publish/<tenant>/<deployment>/&#x22; prefix  bytes_total      int,  files_count      int,  status           text not null default &#x27;pending_create&#x27;, -- pending_create | uploading | building | live | failed  failure_reason   text,  created_at       int not null,  completed_at     int);-- Per-file upload tracking, resumability, and finalize completeness gate.CREATE TABLE deployment_files (  deployment_id   text not null references deployments(id),  path            text not null,  sha256          text not null,  bytes           int  not null,  uploaded        int  not null default 0,     -- 0 = not yet PUT, 1 = uploaded+verified  primary key (deployment_id, sha256));-- &#x60;missing[]&#x60; (returned by /publish/start) is every row with uploaded=0;-- /publish/finalize rejects with 409 if any row is still uploaded=0.-- Replay protection — atomic via PRIMARY KEY (D1&#x27;s serializable per-DB transactions)CREATE TABLE jti_used (  jti  text primary key,  exp  int not null);-- Audit log — kept indefinitely for CF abuse responsesCREATE TABLE audit_publishes (  id              integer primary key autoincrement,  tenant_id       text not null,  harness_slug    text not null,  deployment_id   text,  ip              text,  ua              text,  manifest_sha    text,  bytes_total     int,  outcome         text,                       -- ok | rate_limited | invalid_jwt | banned | upload_failed | cf_error  ts              int not null);CREATE INDEX idx_audit_ts             ON audit_publishes(ts);CREATE INDEX idx_audit_tenant_ts      ON audit_publishes(tenant_id, ts);CREATE INDEX idx_audit_harness_ts     ON audit_publishes(harness_slug, ts);CREATE INDEX idx_audit_ip_ts          ON audit_publishes(ip, ts);"><div></div></button></div></figure></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="kv--counters--ephemeral-state">KV — counters + ephemeral state</h3><a class="sl-anchor-link" href="#kv--counters--ephemeral-state"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “KV — counters + ephemeral state”</span></a></div>
-<p>| Key | Purpose | TTL |
-|---|---|---|
-| <code dir="auto">ratelimit:burst:&#x3C;tenantId></code> | per-tenant 5/min | 60s |
-| <code dir="auto">ratelimit:daily:&#x3C;tenantId></code> | per-tenant 50/day free, 500/day paid | 86400s |
-| <code dir="auto">ratelimit:ip-publish-daily:&#x3C;ip></code> | 50/day per IP, <strong>independent of tenant</strong> (closes the wipe-and-re-register loophole) | 86400s |
-| <code dir="auto">ratelimit:ip-register-hourly:&#x3C;ip></code> | 10/hour per IP on <code dir="auto">/register-tenant</code> | 3600s |
-| <code dir="auto">upload:&#x3C;deploymentId>:&#x3C;sha256></code> | per-file upload token state | 900s |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Purpose</th><th>TTL</th></tr></thead><tbody><tr><td><code dir="auto">ratelimit:burst:&#x3C;tenantId></code></td><td>per-tenant 5/min</td><td>60s</td></tr><tr><td><code dir="auto">ratelimit:daily:&#x3C;tenantId></code></td><td>per-tenant 50/day free, 500/day paid</td><td>86400s</td></tr><tr><td><code dir="auto">ratelimit:ip-publish-daily:&#x3C;ip></code></td><td>50/day per IP, <strong>independent of tenant</strong> (closes the wipe-and-re-register loophole)</td><td>86400s</td></tr><tr><td><code dir="auto">ratelimit:ip-register-hourly:&#x3C;ip></code></td><td>10/hour per IP on <code dir="auto">/register-tenant</code></td><td>3600s</td></tr><tr><td><code dir="auto">upload:&#x3C;deploymentId>:&#x3C;sha256></code></td><td>per-file upload token state</td><td>900s</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="r2--artifact-retention-the-eject-paths-fire-exit">R2 — artifact retention (the eject path’s fire exit)</h3><a class="sl-anchor-link" href="#r2--artifact-retention-the-eject-paths-fire-exit"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “R2 — artifact retention (the eject path’s fire exit)”</span></a></div>
 <p>The Worker binds the <strong>existing</strong> bucket <code dir="auto">papercusp-marketplace-tarballs</code>
 (binding <code dir="auto">ARCHIVE</code>) and namespaces publish archives under the prefix
@@ -390,11 +419,28 @@ declare <code dir="auto">requiresTemplateKinds</code> — so the gate above is n
 this specific plugin even though the enforcement machinery exists. Adding
 the field to the manifest is the remaining step.</p></div> </aside>
 <div class="sl-heading-wrapper level-h3"><h3 id="enforcement-points">Enforcement points</h3><a class="sl-anchor-link" href="#enforcement-points"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Enforcement points”</span></a></div>
-<p>| Where | Behavior |
-|---|---|
-| <code dir="auto">papercusp plugin enable &#x3C;slug></code> | Refuses when the harness kind isn’t allowed (CLI message of the form <code dir="auto">kind="org"</code> vs required template kinds). |
-| Substrate UI plugin cards | Disabled “Enable” button + tooltip: “Requires a coding harness.” |
-| Marketplace listings | Constraint pill: <code dir="auto">🪧 coding harnesses only</code> next to the plugin name. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Where</th><th>Behavior</th></tr></thead><tbody><tr><td><code dir="auto">papercusp plugin enable &#x3C;slug></code></td><td>Refuses when the harness kind isn’t allowed (CLI message of the form <code dir="auto">kind="org"</code> vs required template kinds).</td></tr><tr><td>Substrate UI plugin cards</td><td>Disabled “Enable” button + tooltip: “Requires a coding harness.”</td></tr><tr><td>Marketplace listings</td><td>Constraint pill: <code dir="auto">🪧 coding harnesses only</code> next to the plugin name.</td></tr></tbody></table>
 <p>Templates declare their kind via <code dir="auto">papercusp.json</code>:</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="json"><code><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">{ </span><span style="--0:#7FDBCA;--1:#096E72">"kind"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">template</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">, </span><span style="--0:#7FDBCA;--1:#096E72">"templateKind"</span><span style="--0:#D6DEEB;--1:#403F53">: </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C789D6;--1:#7C5686">coding</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> }</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="{ &#x22;kind&#x22;: &#x22;template&#x22;, &#x22;templateKind&#x22;: &#x22;coding&#x22; }"><div></div></button></div></figure></div>
 <p>Existing templates (papercup-coding, papercup-org, …) get this field
@@ -422,16 +468,57 @@ harness slug, sanitized). Helps when the harness was named
 <code dir="auto">&#x3C;prefix>.pages.dev</code> for that project. CF’s Pages.dev URL never leaks
 to the user.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="1510-what-gets-built">15.10 What gets built</h2><a class="sl-anchor-link" href="#1510-what-gets-built"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.10 What gets built”</span></a></div>
-<p>| # | Component | LOC |
-|---|---|---|
-| 1 | <code dir="auto">apps/papercusp-publish/</code> Worker — D1 + KV + JCS canonicalizer + JWT + signed-URL helpers + R2 archive write | 1,000-1,400 |
-| 2 | <code dir="auto">@papercupai/cloudflare-pages</code> plugin — CF Direct Upload (check-missing/resume on partial upload), BYO-CF direct publish, <code dir="auto">afterDone</code> auto-publish | ~500 |
-| 3 | Substrate “Publishing” settings page — masked tenant info, <strong>Rotate secret</strong> + <strong>Forget credentials</strong> buttons, collapsible BYO-Cloudflare explainer (no mode selector) | ~250 |
-| 4 | <code dir="auto">papercup-coding</code> template <code dir="auto">recommendedPlugins</code> — <em>not built</em>; no such template/field found under <code dir="auto">libs/papercusp/packages/harness/templates</code> | 5 lines |
-| 5 | DNS — wildcard cert + Worker route on <code dir="auto">*.preview.papercuspai.com</code> + <code dir="auto">publish.papercuspai.com</code> | ~3 hours |
-| 6 | Eject script reading from R2 — <em>not built</em> (<code dir="auto">scripts/</code> has only <code dir="auto">install-secrets.sh</code> + <code dir="auto">smoke-test.mjs</code>) | ~200 |
-| 7 | <code dir="auto">requiresTemplateKinds</code> field — schema + CLI loader + UI gating + marketplace pill (machinery built; cloudflare-pages manifest doesn’t declare it yet) | ~300 |
-| 8 | R2 bucket setup + lifecycle rules + cleanup cron | ~150 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Component</th><th>LOC</th></tr></thead><tbody><tr><td>1</td><td><code dir="auto">apps/papercusp-publish/</code> Worker — D1 + KV + JCS canonicalizer + JWT + signed-URL helpers + R2 archive write</td><td>1,000-1,400</td></tr><tr><td>2</td><td><code dir="auto">@papercupai/cloudflare-pages</code> plugin — CF Direct Upload (check-missing/resume on partial upload), BYO-CF direct publish, <code dir="auto">afterDone</code> auto-publish</td><td>~500</td></tr><tr><td>3</td><td>Substrate “Publishing” settings page — masked tenant info, <strong>Rotate secret</strong> + <strong>Forget credentials</strong> buttons, collapsible BYO-Cloudflare explainer (no mode selector)</td><td>~250</td></tr><tr><td>4</td><td><code dir="auto">papercup-coding</code> template <code dir="auto">recommendedPlugins</code> — <em>not built</em>; no such template/field found under <code dir="auto">libs/papercusp/packages/harness/templates</code></td><td>5 lines</td></tr><tr><td>5</td><td>DNS — wildcard cert + Worker route on <code dir="auto">*.preview.papercuspai.com</code> + <code dir="auto">publish.papercuspai.com</code></td><td>~3 hours</td></tr><tr><td>6</td><td>Eject script reading from R2 — <em>not built</em> (<code dir="auto">scripts/</code> has only <code dir="auto">install-secrets.sh</code> + <code dir="auto">smoke-test.mjs</code>)</td><td>~200</td></tr><tr><td>7</td><td><code dir="auto">requiresTemplateKinds</code> field — schema + CLI loader + UI gating + marketplace pill (machinery built; cloudflare-pages manifest doesn’t declare it yet)</td><td>~300</td></tr><tr><td>8</td><td>R2 bucket setup + lifecycle rules + cleanup cron</td><td>~150</td></tr></tbody></table>
 <p><strong>Total: ~2.5 days.</strong></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="1511-admin-one-time-setup">15.11 Admin one-time setup</h2><a class="sl-anchor-link" href="#1511-admin-one-time-setup"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.11 Admin one-time setup”</span></a></div>
 <ol>
@@ -475,14 +562,54 @@ enforcement v1.1.</li>
 until we have users.</li>
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="1513-risk-register">15.13 Risk register</h2><a class="sl-anchor-link" href="#1513-risk-register"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.13 Risk register”</span></a></div>
-<p>| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| CF master account suspended for one user’s content | Real-mode (not tail) | Every user’s site offline | R2 archive retention + eject script (§15.7); reduces to “outage during eject” |
-| <code dir="auto">CF_MASTER_TOKEN</code> leaks | Low (Workers secret) | Every project republishable by attacker | Token scoped Pages-only (no DNS/R2), rotate quarterly, CF analytics alerting on call-rate spikes |
-| Workers subrequest cap (50 free / 1k paid) | Real on Workers Paid for monorepos | 1k+ file deployments fail | <code dir="auto">/publish/upload-batch</code> endpoint as fallback, defer to v1.1 |
-| User publishes 10 GB of static MP4s | Possible | Bandwidth costs balloon | Per-deployment 1 GB cap (§15.5 #7); per-tenant daily limit |
-| First-publish cold-start (~+3s for project creation) | Every new harness | Slightly slower initial Publish | Pre-warm <code dir="auto">ensureProject</code> at plugin enable time so first publish is warm |
-| Half-completed upload (network drop, browser close) | Real, common | Project in <code dir="auto">status=uploading</code> forever, KV tokens leak | Resumable upload via <code dir="auto">/publish/start</code> idempotency (§15.6); cron GC at 1h (§15.6) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Likelihood</th><th>Impact</th><th>Mitigation</th></tr></thead><tbody><tr><td>CF master account suspended for one user’s content</td><td>Real-mode (not tail)</td><td>Every user’s site offline</td><td>R2 archive retention + eject script (§15.7); reduces to “outage during eject”</td></tr><tr><td><code dir="auto">CF_MASTER_TOKEN</code> leaks</td><td>Low (Workers secret)</td><td>Every project republishable by attacker</td><td>Token scoped Pages-only (no DNS/R2), rotate quarterly, CF analytics alerting on call-rate spikes</td></tr><tr><td>Workers subrequest cap (50 free / 1k paid)</td><td>Real on Workers Paid for monorepos</td><td>1k+ file deployments fail</td><td><code dir="auto">/publish/upload-batch</code> endpoint as fallback, defer to v1.1</td></tr><tr><td>User publishes 10 GB of static MP4s</td><td>Possible</td><td>Bandwidth costs balloon</td><td>Per-deployment 1 GB cap (§15.5 #7); per-tenant daily limit</td></tr><tr><td>First-publish cold-start (~+3s for project creation)</td><td>Every new harness</td><td>Slightly slower initial Publish</td><td>Pre-warm <code dir="auto">ensureProject</code> at plugin enable time so first publish is warm</td></tr><tr><td>Half-completed upload (network drop, browser close)</td><td>Real, common</td><td>Project in <code dir="auto">status=uploading</code> forever, KV tokens leak</td><td>Resumable upload via <code dir="auto">/publish/start</code> idempotency (§15.6); cron GC at 1h (§15.6)</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="1514-open-questions-decide-before-code">15.14 Open questions (decide before code)</h2><a class="sl-anchor-link" href="#1514-open-questions-decide-before-code"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “15.14 Open questions (decide before code)”</span></a></div>
 <ol>
 <li><strong>R2 retention period</strong> — proposal: 30 days free / 1 year paid.

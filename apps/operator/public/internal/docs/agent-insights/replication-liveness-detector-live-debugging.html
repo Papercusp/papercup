@@ -185,13 +185,42 @@ channel open attempts + never once paired ⇒ loud signal + forced topic rejoin.
 and failed” in one pass. On a frame’s <code dir="auto">serve.log</code>:</p>
 <div class="expressive-code"><figure class="frame is-terminal not-content"><figcaption class="header"><span class="title"></span><span class="sr-only">Terminal window</span></figcaption><pre data-language="bash"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">for</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">p</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">in</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">announce-debug] mux mux=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">announce-debug] create mux=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> \</span></div></div><div class="ec-line"><div class="code"><span class="indent">         </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">announce-debug] open topic=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">announce-debug] recv topic=</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> \</span></div></div><div class="ec-line"><div class="code"><span class="indent">         </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">announce_admitted</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53">; </span><span style="--0:#C792EA;--1:#8844AE">do</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#C5E478;--1:#3B61B0">printf</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#ECC48D;--1:#984E4D">%s\tfirst=%s\t%s\n</span><span style="--0:#D9F5DD;--1:#111111">'</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">$(</span><span style="--0:#82AAFF;--1:#3B61B0">grep</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">-c</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$p</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#ECC48D;--1:#3B61B0">serve.log</span><span style="--0:#ECC48D;--1:#984E4D">)</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#F78C6C;--1:#AA0982">\</span></div></div><div class="ec-line"><div class="code"><span class="indent">    </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">$(</span><span style="--0:#82AAFF;--1:#3B61B0">grep</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">-o</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D">^\[[0-9T:.Z-]*\].*</span><span style="--0:#C5E478;--1:#3B61B0">$p</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#ECC48D;--1:#3B61B0">serve.log</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">head</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">-1</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#7FDBCA;--1:#096E72">|</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">cut</span><span style="--0:#ECC48D;--1:#984E4D"> </span><span style="--0:#82AAFF;--1:#3B61B0">-c2-25</span><span style="--0:#ECC48D;--1:#984E4D">)</span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">"</span><span style="--0:#C5E478;--1:#3B61B0">$p</span><span style="--0:#D9F5DD;--1:#111111">"</span></div></div><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">done</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="for p in &#x22;announce-debug] mux mux=&#x22; &#x22;announce-debug] create mux=&#x22; \         &#x22;announce-debug] open topic=&#x22; &#x22;announce-debug] recv topic=&#x22; \         &#x22;announce_admitted&#x22;; do  printf &#x27;%s\tfirst=%s\t%s\n&#x27; &#x22;$(grep -c &#x22;$p&#x22; serve.log)&#x22; \    &#x22;$(grep -o &#x22;^\[[0-9T:.Z-]*\].*$p&#x22; serve.log | head -1 | cut -c2-25)&#x22; &#x22;$p&#x22;done"><div></div></button></div></figure></div>
 <p>Read it as a funnel — the stage where the count collapses to 0 is the fault:</p>
-<p>| stage | meaning | 20260725-183831 (frame a) |
-| --- | --- | --- |
-| <code dir="auto">mux mux=</code> | peer connections observed | 188 |
-| <code dir="auto">create mux=</code> | we created + <code dir="auto">open()</code>d a channel | 91 |
-| <code dir="auto">open topic=</code> | Protomux <code dir="auto">onopen</code> — channel <strong>PAIRED</strong> | <strong>0 until 23:07:16</strong> |
-| <code dir="auto">recv topic=</code> | any inbound frame | <strong>0 until 23:07:16</strong> |
-| <code dir="auto">announce_admitted</code> | admission (detector becomes able to run) | <strong>0 until 23:07:16</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>stage</th><th>meaning</th><th>20260725-183831 (frame a)</th></tr></thead><tbody><tr><td><code dir="auto">mux mux=</code></td><td>peer connections observed</td><td>188</td></tr><tr><td><code dir="auto">create mux=</code></td><td>we created + <code dir="auto">open()</code>d a channel</td><td>91</td></tr><tr><td><code dir="auto">open topic=</code></td><td>Protomux <code dir="auto">onopen</code> — channel <strong>PAIRED</strong></td><td><strong>0 until 23:07:16</strong></td></tr><tr><td><code dir="auto">recv topic=</code></td><td>any inbound frame</td><td><strong>0 until 23:07:16</strong></td></tr><tr><td><code dir="auto">announce_admitted</code></td><td>admission (detector becomes able to run)</td><td><strong>0 until 23:07:16</strong></td></tr></tbody></table>
 <p>188 connections, 91 open attempts, and not one frame in either direction for
 20.5 minutes = a dead data path behind sockets Hyperswarm reported as
 connected. <code dir="auto">open topic=</code> collapsing while <code dir="auto">create mux=</code> is healthy is the

@@ -83,14 +83,54 @@ others.</p>
 together. Read it before filing a fresh EI or escalating to the owner on an
 alert that smells familiar.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-known-benign-transient-family-as-of-2026-07-11">The known-benign-transient family (as of 2026-07-11)</h2><a class="sl-anchor-link" href="#the-known-benign-transient-family-as-of-2026-07-11"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The known-benign-transient family (as of 2026-07-11)”</span></a></div>
-<p>| Signature | Why it’s usually benign | Self-resolves via | Runbook / EI |
-|---|---|---|---|
-| <code dir="auto">no_replicator</code> (replication-liveness, “WI-183 class”) — a log with 0 live replicator peers for 180s | Swarm connection can look healthy while one log’s replicator session drops; recovers when the peer reconnects | Auto-dedupes per <code dir="auto">(harness, log, kind)</code> while one stays open; closes when <code dir="auto">getReplicationLiveness()</code> sees the peer again | EI-8268 (resolved); <code dir="auto">agent-insights/shared-hive-federation-diagnosis-toolkit</code> |
-| Token bucket paused, “transient RPM saturation” with other accounts still available | Read as smoothing, not exhaustion, when N-1 buckets are still up | Re-checks next wake; only escalates if it <em>persists across multiple wakes</em> | EI-8535 (correct non-escalation — the model to imitate) |
-| AIMD gateway throttle (<code dir="auto">aimd.effective &#x3C; cap</code>) | The adaptive admission controller is <em>designed</em> to shrink under 429 pressure and grow back on a clean streak — a low <code dir="auto">effective</code> is normal operation, not an outage | Additive recovery: +1 concurrency per 8 clean upstream 200s | <code dir="auto">memory: AIMD adaptive ADMISSION concurrency (B-GW-1)</code>; escalate only on a real <strong>wedge</strong> (<code dir="auto">inFlight>=maxConcurrent &#x26;&#x26; queueDepth>0 &#x26;&#x26; totalRequests frozen</code>), not on throttle alone — see <code dir="auto">agent-insights/inference-gateway-wedge-admission-slot-squat.mdx</code> |
-| Cloudflare edge per-IP 429 (“bare-burst”, no util headers) | Looks like account-budget exhaustion but is an edge/IP-level throttle on a flaky egress proxy | Rotate/cool the egress IP — <strong>not</strong> an account-rate fix | <code dir="auto">agent-insights/rate-limit-is-usually-account-routing-not-capacity</code> Fault #6 |
-| <code dir="auto">infra-liveness</code> health-tick-stale / dead-routines / single-primary split-brain (request-path R4 alarms, independent of the DBOS engine) | Frequently a <strong>tick-timing artifact</strong> under host load, not a dead engine — and can be caused by an agent’s own test suite firing real broadcasts through unwired test-injection points | Usually clears on the next request-path check, often within the same minute | Live example below (WI-4023); no dedicated doc yet — this entry is it |
-| Fleet-wide coord verb timeouts (<code dir="auto">coord:presence</code>/<code dir="auto">fleet:status</code>/orient stalling) | Can be a stale pre-fix release-operator running an unbounded <code dir="auto">coord_event_log</code> scan — a <strong>known, already-mitigated</strong> class, not a fresh coord outage | GC + the durable fix (deploy the staging bundle with the bounded query) already tracked | WI-4055 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Signature</th><th>Why it’s usually benign</th><th>Self-resolves via</th><th>Runbook / EI</th></tr></thead><tbody><tr><td><code dir="auto">no_replicator</code> (replication-liveness, “WI-183 class”) — a log with 0 live replicator peers for 180s</td><td>Swarm connection can look healthy while one log’s replicator session drops; recovers when the peer reconnects</td><td>Auto-dedupes per <code dir="auto">(harness, log, kind)</code> while one stays open; closes when <code dir="auto">getReplicationLiveness()</code> sees the peer again</td><td>EI-8268 (resolved); <code dir="auto">agent-insights/shared-hive-federation-diagnosis-toolkit</code></td></tr><tr><td>Token bucket paused, “transient RPM saturation” with other accounts still available</td><td>Read as smoothing, not exhaustion, when N-1 buckets are still up</td><td>Re-checks next wake; only escalates if it <em>persists across multiple wakes</em></td><td>EI-8535 (correct non-escalation — the model to imitate)</td></tr><tr><td>AIMD gateway throttle (<code dir="auto">aimd.effective &#x3C; cap</code>)</td><td>The adaptive admission controller is <em>designed</em> to shrink under 429 pressure and grow back on a clean streak — a low <code dir="auto">effective</code> is normal operation, not an outage</td><td>Additive recovery: +1 concurrency per 8 clean upstream 200s</td><td><code dir="auto">memory: AIMD adaptive ADMISSION concurrency (B-GW-1)</code>; escalate only on a real <strong>wedge</strong> (<code dir="auto">inFlight>=maxConcurrent &#x26;&#x26; queueDepth>0 &#x26;&#x26; totalRequests frozen</code>), not on throttle alone — see <code dir="auto">agent-insights/inference-gateway-wedge-admission-slot-squat.mdx</code></td></tr><tr><td>Cloudflare edge per-IP 429 (“bare-burst”, no util headers)</td><td>Looks like account-budget exhaustion but is an edge/IP-level throttle on a flaky egress proxy</td><td>Rotate/cool the egress IP — <strong>not</strong> an account-rate fix</td><td><code dir="auto">agent-insights/rate-limit-is-usually-account-routing-not-capacity</code> Fault #6</td></tr><tr><td><code dir="auto">infra-liveness</code> health-tick-stale / dead-routines / single-primary split-brain (request-path R4 alarms, independent of the DBOS engine)</td><td>Frequently a <strong>tick-timing artifact</strong> under host load, not a dead engine — and can be caused by an agent’s own test suite firing real broadcasts through unwired test-injection points</td><td>Usually clears on the next request-path check, often within the same minute</td><td>Live example below (WI-4023); no dedicated doc yet — this entry is it</td></tr><tr><td>Fleet-wide coord verb timeouts (<code dir="auto">coord:presence</code>/<code dir="auto">fleet:status</code>/orient stalling)</td><td>Can be a stale pre-fix release-operator running an unbounded <code dir="auto">coord_event_log</code> scan — a <strong>known, already-mitigated</strong> class, not a fresh coord outage</td><td>GC + the durable fix (deploy the staging bundle with the bounded query) already tracked</td><td>WI-4055</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="live-example-this-session-2026-07-11-02080420-edt">Live example (this session, 2026-07-11, ~02:08–04:20 EDT)</h2><a class="sl-anchor-link" href="#live-example-this-session-2026-07-11-02080420-edt"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Live example (this session, 2026-07-11, ~02:08–04:20 EDT)”</span></a></div>
 <p>Within one ~2h window, <code dir="auto">infra-liveness</code> fired and RECOVERED <strong>five separate
 condition pairs</strong> (<code dir="auto">health-tick-stale</code>, <code dir="auto">dead-routines</code> ×3 different loop

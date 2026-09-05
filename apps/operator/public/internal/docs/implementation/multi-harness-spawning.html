@@ -166,55 +166,237 @@ calls must target it. See
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="4-architecture-decisions-locked-before-code">4. Architecture decisions (locked before code)</h2><a class="sl-anchor-link" href="#4-architecture-decisions-locked-before-code"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “4. Architecture decisions (locked before code)”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="auth--identity">Auth &#x26; identity</h3><a class="sl-anchor-link" href="#auth--identity"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Auth &#x26; identity”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Per-harness shared secret | <code dir="auto">harness_&#x3C;slug>.config_token</code> (random 256-bit, base64url) generated at scaffold time, written to <code dir="auto">.papercusp/config.json</code> mode 0600 | Cryptographic identity binding; token serves as both authn and authz |
-| Auth header | <code dir="auto">Authorization: Bearer &#x3C;token></code> on every executeAction request | Standard, simple |
-| Identity derivation | Executor looks up token in <code dir="auto">harness_shared.token_index</code> to find which harness slug owns it. <strong><code dir="auto">callingHarness</code> in the request body is REJECTED if it doesn’t match the derived identity.</strong> | Body fields are forgeable; token binding is not |
-| <code dir="auto">parent_slug</code> sealing | <code dir="auto">parent_slug = &#x3C;derivedCallingHarness></code> on <code dir="auto">scaffold_harness</code>; never read from body | Real seal, not security theater |
-| <code dir="auto">from_slug</code> on messages | Always = <code dir="auto">&#x3C;derivedCallingHarness></code>; body’s <code dir="auto">from</code> field rejected on mismatch | Stops cross-harness spoofing in the audit log |
-| Token rotation | Out of scope for v1; manual deletion of harness + re-scaffold if compromised | v1 is correctness-floor; rotation is hardening |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Per-harness shared secret</td><td><code dir="auto">harness_&#x3C;slug>.config_token</code> (random 256-bit, base64url) generated at scaffold time, written to <code dir="auto">.papercusp/config.json</code> mode 0600</td><td>Cryptographic identity binding; token serves as both authn and authz</td></tr><tr><td>Auth header</td><td><code dir="auto">Authorization: Bearer &#x3C;token></code> on every executeAction request</td><td>Standard, simple</td></tr><tr><td>Identity derivation</td><td>Executor looks up token in <code dir="auto">harness_shared.token_index</code> to find which harness slug owns it. <strong><code dir="auto">callingHarness</code> in the request body is REJECTED if it doesn’t match the derived identity.</strong></td><td>Body fields are forgeable; token binding is not</td></tr><tr><td><code dir="auto">parent_slug</code> sealing</td><td><code dir="auto">parent_slug = &#x3C;derivedCallingHarness></code> on <code dir="auto">scaffold_harness</code>; never read from body</td><td>Real seal, not security theater</td></tr><tr><td><code dir="auto">from_slug</code> on messages</td><td>Always = <code dir="auto">&#x3C;derivedCallingHarness></code>; body’s <code dir="auto">from</code> field rejected on mismatch</td><td>Stops cross-harness spoofing in the audit log</td></tr><tr><td>Token rotation</td><td>Out of scope for v1; manual deletion of harness + re-scaffold if compromised</td><td>v1 is correctness-floor; rotation is hardening</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="action-execution">Action execution</h3><a class="sl-anchor-link" href="#action-execution"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Action execution”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Endpoint shape | Slug-less <code dir="auto">POST /api/admin/execute-action</code> with <code dir="auto">targetSlug</code> in action body | Many actions cross harnesses; URL-as-context is the wrong frame |
-| Verb dispatch | Single endpoint with <code dir="auto">op</code> discriminator | Matches the deleted <code dir="auto">org.ts</code> contract; matches <code dir="auto">actions-block.ts</code>’s POST shape |
-| State backend | PG (per-harness <code dir="auto">harness_&#x3C;slug>.messages</code>, <code dir="auto">harness_shared.projects</code>) | Universal Schema + Zero sync already in place |
-| Caller-supplied idempotency | <code dir="auto">actionId</code> (UUID) supplied by caller; server returns same <code dir="auto">result</code> on replay | Workers retry on flake; double-spinup is unrecoverable |
-| Idempotency replay semantics | <strong>Cache-is-authoritative.</strong> Cached response returned without verifying side effects still exist. | Documented as v1 boundary; out-of-band mutations break replay correctness; v1.5 can add cache-and-verify |
-| Per-action error shape | <code dir="auto">{ok, actionId, error?, result?}</code>; ACTIONS array continues past mid-array failures | Matches <code dir="auto">actions-block.ts</code> loop semantics |
-| Per-verb timeouts | <code dir="auto">scaffold_harness</code>: 5 min. All other verbs: 60s. | Scaffold legitimately needs minutes (<code dir="auto">papercusp init</code>, schema scaffold, etc.); the rest are SQL or fast |
-| <code dir="auto">send_message</code> addressing | Any harness → any harness; receiver decides whether to consume via prompt-build | Open bus, gated by receiver |
-| <code dir="auto">send_message</code> reason field | Required <code dir="auto">reason: string</code> (min 10 chars; warn on placeholder regex but don’t block) | Friction filters trivial chatter |
-| <code dir="auto">spinup_project</code> partial-failure semantics | Wrapped in a single PG transaction across all affected per-harness schemas. All-or-nothing. | Atomicity > diagnostic detail at v1 |
-| <code dir="auto">scaffold_harness</code> slug uniqueness | <code dir="auto">INSERT ON CONFLICT DO NOTHING</code>; if conflict → 409 with <code dir="auto">error: 'slug already in use'</code> | Don’t write to someone else’s schema |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Endpoint shape</td><td>Slug-less <code dir="auto">POST /api/admin/execute-action</code> with <code dir="auto">targetSlug</code> in action body</td><td>Many actions cross harnesses; URL-as-context is the wrong frame</td></tr><tr><td>Verb dispatch</td><td>Single endpoint with <code dir="auto">op</code> discriminator</td><td>Matches the deleted <code dir="auto">org.ts</code> contract; matches <code dir="auto">actions-block.ts</code>’s POST shape</td></tr><tr><td>State backend</td><td>PG (per-harness <code dir="auto">harness_&#x3C;slug>.messages</code>, <code dir="auto">harness_shared.projects</code>)</td><td>Universal Schema + Zero sync already in place</td></tr><tr><td>Caller-supplied idempotency</td><td><code dir="auto">actionId</code> (UUID) supplied by caller; server returns same <code dir="auto">result</code> on replay</td><td>Workers retry on flake; double-spinup is unrecoverable</td></tr><tr><td>Idempotency replay semantics</td><td><strong>Cache-is-authoritative.</strong> Cached response returned without verifying side effects still exist.</td><td>Documented as v1 boundary; out-of-band mutations break replay correctness; v1.5 can add cache-and-verify</td></tr><tr><td>Per-action error shape</td><td><code dir="auto">{ok, actionId, error?, result?}</code>; ACTIONS array continues past mid-array failures</td><td>Matches <code dir="auto">actions-block.ts</code> loop semantics</td></tr><tr><td>Per-verb timeouts</td><td><code dir="auto">scaffold_harness</code>: 5 min. All other verbs: 60s.</td><td>Scaffold legitimately needs minutes (<code dir="auto">papercusp init</code>, schema scaffold, etc.); the rest are SQL or fast</td></tr><tr><td><code dir="auto">send_message</code> addressing</td><td>Any harness → any harness; receiver decides whether to consume via prompt-build</td><td>Open bus, gated by receiver</td></tr><tr><td><code dir="auto">send_message</code> reason field</td><td>Required <code dir="auto">reason: string</code> (min 10 chars; warn on placeholder regex but don’t block)</td><td>Friction filters trivial chatter</td></tr><tr><td><code dir="auto">spinup_project</code> partial-failure semantics</td><td>Wrapped in a single PG transaction across all affected per-harness schemas. All-or-nothing.</td><td>Atomicity > diagnostic detail at v1</td></tr><tr><td><code dir="auto">scaffold_harness</code> slug uniqueness</td><td><code dir="auto">INSERT ON CONFLICT DO NOTHING</code>; if conflict → 409 with <code dir="auto">error: 'slug already in use'</code></td><td>Don’t write to someone else’s schema</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="parent--child-structure">Parent / child structure</h3><a class="sl-anchor-link" href="#parent--child-structure"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Parent / child structure”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Parent/child relationship | Optional <code dir="auto">parent_slug</code> column on <code dir="auto">harness_shared.projects</code>, mirrored to <code dir="auto">.papercusp/config.json.parent_slug</code> | Structural fact at the registry level; substrate code reads it |
-| Completion-reporting hook | Default <code dir="auto">afterDone.sh</code> ships in <code dir="auto">libs/papercusp/packages/harness/hooks/builtins/</code> and fires when the harness has <code dir="auto">parent_slug</code> set | One canonical impl, opt-in by config |
-| Hook resolution chain | <code dir="auto">&#x3C;harness-dir>/.papercusp/hooks/&#x3C;name>.sh</code> → <code dir="auto">&#x3C;libs>/packages/harness/hooks/builtins/&#x3C;name>.sh</code>. <strong>Resolver scans <code dir="auto">builtins/</code> generically; afterDone is the only v1 builtin shipped.</strong> | New builtins (e.g. <code dir="auto">onPostValidator.sh</code>) are then a one-file PR in v1.5+ |
-| User-supplied per-harness hook | Wins over builtin | Standard hook resolution; backward compatible |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Parent/child relationship</td><td>Optional <code dir="auto">parent_slug</code> column on <code dir="auto">harness_shared.projects</code>, mirrored to <code dir="auto">.papercusp/config.json.parent_slug</code></td><td>Structural fact at the registry level; substrate code reads it</td></tr><tr><td>Completion-reporting hook</td><td>Default <code dir="auto">afterDone.sh</code> ships in <code dir="auto">libs/papercusp/packages/harness/hooks/builtins/</code> and fires when the harness has <code dir="auto">parent_slug</code> set</td><td>One canonical impl, opt-in by config</td></tr><tr><td>Hook resolution chain</td><td><code dir="auto">&#x3C;harness-dir>/.papercusp/hooks/&#x3C;name>.sh</code> → <code dir="auto">&#x3C;libs>/packages/harness/hooks/builtins/&#x3C;name>.sh</code>. <strong>Resolver scans <code dir="auto">builtins/</code> generically; afterDone is the only v1 builtin shipped.</strong></td><td>New builtins (e.g. <code dir="auto">onPostValidator.sh</code>) are then a one-file PR in v1.5+</td></tr><tr><td>User-supplied per-harness hook</td><td>Wins over builtin</td><td>Standard hook resolution; backward compatible</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="marketplace-contract">Marketplace contract</h3><a class="sl-anchor-link" href="#marketplace-contract"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Marketplace contract”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Template “spawnable” contract | New manifest field <code dir="auto">spawnable: { kind: 'coding'\|'service'\|..., requires: [...] }</code> in <code dir="auto">papercusp.json</code> | Marketplace knows which templates a director can pick from |
-| Spawnable-templates discovery | <code dir="auto">GET /api/marketplace/spawnable</code> returns catalog filtered to <code dir="auto">spawnable</code> entries | Director prompt builds available templates list at runtime |
-| <code dir="auto">scaffold_harness</code> template validation | Executor rejects <code dir="auto">template</code> not in spawnable catalog | Prevents directors from spawning marketing-only templates |
-| Adding <code dir="auto">spawnable</code> to existing templates | Bumps patch version (<code dir="auto">0.1.0</code> → <code dir="auto">0.1.1</code>) and re-publishes; documented as the marketplace contract for “additive manifest field” | Avoids undefined-behavior on cached clients |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Template “spawnable” contract</td><td>New manifest field <code dir="auto">spawnable: { kind: 'coding'|'service'|..., requires: [...] }</code> in <code dir="auto">papercusp.json</code></td><td>Marketplace knows which templates a director can pick from</td></tr><tr><td>Spawnable-templates discovery</td><td><code dir="auto">GET /api/marketplace/spawnable</code> returns catalog filtered to <code dir="auto">spawnable</code> entries</td><td>Director prompt builds available templates list at runtime</td></tr><tr><td><code dir="auto">scaffold_harness</code> template validation</td><td>Executor rejects <code dir="auto">template</code> not in spawnable catalog</td><td>Prevents directors from spawning marketing-only templates</td></tr><tr><td>Adding <code dir="auto">spawnable</code> to existing templates</td><td>Bumps patch version (<code dir="auto">0.1.0</code> → <code dir="auto">0.1.1</code>) and re-publishes; documented as the marketplace contract for “additive manifest field”</td><td>Avoids undefined-behavior on cached clients</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="cross-harness-visibility-tiered">Cross-harness visibility (tiered)</h3><a class="sl-anchor-link" href="#cross-harness-visibility-tiered"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Cross-harness visibility (tiered)”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Tier 1 — Substrate self-description | Every prompt includes a fixed ”## About Papercusp” preamble (~300 tokens, identical across all harnesses) | Coherence: orchestrators understand they’re running inside a multi-harness framework |
-| Tier 2 — Neighbor view | Every prompt includes a depth-1 view of: parent (if any), children (if any), siblings sharing same <code dir="auto">parent_slug</code> | Bounded growth, sufficient for relational coordination |
-| Tier 2 detail level | Parent: slug + recent activity 1-liner + last message between us. Children: slug + feature status counts + last activity ts + <strong><code dir="auto">spawned_count: N</code></strong> for grandchild visibility hint. Siblings: slug + status counts. <strong>Plus an aggregate roll-up.</strong> | ~50 tokens each + ~20 tokens roll-up; prevents prompt bloat while flagging where Tier 3 inspection is warranted |
-| Tier 3 — Inspect-on-demand | Read APIs (<code dir="auto">/api/harness/projects</code>, <code dir="auto">/api/harness/&#x3C;slug>/status</code>, <code dir="auto">/api/harness/&#x3C;slug>/inbox</code>, <code dir="auto">/api/harness/all/recent-activity</code>) listed in prompt as “available capabilities”; agent invokes when relevant | Full visibility achievable; pay only when needed |
-| Tier 3 invocation mechanism | <strong>Verified in Step 0.5</strong> — either <code dir="auto">Bash</code> is wired into <code dir="auto">--allowed-tools</code> (so curl works), or a new MCP tool server <code dir="auto">mcp__papercusp__inspectHarness({slug})</code> etc. ships in Step 2.5. <strong>Without this, Tier 3 is dead text.</strong> | Don’t promise Tier 3 in prompts the agent can’t act on |
-| Cross-harness inbox consumption | Each harness’s orchestrator/scoper/worker prompt-build includes its own bounded inbox; consumed messages auto-ack ONLY when orchestrator decision ∈ <code dir="auto">{DONE, NEXT_*}</code>; <code dir="auto">ESCALATE</code>/<code dir="auto">REVIEW</code> leave pending | Parent → child mid-mission supervision reaches the agents; user-escalation messages aren’t eaten |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Tier 1 — Substrate self-description</td><td>Every prompt includes a fixed ”## About Papercusp” preamble (~300 tokens, identical across all harnesses)</td><td>Coherence: orchestrators understand they’re running inside a multi-harness framework</td></tr><tr><td>Tier 2 — Neighbor view</td><td>Every prompt includes a depth-1 view of: parent (if any), children (if any), siblings sharing same <code dir="auto">parent_slug</code></td><td>Bounded growth, sufficient for relational coordination</td></tr><tr><td>Tier 2 detail level</td><td>Parent: slug + recent activity 1-liner + last message between us. Children: slug + feature status counts + last activity ts + <strong><code dir="auto">spawned_count: N</code></strong> for grandchild visibility hint. Siblings: slug + status counts. <strong>Plus an aggregate roll-up.</strong></td><td>~50 tokens each + ~20 tokens roll-up; prevents prompt bloat while flagging where Tier 3 inspection is warranted</td></tr><tr><td>Tier 3 — Inspect-on-demand</td><td>Read APIs (<code dir="auto">/api/harness/projects</code>, <code dir="auto">/api/harness/&#x3C;slug>/status</code>, <code dir="auto">/api/harness/&#x3C;slug>/inbox</code>, <code dir="auto">/api/harness/all/recent-activity</code>) listed in prompt as “available capabilities”; agent invokes when relevant</td><td>Full visibility achievable; pay only when needed</td></tr><tr><td>Tier 3 invocation mechanism</td><td><strong>Verified in Step 0.5</strong> — either <code dir="auto">Bash</code> is wired into <code dir="auto">--allowed-tools</code> (so curl works), or a new MCP tool server <code dir="auto">mcp__papercusp__inspectHarness({slug})</code> etc. ships in Step 2.5. <strong>Without this, Tier 3 is dead text.</strong></td><td>Don’t promise Tier 3 in prompts the agent can’t act on</td></tr><tr><td>Cross-harness inbox consumption</td><td>Each harness’s orchestrator/scoper/worker prompt-build includes its own bounded inbox; consumed messages auto-ack ONLY when orchestrator decision ∈ <code dir="auto">{DONE, NEXT_*}</code>; <code dir="auto">ESCALATE</code>/<code dir="auto">REVIEW</code> leave pending</td><td>Parent → child mid-mission supervision reaches the agents; user-escalation messages aren’t eaten</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h3"><h3 id="autonomy-deferred-to-v2-plan">Autonomy (deferred to v2 plan)</h3><a class="sl-anchor-link" href="#autonomy-deferred-to-v2-plan"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Autonomy (deferred to v2 plan)”</span></a></div>
-<p>| Decision | Choice | Rationale |
-|---|---|---|
-| Autonomy substrate | TBD pending Step 0 spike | Routine plugin if substrate is durable across operator restarts; otherwise PG-backed work queue or systemd timer |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Decision</th><th>Choice</th><th>Rationale</th></tr></thead><tbody><tr><td>Autonomy substrate</td><td>TBD pending Step 0 spike</td><td>Routine plugin if substrate is durable across operator restarts; otherwise PG-backed work queue or systemd timer</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="5-steps">5. Steps</h2><a class="sl-anchor-link" href="#5-steps"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “5. Steps”</span></a></div>
 <div class="sl-heading-wrapper level-h3"><h3 id="step-0--routine-substrate-spike-30-min">Step 0 — Routine substrate spike <em>(~30 min)</em></h3><a class="sl-anchor-link" href="#step-0--routine-substrate-spike-30-min"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Step 0 — Routine substrate spike (~30 min)”</span></a></div>
 <p>Read <code dir="auto">libs/papercusp/packages/plugin-loader/src/routines.ts</code> (or wherever routines live) and answer:</p>
@@ -438,44 +620,194 @@ these curls should target <code dir="auto">:3070</code>. See
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="plaintext"><code><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">1. Send executeAction with no Authorization header.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 401.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">2. Send with bogus bearer token.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 401.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">3. Send with valid token for harness X, body claiming callingHarness: 'Y'.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 403 with clear error about identity mismatch.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">4. Send valid send_message with body.from = 'Y' (X's token).</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 403.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">5. Send valid scaffold_harness with body.parent_slug = 'attacker-controlled'.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 400 (validation_error: parent_slug not caller-controlled) OR</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">           </span></span><span style="--0:#d6deeb;--1:#403f53">the field is silently dropped and parent_slug is set to X (verify which).</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">6. Send valid scaffold_harness with projectSlug = 'papercup-org' (already exists).</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 409, slug already in use.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">7. Send executeAction with reason='asdf'.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 200 (proceeds) but executed_actions row carries a quality flag.</span></div></div><div class="ec-line"><div class="code"><span style="--0:#d6deeb;--1:#403f53">8. Send executeAction with reason='' or missing.</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#d6deeb;--1:#403f53">   </span></span><span style="--0:#d6deeb;--1:#403f53">Assert: 400, validation_error.</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="1. Send executeAction with no Authorization header.   Assert: 401.2. Send with bogus bearer token.   Assert: 401.3. Send with valid token for harness X, body claiming callingHarness: &#x27;Y&#x27;.   Assert: 403 with clear error about identity mismatch.4. Send valid send_message with body.from = &#x27;Y&#x27; (X&#x27;s token).   Assert: 403.5. Send valid scaffold_harness with body.parent_slug = &#x27;attacker-controlled&#x27;.   Assert: 400 (validation_error: parent_slug not caller-controlled) OR           the field is silently dropped and parent_slug is set to X (verify which).6. Send valid scaffold_harness with projectSlug = &#x27;papercup-org&#x27; (already exists).   Assert: 409, slug already in use.7. Send executeAction with reason=&#x27;asdf&#x27;.   Assert: 200 (proceeds) but executed_actions row carries a quality flag.8. Send executeAction with reason=&#x27;&#x27; or missing.   Assert: 400, validation_error."><div></div></button></div></figure></div>
 <p><strong>Gate for ship:</strong> all four smokes pass twice from clean state.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="6-estimates">6. Estimates</h2><a class="sl-anchor-link" href="#6-estimates"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “6. Estimates”</span></a></div>
-<p>| Step | Work | Estimate |
-|---|---|---|
-| 0 | Routine substrate spike | 0.5h |
-| 0.5 | Action-body + auth contract (2-3 page doc + Tier 3 invocation verification) | 2h |
-| 1 | PG schema migration (incl. tokens, parent_slug, indexed caller/target) + idempotent backfill with skip-broken-rows | 1d |
-| 2 | executeAction: auth middleware (0.5d) + 3 SQL verbs (1d) + scaffold_harness (1.75d) + idempotency wrapper (0.25d) | 3.5d |
-| 2.5 | Verify or wire <code dir="auto">inspect_harness</code> capability | 0.5d |
-| 3 | Read APIs + tiered visibility prompt-build (preamble + neighbor view with <code dir="auto">spawned_count</code> + aggregate + capabilities) | 1.75d |
-| 4 | Retarget callers (incl. token-from-config in run.sh + actions-block.ts) | 0.5d |
-| 4.5 | Builtin afterDone hook + generic builtins resolver | 0.5d |
-| 4.6 | Coding-harness inbox in prompt-build + scoped auto-ack | 0.5d |
-| 5a | Re-bundle papercup-org template (incl. version bump) | 0.75d |
-| 5b | Mark coding templates spawnable + version bumps + re-publish | 0.25d |
-| 5c | Prune broken registry + per-row delete UI | 0.25d |
-| 5d | Reinstall papercup-org | 0.25d |
-| 6 | Four integration smokes (A + B + C + D) | 2d |
-| <strong>Subtotal</strong> | | <strong>~13–14d focused</strong> |
-| Buffer | Paperclip stomps + concurrent-edit recovery | ~2d |
-| <strong>Total realistic</strong> | | <strong>15–18 days</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Step</th><th>Work</th><th>Estimate</th></tr></thead><tbody><tr><td>0</td><td>Routine substrate spike</td><td>0.5h</td></tr><tr><td>0.5</td><td>Action-body + auth contract (2-3 page doc + Tier 3 invocation verification)</td><td>2h</td></tr><tr><td>1</td><td>PG schema migration (incl. tokens, parent_slug, indexed caller/target) + idempotent backfill with skip-broken-rows</td><td>1d</td></tr><tr><td>2</td><td>executeAction: auth middleware (0.5d) + 3 SQL verbs (1d) + scaffold_harness (1.75d) + idempotency wrapper (0.25d)</td><td>3.5d</td></tr><tr><td>2.5</td><td>Verify or wire <code dir="auto">inspect_harness</code> capability</td><td>0.5d</td></tr><tr><td>3</td><td>Read APIs + tiered visibility prompt-build (preamble + neighbor view with <code dir="auto">spawned_count</code> + aggregate + capabilities)</td><td>1.75d</td></tr><tr><td>4</td><td>Retarget callers (incl. token-from-config in run.sh + actions-block.ts)</td><td>0.5d</td></tr><tr><td>4.5</td><td>Builtin afterDone hook + generic builtins resolver</td><td>0.5d</td></tr><tr><td>4.6</td><td>Coding-harness inbox in prompt-build + scoped auto-ack</td><td>0.5d</td></tr><tr><td>5a</td><td>Re-bundle papercup-org template (incl. version bump)</td><td>0.75d</td></tr><tr><td>5b</td><td>Mark coding templates spawnable + version bumps + re-publish</td><td>0.25d</td></tr><tr><td>5c</td><td>Prune broken registry + per-row delete UI</td><td>0.25d</td></tr><tr><td>5d</td><td>Reinstall papercup-org</td><td>0.25d</td></tr><tr><td>6</td><td>Four integration smokes (A + B + C + D)</td><td>2d</td></tr><tr><td><strong>Subtotal</strong></td><td></td><td><strong>~13–14d focused</strong></td></tr><tr><td>Buffer</td><td>Paperclip stomps + concurrent-edit recovery</td><td>~2d</td></tr><tr><td><strong>Total realistic</strong></td><td></td><td><strong>15–18 days</strong></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="7-risks">7. Risks</h2><a class="sl-anchor-link" href="#7-risks"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “7. Risks”</span></a></div>
-<p>| Risk | Severity | Mitigation |
-|---|---|---|
-| Routine substrate is in-process; no v2 autonomy path is viable | High for v2, none for this plan | Step 0 surfaces this early |
-| Existing templates don’t have <code dir="auto">spawnable</code> field; <code dir="auto">scaffold_harness</code> can’t find anything to spawn | High | Step 5b explicitly re-publishes; Smoke A validates |
-| <code dir="auto">inspect_harness</code> capability isn’t actually wired; Tier 3 is dead text | High | Step 0.5 verifies; Step 2.5 wires if needed; gate before Step 3 |
-| <code dir="auto">claude -p</code> doesn’t preserve auth tokens cleanly across invocations (env leak risk) | Med | Tokens from <code dir="auto">.papercusp/config.json</code>, mode 0600, never logged; verify in Smoke D |
-| Tier 2 neighbor view explodes for orgs with 15+ children | Med | Smoke C asserts &#x3C;2000 tokens for 6 children; if violated, paginate |
-| <code dir="auto">scaffold_harness</code> shell-out flakes (init fails halfway) | Med | Idempotency on <code dir="auto">actionId</code> + rollback of partial scaffold + 5-min timeout with SIGTERM/SIGKILL |
-| Paperclip stomps the new files | Med | 2-day buffer; commit fast; monitor <code dir="auto">pgrep -af paperclip</code> |
-| Auto-acknowledge in Step 4.6 marks ESCALATE-iteration messages consumed | Med | Scope: ack only on DONE/NEXT_*; explicitly tested in Smoke C step 14-15 |
-| Out-of-band registry mutation breaks idempotency replay (cache-is-authoritative) | Med | Documented as v1 boundary; not a v1 bug |
-| Cross-harness messaging gets noisy without throttling | Med | <code dir="auto">reason</code> field min-10-char + placeholder regex flag; v2 adds throttling if usage data shows >50/day per harness |
-| <code dir="auto">spinup_project</code> cross-schema transaction has unexpected isolation issues | Med | Use serializable isolation; if cross-schema TX is problematic, fall back to sub-action retry pattern |
-| Token compromise has no rotation path in v1 | Med | Documented in <code dir="auto">auth-and-identity.mdx</code>; mitigation = uninstall+reinstall harness |
-| Hook resolver scans <code dir="auto">builtins/</code> but new builtins might collide with user hooks | Low | User hook always wins; lookup order documented |
-| Recursive spawning blows up | Low | Smokes don’t exercise; v2 concern |
-| <code dir="auto">executed_actions</code> grows unbounded | Low | 30-day prune in v1.5 |
-| <code dir="auto">harness_shared.token_index</code> lookup contention under load | Low | Indexed PK; v1 traffic is hand-driven |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Risk</th><th>Severity</th><th>Mitigation</th></tr></thead><tbody><tr><td>Routine substrate is in-process; no v2 autonomy path is viable</td><td>High for v2, none for this plan</td><td>Step 0 surfaces this early</td></tr><tr><td>Existing templates don’t have <code dir="auto">spawnable</code> field; <code dir="auto">scaffold_harness</code> can’t find anything to spawn</td><td>High</td><td>Step 5b explicitly re-publishes; Smoke A validates</td></tr><tr><td><code dir="auto">inspect_harness</code> capability isn’t actually wired; Tier 3 is dead text</td><td>High</td><td>Step 0.5 verifies; Step 2.5 wires if needed; gate before Step 3</td></tr><tr><td><code dir="auto">claude -p</code> doesn’t preserve auth tokens cleanly across invocations (env leak risk)</td><td>Med</td><td>Tokens from <code dir="auto">.papercusp/config.json</code>, mode 0600, never logged; verify in Smoke D</td></tr><tr><td>Tier 2 neighbor view explodes for orgs with 15+ children</td><td>Med</td><td>Smoke C asserts &#x3C;2000 tokens for 6 children; if violated, paginate</td></tr><tr><td><code dir="auto">scaffold_harness</code> shell-out flakes (init fails halfway)</td><td>Med</td><td>Idempotency on <code dir="auto">actionId</code> + rollback of partial scaffold + 5-min timeout with SIGTERM/SIGKILL</td></tr><tr><td>Paperclip stomps the new files</td><td>Med</td><td>2-day buffer; commit fast; monitor <code dir="auto">pgrep -af paperclip</code></td></tr><tr><td>Auto-acknowledge in Step 4.6 marks ESCALATE-iteration messages consumed</td><td>Med</td><td>Scope: ack only on DONE/NEXT_*; explicitly tested in Smoke C step 14-15</td></tr><tr><td>Out-of-band registry mutation breaks idempotency replay (cache-is-authoritative)</td><td>Med</td><td>Documented as v1 boundary; not a v1 bug</td></tr><tr><td>Cross-harness messaging gets noisy without throttling</td><td>Med</td><td><code dir="auto">reason</code> field min-10-char + placeholder regex flag; v2 adds throttling if usage data shows >50/day per harness</td></tr><tr><td><code dir="auto">spinup_project</code> cross-schema transaction has unexpected isolation issues</td><td>Med</td><td>Use serializable isolation; if cross-schema TX is problematic, fall back to sub-action retry pattern</td></tr><tr><td>Token compromise has no rotation path in v1</td><td>Med</td><td>Documented in <code dir="auto">auth-and-identity.mdx</code>; mitigation = uninstall+reinstall harness</td></tr><tr><td>Hook resolver scans <code dir="auto">builtins/</code> but new builtins might collide with user hooks</td><td>Low</td><td>User hook always wins; lookup order documented</td></tr><tr><td>Recursive spawning blows up</td><td>Low</td><td>Smokes don’t exercise; v2 concern</td></tr><tr><td><code dir="auto">executed_actions</code> grows unbounded</td><td>Low</td><td>30-day prune in v1.5</td></tr><tr><td><code dir="auto">harness_shared.token_index</code> lookup contention under load</td><td>Low</td><td>Indexed PK; v1 traffic is hand-driven</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="8-acceptance-criteria">8. Acceptance criteria</h2><a class="sl-anchor-link" href="#8-acceptance-criteria"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “8. Acceptance criteria”</span></a></div>
 <ul>
 <li>All 4 verbs implemented and individually green via authenticated curl</li>

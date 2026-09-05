@@ -78,11 +78,32 @@ was fixed first, precisely because it was the most visible.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-measurement-2026-08-31-ei-21949926443044423">The measurement (2026-08-31, EI-21949926443044423)</h2><a class="sl-anchor-link" href="#the-measurement-2026-08-31-ei-21949926443044423"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The measurement (2026-08-31, EI-21949926443044423)”</span></a></div>
 <p>The umbrella read <em>“Submodule changes are invisible to superproject-only gate and ownership
 probes.”</em> Three members. Reproduced against the build each was filed on:</p>
-<p>| member | subject | verdict |
-|---|---|---|
-| EI-19367242336402442 | green-checkpoint skew detector | <strong>already fixed</strong> |
-| EI-19399543783045007 | <code dir="auto">git-ops.ts</code> has no <code dir="auto">--recurse-submodules</code> | <strong>already fixed</strong> |
-| EI-19468589610261889 | <code dir="auto">tsc-red-sweep</code> ownership prescription | <strong>REAL, live</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>member</th><th>subject</th><th>verdict</th></tr></thead><tbody><tr><td>EI-19367242336402442</td><td>green-checkpoint skew detector</td><td><strong>already fixed</strong></td></tr><tr><td>EI-19399543783045007</td><td><code dir="auto">git-ops.ts</code> has no <code dir="auto">--recurse-submodules</code></td><td><strong>already fixed</strong></td></tr><tr><td>EI-19468589610261889</td><td><code dir="auto">tsc-red-sweep</code> ownership prescription</td><td><strong>REAL, live</strong></td></tr></tbody></table>
 <p>The title’s phrase “gate probes” leads straight to <code dir="auto">dev:pipeline_position</code>, which is <strong>not any of
 the three</strong> — and which handles submodules beautifully: a submodule path resolves inside the
 submodule, and <code dir="auto">changeInCandidate.judgingContainsPath</code> returns <code dir="auto">null</code> rather than a false <code dir="auto">false</code>,

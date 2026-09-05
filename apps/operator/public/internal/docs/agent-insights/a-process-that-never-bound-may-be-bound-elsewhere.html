@@ -82,12 +82,37 @@ questions is where a healthy, fully-working server hides.</p>
 <p>On 2026-08-03 the packaged mac dogfood install’s <code dir="auto">local</code> env operator (the Vite
 SPA) was filed as <strong>EI-19424980348813193: “hung ~26min without ever binding”</strong>.
 The evidence looked airtight and was all real:</p>
-<p>| observation | read as | actually meant |
-|---|---|---|
-| <code dir="auto">lsof -iTCP:3055</code> empty for 26 min | never bound | never bound <em>to 3055</em> |
-| <code dir="auto">%CPU 0.0</code> at two separate samples | not doing work | not doing work <em>because it was done</em> |
-| <code dir="auto">STAT Ss</code> (interruptible sleep) | parked/wedged | idle event loop — the normal state of a server |
-| RSS flat across 14 min | no progress | no progress <em>needed</em> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>observation</th><th>read as</th><th>actually meant</th></tr></thead><tbody><tr><td><code dir="auto">lsof -iTCP:3055</code> empty for 26 min</td><td>never bound</td><td>never bound <em>to 3055</em></td></tr><tr><td><code dir="auto">%CPU 0.0</code> at two separate samples</td><td>not doing work</td><td>not doing work <em>because it was done</em></td></tr><tr><td><code dir="auto">STAT Ss</code> (interruptible sleep)</td><td>parked/wedged</td><td>idle event loop — the normal state of a server</td></tr><tr><td>RSS flat across 14 min</td><td>no progress</td><td>no progress <em>needed</em></td></tr></tbody></table>
 <p>Every one of those is equally consistent with a <strong>correct, idle, serving</strong>
 process. The item accumulated two days of investigation, a disproven
 optimizer-contention hypothesis, and a disproven crash-looping-sibling

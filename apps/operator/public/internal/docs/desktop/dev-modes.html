@@ -86,19 +86,84 @@ runs the prebuilt release binary against the system Postgres on <code dir="auto"
 dev-PG inspection mode), not an HMR Vite server.</p>
 </blockquote>
 <div class="sl-heading-wrapper level-h2"><h2 id="tldr">TL;DR</h2><a class="sl-anchor-link" href="#tldr"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “TL;DR”</span></a></div>
-<p>| | <code dir="auto">npm run dev:hmr</code> (HMR) | <code dir="auto">npm run dev</code> / <code dir="auto">bin/desktop-dev-nohmr</code> (rebuild-watch) | <code dir="auto">npm run dev:preview</code> / <code dir="auto">bin/desktop-preview-prod</code> (prod-preview) |
-|---|---|---|---|
-| URL Tauri loads | <code dir="auto">http://localhost:3055</code> (explicit <code dir="auto">--config</code> override) | <code dir="auto">http://127.0.0.1:3270</code> (this session’s own operator) | <code dir="auto">http://localhost:4173</code> |
-| Frontend process | <code dir="auto">vite</code> (dev server) | <code dir="auto">vite build --watch</code> → <code dir="auto">apps/operator-vite/dist/</code> | <code dir="auto">vite build</code> → <code dir="auto">vite preview</code> |
-| Server in front | Vite dev middleware | Hono host (<code dir="auto">host-spa.ts</code>, Phase G3) | <code dir="auto">vite preview</code> (static) |
-| <code dir="auto">import.meta.env.PROD</code> | <code dir="auto">false</code> | <code dir="auto">false</code> | <code dir="auto">true</code> |
-| React build | dev (warnings, dev checks) | dev | <strong>prod (minified)</strong> |
-| Minification | none | none | <strong>terser</strong> |
-| Update on save | Hot-reload, state preserved | Manual reload (Ctrl-R), state lost | Rebuild + reload manually |
-| Rebuild latency | ~10ms per HMR patch | ~200-500ms per incremental rebuild | full <code dir="auto">vite build</code> |
-| <code dir="auto">ws://localhost:3055/?token=…</code> in console | Yes (Vite HMR socket) | No | No |
-| Path-equivalence to prod | ⚠ different from <code dir="auto">tauri build</code> | ✓ same code path as <code dir="auto">tauri build</code> (dev mode) | ✓✓ identical to what users install |
-| libsoup-pool exhaustion risk | Yes (HMR + SSE both long-lived) | No | No |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th><code dir="auto">npm run dev:hmr</code> (HMR)</th><th><code dir="auto">npm run dev</code> / <code dir="auto">bin/desktop-dev-nohmr</code> (rebuild-watch)</th><th><code dir="auto">npm run dev:preview</code> / <code dir="auto">bin/desktop-preview-prod</code> (prod-preview)</th></tr></thead><tbody><tr><td>URL Tauri loads</td><td><code dir="auto">http://localhost:3055</code> (explicit <code dir="auto">--config</code> override)</td><td><code dir="auto">http://127.0.0.1:3270</code> (this session’s own operator)</td><td><code dir="auto">http://localhost:4173</code></td></tr><tr><td>Frontend process</td><td><code dir="auto">vite</code> (dev server)</td><td><code dir="auto">vite build --watch</code> → <code dir="auto">apps/operator-vite/dist/</code></td><td><code dir="auto">vite build</code> → <code dir="auto">vite preview</code></td></tr><tr><td>Server in front</td><td>Vite dev middleware</td><td>Hono host (<code dir="auto">host-spa.ts</code>, Phase G3)</td><td><code dir="auto">vite preview</code> (static)</td></tr><tr><td><code dir="auto">import.meta.env.PROD</code></td><td><code dir="auto">false</code></td><td><code dir="auto">false</code></td><td><code dir="auto">true</code></td></tr><tr><td>React build</td><td>dev (warnings, dev checks)</td><td>dev</td><td><strong>prod (minified)</strong></td></tr><tr><td>Minification</td><td>none</td><td>none</td><td><strong>terser</strong></td></tr><tr><td>Update on save</td><td>Hot-reload, state preserved</td><td>Manual reload (Ctrl-R), state lost</td><td>Rebuild + reload manually</td></tr><tr><td>Rebuild latency</td><td>~10ms per HMR patch</td><td>~200-500ms per incremental rebuild</td><td>full <code dir="auto">vite build</code></td></tr><tr><td><code dir="auto">ws://localhost:3055/?token=…</code> in console</td><td>Yes (Vite HMR socket)</td><td>No</td><td>No</td></tr><tr><td>Path-equivalence to prod</td><td>⚠ different from <code dir="auto">tauri build</code></td><td>✓ same code path as <code dir="auto">tauri build</code> (dev mode)</td><td>✓✓ identical to what users install</td></tr><tr><td>libsoup-pool exhaustion risk</td><td>Yes (HMR + SSE both long-lived)</td><td>No</td><td>No</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="when-to-use-hmr-npm-run-devhmr">When to use HMR (<code dir="auto">npm run dev:hmr</code>)</h2><a class="sl-anchor-link" href="#when-to-use-hmr-npm-run-devhmr"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “When to use HMR (npm run dev:hmr)”</span></a></div>
 <p>The default for active UI iteration. State preservation between saves
 matters when you’re working on a deeply-nested view that takes effort
@@ -245,11 +310,28 @@ navigation to <code dir="auto">:3055</code>/<code dir="auto">:3070</code> so you
 internal content ports as a standalone site.</p>
 <p>The <code dir="auto">apps/operator</code> workspace (package name <strong><code dir="auto">@papercusp/web</code></strong>) npm scripts are
 Vite equivalents:</p>
-<p>| <code dir="auto">@papercusp/web</code> script | Runs |
-|---|---|
-| <code dir="auto">npm run dev</code> | <code dir="auto">npm --workspace @papercusp/operator-vite run dev</code> → <code dir="auto">vite</code> (<code dir="auto">:3055</code>, HMR off by default — see the HMR note above) |
-| <code dir="auto">npm run build</code> | <code dir="auto">@papercupai/operator-docs</code> build (Starlight) + <code dir="auto">@papercusp/operator-vite</code> build |
-| <code dir="auto">npm run start</code> | <code dir="auto">tsx bin/hono-host.ts</code> — the Hono host (<code dir="auto">:3070</code>) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code dir="auto">@papercusp/web</code> script</th><th>Runs</th></tr></thead><tbody><tr><td><code dir="auto">npm run dev</code></td><td><code dir="auto">npm --workspace @papercusp/operator-vite run dev</code> → <code dir="auto">vite</code> (<code dir="auto">:3055</code>, HMR off by default — see the HMR note above)</td></tr><tr><td><code dir="auto">npm run build</code></td><td><code dir="auto">@papercupai/operator-docs</code> build (Starlight) + <code dir="auto">@papercusp/operator-vite</code> build</td></tr><tr><td><code dir="auto">npm run start</code></td><td><code dir="auto">tsx bin/hono-host.ts</code> — the Hono host (<code dir="auto">:3070</code>)</td></tr></tbody></table>
 <p>The <strong>root</strong> <code dir="auto">bin/dev</code> runs the Vite dev server (<code dir="auto">:3055</code>) + Hono API host
 (<code dir="auto">:3070</code>) as systemd <code dir="auto">--user</code> transient units; the <strong>root</strong> <code dir="auto">bin/prod</code> builds
 the operator and runs the production Hono host on <code dir="auto">:3070</code>. Neither invokes

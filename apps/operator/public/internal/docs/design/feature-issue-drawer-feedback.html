@@ -95,19 +95,72 @@ is mostly <em>“keep it”</em> with one persistent gap (issue drawer
 parity) and a couple of polish items.</p>
 <hr>
 <div class="sl-heading-wrapper level-h1"><h1 id="what-shipped--dont-churn">What shipped — don’t churn</h1><a class="sl-anchor-link" href="#what-shipped--dont-churn"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “What shipped — don’t churn”</span></a></div>
-<p>| Round-1 § | What was wrong | Now |
-|---|---|---|
-| <strong>C1</strong> | Drawer had 160px gap on right of viewport (positioned at <code dir="auto">right: 1280</code> on a 1440 viewport) | <strong>Drawer docks flush right.</strong> Right edge = viewport width, gap = 0. Height = full viewport (900px on a 1440×900 setup). Both drawers, both clean. |
-| <strong>C2</strong> | Two H2s per drawer (<code dir="auto">Feature F-CSV-003</code> + the descriptive title both as H2) | <strong>Single H2</strong> = the descriptive title. ID + status now live in a structured eyebrow strip above. |
-| <strong>C3</strong> | Feature ID <code dir="auto">F-CSV-003</code> appeared 3 times in the title area | Now appears once in the eyebrow (<code dir="auto">Feature · F-CSV-003 · Passed</code>). |
-| <strong>C4</strong> | Issue sub-line crammed <code dir="auto">minor I-0009 open</code> with no separation | Eyebrow now has structured chips: <code dir="auto">&#x3C;span class="h-issue-sev sev-minor">minor&#x3C;/span></code>, <code dir="auto">&#x3C;span class="h-issue-status st-open">open&#x3C;/span></code>. CSS-styled, color-coded (status chip is rose/red, severity has its own treatment). |
-| <strong>C5</strong> | Close button was unicode <code dir="auto">✕</code> on feature, SVG on issue | Both drawers now use SVG with <code dir="auto">aria-label="Close feature details"</code> / <code dir="auto">"Close issue details"</code>. Standardized. |
-| <strong>C6</strong> | Run-log entries rendered as concatenated text without separators | Now structured rows: <code dir="auto">.h-feature-run-row</code> with cells <code dir="auto">[role · time · separator · run-id]</code>. Properly tabular. |
-| <strong>C7</strong> | Lifecycle button row gave no indication of current state | Current state has <code dir="auto">aria-pressed="true"</code>, <code dir="auto">is-current</code> CSS class, <code dir="auto">disabled</code> (no-op-on-self), and <code dir="auto">✓</code> glyph prefix. Clear and accessible. |
-| <strong>C8</strong> | “Steer notes” was internal jargon | Renamed <strong>“User notes”</strong>. |
-| <strong>C10</strong> | <code dir="auto">role="dialog"</code> but no <code dir="auto">aria-modal="true"</code> | Both drawers now have <code dir="auto">aria-modal="true"</code>. |
-| <strong>V2</strong> | Drawer had fixed 720px height regardless of content | Now matches viewport (900px on 1440×900). |
-| <strong>Issue P3</strong> | “note” button (lowercase, single word) | Now <strong>“Add note”</strong>. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Round-1 §</th><th>What was wrong</th><th>Now</th></tr></thead><tbody><tr><td><strong>C1</strong></td><td>Drawer had 160px gap on right of viewport (positioned at <code dir="auto">right: 1280</code> on a 1440 viewport)</td><td><strong>Drawer docks flush right.</strong> Right edge = viewport width, gap = 0. Height = full viewport (900px on a 1440×900 setup). Both drawers, both clean.</td></tr><tr><td><strong>C2</strong></td><td>Two H2s per drawer (<code dir="auto">Feature F-CSV-003</code> + the descriptive title both as H2)</td><td><strong>Single H2</strong> = the descriptive title. ID + status now live in a structured eyebrow strip above.</td></tr><tr><td><strong>C3</strong></td><td>Feature ID <code dir="auto">F-CSV-003</code> appeared 3 times in the title area</td><td>Now appears once in the eyebrow (<code dir="auto">Feature · F-CSV-003 · Passed</code>).</td></tr><tr><td><strong>C4</strong></td><td>Issue sub-line crammed <code dir="auto">minor I-0009 open</code> with no separation</td><td>Eyebrow now has structured chips: <code dir="auto">&#x3C;span class="h-issue-sev sev-minor">minor&#x3C;/span></code>, <code dir="auto">&#x3C;span class="h-issue-status st-open">open&#x3C;/span></code>. CSS-styled, color-coded (status chip is rose/red, severity has its own treatment).</td></tr><tr><td><strong>C5</strong></td><td>Close button was unicode <code dir="auto">✕</code> on feature, SVG on issue</td><td>Both drawers now use SVG with <code dir="auto">aria-label="Close feature details"</code> / <code dir="auto">"Close issue details"</code>. Standardized.</td></tr><tr><td><strong>C6</strong></td><td>Run-log entries rendered as concatenated text without separators</td><td>Now structured rows: <code dir="auto">.h-feature-run-row</code> with cells <code dir="auto">[role · time · separator · run-id]</code>. Properly tabular.</td></tr><tr><td><strong>C7</strong></td><td>Lifecycle button row gave no indication of current state</td><td>Current state has <code dir="auto">aria-pressed="true"</code>, <code dir="auto">is-current</code> CSS class, <code dir="auto">disabled</code> (no-op-on-self), and <code dir="auto">✓</code> glyph prefix. Clear and accessible.</td></tr><tr><td><strong>C8</strong></td><td>”Steer notes” was internal jargon</td><td>Renamed <strong>“User notes”</strong>.</td></tr><tr><td><strong>C10</strong></td><td><code dir="auto">role="dialog"</code> but no <code dir="auto">aria-modal="true"</code></td><td>Both drawers now have <code dir="auto">aria-modal="true"</code>.</td></tr><tr><td><strong>V2</strong></td><td>Drawer had fixed 720px height regardless of content</td><td>Now matches viewport (900px on 1440×900).</td></tr><tr><td><strong>Issue P3</strong></td><td>”note” button (lowercase, single word)</td><td>Now <strong>“Add note”</strong>.</td></tr></tbody></table>
 <p><strong>Bonus content not asked for:</strong></p>
 <ul>
 <li>Issue drawer eyebrow now reads <code dir="auto">Feature detail</code> / <code dir="auto">Issue detail</code> overline before the proper name. Nice orientation.</li>

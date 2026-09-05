@@ -87,34 +87,122 @@
 <p><strong>54 <code dir="auto">lint:*</code> scripts</strong> in the root <code dir="auto">package.json</code> — <code dir="auto">no-raw-setinterval</code>, <code dir="auto">no-retired</code>, <code dir="auto">env-feature-gates</code>, <code dir="auto">generic-first</code>, <code dir="auto">migrations</code>, <code dir="auto">no-sql-json</code>, <code dir="auto">no-workspace-default</code>, <code dir="auto">scope-defaults</code>, <code dir="auto">no-identity-literals</code>, <code dir="auto">assert-integrity</code>, <code dir="auto">insight-citations</code>, <code dir="auto">tsc</code>, and more.</p>
 <p>The instinct that “papercusp runs on prose” is wrong. It runs on a large enforcement surface with a specific, systematic hole.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="enforced--file-and-code-safety">ENFORCED — file and code safety</h2><a class="sl-anchor-link" href="#enforced--file-and-code-safety"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “ENFORCED — file and code safety”</span></a></div>
-<p>| Imperative | Mechanism |
-|---|---|
-| Claim a file lock before editing | <code dir="auto">pretooluse-locks-acquire.sh</code> — verified <code dir="auto">permissionDecision: "deny"</code> |
-| Release the lock after editing | <code dir="auto">posttooluse-locks-release.sh</code> |
-| Edit only the canonical staging tree | worktree guard (PreToolUse) |
-| Never open <code dir="auto">:3055</code>/<code dir="auto">:3070</code> in a browser | <code dir="auto">guard-operator-desktop.mjs</code> |
-| No secrets into tree files | <code dir="auto">pretooluse-secrets-guard.mjs</code> |
-| No identity leaks in content | <code dir="auto">pretooluse-content-lint.mjs</code> + <code dir="auto">lint:no-identity-literals</code> / <code dir="auto">no-owner-name-tags</code> / <code dir="auto">no-box-identity</code> |
-| Bash resource ceilings | <code dir="auto">pretooluse-bash-resource-gate.sh</code> |
-| Prefer tools over bash for known reads | PreToolUse routing gate, registry-generated |
-| No bare <code dir="auto">setInterval</code> | <code dir="auto">lint:no-raw-setinterval</code> (empty baseline) + <code dir="auto">lint:timer-classification</code> |
-| No imports from retired surfaces | <code dir="auto">lint:no-retired</code>, <code dir="auto">lint:no-retired-style</code> |
-| Feature toggles are FLAGS entries, not <code dir="auto">process.env</code> | <code dir="auto">lint:env-feature-gates</code> |
-| New flags default ON; dark flags rationed | <code dir="auto">production-defaults.test.ts</code> + <code dir="auto">DARK_FLAGS_HIGH_WATERMARK</code> / <code dir="auto">DARK_FLAGS_PARKING_COUNT</code> |
-| Migration hygiene | <code dir="auto">lint:migrations</code>, <code dir="auto">lint:drizzle-drift</code>, <code dir="auto">lint:no-sql-json</code> |
-| Tenant scoping on raw SQL | <code dir="auto">lint:no-workspace-default</code>, <code dir="auto">lint:scope-defaults</code>, runtime advisory on <code dir="auto">dev:pg_query</code> |
-| npm only, never pnpm/yarn | <code dir="auto">only-allow npm</code> in root <code dir="auto">preinstall</code> |
-| Tool guidance within prompt-weight budget | <code dir="auto">tools-md-sync</code> + registration-time re-check |
-| New tests in one of four frameworks | <code dir="auto">lint:tests</code> + CI lint P-038 |
-| Content/dialog delivery separation | <code dir="auto">ask-gate-mirror.sh</code> |
-| Turn provenance stamping | <code dir="auto">userpromptsubmit-provenance.sh</code> |
-| No desktop notifications | no-op shim at <code dir="auto">~/.papercusp/bin/notify-send</code> |
-| No tree-wide destructive git ops | Bash guard |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Imperative</th><th>Mechanism</th></tr></thead><tbody><tr><td>Claim a file lock before editing</td><td><code dir="auto">pretooluse-locks-acquire.sh</code> — verified <code dir="auto">permissionDecision: "deny"</code></td></tr><tr><td>Release the lock after editing</td><td><code dir="auto">posttooluse-locks-release.sh</code></td></tr><tr><td>Edit only the canonical staging tree</td><td>worktree guard (PreToolUse)</td></tr><tr><td>Never open <code dir="auto">:3055</code>/<code dir="auto">:3070</code> in a browser</td><td><code dir="auto">guard-operator-desktop.mjs</code></td></tr><tr><td>No secrets into tree files</td><td><code dir="auto">pretooluse-secrets-guard.mjs</code></td></tr><tr><td>No identity leaks in content</td><td><code dir="auto">pretooluse-content-lint.mjs</code> + <code dir="auto">lint:no-identity-literals</code> / <code dir="auto">no-owner-name-tags</code> / <code dir="auto">no-box-identity</code></td></tr><tr><td>Bash resource ceilings</td><td><code dir="auto">pretooluse-bash-resource-gate.sh</code></td></tr><tr><td>Prefer tools over bash for known reads</td><td>PreToolUse routing gate, registry-generated</td></tr><tr><td>No bare <code dir="auto">setInterval</code></td><td><code dir="auto">lint:no-raw-setinterval</code> (empty baseline) + <code dir="auto">lint:timer-classification</code></td></tr><tr><td>No imports from retired surfaces</td><td><code dir="auto">lint:no-retired</code>, <code dir="auto">lint:no-retired-style</code></td></tr><tr><td>Feature toggles are FLAGS entries, not <code dir="auto">process.env</code></td><td><code dir="auto">lint:env-feature-gates</code></td></tr><tr><td>New flags default ON; dark flags rationed</td><td><code dir="auto">production-defaults.test.ts</code> + <code dir="auto">DARK_FLAGS_HIGH_WATERMARK</code> / <code dir="auto">DARK_FLAGS_PARKING_COUNT</code></td></tr><tr><td>Migration hygiene</td><td><code dir="auto">lint:migrations</code>, <code dir="auto">lint:drizzle-drift</code>, <code dir="auto">lint:no-sql-json</code></td></tr><tr><td>Tenant scoping on raw SQL</td><td><code dir="auto">lint:no-workspace-default</code>, <code dir="auto">lint:scope-defaults</code>, runtime advisory on <code dir="auto">dev:pg_query</code></td></tr><tr><td>npm only, never pnpm/yarn</td><td><code dir="auto">only-allow npm</code> in root <code dir="auto">preinstall</code></td></tr><tr><td>Tool guidance within prompt-weight budget</td><td><code dir="auto">tools-md-sync</code> + registration-time re-check</td></tr><tr><td>New tests in one of four frameworks</td><td><code dir="auto">lint:tests</code> + CI lint P-038</td></tr><tr><td>Content/dialog delivery separation</td><td><code dir="auto">ask-gate-mirror.sh</code></td></tr><tr><td>Turn provenance stamping</td><td><code dir="auto">userpromptsubmit-provenance.sh</code></td></tr><tr><td>No desktop notifications</td><td>no-op shim at <code dir="auto">~/.papercusp/bin/notify-send</code></td></tr><tr><td>No tree-wide destructive git ops</td><td>Bash guard</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="nudge--observed-but-not-prevented">NUDGE — observed but not prevented</h2><a class="sl-anchor-link" href="#nudge--observed-but-not-prevented"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “NUDGE — observed but not prevented”</span></a></div>
-<p>| Imperative | Mechanism | Why it is only a nudge |
-|---|---|---|
-| Hold a work-item before editing; verify before completing | <code dir="auto">workitem-verify-nudge.sh</code> | <strong><code dir="auto">exit 0</code> only — no <code dir="auto">permissionDecision</code>, no deny path.</strong> Fires PostToolUse / Stop / SessionEnd, i.e. <em>after</em> the edit. |
-| Completion carries verification evidence | completion gate in <code dir="auto">setWorkItemState</code> / <code dir="auto">setIssueState</code> | Binds on <code dir="auto">terminal_completion_ref</code>, which <code dir="auto">work_items:complete</code> <strong>auto-fills from <code dir="auto">completion.summary</code></strong> — non-null by construction. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Imperative</th><th>Mechanism</th><th>Why it is only a nudge</th></tr></thead><tbody><tr><td>Hold a work-item before editing; verify before completing</td><td><code dir="auto">workitem-verify-nudge.sh</code></td><td><strong><code dir="auto">exit 0</code> only — no <code dir="auto">permissionDecision</code>, no deny path.</strong> Fires PostToolUse / Stop / SessionEnd, i.e. <em>after</em> the edit.</td></tr><tr><td>Completion carries verification evidence</td><td>completion gate in <code dir="auto">setWorkItemState</code> / <code dir="auto">setIssueState</code></td><td>Binds on <code dir="auto">terminal_completion_ref</code>, which <code dir="auto">work_items:complete</code> <strong>auto-fills from <code dir="auto">completion.summary</code></strong> — non-null by construction.</td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="prose--no-mechanism-at-all">PROSE — no mechanism at all</h2><a class="sl-anchor-link" href="#prose--no-mechanism-at-all"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “PROSE — no mechanism at all”</span></a></div>
 <p>Declare intent and claim your lane · Plan before non-trivial work; confirm the route · Register mode changes (<code dir="auto">mode:set</code>) · Reuse-first, extend don’t fork · Start a new app from a template · The papercusp-way routing gate · File what you discover the moment you work around it · A mitigation is not a fix · Never blame “high load” without a mechanism · A red gate is yours to green · A cross-lane ruling is a plan Decision · Read design docs before design work · Read <code dir="auto">/internal/docs/performance</code> first · Use Context7 for library APIs · Apply migrations via the runner not <code dir="auto">psql -f</code> · Use <code dir="auto">npm run install:safe</code> · <strong>Edit sources, never rendered outputs</strong> · State goes in nuqs · Sync goes through <code dir="auto">@papercusp/sync</code></p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-finding">The finding</h2><a class="sl-anchor-link" href="#the-finding"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The finding”</span></a></div>
@@ -126,13 +214,42 @@
 <p>Every PROSE row is about the <em>shape of the work</em>: whether it was planned, claimed, verified, captured. Those violations are not detectable at any single tool call — only in the relationship <em>between</em> calls, or between a claim and its evidence. No hook sits there, so nothing enforces them.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-proof-that-prose-does-not-hold">The proof that prose does not hold</h3><a class="sl-anchor-link" href="#the-proof-that-prose-does-not-hold"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The proof that prose does not hold”</span></a></div>
 <p>Completion-evidence compliance, measured live 2026-07-26 (issue family, weekly):</p>
-<p>| week | terminal rows | % with <strong>no</strong> structured evidence |
-|---|---|---|
-| 2026-06-22 | 696 | 100.0% |
-| 2026-06-29 | 3,511 | 91.8% |
-| 2026-07-06 | 1,225 | 47.1% |
-| 2026-07-13 | 5,268 | 59.1% |
-| 2026-07-20 | 1,428 | 34.9% |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>week</th><th>terminal rows</th><th>% with <strong>no</strong> structured evidence</th></tr></thead><tbody><tr><td>2026-06-22</td><td>696</td><td>100.0%</td></tr><tr><td>2026-06-29</td><td>3,511</td><td>91.8%</td></tr><tr><td>2026-07-06</td><td>1,225</td><td>47.1%</td></tr><tr><td>2026-07-13</td><td>5,268</td><td>59.1%</td></tr><tr><td>2026-07-20</td><td>1,428</td><td>34.9%</td></tr></tbody></table>
 <p>All-time, both families: <strong>65.6% of 14,663 terminal rows carry no structured verification evidence.</strong></p>
 <p>The trend is <strong>non-monotonic</strong>: 47.1 → 59.1 → 34.9. A structurally-enforced rule does not regress like that; it steps to ~0 and stays. A prose rule drifts with whatever else competes for attention that week. That shape <em>is</em> the diagnosis.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="why-the-completion-gate-does-not-count-as-enforcement">Why the completion gate does not count as enforcement</h3><a class="sl-anchor-link" href="#why-the-completion-gate-does-not-count-as-enforcement"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Why the completion gate does not count as enforcement”</span></a></div>

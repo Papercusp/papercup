@@ -89,11 +89,32 @@ plan — not because the plan tools are nicer, but because <em>there is no file 
 cannot reach that end state, so the file stays temptingly editable and the projector’s
 refusal has to substitute for the impossibility plans get for free.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-two-directions-are-not-symmetric">The two directions are not symmetric</h2><a class="sl-anchor-link" href="#the-two-directions-are-not-symmetric"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The two directions are not symmetric”</span></a></div>
-<p>| direction | command | when |
-|---|---|---|
-| PG → file (normal) | <code dir="auto">npm run gen:authored-docs</code> | routine, safe, idempotent |
-| PG → file (verify) | <code dir="auto">npm run gen:authored-docs:check</code> | CI: corpus must equal its projection |
-| file → PG (bootstrap) | <code dir="auto">npm run gen:authored-docs:ingest</code> | one-time, or a new doc with an empty row |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>direction</th><th>command</th><th>when</th></tr></thead><tbody><tr><td>PG → file (normal)</td><td><code dir="auto">npm run gen:authored-docs</code></td><td>routine, safe, idempotent</td></tr><tr><td>PG → file (verify)</td><td><code dir="auto">npm run gen:authored-docs:check</code></td><td>CI: corpus must equal its projection</td></tr><tr><td>file → PG (bootstrap)</td><td><code dir="auto">npm run gen:authored-docs:ingest</code></td><td>one-time, or a new doc with an empty row</td></tr></tbody></table>
 <p><code dir="auto">--ingest</code> is the direction that made the corpus canonical once. After that it is exactly
 the move that would let a hand-edit to a projected file quietly <em>become</em> canonical, which is
 the inversion this plan removed — so it <strong>refuses</strong> any row that already holds content

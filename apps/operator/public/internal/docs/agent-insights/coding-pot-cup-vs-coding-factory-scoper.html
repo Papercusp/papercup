@@ -140,12 +140,37 @@ A per-feature <strong>director</strong> emits a decision verb each turn; the spi
 chunk). <strong>The role is HANDED its <code dir="auto">FEATURE_ID</code>; it does not self-select.</strong></li>
 <li>A factory role <strong>never calls <code dir="auto">scheduler:get_next</code></strong> and a claim-spec means nothing to it.</li>
 </ul>
-<p>| | coding POT | coding-FACTORY |
-|---|---|---|
-| worker unit | <strong><code dir="auto">cup</code></strong> | <code dir="auto">scoper</code>/<code dir="auto">architect</code>/<code dir="auto">worker</code>/<code dir="auto">validator</code>/<code dir="auto">documenter</code>/<code dir="auto">curator</code> |
-| how it gets work | <strong>PULLS</strong> via <code dir="auto">scheduler:get_next</code> per its claim-spec | <strong>PUSHED</strong> a <code dir="auto">FEATURE_ID</code> by the director’s spine |
-| Mug’s lever | <code dir="auto">scheduler:set_claim_spec</code> (steer) | n/a (the director dispatches) |
-| claim-spec on it? | yes — that’s the point | <strong>INERT</strong> — it never calls <code dir="auto">get_next</code> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>coding POT</th><th>coding-FACTORY</th></tr></thead><tbody><tr><td>worker unit</td><td><strong><code dir="auto">cup</code></strong></td><td><code dir="auto">scoper</code>/<code dir="auto">architect</code>/<code dir="auto">worker</code>/<code dir="auto">validator</code>/<code dir="auto">documenter</code>/<code dir="auto">curator</code></td></tr><tr><td>how it gets work</td><td><strong>PULLS</strong> via <code dir="auto">scheduler:get_next</code> per its claim-spec</td><td><strong>PUSHED</strong> a <code dir="auto">FEATURE_ID</code> by the director’s spine</td></tr><tr><td>Mug’s lever</td><td><code dir="auto">scheduler:set_claim_spec</code> (steer)</td><td>n/a (the director dispatches)</td></tr><tr><td>claim-spec on it?</td><td>yes — that’s the point</td><td><strong>INERT</strong> — it never calls <code dir="auto">get_next</code></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="how-to-do-it-properly">How to do it properly</h2><a class="sl-anchor-link" href="#how-to-do-it-properly"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “How to do it properly”</span></a></div>
 <p>To test (or run) a coding-pot self-pulling handoff:</p>
 <ol>

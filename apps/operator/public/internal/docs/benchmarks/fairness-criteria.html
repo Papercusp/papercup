@@ -107,13 +107,48 @@
 <li><strong>The real research question is COORDINATION TOPOLOGY: central coordinator (Mug) vs totally-distributed (peer-to-peer) coordination — which collaborates better?</strong> Both topologies use MULTIPLE coordinating agents; they differ only in <em>how</em> coordination happens.</li>
 </ul>
 <p><strong>Arm taxonomy (name the topology, don’t conflate):</strong></p>
-<p>| Arm | Agents | Coordination | Exists today? |
-|---|---|---|---|
-| mini-swe-agent | 1 | none (baseline floor) | ✅ external |
-| <code dir="auto">su-independent</code> (code) | N, <strong>one task each</strong> | <strong>NONE</strong> — isolated, no comms | ✅ but it’s the <em>no-coordination</em> pole, NOT distributed |
-| <code dir="auto">fifo-noqueen</code> | N over a backlog | none (scripted FIFO, Mug never wakes) | ✅ also a no-coordination pole |
-| <strong>distributed / peer</strong> | <strong>N, coordinating peer-to-peer</strong> (coord:claim / declare-intent / messages / correct each other), <strong>NO central Mug</strong> | <strong>distributed</strong> | ❌ <strong>MUST BE BUILT</strong> |
-| <code dir="auto">pot-realqueen</code> | N, central Mug places/evicts/re-places/briefs/wakes | <strong>central</strong> | ✅ (currently reliability-degraded — EI-1293) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Arm</th><th>Agents</th><th>Coordination</th><th>Exists today?</th></tr></thead><tbody><tr><td>mini-swe-agent</td><td>1</td><td>none (baseline floor)</td><td>✅ external</td></tr><tr><td><code dir="auto">su-independent</code> (code)</td><td>N, <strong>one task each</strong></td><td><strong>NONE</strong> — isolated, no comms</td><td>✅ but it’s the <em>no-coordination</em> pole, NOT distributed</td></tr><tr><td><code dir="auto">fifo-noqueen</code></td><td>N over a backlog</td><td>none (scripted FIFO, Mug never wakes)</td><td>✅ also a no-coordination pole</td></tr><tr><td><strong>distributed / peer</strong></td><td><strong>N, coordinating peer-to-peer</strong> (coord:claim / declare-intent / messages / correct each other), <strong>NO central Mug</strong></td><td><strong>distributed</strong></td><td>❌ <strong>MUST BE BUILT</strong></td></tr><tr><td><code dir="auto">pot-realqueen</code></td><td>N, central Mug places/evicts/re-places/briefs/wakes</td><td><strong>central</strong></td><td>✅ (currently reliability-degraded — EI-1293)</td></tr></tbody></table>
 <aside aria-label="Caution" class="starlight-aside starlight-aside--caution"> <p class="starlight-aside__title" aria-hidden="true"> <svg aria-hidden="true" class="starlight-aside__icon astro-mdhev3hl" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="--sl-icon-size: 1em;"><path d="M12 16a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm10.67 1.47-8.05-14a3 3 0 0 0-5.24 0l-8 14A3 3 0 0 0 3.94 22h16.12a3 3 0 0 0 2.61-4.53Zm-1.73 2a1 1 0 0 1-.88.51H3.94a1 1 0 0 1-.88-.51 1 1 0 0 1 0-1l8-14a1 1 0 0 1 1.78 0l8.05 14a1 1 0 0 1 .05 1.02v-.02ZM12 8a1 1 0 0 0-1 1v4a1 1 0 0 0 2 0V9a1 1 0 0 0-1-1Z"/></svg>Caution </p>  <div class="starlight-aside__content"><p>The code’s <code dir="auto">su-independent</code> is the <strong>NO-coordination</strong> pole (“N independent agents, one task each, NO Mug and NO pot orchestration” — per its own header), <strong>not</strong> distributed coordination. A central-vs-distributed comparison therefore <strong>cannot be run until a distributed/peer-coordination arm is built</strong>. Do not label a no-coordination run as “distributed.”</p></div> </aside>
 <ul>
 <li>State explicitly which topology each arm tests. The 2026-06-17 run used <code dir="auto">su-independent</code> = <strong>no coordination</strong> → it tested neither topology, so it says nothing about central-vs-distributed.</li>
@@ -153,48 +188,228 @@
 </ul>
 <div class="sl-heading-wrapper level-h2"><h2 id="the-mandatory-pre-claim-audit-table">The mandatory pre-claim audit table</h2><a class="sl-anchor-link" href="#the-mandatory-pre-claim-audit-table"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The mandatory pre-claim audit table”</span></a></div>
 <p>Produce this for every run; fill PASS/FAIL/N-A with evidence:</p>
-<p>| # | Criterion | Status | Evidence |
-|---|---|---|---|
-| C1 | Same task set + same scoring denominator | | |
-| C2 | Same model (telemetry-verified) | | |
-| C3 | Compute parity (iso-budget) or disclosed | | |
-| C4 | Capability-under-claim actually exercised | | |
-| C5 | Same grader/env/exclusion | | |
-| C6 | Reliability/coverage parity | | |
-| C7 | No contamination | | |
-| C8 | Statistical validity (N, tiers, seeds) | | |
-| C9 | Reference reproduces published number | | |
-| C10 | Transparent reporting | | |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Criterion</th><th>Status</th><th>Evidence</th></tr></thead><tbody><tr><td>C1</td><td>Same task set + same scoring denominator</td><td></td><td></td></tr><tr><td>C2</td><td>Same model (telemetry-verified)</td><td></td><td></td></tr><tr><td>C3</td><td>Compute parity (iso-budget) or disclosed</td><td></td><td></td></tr><tr><td>C4</td><td>Capability-under-claim actually exercised</td><td></td><td></td></tr><tr><td>C5</td><td>Same grader/env/exclusion</td><td></td><td></td></tr><tr><td>C6</td><td>Reliability/coverage parity</td><td></td><td></td></tr><tr><td>C7</td><td>No contamination</td><td></td><td></td></tr><tr><td>C8</td><td>Statistical validity (N, tiers, seeds)</td><td></td><td></td></tr><tr><td>C9</td><td>Reference reproduces published number</td><td></td><td></td></tr><tr><td>C10</td><td>Transparent reporting</td><td></td><td></td></tr></tbody></table>
 <div class="sl-heading-wrapper level-h2"><h2 id="worked-audit--2026-06-17-su-independent-vs-mini-swe-agent-opus-46-stratified-30">Worked audit — 2026-06-17 su-independent vs mini-swe-agent (Opus 4.6, stratified-30)</h2><a class="sl-anchor-link" href="#worked-audit--2026-06-17-su-independent-vs-mini-swe-agent-opus-46-stratified-30"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Worked audit — 2026-06-17 su-independent vs mini-swe-agent (Opus 4.6, stratified-30)”</span></a></div>
-<p>| # | Criterion | Status | Evidence |
-|---|---|---|---|
-| C1 | Same set + denominator | <strong>FAIL</strong> | Same 30 input, but su <strong>scored on 22</strong>, mini-swe on <strong>30</strong> (su produced no diff on 8 huge repos). Headline leaned on the 72.7% real-diff-22 view, which drops su’s 8 non-attempts. |
-| C2 | Same model | <strong>PASS</strong> | Per-arm telemetry verified <code dir="auto">claude-opus-4-6</code> (su <code dir="auto">agent_usage_samples</code>; mini-swe litellm). |
-| C3 | Compute parity | <strong>FAIL</strong> | Not iso-budget. mini-swe 14.5 calls / $1.13 per task; su ~$4.97/task (≥2–4× even excluding retries). No budget cap. |
-| C4 | Capability exercised | <strong>FAIL</strong> | Ran <code dir="auto">su-independent</code> = <strong>one cup per task, no coordination</strong>. The coordination/communication advantage was <strong>never tested</strong>. cap=2 was 2 <em>different</em> tasks (no overlap). |
-| C5 | Same grader/env | <strong>PASS</strong> | Both via the same <code dir="auto">_xbench_grade.py</code> → <code dir="auto">swe_bench_pro_eval.py --use_local_docker</code>. |
-| C6 | Reliability parity | <strong>FAIL</strong> | su’s 8 non-attempts were largely infra (heartbeat-reclaim of slow cups on huge repos, [EI-1293]); the run was also repeatedly degraded by a governor false-pause. Asymmetric vs mini-swe (0 infra-fails). |
-| C7 | No contamination | <strong>PASS</strong> (assumed) | Same task inputs; no leakage identified. |
-| C8 | Statistical validity | <strong>FAIL</strong> | Single seed; 53% vs 50% on N=30 is ~1.5 tasks — inside noise. |
-| C9 | Reference validation | <strong>PASS</strong> | mini-swe 50% ≈ SEAL-published ~52%. |
-| C10 | Transparent reporting | <strong>PARTIAL</strong> | Initial report over-led with 72.7%; corrected after audit. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>Criterion</th><th>Status</th><th>Evidence</th></tr></thead><tbody><tr><td>C1</td><td>Same set + denominator</td><td><strong>FAIL</strong></td><td>Same 30 input, but su <strong>scored on 22</strong>, mini-swe on <strong>30</strong> (su produced no diff on 8 huge repos). Headline leaned on the 72.7% real-diff-22 view, which drops su’s 8 non-attempts.</td></tr><tr><td>C2</td><td>Same model</td><td><strong>PASS</strong></td><td>Per-arm telemetry verified <code dir="auto">claude-opus-4-6</code> (su <code dir="auto">agent_usage_samples</code>; mini-swe litellm).</td></tr><tr><td>C3</td><td>Compute parity</td><td><strong>FAIL</strong></td><td>Not iso-budget. mini-swe 14.5 calls / $1.13 per task; su ~$4.97/task (≥2–4× even excluding retries). No budget cap.</td></tr><tr><td>C4</td><td>Capability exercised</td><td><strong>FAIL</strong></td><td>Ran <code dir="auto">su-independent</code> = <strong>one cup per task, no coordination</strong>. The coordination/communication advantage was <strong>never tested</strong>. cap=2 was 2 <em>different</em> tasks (no overlap).</td></tr><tr><td>C5</td><td>Same grader/env</td><td><strong>PASS</strong></td><td>Both via the same <code dir="auto">_xbench_grade.py</code> → <code dir="auto">swe_bench_pro_eval.py --use_local_docker</code>.</td></tr><tr><td>C6</td><td>Reliability parity</td><td><strong>FAIL</strong></td><td>su’s 8 non-attempts were largely infra (heartbeat-reclaim of slow cups on huge repos, [EI-1293]); the run was also repeatedly degraded by a governor false-pause. Asymmetric vs mini-swe (0 infra-fails).</td></tr><tr><td>C7</td><td>No contamination</td><td><strong>PASS</strong> (assumed)</td><td>Same task inputs; no leakage identified.</td></tr><tr><td>C8</td><td>Statistical validity</td><td><strong>FAIL</strong></td><td>Single seed; 53% vs 50% on N=30 is ~1.5 tasks — inside noise.</td></tr><tr><td>C9</td><td>Reference validation</td><td><strong>PASS</strong></td><td>mini-swe 50% ≈ SEAL-published ~52%.</td></tr><tr><td>C10</td><td>Transparent reporting</td><td><strong>PARTIAL</strong></td><td>Initial report over-led with 72.7%; corrected after audit.</td></tr></tbody></table>
 <p><strong>Verdict:</strong> that run is <strong>not a fair comparison</strong> and supports <strong>no</strong> capability claim. The only mildly-robust signal (su solved 2 hard tasks, mini-swe 0) is single-seed and not compute-matched.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="coordination-topology-roster-the-study">Coordination-topology roster (the study)</h2><a class="sl-anchor-link" href="#coordination-topology-roster-the-study"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Coordination-topology roster (the study)”</span></a></div>
 <p>The benchmark is a <strong>coordination-topology comparison</strong>, all arms on the same tasks, same model, <strong>same per-task model-call budget (iso-call-budget)</strong>, same denominator. Each arm is a pluggable <strong>topology strategy</strong> over one shared pool driver (so adding/removing an arm is a small config, not a new driver). Axes: <em>locus</em> (none / central / distributed-flat / hierarchical) × <em>mechanism</em> (none / direct-message / shared-artifact / review / aggregation) × <em>granularity</em> (per-backlog / per-task).</p>
 <p>Most arms map 1:1 to a topology <strong>blueprint</strong> (the <code dir="auto">spine.claimModel</code> + <code dir="auto">coordination</code> schema section); the run driver resolves the spec → the right spawn shape. “blueprint+driver ✅” = the topology is declared + the unit-tested driver runs it; the only remaining step for a live run is the consumer’s <code dir="auto">runAgent</code> binding (fleet-spawn-backed) — see <em>Runtime enforcement</em> below.</p>
 <p>The column below is the <strong>arm id</strong> (the <code dir="auto">ArmId</code> on every <code dir="auto">TaskRunResult</code> row), which is <strong>not always a literal <code dir="auto">blueprint.yaml</code> id</strong>. The <code dir="auto">dist-*</code> / <code dir="auto">pair</code> / <code dir="auto">hier-lead-worker</code> / <code dir="auto">ensemble-solve</code> arms <em>are</em> topology blueprint ids, but the three poles resolve differently: <code dir="auto">mini-swe</code> is the external baseline (its su-side floor solver is the <code dir="auto">coding-solo</code> blueprint); <code dir="auto">su-independent</code> is the <strong>default</strong> <code dir="auto">resolveCoordinationSpec</code> resolution (no <code dir="auto">coordination</code> block → <code dir="auto">decider-dispatch</code>, no comms), not a file named <code dir="auto">id: su-independent</code>; and <code dir="auto">pot</code> resolves from any <code dir="auto">kind:'pot'</code> blueprint (e.g. <code dir="auto">coding</code> or <code dir="auto">work</code>), since <code dir="auto">central</code> is set by <code dir="auto">bp.kind==='pot'</code>, not by an id literally <code dir="auto">pot</code>.</p>
-<p>| Arm (id) | Locus | Mechanism | Status |
-|---|---|---|---|
-| <code dir="auto">mini-swe</code> | none (1 agent) | — | ✅ baseline floor (solver: <code dir="auto">coding-solo</code>) |
-| <code dir="auto">su-independent</code> | none (N isolated) | — | ✅ no-coordination pole (default spec, not a file id) |
-| <code dir="auto">dist-broadcast</code> | distributed-flat | self-claim + declare-intent + broadcast findings | ✅ blueprint+driver |
-| <code dir="auto">dist-peer-review</code> | distributed-flat | self-claim + peer-review diffs before submit | ✅ blueprint+driver |
-| <code dir="auto">dist-repo-huddle</code> | distributed (per-repo group) | same-repo agents share understanding + co-edit | ✅ blueprint+driver |
-| <code dir="auto">dist-blackboard</code> | distributed-flat | indirect via shared scratchpad (stigmergic; <code dir="auto">coord:send</code> forbidden) | ✅ blueprint+driver |
-| <code dir="auto">ensemble-solve</code> | none-during, aggregate-after | solve-N-independently → judge picks/merges (<code dir="auto">aggregate:judge-best</code>) | ✅ blueprint+driver (key control) |
-| <code dir="auto">pair</code> | per-task pair | driver writes / navigator continuously reviews | ✅ blueprint+driver |
-| <code dir="auto">hier-lead-worker</code> | hierarchical (elected lead) | a lead runs a coordination pass (charged to the iso-budget), then workers execute under it | ✅ blueprint+driver |
-| <code dir="auto">pot</code> | central | Mug places/evicts/re-places/briefs/wakes | ✅ (<code dir="auto">kind:'pot'</code> blueprint; reliability-degraded → F-FIX-038/EI-1293) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Arm (id)</th><th>Locus</th><th>Mechanism</th><th>Status</th></tr></thead><tbody><tr><td><code dir="auto">mini-swe</code></td><td>none (1 agent)</td><td>—</td><td>✅ baseline floor (solver: <code dir="auto">coding-solo</code>)</td></tr><tr><td><code dir="auto">su-independent</code></td><td>none (N isolated)</td><td>—</td><td>✅ no-coordination pole (default spec, not a file id)</td></tr><tr><td><code dir="auto">dist-broadcast</code></td><td>distributed-flat</td><td>self-claim + declare-intent + broadcast findings</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">dist-peer-review</code></td><td>distributed-flat</td><td>self-claim + peer-review diffs before submit</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">dist-repo-huddle</code></td><td>distributed (per-repo group)</td><td>same-repo agents share understanding + co-edit</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">dist-blackboard</code></td><td>distributed-flat</td><td>indirect via shared scratchpad (stigmergic; <code dir="auto">coord:send</code> forbidden)</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">ensemble-solve</code></td><td>none-during, aggregate-after</td><td>solve-N-independently → judge picks/merges (<code dir="auto">aggregate:judge-best</code>)</td><td>✅ blueprint+driver (key control)</td></tr><tr><td><code dir="auto">pair</code></td><td>per-task pair</td><td>driver writes / navigator continuously reviews</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">hier-lead-worker</code></td><td>hierarchical (elected lead)</td><td>a lead runs a coordination pass (charged to the iso-budget), then workers execute under it</td><td>✅ blueprint+driver</td></tr><tr><td><code dir="auto">pot</code></td><td>central</td><td>Mug places/evicts/re-places/briefs/wakes</td><td>✅ (<code dir="auto">kind:'pot'</code> blueprint; reliability-degraded → F-FIX-038/EI-1293)</td></tr></tbody></table>
 <p><strong>Framework (built):</strong> a topology is a blueprint, resolved to a <code dir="auto">CoordinationSpec</code> by <code dir="auto">resolveCoordinationSpec</code> (<code dir="auto">coordination-topology.ts</code>), mapped to per-team spawn plans (directive + tool-scope + team grouping) by <code dir="auto">coordination-runtime.ts</code>, and executed by <code dir="auto">runTopology</code> (<code dir="auto">run-topology.ts</code>). The driver is generic across benchmarks via two injected seams: a per-benchmark <code dir="auto">CloneGradeSeam</code> (clone/grade — identical across arms, C5) and a <code dir="auto">runAgent</code> (the fleet-spawn-backed agent invocation). SWE-bench-Pro (diff) and FrontierSWE (in-container) both wire onto it.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="runtime-enforcement--how-the-driver-makes-c1--c3--c4-mechanical-not-aspirational">Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)</h3><a class="sl-anchor-link" href="#runtime-enforcement--how-the-driver-makes-c1--c3--c4-mechanical-not-aspirational"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “Runtime enforcement — how the driver makes C1 + C3 + C4 mechanical (not aspirational)”</span></a></div>
 <ul>

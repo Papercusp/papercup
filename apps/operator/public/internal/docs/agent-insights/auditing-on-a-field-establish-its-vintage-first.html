@@ -82,13 +82,42 @@ skipped it”</em>.</p>
 <p>On 2026-07-27 a fleet leader running a completion-integrity audit reached five
 confident, wrong conclusions in a single session. Every one had real evidence
 attached, and two were broadcast to peers before being caught.</p>
-<p>| # | The claim | Why it was wrong |
-|---|---|---|
-| 1 | “This close is a bare assertion — <code dir="auto">terminal_completion_ref</code> is NULL.” | <code dir="auto">work_items:complete</code> never populates that column. Evidence lives in <code dir="auto">payload._completionEvidence</code>. The audit read a field nothing writes. |
-| 2 | “This agent supplied no evidence.” | They passed <code dir="auto">completion</code> as a bare <strong>string</strong>. The tool coerces it to <code dir="auto">{ summary }</code> and writes <strong>no</strong> <code dir="auto">_completionEvidence</code> key. Their verification was real and silently discarded. |
-| 3 | “124 closes never passed the completion gate — <code dir="auto">_assumptions</code> is absent.” | <code dir="auto">_assumptions</code> was introduced <strong>that same day</strong>. It is <code dir="auto">0</code> on every prior day. The 124 were properly completed <em>before the field existed</em>. |
-| 4 | “Your gate-red report does not reproduce — I get EXIT=0.” | The file had been fixed 9 minutes after the report. The check ran against an already-fixed tree. |
-| 5 | “Closure has collapsed — zero closures in each of hours 2–7, net −1 over 3h. The drain is a treadmill.” | <code dir="auto">closed_ts</code> landed <strong>that same day</strong>. Every bucket before it existed read exactly <code dir="auto">0</code>. ~86 closures had actually occurred in that window. |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>#</th><th>The claim</th><th>Why it was wrong</th></tr></thead><tbody><tr><td>1</td><td>”This close is a bare assertion — <code dir="auto">terminal_completion_ref</code> is NULL.”</td><td><code dir="auto">work_items:complete</code> never populates that column. Evidence lives in <code dir="auto">payload._completionEvidence</code>. The audit read a field nothing writes.</td></tr><tr><td>2</td><td>”This agent supplied no evidence.”</td><td>They passed <code dir="auto">completion</code> as a bare <strong>string</strong>. The tool coerces it to <code dir="auto">{ summary }</code> and writes <strong>no</strong> <code dir="auto">_completionEvidence</code> key. Their verification was real and silently discarded.</td></tr><tr><td>3</td><td>”124 closes never passed the completion gate — <code dir="auto">_assumptions</code> is absent.”</td><td><code dir="auto">_assumptions</code> was introduced <strong>that same day</strong>. It is <code dir="auto">0</code> on every prior day. The 124 were properly completed <em>before the field existed</em>.</td></tr><tr><td>4</td><td>”Your gate-red report does not reproduce — I get EXIT=0.”</td><td>The file had been fixed 9 minutes after the report. The check ran against an already-fixed tree.</td></tr><tr><td>5</td><td>”Closure has collapsed — zero closures in each of hours 2–7, net −1 over 3h. The drain is a treadmill.”</td><td><code dir="auto">closed_ts</code> landed <strong>that same day</strong>. Every bucket before it existed read exactly <code dir="auto">0</code>. ~86 closures had actually occurred in that window.</td></tr></tbody></table>
 <p>Different fields, same mechanism: <strong>a present-tense measurement was used to answer
 a past-tense question.</strong> “Is it true now”, “was the reporter right then”, and “is
 this possible at all” are three different questions, and only the first is
@@ -208,11 +237,28 @@ and without waiting for the next pass</strong>.</p>
 <p>Rather than reasoning about whether truncation was occurring, they reproduced the
 deployed pipeline’s own dedupe key in SQL and matched it against the count the
 pipeline had already published:</p>
-<p>| computed over | distinct rows |
-|---|---|
-| the oldest-100k window | <strong>74,810</strong> |
-| the full scored population | 125,071 |
-| <strong>what the live scorecard reported that day</strong> | <strong>74,810</strong> |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>computed over</th><th>distinct rows</th></tr></thead><tbody><tr><td>the oldest-100k window</td><td><strong>74,810</strong></td></tr><tr><td>the full scored population</td><td>125,071</td></tr><tr><td><strong>what the live scorecard reported that day</strong></td><td><strong>74,810</strong></td></tr></tbody></table>
 <p>An exact match on the truncated figure proves the running process saw exactly
 100,000 rows. Nothing else explains that number.</p>
 <blockquote>
@@ -287,10 +333,27 @@ rewards trusting it. Compare the step-function signature earlier on this page �
 these are the two shapes a moving-population bug takes in a time series, one
 suspiciously flat at a bound, the other suspiciously flat at zero.</p>
 <div class="sl-heading-wrapper level-h3"><h3 id="the-pair-stated-together">The pair, stated together</h3><a class="sl-anchor-link" href="#the-pair-stated-together"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “The pair, stated together”</span></a></div>
-<p>| your reading is | the narrowing that fakes it | what it costs |
-|---|---|---|
-| <strong>absent</strong> (no rows, no field, no such id) | a <code dir="auto">WHERE</code> you typed, a scope arg, a mis-read path, a column that predates the window | you conclude something is fine, or that a colleague failed |
-| <strong>present</strong> (a specific plausible figure) | a <code dir="auto">LIMIT</code>, page size, or window cap the corpus has outgrown | you conclude you have measured something, and stop looking |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>your reading is</th><th>the narrowing that fakes it</th><th>what it costs</th></tr></thead><tbody><tr><td><strong>absent</strong> (no rows, no field, no such id)</td><td>a <code dir="auto">WHERE</code> you typed, a scope arg, a mis-read path, a column that predates the window</td><td>you conclude something is fine, or that a colleague failed</td></tr><tr><td><strong>present</strong> (a specific plausible figure)</td><td>a <code dir="auto">LIMIT</code>, page size, or window cap the corpus has outgrown</td><td>you conclude you have measured something, and stop looking</td></tr></tbody></table>
 <p>Both are the same defect: <strong>an audit whose population is defined relative to
 something that moves, emitting no signal when the definition starts biting.</strong> The
 only difference is which direction the artifact points.</p>

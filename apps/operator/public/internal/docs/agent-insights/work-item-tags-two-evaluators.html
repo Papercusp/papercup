@@ -80,11 +80,28 @@ anyone claims it by id. That asymmetry is the tell.</p>
 <p>One spec language (<code dir="auto">view.filter</code> with a <code dir="auto">tags</code> field) is served by <strong>two different
 evaluators reading two different data sources</strong>, and <code dir="auto">work_items:tag</code> historically
 wrote to a <strong>third</strong> store that neither of them reads:</p>
-<p>| Surface | Where its <code dir="auto">tags</code> come from |
-|---|---|
-| feature-family admission (SQL, compiled from the spec) | <code dir="auto">harness_features_consolidated.tags</code> <strong>column</strong> — <code dir="auto">FIELD_MAP</code> in <code dir="auto">scheduler/get-next.ts</code> |
-| issue-family admission (JS evaluator) | <code dir="auto">payload.tags</code> — <code dir="auto">staticTagsOfWorkItem</code> in <code dir="auto">scheduler/claim-spec-match.ts</code> |
-| <code dir="auto">work_items:tag</code> / <code dir="auto">work_items:get{detail}.topics</code> | <code dir="auto">coord_links</code> rows with <code dir="auto">rel='tagged'</code> (the coord tag store) |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Where its <code dir="auto">tags</code> come from</th></tr></thead><tbody><tr><td>feature-family admission (SQL, compiled from the spec)</td><td><code dir="auto">harness_features_consolidated.tags</code> <strong>column</strong> — <code dir="auto">FIELD_MAP</code> in <code dir="auto">scheduler/get-next.ts</code></td></tr><tr><td>issue-family admission (JS evaluator)</td><td><code dir="auto">payload.tags</code> — <code dir="auto">staticTagsOfWorkItem</code> in <code dir="auto">scheduler/claim-spec-match.ts</code></td></tr><tr><td><code dir="auto">work_items:tag</code> / <code dir="auto">work_items:get{detail}.topics</code></td><td><code dir="auto">coord_links</code> rows with <code dir="auto">rel='tagged'</code> (the coord tag store)</td></tr></tbody></table>
 <p>So the tag landed in the coord store, <code dir="auto">topics</code> read it back happily, and the column /
 <code dir="auto">payload.tags</code> the claim path reads stayed NULL. Confirmed on the live row: WI-5779 had
 two <code dir="auto">tagged</code> edges in <code dir="auto">coord_links</code> while <code dir="auto">harness_features_consolidated.tags</code> was NULL.</p>

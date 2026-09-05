@@ -97,10 +97,27 @@ Moving the <em>file</em> into <code dir="auto">apps/operator</code> doesn’t he
 <p><strong>The operator side exposes a slot. The operator-vite route fills it.</strong> The
 operator component never learns what’s inside.</p>
 <p>This is the established convention, not a new invention:</p>
-<p>| Slot | Filled by | Introduced |
-|---|---|---|
-| <code dir="auto">QuickPanelPage({ headerSlot })</code> | <code dir="auto">operator-vite/src/routes/quick-panel.tsx</code> | quick-panel-status-pills-2026-07-13 D-001 |
-| <code dir="auto">OperatorChatSidebar({ faces })</code> → <code dir="auto">ChromeShell({ chatFaces })</code> | <code dir="auto">operator-vite/src/components/chat-faces/ChatFacesHost.tsx</code> | WI-5162 |</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Slot</th><th>Filled by</th><th>Introduced</th></tr></thead><tbody><tr><td><code dir="auto">QuickPanelPage({ headerSlot })</code></td><td><code dir="auto">operator-vite/src/routes/quick-panel.tsx</code></td><td>quick-panel-status-pills-2026-07-13 D-001</td></tr><tr><td><code dir="auto">OperatorChatSidebar({ faces })</code> → <code dir="auto">ChromeShell({ chatFaces })</code></td><td><code dir="auto">operator-vite/src/components/chat-faces/ChatFacesHost.tsx</code></td><td>WI-5162</td></tr></tbody></table>
 <p>A worked descriptor (<code dir="auto">apps/operator/app/_components/op-chat-faces.ts</code>):</p>
 <div class="expressive-code"><figure class="frame not-content"><figcaption class="header"></figcaption><pre data-language="ts"><code><div class="ec-line"><div class="code"><span style="--0:#C792EA;--1:#8844AE">export</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">type</span><span style="--0:#D6DEEB;--1:#403F53"> OpChatFace </span><span style="--0:#C792EA;--1:#8844AE">=</span><span style="--0:#D6DEEB;--1:#403F53"> {</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">id</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53">;                 </span><span style="--0:#919F9F;--1:#5D6376">// keys the ?opcv URL enum</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">label</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53">;              </span><span style="--0:#919F9F;--1:#5D6376">// already lexicon-resolved by the provider</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">tip</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C5E478;--1:#3B61B0">string</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div><div class="ec-line"><div class="code"><span class="indent"><span style="--0:#D6DEEB;--1:#403F53">  </span></span><span style="--0:#D6DEEB;--1:#403F53">icon</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#FFCB8B;--1:#111111">ReactNode</span><span style="--0:#D6DEEB;--1:#403F53">;</span></div></div><div class="ec-line"><div class="code"><span class="indent">  </span><span style="--0:#82AAFF;--1:#3B61B0">render</span><span style="--0:#7FDBCA;--1:#096E72">:</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#D9F5DD;--1:#111111">()</span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#C792EA;--1:#8844AE">=></span><span style="--0:#D6DEEB;--1:#403F53"> </span><span style="--0:#FFCB8B;--1:#111111">ReactNode</span><span style="--0:#D6DEEB;--1:#403F53">;    </span><span style="--0:#919F9F;--1:#5D6376">// a FUNCTION, not a node — see below</span></div></div><div class="ec-line"><div class="code"><span style="--0:#D6DEEB;--1:#403F53">};</span></div></div></code></pre><div class="copy"><div aria-live="polite"></div><button title="Copy to clipboard" data-copied="Copied!" data-code="export type OpChatFace = {  id: string;                 // keys the ?opcv URL enum  label: string;              // already lexicon-resolved by the provider  tip: string;  icon: ReactNode;  render: () => ReactNode;    // a FUNCTION, not a node — see below};"><div></div></button></div></figure></div>
 <p>Three things that made it work:</p>
