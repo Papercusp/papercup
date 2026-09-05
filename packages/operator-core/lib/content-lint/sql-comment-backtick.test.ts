@@ -499,3 +499,149 @@ describe('findSqlCommentBacktick — generated files (the sidestage snapshot fal
     expect(changed).toBe(false);
   });
 });
+
+/** parseDiagnostics is real but not on the public SourceFile type. */
+type ParsedFile = ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] };
+const parseErrors = (file: string, text: string): number =>
+  (ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true) as ParsedFile).parseDiagnostics.length;
+
+/**
+ * The SECOND host (EI-21219437374882016): a `//` comment inside a NON-SQL template.
+ *
+ * The 7th recurrence of this class was `libs/generic/tooldef/src/code-orchestration/
+ * run-script.ts`, whose `const WORKER_SRC = ...` template holds generated JS — and
+ * therefore `//` comments. Two bare backticks in one of them terminated the template
+ * and the file stopped parsing, reported as `Expected ";" but found "inputs"` ON A
+ * COMMENT LINE.
+ *
+ * Containment already existed: ts-parse AND esbuild-transform both flag that content,
+ * and both sit on the git-sync content guard (measured 2026-09-05 through
+ * `npm run content-lint`). What did not exist was a message naming the actual mistake,
+ * which is the whole reason this detector is ordered ahead of them.
+ */
+describe('findSqlCommentBacktick — the template-literal host (EI-21219437374882016)', () => {
+  /** The real 7th-recurrence line, in the smallest host that reproduces it. */
+  const workerSrc = (comment: string) =>
+    src(
+      'const WORKER_SRC = `(() => {',
+      '  const inputs = Object.freeze(workerInputs);',
+      comment,
+      '  return inputs;',
+      '})()`;',
+    );
+
+  const OFFENDING = '  // bindings.values arrive as workerInputs. They remain immutable through `inputs`, while this';
+
+  it('catches the exact pre-fix run-script.ts line — the permanent known-bad control', () => {
+    const hit = findSqlCommentBacktick('run-script.ts', workerSrc(OFFENDING));
+    expect(hit).not.toBeNull();
+    expect(hit!.line).toBe(3);
+    expect(hit!.host).toBe('template');
+    expect(hit!.backticks).toBe(2);
+    expect(hit!.text).toContain('immutable through');
+  });
+
+  it('still catches it even though the file DOES NOT PARSE — the mis-parse hides the backtick, not the line', () => {
+    // This is the objection the module header raises against an AST walk, and it is
+    // real: by the time there are nodes, the stray backtick has been consumed as the
+    // template's TERMINATOR. We never ask "is the backtick inside a template". We ask
+    // whether the LINE BEGINS inside one — and the template closes PART-WAY THROUGH
+    // that line, so the answer survives. Assert both halves, so a future reader sees
+    // the distinction rather than assuming the header was ignored.
+    const text = workerSrc(OFFENDING);
+    expect(parseErrors('run-script.ts', text)).toBeGreaterThan(0); // it really is broken
+    expect(findSqlCommentBacktick('run-script.ts', text)).not.toBeNull(); // and we still see it
+  });
+
+  it('reports the column of the FIRST backtick — the one that ends the template', () => {
+    const hit = findSqlCommentBacktick('run-script.ts', workerSrc(OFFENDING));
+    expect(hit!.col).toBe(OFFENDING.indexOf('`') + 1);
+  });
+
+  it('does NOT flag the SAME comment in ordinary code, outside any template', () => {
+    // The load-bearing false-positive control. Measured over the tracked tree, ~39% of
+    // source files carry a `//` comment with a backticked pair; flagging those on the
+    // commit path would quarantine a third of the repo.
+    const text = src(
+      'const inputs = Object.freeze(workerInputs);',
+      OFFENDING,
+      'export const worker = inputs;',
+    );
+    expect(findSqlCommentBacktick('ordinary.ts', text)).toBeNull();
+  });
+
+  it('does NOT flag a comment block sitting immediately BEFORE a template', () => {
+    // node.pos includes LEADING TRIVIA, so a naive span read attributes the preceding
+    // comment to the template. That one mistake was most of a 123-hit measurement.
+    const text = src(
+      '// The worker source below is built from `inputs` and `bindings`.',
+      '// It is passed to `new Worker()` verbatim.',
+      'const WORKER_SRC = `(() => {',
+      '  return 1;',
+      '})()`;',
+    );
+    expect(parseErrors('before.ts', text)).toBe(0); // the fixture itself is healthy
+    expect(findSqlCommentBacktick('before.ts', text)).toBeNull();
+  });
+
+  it('does NOT flag markdown prose inside a template — a template has no JSDoc block', () => {
+    // `**Signal:** ${evidence}` (scout/rubric-rail.ts) was the single remaining hit over
+    // the whole tracked tree while `*`-continuation lines were treated as comments.
+    const text = src(
+      'export const body = `',
+      '  **Signal:** ${evidence} and `drill-back` follows',
+      '`;',
+    );
+    expect(findSqlCommentBacktick('rubric-rail.ts', text)).toBeNull();
+  });
+
+  it('does NOT flag ESCAPED backticks inside a template comment — they never end it', () => {
+    const text = workerSrc('  // They remain immutable through \\`inputs\\`, while this');
+    expect(parseErrors('run-script.ts', text)).toBe(0);
+    expect(findSqlCommentBacktick('run-script.ts', text)).toBeNull();
+  });
+
+  it('does NOT flag a single backtick — the >=2 rule holds for this host too', () => {
+    const text = workerSrc('  // the backtick of `inputs here is lone and unbalanced');
+    expect(findSqlCommentBacktick('run-script.ts', text)).toBeNull();
+  });
+
+  it('the SQL host wins a tie — it is the only one of the two that can fail SILENTLY', () => {
+    const text = src(
+      'const WORKER_SRC = `(() => {',
+      '  // generated js talking about `inputs` and `bindings`',
+      '})()`;',
+      'const r = await sql`',
+      '  SELECT 1',
+      '  -- the `closed_ts` column',
+      '`;',
+    );
+    expect(findSqlCommentBacktick('both.ts', text)!.host).toBe('sql');
+  });
+});
+
+describe('autoFixSqlCommentBacktick — the repair differs by host', () => {
+  const OFFENDING = '  // They remain immutable through `inputs`, while this';
+  const workerSrc = src('const WORKER_SRC = `(() => {', OFFENDING, '})()`;');
+
+  it('ESCAPES for the template host, and the result parses', () => {
+    const { fixed, changed } = autoFixSqlCommentBacktick(workerSrc, 'run-script.ts');
+    expect(changed).toBe(true);
+    expect(fixed).toContain('\\`inputs\\`');
+    expect(fixed).not.toContain('"inputs"'); // NOT the SQL repair
+    expect(parseErrors('run-script.ts', fixed)).toBe(0);
+    expect(findSqlCommentBacktick('run-script.ts', fixed)).toBeNull();
+  });
+
+  it('is idempotent — a second pass changes nothing', () => {
+    const { fixed } = autoFixSqlCommentBacktick(workerSrc, 'run-script.ts');
+    expect(autoFixSqlCommentBacktick(fixed, 'run-script.ts').changed).toBe(false);
+  });
+
+  it('still REQUOTES for the sql host — a double quote inside a SQL comment is inert', () => {
+    const text = src('const r = await sql`', '  SELECT 1', '  -- the `closed_ts` column', '`;');
+    const { fixed, changed } = autoFixSqlCommentBacktick(text, 'lww.ts');
+    expect(changed).toBe(true);
+    expect(fixed).toContain('"closed_ts"');
+  });
+});
