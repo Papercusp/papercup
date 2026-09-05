@@ -45,7 +45,12 @@ import {
   gateVerdictEnv,
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
-import { recordGateFire } from './release/gate-fire-ledger';
+import {
+  GATE_FIRE_ID_ENV,
+  isGateFireId,
+  mintGateFireId,
+  recordGateFire,
+} from './release/gate-fire-ledger';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
@@ -1737,6 +1742,8 @@ export function buildCheckpointSystemdArgv(
   candidateSha?: string | null,
   /** Logical qualification identity transported to the producer-side verdict recorder. */
   logicalAttemptId?: string | null,
+  /** Stable identity shared by this detached fire's anchor and producer outcomes. */
+  gateFireId?: string | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -1815,6 +1822,9 @@ export function buildCheckpointSystemdArgv(
     logicalAttemptId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(logicalAttemptId)
       ? [`--setenv=${CHECKPOINT_QUALIFICATION_ATTEMPT_ENV}=${logicalAttemptId}`]
       : [];
+  const gateFireEnv = isGateFireId(gateFireId)
+    ? [`--setenv=${GATE_FIRE_ID_ENV}=${gateFireId}`]
+    : [];
   return [
     '--user',
     '--no-block',
@@ -1835,6 +1845,7 @@ export function buildCheckpointSystemdArgv(
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...verdictEnv,
     ...qualificationEnv,
+    ...gateFireEnv,
     'bash',
     '-c',
     inner,
@@ -2735,6 +2746,7 @@ export async function launchDetachedCheckpoint(
   // the P-001 fire ANCHOR (in the close handler below) and the argv env stamps can never
   // disagree about which gate the run records into.
   const verdictTarget = opts.target === undefined ? resolveHomeGateTarget() : opts.target;
+  const gateFireId = verdictTarget ? mintGateFireId() : undefined;
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,
@@ -2747,6 +2759,7 @@ export async function launchDetachedCheckpoint(
     capacityMode,
     candidateSha,
     opts.logicalAttemptId,
+    gateFireId,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
@@ -2803,7 +2816,7 @@ export async function launchDetachedCheckpoint(
         // NON-recording) run writes no outcome row, so it gets no anchor either — anchoring
         // it would inflate `unaccounted` by construction.
         if (verdictTarget) {
-          void recordGateFire(verdictTarget, { route: 'detached', root, unit });
+          void recordGateFire(verdictTarget, { route: 'detached', root, unit, gateFireId });
         }
         resolve({ ...base, launched: true });
         return;

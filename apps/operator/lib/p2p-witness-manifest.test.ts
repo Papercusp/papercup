@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildManifest } from '../../scripts/p2p-witness-manifest.mjs';
+import { buildManifest } from '../../../scripts/p2p-witness-manifest.mjs';
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'p2p-witness-manifest-'));
@@ -40,16 +40,16 @@ describe('P2P witness manifest', () => {
     const model = join(f.root, 'model-pack');
     await mkdir(model);
     await writeFile(join(model, 'weights.bin'), 'v1');
-    const first = await buildManifest({ ...f, sourceSha: 'source-a', submoduleSha: 'submodule-a', modelPackPath: model });
+    const first = await buildManifest({ repoRoot: f.root, outputDir: f.output, sourceSha: 'source-a', submoduleSha: 'submodule-a', modelPackPath: model });
     await writeFile(join(model, 'weights.bin'), 'v2');
-    const second = await buildManifest({ ...f, sourceSha: 'source-a', submoduleSha: 'submodule-a', modelPackPath: model });
+    const second = await buildManifest({ repoRoot: f.root, outputDir: f.output, sourceSha: 'source-a', submoduleSha: 'submodule-a', modelPackPath: model });
     expect(first.inputs.optionalPacks.model?.sha256).not.toBe(second.inputs.optionalPacks.model?.sha256);
     expect(first.artifactId).not.toBe(second.artifactId);
   });
 
   it('uses canonical JSON for a stable manifest payload', async () => {
     const f = await fixture();
-    const manifest = await buildManifest({ ...f, sourceSha: 'source-a', submoduleSha: 'submodule-a' });
+    const manifest = await buildManifest({ repoRoot: f.root, outputDir: f.output, sourceSha: 'source-a', submoduleSha: 'submodule-a' });
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.artifactId).toMatch(/^[0-9a-f]{64}$/);
     expect(await readFile(join(f.output, 'serve.mjs'), 'utf8')).toContain('witness');

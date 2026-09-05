@@ -84,6 +84,7 @@ import {
 import type { OrgSql } from '../work-items';
 import type { FleetPresenceRow } from '../agent-tools/coordination/presence-fleet';
 import { getBuildInfo, type BuildInfo } from '../build-info';
+import { evaluateDelegatedSeatPolicy, loadDelegatedSeatPolicy } from './delegated-seat-policy';
 
 /** How long a spawn-request stays honorable after its publisher-clock stamp. */
 export const SPAWN_REQUEST_HONOR_WINDOW_MS = 60 * 60_000;
@@ -404,6 +405,8 @@ export interface DelegatedSpawnHonorDeps {
    * federated receipt) when genuinely unfulfillable.
    */
   resolveHonorAccount?: (requestedAccount: string, workspaceId: string) => Promise<HonorAccountResolution>;
+  /** P-516/F5 host-owned trust/cap policy; invalid overrides fail closed. */
+  loadDelegatedSeatPolicy?: typeof loadDelegatedSeatPolicy;
   /**
    * P-003 audience gate, 'trusted-members' case: is this GitHub user on THIS
    * host's local trust list? Default {@link defaultIsTrustedUser} reads
@@ -724,6 +727,7 @@ export async function honorSpawnRequestFromProjection(
   const readBuildInfo = deps.getBuildInfo ?? getBuildInfo;
   const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
   const resolveHonorAccount = deps.resolveHonorAccount ?? defaultResolveHonorAccount;
+  const loadSeatPolicy = deps.loadDelegatedSeatPolicy ?? loadDelegatedSeatPolicy;
   const isTrustedUser = deps.isTrustedUser ?? defaultIsTrustedUser;
   const isPotMember = deps.isPotMember ?? defaultIsPotMember;
   const nowMs = deps.nowMs ?? Date.now;
@@ -890,6 +894,23 @@ export async function honorSpawnRequestFromProjection(
     console.log(`[delegated-spawn-honor] ${args.row.offer_id}: ${acct.note}`);
   }
   const resolvedLaunch = { ...resolution.launch, account: acct.account };
+
+  // Gate 4.7 (P-516/F5): delegated seats are explicitly trusted host-agent
+  // delegation. Host-owned allowlists and ceilings are checked before the
+  // atomic claim; untrusted public execution must use the separate OS sandbox.
+  const loadedPolicy = loadSeatPolicy();
+  if (!loadedPolicy.ok) return refuse(loadedPolicy.code, loadedPolicy.detail, `refused:${loadedPolicy.code}`);
+  const credentialRoute = resolvedLaunch.account === 'auto' ? 'auto' : resolvedLaunch.account === 'default' ? 'default' : 'pinned';
+  const policy = evaluateDelegatedSeatPolicy({
+    policy: loadedPolicy.policy,
+    workspaceId: args.workspaceId,
+    credentialRoute,
+    requestedSeats: payload.count,
+    activeSeats: resolution.slot.consumed,
+    requestedAtMs: payload.requestedAtMs,
+    nowMs: nowMs(),
+  });
+  if (!policy.ok) return refuse(policy.code, policy.detail, `refused:${policy.code}`);
 
   // Gate 5: the atomic claim — exactly one hook invocation spawns.
   const claimed = await setDisposition(
