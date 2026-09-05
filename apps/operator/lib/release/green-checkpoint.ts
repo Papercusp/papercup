@@ -742,6 +742,24 @@ export interface CheckpointDeps {
    *  do this job — it is deliberately generous enough for a ~55min suite plus refires. */
   clearInFlightCandidate?(): Promise<void>;
   /**
+   * EI-20427717764878875: stamp "I have decided" onto this run's own live marker.
+   *
+   * NOT the same moment as {@link CheckpointDeps.clearInFlightCandidate}. Clearing says the run is
+   * OVER; this says the DECIDING is over while the process legitimately keeps working — it
+   * continues into re-triage and the longest-clean-prefix salvage, and the marker stays live
+   * throughout (retired for every terminal path at the outer CLI seam). Without the distinction a
+   * decided run and an undeciding one look identical from outside: `elapsedSec` measures the
+   * process, not the decision, so "68 minutes and still no verdict" was indistinguishable from
+   * "decided at 52 minutes, salvaging since". Two agents spent ~1h on that in one hour on
+   * 2026-08-14, and the natural response to an apparently-overdue run is to fire a manual
+   * `release:checkpoint-run` — the one action that discards an in-flight rescue and costs a full
+   * suite.
+   *
+   * Optional / best-effort, exactly like its siblings: an un-stamped run publishes nothing and a
+   * reader treats the absence as "unknown", never as "still deciding".
+   */
+  stampInFlightVerdictWritten?(stamp: { candidate: string; pid: number }): Promise<void>;
+  /**
    * Detect a PREDECESSOR run that died without ever reaching a verdict, and report it loudly.
    *
    * Called immediately BEFORE this run publishes its own marker — the one moment the previous
@@ -9415,6 +9433,14 @@ async function runGreenCheckpointInner(
     if (diagnosticOnly || judgedRedStamped) return;
     judgedRedStamped = true;
     await deps.recordJudgedRed?.(cfg.integrationRoot, sha);
+    // EI-20427717764878875: the same instant, on the same seam, for the same reason — this is the
+    // moment the DECIDING ends, and the process then continues into re-triage and prefix salvage
+    // while its marker stays live. Every property the header above establishes for `recordJudgedRed`
+    // is exactly what this stamp needs, which is why it belongs here rather than at a verdict-log
+    // append: both red exits reach it, `judgedRedStamped` makes it idempotent across overlapping
+    // paths, `diagnosticOnly` keeps an investigation from claiming a verdict, and the infra-fault
+    // arm cannot reach it — a run that was never actually judged must not report a decision time.
+    await deps.stampInFlightVerdictWritten?.({ candidate: sha, pid: process.pid });
   };
   // EI-21149610271281506: frozen-repair dispatch can resolve a terminal RED before the
   // ordinary red-path emitter below. Keep that short-circuit terminal path equivalent to
@@ -16283,6 +16309,23 @@ export function realCheckpointDeps(
         const { clearInFlightCandidate: clear } =
           await import("@papercusp/operator-core/lib/release/in-flight-candidate");
         await clear(target);
+      } catch {
+        /* best-effort diagnostic — never let this break the checkpoint run */
+      }
+    },
+    // EI-20427717764878875. The writer guards on candidate + pid and only stamps an UNSTAMPED
+    // marker, so this is safe to call on any verdict path: if the marker was already retired, or a
+    // replacement run now owns the field, it matches nothing and reports false rather than dating
+    // another candidate's verdict to this run's clock.
+    async stampInFlightVerdictWritten(stamp) {
+      try {
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return;
+        const { stampInFlightVerdictWritten: write } =
+          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
+        await write(target, stamp);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
       }
