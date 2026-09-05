@@ -123,6 +123,7 @@ describe('⚠ a QUIET window is not a DEAD producer (the 2026-07-28T03:08Z fleet
 describe('⚠ WI-6562: a QUIET FLEET is not a dead producer either', () => {
   const STAMPED = 'intent-action-divergence-stamped';
   const SAMPLING = 'intent-action-divergence-sampling';
+  const CELL_CITATION = 'acted-on-stale-or-wrong-value';
 
   /** An interpretable window carrying `eligible` of the producer's output. */
   const good = (eligible: number, at = '2026-07-27T20:00:00Z'): MetricWindow => ({
@@ -189,6 +190,83 @@ describe('⚠ WI-6562: a QUIET FLEET is not a dead producer either', () => {
       );
     });
 
+    it('keeps the live 10-window citation absence unjudgeable when eligibility cannot evidence producer liveness', () => {
+      // Live 2026-09-05 shape: the resolver last produced 2 comparable cell
+      // citations in a 476-message window, followed by ten 433–792-message
+      // windows with no registered-cell citation. Message volume is unrelated to
+      // whether a sender chooses to spell a cell identity, so it cannot turn that
+      // absence into evidence that the coord:send resolver died.
+      const cited: MetricWindow = {
+        measuredAt: '2026-09-05T17:13:30Z',
+        interpretable: true,
+        fillRate: 0.0042,
+        zeroReason: null,
+        eligible: 2,
+        population: 476,
+      };
+      const citationFree = [606, 456, 551, 516, 433, 458, 768, 792, 571, 544].map(
+        (population, i): MetricWindow => ({
+          ...noFailures,
+          measuredAt: new Date(Date.parse('2026-09-05T18:00:00Z') + i * 30 * 60_000).toISOString(),
+          population,
+        }),
+      );
+
+      expect(
+        judgeMetricRatchet([cited, ...citationFree], {
+          eligibilityIsOccurrence: true,
+          producerLivenessIndependentOfEligibility: true,
+        }),
+      ).toBe('window-unjudgeable');
+      expect(
+        judgeMetricRatchet([cited, ...citationFree], { eligibilityIsOccurrence: true }),
+      ).toBe('regressed');
+
+      const series = [
+        windowOf(cited.measuredAt, { [CELL_CITATION]: cited }),
+        ...citationFree.map((metric) => windowOf(metric.measuredAt, { [CELL_CITATION]: metric })),
+      ];
+      const report = ratchetPlaneSeries({ series });
+      expect(report.rows.find((r) => r.metric === CELL_CITATION)).toMatchObject({
+        verdict: 'window-unjudgeable',
+        windowUnjudgeableReason: 'occurrence-absent-liveness-independent',
+      });
+      expect(report.failures.map((f) => f.metric)).not.toContain(CELL_CITATION);
+
+      // The narrow exemption applies only to ABSENCE. Once citations are present,
+      // the existing sustained non-comparability teeth still detect a half-dead
+      // resolver that identifies cells but cannot persist a send-time verdict.
+      const detectedButNotComparable = [0, 1, 2].map(
+        (i): MetricWindow => ({
+          measuredAt: new Date(Date.parse('2026-09-05T23:00:00Z') + i * 30 * 60_000).toISOString(),
+          interpretable: false,
+          fillRate: 0.004,
+          zeroReason: 'nothing-comparable',
+          eligible: 2,
+          population: 500,
+        }),
+      );
+      expect(
+        judgeMetricRatchet([cited, ...detectedButNotComparable], {
+          eligibilityIsOccurrence: true,
+          producerLivenessIndependentOfEligibility: true,
+        }),
+      ).toBe('regressed');
+      expect(
+        ratchetPlaneSeries({
+          series: [
+            windowOf(cited.measuredAt, { [CELL_CITATION]: cited }),
+            windowOf(detectedButNotComparable[0].measuredAt, {
+              [CELL_CITATION]: detectedButNotComparable[0],
+            }),
+          ],
+        }).rows.find((r) => r.metric === CELL_CITATION),
+      ).toMatchObject({
+        verdict: 'window-unjudgeable',
+        windowUnjudgeableReason: 'producer-output-no-comparable',
+      });
+    });
+
     it('but a run of QUIET windows is not — the fleet was simply idle', () => {
       // Same three-window run, same zero failures, one-fifth the traffic. The live
       // interpretable history scanned ~3.3k calls per window; 926 finding none is
@@ -215,13 +293,19 @@ describe('⚠ WI-6562: a QUIET FLEET is not a dead producer either', () => {
       expect(report.failures.map((f) => f.metric)).not.toContain(SAMPLING);
     });
 
-    it('⚠ exactly ONE shipped metric declares occurrence-eligibility, and it is the sampling one', () => {
+    it('pins every shipped occurrence classification and the sole liveness-independent one', () => {
       // A guard on the DECLARATION, not the behaviour. This flag is an exemption
       // from the first-window teeth, so a metric acquiring it silently is how those
       // teeth would erode — the failure mode METRIC_KNOWN_GAPS exists to prevent,
       // one field over. Adding one is fine; adding one UNNOTICED is not.
       const declared = PLANE_METRIC_IDS.filter((id) => METRIC_SPECS[id].eligibilityIsOccurrence === true);
-      expect(declared).toEqual([SAMPLING]);
+      expect(declared).toEqual([SAMPLING, CELL_CITATION]);
+      expect(
+        PLANE_METRIC_IDS.filter(
+          (id) => METRIC_SPECS[id].producerLivenessIndependentOfEligibility === true,
+        ),
+      ).toEqual([CELL_CITATION]);
+      expect(METRIC_SPECS[CELL_CITATION].eligibilityIsOccurrence).toBe(true);
     });
   });
 

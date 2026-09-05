@@ -115,6 +115,14 @@ export const RATCHET_VERDICTS = [
 ] as const;
 export type RatchetVerdict = (typeof RATCHET_VERDICTS)[number];
 
+export const WINDOW_UNJUDGEABLE_REASONS = [
+  'producer-output-no-comparable',
+  'occurrence-absent',
+  'occurrence-absent-liveness-independent',
+  'fleet-traffic-absent',
+] as const;
+export type WindowUnjudgeableReason = (typeof WINDOW_UNJUDGEABLE_REASONS)[number];
+
 /**
  * Which open item explains a metric that has never been interpretable.
  *
@@ -202,6 +210,8 @@ export interface RatchetRow {
   knownGap?: string;
   /** Set when the known gap's item has closed, so the exemption no longer applies. */
   gapClosed?: boolean;
+  /** Why this window is unjudgeable, so the live reporter preserves the causal distinction. */
+  windowUnjudgeableReason?: WindowUnjudgeableReason;
   /**
    * Declared companions (`MetricSpec.interpretableOnlyWith`) that are NOT holding
    * right now — so this metric's own verdict must not be read as a usable signal.
@@ -240,7 +250,11 @@ export function judgeMetricRatchet(
    * input-eligibility reading — so an undeclared metric keeps the original
    * first-window teeth and only a metric that OPTS IN gets the occurrence reading.
    */
-  opts: { eligibilityIsOccurrence?: boolean; eligibilityIsTraffic?: boolean } = {},
+  opts: {
+    eligibilityIsOccurrence?: boolean;
+    eligibilityIsTraffic?: boolean;
+    producerLivenessIndependentOfEligibility?: boolean;
+  } = {},
 ): RatchetVerdict {
   if (windows.length === 0) return 'no-data';
   const latest = windows[windows.length - 1];
@@ -254,11 +268,23 @@ export function judgeMetricRatchet(
   // eligibility metric) the scan ran and the defect simply did not occur.
   const isOccurrence = opts.eligibilityIsOccurrence ?? false;
   const isTraffic = opts.eligibilityIsTraffic ?? false;
-  const quiet =
-    producerWroteButNothingComparable(latest) ||
-    producerRanButNothingOccurred(latest, isOccurrence) ||
-    producerRanButFleetWasStarved(latest, isTraffic);
-  if (quiet && !sustainedlyUninterpretable(windows, isOccurrence)) return 'window-unjudgeable';
+  const quietReason = classifyUnjudgeableWindow(latest, {
+    eligibilityIsOccurrence: isOccurrence,
+    eligibilityIsTraffic: isTraffic,
+    producerLivenessIndependentOfEligibility:
+      opts.producerLivenessIndependentOfEligibility ?? false,
+  });
+  // A sparse, sender-authored occurrence can be absent across arbitrarily busy
+  // windows without saying anything about producer liveness. Keep that absence
+  // unjudgeable forever; do not launder it into holding, and do not misreport it
+  // as a dead producer merely because unrelated message volume accumulated.
+  if (
+    quietReason != null &&
+    ((quietReason === 'occurrence-absent-liveness-independent') ||
+      !sustainedlyUninterpretable(windows, isOccurrence))
+  ) {
+    return 'window-unjudgeable';
+  }
   return 'regressed';
 }
 
@@ -338,6 +364,32 @@ export function producerRanButFleetWasStarved(
 ): boolean {
   if (!eligibilityIsTraffic) return false;
   return !w.interpretable && w.zeroReason === 'nothing-eligible' && w.fillRate === 0;
+}
+
+/**
+ * Classify the causal shape behind `window-unjudgeable` once, so the verdict and
+ * its live explanation cannot drift into contradictory stories.
+ */
+export function classifyUnjudgeableWindow(
+  w: MetricWindow,
+  opts: {
+    eligibilityIsOccurrence: boolean;
+    eligibilityIsTraffic: boolean;
+    producerLivenessIndependentOfEligibility: boolean;
+  },
+): WindowUnjudgeableReason | null {
+  if (producerRanButNothingOccurred(w, opts.eligibilityIsOccurrence)) {
+    return opts.producerLivenessIndependentOfEligibility
+      ? 'occurrence-absent-liveness-independent'
+      : 'occurrence-absent';
+  }
+  if (producerRanButFleetWasStarved(w, opts.eligibilityIsTraffic)) {
+    return 'fleet-traffic-absent';
+  }
+  if (producerWroteButNothingComparable(w)) {
+    return 'producer-output-no-comparable';
+  }
+  return null;
 }
 
 /**
@@ -515,6 +567,7 @@ export function ratchetPlaneSeries(args: {
           interpretableOnlyWith?: readonly PlaneMetricId[];
           eligibilityIsOccurrence?: boolean;
           eligibilityIsTraffic?: boolean;
+          producerLivenessIndependentOfEligibility?: boolean;
         }
       >
     >
@@ -545,10 +598,18 @@ export function ratchetPlaneSeries(args: {
       if (found) windows.push({ ...found, measuredAt: found.measuredAt ?? point.measuredAt });
     }
     const interpretableWindows = windows.filter((w) => w.interpretable && !isIncoherent(w));
-    const verdict = judgeMetricRatchet(windows, {
+    const metricSemantics = {
       eligibilityIsOccurrence: specs[metric]?.eligibilityIsOccurrence ?? false,
       eligibilityIsTraffic: specs[metric]?.eligibilityIsTraffic ?? false,
-    });
+      producerLivenessIndependentOfEligibility:
+        specs[metric]?.producerLivenessIndependentOfEligibility ?? false,
+    };
+    const verdict = judgeMetricRatchet(windows, metricSemantics);
+    const latest = windows[windows.length - 1];
+    const windowUnjudgeableReason =
+      verdict === 'window-unjudgeable' && latest
+        ? classifyUnjudgeableWindow(latest, metricSemantics)
+        : null;
     const knownGap = gaps[metric];
     rows.push({
       metric,
@@ -559,6 +620,7 @@ export function ratchetPlaneSeries(args: {
       lastInterpretableAt: interpretableWindows[interpretableWindows.length - 1]?.measuredAt ?? null,
       windows: windows.length,
       ...(knownGap ? { knownGap, gapClosed: closedGaps.has(knownGap) } : {}),
+      ...(windowUnjudgeableReason ? { windowUnjudgeableReason } : {}),
     });
   }
 
