@@ -62,6 +62,33 @@ const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const BATCH_SIZE = getResourceProfile().embedBatchSize;
 
 /**
+ * How many texts go to the sidecar in ONE batch call. Deliberately much smaller
+ * than BATCH_SIZE, and the gap is the point.
+ *
+ * `sidecarBatchTimeoutMs` scales the budget by text COUNT (15s + 1s/text), a
+ * figure calibrated on 2026-08-03 against a sidecar measured at 59-75ms/row. The
+ * sidecar's cost is dominated by per-text model latency, and under sustained
+ * fleet load that is now far above the calibration: measured 2026-09-04 against
+ * the live :3384 gemma sidecar with UNIQUE texts (identical texts hit the LRU and
+ * report a ~350x-too-fast figure), 907ms/text at 200 chars and 2,503ms/text at
+ * 2,000 chars — document embeds are BACKGROUND_PRIORITY, so they get roughly a
+ * 1-in-5 share behind interactive queries.
+ *
+ * Handing the whole BATCH_SIZE (128) to one call makes a breach maximally
+ * expensive: the budget is 142s, ALL of it is lost on abort because a batch is
+ * all-or-nothing at the sidecar, the sweep then still pays the per-row path for
+ * every row, and that single target can consume the whole 200s SWEEP_BUDGET_MS —
+ * which is how one surface starved the other 15 (observed: `drain: 1 round(s) in
+ * 351s (budget 200s) · drained 3/16 target(s)`).
+ *
+ * Chunking bounds a breach to ONE chunk and KEEPS what earlier chunks produced,
+ * because `batchVectors[i] ?? per-row` below is per-INDEX: a null just sends that
+ * one row down the per-row path. 16 keeps the amortised HTTP win while capping
+ * the worst-case loss at a 30s budget instead of 142s.
+ */
+const BATCH_EMBED_CHUNK_SIZE = 16;
+
+/**
  * WI-7327: per-row embed deadline.
  *
  * A single embed is ~0.3-1.5s against the local :3384 sidecar even on a loaded
@@ -1047,44 +1074,67 @@ export async function backfillTable(
     // the offender and lets the other 63 succeed.
     let batchVectors: Array<number[] | null> | null = null;
     if (embedMany && batch.length > 1) {
-      try {
-        // The outer bound must never be TIGHTER than the sidecar client's own,
-        // or it pre-empts the inner deadline and the specific error is lost.
-        // That inversion is what hid EI-19464574865993243: this race was set to
-        // a deliberate 90s and could never fire, because the client aborted at
-        // its single-embed default of 15s first. Both now derive from
-        // sidecarBatchTimeoutMs; the margin keeps the inner one firing first.
-        const vecs = await withEmbedTimeout(
-          embedMany(batch.map((r) => r.body)),
-          sidecarBatchTimeoutMs(batch.length) + EMBED_BATCH_OUTER_MARGIN_MS,
-          'embed_batch',
-        );
-        if (vecs.length === batch.length) batchVectors = vecs;
-        else {
-          // A length mismatch is a CONTRACT breach, not a transient failure, and
-          // silently falling back would hide it forever.
-          console.warn(
-            `[embed-backfill] batch embed returned ${vecs.length} vectors for ` +
-              `${batch.length} texts (${target.table}) — falling back to per-row`,
+      // Chunked, NOT one call for the whole batch — see BATCH_EMBED_CHUNK_SIZE for
+      // the measurement. Partial progress is retained per INDEX, so a chunk that
+      // breaches costs only its own rows, which then take the per-row path below.
+      const texts = batch.map((r) => r.body);
+      const acc: Array<number[] | null> = new Array<number[] | null>(texts.length).fill(null);
+      let anyChunkOk = false;
+      for (let off = 0; off < texts.length; off += BATCH_EMBED_CHUNK_SIZE) {
+        const slice = texts.slice(off, off + BATCH_EMBED_CHUNK_SIZE);
+        // A lone trailing row IS the per-row path — batching it buys nothing and
+        // would pay a second deadline for the same work.
+        if (slice.length < 2) break;
+        try {
+          // The outer bound must never be TIGHTER than the sidecar client's own,
+          // or it pre-empts the inner deadline and the specific error is lost.
+          // That inversion is what hid EI-19464574865993243: this race was set to
+          // a deliberate 90s and could never fire, because the client aborted at
+          // its single-embed default of 15s first. Both now derive from
+          // sidecarBatchTimeoutMs; the margin keeps the inner one firing first.
+          // Both are sized for THIS CHUNK, so the two stay in step.
+          const vecs = await withEmbedTimeout(
+            embedMany(slice),
+            sidecarBatchTimeoutMs(slice.length) + EMBED_BATCH_OUTER_MARGIN_MS,
+            'embed_batch',
           );
-        }
-      } catch (err) {
-        // NEVER swallow this silently. A batch path that always throws and always
-        // falls back is byte-identical, from the outside, to one that is working:
-        // same rows embedded, same counts, just ~N× slower. That is precisely the
-        // "two states are indistinguishable because one of them is silent" shape
-        // this file has been burned by twice (WI-7327, WI-7348) — and it bit THIS
-        // change during its own verification, where `batch-embed enabled` printed
-        // while the per-row path did all the work.
-        batchVectors = null;
-        if (!warnedBatchFallback) {
-          warnedBatchFallback = true;
-          console.warn(
-            `[embed-backfill] batch embed FAILED for ${target.table}, using the ` +
-              `per-row path (slower). First error: ${(err as Error).message}`,
-          );
+          if (vecs.length !== slice.length) {
+            // A length mismatch is a CONTRACT breach, not a transient failure, and
+            // silently falling back would hide it forever.
+            console.warn(
+              `[embed-backfill] batch embed returned ${vecs.length} vectors for ` +
+                `${slice.length} texts (${target.table}) — falling back to per-row`,
+            );
+            break;
+          }
+          for (let j = 0; j < vecs.length; j++) acc[off + j] = vecs[j];
+          anyChunkOk = true;
+        } catch (err) {
+          // NEVER swallow this silently. A batch path that always throws and always
+          // falls back is byte-identical, from the outside, to one that is working:
+          // same rows embedded, same counts, just ~N× slower. That is precisely the
+          // "two states are indistinguishable because one of them is silent" shape
+          // this file has been burned by twice (WI-7327, WI-7348) — and it bit THIS
+          // change during its own verification, where `batch-embed enabled` printed
+          // while the per-row path did all the work.
+          if (!warnedBatchFallback) {
+            warnedBatchFallback = true;
+            console.warn(
+              `[embed-backfill] batch embed FAILED for ${target.table}, using the ` +
+                `per-row path (slower). First error: ${(err as Error).message}`,
+            );
+          }
+          // Stop batching for the REST of this pull. A breach means the sidecar is
+          // currently slower than the budget allows, so the next chunk would buy an
+          // identical timeout at the same price; the remaining rows fall through to
+          // the per-row path, which has its own per-row deadline.
+          break;
         }
       }
+      // Only claim batch results if at least one chunk actually produced vectors —
+      // an all-null array would otherwise read as "batching worked" while every row
+      // silently took the per-row path.
+      batchVectors = anyChunkOk ? acc : null;
     }
 
     let embeddedThisBatch = 0;
