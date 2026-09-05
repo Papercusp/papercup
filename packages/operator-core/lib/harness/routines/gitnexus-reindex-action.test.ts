@@ -53,6 +53,9 @@ import {
   pickIndexFreshness,
   readIndexMetaFreshness,
   GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS,
+  GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES,
+  measureFreeDiskBytes,
+  requiredFreeDiskBytes,
   shouldSkipForHive,
   GITNEXUS_REPO_NAME,
   DEFAULT_MAX_LOAD_PER_CORE,
@@ -906,6 +909,79 @@ describe('GITNEXUS_ANALYZE_TIMEOUT_MS is sized from the measured LIVE tick (D-00
     // concurrency 'skip'). If the timeout ever drops back under the hour this pin is moot; if
     // the seed ever changes concurrency, this comment is where the reasoning lives.
     expect(GITNEXUS_ANALYZE_TIMEOUT_MS).toBeGreaterThan(60 * 60_000);
+  });
+});
+
+describe('free-disk admission — a rebuild is never admitted into a full filesystem (2026-09-05 ENOSPC)', () => {
+  const GIB = 1024 ** 3;
+
+  it('the floor is at least three databases of the 2026-09-05 graph (5.28 GB live lbug + its shadow + WAL margin)', () => {
+    expect(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES).toBeGreaterThanOrEqual(3 * 5.28e9);
+  });
+
+  it('requiredFreeDiskBytes is the floor, or twice the live database when that is larger', () => {
+    expect(requiredFreeDiskBytes(null)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    expect(requiredFreeDiskBytes(0)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    expect(requiredFreeDiskBytes(Number.NaN)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    // the 2026-09-05 graph: 2 x 5.28 GB is under the 16 GiB floor, so the floor binds
+    expect(requiredFreeDiskBytes(5.28e9)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    // a graph that outgrows the floor drags the requirement up with it
+    expect(requiredFreeDiskBytes(20 * GIB)).toBe(40 * GIB);
+    // a nonsense floor falls back to the constant rather than admitting everything
+    expect(requiredFreeDiskBytes(null, 0)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    expect(requiredFreeDiskBytes(null, Number.NaN)).toBe(GITNEXUS_REINDEX_MIN_FREE_DISK_BYTES);
+    // an operator-tuned floor is honoured
+    expect(requiredFreeDiskBytes(null, 4 * GIB)).toBe(4 * GIB);
+  });
+
+  it('decideReindex defers on low disk with an actionable reason, even for a cold build', () => {
+    const d = decideReindex(baseInput({ freeDiskBytes: 2 * GIB, requiredFreeDiskBytes: 16 * GIB }));
+    expect(d.run).toBe(false);
+    expect(d.reason).toMatch(/^low disk \(2\.0 GiB free .* < 16\.0 GiB/);
+    expect(d.reason).toContain('ENOSPC');
+    // a MISSING index does not override it: the build cannot succeed and hurts the box
+    const cold = decideReindex(baseInput({ registered: false, freeDiskBytes: 2 * GIB, requiredFreeDiskBytes: 16 * GIB }));
+    expect(cold.run).toBe(false);
+    expect(cold.reason).toMatch(/^low disk/);
+  });
+
+  it('decideReindex admits when enough is free, and is fail-soft when the reading is absent', () => {
+    expect(decideReindex(baseInput({ freeDiskBytes: 16 * GIB, requiredFreeDiskBytes: 16 * GIB })).run).toBe(true);
+    expect(decideReindex(baseInput({ freeDiskBytes: 200 * GIB, requiredFreeDiskBytes: 16 * GIB })).run).toBe(true);
+    // unknown ≠ low: a statfs failure must not wedge the cadence, matching the memory gate
+    expect(decideReindex(baseInput({ freeDiskBytes: null, requiredFreeDiskBytes: 16 * GIB })).run).toBe(true);
+    expect(decideReindex(baseInput({ freeDiskBytes: undefined })).run).toBe(true);
+    // without an explicit requirement the constant floor binds
+    expect(decideReindex(baseInput({ freeDiskBytes: 1 * GIB })).run).toBe(false);
+  });
+
+  it('load and memory pressure still outrank the disk gate (they protect the box first)', () => {
+    const d = decideReindex(baseInput({ loadPerCore: 9, freeDiskBytes: 1 * GIB }));
+    expect(d.reason).toMatch(/^box oversubscribed/);
+    const m = decideReindex(baseInput({ memoryPressure: 'crit', freeDiskBytes: 1 * GIB }));
+    expect(m.reason).toMatch(/^memory pressure/);
+  });
+
+  it('measureFreeDiskBytes reads a real filesystem and is null for a path that does not exist', () => {
+    const free = measureFreeDiskBytes(tmpdir());
+    expect(free).not.toBeNull();
+    expect(free!).toBeGreaterThan(0);
+    expect(measureFreeDiskBytes(join(tmpdir(), 'no-such-dir-' + Date.now()))).toBeNull();
+  });
+
+  it('the action measures free disk on the index filesystem and feeds it into decideReindex', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+    const measure = src.indexOf('const freeDiskBytes = measureFreeDiskBytes(');
+    const need = src.indexOf('const requiredFree = requiredFreeDiskBytes(', measure);
+    const decision = src.indexOf('const decision = decideReindex(', need);
+    expect(measure).toBeGreaterThan(0);
+    expect(need).toBeGreaterThan(measure);
+    expect(decision).toBeGreaterThan(need);
+    const call = src.slice(decision, src.indexOf('});', decision));
+    expect(call).toContain('freeDiskBytes,');
+    expect(call).toContain('requiredFreeDiskBytes: requiredFree,');
+    // the requirement is derived from the LIVE database size, not a hard-coded number
+    expect(src.slice(need, decision)).toContain('measureGitnexusDbUsage(root).dbBytes');
   });
 });
 
