@@ -82,6 +82,7 @@ import './run'; // registers code:run (after the mocks are hoisted)
 // published schema. Imported directly rather than via the registry barrel: the barrel drags in
 // the whole catalog (and its mock surface) for one schema.
 import '../improvements/capture';
+import '../plans/set-status';
 
 const orchestration = (over: Record<string, unknown> = {}) => ({
   ok: true,
