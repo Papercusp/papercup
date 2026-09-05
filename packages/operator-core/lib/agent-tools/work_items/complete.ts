@@ -269,7 +269,7 @@ const completionSpec = z
   )
   .describe(
     // EI-39573: publish the same repair shape that the schema-level string refusal returns.
-    "Structured completion record: { summary, verification?: { filesChanged?: string[], filesDeleted?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], filesDeleted?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` (a screenshot/capture image path or a recorded `tauri-agent-tools` capture/screenshot/check invocation); inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
+    "Structured completion record: { summary, verification?: { filesChanged?: string[], filesDeleted?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], filesDeleted?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `completion.verification` is strict: use only the listed evidence keys; put test/typecheck/diff details in `testsRun`/`testResult` (or top-level `tests`), not `verification.tests`, `verification.typecheck`, or `verification.diff`. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'live-service'|'manual'|'already-passing'` for coarse queryable modes. For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in `summary`, `testsRun`, `testResult`, or `filesChanged` — DESKTOP: a screenshot/capture image path, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed URL with its HTTP status, or a recorded browser-driver run (playwright/puppeteer/verdict) naming the http(s) target it drove; inspect the captured image when applicable. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, `NRestarts`, `ActiveState`, or an HTTP status). Use 'unit'/'manual'/'integration' when no live artifact or runtime process was inspected. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
@@ -3433,10 +3433,18 @@ async function completeOne(
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
-      'artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check ' +
-      'invocation) in summary/testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past ' +
-      'its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set ' +
-      "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+      'artifact in summary/testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past ' +
+      'its own author: unit tests verify structure, not pixels. Cite whichever of these matches what you ' +
+      'actually drove — DESKTOP: a screenshot/capture image path, or a recorded tauri-agent-tools ' +
+      'capture/screenshot/check invocation. WEB: the deployed URL with its HTTP status (e.g. ' +
+      '`https://example.com/x -> 200`), or a recorded browser-driver run naming the http(s) target it drove ' +
+      '(e.g. `npx playwright test e2e/x.spec.ts` against https://example.com). ' +
+      // EI-20411096292493737: the fallback list is named LAST and conditioned, because
+      // offering it first made it the cheapest way out of a rejection an agent disagreed
+      // with. For a real web live-drive all three of these labels are FALSE, so an agent
+      // with no truthful option picks whichever passes — putting a wrong verifiedHow into
+      // the very ledger this gate protects. A mislabel is silent; a rejection is not.
+      "Only if you did NOT drive live UI, set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (falseLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id}, but its cited evidence ` +
