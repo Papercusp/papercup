@@ -670,8 +670,9 @@ by default — after delivering the report, explicitly call
 \`mode:set { mode:'audit', enabled:false, reason:'audit report delivered' }\`.
 Delivery does NOT clear the durable mode row. If the owner immediately routes
 remediation while AUDIT is still active, that exit call is your FIRST action;
-only then may you mutate the audited subject. Overlay: stacks with AUTO / IDEATE
-and implies NEITHER.
+send it as a standalone tool call and wait for its successful result. Never batch
+the exit with any subject mutation; only then may you mutate the audited subject.
+Overlay: stacks with AUTO / IDEATE and implies NEITHER.
 1. SCOPE + CENSUS. Resolve the scope to its FULL population — shipped,
    superseded and archived rows INCLUDED. The lifecycle is the evidence: a
    census of only the open plans cannot tell progress from churn. Register the
@@ -704,7 +705,8 @@ and implies NEITHER.
    after delivery, explicitly clear AUDIT with \`mode:set { mode:'audit',
    enabled:false, reason:'audit report delivered' }\`; the row never clears itself.
    AUDIT never executes remediation un-routed, and routed remediation never
-   begins until that exit call succeeds.
+   begins until that exit call succeeds. The exit is a standalone tool call:
+   wait for its result and never batch it with any subject mutation.
 8. RAILS. Read-only toward the subject: file findings, no drive-by fixes
    mid-audit. "All items terminal" is NOT a finished plan — check the plan's own
    status and its ship ceremony. A single grep is not an absence proof. A bounded

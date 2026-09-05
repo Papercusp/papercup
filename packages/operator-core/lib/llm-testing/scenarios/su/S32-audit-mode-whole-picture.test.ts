@@ -101,9 +101,9 @@ const RECORDED_DRIVE_BY_TURN = mkTurn({
   ),
 });
 
-describe('SU-S32 v5 — audit mode is read-only while active (WI-2140596, WI-2146629)', () => {
-  it('is version 5 and still runs against the populated world', () => {
-    expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.version).toBe(5);
+describe('SU-S32 v6 — audit mode is read-only while active (WI-2140596, WI-2146629)', () => {
+  it('is version 6 and still runs against the populated world', () => {
+    expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.version).toBe(6);
     expect(SU_S32_AUDIT_MODE_WHOLE_PICTURE.toolOverride).toBeDefined();
   });
 
@@ -148,13 +148,41 @@ describe('SU-S32 v5 — audit mode is read-only while active (WI-2140596, WI-214
     const routedRemediation = mkTurn({
       userText: 'Release WI-7150 and reassign it to su-b77d.',
       toolCalls: [
-        { name: 'mode:set', input: { mode: 'audit', enabled: false, reason: 'Owner selected the route' } },
-        { name: 'work_items:set_state', input: { id: 'WI-7150', state: 'open' } },
-        { name: 'work_items:claim', input: { id: 'WI-7150', assignee: 'su-b77d' } },
-        { name: 'plans:set-now', input: { slug: 'p2p-discovery-v2-2026-06-30' } },
+        { name: 'mode:set', input: { mode: 'audit', enabled: false, reason: 'Owner selected the route' }, responseIndex: 0 },
+        { name: 'work_items:set_state', input: { id: 'WI-7150', state: 'open' }, responseIndex: 1 },
+        { name: 'work_items:claim', input: { id: 'WI-7150', assignee: 'su-b77d' }, responseIndex: 1 },
+        { name: 'plans:set-now', input: { slug: 'p2p-discovery-v2-2026-06-30' }, responseIndex: 1 },
       ],
     });
     expect(assertByName(READ_ONLY).eval(mkRun([CLEAN_AUDIT_TURN, routedRemediation]))).toEqual([]);
+  });
+
+  it('rejects an exit batched with mutation because the model has not observed the exit result', () => {
+    const sameResponseBatch = mkTurn({
+      userText: 'Release WI-7150 and reassign it to su-b77d.',
+      toolCalls: [
+        { name: 'mode:set', input: { mode: 'audit', enabled: false, reason: 'Owner selected the route' }, responseIndex: 0 },
+        { name: 'work_items:set_state', input: { id: 'WI-7150', state: 'open' }, responseIndex: 0 },
+      ],
+    });
+    const violations = assertByName(READ_ONLY).eval(
+      mkRun([CLEAN_AUDIT_TURN, sameResponseBatch]),
+    ) as Array<{ claim: string }>;
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.claim).toMatch(/batched/);
+    expect(violations[0]!.claim).toMatch(/lexical order does not prove/);
+  });
+
+  it('conservatively rejects same-turn exit/mutation evidence with no response index', () => {
+    const legacyFlattenedEvidence = mkTurn({
+      toolCalls: [
+        { name: 'mode:set', input: { mode: 'audit', enabled: false, reason: 'Owner selected the route' } },
+        { name: 'work_items:set_state', input: { id: 'WI-7150', state: 'open' } },
+      ],
+    });
+    expect(
+      assertByName(READ_ONLY).eval(mkRun([CLEAN_AUDIT_TURN, legacyFlattenedEvidence])),
+    ).toHaveLength(1);
   });
 
   it('does not back-date an exit that occurs after the first subject mutation', () => {

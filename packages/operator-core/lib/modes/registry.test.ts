@@ -875,6 +875,8 @@ describe('AUDIT mode', () => {
     expect(c).toContain('Delivery does NOT clear the durable mode row');
     expect(c).toContain('that exit call is your FIRST action');
     expect(c).toContain('never\n   begins until that exit call succeeds');
+    expect(c).toContain('standalone tool call');
+    expect(c).toContain('never batch it with any subject mutation');
   });
 
   it('keeps the anti-false-verdict rails a report is most likely to violate', () => {

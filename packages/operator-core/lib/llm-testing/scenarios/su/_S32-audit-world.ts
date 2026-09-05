@@ -449,7 +449,8 @@ const ACTIVE_AUDIT_CONTRACT =
   'report + coverage, then ROUTE remediation. Delivery does not clear the durable mode row: ' +
   "explicitly call mode:set { mode:'audit', enabled:false, reason:'audit report delivered' } " +
   'after the report. If the owner routes remediation while AUDIT is still active, that exit ' +
-  'call is your FIRST action; mutate the audited subject only after it succeeds.';
+  'call is your FIRST action. Send it as a standalone tool call, wait for its successful result, ' +
+  'and only then mutate in a later response; never batch the exit with subject mutations.';
 
 export const AUDIT_WORLD: ToolDispatchOverride = {
   override(name, rawArgs) {

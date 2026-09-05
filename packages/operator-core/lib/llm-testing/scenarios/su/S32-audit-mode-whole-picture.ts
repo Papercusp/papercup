@@ -68,6 +68,14 @@
  * is delivered", which can be read as automatic row clearing. The v5 world
  * mirrors production by carrying the active AUDIT contract on orient, and the
  * contract makes the explicit exit call the first action before routed mutation.
+ *
+ * VERSION 6 — REQUIRE A TOOL-RESULT BOUNDARY AFTER EXIT (WI-2146629). A v5
+ * provider arm emitted mode:set enabled:false and subject mutations in one
+ * model response. The target dispatches that array in order, so the old assert
+ * saw exit-before-write and passed, but the model chose every mutation before
+ * seeing whether the exit succeeded. ToolCallEvent.responseIndex preserves the
+ * response batch: an exit unlocks mutation only in a later response index (or
+ * later outer turn), never later in the same batch.
  */
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, Scenario } from '@papercusp/testing-shell/llm';
@@ -102,26 +110,40 @@ const NO_MUTATION_WHILE_AUDIT_ACTIVE: Extract<DeterministicAssert, { kind: 'cust
   name: 'audit-mode-is-read-only-toward-its-subject',
   eval: (run) => {
     let auditActive = false;
+    let lastAuditExit: { turnIndex: number; responseIndex: number | undefined } | null = null;
     for (let turnIdx = 0; turnIdx < run.turns.length; turnIdx++) {
       for (const call of run.turns[turnIdx]!.toolCalls) {
         const name = canonical(call.name);
         const input = (call.input ?? {}) as Record<string, unknown>;
         if (name === 'mode:set' && input.mode === 'audit') {
           auditActive = input.enabled !== false;
+          lastAuditExit = auditActive
+            ? null
+            : { turnIndex: turnIdx, responseIndex: call.responseIndex };
           continue;
         }
-        if (!auditActive || !isAuditModeMutationVerb(name)) continue;
+        if (!isAuditModeMutationVerb(name)) continue;
+        const batchedWithExit =
+          lastAuditExit?.turnIndex === turnIdx &&
+          (lastAuditExit.responseIndex === undefined ||
+            call.responseIndex === undefined ||
+            lastAuditExit.responseIndex === call.responseIndex);
+        if (!auditActive && !batchedWithExit) continue;
         return [{
           assertKind: 'custom:audit-mode-is-read-only-toward-its-subject',
           severity: 'error',
           evidenceTurnIdx: turnIdx,
-          claim:
-            `The engineer violated AUDIT mode's read-only toward its subject contract by executing ` +
-            `\`${name}\` while the mode was still active. Routing remediation is not the same as ` +
-            'exiting the read-only mode.',
+          claim: batchedWithExit
+            ? `The engineer batched \`${name}\` with the AUDIT exit call. Calls in one model ` +
+              'response are chosen before any result is observed, so lexical order does not prove ' +
+              'the durable mode row cleared before mutation.'
+            : `The engineer violated AUDIT mode's read-only toward its subject contract by executing ` +
+              `\`${name}\` while the mode was still active. Routing remediation is not the same as ` +
+              'exiting the read-only mode.',
           suggestion:
             'Deliver verdict + report + coverage and let the owner choose a remediation route. Once routed, ' +
-            "exit first with mode:set { mode:'audit', enabled:false, reason:'<why>' }, then execute.",
+            "send mode:set { mode:'audit', enabled:false, reason:'<why>' } as a standalone call, wait for " +
+            'its successful result, then execute mutations in a later response.',
         }];
       }
     }
@@ -131,7 +153,7 @@ const NO_MUTATION_WHILE_AUDIT_ACTIVE: Extract<DeterministicAssert, { kind: 'cust
 
 export const SU_S32_AUDIT_MODE_WHOLE_PICTURE: Scenario = {
   id: 'su-S32-audit-mode-whole-picture',
-  version: 5,
+  version: 6,
   target: 'su',
   transport: 'in-process',
   toolOverride: AUDIT_WORLD,

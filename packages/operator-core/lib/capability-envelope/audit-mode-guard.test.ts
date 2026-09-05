@@ -80,6 +80,8 @@ describe('checkAuditModeMutationGuard', () => {
     expect(verdict!.reason).toMatch(/work_items:create/);
     expect(verdict!.reason).toMatch(/does not clear the durable AUDIT row/);
     expect(verdict!.reason).toMatch(/mode:set/);
+    expect(verdict!.reason).toMatch(/standalone tool call/);
+    expect(verdict!.reason).toMatch(/never batch the exit/);
     // Calibration: the wrong control would have allowed this exact case.
     expect(await alwaysAllowControl()).toBeNull();
   });

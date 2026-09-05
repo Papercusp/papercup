@@ -586,7 +586,7 @@ class SuSession implements ChatSession {
           } else if (block.type === 'tool_use') {
             const tu = block as ToolUseBlock;
             const canonical = this.state.catalog.canonicalBySanitized.get(tu.name) ?? tu.name;
-            const ev: ToolCallEvent = { name: canonical, input: tu.input };
+            const ev: ToolCallEvent = { name: canonical, input: tu.input, responseIndex: iter };
             result.toolCalls.push(ev);
             result.rawSseTape.push(sse('tool_call', { name: canonical, input: tu.input }));
             toolUses.push(tu);
@@ -679,7 +679,7 @@ class SuSession implements ChatSession {
         const outputs: ResponsesInputItem[] = [];
         for (const call of turn.toolCalls) {
           const canonical = this.state.catalog.canonicalBySanitized.get(call.name) ?? call.name;
-          const event: ToolCallEvent = { name: canonical, input: call.input };
+          const event: ToolCallEvent = { name: canonical, input: call.input, responseIndex: iter };
           result.toolCalls.push(event);
           result.rawSseTape.push(sse('tool_call', event));
           const toolResult = await this.resolveToolResult(canonical, call.input);

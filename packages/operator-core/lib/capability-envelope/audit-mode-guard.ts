@@ -122,7 +122,8 @@ export function auditModeMutationDenyReason(o: { toolName: string; ownerId: stri
     `ask which remediation route the owner wants — silence is not approval. Delivering the ` +
     `report does not clear the durable AUDIT row. Once they have chosen and you are ready to ` +
     `act, exit AUDIT mode first: ` +
-    `mode:set { mode:'audit', enabled:false, reason:'<why>' }.`
+    `mode:set { mode:'audit', enabled:false, reason:'<why>' }. Send that as a standalone tool ` +
+    `call and wait for its successful result; never batch the exit with a subject mutation.`
   );
 }
 

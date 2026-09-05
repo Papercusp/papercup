@@ -74,6 +74,8 @@ describe('SU-S32 audit world', () => {
     expect(r.instructionsFact).toBe('asserted');
     expect(r.contract).toContain("mode:set { mode:'audit', enabled:false");
     expect(r.contract).toContain('that exit call is your FIRST action');
+    expect(r.contract).toContain('standalone tool call');
+    expect(r.contract).toContain('never batch the exit with subject mutations');
   });
 
   it('coord:orient re-injects the same active AUDIT contract before a later-turn mutation', async () => {
@@ -82,7 +84,7 @@ describe('SU-S32 audit world', () => {
     expect(oriented.activeModes).toEqual([
       expect.objectContaining({ mode: 'audit', axis: 'overlay', contract: entered.contract }),
     ]);
-    expect(oriented.activeModes[0].contract).toContain('mutate the audited subject only after it succeeds');
+    expect(oriented.activeModes[0].contract).toContain('wait for its successful result');
   });
 
   it('canonicalises the mcp prefix and passes unmodelled tools through', async () => {

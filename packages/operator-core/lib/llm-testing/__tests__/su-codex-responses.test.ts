@@ -112,7 +112,11 @@ describe('SuTarget Codex Responses tool loop', () => {
       expect.objectContaining({ type: 'function_call_output', call_id: 'call_1' }),
     ]));
     expect(dispatch).toHaveBeenCalledWith('docs:get', { slugs: ['x'], harness: 'all' });
-    expect(result.toolCalls).toEqual([{ name: 'docs:get', input: { slugs: ['x'], harness: 'all' } }]);
+    expect(result.toolCalls).toEqual([{
+      name: 'docs:get',
+      input: { slugs: ['x'], harness: 'all' },
+      responseIndex: 0,
+    }]);
     expect(result.toolResults).toEqual([{
       name: 'docs:get',
       output: dispatchOutput,
@@ -176,6 +180,11 @@ describe('SuTarget Codex Responses tool loop', () => {
       });
 
       expect(dispatch).toHaveBeenCalledWith('docs:get', { slugs: ['x'], harness: 'all' });
+      expect(result.toolCalls).toEqual([{
+        name: 'docs:get',
+        input: { slugs: ['x'], harness: 'all' },
+        responseIndex: 0,
+      }]);
       expect(result.toolResults).toEqual([{
         name: 'docs:get',
         output: dispatchOutput,
