@@ -691,7 +691,9 @@ describe('readGoalLaunchSettings', () => {
       error: null,
       // P-006: budget truth rides the same row read; a goal with nothing
       // declared resolves an all-null truth, not an absent one.
-      budget: { budgetCents: null, spentCents: null, spentCentsAt: null },
+      // P-004: the provenance marker rides along with the cents so the ceiling
+      // refusal can name the population its number measured.
+      budget: { budgetCents: null, spentCents: null, spentCentsAt: null, spentCentsSource: null },
       brief: {
         title: 'Goal g1',
         body: null,
@@ -1063,7 +1065,13 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       standing: true,
     },
     settings: null,
-    budget: { budgetCents: 5_000, spentCents: 1_250, spentCentsAt: '2026-08-28T02:00:00Z' },
+    budget: {
+      budgetCents: 5_000,
+      spentCents: 1_250,
+      spentCentsAt: '2026-08-28T02:00:00Z',
+      // The ordinary case: a rollup-written figure, so it carries the marker.
+      spentCentsSource: 'goal-pots-rollup',
+    },
     ceilings: { maxAgents: 12, maxPerFleet: 5 },
     headcount: { total: 3, fleet: 2 },
     degradedReasons: [],
@@ -1182,6 +1190,25 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
     expect(rendered).toContain('1. plan:papercusp/alpha [active; placement=unplaced] next=P-002');
     expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
+    // P-004: this line lands in every goal agent's kickoff (goals:start,
+    // start-goal-by-id, goal-holder-launch-action all render it), which makes it
+    // the most-read rendering of spentCents anywhere. Unqualified, `spent=1250c`
+    // reads as what the goal has cost; it is the POT leg only, so the population
+    // must travel with the number.
+    expect(rendered).toContain('Budget: spent=1250c [inside-goal-pots:authoritative] / 5000c');
+    // And the label must be EARNED, not decorative: an unmarked figure says so
+    // rather than borrowing the pot scope's standing.
+    const unmarked = renderGoalPortfolioBrief({
+      ...brief!,
+      budget: { ...brief!.budget, spentCentsSource: null },
+    });
+    expect(unmarked).toContain('Budget: spent=1250c [unverified-provenance:unmarked-snapshot]');
+    // No figure ⇒ no population to name; do not label 'unknown' with a scope.
+    const absent = renderGoalPortfolioBrief({
+      ...brief!,
+      budget: { ...brief!.budget, spentCents: null },
+    });
+    expect(absent).toContain('Budget: spent=unknownc /');
     const kickoffEvidenceMarker = rendered.indexOf('GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION');
     const ownerReportInstruction = rendered.indexOf(
       `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; ` +
@@ -1824,7 +1851,12 @@ describe('P-006: the budget launch gate', () => {
     const seen: string[] = [];
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 4999 }, seen);
     expect(r.refusal).toBeNull();
-    expect(r.budget).toEqual({ budgetCents: 5000, spentCents: 4999, spentCentsAt: null });
+    expect(r.budget).toEqual({
+      budgetCents: 5000,
+      spentCents: 4999,
+      spentCentsAt: null,
+      spentCentsSource: null,
+    });
     // Under budget the D-015 default ceilings still get their headcount.
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
   });
@@ -1854,7 +1886,12 @@ describe('P-006: the budget launch gate', () => {
     const r = await launchWithBudget({ budget_cents: null, spent_cents: 9999 });
     expect(r.refusal).toBeNull();
     expect(r.degradedReasons.filter((s) => s.includes('budget'))).toEqual([]);
-    expect(r.budget).toEqual({ budgetCents: null, spentCents: 9999, spentCentsAt: null });
+    expect(r.budget).toEqual({
+      budgetCents: null,
+      spentCents: 9999,
+      spentCentsAt: null,
+      spentCentsSource: null,
+    });
   });
 
   it('kill-switch: flag OFF admits over-budget launches SILENTLY (deliberate config, not degradation)', async () => {
