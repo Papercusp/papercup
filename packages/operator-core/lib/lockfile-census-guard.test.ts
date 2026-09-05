@@ -521,12 +521,13 @@ describe('the repository itself (real-tree assertion)', () => {
   // The blind spot this guard was built from is RESOLVED, not dropped — and this test is
   // why that distinction survived: it forced the removal to arrive with evidence instead of
   // a comment. docs-viewer was reclassified NOT_SHIPPED on 2026-09-05 (WI-2144851) because
-  // the Tauri bundle declares resources ["sidecar/spa/**/*"] with externalBin null,
-  // apps/operator/bin/bundle-host.sh copies ONLY packages/harness/blueprints (never the
-  // packages/harness tree), and the viewer's deps are npm-installed lazily on first run by
-  // bin/docs-viewer.sh rather than vendored. The row must still be CLASSIFIED AND EXPLAINED:
-  // a lockfile may leave the debt list by being accounted for, never by disappearing, so
-  // both halves are asserted here.
+  // papercusp-desktop/bin/build-desktop-sidecar.sh — the actual desktop harness-copy step —
+  // enumerates packages/harness with `find -type f` and excludes `./docs-viewer/*` BY NAME.
+  // The note is pinned to that script rather than to the weaker corroborating reasons
+  // (tauri.conf resources, bundle-host.sh, lazy npm install) because it is the one route
+  // that could have swept the viewer in, so it is the one a future reader must re-check.
+  // The row must still be CLASSIFIED AND EXPLAINED: a lockfile may leave the debt list by
+  // being accounted for, never by disappearing, so both halves are asserted here.
   it('records no uncovered advisory blind spot, and still accounts for the row that left', () => {
     expect(result.rows.filter((r) => r.bucket === 'uncovered-baselined').map((r) => r.path)).toEqual(
       [],
@@ -535,7 +536,7 @@ describe('the repository itself (real-tree assertion)', () => {
       (r) => r.path === 'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
     );
     expect(viewer?.bucket).toBe('not-shipped');
-    expect(viewer?.note ?? '').toMatch(/bundle-host\.sh/);
+    expect(viewer?.note ?? '').toMatch(/build-desktop-sidecar\.sh/);
   });
 
   // THE CORRECTION. This row was baselined as "12 deps ... SHIPPED ... the highest-

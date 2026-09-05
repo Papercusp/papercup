@@ -316,3 +316,109 @@ describe('rust advisory baseline file integrity', () => {
     }
   });
 });
+
+describe('rust advisory baseline: an ABI-pin deferral is only as good as its premise', () => {
+  // WHY THIS EXISTS — THE ONE DEFERRAL NO OTHER CHECK CAN EXPIRE
+  //
+  // `pinned-for-abi` is the only disposition that defers a REAL vulnerability with no end
+  // date, and it does so on a claim about the SHIPPED GRAPH rather than about the advisory:
+  // "there is exactly ONE glib in this process, on the 0.18 line tauri/wry already use, so
+  // bumping ours alone would split the GTK/glib ABI" (D-009, the embedded native terminal
+  // view). That premise is the entire justification — and nothing was checking it.
+  //
+  // Every other pressure on this file is blind to it. The gate reports a baselined advisory
+  // as STALE only once the advisory stops MATCHING, and glib 0.18.5 stays vulnerable whether
+  // or not the rest of the graph moves — so the day tauri/wry advance to the glib 0.20 line
+  // (the entry's own stated trigger to bump the pin WITH them) the gate says nothing, the
+  // baseline keeps asserting a premise that has stopped being true, and the tree looks
+  // exactly as it did the day before. A deferral whose expiry condition nobody can observe
+  // is indistinguishable from a permanent one.
+  //
+  // The check is a PREMISE check, not a version pin, and it fails in both directions that
+  // mean something:
+  //   • the named crate resolves at MORE THAN ONE version — the single-ABI premise is broken
+  //     RIGHT NOW, which is the concrete hazard the pin exists to prevent, not a paperwork
+  //     problem; and
+  //   • the named crate@version is ABSENT — the pin already moved, so the reason recorded in
+  //     the baseline describes a tree that no longer exists and the deferral must be re-made.
+  // It is derived from the baseline's own entries rather than naming glib, so a future
+  // pinned-for-abi entry is covered on the day it is written instead of the day someone
+  // remembers to extend this file.
+  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+  const shipped = SHIPPED_LOCKFILES.flatMap((rel: string) =>
+    parseCargoLock(readFileSync(join(REPO_ROOT, rel), 'utf8')),
+  );
+  const abiPinned = Object.entries<{ disposition: string; crate?: string }>(
+    baseline.entries,
+  ).filter(([, e]) => e.disposition === 'pinned-for-abi');
+
+  it('names a concrete crate@version for every ABI-pinned deferral', () => {
+    // The premise check below can only run on an entry that says WHICH crate was pinned;
+    // without it the deferral is unfalsifiable prose.
+    for (const [id, e] of abiPinned) {
+      expect(e.crate, `${id} defers on an ABI pin without naming the crate`).toMatch(
+        /^[^@\s]+@\d+\.\d+/,
+      );
+    }
+  });
+
+  /**
+   * The premise comparison itself, over supplied data — so the real-tree case and the
+   * deliberately-broken controls below run the SAME code. A guard that has only ever been
+   * run against a passing tree has not been shown to fail; these controls are how that stays
+   * true without mutating the shared checkout (CLAUDE.md's fixture tier).
+   */
+  function abiPinPremise(
+    entries: [string, { crate?: string }][],
+    packages: { name: string; version: string }[],
+  ): { expected: Record<string, string[]>; actual: Record<string, string[]> } {
+    const expected: Record<string, string[]> = {};
+    const actual: Record<string, string[]> = {};
+    for (const [id, e] of entries) {
+      const [name, version] = String(e.crate).split('@');
+      expected[id] = [version];
+      actual[id] = packages
+        .filter((p) => p.name === name)
+        .map((p) => p.version)
+        .sort();
+    }
+    return { expected, actual };
+  }
+
+  const PINNED_FIXTURE: [string, { crate?: string }][] = [['RUSTSEC-0000-0000', { crate: 'lib@1.0.0' }]];
+
+  it('CONTROL: catches the crate resolving at two versions (the ABI split itself)', () => {
+    const { expected, actual } = abiPinPremise(PINNED_FIXTURE, [
+      { name: 'lib', version: '1.0.0' },
+      { name: 'lib', version: '2.0.0' },
+    ]);
+    expect(actual).not.toEqual(expected);
+  });
+
+  it('CONTROL: catches the pinned crate/version disappearing (the pin already moved)', () => {
+    const { expected, actual } = abiPinPremise(PINNED_FIXTURE, [{ name: 'lib', version: '2.0.0' }]);
+    expect(actual).not.toEqual(expected);
+  });
+
+  it('CONTROL: does NOT fire on the single-version tree the deferral describes', () => {
+    // Calibration. Without this, both controls above would also "pass" if the comparison
+    // were broken in a way that never matches anything.
+    const { expected, actual } = abiPinPremise(PINNED_FIXTURE, [
+      { name: 'lib', version: '1.0.0' },
+      { name: 'unrelated', version: '9.9.9' },
+    ]);
+    expect(actual).toEqual(expected);
+  });
+
+  it('still resolves each ABI-pinned crate at exactly one version — the pin premise holds', () => {
+    const { expected, actual } = abiPinPremise(abiPinned, shipped);
+    expect(
+      actual,
+      'an ABI-pinned crate no longer resolves at exactly the pinned version. TWO versions = ' +
+        'the single-ABI premise is broken now: re-make the pin decision, do not just update ' +
+        'this file. NONE / a different version = the pin already moved, so re-evaluate the ' +
+        'deferral in scripts/rust-advisories-baseline.json and drop the entry if the advisory ' +
+        'is fixed.',
+    ).toEqual(expected);
+  });
+});
