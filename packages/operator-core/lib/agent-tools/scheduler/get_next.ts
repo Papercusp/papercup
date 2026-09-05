@@ -1177,6 +1177,15 @@ export default defineTool({
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
     const args = { ...rawArgs, harness: inheritedHarness.slug };
+    // workspace-work-scope-policy-2026-09-04 P-006: a pull from a harness the workspace
+    // policy excludes is refused at the door — the work stays filed, never deleted.
+    {
+      const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
+      const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
+      if (!scope.allowed) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) }] };
+      }
+    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
