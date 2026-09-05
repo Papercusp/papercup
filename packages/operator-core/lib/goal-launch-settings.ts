@@ -556,7 +556,6 @@ export interface GoalPlanPlacementToolCall {
     name: string;
     plan: string;
     harness: string;
-    count: 1;
     leader: 'spawn';
     headless: true;
   };
@@ -800,7 +799,6 @@ export function compileGoalPlanPlacement(args: {
             name: fleet?.slug ?? `${planHarness}-${planSlug}-plan-fleet`,
             plan: planSlug,
             harness: planHarness,
-            count: 1,
             leader: 'spawn',
             headless: true,
           },
@@ -981,7 +979,9 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       ? [
           'MANDATORY NEXT PLAN PLACEMENT',
           `${mandatoryPlacement.ref} is the highest-priority eligible worklist plan; placement=${mandatoryPlacement.placement.state}; repair=${mandatoryPlacement.placement.reconciliation.action}.`,
-          `Call ${mandatoryToolCall.tool} exactly once with ${JSON.stringify(mandatoryToolCall.args)}.`,
+          'Before launching, YOU select the plan allocation: fleet count and leader/member model + effort from the live portfolio, executable plan dependencies, available goal headroom, budget, and owner settings. Record the decision and its rationale.',
+          `Use ${mandatoryToolCall.tool} with this plan/leader identity: ${JSON.stringify(mandatoryToolCall.args)}. Add your chosen count and role configuration; these identity arguments are incomplete until you make that resource decision.`,
+          'The separately launched fleet leader executes this allocation. It may request a change, but the GOAL steward owns plan priority, fleet size, and model choice.',
           'Do not claim its plan item from the GOAL session; the one-call fleet door owns promotion, admission, scheduler custody, and spawned leadership.',
         ]
       : []),

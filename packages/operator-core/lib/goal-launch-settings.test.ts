@@ -1159,7 +1159,6 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
                   name: 'papercusp-alpha-plan-fleet',
                   plan: 'alpha',
                   harness: 'papercusp',
-                  count: 1,
                   leader: 'spawn',
                   headless: true,
                 },
@@ -1224,8 +1223,12 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffCompletionInstruction);
     expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
     expect(rendered).toContain(
-      'Call fleet:launch-on-plan exactly once with {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","count":1,"leader":"spawn","headless":true}.',
+      'Use fleet:launch-on-plan with this plan/leader identity: {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","leader":"spawn","headless":true}.',
     );
+    expect(rendered).toContain('YOU select the plan allocation');
+    expect(rendered).toContain('Add your chosen count and role configuration');
+    expect(rendered).toContain('GOAL steward owns plan priority, fleet size, and model choice');
+    expect(brief!.worklist[0].placement.reconciliation.toolCall!.args).not.toHaveProperty('count');
     expect(rendered).toContain('Do not claim its plan item from the GOAL session');
     expect(rendered).toContain('CURRENT ACTION PRIORITIES');
 
@@ -1282,7 +1285,6 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
             name: 'papercusp-alpha-plan-fleet',
             plan: 'alpha',
             harness: 'papercusp',
-            count: 1,
             leader: 'spawn',
             headless: true,
           },
