@@ -137,6 +137,15 @@ function describeDedupCoverageWarning(
   );
 }
 
+/**
+ * EI-22457131413761799: a valid 50-item create took longer than the tool's
+ * foreground transport budget because the shared bulk helper ran every item
+ * serially. These creates already use independent per-item transactions and
+ * keyed results, so a small worker pool removes the impossible serial latency
+ * without turning a caller-controlled batch into an unbounded PG fan-out.
+ */
+export const WORK_ITEMS_CREATE_MAX_CONCURRENCY = 4;
+
 function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
   const payload = spec.payload ?? {};
   const numberOrNull = (value: unknown): number | null => {
@@ -693,7 +702,10 @@ export default defineTool({
           ...(res.conditionUpsert !== undefined ? { conditionUpsert: res.conditionUpsert } : {}),
         };
       },
-      { keyOf: (spec) => ({ title: spec.title }) },
+      {
+        keyOf: (spec) => ({ title: spec.title }),
+        maxConcurrency: WORK_ITEMS_CREATE_MAX_CONCURRENCY,
+      },
     );
     // Create-time dedup port (memory-delivery-unification-2026-07-12 P-009 /
     // D-006): the work-items-corpus leg is the semantic-dupe guard (which ships as
