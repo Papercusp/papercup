@@ -24,9 +24,11 @@ import {
   evaluateScorecardInstrumentContract,
   scorecardEvidenceFingerprint,
   scorecardInstrumentProvenance,
-  type Rubric,
   type ScorecardInstrumentSnapshot,
 } from './scorecards';
+// `Rubric` is imported BY scorecards.ts, not re-exported from it — take it from the
+// declaring module, the same way scorecards.test.ts does.
+import type { Rubric } from './rubrics';
 
 const NOW = Date.parse('2026-07-15T00:01:00Z');
 const FRESH = '2026-07-15T00:00:30Z';
