@@ -100,6 +100,7 @@ describe('host handler HTTP composition', () => {
     }
 
     const response = await getHealth(address.port);
+    console.error('host-handler-http debug response', response);
     expect(response.statusCode).toBe(401);
     expect(JSON.parse(response.body)).toEqual({
       error: {
