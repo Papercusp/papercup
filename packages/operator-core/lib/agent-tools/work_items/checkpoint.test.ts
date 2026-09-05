@@ -2728,6 +2728,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.checksNotRetainedNote).toContain('BODY PRESERVED');
         });
 
+        it('at the cap, append refreshes an existing keyed check without reporting overflow', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            id: `peer-${String(i + 1).padStart(2, '0')}`,
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            append: true,
+            checks: [
+              {
+                id: 'peer-06',
+                claim: 'PEER-06 refreshed holds',
+                recheck: 'probe refreshed 6',
+                verified: 'measured just now',
+              },
+            ],
+          })) as { ok: boolean; checks: number; errorCode?: string; checksDropped?: string[] };
+
+          expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
+          expect(r.errorCode).toBeUndefined();
+          expect(r.checksDropped).toBeUndefined();
+          const stored = readCurrent();
+          expect(stored).toContain('- ✓ [#peer-06] PEER-06 refreshed holds');
+          expect(stored).toContain('evidence: measured just now');
+          expect(stored).toContain('PEER-01 holds');
+          expect(stored).toContain('PEER-12 holds');
+          expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+        });
+
         it('uses a vacant slot before reporting the remaining supplied row as not retained', async () => {
           const oneVacancy = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 1 }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
