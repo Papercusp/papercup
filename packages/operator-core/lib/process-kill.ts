@@ -155,6 +155,15 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
         // is superseded: "capability:bash already returns a taskId/scope_unit
         // and taskId-mode is now truthful, the recommended path is taskId, not
         // pid"), so the refusal must NAME that path instead of dead-ending.
+        //
+        // EI-20741459236918185: naming taskId ALONE still dead-ends the orphaned
+        // case. `unaccounted` is DEFINED as residue no ledger row claims
+        // (reconcile.ts: `else if (p.owned || scope) unaccountedProcs.push(p)`),
+        // so for exactly that class there IS no owning taskId to look up — the
+        // caller follows "processes:list gives the owning taskId", finds nothing,
+        // and falls back to the raw `kill`/`pkill` the repo convention forbids.
+        // The handle that does work is the scope unit, which `killScopeUnit`
+        // re-validates against systemd and re-probes before signalling.
         detail:
           `pid ${input.pid} exists but is not a managed agent kind ` +
           `(run.sh|omp|claude|codex|paperclip|pty|next) — this tool only manages those. ` +
@@ -162,7 +171,9 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
           `Do not retry in pid mode: stop it by its DURABLE handle instead. ` +
           `processes:list gives the owning taskId (processes:kill { taskId } kills the whole cgroup ` +
           `subtree and cannot hit a recycled pid); a capability:bash background job is stopped with ` +
-          `capability:bash_kill { task_id }.`,
+          `capability:bash_kill { task_id }. If it is ORPHANED residue — surfaced by ` +
+          `processes:list { live:true } with no ledger row, so no taskId exists — read its scopeUnit ` +
+          `from live.unaccountedGroups and pass processes:kill { scopeUnit }.`,
       };
     } else {
       await writeAudit(input.workspaceId, input.actorSlug, {

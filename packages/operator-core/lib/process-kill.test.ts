@@ -142,9 +142,19 @@ describe('killProcess — kind allowlist', () => {
     const r = await killProcess({ pid: 8123, ...BASE });
 
     expect(r).toMatchObject({ ok: false, pid: 8123, kind: 'other', error: 'unsupported_kind' });
-    // The two durable handles that DO work, so the caller can act on the refusal.
+    // The three durable handles that DO work, so the caller can act on the refusal.
     expect(r.detail).toContain('taskId');
     expect(r.detail).toContain('capability:bash_kill');
+    // EI-20741459236918185: the third handle exists because naming taskId alone
+    // still dead-ends the ORPHANED case. `unaccounted` residue is by definition
+    // claimed by no ledger row, so it has no owning taskId to look up; a caller
+    // told only "processes:list gives the owning taskId" finds nothing and falls
+    // back to the raw kill/pkill the repo convention forbids. Assert the scopeUnit
+    // route AND the no-taskId condition that selects it — `scopeUnit` alone could
+    // be satisfied by the word appearing in unrelated prose.
+    expect(r.detail).toContain('processes:kill { scopeUnit }');
+    expect(r.detail).toContain('live.unaccountedGroups');
+    expect(r.detail).toMatch(/no taskId exists/i);
     // And it must not leave the caller thinking the process is gone.
     expect(r.detail).toMatch(/STILL RUNNING/i);
     expect(killSpy).not.toHaveBeenCalled();
