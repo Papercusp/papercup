@@ -45,7 +45,11 @@
 set -uo pipefail
 
 LOG="$HOME/.cache/kopia/healthcheck.log"
-DUMP=/mnt/data/Backup/db-dumps
+# WI-2145150: follow the SAME env seam papercusp-db-backup.sh:60 uses, so this
+# assertion measures the tree the backup actually writes. Hardcoding it here meant
+# a relocated dump left the freshness check pointed at a directory nothing updates.
+# The fallback is unchanged, so a host that never overrides the var is unaffected.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 # Injectable so a caller can capture the alert instead of firing it. This is now a
 # convenience for tests, NOT the safety mechanism — see ALARM SAFETY below.

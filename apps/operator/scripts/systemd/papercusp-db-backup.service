@@ -16,6 +16,19 @@ OnFailure=papercusp-db-backup-alert.service
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
+# WI-2145150: the dump lives on /mnt/backup (/dev/sda1, 1.2T free), NOT /mnt/data.
+# /mnt/data hit 97% and the headroom guard (papercusp-db-backup.sh:112-124) began
+# SKIPPING the papercusp dump every run — 5 consecutive failures, RPO degrading.
+# db-backup.sh:60 reads this var and its fs_avail_gb() follows $PGOUT deliberately
+# (see the comment at :119), so the guard measures the NEW volume with no threshold
+# lowered. Relocation, not deletion, is what retires that blocker.
+#
+# ⚠ KEEP IN SYNC with kopia-healthcheck.service, which sets the SAME var so the
+# healthcheck asserts freshness against the tree the backup actually writes.
+# Two units genuinely need it (different cgroups); a single ~/.config/environment.d
+# definition would need `systemctl --user daemon-reexec`, which would disturb every
+# other user unit on this box, so the per-unit form is deliberate.
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
 # A single serialized 4-job dump was measured at 34.25 GiB cgroup memory while
 # the host reached memory PSI some/full 47.78%/34.88% (2026-08-23 12:08Z).
 # Keep the hourly RPO and the shared wait-mode guard, but make the backup's
