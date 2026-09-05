@@ -23,7 +23,7 @@
  * Usage:
  *   node scripts/publish-workspace-host-artifacts.mjs \
  *     --dir ~/.papercusp/p046-r11-workspace-host-publication \
- *     [--base https://papercusp-cupboard.aviynw.workers.dev] \
+ *     [--base https://cupboard.papercusp.com] \    # default; see DEFAULT_BASE
  *     [--token <bearer>]        # default: `gh auth token`
  *     [--plan-only]             # hash + plan + preflight, no writes
  *
@@ -40,7 +40,21 @@ const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
 const MAX_PARTS = 1024;
 const DIRECT_MAX = { 'server.tgz.minisig': 64 * 1024, 'manifest.json': 1024 * 1024 };
-const DEFAULT_BASE = 'https://papercusp-cupboard.aviynw.workers.dev';
+/**
+ * The BRANDED Cupboard host, matching WORKSPACE_HOST_ARTIFACT_ORIGIN in
+ * libs/generic/deployment-driver/src/workspace-host-build-manifest.ts — the origin the artifacts
+ * this script publishes are later FETCHED from, so the two must name the same host.
+ *
+ * ⚠ Deliberately NOT the Worker's own `*.workers.dev` origin. That form embeds the Cloudflare
+ * ACCOUNT SUBDOMAIN (the release owner's GitHub handle); scripts/ ships inside the release bundle,
+ * so a literal here is a personal identity string in the product (WI-38233 / WI-38321).
+ *
+ * ⚠ FROM THE PAPERCUSP DEV BOX this host will hang: that box blackholes TLS to every
+ * papercusp-family name by SNI (EI-16742, agent-insights/su-box-sni-tls-blackhole-not-outage). It
+ * is a LOCAL network filter, not an outage — pass `--base <the worker's own origin>` for a run
+ * from that box rather than changing this default back.
+ */
+const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
 function parseArgs(argv) {
   const out = { base: DEFAULT_BASE, planOnly: false, concurrency: 4 };

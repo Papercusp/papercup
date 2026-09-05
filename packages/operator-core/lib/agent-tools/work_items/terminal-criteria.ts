@@ -574,6 +574,12 @@ export interface TerminalCriteriaCloseOutcome {
   downgrade: boolean;
   /** Every criterion rated `fail`, in {@link TERMINAL_CRITERION_KEYS} order. */
   unmet: TerminalCriterionKey[];
+  /**
+   * The subset of {@link unmet} that actually forces the downgrade (D-016). The difference
+   * is advisory: a criterion can be unmet and reported without changing authority, so a
+   * reader must never infer the downgrade cause from `unmet` alone.
+   */
+  downgrading: TerminalCriterionKey[];
   /** Caller-facing sentence naming every unmet criterion; undefined when none is unmet. */
   warning?: string;
   /** A dropped item declaration that would have LOWERED the effective floor (D-002). */
@@ -616,7 +622,7 @@ export function evaluateCloseTerminalCriteria(
     ? refuseLoweringDeclaration(itemDeclaration, baseline)
     : null;
 
-  const resolved = resolveTerminalCriteria(
+  const declared = resolveTerminalCriteria(
     collectApplicableDeclarations({
       classDeclaration: input.classDeclaration,
       itemDeclaration: refusedDeclaration ? null : itemDeclaration,
@@ -624,6 +630,26 @@ export function evaluateCloseTerminalCriteria(
       sourcePlanSlug: input.sourcePlanSlug,
     }),
   );
+
+  // Seed the DEFAULT set into the union rather than letting a declaration replace it.
+  // `evaluateTerminalCriteria` falls back to DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES only when
+  // the field is ABSENT, so passing the declared set alone would mean an item that declares
+  // one EXTRA forbidden mode silently DROPS `already-passing` — a loosening delivered as a
+  // tightening, which is precisely what D-002 forbids and what the closer most motivated to
+  // write an override would get for free. Seeding also makes `forbiddenEvidenceOnlyModes: []`
+  // unable to disable the criterion at composition scope, which is the correct reading of
+  // "criteria may only ever tighten". (Caught by this module's own union test, not by review.)
+  //
+  // `resolved` carries the EFFECTIVE set, not the declared one: reporting a narrower set than
+  // the one actually enforced would make every downgrade explanation subtly wrong about why.
+  const resolved: ResolvedTerminalCriteria = {
+    ...declared,
+    forbiddenEvidenceOnlyModes: [
+      ...new Set(
+        [...DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES, ...declared.forbiddenEvidenceOnlyModes].map(dispositionKey),
+      ),
+    ].sort(),
+  };
 
   const remediatingKinds = resolved.requireDurableChange
     ? [...DEFAULT_REMEDIATING_KINDS, normalizeToken(input.itemKind)].filter(Boolean)
@@ -638,12 +664,23 @@ export function evaluateCloseTerminalCriteria(
     treeStamp: input.treeStamp,
     verifiedHow: input.verifiedHow,
     remediatingKinds,
-    ...(resolved.forbiddenEvidenceOnlyModes.length > 0
-      ? { forbiddenEvidenceOnlyModes: resolved.forbiddenEvidenceOnlyModes }
-      : {}),
+    forbiddenEvidenceOnlyModes: resolved.forbiddenEvidenceOnlyModes,
   });
 
   const unmet = TERMINAL_CRITERION_KEYS.filter((key) => result.ratings[key].rating === 'fail');
+  // D-016: which unmet criteria actually DOWNGRADE, measured rather than assumed. Over the
+  // 10,320 committed bug/change closes since 2026-08-17, `durable-change` fails on 4,969 —
+  // 48.1%, half of every defect close in the system — while `forbidden-evidence-mode` fails
+  // on 633 (6.1%), of which 74 landed code and are invisible to every other check. A close
+  // can legitimately remediate and declare no path (a config or environment fix, a fix that
+  // landed in a submodule, a duplicate found late), which is the same reason this module
+  // already refuses to admit `task` into DEFAULT_REMEDIATING_KINDS by assumption. So
+  // durable-change WARNS by default and downgrades only where a class or item declaration
+  // opts in with `requireDurableChange` — which is what that field is for, and what makes it
+  // load-bearing rather than decorative.
+  const downgrading = unmet.filter(
+    (key) => key !== 'durable-change' || resolved.requireDurableChange,
+  );
   const warning =
     unmet.length > 0
       ? `${unmet.length} terminal criteri${unmet.length === 1 ? 'on' : 'a'} unmet: ` +
@@ -654,14 +691,17 @@ export function evaluateCloseTerminalCriteria(
           })
           .join(' | ') +
         (resolved.sources.length > 0 ? ` (criteria from ${resolved.sources.join(', ')})` : '') +
-        '. The completion is RECORDED either way; only its authority is downgraded.'
+        (downgrading.length > 0
+          ? '. The completion is RECORDED either way; only its authority is downgraded.'
+          : '. Advisory only — this did NOT change the completion authority.')
       : undefined;
 
   return {
     result,
     resolved,
-    downgrade: unmet.length > 0,
+    downgrade: downgrading.length > 0,
     unmet: [...unmet],
+    downgrading: [...downgrading],
     ...(warning ? { warning } : {}),
     ...(refusedDeclaration ? { refusedDeclaration } : {}),
   };

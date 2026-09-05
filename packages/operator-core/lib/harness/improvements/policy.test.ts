@@ -154,6 +154,61 @@ describe('classifyImprovement — keyword match is WORD-anchored, not substring 
   });
 });
 
+describe('classifyImprovement — declared clean paths outrank the prose keyword proxy (EI-16013)', () => {
+  // The keyword scan is the PRE-PATHS PROXY (see the describe block above): a stand-in for the
+  // path check used when we do not know which files an item touches. Once paths ARE declared and
+  // none is protected, the proxy is answering a question we now have the structured answer to.
+  //
+  // Filing case EI-11109: a sandbox seccomp `listen` syscall denial, gated to human-only because
+  // its body listed "migration helpers" among affected script types. Measured 2026-09-05: 27 of
+  // the 35 items gated on "migration" had declared a non-empty, entirely-unprotected path set.
+  //
+  // BOTH halves are required here for the same reason the block above states — without the
+  // preserved-gate cases a narrowing could silently disarm the TCB proxy, which is the worse
+  // failure. These four cases pin each of the three properties the narrowing must not break.
+
+  const migrationProse = 'the sandbox denies the listen syscall; affects migration helpers and lint scripts';
+
+  it('PRESERVED: no declared paths → the keyword proxy still gates (the proxy fires)', () => {
+    const d = classifyImprovement(cand({ id: 'e1', kind: 'bug', title: 'seccomp denial', body: migrationProse }));
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toBe('migration');
+  });
+
+  it('FIXED: declared paths, none protected → prose mention no longer gates (the proxy yields)', () => {
+    const d = classifyImprovement(
+      cand({
+        id: 'e2',
+        kind: 'bug',
+        title: 'seccomp denial',
+        body: migrationProse,
+        paths: ['packages/operator-core/lib/agent-tools'],
+      }),
+    );
+    expect(d.tier).toBe('auto');
+    expect(d.protectedHit).toBeUndefined();
+    expect(d.reasons.some((r) => r.includes('keyword proxy skipped'))).toBe(true);
+  });
+
+  it('PRESERVED: a declared path that IS protected still gates, whatever the prose says', () => {
+    const d = classifyImprovement(
+      cand({ id: 'e3', kind: 'bug', title: 'benign title', body: 'nothing notable here', paths: ['libs/flags/types.ts'] }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toBe('libs/flags/**');
+  });
+
+  it('PRESERVED: a real migration that declares its migration path is still gated by the PATH rule', () => {
+    // The property that makes the narrowing safe for the filing keyword: an item genuinely
+    // touching a migration is caught by `libs/papercusp/libs/db/sql/**` before the proxy runs.
+    const d = classifyImprovement(
+      cand({ id: 'e4', kind: 'bug', title: 'two rows collide', paths: ['libs/papercusp/libs/db/sql/731-thing.sql'] }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toBe('libs/papercusp/libs/db/sql/**');
+  });
+});
+
 describe('classifyImprovement — OWNER FULL-AUTONOMY grant lifts the protected-path/keyword TCB (Phase 2)', () => {
   const ON = { ownerFullAutonomy: true };
   // A bug touching the deploy gate / flags / capability dispatch / migrations / the

@@ -4,7 +4,9 @@ import {
   DEFAULT_REMEDIATING_KINDS,
   claimsRemediation,
   collectApplicableDeclarations,
+  evaluateCloseTerminalCriteria,
   evaluateTerminalCriteria,
+  readItemTerminalCriteriaDeclaration,
   refuseLoweringDeclaration,
   resolveTerminalCriteria,
   type ProofFloor,
@@ -495,5 +497,237 @@ describe('forbidden evidence-only modes (P-006)', () => {
     expect(honest.ratings['forbidden-evidence-mode'].rating).toBe('pass');
     expect(honest.wouldBlock).toEqual([]);
     expect(honest.verdict).toBe('pass');
+  });
+});
+
+/* -------------------------------------------------------------------------- *
+ * Close-time composition (P-007).
+ * -------------------------------------------------------------------------- */
+
+describe('readItemTerminalCriteriaDeclaration (P-007, D-010)', () => {
+  it('reads a well-formed declaration out of work_items.payload', () => {
+    const declaration = readItemTerminalCriteriaDeclaration(
+      { ideaLifecycle: 'routed', terminalCriteria: { requireDurableChange: true, minProofFloor: 'l4' } },
+      'EI-1',
+    );
+    expect(declaration).toEqual({
+      source: 'item',
+      sourceRef: 'EI-1',
+      requireDurableChange: true,
+      minProofFloor: 'l4',
+    });
+  });
+
+  // payload is free-form JSON written by many callers and is not schema-bound. Every one of
+  // these is a real shape a payload can hold; none may throw and none may coerce.
+  it.each([
+    ['null payload', null],
+    ['a non-object payload', 'terminalCriteria'],
+    ['an array payload', [{ terminalCriteria: { requireDurableChange: true } }]],
+    ['a payload without the key', { ideaLifecycle: 'routed' }],
+    ['a non-object declaration', { terminalCriteria: 'strict' }],
+    ['an array declaration', { terminalCriteria: ['strict'] }],
+    ['a declaration of only unrecognised fields', { terminalCriteria: { strictness: 'max' } }],
+    ['an unrecognised floor', { terminalCriteria: { minProofFloor: 'l9' } }],
+    ['a non-boolean requireDurableChange', { terminalCriteria: { requireDurableChange: 'yes' } }],
+    ['an empty forbidden list', { terminalCriteria: { forbiddenEvidenceOnlyModes: [] } }],
+    ['a forbidden list of non-strings', { terminalCriteria: { forbiddenEvidenceOnlyModes: [1, null] } }],
+  ])('returns null for %s rather than coercing it', (_label, payload) => {
+    expect(readItemTerminalCriteriaDeclaration(payload, 'EI-1')).toBeNull();
+  });
+});
+
+describe('evaluateCloseTerminalCriteria (P-007)', () => {
+  it('D-016: durable-change alone REPORTS but does not downgrade — it fails 48.1% of real defect closes', () => {
+    // Measured 2026-09-05 over the 10,320 committed bug/change closes since 2026-08-17:
+    // durable-change fails on 4,969 of them. A close can legitimately remediate and declare
+    // no path, so a hard downgrade there would re-rate half the system's defect closes on an
+    // assumption — the same assumption this module already refuses to make about `task`.
+    const outcome = evaluateCloseTerminalCriteria({ ...closeNoEvidence, itemRef: 'EI-1' });
+    expect(outcome.unmet).toContain('durable-change');
+    expect(outcome.downgrading).not.toContain('durable-change');
+    expect(outcome.downgrade).toBe(false);
+    // It is still REPORTED — silence would be the other failure.
+    expect(outcome.warning).toContain('durable-change');
+    expect(outcome.warning).toContain('did NOT change the completion authority');
+  });
+
+  it('D-016: an explicit requireDurableChange opt-in turns that same close INTO a downgrade', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      ...closeNoEvidence,
+      itemRef: 'EI-1',
+      payload: { terminalCriteria: { requireDurableChange: true } },
+    });
+    expect(outcome.downgrading).toContain('durable-change');
+    expect(outcome.downgrade).toBe(true);
+    // D-003: the completion is recorded either way — the message must say so, because a
+    // caller who reads "unmet" as "rejected" will re-send a close that already landed.
+    expect(outcome.warning).toContain('RECORDED');
+  });
+
+  it('D-016: forbidden-evidence-mode downgrades BY DEFAULT — it is the measured discriminating case', () => {
+    // 633 of the same 10,320 closes (6.1%), of which 74 landed code and are therefore
+    // invisible to durable-change and to the content-identity stage alike.
+    const outcome = evaluateCloseTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'already-passing',
+      itemRef: 'EI-1',
+    });
+    expect(outcome.result.ratings['durable-change'].rating).toBe('pass');
+    expect(outcome.downgrading).toEqual(['forbidden-evidence-mode']);
+    expect(outcome.downgrade).toBe(true);
+  });
+
+  it('FALSIFIABILITY CONTROL: an honest close does not downgrade and carries no warning', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'unit+integration; added a regression test that fails without the change',
+      itemRef: 'EI-1',
+    });
+    expect(outcome.downgrade).toBe(false);
+    expect(outcome.unmet).toEqual([]);
+    expect(outcome.warning).toBeUndefined();
+  });
+
+  it('D-015: an UNKNOWN rating does NOT downgrade — a measurement failure is not a closer failure', () => {
+    // Declared paths but no observed tree stamp: durable-change rates `unknown`, which
+    // `wouldBlock` includes and this stage deliberately does not act on.
+    const outcome = evaluateCloseTerminalCriteria({
+      itemKind: 'bug',
+      status: 'done',
+      filesChanged: ['packages/operator-core/lib/x.ts'],
+      treeStamp: null,
+      verifiedHow: 'unit',
+      itemRef: 'EI-1',
+    });
+    expect(outcome.result.ratings['durable-change'].rating).toBe('unknown');
+    expect(outcome.result.wouldBlock).toContain('durable-change');
+    expect(outcome.downgrade).toBe(false);
+    expect(outcome.warning).toBeUndefined();
+  });
+
+  it('an item declaration WIDENS requireDurableChange onto a kind outside the default set', () => {
+    const base = { itemKind: 'task', status: 'done', filesChanged: [], treeStamp: null, itemRef: 'EI-1' };
+    // `task` is deliberately outside DEFAULT_REMEDIATING_KINDS, so it is exempt by default.
+    expect(evaluateCloseTerminalCriteria(base).downgrade).toBe(false);
+    const declared = evaluateCloseTerminalCriteria({
+      ...base,
+      payload: { terminalCriteria: { requireDurableChange: true } },
+    });
+    expect(declared.resolved.requireDurableChange).toBe(true);
+    expect(declared.downgrade).toBe(true);
+    expect(declared.unmet).toContain('durable-change');
+  });
+
+  it('an item declaration TIGHTENS the forbidden set by union, never replacing the default', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'smoke-checked',
+      payload: { terminalCriteria: { forbiddenEvidenceOnlyModes: ['smoke-checked'] } },
+      itemRef: 'EI-1',
+    });
+    expect(outcome.resolved.forbiddenEvidenceOnlyModes).toEqual(
+      expect.arrayContaining(['alreadypassing', 'smokechecked']),
+    );
+    expect(outcome.downgrade).toBe(true);
+    expect(outcome.unmet).toEqual(['forbidden-evidence-mode']);
+  });
+
+  it('D-002: an item declaration cannot DISABLE the default forbidden mode by overriding it', () => {
+    // The regression this pins: passing the resolved set straight through let a declaration
+    // REPLACE the default rather than extend it, so declaring one unrelated mode silently
+    // dropped `already-passing`. An override is the first thing an evasive closer writes.
+    for (const declared of [[], ['smoke-checked'], ['manual']]) {
+      const outcome = evaluateCloseTerminalCriteria({
+        ...closeThatSurvived,
+        verifiedHow: 'already-passing',
+        payload: { terminalCriteria: { forbiddenEvidenceOnlyModes: declared } },
+        itemRef: 'EI-1',
+      });
+      expect(outcome.result.ratings['forbidden-evidence-mode'].rating).toBe('fail');
+      expect(outcome.downgrade).toBe(true);
+    }
+  });
+
+  it('D-002: a LOWERING item declaration is refused and reported, never silently honoured', () => {
+    const classDeclaration: TerminalCriteriaDeclaration = {
+      source: 'class',
+      sourceRef: 'class:defect',
+      requireDurableChange: true,
+      minProofFloor: 'l4',
+    };
+    const outcome = evaluateCloseTerminalCriteria({
+      itemKind: 'task',
+      status: 'done',
+      filesChanged: [],
+      treeStamp: null,
+      itemRef: 'EI-1',
+      classDeclaration,
+      payload: { terminalCriteria: { requireDurableChange: false, minProofFloor: 'none' } },
+    });
+    expect(outcome.refusedDeclaration).toMatch(/only tighten/i);
+    // The floor the class set still stands: the override neither applied nor weakened it.
+    expect(outcome.resolved.requireDurableChange).toBe(true);
+    expect(outcome.resolved.minProofFloor).toBe('l4');
+    expect(outcome.downgrade).toBe(true);
+  });
+
+  it('D-010: decision-scope contributes nothing when the item has no source plan', () => {
+    const decisionDeclaration: TerminalCriteriaDeclaration = {
+      source: 'decision',
+      sourceRef: 'some-plan#D-001',
+      forbiddenEvidenceOnlyModes: ['manual'],
+    };
+    const withoutPlan = evaluateCloseTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'manual',
+      decisionDeclaration,
+      itemRef: 'EI-1',
+    });
+    expect(withoutPlan.resolved.sources).not.toContain('some-plan#D-001');
+    expect(withoutPlan.downgrade).toBe(false);
+
+    const withPlan = evaluateCloseTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'manual',
+      decisionDeclaration,
+      sourcePlanSlug: 'some-plan',
+      itemRef: 'EI-1',
+    });
+    expect(withPlan.resolved.sources).toContain('some-plan#D-001');
+    expect(withPlan.downgrade).toBe(true);
+  });
+
+  it('names the contributing criteria sources so a downgrade is attributable', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      itemKind: 'task',
+      status: 'done',
+      filesChanged: [],
+      treeStamp: null,
+      itemRef: 'EI-1',
+      payload: { terminalCriteria: { requireDurableChange: true } },
+    });
+    expect(outcome.warning).toContain('EI-1');
+  });
+
+  it('is total: a hostile payload yields a verdict rather than throwing (D-003)', () => {
+    const hostile = { terminalCriteria: { forbiddenEvidenceOnlyModes: 'already-passing' } };
+    expect(() =>
+      evaluateCloseTerminalCriteria({ ...closeThatSurvived, payload: hostile, itemRef: 'EI-1' }),
+    ).not.toThrow();
+  });
+
+  it('a non-remediating disposition is exempt, so a wontfix close is never downgraded', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      itemKind: 'bug',
+      status: 'done',
+      terminalReason: 'WONT_FIX',
+      filesChanged: [],
+      treeStamp: null,
+      verifiedHow: 'already-passing',
+      itemRef: 'EI-1',
+    });
+    expect(outcome.downgrade).toBe(false);
+    expect(outcome.result.claimsRemediation).toBe(false);
   });
 });

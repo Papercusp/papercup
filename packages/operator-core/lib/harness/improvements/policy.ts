@@ -582,14 +582,45 @@ export function classifyImprovement(
       }
     }
 
-    const hay = `${c.title} ${c.body ?? ''}`.toLowerCase();
-    // EI-19485505354981364: WORD-anchored, not `hay.includes(k)` — a substring test gated 96 items
-    // on the word "author"/"authoritative" alone, and a keyword hit silently removes the row from
-    // every claim queue (needsHuman is claim floor #6). See mentionsProtectedKeyword.
-    const kw = policy.protectedKeywords.find((k) => mentionsProtectedKeyword(hay, k));
-    if (kw) {
-      reasons.push(`mentions protected keyword "${kw}" → human (the deploy gate is the real backstop)`);
-      return { tier: 'human', reasons, protectedHit: kw };
+    // EI-16013: the keyword scan is the PRE-PATHS PROXY (so named by its own test block) — a
+    // stand-in for the path check, used when we do not yet know WHICH files an item touches.
+    // Once an item DECLARES paths and none of them matched a protected pattern above, we already
+    // HAVE the structured answer the proxy was approximating, and an incidental prose mention
+    // must not override it.
+    //
+    // MEASURED (papercusp-workspace/papercusp, 2026-09-05, dev:pg_query with a passing positive
+    // control): of 35 items gated on the word "migration", 27 had declared a non-empty path set
+    // that matched no protected pattern. The filing case, EI-11109, is a sandbox seccomp `listen`
+    // syscall denial that was gated to human-only because its body listed "migration helpers" as
+    // one example of an affected script type. A keyword hit sets payload.needsHuman, which is
+    // claim floor #6, so such a row goes INVISIBLE to every claim queue rather than failing
+    // loudly — the same silent-removal failure mode EI-19485505354981364 documents below.
+    //
+    // This NARROWS the proxy without disarming it — the distinction the EI-19485505354981364
+    // block is emphatic about ("a narrowing could silently disarm the safety gate entirely —
+    // which is the worse failure"). Three properties are preserved exactly:
+    //   1. No declared paths  → the keyword gate fires verbatim (the proxy's actual purpose).
+    //   2. A declared path IS protected → the path check above already returned human.
+    //   3. Migrations specifically stay covered: `libs/papercusp/libs/db/sql/**` is a protected
+    //      path pattern, so a real migration that declares its paths is caught by (2).
+    // Only the strictly-better-evidence case changes behaviour.
+    const declaredPaths = c.paths ?? [];
+    if (declaredPaths.length > 0) {
+      reasons.push(
+        `declared ${declaredPaths.length} path(s), none protected — keyword proxy skipped (structured paths outrank a prose mention)`,
+      );
+    } else {
+      const hay = `${c.title} ${c.body ?? ''}`.toLowerCase();
+      // EI-19485505354981364: WORD-anchored, not `hay.includes(k)` — a substring test gated 96 items
+      // on the word "author"/"authoritative" alone, and a keyword hit silently removes the row from
+      // every claim queue (needsHuman is claim floor #6). See mentionsProtectedKeyword.
+      const kw = policy.protectedKeywords.find((k) => mentionsProtectedKeyword(hay, k));
+      if (kw) {
+        reasons.push(
+          `mentions protected keyword "${kw}" → human (no paths declared, so this is the pre-paths proxy; the deploy gate is the real backstop)`,
+        );
+        return { tier: 'human', reasons, protectedHit: kw };
+      }
     }
   } else {
     reasons.push(

@@ -3199,6 +3199,74 @@ export async function retireAcceptanceRubricForPlan(planSlug: string, by?: strin
 }
 
 /**
+ * Retire a STANDARD rubric — the missing inverse of `ratifyRubric` (EI-20276435149948191).
+ *
+ * WHY THIS EXISTS WHEN THE STATE WAS ALREADY REACHABLE. A rubric IS a plan row, and
+ * `planStatusToRubricStatus` maps a `superseded` plan → a `retired` rubric, so
+ * `plans:set-plan-status { slug: <rubricId>, status:'superseded' }` already flipped one.
+ * That route is not wrong, it is UNDISCOVERABLE and UNGUARDED: an agent looking to retire
+ * a rubric reads the `rubrics:*` surface, finds propose (whole-document replace, resets to
+ * `proposed`), ratify (`proposed`→`active`), amend (criterion prose only) and
+ * set-history-reset (explicitly PRESERVES status) — and correctly concludes there is no
+ * way out of `active`. That is exactly what EI-20276435149948191 filed, after the
+ * 2026-08-09 Mug/Cup/Kettle retirement left `cup-lifecycle-durability`,
+ * `kettle-supervision-health` and `mug-pot-coordination-health` stuck `active`, so the
+ * staleness watchdog (which selects `listRubrics({ status:'active' })`) nagged forever for
+ * scorecards whose instruments had been deleted.
+ *
+ * THE GUARD IS THE OTHER HALF, and it is why this is not just sugar over the plan verb.
+ * An ACCEPTANCE rubric is a per-plan contract that archives WITH its subject plan
+ * (acceptance-rubrics-on-every-plan-2026-08-11 P-005, `retireAcceptanceRubricForPlan`).
+ * Hand-retiring one through the generic plan verb desyncs it from the plan whose
+ * definition-of-done it IS — silently, because the plan verb has no idea it is looking at
+ * a rubric. Refusing that here is the invariant the raw route cannot express.
+ *
+ * Unlike `ratifyRubric` there is deliberately NO author≠actor gate: retiring is a
+ * custodial act (the subsystem is gone), not a governance promotion, and requiring an
+ * independent second party to retire a rubric nobody can grade would strand it forever —
+ * the very failure this fixes. Reversible by re-ratifying.
+ */
+export async function retireRubric(rubricId: string, by?: string, reason?: string): Promise<Rubric | null> {
+  const existing = await getRubric(rubricId);
+  if (!existing) return null;
+  if (existing.kind === 'acceptance') {
+    throw new Error(
+      `invalid_args: retireRubric: '${rubricId}' is an acceptance-kind rubric (the definition-of-done for ` +
+        `${existing.subjectGoal ? `goal '${existing.subjectGoal}'` : `plan '${existing.subjectPlan ?? '?'}'`}) — ` +
+        'acceptance rubrics are never retired by hand: they archive WITH their subject plan ' +
+        '(acceptance-rubrics-on-every-plan-2026-08-11 P-005). Ship or supersede that plan instead.',
+    );
+  }
+  // Idempotent: already-retired is the goal state, not an error. Returning the rubric
+  // (rather than null, which means not-found) keeps those two cases distinguishable.
+  if (existing.status === 'retired') return existing;
+  const scope = await resolveRubricWriteScope(rubricId);
+  const result = await withPlanLock<boolean>(
+    null,
+    {
+      slug: rubricId,
+      intent: `rubrics:retire ${rubricId}`,
+      ...scope,
+      afterWrite: rubricRevisionAfterWrite(
+        rubricId,
+        by,
+        `rubrics:retire → retired${reason ? ` (${reason})` : ''}`,
+      ),
+    },
+    async (current) => {
+      if (current === null) return { newBody: null, value: false };
+      const flipped = setPlanFrontmatterStatus(current, rubricStatusToPlanStatus('retired'));
+      if (flipped === null) return { newBody: null, value: false };
+      return { newBody: bumpUpdatedDate(flipped), value: true };
+    },
+  );
+  if (result.kind === 'busy') {
+    throw new Error(`retireRubric: plan '${rubricId}' is being written by another caller`);
+  }
+  return getRubric(rubricId);
+}
+
+/**
  * Declare the CONTRACT-GENERATION BOUNDARY on a rubric (D-015) — gradings filed before
  * `at` measured a materially different contract and drop out of `scorecardTrend`.
  *

@@ -94,6 +94,7 @@ export type {
   CompletionTreeStampProbe,
   CompletionTreeStampForEvidenceProbe,
 } from './completion-freshness';
+import { evaluateCloseTerminalCriteria } from './terminal-criteria';
 
 // EI-22361433147291495: completion validation + convergence legitimately took
 // 61.8s in the proxy continuation lane. Declare the established long-handler
@@ -3249,7 +3250,47 @@ async function completeOne(
     treeStamp,
     completionEvidenceForGate?.filesDeleted,
   );
-  const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityWithFindings;
+  // P-007: the THIRD downgrade stage, beside `committedContentIdentityMissing`. Those two
+  // ask different questions and neither subsumes the other: content identity asks whether
+  // the DECLARED paths resolve to real blobs, while terminal criteria ask whether a close
+  // CLAIMING remediation landed anything at all and whether its only stated verification can
+  // distinguish a fix from no fix. D-006 measured the discriminating case — a close that
+  // names a genuine mechanism, declares nothing, and attributes the fix to commits that had
+  // already landed — which declares no paths and so never reaches the content-identity stage.
+  //
+  // Fail-open, and never throwing, per D-003: an unmet criterion downgrades a close to
+  // `proposed` while the completion stays RECORDED. A bug in this evaluator must cost a
+  // downgrade at worst, never a lost completion record.
+  let terminalCriteria: ReturnType<typeof evaluateCloseTerminalCriteria> | undefined;
+  try {
+    terminalCriteria = evaluateCloseTerminalCriteria({
+      itemKind: existing.kind,
+      // `status` and `terminalReason` are BOTH the requested terminal state on purpose: it is
+      // the only disposition this close carries, and work-items.ts derives the persisted
+      // `terminal_reason` column from exactly this value.
+      status: String(effectiveState ?? ''),
+      terminalReason: effectiveState ? String(effectiveState) : null,
+      filesChanged: completionEvidenceForGate?.filesChanged,
+      filesDeleted: completionEvidenceForGate?.filesDeleted,
+      treeStamp,
+      verifiedHow: completionEvidenceForGate?.verifiedHow,
+      payload: existing.payload,
+      itemRef: it.id,
+      sourcePlanSlug: existing.sourcePlanSlug,
+    });
+  } catch {
+    /* fail-open: the completion record must never be lost to a criteria evaluation fault */
+  }
+  const terminalCriteriaUnmet = authorityWithFindings === 'committed' && terminalCriteria?.downgrade === true;
+  const terminalCriteriaWarning = terminalCriteria?.downgrade
+    ? `completion for ${it.id}: ${terminalCriteria.warning}` +
+      (terminalCriteriaUnmet
+        ? ` Authority landed 'proposed' rather than 'committed' as a result.`
+        : ` Authority was already '${authorityWithFindings}', so this did not change it.`) +
+      (terminalCriteria.refusedDeclaration ? ` Note: ${terminalCriteria.refusedDeclaration}` : '')
+    : undefined;
+  const completionAuthority =
+    committedContentIdentityMissing || terminalCriteriaUnmet ? 'proposed' : authorityWithFindings;
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
   // exact persisted evidence shape, warn after recording, and fail open if the
@@ -4006,6 +4047,7 @@ async function completeOne(
     ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
     ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
     ...(claimsFalsifiedWarning ? { claimsFalsifiedWarning } : {}),
+    ...(terminalCriteriaWarning ? { terminalCriteriaWarning } : {}),
     // The full per-claim verdict set, including the ones that HELD and the ones that could
     // not be decided — returned even when nothing was falsified, so a closer can see that
     // their claims were actually evaluated rather than silently skipped. A check whose
