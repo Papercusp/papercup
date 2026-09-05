@@ -18,6 +18,56 @@ import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent
 
 export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
 
+/** Ignore only generated completion backlinks and the frontmatter update date.
+ * Everything else, including authored notes, remains an exact comparison. */
+function acceptanceBookkeepingBody(body: string): string {
+  return body
+    .replace(/^---\r?\n[\s\S]*?\r?\n---/, (frontmatter) =>
+      frontmatter.replace(/^updated:.*$/m, 'updated: <bookkeeping>'))
+    .replace(/^(-[ \t]+\*\*P-\d+\*\*[^\r\n]*?) — note: ← (?:WI|EI)-\d+ completed \((?:done|passed|resolved|closed|dropped|deprecated)\)[ \t]*$/gm, '$1');
+}
+
+/** Keep a derived subject-version pin current after a bookkeeping-only write.
+ * Called while the subject lock is held. The rubric try-lock avoids reversing
+ * an amendment's lock order. Criteria, rubric version and spec pins never change. */
+export async function synchronizeAcceptanceBarSubjectRevision(
+  sql: AcceptanceBarAmendmentSql,
+  args: {
+    workspaceId: string; harnessSlug: string; planSlug: string;
+    previousBody: string; nextBody: string; previousVersion: number; nextVersion: number;
+  },
+): Promise<boolean> {
+  if (args.nextVersion !== args.previousVersion + 1 ||
+      acceptanceBookkeepingBody(args.previousBody) !== acceptanceBookkeepingBody(args.nextBody)) return false;
+  const [subject] = await sql<Array<{
+    acceptance_bar_rubric_slug: string; acceptance_bar_rubric_revision: number;
+    acceptance_bar_set_hash: string;
+  }>>`
+    SELECT acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+       AND plan_slug = ${args.planSlug} AND version = ${args.nextVersion}
+       AND content = ${args.nextBody} AND acceptance_bar_rubric_slug IS NOT NULL`;
+  if (!subject) return false;
+  const [lock] = await sql<Array<{ ok: boolean }>>`
+    SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+      hashtext(${planAdvisoryLockKey(args.workspaceId, args.harnessSlug, subject.acceptance_bar_rubric_slug)})) AS ok`;
+  if (!lock?.ok) throw new Error('acceptance_bar_subject_revision_rubric_busy');
+  const rows = await sql`
+    UPDATE harness_shared.harness_plans
+       SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
+             to_jsonb(${args.nextVersion}::integer)), origin = 'local'
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+       AND plan_slug = ${subject.acceptance_bar_rubric_slug}
+       AND version = ${subject.acceptance_bar_rubric_revision}
+       AND template = 'rubric' AND template_data->>'kind' = 'acceptance'
+       AND template_data->>'subjectPlan' = ${args.planSlug}
+       AND template_data->>'barSetHash' = ${subject.acceptance_bar_set_hash}
+       AND template_data->'barContract'->>'subjectPlanRevision' = ${String(args.previousVersion)}
+    RETURNING plan_slug`;
+  return rows.length === 1;
+}
+
 /** A reviewer posts this JSON through an authenticated Threadable verb (for
  * example work_items:comment). Authorship/time come from the append-only post,
  * never from this body or the amendment caller. Per-BAR hashes permit one review

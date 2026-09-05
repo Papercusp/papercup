@@ -351,9 +351,11 @@ export async function withPlanLock<T>(
         input_schema: unknown;
         output_schema: unknown;
         op_status: string | null;
+        acceptance_bar_rubric_slug: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, template, template_data, input_schema, output_schema, op_status
+      SELECT content, version, content_hash, template, template_data, input_schema, output_schema, op_status,
+             acceptance_bar_rubric_slug
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -745,6 +747,16 @@ export async function withPlanLock<T>(
              AND plan_slug = ${slug}
         `;
       }
+    }
+
+    if (newBody !== null && cur?.acceptance_bar_rubric_slug &&
+        !writesTemplateData && !inputSchema && !outputSchema) {
+      const { synchronizeAcceptanceBarSubjectRevision } = await import('../../acceptance-bar-amendment');
+      await synchronizeAcceptanceBarSubjectRevision(tx, {
+        workspaceId, harnessSlug, planSlug: slug,
+        previousBody: cur.content, nextBody: newBody,
+        previousVersion: curVersion, nextVersion: newVersion,
+      });
     }
 
     // Thread the committed structured value to afterWrite. A body-only write
