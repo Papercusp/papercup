@@ -81,6 +81,7 @@ import TurnRail from './TurnRail';
 import {
   deriveSessionTurns,
   resolveFocusPrecedence,
+  turnAtInstant,
   turnAtMessageIndex,
   type SessionTurn,
 } from './session-turn-index';
@@ -1319,7 +1320,23 @@ export function LiveSessionChat({
  * HUD and PreviewPanel, none of which cap their host and none of which asked
  * for a clamp.
  */
-function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: () => void }) {
+function DecisionCard({
+  item,
+  onResolved,
+  askedAtIndex = null,
+  onJump,
+}: {
+  item: AttentionItem;
+  onResolved: () => void;
+  /**
+   * Message index of the turn this ask was made in, or null when it could not
+   * be DERIVED (see `turnAtInstant`). Null is the common case and renders no
+   * link — the parent never passes a fallback, because a jump to the wrong
+   * message is worse than no jump and would pass a presence-only check.
+   */
+  askedAtIndex?: number | null;
+  onJump?: (messageIndex: number) => void;
+}) {
   // Collapsed by default: the shelf's job is "how many decisions, and roughly
   // what" — reading one in full is the deliberate act. `overflowing` is set by
   // the layout effect below, so the toggle never appears on a card that already
@@ -1368,6 +1385,26 @@ function DecisionCard({ item, onResolved }: { item: AttentionItem; onResolved: (
           resets on selection change — same contract as OtherDetail's other
           hosts (the Queue's PlansClient, the HUD, PreviewPanel). */}
       <OtherDetail key={item.id} item={item} onResolved={onResolved} />
+      {/* D-007 step 5 (WI-7323): the card answers "what needs you"; this answers
+          "why". It scrolls the transcript BELOW to the turn the agent was in
+          when it filed the ask — the same `onRailJump` the Orders rail drives,
+          so the shelf and the rail cannot scroll to different places.
+
+          Rendered ONLY when the parent could derive the target: `askedAtIndex`
+          is null whenever the ask predates this transcript or the session was
+          idle when it was filed (see `turnAtInstant`). There is deliberately no
+          fallback target — "jump to the agent's last message" would look right
+          in a screenshot and be wrong in the reading. */}
+      {askedAtIndex !== null && onJump ? (
+        <button
+          type="button"
+          className="pc-chat-decisions__asked-at"
+          data-testid="decision-asked-at"
+          onClick={() => onJump(askedAtIndex)}
+        >
+          see where this was asked ↑
+        </button>
+      ) : null}
       {/* `expanded ||` is the other half of the strand fix above: once open, the
           toggle is the ONLY way back, so it must survive its own success. */}
       {expanded || overflowing ? (
@@ -1836,6 +1873,21 @@ export default function SessionChatModal({
   const onRailJump = useCallback((messageIndex: number) => {
     setJump((prev) => ({ index: messageIndex, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
+
+  /* D-007 step 5 (WI-7323): per-pending-card jump target, derived HERE because
+     this is the only scope holding both the cards and `turns` (the rail's own
+     index, published up from LiveSessionChat). Keyed by item id rather than
+     position so a card that arrives or resolves cannot shift another card's
+     target. An item missing from the map has NO derivable target and renders no
+     link — see `turnAtInstant` for why -1 is the honest answer there. */
+  const askedAtJumpIndex = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const it of pendingEscalations) {
+      const t = turnAtInstant(turns, it.occurredAt);
+      if (t >= 0) out.set(it.id, turns[t].jumpIndex);
+    }
+    return out;
+  }, [pendingEscalations, turns]);
 
   const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
   const ordersOpen = ordersParam ?? !isOrdersNarrow;
@@ -2540,7 +2592,13 @@ export default function SessionChatModal({
             </p>
             <div className="pc-chat-decisions__list">
               {pendingEscalations.map((i) => (
-                <DecisionCard key={i.id} item={i} onResolved={refreshAttention} />
+                <DecisionCard
+                  key={i.id}
+                  item={i}
+                  onResolved={refreshAttention}
+                  askedAtIndex={askedAtJumpIndex.get(i.id) ?? null}
+                  onJump={onRailJump}
+                />
               ))}
             </div>
           </section>

@@ -2051,25 +2051,36 @@ find yourself appending `; echo "EXIT=$?"` to a `capability:bash` command,
 that is a sign you're hand-rolling something the tool already gives you for
 free.
 
-⚠ **Never combine `capability:bash { run_in_background: true }` with your own
-manual trailing `&` inside the command — it double-backgrounds, and the tool's
-"completed" notification then lies.** `run_in_background: true` already
-backgrounds the whole command for you; adding your own `&` (e.g.
+⚠ **Never combine `run_in_background: true` with your own manual trailing `&`,
+`nohup … &`, or `setsid` inside the command — it double-backgrounds, and the
+tool's "completed" notification then lies.** This holds for BOTH backgrounding
+doors: `capability:bash` (EI-19389748740902475) and the NATIVE `Bash` tool
+(EI-19408257709127659, where `nohup npm run test:affected > log 2>&1 &`
+reported `status:"completed"`, exit 0, while `ps` and the log showed the
+operator-core suite only just starting) — reading the trap as
+capability-specific is exactly how it recurs. `run_in_background: true`
+already backgrounds the whole command; adding your own `&` (e.g.
 `(cmd > log 2>&1; echo EXIT=$? >> log) &`) forks a SECOND, untracked layer of
 backgrounding whose child detaches from the job the tool is tracking. The
 outer wrapper — the part the tool actually sees — returns almost immediately
-after printing "launched pid $!", so `capability:bash_output` reports
-"Background command completed (exit code 0)" while the real leaf process
-(confirmed alive via `pgrep`, and via `tail --pid=<leaf> -f /dev/null`) is
-still running, unfinished, for minutes afterward — with a 0-byte log at the
-moment of the false "completion" (EI-19389748740902475). This is the same
+after printing "launched pid $!", so the completion notification reports
+"completed (exit code 0)" while the real leaf process (confirmed alive via
+`pgrep`, and via `tail --pid=<leaf> -f /dev/null`) is still running,
+unfinished, for minutes afterward — with a 0-byte log at the moment of the
+false "completion". Note what is worse here than in the exit-code traps
+elsewhere in this section: the COMPLETION ITSELF is false, not merely its
+code, and the leaf's real exit is never reported at all. This is the same
 wrapper-PID-vs-leaf-PID class the note below documents for `npm run <target>`,
 but it needs no intermediate `npm` wrapper at all — just pass the plain
-command and let `run_in_background: true` do the backgrounding; never add your
-own `&`. If you must background manually inside a compound command anyway,
-resolve the real leaf PID and wait on it explicitly (`tail --pid=<leaf> -f
-/dev/null`) or poll the log for a terminal marker before trusting the tool's
-own "completed" notification.
+foreground-shaped command and let `run_in_background: true` do the
+backgrounding; never add your own `&`. If you must background manually inside
+a compound command anyway, resolve the real leaf PID and wait on it explicitly
+(`tail --pid=<leaf> -f /dev/null`) or poll the log for a terminal marker
+before trusting the tool's own "completed" notification. The PreToolUse bash
+gate now advises on this at the call site for the native `Bash` tool
+(`double-background advisory`), so prose is no longer the only line of
+defence.
+
 
 ⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f` matches the FULL command line, and your own `bash -c` argv contains the literal pattern, so the poll matches ITSELF and the condition stays true forever — the same self-match class as the documented `pkill -f` trap. `ps … | grep <pat>` loop conditions share the defect, and `grep -v grep` does NOT save you (the `bash -c` wrapper still matches). The PreToolUse gate now denies the loop form. Wait on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the loop) — or, if you genuinely must pattern-poll, bracket the first character so the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
 

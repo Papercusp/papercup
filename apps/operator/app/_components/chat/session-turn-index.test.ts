@@ -19,6 +19,7 @@ import {
   deriveSessionTurns,
   pickTopMessageIndex,
   resolveFocusPrecedence,
+  turnAtInstant,
   turnAtMessageIndex,
   turnSizeRatios,
 } from './session-turn-index';
@@ -292,5 +293,100 @@ describe('pickTopMessageIndex (P-005 — what makes the rail an indicator, not a
 
   it('returns -1 for an empty transcript', () => {
     expect(pickTopMessageIndex([], 32)).toBe(-1);
+  });
+});
+
+/**
+ * turnAtInstant — the "see where this was asked ↑" derivation (WI-7323 / D-007
+ * step 5). The cases carrying the weight are the REFUSALS: the link is only
+ * shippable because it can say "not here", and every -1 below is a transcript a
+ * nearest-neighbour implementation would answer confidently and wrongly.
+ */
+describe('turnAtInstant', () => {
+  const TURNS = deriveSessionTurns(TWO_TURNS);
+
+  it('places an instant inside a turn on that turn', () => {
+    expect(turnAtInstant(TURNS, iso(60_000))).toBe(0);
+    expect(turnAtInstant(TURNS, iso(300_000))).toBe(1);
+  });
+
+  it('places an instant exactly on a question at that turn', () => {
+    expect(turnAtInstant(TURNS, iso(0))).toBe(0);
+    expect(turnAtInstant(TURNS, iso(180_000))).toBe(1);
+  });
+
+  it('refuses an instant BEFORE the first question — the ask predates this transcript', () => {
+    // The carry-respawn case: the owner id survives a respawn, the transcript
+    // does not. Clamping to turn 0 here IS the wrong-message failure.
+    expect(turnAtInstant(TURNS, iso(-1))).toBe(-1);
+    expect(turnAtInstant(TURNS, iso(-86_400_000))).toBe(-1);
+  });
+
+  it('refuses an instant after a SETTLED transcript — no turn was running', () => {
+    // TWO_TURNS ends with an answer, so the session was idle at iso(580_001).
+    expect(turnAtInstant(TURNS, iso(580_001))).toBe(-1);
+    expect(turnAtInstant(TURNS, iso(9_000_000))).toBe(-1);
+  });
+
+  it('refuses after a transcript whose final answer exists but is UNSTAMPED', () => {
+    // The distinction the component test caught (2026-09-04): `answeredAt` is
+    // null here because the feed stamped nothing, NOT because the turn is still
+    // running. Keying "settled" off `answeredAt` reads this as open-ended, and
+    // then an ask filed hours later links to the last turn. `answerIndex` is
+    // derived from the messages, so it cannot drift with the metadata.
+    const unstampedAnswer = deriveSessionTurns([user('q', iso(0)), agent('a')]);
+    expect(unstampedAnswer[0].answeredAt).toBeNull();
+    expect(unstampedAnswer[0].answerIndex).toBe(1);
+    expect(turnAtInstant(unstampedAnswer, iso(9_000_000))).toBe(-1);
+    // …while an instant INSIDE its known span still resolves.
+    expect(turnAtInstant(unstampedAnswer, iso(0))).toBe(0);
+  });
+
+  it('accepts an instant after the last question while that turn is STILL STREAMING', () => {
+    // The live case the link exists for: the agent filed the ask mid-turn and
+    // has not answered yet, so there is no answeredAt to bound against.
+    const streaming = deriveSessionTurns([...TWO_TURNS, user('and now?', iso(700_000))]);
+    expect(streaming[2].answeredAt).toBeNull();
+    expect(turnAtInstant(streaming, iso(760_000))).toBe(2);
+  });
+
+  it('attaches a gap instant to the turn that was most recently running', () => {
+    // Between turn 1's answer (130s) and turn 2's question (180s) the agent is
+    // idle. Pinned rather than left to chance: an emission from that owner
+    // originated in the turn that just ran, not in one not yet asked.
+    expect(turnAtInstant(TURNS, iso(150_000))).toBe(0);
+  });
+
+  it('refuses a missing or unparseable stamp', () => {
+    expect(turnAtInstant(TURNS, null)).toBe(-1);
+    expect(turnAtInstant(TURNS, undefined)).toBe(-1);
+    expect(turnAtInstant(TURNS, '')).toBe(-1);
+    expect(turnAtInstant(TURNS, 'sometime last tuesday')).toBe(-1);
+  });
+
+  it('refuses every instant when the feed stamps no questions', () => {
+    // A feed with no `ts` yields askedAt: null on every turn. The honest result
+    // is no links at all, never links derived from position.
+    const unstamped = deriveSessionTurns([user('a'), agent('b'), user('c'), agent('d')]);
+    expect(unstamped).toHaveLength(2);
+    expect(turnAtInstant(unstamped, iso(60_000))).toBe(-1);
+  });
+
+  it('refuses on an empty transcript', () => {
+    expect(turnAtInstant([], iso(60_000))).toBe(-1);
+  });
+
+  it('PROBE', async () => {
+    const { sessionTimelineToChatMessages } = await import('./session-transcript-mapping');
+    const msgs = sessionTimelineToChatMessages([
+      { kind: 'prompt', text: 'first question', ts: iso(0) },
+      { kind: 'text', text: 'first answer', ts: iso(60_000) },
+      { kind: 'prompt', text: 'second question', ts: iso(120_000) },
+      { kind: 'text', text: 'second answer', ts: iso(180_000) },
+    ] as never);
+    const t = deriveSessionTurns(msgs);
+    throw new Error(
+      JSON.stringify({ msgs: msgs.map((m) => ({ r: m.role, ts: m.ts, c: m.content })), t }),
+    );
   });
 });

@@ -1838,6 +1838,33 @@ button.pc-ctl-name:not(:disabled):focus-visible {
   outline-offset: -2px;
 }
 
+/* D-007 step 5 (WI-7323): "see where this was asked ↑" — scrolls the transcript
+   below to the turn the agent filed the ask in. Rendered only when that turn
+   could be DERIVED from the ask's timestamp, so its absence is the normal state
+   and must not leave a gap: no reserved height, no border of its own.
+
+   Deliberately quieter than `__more`: `__more` reveals the rest of THIS card and
+   is the card's own primary affordance, while this one navigates away from the
+   shelf. Same block, one weight down. */
+.pc-chat-decisions__asked-at {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  padding: 0 12px 5px;
+  color: var(--fg-mute);
+  font-size: 11px;
+  cursor: pointer;
+}
+.pc-chat-decisions__asked-at:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+.pc-chat-decisions__asked-at:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* ── What the buttons DO ─────────────────────────────────────────────────────
  * [owner 2026-08-09] "What do those buttons actually do its unclear."
  * Sits under the cap, above the cards: the answer/Discuss split is a property

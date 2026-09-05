@@ -1564,6 +1564,84 @@ describe('SessionChatModal', () => {
       expect(shelf.querySelector('.pc-chat-decisions__count')?.textContent).toBe('2');
     });
 
+    /* D-007 step 5 (WI-7323): "see where this was asked ↑".
+       The link is only shippable because it REFUSES: nothing on an escalation
+       record names a transcript position (no session id, no message index —
+       key census over the live coord_open_escalations, 2026-09-04), so the
+       target is DERIVED by bracketing the ask's `occurredAt` into the turn that
+       was running. A wrong target is worse than no link AND passes a
+       presence-only check, so the three refusals below carry more weight than
+       the positive case. The bracket itself is unit-tested in
+       session-turn-index.test.ts; what these pin is that the popup feeds the
+       right item's stamp to it and renders nothing when it declines. */
+    const ASK_T0 = Date.parse('2026-09-04T12:00:00.000Z');
+    const askAt = (msAfter: number) => new Date(ASK_T0 + msAfter).toISOString();
+
+    /** A settled two-turn transcript (Q 0s / A 60s, Q 120s / A 180s). */
+    async function renderWithTranscript(items: AttentionItem[]) {
+      seedAttention(items);
+      mockFetchOnce(200, {
+        sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }],
+      });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(
+          JSON.stringify([
+            { kind: 'prompt', text: 'first question', ts: askAt(0) },
+            { kind: 'text', text: 'first answer', ts: askAt(60_000) },
+            { kind: 'prompt', text: 'second question', ts: askAt(120_000) },
+            { kind: 'text', text: 'second answer', ts: askAt(180_000) },
+          ]),
+        );
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy(),
+      );
+    }
+
+    it('offers "see where this was asked" when the ask lands inside a turn of THIS transcript', async () => {
+      await renderWithTranscript([mkEscalation('esc-1', { occurredAt: askAt(30_000) })]);
+      await waitFor(() => expect(screen.getByTestId('decision-asked-at')).toBeTruthy());
+      expect(screen.getByTestId('decision-asked-at').textContent).toMatch(
+        /see where this was asked/i,
+      );
+    });
+
+    it('offers NO link when the ask predates this transcript (the carry-respawn case)', async () => {
+      await renderWithTranscript([mkEscalation('esc-1', { occurredAt: askAt(-3_600_000) })]);
+      expect(screen.queryByTestId('decision-asked-at')).toBeNull();
+    });
+
+    it('offers NO link when the ask arrived after the session had settled', async () => {
+      await renderWithTranscript([mkEscalation('esc-1', { occurredAt: askAt(9_000_000) })]);
+      const link = screen.queryByTestId('decision-asked-at');
+      if (link) {
+        throw new Error(
+          JSON.stringify({
+            LINKED: true,
+            cards: screen.queryAllByTestId('other-detail').map((c) => c.getAttribute('data-item')),
+            rows: screen.queryAllByTestId('turn-rail-row').map((r) => r.getAttribute('aria-label')),
+          }),
+        );
+      }
+      expect(link).toBeNull();
+    });
+
+    it('offers NO link when the item carries no timestamp at all', async () => {
+      await renderWithTranscript([mkEscalation('esc-1')]);
+      expect(screen.queryByTestId('decision-asked-at')).toBeNull();
+    });
+
+    it('resolves each card against its OWN stamp rather than the shelf as a whole', async () => {
+      await renderWithTranscript([
+        mkEscalation('esc-1', { occurredAt: askAt(30_000) }),
+        mkEscalation('esc-2', { occurredAt: askAt(-3_600_000) }),
+      ]);
+      await waitFor(() => expect(screen.getAllByTestId('other-detail')).toHaveLength(2));
+      expect(screen.getAllByTestId('decision-asked-at')).toHaveLength(1);
+    });
+
     /* [owner 2026-08-09] "What do those buttons actually do its unclear."
        The legend is the only thing on this surface that distinguishes an
        ANSWER (terminal — replies to the agent, wakes it, closes the record)

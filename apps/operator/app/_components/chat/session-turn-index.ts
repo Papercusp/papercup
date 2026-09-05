@@ -165,6 +165,70 @@ export function turnAtMessageIndex(turns: readonly SessionTurn[], messageIndex: 
 }
 
 /**
+ * Which turn was RUNNING at a wall-clock instant — the derivation behind the
+ * pending-decision card's "see where this was asked ↑" link
+ * (session-popup-compaction-and-contrast-2026-08-02 D-007 step 5 / WI-7323).
+ *
+ * An owner-owed ask (`coord:escalate` / `coord:ask`) is created by a tool call
+ * the agent makes INSIDE one of its turns, so the turn whose window contains
+ * the item's `occurredAt` IS the turn where it was asked. Nothing on the record
+ * itself says so, which is why the bracket is the derivation rather than a
+ * lookup: a key census over the live `harness_shared.coord_open_escalations`
+ * (269 rows, 2026-09-04) found no session id and no message index in `body`,
+ * and `AttentionItem.ref` carries only `msgId` / `conversationId`.
+ *
+ * Returns the turn's position in the array (0-based), or -1 whenever the
+ * instant cannot be placed. -1 is the answer in every uncertain case, on
+ * purpose: a link that lands on the WRONG message is worse than no link, and it
+ * would look correct in a presence-only check.
+ *  - No stamp, or an unparseable one.
+ *  - BEFORE the first question: the ask predates this transcript. This is the
+ *    ordinary carry-respawn case — an owner id survives a respawn, the
+ *    transcript does not — so it must degrade rather than clamp to turn 0.
+ *  - AFTER a SETTLED transcript: the session was idle when the ask was made, so
+ *    no turn owns it.
+ *
+ * "Settled" is `answerIndex === null` on the final turn — whether an answer
+ * EXISTS — and deliberately not `answeredAt === null`, whether that answer is
+ * STAMPED. The two look interchangeable and are not: a feed can deliver a
+ * complete, answered turn whose answer carries no `ts` (measured against the
+ * popup's own backfill path, 2026-09-04), and reading that as "still streaming"
+ * makes the final turn open-ended forever — so an ask filed hours after the
+ * session went quiet links to it. `answerIndex` cannot drift that way, because
+ * it is derived from the messages rather than from their metadata.
+ *
+ * Turns with no `askedAt` are skipped rather than guessed at; a feed that
+ * stamps nothing yields -1 for every item, which renders no links at all.
+ */
+export function turnAtInstant(
+  turns: readonly SessionTurn[],
+  iso: string | null | undefined,
+): number {
+  const at = parseMs(iso);
+  if (at === null) return -1;
+
+  const dated: { index: number; start: number; end: number | null }[] = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    const start = parseMs(turns[i].askedAt);
+    if (start === null) continue;
+    dated.push({ index: i, start, end: parseMs(turns[i].answeredAt) });
+  }
+  if (dated.length === 0) return -1;
+
+  if (at < dated[0].start) return -1;
+  const last = dated[dated.length - 1];
+  // Open-ended only while the final turn genuinely has no answer yet — the live
+  // case the link exists for. Otherwise the transcript is settled and cannot own
+  // an instant past its own last stamp.
+  if (turns[last.index].answerIndex !== null && at > (last.end ?? last.start)) return -1;
+
+  for (let k = dated.length - 1; k >= 0; k -= 1) {
+    if (at >= dated[k].start) return dated[k].index;
+  }
+  return -1;
+}
+
+/**
  * Relative size of each turn, 0..1, for the spine density's tick heights
  * (D-003). Scaled against the LARGEST turn in the session rather than an
  * absolute message count, so the shape of the session is legible whether it is

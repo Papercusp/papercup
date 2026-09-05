@@ -129,12 +129,49 @@ describe('resolveTierSpec — user-defined menu', () => {
     expect(r).toMatchObject({ ok: true, spec: 'sonnet:high', tier: 'normal', clamped: 'floor' });
   });
 
-  it('a role default whose model id is NOT in the menu yields no floor (no clamp)', () => {
+  // WI-7340. This case previously asserted the OPPOSITE ("yields no floor (no
+  // clamp)") — an off-menu role default let ANY pick through unclamped, so
+  // release-manager (committed opus:xhigh for deploy-gate blast radius) silently
+  // resolved to haiku, the exact downgrade EI-7/EI-286 exists to prevent. The
+  // behavior was changed deliberately, not fixed by accident: with the default
+  // off the ladder there is no basis to rank it, so the role freezes on its own
+  // default rather than moving to an unrankable pick.
+  const noOpus = [{ name: 'eco', spec: 'haiku' }, { name: 'normal', spec: 'sonnet' }];
+
+  it('OFF-LADDER FLOOR: a role default absent from the menu freezes the role on that default', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     // release-manager default opus:xhigh — no opus tier in this menu.
-    const noOpus = [{ name: 'eco', spec: 'haiku' }, { name: 'normal', spec: 'sonnet' }];
     const r = resolveTierSpec({ tier: 'eco', role: 'release-manager', tiers: noOpus });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'role-default', requestedTier: 'eco', clamped: 'floor' });
+    expect((r as { note: string }).note).toContain('not on the configured tier menu');
+  });
+
+  it('OFF-LADDER FLOOR outranks a ceiling too (no common rank ⇒ staying put is the only safe choice)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'normal', role: 'release-manager', tiers: noOpus, tierCeilings: { 'release-manager': 'eco' } });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'role-default', clamped: 'floor' });
+  });
+
+  it('OFF-LADDER FLOOR is distinct from NO default: an empty default still takes any tier unclamped', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // Both reach tierRankOfSpec === -1; only the off-ladder one has a floor to
+    // protect, so collapsing the two would wrongly freeze floorless roles.
+    const r = resolveTierSpec({ tier: 'eco', role: 'reviewer', tiers: noOpus });
     expect(r).toMatchObject({ ok: true, spec: 'haiku', tier: 'eco' });
+    expect(r).not.toHaveProperty('clamped');
+  });
+
+  it('an unknown tier still fails LOUD for an off-ladder role (caller bug ≠ frozen resolution)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    const r = resolveTierSpec({ tier: 'nope', role: 'release-manager', tiers: noOpus });
+    expect(r.ok).toBe(false);
+  });
+
+  it('OFF-LADDER FLOOR composes with resolveRoleOwnModelSpec as "no override"', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // clamped:'floor' is the documented no-override signal, so an off-ladder
+    // role never has its committed pin replaced by a weaker menu row.
+    expect(resolveRoleOwnModelSpec('release-manager', { tiers: noOpus })).toBeNull();
   });
 
   it('an empty tiers array falls back to the default menu', () => {

@@ -23,6 +23,11 @@
 import { DEFAULT_MODEL_TIERS, defaultCompactionLimitForTier, type ModelTier } from '../agent-config-constants';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
 
+/** The `tier` reported when a role is frozen on an OFF-MENU default (WI-7340):
+    no menu tier applies, so naming one would misreport what the spawn runs at.
+    Pairs with `clamped:'floor'` — never a name a caller may pass IN. */
+export const OFF_MENU_TIER = 'role-default';
+
 export interface TierResolution {
   ok: true;
   /** The model spec to thread into the spawn (PAPERCUSP_SPAWN_MODEL). */
@@ -146,6 +151,54 @@ export function resolveTierSpec(opts: {
   let clamped: TierResolution['clamped'];
   let note: string | undefined;
 
+  const roleFloorSpec = roleDefaultSpec(opts.role);
+  const floorIdx = tierRankOfSpec(tiers, roleFloorSpec);
+
+  // OFF-LADDER FLOOR (WI-7340). `tierRankOfSpec` returns -1 for two DIFFERENT
+  // reasons and they must not be collapsed:
+  //   (a) the role has NO default at all (roleFloorSpec === '') — there is
+  //       genuinely no floor to enforce, so any pick resolves unclamped;
+  //   (b) the role HAS a default, but its model family is absent from this
+  //       menu (e.g. a role pinned to a cross-provider model while the menu
+  //       lists only claude tiers).
+  // In case (b) the floor is real but the MENU cannot rank it, so the old
+  // `floorIdx >= 0` gate skipped the clamp entirely and let ANY pick through —
+  // including the cheapest. That silently defeated the never-downgrade
+  // invariant for exactly the role it exists to protect: one whose default was
+  // deliberately raised (EI-7/EI-286 — every committed role default here is
+  // opus:xhigh precisely because a wrong call has fleet-wide blast radius).
+  //
+  // Menu rank is not the only ranking available, though. Where BOTH specs are
+  // known Claude classes we can still order them (haiku < sonnet < opus) and
+  // catch a real downgrade; that is the dangerous half. Freezing on EVERY
+  // unrankable floor instead would break the owner's own-model lever, because
+  // a small hand-written menu routinely omits the role's default family: `cup`
+  // defaults to sonnet, so the one-row menu [standard: opus:xhigh] that exists
+  // to RAISE it also lands here (floorIdx === -1) and would be refused as if it
+  // were a downgrade. Cross-provider picks stay allowed for the same reason
+  // resolveRoleOwnModelSpec returns them unchanged: a spec from another
+  // provider is explicit owner intent, not a silent slide.
+  //
+  // So: clamp only a DEMONSTRABLE downgrade; otherwise resolve normally but say
+  // the floor went unenforced, which is what makes the remaining gap loud
+  // rather than invisible.
+  if (roleFloorSpec && floorIdx < 0) {
+    const floorRank = modelClassRank(roleFloorSpec);
+    const pickRank = modelClassRank(tiers[idx].spec);
+    if (floorRank > 0 && pickRank > 0 && pickRank < floorRank) {
+      return {
+        ok: true,
+        spec: roleFloorSpec,
+        tier: OFF_MENU_TIER,
+        requestedTier: requested,
+        compactionLimit: defaultCompactionLimitForTier({ name: OFF_MENU_TIER, spec: roleFloorSpec }),
+        clamped: 'floor',
+        note: `role "${opts.role}" default "${roleFloorSpec}" is not on the configured tier menu (${tiers.map((t) => t.name).join(', ')}), and tier "${requested}" (${tiers[idx].spec}) is a WEAKER model class — the role stays on its own default (a role never silently downgrades, EI-7/EI-286). Steer an off-menu role via AGENT_MODELS.`,
+      };
+    }
+    note = `role "${opts.role}" default "${roleFloorSpec}" is not on the configured tier menu (${tiers.map((t) => t.name).join(', ')}), so the never-downgrade floor could NOT be enforced by menu rank; tier "${requested}" (${tiers[idx].spec}) was allowed because it is not a demonstrably weaker model class.`;
+  }
+
   // Ceiling, then floor — so when the two conflict (ceiling configured BELOW
   // the role's default) the floor wins: running at the role's default is what
   // happens with no tier at all, so a ceiling can never force a downgrade.
@@ -161,7 +214,8 @@ export function resolveTierSpec(opts: {
     }
   }
 
-  const floorIdx = tierRankOfSpec(tiers, roleDefaultSpec(opts.role));
+  // floorIdx < 0 can only mean the EMPTY-default case (a) here — the off-ladder
+  // case (b) returned above — so this stays the plain "rankable floor" clamp.
   if (floorIdx >= 0 && idx < floorIdx) {
     idx = floorIdx;
     clamped = 'floor';
@@ -175,8 +229,22 @@ export function resolveTierSpec(opts: {
     requestedTier: requested,
     ...(tiers[idx].backend ? { backend: tiers[idx].backend } : {}),
     compactionLimit: tiers[idx].compactionLimit ?? defaultCompactionLimitForTier(tiers[idx]),
-    ...(clamped ? { clamped, note } : {}),
+    ...(clamped ? { clamped } : {}),
+    // Emitted independently of `clamped`: an off-menu floor that could NOT be
+    // enforced by rank produces a note with no clamp, and that combination is
+    // the whole point — the gap is reported instead of passing silently.
+    ...(note ? { note } : {}),
   };
+}
+
+/** Coarse capability rank of a spec's model CLASS — haiku < sonnet < opus, and
+    0 for `other` meaning NOT COMPARABLE (a cross-provider model, whose strength
+    relative to the Claude ladder this module deliberately does not guess).
+    Only ever used to detect a demonstrable DOWNGRADE; a 0 on either side means
+    "no verdict", never "weakest". */
+function modelClassRank(spec: string): number {
+  const cls = specModelClass(spec);
+  return cls === 'haiku' ? 1 : cls === 'sonnet' ? 2 : cls === 'opus' ? 3 : 0;
 }
 
 /** The coarse model CLASS of a spec — a local mirror of the governor's `modelClassOf` so model-tiers

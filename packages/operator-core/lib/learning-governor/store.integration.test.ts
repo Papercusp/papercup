@@ -38,7 +38,18 @@ beforeAll(async () => {
   containerUri = await getTestPg();
   const { databaseUri } = await provisionGymDatabase({ maintenanceUri: containerUri, dbName });
   sql = postgres(databaseUri, { max: 2, onnotice: () => {}, prepare: false });
-}, 180_000);
+  // Budget is MEASURED, not guessed (2026-09-04): on this box getTestPg() returns
+  // in ~1.2s and provisionGymDatabase() takes ~165s, because it re-applies all 934
+  // migrations serially into a fresh database on EVERY run. Against the family's
+  // customary 180_000 that leaves ~8% headroom, so ordinary fleet load tips the hook
+  // over and Vitest cancels — reporting `Hook timed out` with 26 assertions COLLECTED
+  // BUT NOT RUN, which reads like a red suite while actually producing no evidence
+  // either way. 180_000 also exactly equals TESTCONTAINER_START_LOCK_TIMEOUT_MS, whose
+  // contract asks callers to leave headroom so the lock's own diagnostic can surface
+  // instead of being cancelled first. The provisioning COST is the real defect and is
+  // tracked separately (template-database reuse via the existing getOrBuildTemplate);
+  // this budget just stops that cost from silently masquerading as a P-005 failure.
+}, 420_000);
 
 afterAll(async () => {
   if (sql) await sql.end({ timeout: 5 });
