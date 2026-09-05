@@ -81,7 +81,8 @@ import {
 } from '../../agent-launch-core';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
-import { describeSessionEndTime } from '../../adv-sessions';
+import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
+import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { classifyResumeTurnExit } from '../../events/await/resume-turn-outcome';
@@ -606,6 +607,7 @@ export default defineTool({
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
     let successorBrief: string | null = null;
+    let reconcileSuccessor: (() => Promise<string | null>) | null = null;
     let fork = !!args.fork;
     const notes: string[] = [];
     if (sourceAction) {
@@ -675,7 +677,7 @@ export default defineTool({
         args.cwd ??= target.cwd ?? undefined;
         notes.push(
           `✓ Fresh successor for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +
-            'the predecessor remains untouched and its durable carry/claims are reused.',
+            'its durable carry/claims are reused.',
         );
         try {
           const { buildCarryBrief, renderCarryBriefText } = await import('../../carry-brief');
@@ -701,6 +703,48 @@ export default defineTool({
             `(${(e as Error)?.message ?? e}). No process was opened.`
           );
         }
+        // EI-22446987530949437: do this only AFTER preflight and the launch
+        // claim, immediately before spawn. A new launcher can refresh presence
+        // and turn a dead predecessor into `recorded`, defeating bootstrap's
+        // otherwise-correct fail-closed conflict guard. Reconcile the original
+        // binding first, never an arbitrary row currently attached to the owner.
+        reconcileSuccessor = async () => {
+          const binding = target.binding;
+          if (!binding || binding.coordOwnerId !== target.ownerId) {
+            return 'Cannot start successor: the exact predecessor binding is unavailable. No process was opened.';
+          }
+          const current = await resolveResumeTarget({ agentId: binding.coordOwnerId });
+          if (!current.ok || current.advSessionId !== target.advSessionId ||
+              current.binding?.coordOwnerId !== binding.coordOwnerId ||
+              current.binding?.sessionId !== binding.sessionId ||
+              current.binding?.startedAt !== binding.startedAt) {
+            return 'Cannot start successor: the predecessor binding changed during preparation. Re-resolve the source; no process was opened.';
+          }
+          if (current.live || findLiveHost(binding.coordOwnerId)) {
+            return 'Cannot start successor: a LIVE source host appeared during preparation. No process was opened.';
+          }
+          if (hasAdvSessionTerminalEvidence(current)) return null;
+          const verdicts = await resolveSessionStates(
+            [{ ownerId: binding.coordOwnerId }],
+            { hydratePerId: true },
+          );
+          const state = verdicts.get(binding.coordOwnerId)?.sessionState;
+          if (state !== 'ended' && state !== 'suspect') {
+            return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
+          }
+          if (findLiveHost(binding.coordOwnerId)) {
+            return 'Cannot start successor: a LIVE source host appeared during reconciliation. No process was opened.';
+          }
+          const ended = await markAdvSessionEnded(target.advSessionId, null, 'reconciler', {
+            expectedBinding: binding,
+            throwOnError: true,
+          });
+          if (!ended) {
+            return 'Cannot start successor: predecessor binding reconciliation lost its compare-and-swap. Re-resolve the source; no process was opened.';
+          }
+          notes.push(`✓ Reconciled terminal predecessor binding #${target.advSessionId} before successor launch; actual exit time remains unknown.`);
+          return null;
+        };
         return null;
       };
       if (isSuccessor) {
@@ -1296,6 +1340,19 @@ export default defineTool({
             : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
         },
       };
+    }
+
+    if (reconcileSuccessor) {
+      let failure: string | null;
+      try {
+        failure = await reconcileSuccessor();
+      } catch (e) {
+        failure = `Cannot start successor: predecessor reconciliation failed (${(e as Error)?.message ?? e}). No process was opened.`;
+      }
+      if (failure) {
+        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey, launchedBy: callerOwnerId });
+        return err(failure);
+      }
     }
 
     // Public member claimKinds still needs fleet:launch-on-plan's claim-spec
