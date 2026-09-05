@@ -525,8 +525,10 @@ export interface ListTasksFilter {
    * `pgrep -f <ownerId>`, an idiom that self-matches the caller's own command
    * line — the documented `pkill -f` trap, returning the caller's pid as if it
    * were the target's (P-023/WI-2141828).
-   */
+  */
   coordOwnerId?: string;
+  /** Match one exact task-ledger row by its durable task id. */
+  taskId?: string;
   workItemId?: string;
   rootTaskId?: string;
   /** Native Claude/Codex session id recorded after bootstrap. */
@@ -603,6 +605,7 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.classes?.length ? sql`AND class = ANY(${sql.array(filter.classes as string[])})` : sql``}
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
        ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
+       ${filter.taskId ? sql`AND task_id = ${filter.taskId}` : sql``}
        ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
        ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
        ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}
