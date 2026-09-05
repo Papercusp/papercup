@@ -7326,9 +7326,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
 
   'operatorConfig.byWorkspace': {
     resolve: async () => {
-      const [{ readOperatorState }, { OPERATOR_SUBSTRATE_PROMPT }] = await Promise.all([
+      const [{ readOperatorState }, { OPERATOR_SUBSTRATE_PROMPT }, defaults] = await Promise.all([
         import('../operator-state-pg'),
         import('../operator-prompt-system'),
+        import('../operator-config-defaults'),
       ]);
       // BOUNDED (WI-39825). Two state reads, both rendered by the same editor, so
       // neither is supplementary and a lapse propagates as a labelled failure.
@@ -7337,10 +7338,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         withinBudget(readOperatorState<{ content?: string }>('operator_prompt_user'), 'operatorPrompt user'),
         withinBudget(readOperatorState<{ content?: string }>('operator_preferences'), 'operatorPrompt preferences'),
       ]);
+      // SAME fallback as GET /api/agent-mcp/operator-config: an unset table
+      // renders the template, never '' — the Settings › Papercup form seeds
+      // from THIS read, so '' here meant an empty editor whose Save would have
+      // blanked the prompt the REST readers still reported (EI-22439758558949990).
       return [
         {
-          prompt_user: prompt?.content ?? '',
-          preferences: prefs?.content ?? '',
+          prompt_user: defaults.operatorConfigContent(prompt, defaults.DEFAULT_PROMPT_USER),
+          preferences: defaults.operatorConfigContent(prefs, defaults.DEFAULT_PREFS),
           substrate_prompt: OPERATOR_SUBSTRATE_PROMPT,
           prompt_user_path: 'harness_shared.operator_prompt_user',
           prefs_path: 'harness_shared.operator_preferences',
