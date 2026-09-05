@@ -806,10 +806,19 @@ export default defineTool({
   name: 'work_items:checkpoint',
   profile: 'engineer',
   description:
-    'Write or clear one OR many work-item checkpoints. ' +
+    'Write or clear work-item checkpoints. ' +
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
     'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. ' +
-    'Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. ' +
+    // EI-20218215840085630: this clause used to read "block suspicious shrink",
+    // which has been false since EI-20232176364474286 taught the tool to RETRY a
+    // refused plain shrink as a safe append. The accurate statement lived only in
+    // `guidance.returns`, which is NOT delivered in the schema a caller loads — so
+    // the one surface every caller does get asserted the opposite of the behavior,
+    // exactly at the context boundary where a concise checkpoint is written. Worse
+    // than a stale doc: "blocked" plus the full-replacement recipe below invites a
+    // pre-emptive `confirmShrink:true`, which DISCARDS the prior history the retry
+    // would have preserved. State the behavior positively instead.
+    'Writes verify-read; a big shrink keeps prior under your note; peer-held/terminal-item writes are refused while explicit clears remain allowed. ' +
     // P-011: the `absenceLint` sentence that used to sit here was a verbatim
     // duplicate of the `guidance.returns` line below, and `returns` is NOT counted
     // against the 1500-char prompt budget while `description` is. Dropping the copy
