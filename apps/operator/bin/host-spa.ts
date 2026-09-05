@@ -282,7 +282,11 @@ async function serveIndexHtml(
       // /api/flags/bootstrap `no-store`. The hashed assets stay cacheable (served
       // elsewhere); only this dynamic shell opts out, so any normal reload now gets the
       // latest flags + bundle.
-      'cache-control': 'no-store, max-age=0',
+      // `no-transform` also prevents Cloudflare from rewriting the hosted shell
+      // to inject its Web Analytics beacon. Keep `no-store`: the per-request
+      // globals above make this document unsafe to cache even though its
+      // content-hashed assets remain immutable.
+      'cache-control': 'no-store, max-age=0, no-transform',
       // P-006: the CSP goes on the SPA DOCUMENT (a CSP applies to the document it
       // is served with, so the hashed asset responses are the wrong place for it).
       // Now ENFORCING (P-005 clause 4) after the policy was validated against live
