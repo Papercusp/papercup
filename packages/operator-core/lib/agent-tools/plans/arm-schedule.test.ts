@@ -25,6 +25,12 @@ vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
 vi.mock('../../harness/routines/arm-plan-schedule', () => ({ armPlanSchedule: vi.fn() }));
 
 import { getFlag } from '@papercusp/flags/server';
+import { configurePlanAdmissionPolicySource } from './plan-admission-gate';
+// P-004 admission: checkPlanStartable now ends in checkPlanAdmission, whose default
+// policy source reads the pot's governance section through hive-federation →
+// harness-registry → PG. A unit test has no PG, so pin the source to "no policy"
+// (admitted, skipped:'no-admission-policy') through the gate's own seam.
+configurePlanAdmissionPolicySource(async () => null);
 import { getPlanRow } from './source';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
 const flagM = vi.mocked(getFlag);

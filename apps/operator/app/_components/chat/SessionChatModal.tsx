@@ -2716,12 +2716,17 @@ export default function SessionChatModal({
             is now literally true, which is what WI-6505 wanted in the first
             place. (Deck item 5 proposes moving this row to the Sessions board
             entirely; that is P-007 and is owner-gated — see D-003.) */}
+        {/* A native <details> rather than LazyDetails: the open state is
+            nuqs-controlled (URL), which LazyDetails cannot take. The A6 intent
+            — do not mount the heavy child while collapsed — is met by gating
+            FleetLaunchRow on the same URL state below.
+            // perf:allow A6 nuqs-controlled disclosure; child mounts only while open */}
         <details className="session-chat__fleet-setup" open={fleetLaunchOpen}>
           <summary onClick={(event) => {
             event.preventDefault();
             void setFleetLaunchOpen(!fleetLaunchOpen);
           }}>Launch a fleet</summary>
-          <FleetLaunchRow />
+          {fleetLaunchOpen ? <FleetLaunchRow /> : null}
         </details>
       </div>
         {/* The RIGHT panel. A SIBLING of the conversation region — which since

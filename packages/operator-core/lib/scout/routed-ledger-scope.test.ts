@@ -2,15 +2,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ rendered: [] as string[] }));
 
-vi.mock('@papercusp/db-org', async (orig) => ({
-  ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({
-    sql: ((strings: TemplateStringsArray, ...values: unknown[]) => {
+vi.mock('@papercusp/db-org', async (orig) => {
+  // WI-40234: a tagged-template getOrgPg().sql fake must expose `.begin` because
+  // production org clients support transactions (the full-replacement-mock guard
+  // refuses a fake without it).
+  const sql = Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
       h.rendered.push(strings.reduce((acc, text, index) => acc + text + (index < values.length ? JSON.stringify(values[index] ?? null) : ''), ''));
       return Promise.resolve([]);
-    }) as unknown,
-  }),
-}));
+    },
+    { begin: async <T,>(cb: (tx: unknown) => Promise<T>): Promise<T> => cb(sql) },
+  );
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => ({ sql: sql as unknown }),
+  };
+});
 
 const { readRoutedIdeas } = await import('./routed-ledger');
 

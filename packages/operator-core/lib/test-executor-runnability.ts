@@ -259,17 +259,19 @@ function explicitExecutor(
     };
   }
 
-  // The wdio package's own unit tests (`perf-report.test.ts`) run under node's
+  // The wdio package's own unit tests (`perf-report.node-test.ts`) run under node's
   // built-in test runner via its `test` chain, not under Vitest — the Vitest
   // router would otherwise route them to the repo-root config, which excludes
-  // them, and report a runnable file as an executor gap.
-  if (/^tools\/perf-test\/wdio\/[^/]+\.test\.ts$/.test(relativeFile)) {
+  // them, and report a runnable file as an executor gap. The `*.node-test.ts`
+  // name is the node-test-naming-guard contract (EI-10878): a `*.test.ts` name
+  // is globbed by vitest, which reports "No test suite found" and reds the gate.
+  if (/^tools\/perf-test\/wdio\/[^/]+\.(?:node-)?test\.ts$/.test(relativeFile)) {
     const packageJson = resolve(repoRoot, `${WDIO_PACKAGE_DIR}package.json`);
     const script = expandPackageScript(deps, packageJson, 'test');
     const baseName = relativeFile.slice(WDIO_PACKAGE_DIR.length);
     const nodeTestRunner = script !== undefined && /\bnode\b[^\n&|;]*\s--test\b/.test(script);
     const namesThisFile =
-      script !== undefined && (script.includes(baseName) || /\*\.test\.ts\b/.test(script));
+      script !== undefined && (script.includes(baseName) || /\*\.(?:node-)?test\.ts\b/.test(script));
     if (nodeTestRunner && namesThisFile) {
       return { file: relativeFile, runnable: true, executor: 'node' };
     }
