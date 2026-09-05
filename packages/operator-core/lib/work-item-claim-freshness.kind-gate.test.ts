@@ -4,14 +4,33 @@
  *
  * ## What was wrong
  *
- * The freshness lane has two enforcement points that have to agree:
- *   STAMP — `issues-engineer.createIssue` writes `payload.freshnessEnvelope`.
- *   READ  — `scheduler:get_next` scores that envelope into a claim-time verdict.
+ * The freshness lane has THREE enforcement points that have to agree:
+ *   STAMP   — `issues-engineer.createIssue` writes `payload.freshnessEnvelope`.
+ *   SCORE   — `scheduler:get_next` scores that envelope into a claim-time verdict.
+ *   MEASURE — `scheduler:get_next` computes the source-generation signal that the
+ *             SCORE site re-scores the verdict with.
  *
- * Each carried its own hand-written `kind === 'bug'` literal. Two copies of one
+ * Each carried its own hand-written `kind === 'bug'` literal. Copies of one
  * policy can only ever be half-changed, and the failure is silent in the
  * direction that matters: a `change` claimant simply receives no `freshness` key
  * at all, which is indistinguishable from "this item is fresh".
+ *
+ * ## The third site, and why this docblock used to say "two" (WI-2145579)
+ *
+ * The original fix unified STAMP and SCORE and then asserted, here, that the lane
+ * had two enforcement points. It has three, and the MEASURE site was left on its
+ * literal — so the gate went from fully-bug-only to two-thirds-changed, which
+ * fails in a NEW and quieter way: a `change` claim now gets a `freshness` key from
+ * SCORE whose only item-specific axis is permanently unmeasured, because the
+ * signal feeding the re-score is never computed for it. A verdict that looks
+ * measured and is not is worse than an absent one.
+ *
+ * The lesson is about the GUARD, not just the gate: a source guard that names its
+ * own population is only as good as that census. This one asserted two sites
+ * because its author had found two, and a third that it never looked for could
+ * not fail it. Hence the assertions below are written to pin every site AND to
+ * reject the bare literal anywhere in the READ file, so a fourth copy introduced
+ * later fails here instead of being silently outside the guard's stated scope.
  *
  * Measured on the filing item itself: claiming EI-20264587083609474 (kind
  * `change`) returned a result with ZERO freshness fields — verified with a
@@ -35,6 +54,16 @@ import { FRESHNESS_TRACKED_KINDS, isFreshnessTrackedKind } from './work-item-cla
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
+/**
+ * Drop block and line comments so a literal quoted in PROSE cannot be mistaken for
+ * a literal in CODE. Both sites' history comments quote the pre-fix
+ * `kind === 'bug'` verbatim, so without this the guard would fail on its own
+ * explanation. The `[^:]` guard keeps `https://` in a string from being eaten;
+ * the assertions calibrate this both ways rather than trusting it.
+ */
+const stripComments = (src: string): string =>
+  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
 const GET_NEXT = './agent-tools/scheduler/get_next.ts';
 const ISSUES_ENGINEER = './issues-engineer.ts';
 
@@ -56,7 +85,7 @@ describe('freshness kind gate', () => {
     expect([...FRESHNESS_TRACKED_KINDS].sort()).toEqual(['bug', 'change']);
   });
 
-  it('has both enforcement points consult the shared predicate, not a local literal', () => {
+  it('has all THREE enforcement points consult the shared predicate, not a local literal', () => {
     const getNext = read(GET_NEXT);
     const issuesEngineer = read(ISSUES_ENGINEER);
 
@@ -67,12 +96,33 @@ describe('freshness kind gate', () => {
     expect(getNext).toContain('assessClaimFreshness');
     expect(issuesEngineer).toContain('createBugFreshnessEnvelope');
 
-    // The READ site (scheduler:get_next) and the STAMP site (createIssue).
-    expect(getNext).toContain('isFreshnessTrackedKind(wi.kind)');
-    expect(issuesEngineer).toContain('isFreshnessTrackedKind(storageKind)');
+    // Both fixes deliberately QUOTE the pre-fix literal in their own history
+    // comments, so the absence assertions have to run against code alone —
+    // otherwise the explanation of the bug would read as the bug.
+    const getNextCode = stripComments(getNext);
+    const issuesEngineerCode = stripComments(issuesEngineer);
 
-    // The exact pre-fix literals must not come back.
-    expect(getNext).not.toContain("if (wi.kind === 'bug')");
-    expect(issuesEngineer).not.toContain("storageKind === 'bug' &&");
+    // Calibration for the stripper itself, in BOTH directions — a stripper that
+    // returned '' would make every absence assertion below pass vacuously, and one
+    // that stripped nothing would trip them on prose. `EI-22283949842250645` is a
+    // comment-only marker in get_next.ts (it tags the source-axis work), so it must
+    // vanish; the code markers must survive. Keyed to a stable id rather than to the
+    // wording of any one comment, so rephrasing a comment cannot break this.
+    expect(getNext).toContain('EI-22283949842250645');
+    expect(getNextCode).not.toContain('EI-22283949842250645');
+    expect(getNextCode).toContain('assessClaimFreshness');
+    expect(issuesEngineerCode).toContain('createBugFreshnessEnvelope');
+
+    // SCORE (get_next), MEASURE (get_next), STAMP (createIssue).
+    expect(getNextCode).toContain('isFreshnessTrackedKind(wi.kind)');
+    expect(getNextCode).toContain('isFreshnessTrackedKind(wi?.kind)');
+    expect(issuesEngineerCode).toContain('isFreshnessTrackedKind(storageKind)');
+
+    // No bare literal survives in CODE at any site. Stated as a whole-file
+    // absence rather than three exact pre-fix strings on purpose: the previous
+    // version of this guard pinned the two copies its author had found, so the
+    // third could not fail it. A fourth introduced later fails here.
+    expect(getNextCode).not.toMatch(/kind === 'bug'/);
+    expect(issuesEngineerCode).not.toMatch(/storageKind === 'bug'/);
   });
 });

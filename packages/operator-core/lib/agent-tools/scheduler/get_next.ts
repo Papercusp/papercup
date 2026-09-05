@@ -1816,10 +1816,13 @@ export default defineTool({
           ? (wi.payload as Record<string, unknown>).routingHint
           : undefined;
       routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
-      // EI-20264587083609474: this was `wi.kind === 'bug'`, one of two independent
-      // copies of the freshness policy (the other stamps the envelope in
-      // `issues-engineer.createIssue`). Both now consult the SAME predicate, so the
-      // gate cannot be half-changed again. `change` is the repo's default kind for a
+      // EI-20264587083609474: this was `wi.kind === 'bug'`, one of THREE independent
+      // copies of the freshness policy — STAMP (`issues-engineer.createIssue`), this
+      // SCORE site, and MEASURE (the source-generation leg below). All three now
+      // consult the SAME predicate. (This comment said "two" until WI-2145579: the
+      // original fix missed the MEASURE copy, which left a `change` claim holding a
+      // verdict whose only item-specific axis was never computed.)
+      // `change` is the repo's default kind for a
       // code edit, so it is exactly as susceptible to "already built" as a bug —
       // measured on that item, half the already-built evidence its filer cited was a
       // `change`, and this gate is why a `change` claimant was told nothing.
@@ -2179,9 +2182,28 @@ export default defineTool({
             : Promise.resolve(null),
           // EI-22283949842250645: measure the freshness verdict's source axis —
           // "do this item's own paths carry commits newer than the generation it
-          // was observed against?". Only meaningful for the bug family, which is
-          // the only family that carries a freshness envelope.
-          wi?.kind === 'bug'
+          // was observed against?". Meaningful for exactly the kinds that carry a
+          // freshness envelope, which is why this consults the shared predicate
+          // rather than a literal.
+          //
+          // WI-2145579: this was the THIRD hand-written `kind === 'bug'` copy of
+          // the freshness policy, and it survived EI-20264587083609474 — which
+          // unified the other two (STAMP in `issues-engineer.createIssue`, SCORE
+          // below) and then asserted in its own guard that the lane had "two
+          // enforcement points". It has three, and this is the MEASURE point.
+          // Left behind, it half-changed the gate in the direction that hides:
+          // a `change` claim got a `freshness` key from the SCORE site whose only
+          // item-specific axis was permanently unmeasured, because the signal
+          // feeding the re-score below was never computed for it. The old comment
+          // here justified the literal as "the only family that carries a
+          // freshness envelope" — a premise the STAMP change had already falsified.
+          // The measurement itself is kind-agnostic: it needs only
+          // `payload.freshnessEnvelope` (source-generation-claim-port reads
+          // `observedSourceSha ?? observedRuntimeSha` and returns `unmeasured`
+          // without one). The one real cost note — a `git log` per cited path —
+          // is stated above and applies to `bug` identically, so it was never a
+          // kind distinction.
+          isFreshnessTrackedKind(wi?.kind)
             ? import('../../source-generation-claim-port')
                 .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
                 .catch(() => null)
