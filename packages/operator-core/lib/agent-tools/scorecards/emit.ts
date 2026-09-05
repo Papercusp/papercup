@@ -1093,10 +1093,28 @@ export async function emitScorecard(
         };
       }
       if (gradedObservation.gradingAudit.state !== 'pending') {
-        return {
-          ok: false as const,
-          error: `audit subject '${args.subject.ref}' is already audited (${gradedObservation.gradingAudit.state}) — supersede the AUDIT card instead of re-auditing (D-004: one level, no regress)`,
-        };
+        // A settled graded subject may still need a factual/body correction to
+        // its AUDIT card. Allow that narrow same-subject correction through;
+        // the generic supersedes validation below still enforces that the
+        // referenced card is an actual same-rubric scorecard.
+        const supersededAudit = args.supersedes ? await getIssue(args.supersedes) : null;
+        const supersededAuditRaw =
+          supersededAudit?.payload &&
+          typeof supersededAudit.payload === 'object' &&
+          !Array.isArray(supersededAudit.payload)
+            ? (supersededAudit.payload as { observation?: unknown }).observation
+            : undefined;
+        const supersededAuditObservation = asStructuredObservation(supersededAuditRaw);
+        const isAuditCorrection =
+          supersededAuditObservation?.rubricRef === GRADING_INTEGRITY_RUBRIC_REF &&
+          supersededAuditObservation.subject?.kind === 'scorecard' &&
+          supersededAuditObservation.subject.ref === args.subject.ref;
+        if (!isAuditCorrection) {
+          return {
+            ok: false as const,
+            error: `audit subject '${args.subject.ref}' is already audited (${gradedObservation.gradingAudit.state}) — supersede the AUDIT card instead of re-auditing (D-004: one level, no regress)`,
+          };
+        }
       }
       const gradedAuthor = graded?.createdBy ?? null;
       // Unattributable identity on EITHER side refuses — strict toward auditing again.
