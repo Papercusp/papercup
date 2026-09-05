@@ -16,6 +16,7 @@ import { buildApi } from '../routes/index.ts';
 import type { Env } from '../env.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
+import { USER_ID_FORM, isCanonicalUserId } from '@papercusp/operator-core/lib/cupboard/commerce-door-gate-io';
 
 /**
  * Only `resolveGithubBearer` is mocked — the real `AuthError` is kept, so the
@@ -325,8 +326,13 @@ function stripeStub(response: { status: number; body: string } = { status: 200, 
   return { impl, calls };
 }
 
+// `gh:42` is the SELF-purchase case: it is exactly the principal the mocked
+// bearer below resolves to ({ id: 42 }), so these tests exercise creation and
+// idempotency rather than re-testing authorization. Naming any other buyer now
+// requires an org membership — see the authorization block at the end of this
+// file, and `principalId` in routes/commerce.ts for the `gh:<id>` convention.
 const CHECKOUT_BODY = {
-  buyerOrgId: 'buyer-1',
+  buyerOrgId: 'gh:42',
   offerId: 'offer-1',
   successUrl: 'https://example.test/ok',
   cancelUrl: 'https://example.test/no',
@@ -477,7 +483,7 @@ describe('POST /commerce/checkout-sessions — creation and idempotency', () => 
     expect(stripe.calls[0].headers['idempotency-key']).toBe(json.orderId);
 
     const order = raw.prepare('SELECT order_id, buyer_id, state, amount_minor, provider_ref FROM commerce_orders WHERE order_id = ?').get(json.orderId);
-    expect(order).toMatchObject({ order_id: json.orderId, buyer_id: 'buyer-1', state: 'pending', amount_minor: 2500, provider_ref: 'cs_test_1' });
+    expect(order).toMatchObject({ order_id: json.orderId, buyer_id: 'gh:42', state: 'pending', amount_minor: 2500, provider_ref: 'cs_test_1' });
   });
 
   it('replays the SAME idempotencyKey to the same order without a second Stripe call', async () => {
@@ -510,8 +516,14 @@ describe('POST /commerce/checkout-sessions — creation and idempotency', () => 
     const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
     seedCatalog(raw);
 
-    const a = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'buyer-a' });
-    const b = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'buyer-b' });
+    // Each buyer must now BE its own authenticated principal (WI-2146391): a
+    // caller may only name itself or an org it belongs to. That makes this
+    // stronger than it was — the two orders are opened by two genuinely
+    // different identities rather than by one caller naming two strings.
+    auth.resolveGithubBearer.mockResolvedValue({ id: 1, login: 'buyer-a' });
+    const a = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'gh:1' });
+    auth.resolveGithubBearer.mockResolvedValue({ id: 2, login: 'buyer-b' });
+    const b = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'gh:2' });
     const aJson = await a.json() as { orderId: string };
     const bJson = await b.json() as { orderId: string };
 
@@ -531,5 +543,134 @@ describe('POST /commerce/checkout-sessions — creation and idempotency', () => 
     const second = await checkout(api, env, { ...CHECKOUT_BODY, idempotencyKey: 'checkout-key-2' });
     expect((await first.json() as { orderId: string }).orderId).not.toBe((await second.json() as { orderId: string }).orderId);
     expect(stripe.calls).toHaveLength(2);
+  });
+});
+
+/**
+ * POST /commerce/checkout-sessions — AUTHORIZATION (WI-2146391).
+ *
+ * The gap these close: the route authenticated WHO was calling but never that
+ * they could act for `buyerOrgId`, so any authenticated user could open a
+ * Checkout Session — and an `order.created` ledger event — in any org's name.
+ *
+ * The membership rule itself lives in `authorizeOrgActor` (D-045 §3d) and is
+ * NOT restated here; what these assert is that the route consults it, maps its
+ * refusals to the wire, and — the part that is easy to get wrong — consults it
+ * BEFORE the idempotent-replay branch.
+ *
+ * `loadOrgs` is injected because production has no org writer yet, so the
+ * member-permitted branch would otherwise be unreachable and untested.
+ */
+describe('POST /commerce/checkout-sessions — authorization', () => {
+  const ORG_ID = 'org-acme';
+  const MEMBER = 'gh:42'; // the principal the mocked bearer below resolves to
+  const STRANGER = 'gh:99';
+
+  // The one thing that must agree between the Worker and the desktop door.
+  // Membership is matched by string equality, so a divergence here would not
+  // error — it would refuse every legitimate member as a stranger. Asserted
+  // against the shared predicate rather than restated, so if su-43e03bbc's
+  // half changes form this fails instead of silently 403ing production.
+  it('emits principal ids in the form both halves pinned', () => {
+    expect(isCanonicalUserId(MEMBER)).toBe(true);
+    expect(isCanonicalUserId(STRANGER)).toBe(true);
+    expect(USER_ID_FORM).toBe('gh:<numeric github id>');
+    // The fixture ids above are exactly what the route derives from a bearer.
+    expect(MEMBER).toBe(`gh:${42}`);
+  });
+
+  function orgHarness(memberships: Array<{ userId: string; role: 'owner' | 'admin' | 'member' }>) {
+    const orgs = new Map([
+      [
+        ORG_ID,
+        {
+          orgId: ORG_ID,
+          displayName: 'Acme',
+          memberships: memberships.map((m) => ({ ...m, addedAtMs: 1_000 })),
+        },
+      ],
+    ]);
+    const stripe = stripeStub();
+    const { db, raw } = makeSqliteDb();
+    const { env } = makeEnv({ STRIPE_WEBHOOK_SECRET: SIGNING_FIXTURE, STRIPE_SECRET_KEY: 'test-secret-material' });
+    env.DB = db;
+    const api = buildApi({ fetchImpl: stripe.impl, loadOrgs: async () => orgs });
+    seedCatalog(raw);
+    return { api, env, raw, stripe };
+  }
+
+  beforeEach(() => {
+    auth.resolveGithubBearer.mockReset();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 42, login: 'buyer-user' });
+  });
+
+  it('201s a MEMBER buying in their org’s name, booking the order to the ORG', async () => {
+    const { api, env, raw, stripe } = orgHarness([{ userId: MEMBER, role: 'member' }]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: ORG_ID });
+    expect(res.status).toBe(201);
+    expect(stripe.calls).toHaveLength(1);
+    const json = (await res.json()) as { orderId: string };
+    expect(raw.prepare('SELECT buyer_id FROM commerce_orders WHERE order_id = ?').get(json.orderId))
+      .toMatchObject({ buyer_id: ORG_ID });
+  });
+
+  it('403s a NON-MEMBER of a real org, reaching neither Stripe nor the ledger', async () => {
+    const { api, env, raw, stripe } = orgHarness([{ userId: STRANGER, role: 'owner' }]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: ORG_ID });
+    expect(res.status).toBe(403);
+    expect((await res.json() as { error: string }).error).toBe('not_org_member');
+    expect(stripe.calls).toHaveLength(0);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'").get())
+      .toMatchObject({ n: 0 });
+  });
+
+  it('403s an org that does not exist, never falling through to the individual-buyer path', async () => {
+    const { api, env, stripe } = orgHarness([{ userId: MEMBER, role: 'member' }]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'org-does-not-exist' });
+    expect(res.status).toBe(403);
+    // `resolveBuyerPrincipal` would have resolved this to an INDIVIDUAL buyer
+    // named 'org-does-not-exist'; the gate asserts kind === 'organization'
+    // instead, which is what makes this a refusal rather than a comparison.
+    expect((await res.json() as { error: string }).error).toBe('org_membership_unknown');
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it('permits the SELF case: the buyer named IS the authenticated principal', async () => {
+    const { api, env, stripe } = orgHarness([]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: MEMBER });
+    expect(res.status).toBe(201);
+    expect(stripe.calls).toHaveLength(1);
+  });
+
+  it('refuses a principal naming ANOTHER user’s id — self is equality, not a namespace', async () => {
+    const { api, env, stripe } = orgHarness([]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: STRANGER });
+    expect(res.status).toBe(403);
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it('403s a NON-MEMBER replaying a member’s key — the check PRECEDES the replay branch', async () => {
+    // THE ORDERING TEST. Replay returns the original order's live Checkout URL,
+    // so had authorization run after the replay lookup, a stranger would get a
+    // 200 carrying a payment handle they were never entitled to see.
+    const { api, env, stripe } = orgHarness([{ userId: MEMBER, role: 'member' }]);
+
+    const first = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: ORG_ID });
+    expect(first.status).toBe(201);
+    const firstJson = (await first.json()) as { orderId: string; url: string };
+
+    // A different principal replays the SAME idempotencyKey against the same org.
+    auth.resolveGithubBearer.mockResolvedValue({ id: 99, login: 'stranger' });
+    const replay = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: ORG_ID });
+
+    expect(replay.status).toBe(403);
+    const replayJson = (await replay.json()) as { error: string; url?: string; orderId?: string };
+    expect(replayJson.error).toBe('not_org_member');
+    // The payment handle must not appear anywhere in a refusal.
+    expect(replayJson.url).toBeUndefined();
+    expect(replayJson.orderId).toBeUndefined();
+    expect(JSON.stringify(replayJson)).not.toContain(firstJson.url);
+    // And no second Checkout Session was opened.
+    expect(stripe.calls).toHaveLength(1);
   });
 });

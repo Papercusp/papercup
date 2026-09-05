@@ -23,6 +23,7 @@ import type {
   WebhookInboxRecord,
   WebhookInboxStore,
 } from '@papercusp/operator-core/lib/cupboard/webhook-inbox';
+import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
 
 /** The `WebhookInboxStore` the pure `ingestWebhook` asks for, backed by D1.
  *  Idempotency is enforced by the table's UNIQUE(provider, provider_event_id). */
@@ -206,6 +207,28 @@ export interface EntitlementView {
   granted_at_ms: number;
   revoked_at_ms: number | null;
   revoke_reason: string | null;
+}
+
+/**
+ * The organizations this deployment knows, for the checkout door's actor check.
+ *
+ * Deliberately EMPTY, and deliberately a function rather than a constant. There
+ * is no org writer anywhere yet (`commerce-door-gate-io.loadCommerceState` says
+ * the same thing for the desktop half, and hardcodes the same empty map), and
+ * the money ledger has no `org.created`/`member.added` kinds to fold — P-010's
+ * `LEDGER_EVENT_KINDS` covers orders, refunds and payouts only, and widening it
+ * with identity would put membership inside the reducer that D-043 reserves for
+ * money.
+ *
+ * Returning an empty map is therefore the honest answer, not a stub: with no
+ * organizations, `authorizeOrgActor` refuses every org-named checkout
+ * (`unknown-org`) and only a self-purchase can proceed. Synthesising rows here
+ * would make org purchases look authorized when nothing has ever verified a
+ * membership. When an org writer lands, this function is the only thing that
+ * changes.
+ */
+export async function loadOrganizations(_db: D1Database): Promise<ReadonlyMap<string, Organization>> {
+  return new Map<string, Organization>();
 }
 
 /** The P-009 delivery gate's read: which products may this buyer receive? */

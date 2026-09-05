@@ -26,7 +26,9 @@ import {
 import { AuthError, resolveGithubBearer } from '../auth.ts';
 import { reduceLedger } from '@papercusp/operator-core/lib/cupboard/commerce-ledger';
 import type { LedgerEvent, Order } from '@papercusp/operator-core/lib/cupboard/commerce-ledger';
-import { appendLedgerEvents, d1WebhookInboxStore, listActiveEntitlements, loadLedgerEvents, projectLedger } from '../commerce-store.ts';
+import { authorizeOrgActor } from '@papercusp/operator-core/lib/cupboard/commerce-door-gate';
+import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
+import { appendLedgerEvents, d1WebhookInboxStore, listActiveEntitlements, loadLedgerEvents, loadOrganizations, projectLedger } from '../commerce-store.ts';
 
 /** Signature refusals — the request never proved who it was. */
 const SIGNATURE_REFUSALS = new Set([
@@ -114,24 +116,56 @@ const BUILD_REFUSAL_CODES: Record<string, string> = {
   'zero-amount': 'zero_amount',
 };
 
-export function commerceRoute(options: { fetchImpl?: typeof fetch } = {}): Hono<{ Bindings: Env }> {
+/**
+ * The acting principal, as one canonical string.
+ *
+ * The Worker's only identity is a GitHub bearer, so this is the ONE place the
+ * `{ id, login }` it yields is turned into the `userId` shape P-011 memberships
+ * are keyed by. Numeric id rather than login because a login can be renamed and
+ * the id cannot — a renamed login would silently stop matching a membership and
+ * read as "not a member" rather than as a stale record.
+ *
+ * ⚠ This string must be IDENTICAL to the one an org writer records in
+ * `OrgMembership.userId`, because membership is matched by string equality: a
+ * writer recording `mia` while this authenticates `gh:1234` would not error, it
+ * would find no membership and refuse every legitimate member as a stranger.
+ * The form is therefore pinned as shared code, not convention — `USER_ID_FORM`
+ * / `isCanonicalUserId` in `commerce-door-gate-io` (agreed with su-43e03bbc,
+ * WI-2146391) — and asserted against that predicate below so the two halves
+ * cannot drift apart silently.
+ */
+function principalId(user: { id: number }): string {
+  return `gh:${user.id}`;
+}
+
+export function commerceRoute(
+  options: {
+    fetchImpl?: typeof fetch;
+    loadOrgs?: (db: D1Database) => Promise<ReadonlyMap<string, Organization>>;
+  } = {},
+): Hono<{ Bindings: Env }> {
   const route = new Hono<{ Bindings: Env }>();
   // Injected so the checkout path is exercisable without network access; the
   // default is the runtime's own fetch, bound so workerd does not see an
   // illegal-invocation receiver.
   const fetchImpl: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
+  // Injected for the same reason: production has no org writer yet, so the
+  // MEMBER-permitted path is only reachable in a test until one lands. Without
+  // this seam the org branch of the gate would be unexercisable, and an
+  // unexercised authorization branch is the one that rots.
+  const loadOrgs = options.loadOrgs ?? loadOrganizations;
 
   route.post('/commerce/checkout-sessions', async (c) => {
     // Authenticate FIRST: this endpoint opens real orders and real Checkout
     // Sessions, so an anonymous caller must not even learn whether this
     // deployment has Stripe configured.
     //
-    // ⚠ This establishes WHO is calling, not that they may act for
-    // `buyerOrgId` — the Worker has no org-membership model yet, so any
-    // authenticated user can still open an order naming any org. That
-    // authorization gap is recorded on WI-2146343, not silently accepted.
+    // This establishes WHO is calling; whether they may act for `buyerOrgId`
+    // is a SEPARATE question, answered below once the body has been parsed
+    // (WI-2146391 — that check used to be missing entirely).
+    let actingUserId: string;
     try {
-      await resolveGithubBearer(c.req.raw);
+      actingUserId = principalId(await resolveGithubBearer(c.req.raw));
     } catch (err) {
       if (err instanceof AuthError) return c.json({ error: 'unauthorized', reason: err.reason }, 401);
       throw err;
@@ -155,6 +189,39 @@ export function commerceRoute(options: { fetchImpl?: typeof fetch } = {}): Hono<
       return c.json({ error: parsed.code, detail: parsed.detail }, parsed.code === 'unsupported_quantity' ? 422 : 400);
     }
     const request = parsed.value;
+
+    // AUTHORIZATION (WI-2146391). Ordered BEFORE the idempotent-replay branch
+    // on purpose: replay returns the original order's Checkout URL, so running
+    // this check afterwards would let a non-member replay a member's key and
+    // read back a live payment handle with a 200. An authorization check that
+    // sits behind a cache is not an authorization check.
+    //
+    // Two, and only two, ways to pass:
+    //   1. SELF — the buyer named IS the authenticated principal. Compared by
+    //      explicit string equality against the id we just authenticated, so it
+    //      is unspoofable: a caller can only ever name themselves.
+    //   2. ORG — `authorizeOrgActor` (D-045 §3d) confirms the org exists AND
+    //      the actor is a member. That rule lives in the shared gate and is not
+    //      restated here; a second copy of a membership rule is exactly the
+    //      drift the gate exists to prevent.
+    //
+    // Note we do NOT reach case 2 via `resolveBuyerPrincipal`'s individual
+    // fallback. That resolver never fails — an id matching no organization
+    // comes back as an INDIVIDUAL buyer with that id — so leaning on it would
+    // make "org that does not exist" and "person" indistinguishable at a door
+    // that is deciding whose money may be spent.
+    if (request.buyerOrgId !== actingUserId) {
+      const orgs = await loadOrgs(c.env.DB);
+      const verdict = authorizeOrgActor(request.buyerOrgId, actingUserId, orgs);
+      if (!verdict.ok) {
+        // The gate's vocabulary, mapped to this route's wire contract.
+        // `unknown-org` is reported as a membership question rather than as a
+        // 404: telling an unauthorized caller which org ids exist would make
+        // this endpoint an org-enumeration oracle.
+        const code = verdict.code === 'actor-not-in-org' ? 'not_org_member' : 'org_membership_unknown';
+        return c.json({ error: code, detail: verdict.detail }, 403);
+      }
+    }
 
     const events = await loadLedgerEvents(c.env.DB);
     const state = reduceLedger(events);
