@@ -115,30 +115,45 @@ age_of() {
   awk -v now="$(date +%s)" -v then="$recorded" 'BEGIN { printf "%d", now - then }'
 }
 
-# Returns 0 to DEFER (caller exits), 1 to ADMIT despite pressure.
+# Arm the override for this whole cycle, BEFORE and INDEPENDENTLY of admission.
+#
+# Admission is not where most cycles die, and building the floor only into the
+# admission check would have left the dominant failure untouched.  Measured over
+# 48h on this host (label=hot, from this guard's own journal): 51 cycles STARTED
+# and 46 of them were retired mid-run by `deferred-during-run`; only 6 ever
+# reached `finished rc=0`, the last 30 hours before this was written.  Those 46
+# passed admission cleanly during a lull and were then killed seconds in by a
+# transient crossing -- typically by a hair (io 10.06 against a limit of 10,
+# memory 5.09 against 5).  A sweep visits its sources in order with
+# --parallel=1, so a cycle killed at 46s covers whichever sources happen to come
+# first and silently leaves the rest uncovered; which sources those are depends
+# on where the kill lands.  That is why the override has to cover the run, not
+# just its admission: pressure may DELAY a cycle, and may not CANCEL it, in
+# either half of the cycle.
+staleness_override_reason=
 pressure_escalated=0
-defer_or_escalate() {
-  local reason="$1" age escalated_age
+arm_staleness_override() {
+  local age escalated_age
   if ! age=$(age_of "$deadline_base_path"); then
-    # No baseline yet.  Seed the clock from now and defer normally rather than
-    # admitting immediately: enabling this must not make every label on the host
-    # ignore pressure at once on its first tick.
+    # No baseline yet.  Seed the clock from now rather than arming immediately:
+    # enabling this must not make every label on the host ignore pressure at
+    # once on its first tick.
     write_stamp "$deadline_base_path"
-    guard_log "result=deferred reason=$reason staleness_sec=unknown-seeded max_defer_sec=$max_defer"
-    return 0
+    staleness_override_reason="staleness_sec=unknown-seeded max_defer_sec=$max_defer"
+    return 1
   fi
-  if [ "$age" -lt "$max_defer" ]; then
-    guard_log "result=deferred reason=$reason staleness_sec=$age max_defer_sec=$max_defer"
-    return 0
-  fi
+  staleness_override_reason="staleness_sec=$age max_defer_sec=$max_defer"
+  [ "$age" -ge "$max_defer" ] || return 1
+  # Once armed, do not arm again on the very next tick.  A backup failing for a
+  # NON-pressure reason would otherwise ignore pressure on every tick forever.
   if escalated_age=$(age_of "$escalation_path") && [ "$escalated_age" -lt "$escalation_retry" ]; then
-    guard_log "result=deferred reason=$reason staleness_sec=$age max_defer_sec=$max_defer escalation_retry_in_sec=$((escalation_retry - escalated_age))"
-    return 0
+    staleness_override_reason="$staleness_override_reason escalation_retry_in_sec=$((escalation_retry - escalated_age))"
+    return 1
   fi
   write_stamp "$escalation_path"
   pressure_escalated=1
-  guard_log "result=admitted-despite-pressure reason=$reason staleness_sec=$age max_defer_sec=$max_defer"
-  return 1
+  guard_log "result=staleness-override-armed $staleness_override_reason"
+  return 0
 }
 
 # /run/lock is the host-global lock namespace shared by the user systemd units
@@ -201,12 +216,13 @@ run_scheduled_command() {
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
 
-    # This cycle was admitted BECAUSE it is past the staleness deadline.  Leaving
-    # the runtime abort armed would retire it within one monitor interval on the
-    # same pressure that admission just overrode, which makes the whole floor
-    # inert -- the failure mode is a log line saying the backup was admitted
-    # followed immediately by one saying it was deferred, and still no snapshot.
-    # The cgroup limits on the unit remain the brake for an escalated run.
+    # This cycle is past the staleness deadline, so it is allowed to finish.
+    # This branch -- not the admission one -- is the one that matters: 46 of the
+    # 48h sample's 51 started cycles were killed HERE, after passing admission
+    # cleanly, and the sweep therefore never reached its later sources.  The
+    # cgroup limits on the unit (MemoryHigh/MemoryMax/MemorySwapMax) and Kopia's
+    # --parallel=1 remain the brake for an overridden run; this only removes the
+    # brake that was stopping the backup from ever completing.
     if [ "$pressure_escalated" = 1 ]; then
       continue
     fi
@@ -283,8 +299,14 @@ if [ "$mode" = scheduled ]; then
     admission_block_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
   fi
 
-  if [ -n "$admission_block_reason" ] && defer_or_escalate "$admission_block_reason"; then
-    exit 0
+  arm_staleness_override || true
+  if [ -n "$admission_block_reason" ]; then
+    if [ "$pressure_escalated" = 1 ]; then
+      guard_log "result=admitted-despite-pressure reason=$admission_block_reason $staleness_override_reason"
+    else
+      guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason"
+      exit 0
+    fi
   fi
 else
   guard_log "result=waiting reason=lock"
