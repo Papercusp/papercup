@@ -1011,6 +1011,23 @@ export const CC_HOOK_FILES = [
   // EMPTY once git-sync sweeps the tree (minutes), so it false-greens — measured in its own
   // formatNoFindings docstring. Only an edit-time hook sees the true pre-edit HEAD.
   'posttooluse-required-field-strand-nudge.mjs',
+  // EI-20022235111425919: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge for
+  // the BEHAVIOURAL sibling of the strand class above. Adding a CALL to an injected
+  // collaborator inside a shared lib changes how many times that seam is called, stranding
+  // every `toHaveBeenCalledTimes` / call-order assertion in OTHER workspaces — files the
+  // change never touched. It is invisible to BOTH instruments the author reads as green:
+  // `lint:tsc` sees no type change (only a runtime count moved), and `test:affected`
+  // selects by the workspaces the changed PATHS map into, which is the wrong workspace by
+  // construction. Measured cost of one instance (WI-37582): ~3 gate reds, ~2h of frozen
+  // `main`, three agents diagnosing it in parallel. The detector exists
+  // (scripts/check-behavioural-strands.mjs) and, exactly as for the required-field sibling,
+  // the hard part is KNOWING TO RUN IT — and running it later cannot work here either,
+  // because git-sync sweeps the edit into HEAD within minutes and `--base HEAD` then diffs
+  // content that already contains it. Only an edit-time hook sees the true pre-edit HEAD.
+  // Submodule-aware by necessity: libs/generic/* and libs/papercusp ARE submodules and are
+  // this guard's whole trigger class, and a superproject `git show HEAD:<path>` answers
+  // "absent" for a committed file inside one.
+  'posttooluse-behavioural-strand-nudge.mjs',
   // EI-19457231269012320 / EI-19457320059999661: PostToolUse (matcher
   // "Edit|Write|MultiEdit") ADVISORY nudge when the file just written does not PARSE.
   // A parse-class guard already exists and is correct (tsParseDetector in
@@ -2663,6 +2680,19 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
+    });
+  // merge_behavioural_strand_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-20022235111425919). The BEHAVIOURAL sibling of the block above: that one catches a
+  // required field stranding construction sites, this one catches an added CALL stranding
+  // call-COUNT/ORDER assertions in another workspace. Advisory only, and it must stay that
+  // way — adding a call is usually correct, and the guard's own narrowing is a RANKING, not
+  // a filter. Registered here rather than merely copied: the file shipped in hooks/cc
+  // unregistered, which orphaned-cc-hooks.test.ts flags precisely because a copied-but-
+  // unregistered hook is inert while looking installed.
+  if (has('posttooluse-behavioural-strand-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-behavioural-strand-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-behavioural-strand-nudge.mjs'),
     });
   // merge_ts_parse_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19457231269012320 / EI-19457320059999661). Advisory only, and this one MUST stay
