@@ -43,6 +43,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { heartbeatSpawns, recordSpawnPid } from '../fleet/spawn-reclaim';
 import { loopbackFetch } from '../loopback-fetch';
+import { gatewayWholesaleThrottled } from '../inference-gateway/observability';
 import {
   fireLaunchBlueprint,
   setLaunchBlueprintFire,
@@ -86,6 +87,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     vi.mocked(recordSpawn).mockResolvedValue(undefined);
     vi.mocked(finishSpawn).mockResolvedValue(undefined);
     vi.mocked(loopbackFetch).mockResolvedValue(new Response('', { status: 200 }));
+    vi.mocked(gatewayWholesaleThrottled).mockResolvedValue(false);
   });
 
   it('records a spawned_agents row with status=running before fetch', async () => {
@@ -170,7 +172,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
 
   it('opens the durable release-fixer escalation when a release-fix launch times out before its first turn', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+    vi.mocked(loopbackFetch).mockImplementation(async () => new Response(JSON.stringify({
       ok: false,
       exitCode: 143,
       timedOut: true,
@@ -187,7 +189,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
         },
       },
     });
-    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledTimes(2));
 
     const sqlTexts = mockSql.mock.calls.map((args) => {
       const strings = args[0] as TemplateStringsArray | string | undefined;
@@ -203,6 +205,75 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     expect(escalationCall).toBeDefined();
     expect(escalationCall).toContain('green-checkpoint-release-fixer-no-turn');
     expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ status: 'failed' });
+    expect(vi.mocked(finishSpawn).mock.calls[1]![1]).toMatchObject({ status: 'failed' });
+    warn.mockRestore();
+  });
+
+  it('retries one release-fix infra_loss fallback and suppresses escalation when the retry runs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loopbackFetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        exitCode: 143,
+        timedOut: true,
+        agentOutput: '',
+        rawStdoutTail: 'first launch died before a turn',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        exitCode: 0,
+        agentOutput: 'decision: recovered',
+      }), { status: 200 }));
+
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledTimes(2));
+
+    expect(vi.mocked(loopbackFetch)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ status: 'failed' });
+    expect(vi.mocked(finishSpawn).mock.calls[1]![1]).toMatchObject({ status: 'done', exitCode: 0 });
+    const sqlTexts = mockSql.mock.calls.map((args) => {
+      const strings = args[0] as TemplateStringsArray | string | undefined;
+      return Array.isArray(strings) ? strings.join(' ') : String(strings);
+    });
+    expect(sqlTexts.some((text) => text.includes('INSERT INTO harness_shared.harness_escalations'))).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('does not retry a capacity_shed release-fix fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(gatewayWholesaleThrottled).mockResolvedValue(true);
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 1,
+      timedOut: false,
+      agentOutput: '',
+      stderr: '',
+    }), { status: 200 }));
+
+    await fireLaunchBlueprint('release-fix', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+
+    expect(vi.mocked(loopbackFetch)).toHaveBeenCalledOnce();
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({
+      status: 'failed',
+      errorMessage: expect.stringContaining('capacity_shed:'),
+    });
+    warn.mockRestore();
+  });
+
+  it('does not retry an infra_loss fallback for a non-release blueprint', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 143,
+      timedOut: true,
+      agentOutput: '',
+    }), { status: 200 }));
+
+    await fireLaunchBlueprint('cup', opts);
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+
+    expect(vi.mocked(loopbackFetch)).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
 

@@ -42,6 +42,7 @@ import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
 import {
   isReleaseFixerNoTurnFailure,
+  isRetryableReleaseFixerNoTurnFailure,
   recordReleaseFixerNoTurnEscalation,
 } from '../release/fixer-liveness';
 import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
@@ -54,6 +55,8 @@ import type { Db } from '../fleet/pg-stores';
 const operatorBase = operatorApiBase;
 /** Bounded stderr captured from the invoke response into `spawned_agents.output_tail`. */
 const INVOKE_OUTPUT_TAIL_LIMIT = 2_000;
+/** The fallback retries one unclassified release-fixer launcher death, never more. */
+const RELEASE_FIXER_FALLBACK_RETRY_LIMIT = 1;
 
 /**
  * The built-in SINGLE-ROLE launch blueprints (vs the program-mode vote/deliberate,
@@ -414,18 +417,22 @@ export async function buildLaunchSpawnRequest(
   };
 }
 
-const defaultFire: LaunchFireFn = async ({
-  url,
-  role,
-  installSlug,
-  blueprintId,
-  kickoff,
-  extra,
-  timeoutMs,
-  workspaceId,
-  parent,
-  bodyExtra,
-}) => {
+const defaultFire = async (
+  {
+    url,
+    role,
+    installSlug,
+    blueprintId,
+    kickoff,
+    extra,
+    timeoutMs,
+    workspaceId,
+    parent,
+    bodyExtra,
+  }: FireLaunchInput & LaunchTarget,
+  releaseFixerRetryCount = 0,
+  allowDurable = true,
+): Promise<LaunchSpawnInfo> => {
   const body = buildInvokeBody(blueprintId, { kickoff, extra, timeoutMs, bodyExtra });
 
   // DURABLE when DBOS is on (unify-agent-spawn-chokepoint P-010): the launch runs
@@ -435,7 +442,7 @@ const defaultFire: LaunchFireFn = async ({
   // workflow at import) is only loaded under DBOS; `durableSpawnFire` returns false
   // when it can't durably enqueue here (e.g. called from inside another step) so we
   // fall through to fire-and-forget.
-  if (dbosOrchestratorActive()) {
+  if (allowDurable && dbosOrchestratorActive()) {
     try {
       const { durableSpawnFire } = await import('../dbos/durable-spawn');
       const idempotencyKey = `launch:${installSlug}:${blueprintId}:${role}:${Date.now()}`;
@@ -674,7 +681,11 @@ const defaultFire: LaunchFireFn = async ({
       // red gate without a diagnosis. Reuse the durable escalation table so the next reader
       // sees the failure immediately, while the liveness-aware dispatcher remains the retry
       // mechanism. This runs for both timeout and pre-turn auth/context/infra failures.
-      if (blueprintId === 'release-fix' && isReleaseFixerNoTurnFailure(errorMessage)) {
+      const retryReleaseFixer =
+        blueprintId === 'release-fix' &&
+        releaseFixerRetryCount < RELEASE_FIXER_FALLBACK_RETRY_LIMIT &&
+        isRetryableReleaseFixerNoTurnFailure(errorMessage);
+      if (blueprintId === 'release-fix' && isReleaseFixerNoTurnFailure(errorMessage) && !retryReleaseFixer) {
         const releaseFixerContext = bodyExtra?.releaseFixerContext as
           | { candidate?: unknown; failingTests?: unknown }
           | undefined;
@@ -692,7 +703,7 @@ const defaultFire: LaunchFireFn = async ({
           console.warn(`[launch-blueprint] release-fixer no-turn escalation opened (${installSlug}/${spawnId})`);
         }
       }
-      void finishSpawn(pg.sql, {
+      await finishSpawn(pg.sql, {
         spawnId,
         workspaceId,
         status,
@@ -700,6 +711,34 @@ const defaultFire: LaunchFireFn = async ({
         outputTail: harvestedOutputTail,
         ...(errorMessage ? { errorMessage } : {}),
       }).catch(() => {});
+      if (retryReleaseFixer) {
+        console.warn(
+          `[launch-blueprint] retrying release-fixer fallback after infra_loss (${installSlug}/${spawnId}); ` +
+            `retry ${releaseFixerRetryCount + 1}/${RELEASE_FIXER_FALLBACK_RETRY_LIMIT}`,
+        );
+        void defaultFire(
+          {
+            url,
+            role,
+            installSlug,
+            blueprintId,
+            kickoff,
+            extra,
+            timeoutMs,
+            workspaceId,
+            parent,
+            bodyExtra,
+          },
+          releaseFixerRetryCount + 1,
+          false,
+        ).catch((retryError) => {
+          console.warn(
+            `[launch-blueprint] release-fixer fallback retry failed to start (${installSlug}): ${
+              retryError instanceof Error ? retryError.message : String(retryError)
+            }`,
+          );
+        });
+      }
     })
     .catch((e) => {
       stopHeartbeat();

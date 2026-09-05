@@ -106,6 +106,16 @@ export function isReleaseFixerNoTurnFailure(errorMessage: string | null | undefi
     /(?:produced no turn|before producing a turn|before (?:the agent|it) produced a turn)/i.test(errorMessage);
 }
 
+/**
+ * The fire-and-forget fallback gets one local retry only for an unclassified
+ * launcher/host death. Capacity sheds already have their own gateway retry
+ * semantics, while auth/quota/context failures need their underlying cause
+ * fixed before another launch can help.
+ */
+export function isRetryableReleaseFixerNoTurnFailure(errorMessage: string | null | undefined): boolean {
+  return isReleaseFixerNoTurnFailure(errorMessage) && /^\s*infra_loss\s*:/i.test(errorMessage ?? '');
+}
+
 /** Pure, bounded payload for the existing `harness_escalations` surface. */
 export function releaseFixerNoTurnEscalationBody(opts: ReleaseFixerNoTurnEscalationInput): string {
   const candidate = typeof opts.candidate === 'string' ? opts.candidate.slice(0, 12) : null;
