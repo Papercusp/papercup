@@ -1459,6 +1459,33 @@ export function defaultAccountEnv(): {
  */
 export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
 /**
+ * Build the owner-facing warning for a known all-walled Codex auto-route pool.
+ * Missing/deploy-skewed stats fail open: this guard warns only from affirmative live data.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   model?: string | null,
+ *   account?: string | null | { mode?: string, provider?: string },
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
+ *   now?: number
+ * }} input
+ * @returns {string | null}
+ */
+export function codexAutoPoolWarning({ agent, model, account, stats, now, }?: {
+    agent?: string | null;
+    model?: string | null;
+    account?: string | null | {
+        mode?: string;
+        provider?: string;
+    };
+    stats?: {
+        codexHealthyAccounts?: number;
+        codexTotalAccounts?: number;
+        codexEarliestRecoveryAt?: number | null;
+    } | null;
+    now?: number;
+}): string | null;
+/**
  * Strip ONLY the managed ROOT block (`model_provider = "papercusp-codex-gateway"`),
  * leaving the `[model_providers.papercusp-codex-gateway]` TABLE in place. With no
  * root key codex falls back to its built-in `openai` provider — the same state a

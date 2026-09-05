@@ -5102,6 +5102,114 @@ export function gatewayAutoEnv(provider = "claude", ownerId = undefined) {
 }
 
 /**
+ * True only for an explicit AUTO route whose model is served by the Codex/OpenAI pool.
+ * OMP is provider-polymorphic, so its selected model — not the OMP process name — decides.
+ *
+ * @param {string | null | undefined} agent
+ * @param {string | null | undefined} model
+ * @param {string | null | undefined | { mode?: string, provider?: string }} account
+ */
+function isCodexAutoRoute(agent, model, account) {
+  const route = account && typeof account === "object" ? account : null;
+  const mode = route?.mode ?? accountRoutingMode(account);
+  if (mode !== "auto") return false;
+  const provider =
+    route?.provider ??
+    (agent === "codex"
+      ? "codex"
+      : agent === "omp"
+        ? ompGatewayModelFromSpec(String(model || ""))?.accountProvider
+        : "claude");
+  return provider === "codex";
+}
+
+/**
+ * Build the owner-facing warning for a known all-walled Codex auto-route pool.
+ * Missing/deploy-skewed stats fail open: this guard warns only from affirmative live data.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   model?: string | null,
+ *   account?: string | null | { mode?: string, provider?: string },
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
+ *   now?: number
+ * }} input
+ * @returns {string | null}
+ */
+export function codexAutoPoolWarning({
+  agent,
+  model,
+  account,
+  stats,
+  now = Date.now(),
+} = {}) {
+  if (!isCodexAutoRoute(agent, model, account)) return null;
+  const healthy = Number(stats?.codexHealthyAccounts);
+  if (!Number.isFinite(healthy) || healthy > 0) return null;
+  const total = Number(stats?.codexTotalAccounts);
+  const count =
+    Number.isFinite(total) && total > 0 ? `0 of ${Math.floor(total)}` : "0";
+  const recovery = Number(stats?.codexEarliestRecoveryAt);
+  const horizon =
+    Number.isFinite(recovery) && recovery > now
+      ? `; earliest known recovery ${new Date(recovery).toISOString()}`
+      : "; earliest recovery unknown";
+  return (
+    `psu: WARNING — Codex auto-route pool is fully walled: ${count} ChatGPT accounts serviceable${horizon}. ` +
+    "The launch will continue, but its first model call will fail fast with 429 until capacity returns."
+  );
+}
+
+/**
+ * Best-effort launch preflight. A down or older gateway never blocks psu; only a live,
+ * self-describing all-walled snapshot emits a warning.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   model?: string | null,
+ *   account?: string | null | { mode?: string, provider?: string },
+ *   fetchImpl?: typeof fetch,
+ *   log?: (message: string) => void,
+ *   port?: number,
+ *   timeoutMs?: number
+ * }} input
+ */
+async function warnIfCodexAutoPoolWalled({
+  agent,
+  model,
+  account,
+  fetchImpl = fetch,
+  log = console.error,
+  port,
+  timeoutMs = 1_200,
+} = {}) {
+  if (!isCodexAutoRoute(agent, model, account)) return null;
+  const envPort = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  const gatewayPort =
+    Number.isFinite(port) && port > 0
+      ? port
+      : Number.isFinite(envPort) && envPort > 0
+        ? envPort
+        : 8788;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${gatewayPort}/stats`, {
+      signal: controller.signal,
+    });
+    if (!response?.ok) return null;
+    const stats = await response.json();
+    const warning = codexAutoPoolWarning({ agent, model, account, stats });
+    if (warning) log(warning);
+    return warning;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Strip ONLY the managed ROOT block (`model_provider = "papercusp-codex-gateway"`),
  * leaving the `[model_providers.papercusp-codex-gateway]` TABLE in place. With no
  * root key codex falls back to its built-in `openai` provider — the same state a
@@ -12203,6 +12311,11 @@ async function launchResolvedResume(source, args, { tracked }) {
     await launchSessionPort(source, target, account, args);
     return;
   }
+  await warnIfCodexAutoPoolWalled({
+    agent: target.targetAgent,
+    model: target.modelSpec,
+    account,
+  });
   const resumeModel = reconcileResumeModelForAccountRoute({
     agent: target.targetAgent,
     model: target.modelSpec,
@@ -12517,6 +12630,7 @@ async function roleFlow(args, role, rolesMeta) {
   // Backend-not-installed → offer to install it before we spawn (owner req
   // 2026-07-06), same as the SU flow. Aborts if the user declines / it doesn't land.
   if (!(await ensureBackendInstalled(agent))) process.exit(1);
+  await warnIfCodexAutoPoolWalled({ agent, model: args.model, account });
 
   const res = await api("/api/agent-mcp/console/bootstrap-role", {
     method: "POST",
@@ -13161,6 +13275,11 @@ async function fetchSetupStageSoft({
  * it reaches this launcher.
  */
 async function launchFreshSu(selections, args, { brain = false } = {}) {
+  await warnIfCodexAutoPoolWalled({
+    agent: selections.agent,
+    model: args.model,
+    account: args.account,
+  });
   const bootstrapIdempotencyKey = randomUUID();
   if (
     selections.agent === "codex" &&
