@@ -233,6 +233,22 @@ export default defineTool({
     when: 'Track a unit of work an agent will do. Pick the kind by what it IS: bug (code is broken), change (a code change / fix / refactor / DX ask — the DEFAULT for coding work-items), feature (a pipeline-sized coding work-unit), or task (NON-CODE work only — research, a decision, an ops step). The retired `chunk` kind is history, not an option. A suspected bug is filed (kind:bug) the MOMENT you notice it — filing is unconditional; fixing is the judgment call. File several via items:[…]; inline links:[{ rel, target_id }] beats a follow-up link call.',
     notWhen: 'NEVER use `task` for anything that edits code — that is `change` (or `feature` if pipeline-sized); `task` is non-code only. A passing peer question → coord:send with expects:"answer". A validator finding inside a live pipeline run → the validator pipeline, not here.',
     chaining: 'work_items:list (dedup) → work_items:create → work_items:claim/claim_next when you start → work_items:set_state on progress; work_items:promote to give a bug/change a pipeline run.',
+    // WI-38059: `paths` was the eighth instance in that item's measured rejection burst,
+    // and it is the ONE the item's own two remedies cannot reach. `payload` is declared
+    // `z.record(z.string(), z.unknown())`, which renders as
+    // `{ type:'object', additionalProperties:{} }` with NO `properties` — so
+    // `nestedArgPaths` has nothing to walk (verified: it returns an empty map for this
+    // shape while still resolving `observation.refs` for a TYPED nested object), and
+    // `suggestArgName('paths', <declared keys>)` returns null because no declared key is
+    // within edit distance. The caller therefore gets no pointer at all and reads the
+    // rejection as "this tool has no paths concept" — but `paths` is real and load-bearing
+    // (improvements:capture's own guidance says "Include `paths` — the auto-implement risk
+    // gate reads them", and create.ts reads payload.paths when it builds the row). An
+    // authored redirect is the only rung that fires for a free-form record. Zero prompt
+    // weight, paid only on the failure.
+    argRedirects: {
+      paths: 'payload.paths',
+    },
     seeAlso: [
       'work_items:list (dedup against existing items before filing)',
       'work_items:link (add typed edges to an EXISTING item — create’s links:[…] is the at-birth shorthand)',
