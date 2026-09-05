@@ -1579,7 +1579,10 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
-  if (!verdict.repairQueue && shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests)) {
+  if (
+    !verdict.repairQueue &&
+    shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests, verdict.retriage)
+  ) {
     await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -1926,7 +1929,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     !isPinnedCheckpointVerdict(parsed) &&
     !recordedByRun &&
     !parsed?.repairQueue &&
-    shouldDispatchReleaseFixer(status, candidate, failingTests)
+    shouldDispatchReleaseFixer(status, candidate, failingTests, parsed?.retriage)
   ) {
     await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
@@ -4306,14 +4309,46 @@ export interface ReleaseFixerRecord {
  * spoon-knife-hive). `trackGateStall` (the caller's sibling step) still fires the
  * human-facing "held too long" alert regardless of this gate, so a genuinely-stuck gate
  * is never silently dropped — this only spares the pointless fixer spawn.
+ *
+ * EI-20029143927692821: the same reasoning applies to a red the run has ALREADY PROVEN stale by
+ * its own hand. When `retriage` reports `classification: 'stale-candidate'`, the CLI re-ran these
+ * exact failing files at a newer tip and watched them PASS — the strongest negative evidence the
+ * gate ever produces. Dispatching a fixer at those names asks an agent to re-derive from scratch a
+ * conclusion this very verdict already carries; it reproduces nothing and stands down. Measured
+ * cost: one full release-fixer agent per occurrence, recurring whenever a torn sweep lands near
+ * the refire cap.
+ *
+ * This REUSES `isProvenStaleCandidate` rather than keying on the reader-side name for the same
+ * evidence (`verdictStaleReasonCode === 'retriage-proven'`, gate-verdict-freshness.ts Rule 3), so
+ * that ONE definition of "proven stale" governs BOTH decisions the evidence bears on — whether the
+ * red moves the streak (`classifyGateTick` → 'record-only') and whether it spends an agent. Two
+ * copies of this predicate would be free to drift; there is only one.
+ *
+ * ⚠ THE `charged-budget` CARVE-OUT IS LOAD-BEARING, and is why this is NOT a blanket "suppress
+ * whenever the re-triage proved staleness". `refireBlockedBy === 'charged-budget'` means the SAME
+ * breakage survived every rescue, which the operator text calls out as "the tip is genuinely
+ * broken: a human is needed" — precisely when a fixer IS wanted. `isProvenStaleCandidate` already
+ * encodes that single exclusion; the other three blockers are not evidentiary (`deadline` is a
+ * clock, `cap-disabled` a feature switch, and `absolute-ceiling`'s own operator text says "the fix
+ * is to slow the tree or widen the window, NOT to debug the files named above").
+ *
+ * `retriage` is REQUIRED, not optional, so a future dispatch site must ANSWER the question instead
+ * of silently inheriting the un-guarded behaviour. Pass `undefined` when the caller genuinely has
+ * no re-triage verdict (old CLI payload, or no tip re-run happened): absent evidence dispatches,
+ * which is the fail-open direction — an unproven red still gets its fixer.
  */
 export function shouldDispatchReleaseFixer(
   status: string,
   candidate: string | undefined,
   failingTests: string[] | undefined,
+  retriage: GateStallRetriage | null | undefined,
 ): candidate is string {
   return (
-    (status === 'not-green' || status === 'advanced-prefix') && !!candidate && !!failingTests && failingTests.length > 0
+    (status === 'not-green' || status === 'advanced-prefix') &&
+    !!candidate &&
+    !!failingTests &&
+    failingTests.length > 0 &&
+    !isProvenStaleCandidate(retriage)
   );
 }
 
