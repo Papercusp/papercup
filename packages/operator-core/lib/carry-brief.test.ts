@@ -37,6 +37,7 @@ import {
   CARRY_QUERY_HANDLES_MAX,
   CARRY_QUERY_HANDLES_HEADING,
   type CarryBrief,
+  type CarryBriefHeldItem,
   type CarryBriefDeferredItem,
   type BuildCarryBriefOpts,
 } from './carry-brief';
