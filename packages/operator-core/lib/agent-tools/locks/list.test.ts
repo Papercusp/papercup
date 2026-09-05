@@ -33,12 +33,22 @@ vi.mock('./su-lock-store', () => ({
   getResource: vi.fn(),
   listResources: vi.fn(),
   readResourceQueue: vi.fn(),
+  // EI-20192110087737961: the handler now also measures the FILE plane.
+  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [] })),
 }));
 
-import { getResource, listResources, readResourceQueue } from './su-lock-store';
+import {
+  getResource,
+  listResources,
+  readResourceQueue,
+  readQueue,
+  type ActiveLockRow,
+  type WaiterRow,
+} from './su-lock-store';
 const getResourceM = vi.mocked(getResource);
 const listResourcesM = vi.mocked(listResources);
 const queueM = vi.mocked(readResourceQueue);
+const fileQueueM = vi.mocked(readQueue);
 
 const tool = (await import('./list')).default;
 type Out = {
@@ -62,6 +72,27 @@ type Out = {
     draining: boolean;
     plane: string;
     fileLockHint: string;
+    // EI-20197228449443651: the narrowing is reported ON the aggregate, so a
+    // bounded read can never be mistaken for a complete census.
+    registryCount: {
+      total: number;
+      matched: number;
+      returned: number;
+      truncatedByLimit: boolean;
+      qApplied: boolean;
+      qIgnoredResourceScoped: boolean;
+    };
+    // EI-20192110087737961: the measured FILE plane, returned beside the
+    // named-resource one.
+    fileLocks: {
+      plane: string;
+      activeCount: number | null;
+      waitingCount: number | null;
+      distinctHolders: number | null;
+      holders: Array<{ owner: string; pathCount: number; paths: string[] }>;
+      unreadable?: string;
+      readVia: string;
+    };
   };
 };
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
@@ -279,5 +310,248 @@ describe('locks:list — resources[] denormalized with holders (EI-2207368677505
     expect(devServer.holders).toEqual([]);
     expect(releaseDeploy.held).toBe(true);
     expect(releaseDeploy.holders).toHaveLength(1);
+  });
+});
+
+/**
+ * EI-20192110087737961 — the primary lock read surface must MEASURE the file
+ * plane, not merely point at it.
+ *
+ * The pointer these tests supersede (`fileLockHint`, EI-19400582907190258) is
+ * still asserted above and still correct; what it could not do was survive
+ * contact with a reader. It shipped 2026-08-03; this item was filed 2026-08-11
+ * by an agent who read `locks:list`, concluded it "did not show repository file
+ * locks", and went and found `locks:queue` themselves.
+ */
+describe('locks:list — the FILE plane is measured, not just pointed at (EI-20192110087737961)', () => {
+  /** A COMPLETE ActiveLockRow with a narrow override seam, so the fixture is
+   * genuinely typechecked against the store signature rather than cast past it
+   * (lint:mock-cast-escape is shrink-only). If ActiveLockRow gains a required
+   * field, this factory fails to compile — which is the point. */
+  const activeRow = (over: Partial<ActiveLockRow> = {}): ActiveLockRow => ({
+    lock_id: 'LOCK-1',
+    path: 'packages/x.ts',
+    owner: 'peer-1',
+    owner_label: 'Peer One',
+    intent: 'rewriting the guard',
+    goal_ref: null,
+    acquired_ts: new Date('2026-01-01T00:00:00Z'),
+    expires_ts: new Date('2026-01-01T00:20:00Z'),
+    coordination_domain: '/some/tree',
+    ...over,
+  });
+  const waiterRow = (over: Partial<WaiterRow> = {}): WaiterRow => ({
+    ticket_id: 'T-1',
+    owner: 'peer-2',
+    owner_label: 'Peer Two',
+    paths: ['packages/x.ts'],
+    intent: 'waiting to edit',
+    goal_ref: null,
+    queued_ts: new Date('2026-01-01T00:01:00Z'),
+    wait_until: new Date('2026-01-01T00:21:00Z'),
+    status: 'waiting',
+    ...over,
+  });
+  const fileQueue = (active: ActiveLockRow[], waiting: WaiterRow[] = []) =>
+    mockResolvedTyped(fileQueueM, { active_locks: active, waiting });
+
+  /** Local + typed: the sibling describe's `registryRow` is scoped to that
+   * block, and deriving the row type from the store signature keeps this
+   * fixture honest without another `as never`. */
+  type RegistryRow = Awaited<ReturnType<typeof listResources>>[number];
+  const registryRow = (resource: string): RegistryRow =>
+    ({ resource, description: '', rule_text: 'rule text', enforcement: 'enforced' }) as RegistryRow;
+
+  beforeEach(() => {
+    mockResolvedTyped(listResourcesM, [registryRow('dev-server')]);
+    heldOnlyIn('/caller/tree', []);
+  });
+
+  it('returns a measured file-lock count beside the named-resource holders', async () => {
+    fileQueue(
+      [
+        activeRow({ path: 'packages/x.ts' }),
+        activeRow({ path: 'packages/y.ts', lock_id: 'LOCK-2' }),
+      ],
+      [waiterRow()],
+    );
+
+    const b = await call({});
+
+    // The named-resource plane is empty here — which is exactly the reading the
+    // item says gets mistaken for "nothing is locked". The measured block sits
+    // beside it and contradicts that reading with a number.
+    expect(b.data.holders).toEqual([]);
+    expect(b.data.fileLocks.activeCount).toBe(2);
+    expect(b.data.fileLocks.waitingCount).toBe(1);
+    expect(b.data.fileLocks.distinctHolders).toBe(1);
+    expect(b.data.fileLocks.holders[0]).toMatchObject({ owner: 'peer-1', pathCount: 2 });
+  });
+
+  it('measures the file plane on a {resource}-SCOPED call too', async () => {
+    // A caller who narrowed to one resource is if anything MORE likely to read
+    // the resulting empty holders[] as a verdict about their own file.
+    mockResolvedTyped(getResourceM, registryRow('dev-server'));
+    fileQueue([activeRow({ path: 'a.ts' })]);
+
+    const b = await call({ resource: 'dev-server' });
+    expect(b.data.fileLocks.activeCount).toBe(1);
+  });
+
+  it('reads across EVERY coordination domain, not the caller’s', async () => {
+    // readIdentity is mocked to '/caller/tree'; a domain-scoped read reports a
+    // genuinely-held lock as absent when the serving operator and the edited
+    // checkout differ (:3070 vs :3170, WI-5979).
+    fileQueue([]);
+    await call({});
+    expect(fileQueueM).toHaveBeenCalledWith(expect.anything(), { coordinationDomain: null });
+  });
+
+  it('does NOT report zero file locks when the file-lock read fails', async () => {
+    // The regression this guards is a silent downgrade of the failure path to
+    // `activeCount: 0` — which would be strictly worse than the empty array it
+    // replaced, because a confident wrong number outranks a hint just as
+    // reliably as a right one.
+    fileQueueM.mockRejectedValue(new Error('lock plane unreachable'));
+
+    const b = await call({});
+
+    expect(b.data.fileLocks.activeCount).toBeNull();
+    expect(b.data.fileLocks.activeCount).not.toBe(0);
+    expect(b.data.fileLocks.unreadable).toContain('lock plane unreachable');
+    // …and the rest of the tool still answers: a file-plane failure must not
+    // take the named-resource answer down with it.
+    expect(b.data.ok).toBe(true);
+    expect(b.data.resources).toHaveLength(1);
+  });
+
+  it('routes the hint at the measured block rather than standing in for one', async () => {
+    fileQueue([]);
+    const b = await call({});
+    expect(b.data.fileLockHint).toContain('fileLocks');
+    expect(b.data.fileLockHint).toContain('locks:queue { paths: [...] }');
+  });
+});
+
+// EI-20197228449443651: the registry is 518 rows live, and the only expressible
+// reads were ONE exact `resource` or the whole firehose — so `{limit:100}` was
+// rejected as unsupported. `q`/`limit` make a bounded browse statable. The load-
+// bearing constraint is that they narrow the REGISTRY view ONLY: every prior fix
+// in list.ts (EI-18674647773291145, WI-5960, EI-21733256625452096,
+// EI-22073686775053989) was an under-reported holder reading as "free", so a
+// browse filter that could narrow holders[] would reintroduce that whole class.
+describe('locks:list — bounded registry browse via q/limit (EI-20197228449443651)', () => {
+  /** Derived from the store signature and spelled out in FULL — no `as never`,
+   * and no inner cast either, so a row type that gains a required field fails
+   * here at typecheck instead of rotting into a runtime failure at the fleet
+   * green-checkpoint (which is exactly what the cast the ratchet counts buys). */
+  type RegistryRow = Awaited<ReturnType<typeof listResources>>[number];
+  const registryRow = (resource: string): RegistryRow => ({
+    resource,
+    description: '',
+    rule_text: 'rule text',
+    enforcement: 'advisory',
+    match_patterns: [],
+    max_holders: null,
+  });
+
+  const registry = (...names: string[]) =>
+    mockResolvedTyped(listResourcesM, names.map((n) => registryRow(n)));
+
+  it('accepts q/limit and still rejects unknown args and out-of-range limits', () => {
+    expect(tool.args.safeParse({ q: 'git-sync' }).success).toBe(true);
+    expect(tool.args.safeParse({ limit: 100 }).success).toBe(true);
+    expect(tool.args.safeParse({ q: 'git-sync', limit: 5 }).success).toBe(true);
+    // The rejection that filed this item must stay a rejection for genuinely
+    // unsupported shapes — widening `limit` is not licence to accept anything.
+    expect(tool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(false);
+    expect(tool.args.safeParse({ limit: 0 }).success).toBe(false);
+    expect(tool.args.safeParse({ limit: 501 }).success).toBe(false);
+    expect(tool.args.safeParse({ limit: 2.5 }).success).toBe(false);
+  });
+
+  it('q filters resources[] by name, case-insensitively', async () => {
+    registry('git-sync:portal', 'GIT-SYNC:calendar', 'dev-server', 'db-schema');
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({ q: 'git-sync' });
+
+    expect(b.data.resources.map((r) => r.resource)).toEqual(['git-sync:portal', 'GIT-SYNC:calendar']);
+    expect(b.data.registryCount).toMatchObject({ total: 4, matched: 2, returned: 2, qApplied: true });
+  });
+
+  it('limit bounds resources[] AFTER q, and the aggregate says the read was bounded', async () => {
+    registry('git-sync:a', 'git-sync:b', 'git-sync:c', 'dev-server');
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({ q: 'git-sync', limit: 2 });
+
+    expect(b.data.resources.map((r) => r.resource)).toEqual(['git-sync:a', 'git-sync:b']);
+    expect(b.data.registryCount).toMatchObject({
+      total: 4,
+      matched: 3,
+      returned: 2,
+      truncatedByLimit: true,
+    });
+  });
+
+  it('an unbounded read reports truncatedByLimit:false — a complete census is distinguishable', async () => {
+    registry('dev-server', 'db-schema');
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({});
+
+    expect(b.data.registryCount).toMatchObject({
+      total: 2,
+      matched: 2,
+      returned: 2,
+      truncatedByLimit: false,
+      qApplied: false,
+    });
+  });
+
+  // THE INVARIANT THIS FEATURE MUST NOT BREAK. A filter that narrowed holders[]
+  // would let a caller browse the registry and read a MISSING holder as "free"
+  // — the exact false-empty that EI-18674647773291145 / WI-5960 /
+  // EI-21733256625452096 / EI-22073686775053989 each fixed. Over-reporting a
+  // holder is safe (a reader waits); under-reporting reads as permission to
+  // write on a resource a peer holds, on rows whose enforcement is `advisory`.
+  it('neither q nor limit may narrow holders[]: a holder OUTSIDE the filter is still reported', async () => {
+    registry('git-sync:portal', 'dev-server');
+    heldOnlyIn('/caller/tree', [holder('peer-agent', 'dev-server')]);
+
+    const b = await call({ q: 'git-sync', limit: 1 });
+
+    // dev-server is filtered OUT of the registry view...
+    expect(b.data.resources.map((r) => r.resource)).toEqual(['git-sync:portal']);
+    // ...but its holder is still on the holder plane, un-narrowed.
+    expect(b.data.holders).toHaveLength(1);
+    expect(b.data.holders[0]).toMatchObject({ resource: 'dev-server', owner: 'peer-agent' });
+  });
+
+  it('a q that matches nothing is a MEASURED empty, not an empty registry', async () => {
+    registry('dev-server', 'db-schema');
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({ q: 'no-such-resource' });
+
+    expect(b.data.resources).toEqual([]);
+    // total > 0 beside matched === 0 is what tells the two apart.
+    expect(b.data.registryCount).toMatchObject({ total: 2, matched: 0, returned: 0, qApplied: true });
+  });
+
+  it('q alongside the exact `resource` selector is IGNORED — and says so rather than silently', async () => {
+    mockResolvedTyped(getResourceM, registryRow('dev-server'));
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({ resource: 'dev-server', q: 'git-sync' });
+
+    // The exact selector wins; the filter that would have excluded it does not
+    // silently empty the result.
+    expect(b.data.resources.map((r) => r.resource)).toEqual(['dev-server']);
+    expect(b.data.registryCount).toMatchObject({
+      qApplied: false,
+      qIgnoredResourceScoped: true,
+    });
   });
 });

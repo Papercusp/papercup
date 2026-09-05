@@ -17,6 +17,16 @@
  * (unchanged shape, useful when scanning across resources or for ad hoc /
  * unregistered names that never appear as a `resources[]` row) — the two are
  * kept in sync from one merge, never two independent computations.
+ *
+ * EI-20192110087737961: the result also carries `fileLocks` — a MEASURED
+ * summary of the other lock plane (see file-lock-summary.ts). This tool is the
+ * primary lock read surface, so an agent reads it and concludes "nothing is
+ * locked"; `holders: []` is about NAMED RESOURCES and says nothing about files.
+ * The prior remedy was prose (`fileLockHint`), and it did not hold: it shipped
+ * 2026-08-03 and this item was filed 2026-08-11 by an agent who read this tool,
+ * concluded it "did not show repository file locks", and went and found
+ * `locks:queue` on their own. A sentence next to an empty array loses to the
+ * empty array; a number next to it does not.
  */
 
 import { z } from 'zod';
@@ -32,6 +42,7 @@ import {
   type ResourceRegistryRow,
 } from './su-lock-store';
 import { shapeLocksList } from './list-shape';
+import { readFileLockSummary } from './file-lock-summary';
 
 function holderJson(h: ResourceHolder) {
   return {
@@ -58,11 +69,11 @@ function registryJson(r: ResourceRegistryRow) {
 export default defineTool({
   name: 'locks:list',
   description:
-    'List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable.',
+    'List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable. Browse a large registry with `q` (name substring) and/or `limit`: both narrow resources[] only, never holders[]; registryCount reports the narrowing.',
   guidance: {
-    when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource.',
-    notWhen: 'File-lock contention — that is locks:queue.',
-    chaining: 'Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? } → locks:acquire_resource { resource, mode }.',
+    when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource. The fileLocks block measures the FILE plane on this same call — holders[] alone never answers "is a peer on this file".',
+    notWhen: 'Full file-lock rows or a release handle — that is locks:queue; this carries a bounded fileLocks summary only.',
+    chaining: 'Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? | q?, limit? } → locks:acquire_resource { resource, mode }.',
     seeAlso: [
       'locks:acquire_resource (acquire a resource you found)',
       'locks:queue (file-lock contention, not named resources)',
@@ -73,6 +84,30 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     resource: z.string().min(1).max(200).optional(),
+    // EI-20197228449443651: the registry is NOT a small bounded set (518 rows
+    // live, dominated by the `git-sync:<slug>` family), but the only reads
+    // were ONE exact `resource` or the whole firehose — so a caller wanting to
+    // browse had no expressible request, and the rejected `{limit:100}` call
+    // that filed this item was a reasonable ask the surface could not state.
+    // Named to match the established `q`/`limit` convention on work_items:list,
+    // issues:list and routines:list rather than inventing a third spelling.
+    q: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'Case-insensitive substring filter over resource NAMES. Narrows resources[] only. Ignored (and reported as such) when `resource` is passed — that is the exact-match selector.',
+      ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Max registry rows returned, applied AFTER `q`. Bounds resources[] only; holders[] is never narrowed by it. Read registryCount to tell a bounded read from a complete one.',
+      ),
   }),
   // context-trimming-tiers P-023: trimmed/standard sessions get clipped
   // registry rules + lean holder rows (see list-shape.ts). NOT hook-consumed
@@ -86,9 +121,27 @@ export default defineTool({
     const { coordinationDomain: callerDomain } = readIdentity(ctx);
     const pool = getTxPool();
 
-    const registry = args.resource
+    const considered = args.resource
       ? [await getResource(pool, args.resource)].filter((r): r is ResourceRegistryRow => r !== null)
       : await listResources(pool);
+
+    // EI-20197228449443651: `q`/`limit` narrow the REGISTRY view only, and
+    // `holders[]` is deliberately left un-narrowed by both. Every prior fix in
+    // this file (EI-18674647773291145, WI-5960, EI-21733256625452096,
+    // EI-22073686775053989) was the same defect — an under-reported holder
+    // reading as "this resource is free" — and this file's own rule is that
+    // over-reporting a holder is safe (a reader waits) while under-reporting
+    // reads as permission to write on a resource a peer holds, on rows whose
+    // enforcement is merely `advisory`. A browse filter must never be able to
+    // manufacture that false empty, so it cannot touch the holder plane.
+    const qIgnoredResourceScoped = Boolean(args.resource && args.q);
+    const needle = args.resource ? undefined : args.q?.toLowerCase();
+    const matched =
+      needle === undefined
+        ? considered
+        : considered.filter((r) => r.resource.toLowerCase().includes(needle));
+    const limit = args.resource ? undefined : args.limit;
+    const registry = limit === undefined ? matched : matched.slice(0, limit);
 
     // EI-18674647773291145 Defect 2 / WI-5960: a special-domain resource (a
     // host-global one like 'release-deploy', OR a workspace-scoped one like
@@ -153,13 +206,40 @@ export default defineTool({
       };
     });
 
+    // EI-20192110087737961: measure the OTHER plane and return it inline.
+    // Read unconditionally, including on a `{resource}`-scoped call: the
+    // question this answers ("is anything holding a FILE right now") does not
+    // narrow with the resource filter, and a caller who scoped their call is if
+    // anything MORE likely to read the resulting `holders: []` as a verdict
+    // about their file. Failure is reported as `activeCount: null` +
+    // `unreadable`, never as `0`.
+    const fileLocks = await readFileLockSummary(pool);
+
     // {data} envelope so the payload-tier shapers apply.
     return {
       data: {
         ok: true,
         resources: resourcesWithHolders,
+        // EI-20197228449443651: a caller's `limit` bounds a ROW LIST, never an
+        // aggregate — so the narrowing is reported ON the aggregate rather than
+        // left to be inferred from row count. Without this, `resources[]`
+        // holding 100 of 518 rows is indistinguishable from a registry that
+        // has 100 resources, and a bounded read reads as a complete census.
+        // `returned` counts what the HANDLER produced: a trimmed/standard
+        // payload tier may clip further, and says so in its own marker row.
+        // A zero `matched` under a `q` is a MEASURED empty (nothing matched),
+        // never "the registry is empty" — `total` is there to tell them apart.
+        registryCount: {
+          total: considered.length,
+          matched: matched.length,
+          returned: registry.length,
+          truncatedByLimit: registry.length < matched.length,
+          qApplied: needle !== undefined,
+          qIgnoredResourceScoped,
+        },
         holders,
         draining,
+        fileLocks,
         // EI-19400582907190258: this result enumerates the NAMED-RESOURCE lock
         // plane only (dev:restart, db:migrate, git-sync:<slug>, …) — rows carry
         // no `path` field at all. A caller asking "does a peer hold THIS FILE"
@@ -170,7 +250,13 @@ export default defineTool({
         // guidance was skipped — an empty `holders: []` here proves nothing
         // about a specific file.
         plane: 'resource' as const,
-        fileLockHint: 'This is the NAMED-RESOURCE lock plane, not file locks. To check whether a peer holds a specific FILE path, use locks:queue { paths: [...] } instead — an empty result here never answers that question.',
+        // EI-20192110087737961: this sentence used to be the WHOLE remedy, and
+        // it demonstrably was not enough — it shipped 2026-08-03 and an agent
+        // still filed "locks:list did not show repository file locks" on
+        // 2026-08-11. It now describes the measured `fileLocks` block beside
+        // it rather than standing in for one.
+        fileLockHint:
+          'resources[]/holders[] are the NAMED-RESOURCE plane and can never answer "does a peer hold this FILE" — read fileLocks (measured on this call) for that, then locks:queue { paths: [...] } for full rows incl. lock_id and waiters. fileLocks.activeCount === null means the read FAILED, not zero.',
       },
     };
   },
