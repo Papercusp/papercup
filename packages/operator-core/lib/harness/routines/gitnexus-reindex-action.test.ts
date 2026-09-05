@@ -63,6 +63,9 @@ import {
   cleanCrashResidue,
   probeOpenHandles,
   classifyWriterLiveness,
+  classifyWriteHolderLiveness,
+  detectLiveAnalyzeWriter,
+  processAgeMs,
   type OpenHandleProbe,
   judgeCanary,
   GITNEXUS_HEALTH_DEFAULT,
@@ -1111,7 +1114,7 @@ describe('isOrphanWal', () => {
  * file no process has open, so a test can prove the surrounding tree is cleanable
  * without depending on the host's process table at that instant.
  */
-const NO_HOLDERS: OpenHandleProbe = { ok: true, holders: [], scannedPids: 1, unreadablePids: 0 };
+const NO_HOLDERS: OpenHandleProbe = { ok: true, holders: [], writers: [], scannedPids: 1, unreadablePids: 0 };
 
 describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery)', () => {
   function poisonedRoot(): string {
@@ -1219,6 +1222,7 @@ describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery
     writeFileSync(wal, 'pending wal');
     const old = (Date.now() - (DEAD_SHADOW_STALE_MS + 60_000)) / 1000;
     utimesSync(shadow, old, old);
+    utimesSync(wal, old, old); // so the calibration below measures the shadow handle, not WAL freshness
 
     const fd = openSync(shadow, 'r+');
     try {
@@ -1249,7 +1253,7 @@ describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery
 
     const unavailable = cleanCrashResidue(root, {
       writerKnownDead: true,
-      probeOpenHandles: () => ({ ok: false, holders: [], scannedPids: 0, unreadablePids: 0 }),
+      probeOpenHandles: () => ({ ok: false, holders: [], writers: [], scannedPids: 0, unreadablePids: 0 }),
     });
     expect(unavailable.writerLiveness).toBe('unknown');
     expect(unavailable.cleaned).toBe(false);
@@ -1282,9 +1286,10 @@ describe('cleanCrashResidue — writerKnownDead (immediate post-timeout recovery
   it('CALIBRATION: the default path still cleans a STALE poison, so the flag adds only immediacy', () => {
     // Guards against "fixing" the gap by making the default arm over-eager.
     const root = poisonedRoot();
-    const { shadow } = gitnexusDbPaths(root);
+    const { shadow, wal } = gitnexusDbPaths(root);
     const old = (Date.now() - (DEAD_SHADOW_STALE_MS + 60_000)) / 1000;
     utimesSync(shadow, old, old);
+    utimesSync(wal, old, old); // the WAL has its own staleness corroborator now (WI-2146606)
 
     expect(cleanCrashResidue(root).cleaned).toBe(true);
   });
@@ -1336,9 +1341,10 @@ describe('cleanCrashResidue', () => {
     writeFileSync(shadow, ''); // ZERO BYTES — the build died before writing anything
     writeFileSync(wal, 'pending wal');
     writeFileSync(walCheckpoint, 'checkpoint');
-    // Backdate the shadow past the staleness floor: a corpse, not a build in flight.
+    // Backdate the shadow AND its WAL past the staleness floor: a corpse, not a build in flight.
     const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
     utimesSync(shadow, old, old);
+    utimesSync(wal, old, old);
 
     const result = cleanCrashResidue(root);
 
@@ -1397,6 +1403,7 @@ describe('cleanCrashResidue', () => {
     writeFileSync(wal, 'orphaned wal');
     const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
     utimesSync(shadow, old, old);
+    utimesSync(wal, old, old);
 
     const result = cleanCrashResidue(root);
 
@@ -1416,6 +1423,10 @@ describe('cleanCrashResidue', () => {
     const { db, shadow, wal } = gitnexusDbPaths(root);
     writeFileSync(db, 'promoted-db');
     writeFileSync(wal, 'pending-writes-from-a-killed-analyze');
+    // A killed analyze's WAL is long untouched by the next tick. A FRESH unheld WAL is
+    // deliberately spared for DEAD_SHADOW_STALE_MS (WI-2146606) — see that describe block.
+    const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
+    utimesSync(wal, old, old);
     expect(existsSync(shadow)).toBe(false);
 
     const result = cleanCrashResidue(root);
@@ -1495,6 +1506,322 @@ describe('cleanCrashResidue', () => {
  * cannot find a handle we are DEMONSTRABLY holding in this very process, its zeroes mean
  * nothing and the whole fix is resting on a broken instrument.
  */
+/**
+ * WI-2146606 — the cross-restart double-spawn (observed live 2026-09-05T19:16:59–19:17:03Z).
+ *
+ * A bg-host was restarted 44 min into a tick. The analyze survived in its own managedSpawn
+ * scope and was in its post-promote phase: `lbug` + `lbug.wal` held O_RDWR, NO shadow. The
+ * successor host's first preflight read exactly that shape through `isOrphanWal` — "killed
+ * after the promote" — deleted the LIVE run's WAL as ORPHAN-WAL residue, and, seeing no
+ * in-process concurrency, spawned a SECOND analyze onto the same index.
+ *
+ * Two defects, one instrument: the open-handle probe only ever asked about the shadow, and
+ * the concurrency guard only knew about a child this host was awaiting. Both now ask the
+ * kernel who holds the index's files open — and, for the two files READERS also hold, in
+ * what MODE.
+ */
+describe('WI-2146606 — the WAL and the index get the open-handle discriminator too', () => {
+  const onLinux = process.platform === 'linux' && existsSync('/proc/self/fd');
+  const NONE: OpenHandleProbe = { ok: true, holders: [], writers: [], scannedPids: 1, unreadablePids: 0 };
+  const WRITER: OpenHandleProbe = { ok: true, holders: [4242], writers: [4242], scannedPids: 1, unreadablePids: 0 };
+  const READER: OpenHandleProbe = { ok: true, holders: [4242], writers: [], scannedPids: 1, unreadablePids: 0 };
+  const UNAVAILABLE: OpenHandleProbe = { ok: false, holders: [], writers: [], scannedPids: 0, unreadablePids: 0 };
+
+  function root(): string {
+    const r = mkdtempSync(join(tmpdir(), 'gitnexus-wi2146606-'));
+    mkdirSync(join(r, '.gitnexus'));
+    return r;
+  }
+  function backdate(f: string): void {
+    const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
+    utimesSync(f, old, old);
+  }
+  /** The post-promote shape: database + WAL, NO shadow — exactly what `isOrphanWal` alone condemns. */
+  function postPromoteTree(): { root: string; db: string; wal: string } {
+    const r = root();
+    const { db, wal } = gitnexusDbPaths(r);
+    writeFileSync(db, 'promoted database');
+    writeFileSync(wal, 'embedding inserts in flight');
+    return { root: r, db, wal };
+  }
+
+  describe('probeOpenHandles.writers — open MODE, not just presence', () => {
+    function file(prefix: string): string {
+      const dir = mkdtempSync(join(tmpdir(), prefix));
+      const f = join(dir, 'lbug');
+      writeFileSync(f, 'x');
+      return f;
+    }
+
+    it.skipIf(!onLinux)('a READ-ONLY holder is a holder but NOT a writer (every gitnexus cypher/query)', () => {
+      const f = file('gitnexus-mode-ro-');
+      const fd = openSync(f, 'r');
+      try {
+        const probe = probeOpenHandles(f);
+        expect(probe.holders).toContain(process.pid);
+        expect(probe.writers).not.toContain(process.pid);
+        expect(classifyWriterLiveness(probe)).toBe('live'); // the shadow rule: any holder
+        expect(classifyWriteHolderLiveness(probe)).toBe('orphaned'); // the lbug/wal rule: writers only
+      } finally {
+        closeSync(fd);
+      }
+    });
+
+    it.skipIf(!onLinux)('a READ-WRITE holder is a writer (the analyze holds lbug + lbug.wal O_RDWR, measured 2026-09-05)', () => {
+      const f = file('gitnexus-mode-rw-');
+      const fd = openSync(f, 'r+');
+      try {
+        const probe = probeOpenHandles(f);
+        expect(probe.writers).toContain(process.pid);
+        expect(classifyWriteHolderLiveness(probe)).toBe('live');
+      } finally {
+        closeSync(fd);
+      }
+    });
+
+    it.skipIf(!onLinux)('a process holding the file read-only AND for write is a writer — the first fd cannot hide the second', () => {
+      const f = file('gitnexus-mode-both-');
+      const ro = openSync(f, 'r');
+      const wo = openSync(f, 'a');
+      try {
+        const probe = probeOpenHandles(f);
+        expect(probe.holders).toContain(process.pid);
+        expect(probe.writers).toContain(process.pid);
+      } finally {
+        closeSync(ro);
+        closeSync(wo);
+      }
+    });
+
+    it('classifyWriteHolderLiveness: UNKNOWN on a failed or missing probe — never orphaned', () => {
+      expect(classifyWriteHolderLiveness(null)).toBe('unknown');
+      expect(classifyWriteHolderLiveness(UNAVAILABLE)).toBe('unknown');
+      expect(classifyWriteHolderLiveness(READER)).toBe('orphaned');
+      expect(classifyWriteHolderLiveness(WRITER)).toBe('live');
+    });
+  });
+
+  describe('cleanCrashResidue — the orphan-WAL arm no longer trusts the missing shadow', () => {
+    it('THE REGRESSION: a post-promote WAL a writer holds open is SPARED — nothing touched, kind none', () => {
+      const { root: r, wal, db } = postPromoteTree();
+      backdate(wal); // even STALE by the clock: the open handle outranks it
+      const res = cleanCrashResidue(r, { probeOpenHandles: () => WRITER });
+      expect(res.walWriterLiveness).toBe('live');
+      expect(res.cleaned).toBe(false);
+      expect(res.kind).toBe('none');
+      expect(existsSync(wal)).toBe(true);
+      expect(existsSync(db)).toBe(true);
+
+      // CALIBRATION: the same tree with the writer gone IS cleaned, so the arm is not inert.
+      const gone = cleanCrashResidue(r, { probeOpenHandles: () => NONE });
+      expect(gone.walWriterLiveness).toBe('orphaned');
+      expect(gone.cleaned).toBe(true);
+      expect(gone.kind).toBe('orphan-wal');
+      expect(existsSync(wal)).toBe(false);
+    });
+
+    it('a READER holding the WAL does not pin residue as live (readers replay the WAL on open)', () => {
+      const { root: r, wal } = postPromoteTree();
+      backdate(wal);
+      const res = cleanCrashResidue(r, { probeOpenHandles: () => READER });
+      expect(res.walWriterLiveness).toBe('orphaned');
+      expect(res.cleaned).toBe(true);
+      expect(existsSync(wal)).toBe(false);
+    });
+
+    it('a FRESH unheld WAL is spared for the staleness floor — a writer between two open() calls…', () => {
+      const { root: r, wal } = postPromoteTree(); // fresh mtime
+      const res = cleanCrashResidue(r, { probeOpenHandles: () => NONE });
+      expect(res.walWriterLiveness).toBe('orphaned');
+      expect(res.cleaned).toBe(false);
+      expect(res.kind).toBe('none');
+      expect(existsSync(wal)).toBe(true);
+    });
+
+    it('…unless the caller stands at the kill site (writerKnownDead), whose SIGKILL is the proof', () => {
+      const { root: r, wal } = postPromoteTree();
+      const res = cleanCrashResidue(r, { writerKnownDead: true, probeOpenHandles: () => NONE });
+      expect(res.cleaned).toBe(true);
+      expect(res.kind).toBe('orphan-wal');
+      expect(existsSync(wal)).toBe(false);
+    });
+
+    it('with NO usable probe, staleness alone decides: a fresh WAL is spared, a stale one cleaned', () => {
+      const fresh = postPromoteTree();
+      const spared = cleanCrashResidue(fresh.root, { probeOpenHandles: () => UNAVAILABLE });
+      expect(spared.walWriterLiveness).toBe('unknown');
+      expect(spared.cleaned).toBe(false);
+      expect(existsSync(fresh.wal)).toBe(true);
+
+      const stale = postPromoteTree();
+      backdate(stale.wal);
+      const cleaned = cleanCrashResidue(stale.root, { probeOpenHandles: () => UNAVAILABLE });
+      expect(cleaned.walWriterLiveness).toBe('unknown');
+      expect(cleaned.cleaned).toBe(true);
+      expect(existsSync(stale.wal)).toBe(false);
+    });
+
+    it('a live WAL writer protects even a DEAD shadow beside it — the two-writer tree — nothing is touched', () => {
+      // Writer A promoted and is inserting; writer B (the double-spawn) died leaving an
+      // empty stale shadow. A's WAL must survive, and A's wal.checkpoint is not ours either.
+      const { root: r, wal } = postPromoteTree();
+      const { shadow, walCheckpoint } = gitnexusDbPaths(r);
+      writeFileSync(shadow, '');
+      backdate(shadow);
+      writeFileSync(walCheckpoint, 'checkpoint in flight');
+      const probe = (target: string): OpenHandleProbe => (target.endsWith('.wal') ? WRITER : NONE);
+
+      const res = cleanCrashResidue(r, { probeOpenHandles: probe });
+
+      expect(res.writerLiveness).toBe('orphaned'); // the shadow IS dead…
+      expect(res.walWriterLiveness).toBe('live'); // …but the WAL's writer is alive
+      expect(res.cleaned).toBe(false);
+      expect(existsSync(shadow)).toBe(true);
+      expect(existsSync(walCheckpoint)).toBe(true);
+      expect(existsSync(wal)).toBe(true);
+    });
+
+    it.skipIf(!onLinux)('END-TO-END, REAL probe: this process holding the WAL O_RDWR spares it; closing it condemns it', () => {
+      const { root: r, wal } = postPromoteTree();
+      backdate(wal);
+      const fd = openSync(wal, 'r+');
+      let held;
+      try {
+        held = cleanCrashResidue(r);
+      } finally {
+        closeSync(fd);
+      }
+      expect(held.walWriterLiveness).toBe('live');
+      expect(held.cleaned).toBe(false);
+      expect(existsSync(wal)).toBe(true);
+
+      const released = cleanCrashResidue(r);
+      expect(released.walWriterLiveness).toBe('orphaned');
+      expect(released.cleaned).toBe(true);
+      expect(existsSync(wal)).toBe(false);
+    });
+  });
+
+  describe('detectLiveAnalyzeWriter — the cross-restart concurrency guard', () => {
+    it('a WRITE holder of lbug is a live analyze (post-promote phase, incl. the promote→first-WAL gap)', () => {
+      const r = root();
+      const { db } = gitnexusDbPaths(r);
+      writeFileSync(db, 'db');
+      const v = detectLiveAnalyzeWriter(r, { probeOpenHandles: () => WRITER });
+      expect(v).toEqual({ live: true, verdict: 'live', pids: [4242], files: ['lbug'] });
+    });
+
+    it('READERS of lbug are NOT a live analyze — otherwise every agent query would skip the tick forever', () => {
+      const r = root();
+      const { db } = gitnexusDbPaths(r);
+      writeFileSync(db, 'db');
+      const v = detectLiveAnalyzeWriter(r, { probeOpenHandles: () => READER });
+      expect(v.live).toBe(false);
+      expect(v.verdict).toBe('orphaned');
+      expect(v.pids).toEqual([]);
+    });
+
+    it('ANY holder of the shadow is a live analyze (nothing else opens a build-in-progress artifact)', () => {
+      const r = root();
+      const { db, shadow } = gitnexusDbPaths(r);
+      writeFileSync(db, 'db');
+      writeFileSync(shadow, 'building');
+      const v = detectLiveAnalyzeWriter(r, { probeOpenHandles: (t) => (t.endsWith('.shadow') ? READER : NONE) });
+      expect(v.live).toBe(true);
+      expect(v.files).toEqual(['lbug.shadow']);
+      expect(v.pids).toEqual([4242]);
+    });
+
+    it('a write holder of the WAL is a live analyze even with lbug itself unheld', () => {
+      const { root: r } = postPromoteTree();
+      const v = detectLiveAnalyzeWriter(r, { probeOpenHandles: (t) => (t.endsWith('.wal') ? WRITER : NONE) });
+      expect(v.live).toBe(true);
+      expect(v.files).toEqual(['lbug.wal']);
+    });
+
+    it('is UNKNOWN — not clear — when no probe could run; orphaned when probes ran and found nobody', () => {
+      const r = root();
+      const { db } = gitnexusDbPaths(r);
+      writeFileSync(db, 'db');
+      expect(detectLiveAnalyzeWriter(r, { probeOpenHandles: () => UNAVAILABLE }).verdict).toBe('unknown');
+      expect(
+        detectLiveAnalyzeWriter(r, {
+          probeOpenHandles: () => {
+            throw new Error('/proc is not mounted');
+          },
+        }).verdict,
+      ).toBe('unknown');
+      expect(detectLiveAnalyzeWriter(r, { probeOpenHandles: () => NONE }).verdict).toBe('orphaned');
+      // No index files at all ⇒ nothing was probed ⇒ unknown, even with a would-be writer.
+      expect(detectLiveAnalyzeWriter(root(), { probeOpenHandles: () => WRITER }).verdict).toBe('unknown');
+    });
+
+    it.skipIf(!onLinux)('REAL probe: this process holding lbug O_RDWR is detected; holding it read-only is not', () => {
+      const r = root();
+      const { db } = gitnexusDbPaths(r);
+      writeFileSync(db, 'db');
+      const ro = openSync(db, 'r');
+      try {
+        expect(detectLiveAnalyzeWriter(r).live).toBe(false);
+      } finally {
+        closeSync(ro);
+      }
+      const rw = openSync(db, 'r+');
+      try {
+        const v = detectLiveAnalyzeWriter(r);
+        expect(v.live).toBe(true);
+        expect(v.pids).toContain(process.pid);
+        expect(v.files).toEqual(['lbug']);
+      } finally {
+        closeSync(rw);
+      }
+    });
+  });
+
+  describe('the action yields to a live writer BEFORE the residue preflight and BEFORE the spawn', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+
+    it('detectLiveAnalyzeWriter → return precedes cleanCrashResidue, which precedes runGitnexusAnalyze', () => {
+      const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
+      expect(handler).toBeGreaterThan(0);
+      const guard = src.indexOf('const writer = detectLiveAnalyzeWriter(root);', handler);
+      const residue = src.indexOf('const residue = cleanCrashResidue(root);', handler);
+      const spawn = src.indexOf('await runGitnexusAnalyze(root, repoName, timeoutMs)', handler);
+      expect(guard).toBeGreaterThan(handler);
+      expect(guard).toBeLessThan(residue);
+      expect(residue).toBeLessThan(spawn);
+      // …and the guard RETURNS: a skipped tick, not a log-and-continue.
+      const ret = src.indexOf('return;', guard);
+      expect(ret).toBeGreaterThan(guard);
+      expect(ret).toBeLessThan(residue);
+    });
+  });
+
+  describe('processAgeMs — diagnostic only (feeds the skip line, never a decision)', () => {
+    it.skipIf(!onLinux)('reports a plausible age for THIS process and null for a pid that does not exist', () => {
+      const mine = processAgeMs(process.pid);
+      expect(mine).not.toBeNull();
+      expect(mine!).toBeGreaterThanOrEqual(0);
+      expect(mine!).toBeLessThan(24 * 3600_000);
+      expect(processAgeMs(2 ** 22 + 12345)).toBeNull();
+    });
+
+    it('parses a synthetic /proc tree, including a comm containing spaces and parens', () => {
+      const proc = mkdtempSync(join(tmpdir(), 'gitnexus-fakeproc-'));
+      mkdirSync(join(proc, '77'));
+      writeFileSync(join(proc, 'stat'), 'cpu  1 2 3\nbtime 1000000\nprocesses 5\n');
+      // field 22 (starttime) = 500 ticks = 5s after boot; comm deliberately hostile.
+      writeFileSync(
+        join(proc, '77', 'stat'),
+        '77 (node (x) y) S 1 77 77 0 -1 4194560 100 0 0 0 10 5 0 0 20 0 1 0 500 1000 200 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n',
+      );
+      const nowMs = (1_000_000 + 5 + 60) * 1000; // 60s after the process started
+      expect(processAgeMs(77, proc, nowMs)).toBe(60_000);
+      expect(processAgeMs(78, proc, nowMs)).toBeNull();
+    });
+  });
+});
+
 describe('probeOpenHandles / classifyWriterLiveness — the open-handle discriminator', () => {
   const onLinux = process.platform === 'linux' && existsSync('/proc/self/fd');
 
@@ -1579,7 +1906,7 @@ describe('probeOpenHandles / classifyWriterLiveness — the open-handle discrimi
   it('treats a missing probe as UNKNOWN', () => {
     expect(classifyWriterLiveness(null)).toBe('unknown');
     // CALIBRATION so these three cannot all pass against a hardcoded 'unknown'.
-    expect(classifyWriterLiveness({ ok: true, holders: [1], scannedPids: 1, unreadablePids: 0 })).toBe('live');
+    expect(classifyWriterLiveness({ ok: true, holders: [1], writers: [1], scannedPids: 1, unreadablePids: 0 })).toBe('live');
     expect(classifyWriterLiveness(NO_HOLDERS)).toBe('orphaned');
   });
 
@@ -1587,7 +1914,7 @@ describe('probeOpenHandles / classifyWriterLiveness — the open-handle discrimi
     // The stated blind spot, pinned so it stays stated. unreadablePids is diagnostic;
     // if it ever starts forcing 'unknown', the fix is disabled on every box with a
     // root daemon — i.e. all of them — and this assertion is where that shows up.
-    const withBlindSpots: OpenHandleProbe = { ok: true, holders: [], scannedPids: 200, unreadablePids: 87 };
+    const withBlindSpots: OpenHandleProbe = { ok: true, holders: [], writers: [], scannedPids: 200, unreadablePids: 87 };
     expect(classifyWriterLiveness(withBlindSpots)).toBe('orphaned');
   });
 });
