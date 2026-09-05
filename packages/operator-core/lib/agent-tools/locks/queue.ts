@@ -23,6 +23,21 @@ export default defineTool({
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
     ],
+    // EI-20206554322712742: a caller filtering ONE file reached for the intuitive
+    // singular `path` and got a bare unrecognized-key rejection. The report called
+    // it a prompt/schema mismatch, but no prompt pairs `path` with locks:queue —
+    // every prompt in the tree writes `locks:queue { paths: [...] }`. The shape is
+    // BORROWED, exactly like `mode` on locks:acquire (EI-21988514956470475): the
+    // sibling locks:acquire_granular really does take a scalar `path`, so the guess
+    // is a reasonable generalisation from a real signature, and only the FAILURE
+    // path can correct it. Zero prompt weight (argRedirects is excluded from
+    // describeFromGuidance), paid for only on the rejection that needs it.
+    argRedirects: {
+      // A RENAME, not a drop — the same shape as acquire's `reason` redirect: dropping
+      // the key silently turns a one-file filter into an unfiltered workspace-wide scan,
+      // which returns rows and therefore reads as success rather than as a second error.
+      path: 'this tool spells that `paths` and takes an ARRAY, never a scalar — RENAME the key rather than dropping it: paths: ["<repo-relative/file>"]. Dropping it does not fail, it silently widens the read to EVERY row in the workspace, so a one-file question comes back answered about everything. The singular `path` is the sibling locks:acquire_granular { path, mode: IS|IX|S|SIX|X } (directory/subtree intention lock), which is where the shape is borrowed from. Note paths:[] is intentionally empty and matches NOTHING — omit paths entirely for the unfiltered scan.',
+    },
   },
   capability: 'locks:read',
   requirePrincipal: false,
