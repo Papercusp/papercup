@@ -334,6 +334,20 @@ export default defineTool({
     notWhen:
       "A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent's item, never for clearing a peer's in-flight claim.",
     chaining: 'work_items:claim → … → work_items:release.',
+    // EI-21829130743047093: a caller handing the item back tried to leave its note in the
+    // SAME call (`release { id, checkpoint }`) — the natural shape, because releasing and
+    // recording why are one intention. They are two verbs here, and the unrecognized-key
+    // rejection could only list what release accepts, never name the writer. This is a
+    // CAPABILITY boundary, not a rename, so it redirects to the verb rather than adding a
+    // key. Zero prompt weight (argRedirects is excluded from describeFromGuidance), paid
+    // only on that rejection.
+    argRedirects: {
+      checkpoint: {
+        tool: 'work_items:checkpoint',
+        args: { id: '<work-item-id>', checkpoint: '<the carry note>' },
+        note: 'release ends your hold and persists no note — work_items:checkpoint is the writer. Call it BEFORE releasing: the note survives either way, but a plain release re-surfaces the item immediately, so a checkpoint written afterwards can land after the next claimant has already started without it.',
+      },
+    },
     seeAlso: [
       'work_items:set_state { state:"blocked" } (standalone feature-family park; plan-linked feature items must use plans:set-status because the plan item is the source of truth; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion)',
       'work_items:hold_open (hold the item open — stamps held_open_by + blocks non-holder terminal transitions — WITHOUT releasing your claim)',
