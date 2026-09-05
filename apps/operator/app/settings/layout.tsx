@@ -8,7 +8,14 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
 
-const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
+/**
+ * Settings paths that exist only behind a flag. The nav below hides a gated
+ * link while its flag is off; the operator-vite route for each gated path
+ * enforces the same flag in `beforeLoad` (`requireFlag`), and a router-less
+ * host (`SettingsSurface`) reads this map to apply the same gate to the page
+ * it mounts — one map, three enforcement points.
+ */
+export const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
   '/settings/autonomy':   FLAGS.MUG_AUTONOMY_SETTINGS,

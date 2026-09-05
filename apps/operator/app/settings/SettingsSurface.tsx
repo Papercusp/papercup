@@ -14,21 +14,42 @@
  * `/settings/<sub>` pathname (and maps the layout's `RouteLink`s /
  * `router.push` back), so the nav, the highlight and the page all agree.
  */
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
+import type { FlagKey } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 import { usePathname } from '@/lib/router-compat/navigation';
-import SettingsLayout from './layout';
+import SettingsLayout, { SETTINGS_PATH_FLAGS } from './layout';
 import { SETTINGS_SURFACE_PAGES, settingsSubPathFor } from './settings-surface-pages';
+
+/**
+ * The same gate the operator-vite route applies in `beforeLoad`
+ * (`requireFlag`): a flagged page renders only while its flag is on. Its own
+ * component so the hook call is unconditional whether or not a path is gated.
+ */
+function FlagGatedPage({ flag, children }: { flag: FlagKey; children: ReactNode }) {
+  const enabled = useFlag(flag);
+  if (enabled) return <>{children}</>;
+  return (
+    <p role="status" style={{ color: 'var(--fg-mute)' }}>
+      This settings page is behind the <code>{flag}</code> flag, which is off.
+    </p>
+  );
+}
 
 export default function SettingsSurface() {
   const pathname = usePathname();
   const sub = settingsSubPathFor(pathname);
   const Page = sub ? SETTINGS_SURFACE_PAGES[sub] : null;
+  const gate = sub ? SETTINGS_PATH_FLAGS[`/settings/${sub}`] : undefined;
+  const page = Page ? (
+    <Suspense fallback={null}>
+      <Page />
+    </Suspense>
+  ) : null;
   return (
     <SettingsLayout>
-      {Page ? (
-        <Suspense fallback={null}>
-          <Page />
-        </Suspense>
+      {page ? (
+        gate ? <FlagGatedPage flag={gate}>{page}</FlagGatedPage> : page
       ) : (
         // An operator settings route this table does not mount. The layout
         // (and its nav) still renders, so the reader is one click from a page

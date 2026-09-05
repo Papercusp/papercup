@@ -55,8 +55,11 @@ describe('SETTINGS_SURFACE_PAGES is pinned to the operator route set', () => {
     expect(keys).toEqual(routeSubPaths());
   });
 
-  it('names exactly the settings page modules on disk', () => {
-    expect(keys).toEqual(pageSubPaths());
+  it('has a row for every settings page module on disk', () => {
+    // A subset, not equality: `publishing` mounts PublishingClient directly
+    // (no page.tsx), so the route set above is the exact pin and this one
+    // catches a page added without a row.
+    for (const sub of pageSubPaths()) expect(keys, `settings/${sub}/page.tsx has no row`).toContain(sub);
   });
 
   it('defaults a bare /settings to a page that exists', () => {

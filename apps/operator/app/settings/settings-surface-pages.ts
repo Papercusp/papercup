@@ -45,6 +45,10 @@ export const SETTINGS_SURFACE_PAGES = {
   'pot-customization': lazy(() => import('./pot-customization/page')),
   profile: lazy(() => import('./profile/page')),
   'prompt-studio': lazy(() => import('./prompt-studio/page')),
+  // The one sub-page with no `page.tsx`: its route mounts the client
+  // component directly, behind `requireFlag(FLAGS.CLOUDFLARE_PUBLISH)`. The
+  // surface applies the same gate through the layout's own route→flag map.
+  publishing: lazy(() => import('./publishing/PublishingClient')),
   'setup-wizard': lazy(() => import('./setup-wizard/page')),
   shortcuts: lazy(() => import('./shortcuts/page')),
   storage: lazy(() => import('./storage/page')),
