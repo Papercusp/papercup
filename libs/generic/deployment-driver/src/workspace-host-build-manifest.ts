@@ -598,9 +598,21 @@ function urlPathname(value: string): string {
  *
  * This is the maintained artifact origin, extended rather than replaced: a second publisher would
  * be a parallel release system, which is precisely what this lane must not build.
+ *
+ * ⚠ The BRANDED host, deliberately — not the Worker's own `*.workers.dev` origin. Both names route
+ * to the same Worker and serve byte-identical bodies, but the workers.dev form embeds the
+ * Cloudflare ACCOUNT SUBDOMAIN, which is the release owner's GitHub handle. Because this constant
+ * is bundled into the shipped host, using that form compiled a personal identity string into every
+ * release and forced an acceptance in the release identity gate (WI-38233 disclosed it; WI-38321
+ * removed it). Callers that genuinely need another origin pass `options.origin`; do not reintroduce
+ * an account-bearing hostname here.
+ *
+ * ⚠ FROM THE PAPERCUSP DEV BOX this hostname will not resolve or connect: that box silently
+ * blackholes TLS to every papercusp-family name by SNI (EI-16742,
+ * agent-insights/su-box-sni-tls-blackhole-not-outage). A local timeout here is NOT evidence the
+ * origin is down, and must not be "fixed" by pointing this back at workers.dev.
  */
-export const WORKSPACE_HOST_ARTIFACT_ORIGIN =
-  "https://papercusp-cupboard.aviynw.workers.dev";
+export const WORKSPACE_HOST_ARTIFACT_ORIGIN = "https://cupboard.papercusp.com";
 
 /** The published path prefix under which workspace-host artifacts are content-addressed. */
 export const WORKSPACE_HOST_ARTIFACT_PATH_PREFIX = "/artifacts/workspace-host";

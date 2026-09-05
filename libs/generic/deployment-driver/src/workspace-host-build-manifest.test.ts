@@ -453,7 +453,7 @@ describe("workspace-host release provenance", () => {
   // the very URL the publication contract mandates — the tests passed only because the fixture
   // above happens to use a version-style path. This case pins the canonical form directly.
   it("accepts the canonical content-addressed URL, which carries no version", () => {
-    const bundleUrl = `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/${SHA_A}/server.tgz`;
+    const bundleUrl = `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA_A}/server.tgz`;
     const verdict = verifyWorkspaceHostReleaseProvenance(
       buildWorkspaceHostBuildManifest(shippable()),
       pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
@@ -464,7 +464,7 @@ describe("workspace-host release provenance", () => {
   it("refuses a content-addressed URL that addresses a different artifact", () => {
     // Accepting the digest FORM without checking the digest VALUE would let a well-shaped URL
     // point at someone else's bundle while the pin still claimed to be immutable.
-    const bundleUrl = `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/${SHA_D}/server.tgz`;
+    const bundleUrl = `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA_D}/server.tgz`;
     const verdict = verifyWorkspaceHostReleaseProvenance(
       buildWorkspaceHostBuildManifest(shippable()),
       pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
@@ -609,7 +609,9 @@ describe("canonical workspace-host artifact URLs", () => {
   });
 
   it.each([
-    ["plain HTTP", "http://papercusp-cupboard.aviynw.workers.dev"],
+    // Derived from the shipped origin so this case can never drift off it — and so no
+    // account-bearing hostname is reintroduced into source (WI-38321).
+    ["plain HTTP", WORKSPACE_HOST_ARTIFACT_ORIGIN.replace(/^https:/, "http:")],
     ["a reserved name", "https://cupboard.invalid"],
     ["localhost", "https://localhost:8787"],
     ["not a URL", "papercusp-cupboard"],

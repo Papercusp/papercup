@@ -11,6 +11,7 @@ import {
   WORKSPACE_HOST_PUI_INSTALL_MANIFEST_PATH,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_REQUIRED_RELEASE_MATERIALS,
+  WORKSPACE_HOST_ARTIFACT_ORIGIN,
 } from "@papercusp/deployment-driver";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 
@@ -38,7 +39,11 @@ const BASE_SHA = "01af466feb100306498c86aa6bad1815e33036019aa34d4362c20f374ea5c8
 const BASE_IMAGE = "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260826";
 const PUBLISHED_AT = "2026-08-30T02:14:40.345Z";
 const TEMPLATE_BODY = 'packer {\n  required_plugins {}\n}\n';
-const CUPBOARD = "https://papercusp-cupboard.aviynw.workers.dev";
+/**
+ * Derived from the shipped artifact origin rather than hardcoded, so this fixture cannot drift off
+ * it — and so no account-bearing hostname is reintroduced into source (WI-38321).
+ */
+const CUPBOARD = WORKSPACE_HOST_ARTIFACT_ORIGIN;
 const SIGNING_PUBLIC_KEY =
   "untrusted comment: minisign public key: 5D3A7DD4A7089944\nRWREmQin1H06XfseQbDxZxnbUzVEFqNzYLmA5gnCdg+6cAKucqh02Be5\n";
 /** The bundle cannot initialize a workspace without this entrypoint, so the gate requires it. */

@@ -46,8 +46,15 @@
  */
 
 /**
- * The canonical branded hostname, bound to the Cupboard worker via the
- * `[[routes]] custom_domain` entry in apps/operator-public/wrangler.toml.
+ * The canonical branded hostname for the Cupboard worker.
+ *
+ * ⚠ The binding is currently OUT-OF-BAND, not declarative: the `[[routes]]
+ * custom_domain` block in apps/operator-public/wrangler.toml is still COMMENTED
+ * (uncommenting it hard-fails `wrangler deploy` unless the papercusp.com zone is
+ * in the same Cloudflare account, which cannot be checked from the dev box). The
+ * route was created through the dashboard/API, so nothing in this repo recreates
+ * it — see that file's "Domain setup" note before assuming the binding is
+ * reproducible from config.
  *
  * It carries no account identity, which is the whole point: the worker's own
  * *.workers.dev origin embeds the Cloudflare account subdomain, so defaulting to
