@@ -106,6 +106,20 @@ function compactClaimableNow(value: unknown): unknown {
   const out: Dict = {};
   if ('value' in source) out.value = source.value;
 
+  const interpretation = asDict(source.interpretation);
+  if (interpretation) {
+    const compactInterpretation = pick(interpretation, ['state'], 40) ?? {};
+    const exactness = pick(interpretation.exactness, ['status', 'reason'], 180);
+    if (exactness) compactInterpretation.exactness = exactness;
+    const evidence = pick(
+      interpretation.evidence,
+      ['fleetPaused', 'matchedByFilter', 'excluded'],
+      220,
+    );
+    if (evidence) compactInterpretation.evidence = evidence;
+    out.interpretation = compactInterpretation;
+  }
+
   const population = asDict(source.population);
   if (population) {
     const compactPopulation =
@@ -113,7 +127,7 @@ function compactClaimableNow(value: unknown): unknown {
     if ('spec' in population) {
       const spec = asDict(population.spec);
       compactPopulation.spec = spec
-        ? (pick(spec, ['ref', 'revision', 'matchedBy', 'assigneeScoped'], 140) ?? {})
+        ? (pick(spec, ['ref', 'revision', 'matchedBy', 'assigneeScoped', 'planScoped'], 140) ?? {})
         : population.spec;
     }
     out.population = compactPopulation;

@@ -3913,6 +3913,7 @@ export async function buildLeaderBrief(
     fleet,
     requestedHarness: args.harness,
     laneHealth: fleetLaneHealth,
+    fleetPaused: fleetPause.paused,
   });
   // P-005 / D-001: hydrate the rich, replace-full fleet snapshot through the
   // canonical scope resolver + burn-down builder. A missing harness or a slow
