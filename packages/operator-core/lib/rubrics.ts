@@ -2184,6 +2184,9 @@ function rubricRevisionAfterWrite(
  * template_data can never lag the body and there is no skip branch to no-op through.
  */
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
+  // Every preflight and writer must inspect the same canonical fields. In
+  // particular, a nested verification.check must participate in the check floor.
+  input = { ...input, criteria: input.criteria.map(normalizeRequirementSections) };
   const kind = input.kind ?? 'standard';
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
@@ -2467,7 +2470,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
   }
 
   let criteria: ProposeRubricCriterion[] = input.criteria
-    ? input.criteria.map((criterion) => ({ ...criterion }))
+    ? input.criteria.map(normalizeRequirementSections)
     : stored.criteria;
   if (input.requirement) {
     const patch = input.requirement;
@@ -2641,6 +2644,8 @@ interface AcceptanceAmendmentResult {
   };
   idempotencyKey: string;
   replayed?: boolean;
+  /** No promise changed; continue through the guarded method/pin-refresh writer. */
+  methodOnly?: boolean;
   /** Committed snapshots used by the existing plan-revision audit spine. */
   rubricBody?: string;
   subjectBody?: string;
@@ -2840,7 +2845,12 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
-      if (changedBars.length === 0 && !preview) return null;
+      if (changedBars.length === 0 && !preview) return {
+        rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+        subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
+        changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+        idempotencyKey: '', methodOnly: true,
+      };
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
@@ -3272,6 +3282,7 @@ async function amendAcceptanceBarRubric(
 
       const projected = planRowToRubric({
         plan_slug: input.rubricId,
+        version: nextRubricRevision,
         workspace_id: rubricScope.workspaceId,
         harness_slug: rubricScope.harnessSlug,
         title: rubricIdx.title,
@@ -3305,7 +3316,7 @@ async function amendAcceptanceBarRubric(
     },
   );
   if (!txResult) return null;
-  if (txResult.replayed || txResult.preview) return txResult;
+  if (txResult.replayed || txResult.preview || txResult.methodOnly) return txResult;
   // Revision rows are audit history.  The data transaction above remains the
   // atomic source of truth; these best-effort records make both plans visible
   // through the existing plan-revisions reader.
@@ -3359,6 +3370,7 @@ export async function previewAcceptanceBarAmendment(
 
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
+  let methodOnlyRevision: number | undefined;
   // A started acceptance BAR is a cross-plan contract: changing its MODEL or
   // falsifier must update the subject plan, projection revisions, and open
   // work-item contracts in the same transaction.  METHOD/title/criterion-class
@@ -3373,10 +3385,10 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       (input.criterion && (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
   ) {
     const amended = await amendAcceptanceBarRubric(input, scope);
-    // Do not fall back to the single-plan path when the locked reread no longer
-    // matches the preflight snapshot: that would silently bypass the cross-plan
-    // amendment contract after a concurrent subject/rubric change.
-    return amended?.rubric ?? null;
+    // A null reread still refuses. Only an explicit, locked method-only result
+    // may use the ordinary writer, which refreshes the dependent revision pins.
+    if (!amended?.methodOnly) return amended?.rubric ?? null;
+    methodOnlyRevision = amended.rubricRevision;
   }
   const compatibilityAudit: { current?: RubricCompatibilityAudit } = {};
   const result = await withPlanLock<true | null>(
@@ -3397,6 +3409,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     async (current, meta) => {
       const stored = rubricFromLockedPlan(input.rubricId, current, meta?.templateData ?? null, scope);
       if (!current || !stored) return { newBody: null, value: null };
+      if (methodOnlyRevision !== undefined && meta?.version !== methodOnlyRevision) {
+        throw new Error('acceptance_bar_amendment_revision_conflict: rubric changed before method update');
+      }
 
       // Build and validate the replacement from the locked snapshot. This keeps
       // the loss guards and template schema on the same side of the advisory lock
@@ -3431,14 +3446,8 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
         templateData: {
           data: templateData,
           rubricLossAck: rubricLossAckOf(amended),
-          // P-004: this capability is consumed at withPlanLock's persistence
-          // boundary and never serialized into template_data. Generic callers
-          // (including plans:set-template-data and seed/migration writers) do
-          // not receive it and therefore cannot alter a started BAR.
-          barAmendment: {
-            actorId: amended.by ?? stored.createdBy ?? '',
-            reason: `rubrics:amend ${input.rubricId}`,
-          },
+          // Promise changes belong to the approved cross-plan transaction.
+          // Re-check that invariant against this writer's locked current row.
         },
         value: true,
       };
