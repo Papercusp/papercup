@@ -80,6 +80,7 @@ import {
   activeExecutionTarget,
   getRerankWorkerState,
   loadCrossEncoder,
+  rerankExecutionHealth,
   scoreCrossEncoder,
   shutdownLocalReranker,
 } from '@papercusp/rerank';
@@ -1235,6 +1236,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // is fail-safe by design), so this is where that shows up. Before the
         // first load it reports the host's resolved target. See plan D-006.
         rerankExecution: activeExecutionTarget(),
+        // ...and REQUESTED beside ACTIVE, because `rerankExecution` alone could
+        // not express the very demotion the comment above promises it reveals:
+        // a demoted host and a deliberate CPU host both rendered as plain
+        // cpu/q8. `demoted` is the comparison nobody was making by hand.
+        // `demoted: false` before the first load is honest-but-unproven — the
+        // GPU session is only verified by constructing one.
+        rerankExecutionHealth: rerankExecutionHealth(),
         // WI-37696: the two worker-thread crash-breakers THIS process owns.
         //
         // Both the embedder (@papercusp/memory) and the cross-encoder
