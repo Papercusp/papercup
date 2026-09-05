@@ -309,6 +309,25 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
   for (const adapter of adapters) {
     let entries: Array<{ parentPath?: string; path?: string; name: string; isFile(): boolean }>;
     try {
+      // EI-14263 / EI-579: this recursive readdir materialises EVERY entry under
+      // `adapter.root` before `maxFiles` (applied at .slice() below) can bind, so the
+      // allocation is O(entries-in-root), not O(maxFiles). EI-579 named that its
+      // "prime suspect" for a boot-time RSS spike and split this item off to bound it.
+      // MEASURED 2026-09-05 against the real machine, all 220 adapter roots:
+      //   peak RSS delta +2.0 MB · 105 ms · 10,324 entries materialised / 5,368 used
+      //   · largest SINGLE root 3,406 entries (roots are scanned sequentially, so that
+      //   is the true peak allocation — not the sum) · ~200 bytes/entry.
+      // So the O(entries) shape is real but immaterial: ~5M entries in ONE root would
+      // be needed to reach 1 GB. It is also NOT on the boot path — `interactive-usage-
+      // ingest` is a cron routine (`0 */10 * * * *`). A bounded early-terminating walk
+      // was prototyped and rejected: it saves ~1.5 MB and CHANGES which files are
+      // ingested when the cap binds (Node's recursive order is not our BFS order).
+      // What actually keeps this bounded is the `/projects` (and `/sessions`) suffix in
+      // claudeProjectsRoots()/codexSessionRoots(): the isolation BASE holds 4,485,503
+      // entries, the fenced roots only 2,458. That fence is the load-bearing invariant
+      // here — it is guarded in claude-sessions.test.ts; do not widen a root to a bare
+      // owner/home dir. Per-file reads (DEFAULT_MAX_BYTES_PER_FILE, 32 MiB) dominate
+      // this module's memory by ~16x, so profile there first, not here.
       entries = (await fs.readdir(adapter.root, { withFileTypes: true, recursive: true })) as never;
     } catch {
       continue; // no transcript root for this backend on this machine
