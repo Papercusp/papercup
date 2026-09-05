@@ -25,6 +25,41 @@ import { IframePanel } from './IframePanel';
 import { MissingPanel } from './MissingPanel';
 
 /**
+ * The sandbox every PLUGIN-contributed iframe panel is rendered under
+ * (security-boundary-remediation-and-usability-2026-09-04 P-005: "isolate
+ * plugin/preview content without native grants").
+ *
+ * WHY THIS IS NEEDED AT ALL. Tauri scopes capabilities by WINDOW LABEL, not by
+ * frame origin — `capabilities/default.json` grants the `main` window
+ * `allow-pty-spawn`, `fs:default`, `process:default`, `shell:allow-open`,
+ * `allow-console-launch` and `allow-endpoint-invoke`. A plugin panel's `src`
+ * comes from that plugin's own `/api/plugins/<slug>/contributions` manifest, so
+ * a plugin that points a panel at a same-origin URL used to get an UNSANDBOXED
+ * same-origin frame inside `main` — from which `window.__TAURI__` is reachable
+ * and the whole native grant set with it. Before this constant, `PanelContrib`
+ * had no `sandbox` field at all and `getOrCreateIframe` only sets the attribute
+ * `if (options.sandbox)`, so the frame was created with no sandbox whatsoever.
+ *
+ * WHY `allow-same-origin` IS ABSENT, AND WHY THAT IS THE WHOLE POINT. Omitting
+ * it puts the frame in an OPAQUE origin: it cannot touch the app origin's DOM,
+ * storage, or the Tauri IPC bridge, which is origin-gated. Every other token
+ * here is what a panel legitimately needs to be a usable panel. Note that
+ * `allow-scripts` + `allow-same-origin` TOGETHER is the classic sandbox escape
+ * (the frame can simply delete its own sandbox attribute), so the two must
+ * never be granted as a pair.
+ *
+ * WHY A PLUGIN CANNOT OVERRIDE IT. This is applied AFTER the params spread and
+ * is deliberately not a `PanelContrib` field. A manifest-supplied sandbox would
+ * be attacker-supplied for exactly the attacker we are containing — a hostile
+ * plugin would simply declare `allow-scripts allow-same-origin` and restore the
+ * hole. First-party panels (workbench-panels.tsx and friends) render through
+ * `IframePanel` directly and are untouched, which is what keeps code-server,
+ * Drizzle Studio and the previews working (D-001: preserve the legitimate path).
+ */
+export const PLUGIN_IFRAME_SANDBOX =
+  'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads';
+
+/**
  * Known componentRoot/componentId combinations the dock can resolve
  * locally. Used when a plugin manifest declares a `react`-type panel
  * whose component ships inside the operator codebase rather than as
@@ -95,7 +130,15 @@ export function useRegisterPluginPanels(slug: string): void {
               return (
                 <IframePanel
                   {...props}
-                  params={{ ...props.params, src: params.src ?? panel.src }}
+                  params={{
+                    ...props.params,
+                    src: params.src ?? panel.src,
+                    // P-005: forced LAST, so neither the plugin manifest nor an
+                    // openPanel caller can widen it back to `allow-same-origin`
+                    // and reach the native grants `main` holds. See the
+                    // PLUGIN_IFRAME_SANDBOX comment above.
+                    sandbox: PLUGIN_IFRAME_SANDBOX,
+                  }}
                 />
               );
             };

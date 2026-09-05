@@ -445,6 +445,37 @@ export function reverseReachable({ seeds, files, readFile, byDir, byEntryDir }) 
   return new Set([...seen].map((i) => files[i]));
 }
 
+/**
+ * The MEMBER names of the seams that grew — `source.lexical` -> `lexical`, `run()` -> `run`.
+ *
+ * Used to narrow the reachable set, because raw reachability is too blunt to act on and a
+ * list nobody runs is worth nothing. MEASURED on the real instance: 4,182 reachable
+ * other-workspace tests -> 1,567 carrying a count/order assertion -> 47 that also name a
+ * seam member, with the genuinely-stranded file surviving all three filters (it mentions
+ * `lexical` nine times). 47 is a 15-second check; 1,567 is a suite run nobody performs.
+ *
+ * The narrowing is a RANKING, never a silence: an aliased mock could carry a stale count
+ * assertion without naming the seam, so the wider band is always reported, is runnable with
+ * --wide, and is what gets named when the narrow set comes out empty.
+ */
+export function seamMemberNames(triggers) {
+  const names = new Set();
+  for (const t of triggers) {
+    for (const s of t.seams) {
+      const member = s.seam.includes('.') ? s.seam.slice(s.seam.indexOf('.') + 1) : s.seam.replace(/\(\)$/, '');
+      if (member && /^[A-Za-z_$][\w$]*$/.test(member)) names.add(member);
+    }
+  }
+  return [...names];
+}
+
+/** Does `text` name any of `members` as a whole word? */
+export function mentionsSeamMember(text, members) {
+  if (members.length === 0) return false;
+  const escaped = members.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`\\b(?:${escaped.join('|')})\\b`).test(String(text));
+}
+
 // ── reporting ───────────────────────────────────────────────────────────────────────────
 
 const CLIP = 25;

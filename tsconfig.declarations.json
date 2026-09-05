@@ -313,6 +313,7 @@
     // (fullAuditJson), and under a `@ts-ignore`d import a call that silently dropped it
     // would still compile while quietly restoring the optimistic single-lens reading.
     "scripts/check-reachable-advisories.mjs",
+    "scripts/check-rust-advisories.mjs",
     // EI-19313879938405219 — the sidecar externals-boundary verifier. Registered for
     // this list's FIRST reason: it is imported directly by
     // verify-sidecar-host-compat.test.ts, which is what makes the checker's fail-OPEN

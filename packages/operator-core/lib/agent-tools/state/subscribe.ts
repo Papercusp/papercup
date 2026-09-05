@@ -42,6 +42,34 @@ import { resolveSelfSubject } from '../../cell-suggest';
 import { PREDICATE_OPS } from '../../events/await/predicate-watch';
 import { softText, clampText, LIMITS } from '../limits';
 import watchTool from '../events/watch';
+import { CHECKPOINT_MAX_RUNTIME_SEC } from '../../release-checkpoint-launch';
+
+/**
+ * EI-20037590613603206 — the GC HORIZON for the `once` watch this tool registers.
+ * It is NOT a wait budget, and that distinction is the whole fix.
+ *
+ * A `once` watch CLEARS ITSELF when it fires, so its expiry only ever reaps watches
+ * that NEVER fire. `predicate-watch.ts` (`'gc: paired event_awaits registration gone
+ * (cancelled/consumed/expired)'`) reaps a predicate watch exactly when its paired
+ * `event_awaits` row is gone — so the expiry IS the only reaper on this path. That
+ * rules out the tempting "just make it null" fix: it would trade a stranded caller
+ * for an unbounded leak of the watches most likely to leak.
+ *
+ * What it must NOT do is front-run a legitimate wait. Inheriting watch:create's
+ * generic `AWAIT_DEFAULT_TIMEOUT_SEC` (30min) did exactly that: this tool's own
+ * See-also — and `release:checkpoint-run`'s — sends callers here to wait for
+ * `gate.greenCheckpoint.verdict`, a suite whose systemd backstop allows up to
+ * `CHECKPOINT_MAX_RUNTIME_SEC`. The subscription expired first, every time, and a
+ * TIMEOUT wake reads as "the thing I am waiting on has STALLED".
+ *
+ * Sized like WI-5685 sized `CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC` for the sibling
+ * `events:await-checkpoint` path — DERIVED from the slowest registered cell's real
+ * producer ceiling plus grace for the verdict to land, not from an observed suite
+ * duration. A generic value is safe here precisely because callers never wait ON it:
+ * this tool deliberately withholds `timeout_sec`/`on_timeout` (events:await owns
+ * those), so nothing but garbage collection depends on the number.
+ */
+export const STATE_SUBSCRIBE_GC_HORIZON_SEC = CHECKPOINT_MAX_RUNTIME_SEC + 10 * 60;
 
 export default defineTool({
   name: 'state:subscribe',
@@ -51,7 +79,7 @@ export default defineTool({
     when: 'You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.',
     notWhen: 'You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.',
     chaining:
-      'state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value\'s current reading to mean that — it transcribes a volatile value and misses a move landing before the call. A valued `on` on an assessed cell must name `target` — refused, not guessed. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those), and the why-field is `note`. once:false re-fires per change. Cancel via events:cancel.',
+      'state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value\'s current reading to mean that — it transcribes a volatile value and misses a move landing before the call. A valued `on` on an assessed cell must name `target` — refused, not guessed. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those) — the watch outlives a gate suite; why-field is `note`. once:false re-fires per change. Cancel via events:cancel.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -337,10 +365,16 @@ export default defineTool({
     // other knob is watch:create's, unchanged. Parsing through watch:create's own
     // schema (rather than hand-building its args) means a change to that schema
     // surfaces HERE as a parse error instead of silently dropping a field.
+    const once = args.once ?? true;
     const watchArgs = watchTool.args.parse({
       pattern: `cell:${args.cell}`,
       wake: true,
-      once: args.once ?? true,
+      once,
+      // EI-20037590613603206: the `once` path must NOT inherit watch:create's generic
+      // 30min default — see STATE_SUBSCRIBE_GC_HORIZON_SEC. A STANDING watch (once:false)
+      // is deliberately left unset so watch:create still yields `null` (no expiry): it is
+      // not garbage after one fire, so it is not on the same GC contract at all.
+      ...(once ? { timeout_sec: STATE_SUBSCRIBE_GC_HORIZON_SEC } : {}),
       interval_sec: args.interval_sec,
       // `measurement` stays unannotated: it is what an unqualified "cell X changed"
       // has always meant, and re-labelling it would churn every existing note.

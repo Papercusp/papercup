@@ -11456,7 +11456,7 @@
           "POST"
         ]
       },
-      "description": "Register a CUSTOM invariant your fleet:leader-brief evaluates on every read, so an ad-hoc check outlives the turn that wrote it. The check is read-only SQL and the contract is ROWS RETURNED == VIOLATED (zero rows == satisfied); the rows come back as the evidence. REGISTER: { name, sql, description?, severity? } — re-registering a name replaces it. LIST: { list: true }. REMOVE: { remove: name }. Use {{fleet}} / {{workspace}} in the SQL rather than hardcoding a slug, so a copied invariant checks the fleet it now belongs to — they substitute ALREADY-QUOTED, so write `= {{fleet}}`, never `= '{{fleet}}'`. Capped at 10 per fleet; each runs read-only, row-capped and timeout-bounded, and one that errors is reported as errored — never silently as passing.",
+      "description": "Register a CUSTOM invariant your fleet:leader-brief evaluates on every read, so an ad-hoc check outlives the turn that wrote it. The check is read-only SQL and the contract is ROWS RETURNED == VIOLATED (zero rows == satisfied); the rows come back as the evidence. REGISTER: { name, sql, falsifier?, description?, severity? } — re-registering a name replaces it. LIST: { list: true }. REMOVE: { remove: name }. Use {{fleet}} / {{workspace}} in the SQL rather than hardcoding a slug, so a copied invariant checks the fleet it now belongs to — they substitute ALREADY-QUOTED, so write `= {{fleet}}`, never `= '{{fleet}}'`. Capped at 10 per fleet; each runs read-only, row-capped and timeout-bounded, and one that errors is reported as errored — never silently as passing.",
       "capabilities": [
         "coord:write"
       ],
