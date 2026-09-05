@@ -30,6 +30,21 @@ export const FLAGS = {
   // decideFrozenConvergenceCycleEntry): flipping it off stops new cycles opening and leaves
   // an in-flight convergence to finish, rather than stranding its repair worktree.
   RELEASE_FREEZE_AND_CONVERGE_DEFAULT: "papercusp-release-freeze-and-converge-default",
+  // machine-enforced-terminal-criteria-2026-09-05 (P-006/P-007, D-018): the ENFORCEMENT
+  // kill-switch for item-scoped terminal criteria on work-item closes. Default ON (derived
+  // FLAG_DEFAULTS — deliberately NOT in DARK_FLAGS): ON is the shipped behaviour, so the
+  // flag ships matching production and changes nothing on its own.
+  //
+  // It exists because this gate changes close OUTCOMES for ~6.1% of committed bug/change
+  // closes fleet-wide the moment it deploys, against ~68 active agents. Without a switch the
+  // only rollback is a revert — unacceptable blast radius for a behaviour change that lands
+  // on every agent's close path at once.
+  //
+  // OFF is a pure ENFORCEMENT switch, not a blind spot: the evaluator still RUNS and its
+  // verdict is still RECORDED on the completion, so the gate stays measurable while disabled
+  // (which is exactly what you need to decide whether to turn it back on). Only the
+  // committed->proposed DOWNGRADE is suppressed. See complete.ts's third downgrade stage.
+  TERMINAL_CRITERIA_ENFORCEMENT: "papercusp-terminal-criteria-enforcement",
   PG_MUTATE_TOOL: "papercusp-pg-mutate-tool",
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",
