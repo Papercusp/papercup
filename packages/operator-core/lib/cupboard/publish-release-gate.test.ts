@@ -11,7 +11,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PINNING_POLICY, type ArtifactDistributionManifest } from '../p2p/artifact-distribution';
 import { buildArtifactPackage, sha256Prefixed } from '../p2p/artifact-package';
-import { CONTENT_KEY_BYTES, type KeyWrapAdapter } from '../p2p/artifact-encryption';
+import {
+  CONTENT_KEY_BYTES,
+  type KeyWrapAdapter,
+  type WrappedKeyDeliveryAdapter,
+} from '../p2p/artifact-encryption';
 import { isPrivateVisibility, prepareReleaseForPublish } from './publish-release-gate';
 import type { CupboardReleaseManifest } from './listing-manifest';
 
@@ -57,6 +61,23 @@ const fakeAdapter: KeyWrapAdapter = {
 };
 
 const contentKey = Buffer.alloc(CONTENT_KEY_BYTES, 7);
+
+/**
+ * A delivery provider that actually STORES what it is handed, so the gate's
+ * read-back is a real round trip. `delivered` is exposed because the whole point
+ * of the check is that a no-op adapter must not pass — see the drop control.
+ */
+const memoryDelivery = (): WrappedKeyDeliveryAdapter & { readonly delivered: Map<string, Buffer> } => {
+  const delivered = new Map<string, Buffer>();
+  return {
+    providerId: 'memory',
+    delivered,
+    deliver: async (key) => {
+      delivered.set(`${key.recipientId}:${key.wrappedKeyId}`, key.wrapped);
+    },
+    fetch: async ({ wrappedKeyId, recipientId }) => delivered.get(`${recipientId}:${wrappedKeyId}`) ?? null,
+  };
+};
 
 describe('prepareReleaseForPublish — public path', () => {
   it('passes a manifest whose root agrees with its chunk list', async () => {
@@ -126,6 +147,7 @@ describe('prepareReleaseForPublish — private path', () => {
       keyVersion: 1,
       recipientIds: ['user-a', 'user-b'],
       adapter: fakeAdapter,
+      deliveryAdapter: memoryDelivery(),
       sign: () => 'signed-by-publisher',
       plaintextChunkSizeBytes: CHUNK,
       chunkSizeBytes: CHUNK,
@@ -204,6 +226,60 @@ describe('prepareReleaseForPublish — private path', () => {
     if (r.ok) return;
     expect(r.code).toBe('private-publication-failed');
     expect(r.detail).toContain('hsm offline');
+  });
+
+  it('DELIVERS one wrapped key per recipient out of band and reports the ids', async () => {
+    const deliveryAdapter = memoryDelivery();
+    const r = await prepareReleaseForPublish({ ...privateInput(), deliveryAdapter });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+
+    // The evidence that the ciphertext is openable: every id the manifest
+    // committed to was delivered, and each is fetchable back by its recipient —
+    // which is exactly the lookup `openRetrievedArtifact` performs at install.
+    expect([...r.deliveredKeyIds].sort()).toEqual([...r.manifest.encryption!.wrappedKeyIds].sort());
+    expect(deliveryAdapter.delivered.size).toBe(2);
+    for (const key of r.wrappedKeys) {
+      await expect(
+        deliveryAdapter.fetch({ wrappedKeyId: key.wrappedKeyId, recipientId: key.recipientId }),
+      ).resolves.not.toBeNull();
+    }
+  });
+
+  it('REFUSES a private publish whose keys are accepted but never stored (the no-op provider)', async () => {
+    // The control that makes the read-back meaningful: `deliver` resolves, so
+    // `deliverWrappedKeys` reports every id as delivered — and the release is
+    // still refused, because nothing can be fetched back. Without the read-back
+    // this case publishes ciphertext no buyer can ever open.
+    const r = await prepareReleaseForPublish({
+      ...privateInput(),
+      deliveryAdapter: {
+        providerId: 'no-op',
+        deliver: async () => undefined,
+        fetch: async () => null,
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('key-delivery-failed');
+    expect(r.detail).toContain('cannot be fetched back');
+  });
+
+  it('returns a refusal rather than throwing when wrapped-key delivery fails', async () => {
+    const r = await prepareReleaseForPublish({
+      ...privateInput(),
+      deliveryAdapter: {
+        providerId: 'broken',
+        deliver: async () => {
+          throw new Error('key bus offline');
+        },
+        fetch: async () => null,
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('key-delivery-failed');
+    expect(r.detail).toContain('key bus offline');
   });
 
   it('returns a refusal rather than throwing when the wrap adapter fails', async () => {
