@@ -104,8 +104,9 @@ export const GITNEXUS_REPO_NAME = 'papercusp';
  *
  * It deliberately EXCEEDS the hourly cron: the routine row is `concurrency: 'skip'`
  * (seed-gitnexus-reindex-routine.ts), so a fire that lands while the previous tick is still
- * awaiting its analyze is skipped rather than double-spawned. The cold one-shot bootstrap
- * (3,139s) is NOT run under this timeout — see the module header.
+ * awaiting its analyze is skipped rather than double-spawned — IN-PROCESS only: an analyze
+ * that outlives a bg-host restart is caught by `detectLiveAnalyzeWriter` instead (WI-2146606).
+ * The cold one-shot bootstrap (3,139s) is NOT run under this timeout — see the module header.
  */
 export const GITNEXUS_ANALYZE_TIMEOUT_MS = 70 * 60_000;
 
@@ -710,8 +711,12 @@ export function describeStrandedIncompleteIndex(marker: GitnexusIncompleteIndex 
  * PURE — killed AFTER the promote: a pending WAL beside a real database, with no shadow
  * to say a build is in flight. This is the read-path poison (D-016).
  *
- * The `!shadowExists` term is what makes this safe to act on: shadow-present means a
- * build is genuinely running and its WAL is live data, not residue.
+ * The `!shadowExists` term was what made this look safe to act on: shadow-present means a
+ * build is genuinely running and its WAL is live data, not residue. The CONVERSE is false —
+ * shadow-absent does not mean no build is running: a healthy analyze spends its whole
+ * post-promote phase (the embedding insert) with exactly this shape. `cleanCrashResidue`
+ * therefore corroborates this predicate with the WAL's own open handles before acting
+ * (WI-2146606); on its own it is a shape test, not a liveness verdict.
  */
 export function isOrphanWal(dbExists: boolean, shadowExists: boolean, walExists: boolean): boolean {
   return walExists && dbExists && !shadowExists;
@@ -784,8 +789,17 @@ export interface OpenHandleProbe {
    * UNKNOWN. It must never be read as "nobody has it open".
    */
   ok: boolean;
-  /** Pids observed holding the path open. Non-empty ⇒ a writer is alive. */
+  /** Pids observed holding the path open (any mode). For a SHADOW, non-empty ⇒ a writer is alive. */
   holders: number[];
+  /**
+   * The subset of `holders` whose fd is open for WRITE (`O_WRONLY`/`O_RDWR`, read from
+   * `/proc/<pid>/fdinfo/<fd>` flags). This is the discriminator for files READERS also
+   * hold — `lbug` (held O_RDONLY by every `gitnexus cypher`/`query` for its lifetime) and
+   * `lbug.wal` — where "any holder" would pin the tree as live whenever someone queries
+   * it. A holder whose fdinfo cannot be read is COUNTED as a writer: unknown mode fails
+   * toward "live", the direction that never corrupts a build (WI-2146606).
+   */
+  writers: number[];
   /** Process directories whose fd table was read successfully. */
   scannedPids: number;
   /**
@@ -832,12 +846,25 @@ export function classifyWriterLiveness(probe: OpenHandleProbe | null): WriterLiv
 }
 
 /**
+ * PURE. The `writers`-keyed verdict for files READERS also hold (`lbug`, `lbug.wal`):
+ * live only when some process has the file open for WRITE. Same blind spots as
+ * `classifyWriterLiveness`, plus one: a holder whose open mode could not be read is
+ * counted as a writer (see `OpenHandleProbe.writers`), so this errs toward 'live'.
+ */
+export function classifyWriteHolderLiveness(probe: OpenHandleProbe | null): WriterLiveness {
+  if (!probe || !probe.ok) return 'unknown';
+  return probe.writers.length > 0 ? 'live' : 'orphaned';
+}
+
+/**
  * Scan `/proc/*​/fd` for any process holding `targetPath` open.
  *
- * ⚠ DELIBERATELY PROBES THE SHADOW ONLY — never `lbug` itself. Readers hold the promoted
- * database open all the time; treating that as "a writer is alive" would pin every
- * shadow as live for as long as anyone is querying, which is the opposite failure. The
- * shadow is the build-in-progress artifact, so its holders are exactly its writers.
+ * ⚠ `holders` vs `writers` — which one answers depends on the FILE. For the shadow, any
+ * holder is a writer (nothing else opens a build-in-progress artifact). For `lbug` and
+ * `lbug.wal`, readers hold them too — every `gitnexus cypher`/`query` opens the promoted
+ * database O_RDONLY — so "any holder" would pin the tree as live for as long as anyone is
+ * querying, the opposite failure. Those two files are judged on `writers` only, which is
+ * why the probe reads each matching fd's open mode (WI-2146606).
  *
  * ⚠ NOT argv matching. `proc-guard.mjs check "gitnexus analyze"` is a measured FALSE
  * NEGATIVE on the real analyze process — its argv is `…/gitnexus/dist/cli/index.js
@@ -846,7 +873,7 @@ export function classifyWriterLiveness(probe: OpenHandleProbe | null): WriterLiv
  * one holding it.
  */
 export function probeOpenHandles(targetPath: string, procRoot = '/proc'): OpenHandleProbe {
-  const probe: OpenHandleProbe = { ok: false, holders: [], scannedPids: 0, unreadablePids: 0 };
+  const probe: OpenHandleProbe = { ok: false, holders: [], writers: [], scannedPids: 0, unreadablePids: 0 };
 
   let targetDev: number;
   let targetIno: number;
@@ -891,6 +918,9 @@ export function probeOpenHandles(targetPath: string, procRoot = '/proc'): OpenHa
       continue;
     }
     probe.scannedPids += 1;
+    const pid = Number(entry);
+    let holds = false;
+    let writes = false;
     for (const fd of fds) {
       const link = `${fdDir}/${fd}`;
       let dest: string;
@@ -906,27 +936,59 @@ export function probeOpenHandles(targetPath: string, procRoot = '/proc'): OpenHa
       const clean = dest.endsWith(PROC_FD_DELETED_SUFFIX)
         ? dest.slice(0, -PROC_FD_DELETED_SUFFIX.length)
         : dest;
-      if (clean === canonical || clean === targetPath) {
-        probe.holders.push(Number(entry));
+      let matches = clean === canonical || clean === targetPath;
+      if (!matches) {
+        // Identity, not spelling: a bind mount or a symlinked parent directory yields the
+        // same inode under a different path string, and a pure string compare would miss
+        // that holder — the one direction of error that corrupts a live build. Narrowed by
+        // basename so this costs one extra stat per genuinely similar fd, not per fd.
+        if (path.basename(clean) !== targetBase) continue;
+        try {
+          const s = statSync(link);
+          matches = s.ino === targetIno && s.dev === targetDev;
+        } catch {
+          // Deleted or vanished between readlink and stat — nothing further to learn.
+        }
+      }
+      if (!matches) continue;
+      holds = true;
+      // One process may hold the file twice (a read fd and a write fd); keep scanning until
+      // a WRITE handle is seen, so a reader-looking first fd cannot hide a writer.
+      if (fdOpenForWrite(`${procRoot}/${entry}/fdinfo/${fd}`)) {
+        writes = true;
         break;
       }
-      // Identity, not spelling: a bind mount or a symlinked parent directory yields the
-      // same inode under a different path string, and a pure string compare would miss
-      // that holder — the one direction of error that corrupts a live build. Narrowed by
-      // basename so this costs one extra stat per genuinely similar fd, not per fd.
-      if (path.basename(clean) !== targetBase) continue;
-      try {
-        const s = statSync(link);
-        if (s.ino === targetIno && s.dev === targetDev) {
-          probe.holders.push(Number(entry));
-          break;
-        }
-      } catch {
-        // Deleted or vanished between readlink and stat — nothing further to learn.
-      }
+    }
+    if (holds) {
+      probe.holders.push(pid);
+      if (writes) probe.writers.push(pid);
     }
   }
   return probe;
+}
+
+/** `O_ACCMODE` and the two access modes that can write, from <fcntl.h>. */
+const O_ACCMODE = 0o3;
+const O_WRONLY = 0o1;
+const O_RDWR = 0o2;
+
+/**
+ * Is the fd behind this `/proc/<pid>/fdinfo/<fd>` entry open for WRITE? The kernel reports
+ * the open(2) flags there as an OCTAL `flags:` line. UNREADABLE ⇒ true: when the mode cannot
+ * be established the holder is treated as a writer, because the only cost of that error is
+ * a spared file, while the opposite error deletes a live build's WAL (WI-2146606).
+ */
+function fdOpenForWrite(fdinfoPath: string): boolean {
+  let text: string;
+  try {
+    text = readFileSync(fdinfoPath, 'utf8');
+  } catch {
+    return true;
+  }
+  const m = /^flags:\s*([0-7]+)\s*$/m.exec(text);
+  if (!m) return true;
+  const mode = Number.parseInt(m[1], 8) & O_ACCMODE;
+  return mode === O_WRONLY || mode === O_RDWR;
 }
 
 export interface OrphanShadowCleanup {
@@ -940,6 +1002,13 @@ export interface OrphanShadowCleanup {
    * instead of leaving the next investigator to re-derive it.
    */
   writerLiveness?: WriterLiveness;
+  /**
+   * How the WAL's liveness was established — `writers`-keyed (`classifyWriteHolderLiveness`).
+   * 'live' means a process holds `lbug.wal` open for write and NOTHING was touched, whatever
+   * the shadow said: that is the post-promote embedding insert of an analyze the caller
+   * cannot see (WI-2146606). Absent when no WAL was present to judge.
+   */
+  walWriterLiveness?: WriterLiveness;
 }
 
 /**
@@ -987,19 +1056,21 @@ export function cleanCrashResidue(
   // A shadow only counts as "a build is in flight" if it shows any sign of being one.
   // An empty, stale shadow is a corpse, and treating it as live is what left the tree
   // segfaulting on 2026-08-21 with NEITHER arm firing (see isDeadShadow).
+  const probeFn = opts.probeOpenHandles ?? probeOpenHandles;
+  const runProbe = (target: string): OpenHandleProbe | null => {
+    try {
+      return probeFn(target);
+    } catch {
+      // A probe that throws taught us nothing. UNKNOWN, never "nobody holds it".
+      return null;
+    }
+  };
   let shadowIsDead = false;
   let writerLiveness: WriterLiveness = 'unknown';
   if (shadowExists) {
     try {
       const st = statSync(shadow);
-      const probeFn = opts.probeOpenHandles ?? probeOpenHandles;
-      let probe: OpenHandleProbe | null = null;
-      try {
-        probe = probeFn(shadow);
-      } catch {
-        // A probe that throws taught us nothing. UNKNOWN, never "nobody holds it".
-        probe = null;
-      }
+      const probe = runProbe(shadow);
       writerLiveness = classifyWriterLiveness(probe);
       const shadowAgeMs = Date.now() - st.mtimeMs;
 
@@ -1033,6 +1104,43 @@ export function cleanCrashResidue(
   // What the two existing predicates should have been asking all along: is a build LIVE?
   const liveShadow = shadowExists && !shadowIsDead;
 
+  // WI-2146606 — THE WAL GETS THE SAME DISCRIMINATOR. `isOrphanWal` reads "WAL, database, no
+  // shadow" as "killed after the promote", but that is ALSO the shape of a HEALTHY analyze in
+  // its post-promote phase: the shadow was renamed over `lbug` and the writer is now inserting
+  // (cache-restored embeddings, 20+ min on this graph) through `lbug.wal`. Observed live
+  // 2026-09-05T19:16:59Z: a bg-host restarted mid-tick, the analyze survived in its own
+  // scope, and the successor host's preflight deleted the live run's WAL as "ORPHAN-WAL
+  // residue", then double-spawned. The shadow's absence proves nothing about the WAL's
+  // writer; the WAL's own open handles do. `writers`-keyed, because readers open the WAL
+  // too (a read-only open replays it) — a reader must never pin residue as live.
+  let walWriterLiveness: WriterLiveness | undefined;
+  let walIsLive = false;
+  if (walExists) {
+    try {
+      const st = statSync(wal);
+      walWriterLiveness = classifyWriteHolderLiveness(runProbe(wal));
+      const walAgeMs = Date.now() - st.mtimeMs;
+      if (walWriterLiveness === 'live') {
+        walIsLive = true;
+      } else {
+        // 'orphaned' or 'unknown': corroborate before condemning, exactly as for the shadow.
+        // A live writer touches its WAL continuously, so a WAL untouched for the staleness
+        // floor has no writer; a FRESH one with no visible holder may belong to a writer
+        // between two open() calls. At the kill site the caller's own SIGKILL is the proof.
+        walIsLive = opts.writerKnownDead !== true && walAgeMs <= DEAD_SHADOW_STALE_MS;
+      }
+    } catch {
+      // Vanished between the check and the stat — that IS the not-present case.
+      walIsLive = false;
+    }
+  }
+  if (walIsLive) {
+    // A writer owns the whole tree while it is alive. Not even a dead shadow beside it is
+    // ours to remove right now — `lbug.wal.checkpoint` may be its checkpoint in flight — and
+    // the corpse costs nothing until the next tick, when no writer will be holding anything.
+    return { cleaned: false, removed: [], kind: 'none', writerLiveness, walWriterLiveness };
+  }
+
   let kind: OrphanShadowCleanup['kind'] = 'none';
   let targets: string[] = [];
   if (isOrphanShadow(dbExists, liveShadow)) {
@@ -1049,7 +1157,7 @@ export function cleanCrashResidue(
     kind = 'dead-shadow-wal';
     targets = [shadow, walCheckpoint];
   } else {
-    return { cleaned: false, removed: [], kind: 'none', writerLiveness };
+    return { cleaned: false, removed: [], kind: 'none', writerLiveness, walWriterLiveness };
   }
 
   const removed: string[] = [];
@@ -1063,7 +1171,101 @@ export function cleanCrashResidue(
       // unlink) — not our job to report, the residue condition is gone either way.
     }
   }
-  return { cleaned: removed.length > 0, removed, kind, writerLiveness };
+  return { cleaned: removed.length > 0, removed, kind, writerLiveness, walWriterLiveness };
+}
+
+// ---------------------------------------------------------------------------
+// WI-2146606 — THE CROSS-RESTART CONCURRENCY GUARD.
+//
+// The routine row is `concurrency: 'skip'`, and the timeout rationale above leans on it: a
+// fire that lands while the previous tick is still awaiting its analyze is skipped. That
+// guard is IN-PROCESS — it knows about the analyze because the same bg-host is awaiting
+// its promise. The analyze itself runs in its own transient scope (managedSpawn, detached),
+// so it SURVIVES a bg-host stop/restart; the successor host holds no promise, sees no
+// concurrency, and on its first fire runs the preflight and spawns a SECOND analyze onto
+// the same index (observed 2026-09-05T19:17:03Z, 44 min into a 40–60 min tick). Two writers
+// on one LadybugDB is not a slow tick, it is a corrupted one.
+//
+// So ask the FACT, not the process table: does any process hold one of this index's files
+// open for WRITE? Same instrument as the residue policy, same blind spots, same direction
+// of error (a spared tick, never a corrupted build). Deliberately NOT a pid/lock file — a
+// lock file records the writer this host launched, and the writer that matters here is
+// precisely the one it did not — and NOT argv matching (see probeOpenHandles).
+// ---------------------------------------------------------------------------
+
+export interface LiveAnalyzeWriter {
+  /** A process holds the shadow (any mode) or `lbug.wal`/`lbug` (write mode) open. */
+  live: boolean;
+  /** 'unknown' when no probe could run on any present file — a caller must NOT read that as clear. */
+  verdict: WriterLiveness;
+  /** The holding pids, ascending. */
+  pids: number[];
+  /** Basename of the first file found held (probe order: shadow, wal, db). */
+  files: string[];
+}
+
+/**
+ * Is an analyze — ours or anyone's — currently writing this index? Probes the files a
+ * writer can hold, in the order a build touches them: the shadow (any holder is a writer),
+ * then `lbug.wal` and `lbug` (write-mode holders only — readers hold both). Stops at the
+ * first file with a live writer; a `/proc` scan per file is the cost.
+ */
+export function detectLiveAnalyzeWriter(
+  root: string,
+  opts: { probeOpenHandles?: (targetPath: string) => OpenHandleProbe } = {},
+): LiveAnalyzeWriter {
+  const { db, shadow, wal } = gitnexusDbPaths(root);
+  const probeFn = opts.probeOpenHandles ?? probeOpenHandles;
+  const pids = new Set<number>();
+  const files: string[] = [];
+  let probed = false;
+  for (const target of [shadow, wal, db]) {
+    if (!existsSync(target)) continue;
+    let probe: OpenHandleProbe | null = null;
+    try {
+      probe = probeFn(target);
+    } catch {
+      probe = null;
+    }
+    if (!probe || !probe.ok) continue;
+    probed = true;
+    const writers = target === shadow ? probe.holders : probe.writers;
+    if (writers.length === 0) continue;
+    for (const p of writers) pids.add(p);
+    files.push(path.basename(target));
+    break;
+  }
+  const live = pids.size > 0;
+  return {
+    live,
+    verdict: live ? 'live' : probed ? 'orphaned' : 'unknown',
+    pids: [...pids].sort((a, b) => a - b),
+    files,
+  };
+}
+
+/** Kernel clock ticks per second for `/proc/<pid>/stat` starttime. USER_HZ is 100 on every
+ *  Linux ABI Node ships for, and this value feeds a log line, never a decision. */
+const USER_HZ = 100;
+
+/**
+ * Best-effort age of a process from `/proc/<pid>/stat` (field 22, starttime in ticks since
+ * boot) and `/proc/stat` btime. `null` when either cannot be read. Diagnostic only: it lets
+ * the skip line say whether the writer being yielded to is a fresh tick or a runaway.
+ */
+export function processAgeMs(pid: number, procRoot = '/proc', nowMs: number = Date.now()): number | null {
+  try {
+    const stat = readFileSync(`${procRoot}/${pid}/stat`, 'utf8');
+    // comm may contain spaces/parens; everything after the LAST ')' is fixed-shape.
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    const startTicks = Number(rest[19]); // field 22 overall; rest[0] is field 3 (state)
+    const btime = /^btime\s+(\d+)/m.exec(readFileSync(`${procRoot}/stat`, 'utf8'));
+    if (!Number.isFinite(startTicks) || !btime) return null;
+    const startedAtMs = (Number(btime[1]) + startTicks / USER_HZ) * 1000;
+    return Math.max(0, nowMs - startedAtMs);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1766,6 +1968,33 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   // the expensive analyzer, so record it before the cadence gates (including skips).
   await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
 
+  const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);
+
+  // WI-2146606 — a writer this host cannot see. The routine's `concurrency: 'skip'` only
+  // knows about an analyze THIS host is awaiting; one launched by a previous host
+  // incarnation survives the restart in its own scope and is invisible here. Yield to it:
+  // no residue cleanup (its WAL would read as orphan), no spawn (two writers corrupt it).
+  const writer = detectLiveAnalyzeWriter(root);
+  if (writer.live) {
+    const ages = writer.pids.map((p) => {
+      const age = processAgeMs(p);
+      return age == null ? String(p) : `${p} (${Math.round(age / 60_000)} min old)`;
+    });
+    const overBudget = writer.pids.some((p) => (processAgeMs(p) ?? 0) > timeoutMs);
+    const line =
+      `[gitnexus-reindex] skip: an analyze writer is ALIVE on ${root} — pid(s) ${ages.join(', ')} hold ` +
+      `${writer.files.join(' + ')} open for write; not cleaning residue, not spawning (WI-2146606)`;
+    if (overBudget) {
+      console.warn(
+        `${line} ⚠ older than the ${Math.round(timeoutMs / 60_000)}-min timeout budget. A routine-launched ` +
+          `run is bounded by its own scope deadline (managedSpawn runtimeMaxSec); a manual run is not ours to kill.`,
+      );
+    } else {
+      console.log(line);
+    }
+    return;
+  }
+
   // Crash residue is a READ-AVAILABILITY fault, not an analyze-admission concern.
   // Clean it before cadence/load/memory gates: a skipped analyze is legitimate,
   // but leaving an orphan shadow or WAL in place makes every read-only GitNexus
@@ -1824,7 +2053,6 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     return;
   }
 
-  const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);
   const startedAt = Date.now();
   console.log(`[gitnexus-reindex] running analyze (${decision.reason}) — root=${root} name=${repoName}`);
   const r = await runGitnexusAnalyze(root, repoName, timeoutMs);
