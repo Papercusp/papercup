@@ -175,15 +175,21 @@ function publishDefaultAccountEnv(active: boolean): void {
 
 /**
  * Bring this process's default-account marker in line with the persisted override. Call at host
- * boot, and on a cadence in any long-lived host, BEFORE relying on in-process routing.
+ * boot, BEFORE relying on in-process routing.
  *
- * ⚠ KNOWN GAP, stated rather than hidden: the marker is per-PROCESS. `setDefaultAccount` updates
- * the process that handled the write (the operator), so its own in-process calls switch
- * immediately — but a SIBLING host (papercup-bg-host) that booted earlier keeps its stale marker
- * until it next runs this. The gateway itself is unaffected: it re-resolves the pool on its own
- * hot-reload poll, so once a caller chooses the gateway leg the account is always current. This
- * is why the marker is a boolean rather than a cached account id — the stale value can only be
- * wrong about WHICH LEG to take, never about which account, and both legs work.
+ * The marker is per-PROCESS. `setDefaultAccount` updates the process that handled the write (the
+ * operator), so its own in-process calls switch immediately. A SIBLING host (papercup-bg-host)
+ * that booted earlier used to keep its stale marker until it next restarted — EI-19944784972017743.
+ * That is now closed by REACTION, not by a cadence: `deployment/account-default-marker-rule.ts`
+ * re-fires this on every `operator_account_override` change, riding the change stream that table
+ * already emits (its `emit_change_notify_trg` → `pg_notify('sync_invalidate')` → the LISTEN every
+ * host starts at boot → `bridgeTriggerEvent`). So do NOT add a polling cadence here; the push
+ * already exists, and a timer would re-poll PG from every host to rediscover it.
+ *
+ * The gateway itself was never affected: it re-resolves the pool on its own hot-reload poll, so
+ * once a caller chooses the gateway leg the account is always current. This is why the marker is
+ * a boolean rather than a cached account id — a stale value can only be wrong about WHICH LEG to
+ * take, never about which account, and both legs work.
  *
  * FAIL-SOFT on purpose, unlike readDefaultAccountId's other callers: this is a best-effort
  * refresher, not a routing decision. Leaving the previous marker in place on a transient read

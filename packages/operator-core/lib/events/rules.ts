@@ -13,6 +13,7 @@
 import { registerReactionRule } from './registry';
 import { formatHandoff, type HandoffArgs } from './format-handoff';
 import { registerCacheTagEcaRule } from './cache-eca-rule';
+import { registerAccountDefaultMarkerRule } from '../deployment/account-default-marker-rule';
 // oddsmith-domain reaction: a completed bet-analysis item → one decision-ledger
 // disposition (the signals/recent-auto-decisions feed). Self-registers on import.
 // (Cleaner long-term home: an oddsmith PluginReactionRule — see on-papercusp plan P3.)
@@ -63,6 +64,15 @@ registerReactionRule({
  * the built-in `cache.bumpTags` action. Flag-gated (CACHE_TAG_ECA, default ON).
  */
 registerCacheTagEcaRule();
+
+/**
+ * EI-19944784972017743 — a change to the owner's account override re-publishes THIS
+ * process's `PAPERCUSP_DEFAULT_ACCOUNT_ACTIVE` marker, so a sibling long-lived host
+ * (bg-host) stops routing its in-process anthropic-direct calls at `~/.claude` after
+ * the owner nominates a default pool account. Rides the change stream the override
+ * table already emits, rather than re-polling PG from every host on a timer.
+ */
+registerAccountDefaultMarkerRule();
 
 /**
  * WI-5271 — critical-severity work-item alert, event-driven (replaces the leaking
