@@ -204,6 +204,51 @@ export async function recordWorkScopeDecision(d: Omit<WorkScopeDecision, 'at'> &
   } catch (e) {
     console.warn(`[work-scope] ledger write failed (decision still applied): ${(e as Error)?.message ?? e}`);
   }
+  await broadcastWorkScopeDecision(d).catch((e) => {
+    console.warn(`[work-scope] broadcast failed (decision still applied): ${(e as Error)?.message ?? e}`);
+  });
+}
+
+/** P-011 loudness: one owner-inbox line + one recurrence observation per (site, harness), throttled. */
+const WORK_SCOPE_BROADCAST_THROTTLE_MS = 10 * 60_000;
+const lastBroadcastAt = new Map<string, number>();
+const WORK_SCOPE_SYSTEM_IDENTITY = {
+  ownerId: 'system:work-scope-policy',
+  ownerLabel: 'system · work-scope-policy',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+} as const;
+
+async function broadcastWorkScopeDecision(d: Omit<WorkScopeDecision, 'at'> & { at?: string }): Promise<void> {
+  if (process.env.VITEST) return;
+  const key = `${d.site}|${d.harness ?? '?'}|${d.verdict}`;
+  const now = Date.now();
+  const last = lastBroadcastAt.get(key) ?? 0;
+  if (now - last < WORK_SCOPE_BROADCAST_THROTTLE_MS) return;
+  lastBroadcastAt.set(key, now);
+  const headline =
+    `🛂 work-scope ${d.verdict} @${d.site}: harness '${d.harness ?? '?'}'` +
+    `${d.subject ? ` (${d.subject})` : ''}${d.actor ? ` by ${d.actor}` : ''}`;
+  const [{ sendMessage }, { captureImprovement }] = await Promise.all([
+    import('./agent-tools/coordination/messages'),
+    import('./harness/improvements/capture-core'),
+  ]);
+  await sendMessage(WORK_SCOPE_SYSTEM_IDENTITY as unknown as Parameters<typeof sendMessage>[0], {
+    to: ['human'],
+    summary: headline,
+    body:
+      `${headline}. ${d.note ?? ''} Out-of-scope work is parked, never deleted. ` +
+      `Inspect: workspace:work_scope { op:'get' } (ledger + counts); widen: workspace:work_scope { op:'set' }.`,
+  } as Parameters<typeof sendMessage>[1]);
+  await captureImprovement({
+    title: `work-scope ${d.verdict}: harness ${d.harness ?? '?'} refused at ${d.site}`,
+    kind: 'change',
+    lane: 'observation',
+    conditionKey: `scope:${d.verdict}:${d.harness ?? 'unknown'}`,
+    body: `${headline}. ${d.note ?? ''}`.trim(),
+    foundDuring: 'workspace-work-scope-policy-2026-09-04',
+  } as Parameters<typeof captureImprovement>[0]);
 }
 
 /**
