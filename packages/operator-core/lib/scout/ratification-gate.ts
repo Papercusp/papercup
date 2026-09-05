@@ -24,20 +24,44 @@
  * case: a proposal approved by its own author is a self-licking loop, and here the
  * loop spends fleet capacity rather than just polluting a learning signal.
  *
- * ⚠ (1) IS NOT ENFORCED HERE AND IS NOT SILENTLY IMPLIED TO BE. Whether a draft is
- * "irreversible" is a judgement over its content, and a keyword classifier for it
- * would be worse than nothing: it would miss the dangerous drafts that do not use
- * the expected words while manufacturing confidence that the class is covered.
- * Condition (1) remains DOCTRINE (the steward contract + ready-plan-autostart's
- * header). Tracked as residue on WI-38047 — do not read this module's existence as
- * evidence that both guards are live.
+ * ⚠ (1) IS NOT ENFORCED HERE, IS NOT SILENTLY IMPLIED TO BE, AND IS NOT PENDING.
+ * [D-026, 2026-09-05, WI-38057] condition (1) is ACCEPTED AS DOCTRINE — enforced by
+ * the steward's adherence alone. Do not read this module's existence as evidence that
+ * both guards are live, and do not refile (1) as unimplemented work.
  *
- * ⚠ TODAY'S POPULATION, measured 2026-08-12 (state it, do not imply protection that
- * is not yet in force): all 6 `rail='plan'` ledger rows are `origin='scout'` with
- * `created_by` NULL — the ideator rail files them, not an su — so no current row can
- * trigger this refusal. The guard is FORWARD-acting by construction (the D-013 epoch
- * shape): it binds the first time an su routes its OWN filing to the plan rail, which
- * is precisely the case D-015 names and the one nothing else stops.
+ * The obvious mechanisation was MEASURED before it was rejected, so the rejection is a
+ * number rather than an opinion. Classifying the 30 plans reachable from
+ * `scout_routed_ideas WHERE rail='plan'` with the obvious keyword sets flagged 30/30 —
+ * and hand-checking the most-flagged found 0 true positives (matches were a REFERENCE
+ * to an applied migration, the word "migration" inside an error string, and a plan that
+ * is "Zero-secret by construction"). Measured precision 0.00. The noise is the DOMAIN,
+ * not the keyword choice: this is a codebase about fleets, release gates, migrations and
+ * auth-bearing tools, so the dangerous-set vocabulary is every plan's ordinary working
+ * vocabulary. An advisory that fires on 100% of drafts trains the ratifier to ignore the
+ * channel and would degrade guard (2)'s genuine refusal by association.
+ *
+ * REOPENS ON: a measured true positive on this rail, or a classifier that beats the
+ * recorded 0.00-precision baseline on that same corpus. The burden of proof sits with
+ * the proposal, not with the gap.
+ *
+ * ⚠ POPULATION — RE-MEASURED 2026-09-05, AND IT HAS FLIPPED. This module previously
+ * recorded (measured 2026-08-12) that all 6 `rail='plan'` rows had `created_by` NULL,
+ * so no current row could trigger the refusal and the guard was "FORWARD-acting". That
+ * is NO LONGER TRUE and must not be carried forward: `rail='plan'` now holds 27 rows
+ * WITH an originator on record (15 routed 2026-08-13..15, 12 more 2026-08-20..2026-09-05),
+ * against 6 originator-less rows from June. The guard is LIVE, not forward-acting — an
+ * su routing its own filing to the plan rail is now the ordinary case, which is exactly
+ * the case D-015 names.
+ *
+ * Re-check before relying on either number (the shape of the read, not a remembered
+ * total):
+ *   SELECT count(*) FILTER (WHERE created_by IS NOT NULL) AS with_originator, count(*)
+ *     FROM harness_shared.scout_routed_ideas WHERE rail = 'plan';
+ *
+ * The lesson generalises past this module: the 2026-08-12 note was pinned by a unit test
+ * that passed `createdBy: null` BY HAND, so it asserted a claim about the live ledger
+ * while measuring only the pure function. It could never fail when the population moved,
+ * and it did not. A population claim needs a probe that reads the population.
  *
  * FAIL-SOFT, deliberately, and VISIBLE. An unattributable caller or a lookup failure
  * yields `satisfied: true` with a `skipped` reason rather than a refusal — a DB blip

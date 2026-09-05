@@ -16,9 +16,23 @@
  * either check escalates to the owner instead of being ratified.
  *
  * ⚠ Those two conditions are the ENTIRE safety margin — the item cap that used to sit in
- * front of them was lifted deliberately. They are currently DOCTRINE (this comment + the
- * steward contract), not enforced here: nothing in this sweep inspects who originated a
- * ratified plan. Treat that as a known gap, not as a guarantee. The decompose-wake
+ * front of them was lifted deliberately. They now have DIFFERENT enforcement status, and
+ * conflating them (as this comment did until 2026-09-05) reads as though neither is live:
+ *
+ *   - (2) never a self-filed draft — ENFORCED since WI-38047, though not HERE. The check
+ *     runs upstream at the `ready` flip itself (`plans:set-plan-status` →
+ *     `scout/ratification-gate.ts`), which refuses BEFORE the write, so a self-ratified
+ *     plan never reaches this sweep. Nothing below inspects who originated a plan because
+ *     by this point it cannot be a self-ratification.
+ *   - (1) nothing in the dangerous set — ACCEPTED DOCTRINE [D-026, 2026-09-05, WI-38057],
+ *     enforced by the steward's adherence alone. Accepted on a measurement, not a shrug:
+ *     keyword classification of the live plan-rail corpus flagged 30/30 with 0 true
+ *     positives (precision 0.00), because the dangerous-set vocabulary is this codebase's
+ *     ordinary vocabulary. It is NOT pending implementation — see ratification-gate.ts's
+ *     header for the full rationale and what would reopen it.
+ *
+ * So: a known-and-ACCEPTED gap on (1), a live guard on (2) — neither is a guarantee that
+ * a ratified draft is safe to promote. The decompose-wake
  * below (`source='scout-ready-decompose'`) likewise now targets the nudge ladder rather
  * than a Queen lookup. Read every "Queen" below as "the ratifying steward".
  *
