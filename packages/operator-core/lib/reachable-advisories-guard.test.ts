@@ -23,6 +23,8 @@ import { join } from 'node:path';
 import {
   analyze,
   attributeAdvisories,
+  collectInstalledVersions,
+  deriveFixFeasibility,
   isNonShipping,
   measureJson,
 } from '../../../scripts/check-reachable-advisories.mjs';
@@ -44,12 +46,22 @@ const LS_FIXTURE = {
   },
 };
 
+/**
+ * `range` is LOAD-BEARING on evil-shipped, not decoration — do not drop it.
+ *
+ * A real `npm audit` record always carries the vulnerable range, and `deriveFixFeasibility`
+ * now reads it: `^1.0.0` is NOT a subset of `<=1.0.0`, so a semver-compatible escape exists
+ * and the single-lens reading stays patch-compatible. Strip the range and the derivation
+ * degrades to UNDETERMINED, which fails closed to patchCompatible:false — turning the
+ * "is not vacuous" control below into a control that cannot fail, since both halves of its
+ * discrimination would then read false for entirely unrelated reasons.
+ */
 const AUDIT_FIXTURE = {
   vulnerabilities: {
-    'evil-shipped': { severity: 'high', fixAvailable: true },
-    'evil-testonly': { severity: 'high', fixAvailable: true },
-    'evil-orphan': { severity: 'critical', fixAvailable: false },
-    'noisy-moderate': { severity: 'moderate', fixAvailable: true },
+    'evil-shipped': { severity: 'high', fixAvailable: true, range: '<=1.0.0' },
+    'evil-testonly': { severity: 'high', fixAvailable: true, range: '<=1.0.0' },
+    'evil-orphan': { severity: 'critical', fixAvailable: false, range: '<=1.0.0' },
+    'noisy-moderate': { severity: 'moderate', fixAvailable: true, range: '<=1.0.0' },
   },
 };
 
@@ -270,6 +282,250 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
   it('a missing second lens degrades to the single-lens reading without throwing', () => {
     expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, null)).not.toThrow();
     expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, {})).not.toThrow();
+  });
+});
+
+/**
+ * WI-2144851 — fix feasibility DERIVED from the advisory range, not read off `fixAvailable`.
+ *
+ * WHY THIS BLOCK EXISTS. The two-lens reconciliation above only bites when npm returns
+ * `fixAvailable` as an OBJECT carrying `isSemVerMajor`; when npm returns the BARE BOOLEAN
+ * `true`, there is no version to compare and BOTH lenses read "patch-compatible". That is
+ * not hypothetical: on 2026-09-05 style-dictionary's npm record moved from
+ * `{version:5.5.2, isSemVerMajor:true}` to the range `4.3.0 - 5.4.3` plus a bare `true`
+ * within hours, and an entry that had just been hand-CORRECTED silently reverted to reading
+ * patch-compatible with nothing failing anywhere. Keying a fix on the SHAPE of a third
+ * party's payload gives it an expiry date; `deriveFixFeasibility` keys on the invariant the
+ * advisory itself owns — is `^installed` a semver SUBSET of the vulnerable range?
+ *
+ * The three ground-truth rows below were verified against the published registry the same
+ * day, so they are measurements, not illustrations.
+ */
+describe('reachable-advisory gate: derived fix feasibility', () => {
+  it('the derivation is actually running — semver is resolvable from the gate script', () => {
+    // Calibration. `deriveFixFeasibility` degrades to UNDETERMINED when `semver` cannot be
+    // required (it is a hoisted transitive, not a declared dependency). Without this control
+    // a hoist reshuffle would turn EVERY case below into a vacuous "undetermined" pass, and
+    // the suite would stay green while the derivation measured nothing at all.
+    const probe = deriveFixFeasibility('<=1.0.0', ['1.0.0']);
+    expect(probe.verdict, `semver unavailable to the gate: ${probe.reason}`).not.toBe('undetermined');
+  });
+
+  it('^installed INSIDE the vulnerable range requires a major bump (style-dictionary 4.4.0)', () => {
+    const r = deriveFixFeasibility('4.3.0 - 5.4.3', ['4.4.0']);
+    expect(r.verdict).toBe('requires-major');
+    expect(r.reason).toContain('^4.4.0');
+    expect(r.vulnerableCopies).toEqual(['4.4.0']);
+  });
+
+  it('^installed reaching PAST the vulnerable range is escapable (lodash-es 4.17.21)', () => {
+    // ^4.17.21 admits 4.18.1, which is outside `<=4.17.23` — a compatible escape exists.
+    const r = deriveFixFeasibility('<=4.17.23', ['4.17.21']);
+    expect(r.verdict).toBe('escapable');
+  });
+
+  it('is not vacuous: the same installed version flips verdict on the range alone', () => {
+    // The discrimination that makes the two cases above meaningful. Identical input except
+    // the range; a derivation that ignored the range could not produce both answers.
+    expect(deriveFixFeasibility('<=4.17.23', ['4.17.21']).verdict).toBe('escapable');
+    // `<5.0.0` swallows the WHOLE of `^4.17.21` (= `>=4.17.21 <5.0.0`), so only a major
+    // bump escapes. Note `<=4.99.0` would NOT do this — 4.99.1 is compatible and outside
+    // it — which is exactly why the derivation has to ask semver instead of eyeballing
+    // whether the range "looks like it covers" the installed version.
+    expect(deriveFixFeasibility('<5.0.0', ['4.17.21']).verdict).toBe('requires-major');
+  });
+
+  it('traps the 0.x case, where a MINOR bump is already breaking (langsmith 0.3.87)', () => {
+    // `^0.3.87` collapses to `>=0.3.87 <0.4.0` under semver's 0.x rule, so it cannot reach
+    // past `<=0.5.26`. A naive "the range ends below some newer version, so patch it"
+    // reading calls this escapable; it is not.
+    expect(deriveFixFeasibility('<=0.5.26', ['0.3.87']).verdict).toBe('requires-major');
+  });
+
+  it('only copies actually IN the range vote — a clean sibling cannot excuse a trapped one', () => {
+    // Both copies installed; only 4.4.0 is vulnerable. The clean 5.9.0 must not make the
+    // trapped copy look escapable just by existing in the tree.
+    const r = deriveFixFeasibility('4.3.0 - 5.4.3', ['4.4.0', '5.9.0']);
+    expect(r.verdict).toBe('requires-major');
+    expect(r.vulnerableCopies).toEqual(['4.4.0']);
+  });
+
+  describe('unmeasurable inputs are UNDETERMINED, never the optimistic reading', () => {
+    it('an advisory with no range', () => {
+      expect(deriveFixFeasibility('', ['1.0.0']).verdict).toBe('undetermined');
+    });
+
+    it('a range semver cannot parse', () => {
+      expect(deriveFixFeasibility('not-a-range', ['1.0.0']).verdict).toBe('undetermined');
+    });
+
+    it('a package absent from the installed tree', () => {
+      expect(deriveFixFeasibility('<=1.0.0', []).verdict).toBe('undetermined');
+    });
+
+    it('an advisory whose range no installed copy satisfies', () => {
+      // npm says vulnerable, the tree says otherwise. That contradiction is a measurement
+      // gap, not a clean bill of health.
+      expect(deriveFixFeasibility('<=1.0.0', ['9.9.9']).verdict).toBe('undetermined');
+    });
+  });
+
+  describe('collectInstalledVersions', () => {
+    it('finds a NESTED vulnerable copy the hoisted clean one would hide', () => {
+      // The measured langsmith shape: 0.8.7 hoisted (clean), 0.3.87 nested under a
+      // dependency (vulnerable). Reading only the hoisted copy answers about the wrong
+      // object — and in the fail-OPEN direction.
+      const ls = {
+        dependencies: {
+          '@papercusp/web': {
+            resolved: 'file:apps/web',
+            dependencies: {
+              langsmith: { version: '0.8.7' },
+              stagehand: { version: '3.4.0', dependencies: { langsmith: { version: '0.3.87' } } },
+            },
+          },
+        },
+      };
+      const got = collectInstalledVersions(ls, ['langsmith']);
+      expect(got.get('langsmith')).toEqual(['0.3.87', '0.8.7']);
+    });
+
+    it('terminates on a cyclic dependency graph', () => {
+      const a: Record<string, unknown> = { version: '1.0.0' };
+      const b = { version: '2.0.0', dependencies: { a } };
+      a.dependencies = { b };
+      expect(() => collectInstalledVersions({ dependencies: { a } }, ['a', 'b'])).not.toThrow();
+    });
+
+    it('ignores packages nobody filed an advisory for', () => {
+      expect(collectInstalledVersions(LS_FIXTURE, ['evil-shipped']).has('evil-testonly')).toBe(false);
+    });
+  });
+
+  describe('the derivation overrides a bare-boolean fixAvailable inside analyze()', () => {
+    // The exact shape the two-lens reconciliation is structurally blind to: a bare `true`
+    // from BOTH lenses, so nothing to compare, while the range traps every compatible
+    // version. This is the regression that silently reverted a corrected classification.
+    const trappedLs = {
+      dependencies: {
+        '@papercusp/web': {
+          resolved: 'file:apps/web',
+          dependencies: { 'trapped-major': { version: '4.4.0' } },
+        },
+      },
+    };
+    const trappedAudit = {
+      vulnerabilities: {
+        'trapped-major': { severity: 'high', fixAvailable: true, range: '4.3.0 - 5.4.3' },
+      },
+    };
+
+    it('refuses to call a trapped advisory patch-compatible', () => {
+      const f = findingFor(analyze(trappedAudit, trappedLs, { accepted: [] }, trappedAudit), 'trapped-major');
+      expect(f.patchCompatible).toBe(false);
+      expect(f.disposition).toBe('deferred-semver-major');
+      expect(f.fixFeasibility.verdict).toBe('requires-major');
+    });
+
+    it('is not vacuous: widening the range alone makes the SAME finding patch-eligible', () => {
+      // Identical fixture but for the range, and both lenses still say a bare `true`. If
+      // the derivation were inert, these two cases could not disagree.
+      const escapableAudit = {
+        vulnerabilities: {
+          'trapped-major': { severity: 'high', fixAvailable: true, range: '<=4.4.0' },
+        },
+      };
+      const f = findingFor(analyze(escapableAudit, trappedLs, { accepted: [] }, escapableAudit), 'trapped-major');
+      expect(f.patchCompatible).toBe(true);
+      expect(f.disposition).toBe('patch-eligible');
+    });
+
+    it('names the contradiction instead of quietly downgrading it', () => {
+      const f = findingFor(analyze(trappedAudit, trappedLs, { accepted: [] }, trappedAudit), 'trapped-major');
+      expect(f.fixDisagreement).toEqual(expect.stringContaining('fixAvailable:true'));
+    });
+
+    it('ESCAPABLE alone is not a fix — a lens reporting a MAJOR still defers (the d3 shape)', () => {
+      // The asymmetry, pinned. `requires-major` is a proof; `escapable` is only the absence
+      // of that proof and says nothing about what the registry PUBLISHED. Measured
+      // 2026-09-05: ^6.7.0 is not a subset of d3's range, yet the only real fix is 7.x. If
+      // `escapable` were ever allowed to imply patch-eligible on its own, this defers-
+      // correctly case would flip to "just patch it" and the advice would be unfollowable.
+      const escapableRangeMajorFix = {
+        vulnerabilities: {
+          'trapped-major': {
+            severity: 'high',
+            range: '<=4.4.0',
+            fixAvailable: { name: 'trapped-major', version: '7.9.0', isSemVerMajor: true },
+          },
+        },
+      };
+      const f = findingFor(
+        analyze(escapableRangeMajorFix, trappedLs, { accepted: [] }, escapableRangeMajorFix),
+        'trapped-major',
+      );
+      expect(f.fixFeasibility.verdict).toBe('escapable');
+      expect(f.patchCompatible).toBe(false);
+      expect(f.disposition).toBe('deferred-semver-major');
+    });
+
+    describe('the derivation POLICES the curated baseline disposition rather than replacing it', () => {
+      // Rung 2 of the derived-truth ladder. The stored disposition stays curated because
+      // the derivation can be blind (a dev-only-reachable vulnerable copy is invisible to
+      // the prod `npm ls` tree — the measured langsmith case), so a blind re-seed would
+      // downgrade a correct human judgment to "unknown". Instead it must POLICE it, and
+      // the two failure kinds must stay distinguishable.
+      const baselineSaying = (disposition: string) => ({
+        accepted: ['trapped-major'],
+        entries: { 'trapped-major': { disposition } },
+      });
+
+      it('CONTRADICTED when the derivation measured something and disagrees', () => {
+        const r = analyze(trappedAudit, trappedLs, baselineSaying('patch-eligible'), trappedAudit);
+        expect(r.dispositionDrift).toHaveLength(1);
+        expect(r.dispositionDrift[0]).toMatchObject({
+          name: 'trapped-major',
+          stored: 'patch-eligible',
+          derived: 'deferred-semver-major',
+          kind: 'contradicted',
+        });
+      });
+
+      it('UNCORROBORATED — not contradicted — when the derivation could not measure at all', () => {
+        // The distinction this whole block exists for: "I cannot tell" must never be
+        // rendered as "the entry is wrong", or an instrument gap becomes pressure to
+        // rewrite a correct entry.
+        const unmeasurable = {
+          vulnerabilities: { 'trapped-major': { severity: 'high', fixAvailable: true, range: 'sometime-after-4' } },
+        };
+        const r = analyze(unmeasurable, trappedLs, baselineSaying('deferred-semver-major'), unmeasurable);
+        expect(r.dispositionDrift[0].kind).toBe('uncorroborated');
+      });
+
+      it('is silent when the derivation and the curated entry agree', () => {
+        const r = analyze(trappedAudit, trappedLs, baselineSaying('deferred-semver-major'), trappedAudit);
+        expect(r.dispositionDrift).toEqual([]);
+      });
+
+      it('never invents drift for an entry that states no disposition', () => {
+        const r = analyze(trappedAudit, trappedLs, { accepted: ['trapped-major'], entries: {} }, trappedAudit);
+        expect(r.dispositionDrift).toEqual([]);
+      });
+    });
+
+    it('an UNDETERMINED derivation fails closed rather than inheriting the lens verdict', () => {
+      // npm says patch-compatible; the range is unparseable so nothing can confirm it. The
+      // gate must not take npm's word for it — that is the whole point of the third verdict.
+      const unparseable = {
+        vulnerabilities: {
+          'trapped-major': { severity: 'high', fixAvailable: true, range: 'sometime-after-4' },
+        },
+      };
+      const f = findingFor(analyze(unparseable, trappedLs, { accepted: [] }, unparseable), 'trapped-major');
+      expect(f.fixFeasibility.verdict).toBe('undetermined');
+      expect(f.patchCompatible).toBe(false);
+      expect(f.disposition).toBe('undetermined');
+    });
   });
 });
 
