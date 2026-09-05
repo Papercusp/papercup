@@ -20,6 +20,7 @@ import {
 import { computeAcceptanceBarHash, computeAcceptanceBarSetHash, type Rubric, type RubricCriterion } from './rubrics';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
+import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
 
 const iso = '2026-09-04T12:00:00.000Z';
 
@@ -255,6 +256,32 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
   };
 }
 
+function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
+  const input = fixture(n);
+  const rubric = input.rubrics.rows[0]!;
+  for (const criterion of rubric.criteria) {
+    criterion.requiredTestLayers = ['integration'];
+    criterion.check = { kind: 'instrument', instrumentKey: 'none' };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+  }
+  const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+  rubric.barSetHash = barSetHash;
+  input.planRows.rows[0]!.barSetHash = barSetHash;
+  input.clauses.rows.forEach((clause, index) => {
+    clause.requiredTestLayers = ['integration'];
+    clause.sourceBar!.barHash = rubric.criteria[index]!.barHash!;
+    clause.sourceBar!.barSetHash = barSetHash;
+  });
+  for (const evidence of input.evidence.rows) {
+    evidence.currentness = { ...evidence.currentness, overall: 'current', comparisonSupplied: true,
+      dimensions: { ...evidence.currentness.dimensions, source: 'current' }, unknownReasons: [] };
+    evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
+      falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+      outcome: 'passed', coverageRungs: { l3: true } } };
+  }
+  return input;
+}
+
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   it('keeps historical contracts visible without letting them invalidate a current discharge', () => {
     const input = fixture(1);
@@ -270,7 +297,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.readiness.workContract).toBe('stale');
   });
   it('projects exact source revisions, per-BAR trace, authoritative grading, and one content hash', () => {
-    const snapshot = projectAcceptanceBarContractSnapshot(fixture());
+    const snapshot = projectAcceptanceBarContractSnapshot(provedFixture());
 
     expect(snapshot).toMatchObject({
       schemaVersion: ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
@@ -313,6 +340,48 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     expect(reversed.contentHash).toBe(first.contentHash);
     expect(reversed.bars).toEqual(first.bars);
+  });
+
+  it('accepts a fully exercised outcome and refuses a green module suite for a required integration path', () => {
+    const input = provedFixture(1);
+    const accepted = projectAcceptanceBarContractSnapshot(input);
+    expect(accepted.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(evaluateAcceptanceBarLifecycle(accepted, 'ship').satisfied).toBe(true);
+    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), testLayer: 'unit' };
+    const blocked = projectAcceptanceBarContractSnapshot(input);
+    expect(blocked.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('correct-layer');
+    expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it.each([
+    ['unreachable', { pathReachable: false }], ['skipped', { skipped: true }],
+    ['failed', { outcome: 'failed' }], ['self-oracle', { oracleIndependent: false }],
+  ])('refuses %s proof even when the independent rating claims success', (_name, patch) => {
+    const input = provedFixture(1);
+    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), ...patch };
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.grading.state).toBe('pass');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it('does not treat absent freshness comparisons as current proof', () => {
+    const input = provedFixture(1);
+    input.evidence.rows[0]!.currentness = fixture(1).evidence.rows[0]!.currentness;
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('freshness');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
+  });
+
+  it('keeps failed history after a successful revision without borrowing its evidence plane', () => {
+    const input = provedFixture(1);
+    const historical = { ...input.evidence.rows[0]!, id: 99, evidenceRef: 'old-live-failure', specRevision: 0,
+      details: { evidencePlane: 'live', adequacy: { outcome: 'failed' } } };
+    input.evidence.rows.push(historical);
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.evidenceRefs).toContain('old-live-failure');
+    expect(snapshot.bars[0]!.proof.evidencePlanes).toEqual(['tree']);
+    expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(snapshot.bars[0]!.proof.staleEvidence).toBe(1);
   });
 
   it('fails source completeness when BAR meaning no longer matches the server hash', () => {

@@ -1,5 +1,6 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
@@ -18,6 +19,18 @@ export const SPEC_EVIDENCE_KINDS = [
   'operational',
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
+
+const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
+/** Shared wire contract for an explicit comparison with currently measured proof. */
+export const evidenceCurrentInputSchema = z.object({
+  evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
+  evidenceRef: z.string().trim().min(1).max(2000),
+  sourceFingerprint: evidenceFingerprintSchema,
+  testFingerprint: evidenceFingerprintSchema.nullable().optional(),
+  fixtureFingerprint: evidenceFingerprintSchema.nullable().optional(),
+  rubricFingerprint: evidenceFingerprintSchema.nullable().optional(),
+  environmentFingerprint: evidenceFingerprintSchema.nullable().optional(),
+});
 
 export interface EvidenceFingerprints {
   sourceFingerprint: string;

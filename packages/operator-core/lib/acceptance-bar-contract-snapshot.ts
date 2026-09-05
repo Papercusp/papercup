@@ -18,7 +18,8 @@ import {
   type RubricCriterion,
 } from './rubrics';
 import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
-import { listSpecEvidence } from './agent-tools/plans/spec-evidence-store';
+import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
+import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
@@ -95,6 +96,8 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_check_missing'
   | 'bar_snapshot_check_invalid'
   | 'bar_snapshot_proof_uncertain'
+  | 'bar_snapshot_proof_depth_missing'
+  | 'bar_snapshot_proof_inadequate'
   | 'bar_snapshot_evidence_plane_unmet';
 
 export interface BoundedAcceptanceBarRows<T> {
@@ -180,6 +183,7 @@ export interface AcceptanceBarTrace {
   mandatory: boolean | null;
   requiredScope: string[];
   evidencePlane: 'tree' | 'deployed' | 'live' | null;
+  requiredTestLayers?: string[];
   passRatings: string[];
   coversBarKeys: string[];
   provenance: RubricCriterion['barProvenance'] | null;
@@ -211,6 +215,10 @@ export interface AcceptanceBarTrace {
     uncertainEvidence: number;
     /** Explicit planes recorded by evidence details, when producers supplied one. */
     evidencePlanes: string[];
+    adequacy?: {
+      state: 'pass' | 'fail' | 'unknown' | 'undeclared';
+      checks: Array<{ specId: string; revision: number; verdict: 'pass' | 'fail' | 'unknown'; wouldBlock: string[]; evidenceRefs: string[] }>;
+    };
   };
   grading: {
     state: 'pass' | 'not-pass' | 'stale' | 'missing' | 'truncated';
@@ -303,6 +311,7 @@ export interface AcceptanceBarSnapshotDeps {
   ) => Promise<BoundedAcceptanceBarRows<AcceptanceBarWorkContractSource>>;
   readEvidence: (
     plan: AcceptanceBarSubjectPlanSource,
+    current?: EvidenceCurrentInput[],
   ) => Promise<BoundedAcceptanceBarRows<AcceptanceBarEvidenceSource>>;
   readLineage: (plan: AcceptanceBarSubjectPlanSource) => Promise<AcceptanceBarLineageSource>;
   readScorecards: (rubric: Rubric) => Promise<BoundedAcceptanceBarRows<ScorecardRow>>;
@@ -439,6 +448,8 @@ function nextRepair(
     'bar_snapshot_work_contract_stale',
     'bar_snapshot_proof_missing',
     'bar_snapshot_proof_stale',
+    'bar_snapshot_proof_depth_missing',
+    'bar_snapshot_proof_inadequate',
     'bar_snapshot_grading_missing',
     'bar_snapshot_grading_stale',
     'bar_snapshot_grading_not_pass',
@@ -494,6 +505,8 @@ function nextRepair(
     bar_snapshot_check_missing: 'Add a runnable structured check or explicit manual instrument contract.',
     bar_snapshot_check_invalid: 'Repair the structured check or provide an explicit manual replication contract.',
     bar_snapshot_proof_uncertain: 'Re-bind evidence with complete currentness/fingerprint metadata.',
+    bar_snapshot_proof_depth_missing: 'Declare requiredTestLayers in the requirement Acceptance section through rubrics:amend.',
+    bar_snapshot_proof_inadequate: 'Run plans:evaluate-spec-test-adequacy for the mapped outcome with current fingerprints; fix every fail/unknown proof obligation before ship.',
     bar_snapshot_evidence_plane_unmet: "Record current evidence on the BAR's declared evidence plane.",
   };
   return { code, barKey: bar?.barKey ?? null, action: actions[code] };
@@ -734,10 +747,32 @@ export function projectAcceptanceBarContractSnapshot(
           clause.specId === row.specId &&
           row.specRevision === clause.revision &&
           row.currentRevision === clause.revision &&
-          row.specFingerprint === clause.contentHash,
+          row.specFingerprint === clause.contentHash &&
+          row.currentness.overall !== 'stale',
       ),
     );
     const staleEvidence = evidence.filter((row) => !currentEvidence.includes(row));
+    const requiredTestLayers = normalized(criterion.requiredTestLayers);
+    const planeOf = (row: AcceptanceBarEvidenceSource): string | undefined => {
+      const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+      return typeof plane === 'string' ? plane.trim().toLowerCase() : undefined;
+    };
+    // Only current proof on the promised plane can establish adequacy. Keep all
+    // historical rows for inspection; do not let a stale live row lend its plane
+    // to a current unit test. Unknown fingerprints remain unknown to the evaluator.
+    const proofCandidates = currentEvidence.filter((row) =>
+      criterion.evidencePlane === 'tree' || planeOf(row) === criterion.evidencePlane);
+    const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
+      ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
+    const adequacyChecks = requiredTestLayers.length === 0 ? [] : clauses.map((clause) => {
+      const result = evaluateSpecTestAdequacy({ clause: { ...clause, requiredTestLayers },
+        evidence: proofCandidates, classRef });
+      return { specId: clause.specId, revision: clause.revision, verdict: result.verdict,
+        wouldBlock: result.wouldBlock, evidenceRefs: result.evidenceRefs };
+    });
+    const adequacyState = requiredTestLayers.length === 0 ? 'undeclared' as const
+      : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
+        : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
@@ -780,7 +815,8 @@ export function projectAcceptanceBarContractSnapshot(
           clause.sourceBar?.barSetHash !== plan?.barSetHash ||
           clause.sourceBar?.rubricSlug !== rubric?.rubricId ||
           clause.sourceBar?.rubricRevision !== rubricRevision ||
-          clause.sourceBar?.evidencePlane !== criterion.evidencePlane,
+          clause.sourceBar?.evidencePlane !== criterion.evidencePlane ||
+          JSON.stringify(normalized(clause.requiredTestLayers)) !== JSON.stringify(requiredTestLayers),
       )
     )
       addCode('bar_snapshot_projection_stale');
@@ -789,6 +825,10 @@ export function projectAcceptanceBarContractSnapshot(
     if (workContractState === 'stale') addCode('bar_snapshot_work_contract_stale');
     if (proofState === 'missing') addCode('bar_snapshot_proof_missing');
     if (proofState === 'stale' || proofState === 'truncated') addCode('bar_snapshot_proof_stale');
+    if (criterion.role === 'outcome') {
+      if (adequacyState === 'undeclared') addCode('bar_snapshot_proof_depth_missing');
+      else if (adequacyState !== 'pass') addCode('bar_snapshot_proof_inadequate');
+    }
     if (gradingState === 'missing' || gradingState === 'truncated') addCode('bar_snapshot_grading_missing');
     if (gradingState === 'stale') addCode('bar_snapshot_grading_stale');
     if (gradingState === 'not-pass') addCode('bar_snapshot_grading_not_pass');
@@ -806,6 +846,7 @@ export function projectAcceptanceBarContractSnapshot(
       mandatory: criterion.mandatory ?? null,
       requiredScope: normalized(criterion.requiredScope),
       evidencePlane: criterion.evidencePlane ?? null,
+      requiredTestLayers,
       passRatings: normalized(criterion.passRatings),
       coversBarKeys: normalized(criterion.coversBarKeys),
       provenance: criterion.barProvenance ?? null,
@@ -817,6 +858,7 @@ export function projectAcceptanceBarContractSnapshot(
         staleEvidence: staleEvidence.length,
         kinds: normalized(evidence.map((row) => row.evidenceKind)),
         evidenceRefs: normalized(evidence.map((row) => row.evidenceRef)),
+        adequacy: { state: adequacyState, checks: adequacyChecks },
         // WI-2146375: `unknown` is what the classifier returns when the READER supplied no
         // current-fingerprint input, not a property of the evidence. `source_fingerprint` is
         // NOT NULL, and `defaultReadEvidence` passes no `current`, so counting bare `unknown`
@@ -836,7 +878,7 @@ export function projectAcceptanceBarContractSnapshot(
           );
         }).length,
         evidencePlanes: normalized(
-          evidence.flatMap((row) => {
+          currentEvidence.flatMap((row) => {
             const details =
               row.details && typeof row.details === 'object' ? (row.details as Record<string, unknown>) : {};
             const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
@@ -1158,10 +1200,12 @@ async function defaultReadWorkContracts(
 
 async function defaultReadEvidence(
   plan: AcceptanceBarSubjectPlanSource,
+  current?: EvidenceCurrentInput[],
 ): Promise<BoundedAcceptanceBarRows<AcceptanceBarEvidenceSource>> {
   const rows = await listSpecEvidence({
     harnessSlug: plan.harnessSlug,
     planSlugs: [plan.planSlug],
+    current,
     limit: ACCEPTANCE_BAR_SNAPSHOT_EVIDENCE_LIMIT + 1,
   });
   return bounded(rows, ACCEPTANCE_BAR_SNAPSHOT_EVIDENCE_LIMIT);
@@ -1267,6 +1311,7 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
 export async function readAcceptanceBarContractSnapshot(
   planSlug: string,
   deps: Partial<AcceptanceBarSnapshotDeps> = {},
+  options: { current?: EvidenceCurrentInput[] } = {},
 ): Promise<AcceptanceBarContractSnapshot> {
   const d: AcceptanceBarSnapshotDeps = { ...DEFAULT_DEPS, ...deps };
   const failures: Partial<Record<AcceptanceBarSnapshotSource, string>> = {};
@@ -1303,7 +1348,7 @@ export async function readAcceptanceBarContractSnapshot(
       () => (plan ? d.readWorkContracts(plan) : Promise.resolve(emptyContracts)),
       emptyContracts,
     ),
-    captured('evidence', () => (plan ? d.readEvidence(plan) : Promise.resolve(emptyEvidence)), emptyEvidence),
+    captured('evidence', () => (plan ? d.readEvidence(plan, options.current) : Promise.resolve(emptyEvidence)), emptyEvidence),
     captured('lineage', () => (plan ? d.readLineage(plan) : Promise.resolve(emptyLineage)), emptyLineage),
     captured('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
     captured(
