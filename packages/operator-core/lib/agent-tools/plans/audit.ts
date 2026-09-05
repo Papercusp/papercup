@@ -216,6 +216,11 @@ export default defineTool({
       auditSeq: z.number().int().nonnegative().optional(),
       auditedPlanRevision: z.unknown().optional(),
       mappings: z.unknown().optional(),
+      // `returns` promises barSeed on the activation envelope (the active rubric
+      // revision, barSetHash, BAR count, projection-edge count). Declare it here so
+      // that promise is backed by the registered schema rather than by prose —
+      // guidance-output-schema-live-guard fails a promised-but-undeclared field.
+      barSeed: z.unknown().optional(),
       sourceRefsResolved: z.number().int().nonnegative().optional(),
       slug: z.string().optional(),
       itemsAuditedThisPass: z.number().int().nonnegative().optional(),
