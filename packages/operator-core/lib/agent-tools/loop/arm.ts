@@ -38,6 +38,10 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
 import {
+  resolveBlockedSince,
+  type LoopBlockedOnRecord,
+} from '../../harness/routines/loop-blocker-liveness';
+import {
   claimWorkItem,
   classifyClaimFailure,
   getWorkItem,
@@ -546,6 +550,23 @@ export default defineTool({
           .optional()
           .describe(
             "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. Omit it and the interval is CAPPED to 15min.",
+          ),
+        // EI-21526226279199560 — the same `kind`/`ref` vocabulary coord's blockedOn uses
+        // (D-003), deliberately NOT a second spelling of one concept. Prose cannot be
+        // resolved; a ref can, which is what lets each wake re-check the blocker instead
+        // of re-reading a frozen sentence.
+        kind: z
+          .enum(['process', 'event', 'work-item', 'agent', 'owner', 'other'])
+          .optional()
+          .describe(
+            "What KIND of thing you are blocked on — same vocabulary as coord's blockedOn. With kind:'agent' + `ref`, every wake re-checks that agent's sessionState and tells you when it has DIED, so you stop waiting on a corpse.",
+          ),
+        ref: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            "The blocker's identity in its own namespace: an ownerId for kind:'agent', a WI-/EI- id for 'work-item', an events:catalog key for 'event'.",
           ),
         }),
       )
@@ -1372,12 +1393,35 @@ export default defineTool({
       }
     }
 
+    // EI-21526226279199560 — persist the declared blocker STRUCTURALLY, alongside the
+    // frozen premise already prepended to `kickoff` above. The premise is what the wake
+    // re-READS; this record is what the wake can re-RESOLVE, which is the difference
+    // between re-delivering a stale sentence and noticing the blocker died an hour ago.
+    const blockedOnRecord: LoopBlockedOnRecord | null = args.blockedOn
+      ? {
+          reason: args.blockedOn.reason,
+          kind: args.blockedOn.kind ?? null,
+          ref: args.blockedOn.ref ?? null,
+          event: args.blockedOn.event ?? null,
+          since: resolveBlockedSince(
+            {
+              reason: args.blockedOn.reason,
+              kind: args.blockedOn.kind ?? null,
+              ref: args.blockedOn.ref ?? null,
+            },
+            prior?.blockedOn ?? null,
+            new Date().toISOString(),
+          ),
+        }
+      : null;
+
     const loop = await materializeLoop({
       workspaceId,
       harnessSlug: harness,
       ownerId,
       intervalSec: intervalSec,
       kickoff,
+      ...(blockedOnRecord ? { blockedOn: blockedOnRecord } : {}),
       // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
       // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
       // reaches a successor (via loop:status and the carry document).
