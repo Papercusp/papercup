@@ -929,6 +929,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         [join(fixtureRoot, 'unsigned-evidence.json'), towerIdentity, vmIdentity],
         {
           encoding: 'utf8',
+          timeout: 120_000,
+          killSignal: 'SIGKILL',
           env: {
             ...process.env,
             HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
