@@ -291,6 +291,18 @@ export interface EvidenceCurrentness {
   };
   staleReasons: string[];
   unknownReasons: string[];
+  /**
+   * Whether the CALLER actually supplied a current-fingerprint input for this row.
+   *
+   * WHY THIS EXISTS. `unknown` is produced by `compareFingerprint(stored, undefined)`,
+   * i.e. by the caller not asking — not by anything uncertain about the evidence. A
+   * reader that supplies no `current` therefore gets `unknown` on every row with a
+   * stored fingerprint, and `source_fingerprint` is NOT NULL, so that is EVERY row.
+   * Consumers which gate on uncertainty must distinguish "asked and got a gap" from
+   * "never asked"; without this flag the two are indistinguishable and a gate reading
+   * `unknown` as doubt becomes a constant refusal (WI-2146375).
+   */
+  comparisonSupplied: boolean;
 }
 
 interface CurrentnessRow {
@@ -339,6 +351,7 @@ export function classifySpecEvidenceCurrentness(
     dimensions,
     staleReasons,
     unknownReasons,
+    comparisonSupplied: current != null,
   };
 }
 

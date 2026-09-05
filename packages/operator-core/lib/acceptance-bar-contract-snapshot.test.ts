@@ -200,6 +200,9 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
           },
           staleReasons: [],
           unknownReasons: ['source-current-fingerprint-not-supplied'],
+          // The default snapshot reader supplies no `current` input, so this row's
+          // `unknown` means "nobody asked", not "the proof is doubtful" (WI-2146375).
+          comparisonSupplied: false,
         },
       }) as AcceptanceBarEvidenceSource,
   );
@@ -430,5 +433,31 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     expect(diff.requiresAmendment).toBe(true);
     expect(diff.changes[0]?.kinds).toEqual(['bar-meaning', 'evidence-plane', 'mapping', 'provenance-cohort']);
     expect(diff.contentHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  // WI-2146375. The acceptance-BAR ship gate reads `bar.proof.uncertainEvidence` and, when it is
+  // non-zero, raises `bar_snapshot_proof_uncertain` — which `phaseSnapshotCodes` returns at phase
+  // 'ship', so it BLOCKS. The count used to include rows whose currentness was `unknown` purely
+  // because the reader supplied no comparison input. `defaultReadEvidence` never supplies one and
+  // `source_fingerprint` is NOT NULL, so every bound row counted, unconditionally — and since zero
+  // rows already raises `bar_snapshot_proof_missing`, the proof leg had NO satisfiable state and no
+  // enrolled plan could ship. Measured both ways on :3170 before the fix.
+  it('does not call proof uncertain when the reader never asked for a currentness comparison', () => {
+    const input = fixture(1);
+    const evidence = input.evidence.rows[0]!;
+    expect(evidence.currentness.comparisonSupplied).toBe(false);
+    expect(evidence.currentness.overall).toBe('unknown');
+
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.uncertainEvidence).toBe(0);
+  });
+
+  it('DOES call proof uncertain when a comparison was supplied and came back unknown', () => {
+    const input = fixture(1);
+    // The control that keeps the test above honest: flipping ONLY `comparisonSupplied` must
+    // restore the count. If this ever passes alongside the assertion above, the count is
+    // ignoring the dimensions rather than ignoring un-asked questions, and the check is vacuous.
+    input.evidence.rows[0]!.currentness.comparisonSupplied = true;
+
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.uncertainEvidence).toBe(1);
   });
 });

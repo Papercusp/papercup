@@ -817,12 +817,22 @@ export function projectAcceptanceBarContractSnapshot(
         staleEvidence: staleEvidence.length,
         kinds: normalized(evidence.map((row) => row.evidenceKind)),
         evidenceRefs: normalized(evidence.map((row) => row.evidenceRef)),
+        // WI-2146375: `unknown` is what the classifier returns when the READER supplied no
+        // current-fingerprint input, not a property of the evidence. `source_fingerprint` is
+        // NOT NULL, and `defaultReadEvidence` passes no `current`, so counting bare `unknown`
+        // here made `bar_snapshot_proof_uncertain` fire on EVERY bound row — which, since the
+        // empty-evidence case already raises `bar_snapshot_proof_missing`, left the ship gate
+        // with no satisfiable state at all. Only a reader that actually ASKED can be uncertain.
         uncertainEvidence: evidence.filter((row) => {
-          const currentness = (row as { currentness?: { overall?: string; dimensions?: Record<string, string> } })
-            .currentness;
+          const currentness = (
+            row as {
+              currentness?: { overall?: string; dimensions?: Record<string, string>; comparisonSupplied?: boolean };
+            }
+          ).currentness;
+          if (currentness?.comparisonSupplied !== true) return false;
           return (
-            currentness?.overall === 'unknown' ||
-            Object.values(currentness?.dimensions ?? {}).some((value) => value === 'unknown')
+            currentness.overall === 'unknown' ||
+            Object.values(currentness.dimensions ?? {}).some((value) => value === 'unknown')
           );
         }).length,
         evidencePlanes: normalized(
