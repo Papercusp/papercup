@@ -310,6 +310,29 @@ export function assessSourceCoverage(
     };
   }
 
+  return assessSurfaceCoverage(source, surfaces, snapshot);
+}
+
+/**
+ * The surface-level half of {@link assessSourceCoverage}, for consumers that run a
+ * cosine query but are NOT a `SearchSource` — the work-item dupe guard, work-item
+ * similarity, plan semantic-dedup, memory recall (WI-9393 / D-018).
+ *
+ * Those consumers must NOT be added to `SEARCH_SOURCE_SURFACES`: that map is asserted
+ * exhaustive in both directions against `SEARCH_SOURCES` (coverage-gate.test.ts), so a
+ * non-search key there would fail the suite — and a second parallel map would be the
+ * fork this repo's reuse-first rule exists to prevent. They pass their own surfaces here
+ * instead, and inherit the identical verdict logic, including the binding D-018
+ * constraint that absence of evidence renders `unknown` and never `healthy`.
+ *
+ * `source` is the LABEL this consumer is reported under; it appears in the notes and in
+ * the returned assessment's `source` field.
+ */
+export function assessSurfaceCoverage(
+  source: string,
+  surfaces: readonly string[],
+  snapshot: CoverageSnapshot,
+): SourceCoverageAssessment {
   if (surfaces.length === 0) {
     return {
       source,
