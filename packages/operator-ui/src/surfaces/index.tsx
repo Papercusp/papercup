@@ -43,6 +43,13 @@
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 import '../../../../apps/operator/app/harness/harness.css';
+// The token → grid palette bridge. Every grid-bearing surface below paints
+// from grid-core's live palette, which is a neutral DARK set until this runs
+// (portal-parity D-008 / P-012). The operator's main.tsx imports the same
+// module; a host that mounts these surfaces gets it from here, by construction.
+import '../grid-theme-bridge';
+import { POT_BAR_TAB_IDS, potBarModeForTab } from '../../../../apps/operator-vite/src/components/adv/adv-pot-bar-tabs';
+import type { AdvTabId } from '../../../../apps/operator-vite/src/components/adv/AdvShell';
 
 /** The portal rail kinds that resolve to an operator surface. */
 export type OperatorSurfaceKind =
@@ -115,4 +122,46 @@ export const OPERATOR_SURFACES: Record<
 /** Whether a portal rail kind has a native operator surface behind it. */
 export function isOperatorSurfaceKind(kind: string): kind is OperatorSurfaceKind {
   return kind in OPERATOR_SURFACES;
+}
+
+/**
+ * The POT SCOPE a host must put around the /adv tab bodies (portal-parity
+ * D-008 / P-006).
+ *
+ * In the operator, AdvShell provides `useAdvScope()` and each pot-scoped tab
+ * body renders AdvPotBar (the pot selector + the "Create pot" / Share
+ * affordances) above itself. A host that mounts a tab body WITHOUT that shell
+ * gets the context default — `ready:false`, `hive:''` — so LearningTab's
+ * hive-aware reads never fire (no retained learnings) and HarnessesWorkspace
+ * asks the reader to pick a pot "from the selector above" with no selector
+ * above. These two are the shell's scope, extracted so the host can mount them
+ * alone: `<Provider><PotBar withStatus={…}/><Surface/></Provider>`.
+ */
+export const OPERATOR_POT_SCOPE = {
+  Provider: lazy(async () => {
+    const mod = await import('../../../../apps/operator-vite/src/components/adv/AdvShell');
+    return { default: mod.AdvScopeProvider };
+  }),
+  PotBar: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvPotBar')),
+} as const;
+
+/**
+ * Which portal surface kinds are /adv tab bodies, and which /adv tab each one
+ * is — the operator's own `POT_BAR_TAB_IDS` then decides whether the pot bar
+ * shows, so this table cannot disagree with the operator about scope.
+ */
+const SURFACE_KIND_TO_ADV_TAB: Partial<Record<OperatorSurfaceKind, AdvTabId>> = {
+  overview: 'overview',
+  hud: 'hud',
+  work: 'harnesses',
+  learning: 'learning',
+  workflows: 'workflows',
+  brainstorm: 'brainstorm',
+};
+
+/** The pot bar mode for a surface kind — `{ show:false }` for every kind that is not a pot-scoped /adv tab. */
+export function potScopeForSurface(kind: string): { show: boolean; withStatus: boolean } {
+  const tab = SURFACE_KIND_TO_ADV_TAB[kind as OperatorSurfaceKind];
+  if (!tab || !POT_BAR_TAB_IDS.has(tab)) return { show: false, withStatus: false };
+  return potBarModeForTab(tab);
 }

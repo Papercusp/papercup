@@ -67,3 +67,18 @@ export declare const OPERATOR_SURFACES: Record<
 
 /** Narrow an arbitrary rail kind to one that has a surface behind it. */
 export declare function isOperatorSurfaceKind(kind: string): kind is OperatorSurfaceKind;
+
+/**
+ * The pot scope a host wraps the /adv tab bodies in (portal-parity D-008 /
+ * P-006): `Provider` supplies `useAdvScope()` and mounts the create/share
+ * modals; `PotBar` is the operator's pot selector row. Mount as
+ * `<Provider><PotBar withStatus={…}/><Surface/></Provider>` for every kind
+ * `potScopeForSurface` reports `show:true`.
+ */
+export declare const OPERATOR_POT_SCOPE: {
+  readonly Provider: LazyExoticComponent<ComponentType<{ children?: import('react').ReactNode }>>;
+  readonly PotBar: LazyExoticComponent<ComponentType<{ withStatus?: boolean }>>;
+};
+
+/** Whether a surface kind is a pot-scoped /adv tab body, and whether its pot bar carries the status pills. */
+export declare function potScopeForSurface(kind: string): { show: boolean; withStatus: boolean };

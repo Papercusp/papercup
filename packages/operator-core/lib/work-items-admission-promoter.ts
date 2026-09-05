@@ -21,6 +21,7 @@ import { selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
+import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
 
 export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
@@ -28,6 +29,8 @@ export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
 export const PROMOTER_ACTOR = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
 export const FAIL_OPEN_ACTOR = `system:${WORK_ITEM_ADMISSION_FAIL_OPEN}`;
 export const DEFAULT_PROMOTER_BATCH_SIZE = 20;
+/** Process-local throttle for the work-scope `held` ledger line (one per harness). */
+const scopeHeldHarnessesNoted = new Set<string>();
 /**
  * EI-21973318733042066: the cadence now lives in work-items-admission.ts beside the
  * admission predicate itself, so the CLAIM path can state the bound a pending row clears
@@ -1968,6 +1971,36 @@ export async function runWorkItemAdmissionPromoter(opts: {
   // or the ledger can name a model the run never used. Mirrors the sibling
   // admission paths (bulk-dedup, daily-digest) so a per-run override reaches all three.
   const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
+  // workspace-work-scope-policy-2026-09-04 P-006: an out-of-scope harness is never
+  // PROMOTED — its pending rows stay `pending` (visibly not admitted, never deleted) until
+  // the policy widens. Recorded on the policy ledger once per harness per process so a
+  // 25-harness tick does not flood the ring; with no policy this is one cached read.
+  if (!isHarnessInScope(opts.harnessSlug)) {
+    if (!scopeHeldHarnessesNoted.has(opts.harnessSlug)) {
+      scopeHeldHarnessesNoted.add(opts.harnessSlug);
+      await recordWorkScopeDecision({
+        site: 'admission-promoter',
+        verdict: 'held',
+        harness: opts.harnessSlug,
+        actor: PROMOTER_ACTOR,
+        note: 'harness outside the workspace work-scope policy — pending items stay pending (not promoted)',
+      });
+    }
+    return {
+      runId,
+      batchSize,
+      flaggedPairs: 0,
+      promoted: 0,
+      merged: 0,
+      held: 0,
+      modelCalled: false,
+      tokensIn: 0,
+      tokensOut: 0,
+      censusBefore: 0,
+      censusAfter: 0,
+      writerCoverageGap: [],
+    };
+  }
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
@@ -2199,6 +2232,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'fail-open' });
   try {
     const cutoffMs = startedAt - 2 * tickMinutes * 60_000;
+    // workspace-work-scope-policy-2026-09-04 P-006: the workspace-wide fail-open never
+    // admits an out-of-scope harness's rows either — they stay `pending`, reversible the
+    // moment the policy widens. No policy ⇒ no predicate (byte-identical SQL).
+    const scopeTerms = workScopeSqlTerms();
+    const scopePredicate = scopeTerms
+      ? sql`AND (harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
+      : sql``;
     // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
     // inside one tenant, never across tenants.
     const rows = await sql<Array<{ feature_id: string; harness_slug: string }>>`
@@ -2235,6 +2275,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
              updated_ts = ${startedAt}
        WHERE workspace_id = ${opts.workspaceId}
          ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
+         ${scopePredicate}
          AND admission = 'pending'
          AND created_ts < ${cutoffMs}
        RETURNING feature_id, harness_slug`;

@@ -456,6 +456,251 @@ export function useAdvScope(): AdvScope {
 }
 
 /**
+ * The pot-scope MODEL: the two URL axes (`?slug=`, `?scope=`), the live harness
+ * registry, the once-per-mount persisted-selection restore, and the derived
+ * `AdvScope` every pot-aware tab reads through `useAdvScope()`.
+ *
+ * Extracted from AdvShell (portal-parity D-008 / P-006) so a SECOND host can
+ * provide the scope without the shell's tab strip: the cloud portal mounts the
+ * pot-scoped tab bodies (Overview, HUD, Work, Learning, Brainstorm) natively,
+ * each behind its own rail item, and had no AdvShell above them — so
+ * `useAdvScope()` returned the context DEFAULT (`ready:false`, `hive:''`),
+ * every `enabled: hiveReady` read in LearningTab stayed off (no retained
+ * learnings), and HarnessesWorkspace had no `?slug=` to open (empty Work tab).
+ * AdvShell calls this hook itself; `AdvScopeProvider` below is the shell-less
+ * form. ONE model, two hosts — never a copy.
+ */
+export function useAdvScopeModel() {
+  const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
+  // The Harnesses-tab member axis (`?harness=`). The shell WRITES it on an into-hive
+  // create (focus the new member in the rail, P-011 contract) and CLEARS it (→ null)
+  // whenever a hive is picked in the selector / keyboard switcher, so the Harnesses
+  // dock re-scopes to the picked hive instead of staying pinned to a drilled-into
+  // sub-hive (the stale-?harness bug). The tab owns READING it.
+  const [, setActiveHarness] = useQueryState('harness', parseAsString);
+  // P-015: scope axis. 'expanded' (default) means consumers UNION the
+  // selected slug + its sub-harnesses; 'self' narrows to just the picked
+  // slug; 'all' spans every harness in the workspace (the selector's
+  // "All harnesses" option). URL-round-tripped so the choice survives
+  // refresh + tab switches. Enum is shared so all readers agree.
+  const [scopeMode, setScopeMode] = useQueryState(
+    'scope',
+    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
+  );
+  // LIVE harness registry list (harnessProjects.lite). Replaces the old one-shot
+  // /api/harness/projects/lite fetch (data-sync-push P-010): the resolver is
+  // invalidated from the registry write seam, so creates/deletes/renames/forks
+  // from ANY operator process live-update the selector (EI-206). `invalidate()`
+  // still forces an immediate refetch after a local create/publish so the
+  // just-written state shows without waiting for the push.
+  const {
+    data: projectsData,
+    error: projectsError,
+    invalidate: refreshProjects,
+  } = useSyncQuery<HarnessProjectLite>({
+    queryName: 'harnessProjects.lite',
+    args: { includeHiveHomes: true },
+    staleTime: 60_000,
+  });
+  const projects = projectsData ?? [];
+  const projectLoadError = projectsError ? String(projectsError.message ?? projectsError) : null;
+
+  // The persisted-selection restore runs at most once per mount. Setting the
+  // slug re-renders (activeSlug changes), but the ref keeps the effect from
+  // re-restoring (or fighting a user's later pick / a later live push).
+  const restoredSelectionRef = useRef(false);
+
+  useEffect(() => {
+    if (restoredSelectionRef.current || projects.length === 0) return;
+    restoredSelectionRef.current = true;
+    let cancelled = false;
+    // Restore the persisted harness selection so the selector + tab strip
+    // inherit the last harness the user picked (persisted to localStorage
+    // on every selector change). resolveAdvHarnessSelection encodes the
+    // precedence: explicit ?slug= wins, else a persisted concrete harness
+    // (→ scope=expanded, full tab strip), else All-harnesses.
+    const persisted =
+      typeof window !== 'undefined'
+        ? window.localStorage.getItem(wsLocalKey('harness.activeProject'))
+        : null;
+    const decision = resolveAdvHarnessSelection({
+      projectSlugs: projects.map((p) => p.slug),
+      urlSlug: activeSlug,
+      urlScope: scopeMode,
+      persisted,
+    });
+    // Apply the two writes SEQUENTIALLY (await between them). The custom
+    // nuqs adapter merges each write over the live `window.location.search`,
+    // so two same-tick writes both snapshot the pre-write URL and the later
+    // flush clobbers the earlier — a concurrent slug+scope restore kept only
+    // the slug and left a stale `scope=all`, so the strip stayed collapsed.
+    // Awaiting serializes them; scope is written last so it's authoritative
+    // for allMode.
+    void (async () => {
+      if (decision.setSlug) await setActiveSlug(decision.setSlug);
+      if (cancelled) return;
+      if (decision.setScope) await setScopeMode(decision.setScope);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects.length]);
+
+  // "All harnesses" mode: list views (Plans, Sessions) span the whole
+  // workspace; the single-pot widgets (Share, now-running, Discord — all in
+  // AdvPotBar now) have no single target, so they blank out.
+  const allMode = scopeMode === 'all';
+  const singleSlug = allMode ? null : activeSlug;
+  const activeProject = singleSlug ? projects.find((p) => p.slug === singleSlug) : undefined;
+  // Sharing happens at the HIVE level (comb-retire-per-harness-sharing-2026-06-11):
+  // the Share affordance (in AdvPotBar) publishes the active hive to the P2P
+  // directory; the host only mounts the modal it opens, so it needs to know
+  // whether the active pot IS a hive.
+  const activeSlugIsHive = activeProject?.harness_kind === 'hive';
+
+  // The inherited pot scope for every tab (useAdvScope above). A selected
+  // member harness resolves to its hive home via the lite payload's
+  // authoritative hive_slug; a selected hive is itself; All Pots ⇒ ''.
+  const advScope = useMemo<AdvScope>(
+    () => ({
+      allMode,
+      scopeMode,
+      slug: singleSlug,
+      hive: !singleSlug ? '' : activeSlugIsHive ? singleSlug : activeProject?.hive_slug || singleSlug,
+      harnessSlugs: resolveAdvScopeHarnessSlugs(scopeMode, singleSlug, projects),
+      ready: allMode || projects.length > 0 || Boolean(projectLoadError),
+    }),
+    [allMode, scopeMode, singleSlug, activeSlugIsHive, activeProject?.hive_slug, projects, projectLoadError],
+  );
+
+  return {
+    activeSlug,
+    setActiveSlug,
+    setActiveHarness,
+    scopeMode,
+    setScopeMode,
+    projects,
+    projectLoadError,
+    refreshProjects,
+    allMode,
+    singleSlug,
+    activeProject,
+    activeSlugIsHive,
+    advScope,
+  };
+}
+
+/**
+ * The two URL-mounted pot modals — create (`?create`) and share (`?share`).
+ * AdvPotBar WRITES those params; whichever host provides the scope must mount
+ * what they open, or the bar's buttons are dead. Rendered by AdvShell and by
+ * AdvScopeProvider alike.
+ */
+export function AdvPotModals({
+  allMode,
+  activeSlug,
+  activeIsHive,
+  refreshProjects,
+}: {
+  allMode: boolean;
+  activeSlug: string | null;
+  activeIsHive: boolean;
+  refreshProjects: () => void;
+}) {
+  // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
+  // survives refresh and is agent-controllable; `refreshProjects()` re-queries
+  // the registry once a harness is created so the selector picks it up.
+  const [createOpen, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
+  // Share the currently-selected harness. URL-backed so it survives refresh
+  // and is agent-controllable; only meaningful when a slug is active.
+  const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
+  return (
+    <>
+      <CreateHarnessPicker
+        open={createOpen}
+        // Opening only: the picker CLOSES itself via a single atomic useQueryStates
+        // write (clearing ?create + ?picker together) — writing ?create here too
+        // would be a second same-tick write the custom adapter clobbers. The host
+        // re-reads ?create and re-renders shut.
+        onOpenChange={(o: boolean) => void setCreateOpen(o)}
+        // EI-319: the removed bottom-right FAB was the only opener that passed a
+        // hive scope, so the header "New" button (now the primary opener) lost
+        // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
+        // hive — mirrors how the share modal below already takes activeSlug.
+        // all-mode has no scope ⇒ null ⇒ New-hive/Standalone only.
+        //
+        // Gate on activeIsHive, NOT just a non-null activeSlug: the `?slug=` URL
+        // param outlives the entity, so a removed hive (slug no longer in
+        // `projects`) or a non-hive active harness would still enable the "Add to
+        // <X>" fork. Submitting that posts `intoHive=<X>`, which the backend
+        // rejects as `hive_not_found` ("The selected hive wasn't found — it may
+        // have been removed"), blocking the headline new-hive create from a stale
+        // scope. activeIsHive already requires activeProject to exist AND be
+        // kind:'hive', exactly the backend's into-hive precondition.
+        hiveScope={activeIsHive ? activeSlug : null}
+        onCreated={(slug: string, opts?: { hive?: string }) => {
+          // SIDE-EFFECTS ONLY. The picker writes the focus params (?slug / ?harness)
+          // in the SAME atomic useQueryStates write as the modal close, so the
+          // custom nuqs adapter can't clobber one of two same-tick writes (that
+          // dropped ?create=false → stuck-open modal). Doing setActiveSlug/Harness
+          // here would re-introduce that race, so we keep only non-URL effects.
+          refreshProjects();
+          const intoActiveHive = opts?.hive && opts.hive === activeSlug;
+          if (!intoActiveHive && typeof window !== 'undefined') {
+            window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
+          }
+        }}
+      />
+      {shareOpen && !allMode && activeSlug && activeIsHive && (
+        <Modal
+          open={shareOpen}
+          onOpenChange={(v) => {
+            if (!v) {
+              void setShareOpen(false);
+              // Re-query projects/lite so a just-completed publish is reflected.
+              refreshProjects();
+            }
+          }}
+          title={`Share ${activeSlug}`}
+          contentStyle={{
+            width: 'min(480px, 96vw)',
+            background: 'var(--bg-popover, #0d1829)',
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            padding: 24,
+            color: 'var(--fg, #e8e8ea)',
+          }}
+        >
+          <PublishPotCard potSlug={activeSlug} />
+        </Modal>
+      )}
+    </>
+  );
+}
+
+/**
+ * The shell-less pot scope: provides `useAdvScope()` to `children` and mounts
+ * the pot modals, with no tab strip. This is what a host that already has its
+ * own navigation (the cloud portal's rail) wraps a pot-scoped tab body in —
+ * typically `<AdvScopeProvider><AdvPotBar/><LearningTab/></AdvScopeProvider>`.
+ */
+export function AdvScopeProvider({ children }: { children: React.ReactNode }) {
+  const { advScope, allMode, activeSlug, activeSlugIsHive, refreshProjects } = useAdvScopeModel();
+  return (
+    <AdvScopeContext.Provider value={advScope}>
+      {children}
+      <AdvPotModals
+        allMode={allMode}
+        activeSlug={activeSlug}
+        activeIsHive={activeSlugIsHive}
+        refreshProjects={refreshProjects}
+      />
+    </AdvScopeContext.Provider>
+  );
+}
+
+/**
  * The /adv shell. Chrome = the tab strip (+ the two URL-mounted modals); the tab
  * bodies — and, on the pot-scoped ones, the pot bar — are `children`.
  *
@@ -542,46 +787,25 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     if (!list) return;
     list.scrollBy({ left: dir * Math.max(140, list.clientWidth * 0.7), behavior: 'smooth' });
   }, []);
-  const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
-  // The Harnesses-tab member axis (`?harness=`). The shell WRITES it on an into-hive
-  // create (focus the new member in the rail, P-011 contract) and CLEARS it (→ null)
-  // whenever a hive is picked in the selector / keyboard switcher, so the Harnesses
-  // dock re-scopes to the picked hive instead of staying pinned to a drilled-into
-  // sub-hive (the stale-?harness bug). The tab owns READING it.
-  const [, setActiveHarness] = useQueryState('harness', parseAsString);
-  // P-015: scope axis. 'expanded' (default) means consumers UNION the
-  // selected slug + its sub-harnesses; 'self' narrows to just the picked
-  // slug; 'all' spans every harness in the workspace (the selector's
-  // "All harnesses" option). URL-round-tripped so the choice survives
-  // refresh + tab switches. Enum is shared so all readers agree.
-  const [scopeMode, setScopeMode] = useQueryState(
-    'scope',
-    parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
-  );
-  // LIVE harness registry list (harnessProjects.lite). Replaces the old one-shot
-  // /api/harness/projects/lite fetch (data-sync-push P-010): the resolver is
-  // invalidated from the registry write seam, so creates/deletes/renames/forks
-  // from ANY operator process live-update the selector (EI-206). `invalidate()`
-  // still forces an immediate refetch after a local create/publish so the
-  // just-written state shows without waiting for the push.
+  // The pot scope — URL axes, live registry, persisted-selection restore and the
+  // derived AdvScope — is one model shared with AdvScopeProvider (which the cloud
+  // portal mounts INSTEAD of this shell; portal-parity D-008). See useAdvScopeModel.
   const {
-    data: projectsData,
-    error: projectsError,
-    invalidate: refreshProjects,
-  } = useSyncQuery<HarnessProjectLite>({
-    queryName: 'harnessProjects.lite',
-    args: { includeHiveHomes: true },
-    staleTime: 60_000,
-  });
-  const projects = projectsData ?? [];
-  const projectLoadError = projectsError ? String(projectsError.message ?? projectsError) : null;
-  // Create-harness flow. The dialog open-state is URL-backed (nuqs) so it
-  // survives refresh and is agent-controllable; `refreshProjects()` re-queries
-  // the registry once a harness is created so the selector picks it up.
-  const [createOpen, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
-  // Share the currently-selected harness. URL-backed so it survives refresh
-  // and is agent-controllable; only meaningful when a slug is active.
-  const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
+    activeSlug,
+    setActiveSlug,
+    setActiveHarness,
+    scopeMode,
+    setScopeMode,
+    projects,
+    projectLoadError,
+    refreshProjects,
+    allMode,
+    activeSlugIsHive: activeIsHive,
+    advScope,
+  } = useAdvScopeModel();
+  // The create dialog is URL-backed (`?create`, see AdvPotModals); the shell only
+  // needs the SETTER, for the Mod+Shift+N shortcut below.
+  const [, setCreateOpen] = useQueryState('create', parseAsBoolean.withDefault(false));
   // ── Tab fullscreen: off → window (maximize) → screen (OS fullscreen) ──────
   // See the ADV_MAX_LEVELS doc comment for the shape. URL-backed so it survives
   // a refresh and is agent-drivable; 'off' is the default so nuqs clears ?max=.
@@ -709,75 +933,6 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [maxLevel, applyMaxLevel]);
-
-  // The persisted-selection restore runs at most once per mount. Setting the
-  // slug re-renders (activeSlug changes), but the ref keeps the effect from
-  // re-restoring (or fighting a user's later pick / a later live push).
-  const restoredSelectionRef = useRef(false);
-
-  useEffect(() => {
-    if (restoredSelectionRef.current || projects.length === 0) return;
-    restoredSelectionRef.current = true;
-    let cancelled = false;
-    // Restore the persisted harness selection so the selector + tab strip
-    // inherit the last harness the user picked (persisted to localStorage
-    // on every selector change). resolveAdvHarnessSelection encodes the
-    // precedence: explicit ?slug= wins, else a persisted concrete harness
-    // (→ scope=expanded, full tab strip), else All-harnesses.
-    const persisted =
-      typeof window !== 'undefined'
-        ? window.localStorage.getItem(wsLocalKey('harness.activeProject'))
-        : null;
-    const decision = resolveAdvHarnessSelection({
-      projectSlugs: projects.map((p) => p.slug),
-      urlSlug: activeSlug,
-      urlScope: scopeMode,
-      persisted,
-    });
-    // Apply the two writes SEQUENTIALLY (await between them). The custom
-    // nuqs adapter merges each write over the live `window.location.search`,
-    // so two same-tick writes both snapshot the pre-write URL and the later
-    // flush clobbers the earlier — a concurrent slug+scope restore kept only
-    // the slug and left a stale `scope=all`, so the strip stayed collapsed.
-    // Awaiting serializes them; scope is written last so it's authoritative
-    // for allMode.
-    void (async () => {
-      if (decision.setSlug) await setActiveSlug(decision.setSlug);
-      if (cancelled) return;
-      if (decision.setScope) await setScopeMode(decision.setScope);
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects.length]);
-
-  // "All harnesses" mode: list views (Plans, Sessions) span the whole
-  // workspace; the single-pot widgets (Share, now-running, Discord — all in
-  // AdvPotBar now) have no single target, so they blank out.
-  const allMode = scopeMode === 'all';
-  const singleSlug = allMode ? null : activeSlug;
-  const activeProject = singleSlug ? projects.find((p) => p.slug === singleSlug) : undefined;
-  // Sharing happens at the HIVE level (comb-retire-per-harness-sharing-2026-06-11):
-  // the Share affordance (in AdvPotBar) publishes the active hive to the P2P
-  // directory; this shell only mounts the modal it opens, so it needs to know
-  // whether the active pot IS a hive.
-  const activeIsHive = activeProject?.harness_kind === 'hive';
-
-  // The inherited pot scope for every tab (useAdvScope above). A selected
-  // member harness resolves to its hive home via the lite payload's
-  // authoritative hive_slug; a selected hive is itself; All Pots ⇒ ''.
-  const advScope = useMemo<AdvScope>(
-    () => ({
-      allMode,
-      scopeMode,
-      slug: singleSlug,
-      hive: !singleSlug ? '' : activeIsHive ? singleSlug : activeProject?.hive_slug || singleSlug,
-      harnessSlugs: resolveAdvScopeHarnessSlugs(scopeMode, singleSlug, projects),
-      ready: allMode || projects.length > 0 || Boolean(projectLoadError),
-    }),
-    [allMode, scopeMode, singleSlug, activeIsHive, activeProject?.hive_slug, projects, projectLoadError],
-  );
 
   // (The Share-button → Shared-badge swap reads the active hive's directory
   // share-state; that lives with the button, in AdvPotBar.)
@@ -1069,64 +1224,12 @@ export default function AdvShell({ children }: { children: React.ReactNode }) {
         </Tabs.Root>
         </header>
       )}
-      <CreateHarnessPicker
-        open={createOpen}
-        // Opening only: the picker CLOSES itself via a single atomic useQueryStates
-        // write (clearing ?create + ?picker together) — writing ?create here too
-        // would be a second same-tick write the custom adapter clobbers. AdvShell
-        // re-reads ?create and re-renders shut.
-        onOpenChange={(o: boolean) => void setCreateOpen(o)}
-        // EI-319: the removed bottom-right FAB was the only opener that passed a
-        // hive scope, so the header "New" button (now the primary opener) lost
-        // the into-hive "Add to <hive>" mode. Restore it when scoped to a single
-        // hive — mirrors how the share modal below already takes activeSlug.
-        // all-mode has no scope ⇒ null ⇒ New-hive/Standalone only.
-        //
-        // Gate on activeIsHive, NOT just a non-null activeSlug: the `?slug=` URL
-        // param outlives the entity, so a removed hive (slug no longer in
-        // `projects`) or a non-hive active harness would still enable the "Add to
-        // <X>" fork. Submitting that posts `intoHive=<X>`, which the backend
-        // rejects as `hive_not_found` ("The selected hive wasn't found — it may
-        // have been removed"), blocking the headline new-hive create from a stale
-        // scope. activeIsHive already requires activeProject to exist AND be
-        // kind:'hive' (line ~318), exactly the backend's into-hive precondition.
-        hiveScope={activeIsHive ? activeSlug : null}
-        onCreated={(slug: string, opts?: { hive?: string }) => {
-          // SIDE-EFFECTS ONLY. The picker writes the focus params (?slug / ?harness)
-          // in the SAME atomic useQueryStates write as the modal close, so the
-          // custom nuqs adapter can't clobber one of two same-tick writes (that
-          // dropped ?create=false → stuck-open modal). Doing setActiveSlug/Harness
-          // here would re-introduce that race, so we keep only non-URL effects.
-          refreshProjects();
-          const intoActiveHive = opts?.hive && opts.hive === activeSlug;
-          if (!intoActiveHive && typeof window !== 'undefined') {
-            window.localStorage.setItem(wsLocalKey('harness.activeProject'), slug);
-          }
-        }}
+      <AdvPotModals
+        allMode={allMode}
+        activeSlug={activeSlug}
+        activeIsHive={activeIsHive}
+        refreshProjects={refreshProjects}
       />
-      {shareOpen && !allMode && activeSlug && activeIsHive && (
-        <Modal
-          open={shareOpen}
-          onOpenChange={(v) => {
-            if (!v) {
-              void setShareOpen(false);
-              // Re-query projects/lite so a just-completed publish is reflected.
-              refreshProjects();
-            }
-          }}
-          title={`Share ${activeSlug}`}
-          contentStyle={{
-            width: 'min(480px, 96vw)',
-            background: 'var(--bg-popover, #0d1829)',
-            border: '1px solid var(--border)',
-            borderRadius: 10,
-            padding: 24,
-            color: 'var(--fg, #e8e8ea)',
-          }}
-        >
-          <PublishPotCard potSlug={activeSlug} />
-        </Modal>
-      )}
       <div className="pc-advshell__body">
         <AdvScopeContext.Provider value={advScope}>{children}</AdvScopeContext.Provider>
       </div>

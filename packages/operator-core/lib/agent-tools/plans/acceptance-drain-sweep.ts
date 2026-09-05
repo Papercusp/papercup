@@ -62,6 +62,7 @@ import {
 } from './acceptance-drain-filing';
 import { listPlanIndexRowsForWorkspace, type PlanIndexRow } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { isHarnessInScope } from '../../work-scope-policy';
 
 /** Upper bound on work items filed in a single run. See the rails note above. */
 export const ACCEPTANCE_DRAIN_MAX_FILINGS_PER_RUN = 25;
@@ -199,8 +200,16 @@ export async function runAcceptanceDrainSweepOnce(
   const errors: string[] = [];
   let shippableNow = 0;
   let deferred = 0;
+  let scopeSkipped = 0;
 
   for (const row of candidates) {
+    // workspace-work-scope-policy-2026-09-04 P-007: a plan homed outside the workspace
+    // work-scope policy gets no acceptance-drain filing — filing it would place work in an
+    // out-of-scope harness. Counted, never dropped. No policy ⇒ never skips.
+    if (!isHarnessInScope(row.harnessSlug)) {
+      scopeSkipped++;
+      continue;
+    }
     if (filed.length >= maxFilings) {
       deferred++;
       continue;
@@ -250,7 +259,8 @@ export async function runAcceptanceDrainSweepOnce(
     `${alreadyFiled} already filed · ${shippableNow} SHIPPABLE NOW · ` +
     `${filed.length} filed${codeBreakdown ? ` (${codeBreakdown})` : ''}` +
     (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '') +
+    (scopeSkipped > 0 ? ` · ${scopeSkipped} skipped (harness outside the work-scope policy)` : '') +
     (errors.length > 0 ? ` · ${errors.length} error(s)` : '');
 
-  return { scanned: rows.length, alreadyFiled, shippableNow, filed, deferred, errors, summary };
+  return { scanned: rows.length, alreadyFiled, shippableNow, filed, deferred, scopeSkipped, errors, summary };
 }

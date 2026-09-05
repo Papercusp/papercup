@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Closure-configured by each test; read lazily inside the mock's sql fn.
 let sessionRows: Array<Record<string, unknown>> = [];
 let updateCount = 0;
+let getOrgPgCount = 0;
 
 vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values). The UPDATE is the only
@@ -29,7 +30,13 @@ vi.mock('@papercusp/db-org', async (orig) => {
     },
     { begin: vi.fn() },
   );
-  return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) };
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => {
+      getOrgPgCount++;
+      return { sql };
+    },
+  };
 });
 
 import {
@@ -56,6 +63,7 @@ const liveSession = (userId = 'u1') => [
 beforeEach(() => {
   sessionRows = [];
   updateCount = 0;
+  getOrgPgCount = 0;
   _resetLastSeenDebounceForTests();
 });
 
@@ -92,6 +100,7 @@ describe('getSessionUser last_seen_at debounce', () => {
   it('returns null and issues no write when there is no session cookie', async () => {
     expect(await getSessionUser(new Headers())).toBeNull();
     expect(updateCount).toBe(0);
+    expect(getOrgPgCount).toBe(0);
   });
 
   it('returns null and issues no write when the session row is absent', async () => {

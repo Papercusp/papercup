@@ -43,6 +43,9 @@ vi.mock('./agent-tools/coordination/dispatch-heartbeat', async (importOriginal) 
 import {
   PROJECTED_DEPS,
   authorizationFailureHint,
+  operatorKernelEnforcement,
+  setKernelEnforcementResolver,
+  wrapOperatorKernelSpawn,
   setReactionPostInvoke,
   jsonbSafeStringify,
   isPaletteUiPollRead,
@@ -66,6 +69,107 @@ afterEach(() => {
   // The reaction port is a module-level singleton — reset between tests so an
   // installed handler does not leak.
   setReactionPostInvoke(null);
+  setKernelEnforcementResolver(null);
+});
+
+describe('PROJECTED_DEPS.kernelEnforcement — D-030 activation/ownership seat', () => {
+  it('denies an explicitly revoked session before any handler work', async () => {
+    const verdict = await operatorKernelEnforcement({
+      phase: 'preflight',
+      boundary: 'dispatch',
+      toolName: 'plans:set-status',
+      capabilities: ['plans:write'],
+      args: {},
+      ctx: ctx({ kernelState: { revoked: true } }),
+    });
+    expect(verdict).toMatchObject({ decision: 'deny', code: 'revoked', availability: 'available' });
+  });
+
+  it('denies a requested revision that is not the host-applied revision', async () => {
+    const verdict = await operatorKernelEnforcement({
+      phase: 'enforce',
+      boundary: 'dispatch',
+      toolName: 'plans:set-status',
+      capabilities: ['plans:write'],
+      args: {},
+      requestedRevision: { specificationRevision: 'spec-new', stateRevision: 'state-new' },
+      appliedRevision: { specificationRevision: 'spec-old', stateRevision: 'state-old' },
+      ctx: ctx(),
+    });
+    expect(verdict).toMatchObject({ decision: 'deny', code: 'stale-activation' });
+  });
+
+  it('requires explicit resource ownership when the host marks a check required', async () => {
+    const denied = await operatorKernelEnforcement({
+      phase: 'preflight',
+      boundary: 'dispatch',
+      toolName: 'work_items:complete',
+      capabilities: ['work_items:write'],
+      args: {},
+      ownership: { required: true, resourceId: 'WI-1', resourceOwnerId: 'owner-a' },
+      ctx: ctx({ isSuperuser: true, uiClientId: 'owner-b' }),
+    });
+    expect(denied).toMatchObject({ decision: 'deny', code: 'ownership' });
+
+    const allowed = await operatorKernelEnforcement({
+      phase: 'enforce',
+      boundary: 'dispatch',
+      toolName: 'work_items:complete',
+      capabilities: ['work_items:write'],
+      args: {},
+      ownership: { required: true, resourceId: 'WI-1', resourceOwnerId: 'owner-a' },
+      ctx: ctx({ isSuperuser: true, uiClientId: 'owner-a' }),
+    });
+    expect(allowed).toMatchObject({ decision: 'allow', availability: 'unavailable' });
+  });
+
+  it('returns actual applied revision for telemetry attribution, never prepared state', async () => {
+    const revision = { specificationRevision: 'spec-a', stateRevision: 'state-1' };
+    const applied = await operatorKernelEnforcement({
+      phase: 'enforce',
+      boundary: 'dispatch',
+      toolName: 'plans:set-status',
+      capabilities: ['plans:write'],
+      args: {},
+      ctx: ctx({ kernelState: { activation: { applied: revision } } }),
+    });
+    expect(applied).toMatchObject({ decision: 'allow', revisionSource: 'applied', executionRevision: revision });
+
+    const prepared = await operatorKernelEnforcement({
+      phase: 'enforce',
+      boundary: 'dispatch',
+      toolName: 'plans:set-status',
+      capabilities: ['plans:write'],
+      args: {},
+      ctx: ctx({ kernelState: { activation: { prepared: revision } } }),
+    });
+    expect(prepared).toMatchObject({ decision: 'allow', revisionSource: 'prepared' });
+    expect(prepared?.executionRevision).toEqual(revision);
+  });
+
+  it('is replaceable by a live control-plane resolver without changing PROJECTED_DEPS identity', async () => {
+    const resolver = vi.fn(async () => ({ decision: 'deny' as const, code: 'live-revocation' }));
+    setKernelEnforcementResolver(resolver);
+    expect(PROJECTED_DEPS.kernelEnforcement).toBe(operatorKernelEnforcement);
+    const verdict = await PROJECTED_DEPS.kernelEnforcement!({
+      phase: 'preflight',
+      boundary: 'dispatch',
+      toolName: 'coord:send',
+      capabilities: ['coord:write'],
+      args: {},
+      ctx: ctx(),
+    });
+    expect(verdict).toMatchObject({ decision: 'deny', code: 'live-revocation' });
+    expect(resolver).toHaveBeenCalledOnce();
+  });
+
+  it('wraps native/shell spawn and never calls the executor after revocation', async () => {
+    const spawn = vi.fn(async () => ({ code: 0, stdout: 'ok', stderr: '', killed: false }));
+    setKernelEnforcementResolver(async () => ({ decision: 'deny', code: 'revoked', reason: 'revoked' }));
+    const wrapped = wrapOperatorKernelSpawn(spawn, ctx({ isSuperuser: true, uiClientId: 'su-a' }), ['compute:exec:echo']);
+    await expect(wrapped('echo', ['ok'])).rejects.toMatchObject({ name: 'KernelEnforcementDeniedError' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('PROJECTED_DEPS.onDispatchStart — in-flight liveness wiring', () => {

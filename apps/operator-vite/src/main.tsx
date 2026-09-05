@@ -5,8 +5,10 @@
 import './process-polyfill';
 import './buffer-polyfill';
 // Inject Papercup's grid palette before any grid renders (grid-core went
-// brand-agnostic; see grid-colors.ts).
-import './grid-colors';
+// brand-agnostic). The bridge lives in @papercusp/operator-ui so the cloud
+// portal, which mounts the same grid-bearing surfaces, runs the SAME one
+// (portal-parity D-008) — not a second copy.
+import '@papercusp/operator-ui/grid-theme-bridge';
 // Install this app's Link/toast/apiFetch into the panels that were extracted to
 // @papercusp/operator-ui so the portal could mount them too (WI-2143109).
 import './operator-ui-entry';

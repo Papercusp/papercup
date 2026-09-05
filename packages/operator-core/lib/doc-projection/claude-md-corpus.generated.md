@@ -1944,7 +1944,10 @@ your OWN `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
 
-**The Bash tool's own description says "the working directory persists between commands" — that is only true while you stay INSIDE this repo tree.** `cd /tmp/some-scratch-dir` succeeds and holds for the REST of that one call, but the *next* Bash call starts back at this repo's root, with a post-hoc `Shell cwd was reset to <repo root>` note on the PRIOR call's result — no warning before it runs, just after. `cd` to a path still *inside* the tree (e.g. a package subdir) genuinely persists across calls with no reset. So the boundary is exactly "inside vs. outside this tree", not "cd never persists".Verified live (EI-19409936180303618, 2026-08-03).
+**The Bash tool's own description says "the working directory persists between commands" — that is only true while you stay INSIDE this repo tree.** `cd /tmp/some-scratch-dir` succeeds and holds for the REST of that one call, but the *next* Bash call starts back at this repo's root, with a post-hoc `Shell cwd was reset to <repo root>` note on the PRIOR call's result — no warning before it runs, just after. `cd` to a path still *inside* the tree (e.g. a package subdir) genuinely persists across calls with no reset. So the boundary is exactly "inside vs. outside this tree", not "cd never persists".
+
+⚠ **That in-tree half is NOT the benign one — a persisted in-tree cwd changes which `package.json` a later ROOT `npm run <script>` resolves against.** npm walks up to the NEAREST enclosing workspace, so after a `cd packages/<pkg>/…` the root commands this guide prescribes — `test:affected`, `install:safe`, `doctor`, `gen:*`, `docs:rebuild`, `set-doc-part` — die with `npm error location …/packages/<pkg>` and `Missing script: "<name>"`. **The trap is the READING, not the error**, and it is the same misreading this guide documents for `npm run --workspace <dir> test`: "Missing script" invites *"that script does not exist, so there is nothing to run"* when the truth is *"wrong directory, and NOTHING was measured"* — so an agent mid-verification moves on believing it verified something. Measured 2026-09-05: 207 of the root's 260 scripts are absent from `packages/operator-core` alone, `test:affected` and `install:safe` among them.
+Verified live (EI-19409936180303618, 2026-08-03).
 
 **Why this is dangerous, not just surprising:** a multi-line script with no
 `set -e` does NOT abort on a failed `cd` — it keeps executing every later line
@@ -1969,6 +1972,13 @@ mkdir -p /tmp/my-scratch-dir && cd /tmp/my-scratch-dir || exit 1
 failed `cd` then kills the script instead of falling through. And when in
 doubt whether a PRIOR call's `cd` actually landed you where you think, `pwd` as
 the first line of the next call is free insurance — never assume.
+
+**The dual, for a `cd` that STAYS in the tree: don't leave one behind.** Scope it to a
+subshell so your own cwd never moves — `( cd packages/<pkg> && <cmd> )` — or, when a
+later call must run a ROOT script, re-anchor first:
+`cd "$(git rev-parse --show-toplevel)" || exit 1`. Either line is free, and either one
+removes the `Missing script` misdirection above at its source.
+
 
 ## Scratch probes: name the file `.mts`, not `.ts`
 

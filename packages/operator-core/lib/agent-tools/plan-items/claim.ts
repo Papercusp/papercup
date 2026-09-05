@@ -274,6 +274,21 @@ export default defineTool({
       list,
       async (it): Promise<BulkItemResult> => {
         const { workspaceId, harnessSlug } = await resolvePlanScope({ harnessSlug: it.harness });
+        // workspace-work-scope-policy-2026-09-04 P-006: a plan item homed outside the
+        // workspace work-scope policy is refused for every claimant before any lease or
+        // work-item mint. Held, never deleted; the denial lands on the policy ledger.
+        {
+          const { gateWorkScope } = await import('../../work-scope-policy');
+          const scope = await gateWorkScope('plan_items:claim', { harness: harnessSlug, plan: it.plan, actor: id.ownerId });
+          if (!scope.allowed) {
+            return {
+              ok: false,
+              plan: it.plan,
+              item: it.item,
+              result: { status: 'refused', reason: scope.code, hint: scope.message },
+            };
+          }
+        }
         const ownerName = await resolveAdoptedName(workspaceId, id.ownerId);
 
         if (autoConvert) {

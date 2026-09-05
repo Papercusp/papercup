@@ -109,6 +109,16 @@ export default defineTool({
     // the caller) — previously stored verbatim, producing an unmatchable, permanently
     // orphaned claim (WI-3881).
     const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
+    // workspace-work-scope-policy-2026-09-04 P-006: a pull from an out-of-scope harness is
+    // refused before any SKIP-LOCKED claim runs (held, never deleted; ledgered). No policy ⇒
+    // one cached read, byte-identical behaviour.
+    {
+      const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
+      const scope = await gateWorkScope('work_items:claim_next', { harness: args.harness, actor: assignee });
+      if (!scope.allowed) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope)) }] };
+      }
+    }
     // WI-5940: the same compact-first refusal scheduler:get_next applies, via the SHARED
     // decision so the two self-select surfaces cannot drift (the WI-6409 failure mode).
     //

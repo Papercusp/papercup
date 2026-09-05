@@ -4121,6 +4121,56 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
   });
 
+  describe('cross-phase assumptions hint (EI-19486111655110215)', () => {
+    // The gate above is enforced at HANDLER time, one phase after the schema, because it is
+    // conditional on a post-parse value (see the ⚠ block over `args` in complete.ts — the
+    // conditionality must NOT be moved into the schema). The cost was a per-phase refusal
+    // loop: fix the schema error, get refused again for `assumptions`. `argPreconditions`
+    // lets the FIRST refusal also say what the second one would. It does not move the gate,
+    // so every test in the describe above must keep passing unchanged.
+    const preconditions = (raw: unknown): readonly string[] =>
+      (complete as unknown as { argPreconditions: (raw: unknown) => readonly string[] }).argPreconditions(raw);
+
+    it('is actually declared on the built tool — a dropped field type-checks and does nothing', () => {
+      // EI-22172195473893352: `argReencodings` shipped inert exactly this way.
+      expect(typeof (complete as unknown as { argPreconditions?: unknown }).argPreconditions).toBe('function');
+    });
+
+    it('names the assumptions requirement for a direct terminal close that omits it', () => {
+      expect(preconditions({ id: 'WI-1', state: 'resolved', completion: { summary: 'x' } })).toEqual([
+        expect.stringContaining('a terminal close requires `assumptions`'),
+      ]);
+    });
+
+    it('names it for an inferred issue close carried by completion.status alone', () => {
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'x', status: 'resolved' } })).toHaveLength(1);
+    });
+
+    it('names it for a bulk items[] close, including one inheriting the top-level state', () => {
+      expect(preconditions({ state: 'resolved', items: [{ id: 'WI-1', completion: { summary: 'x' } }] })).toHaveLength(1);
+      expect(preconditions({ items: [{ id: 'WI-1', state: 'done', completion: { summary: 'x' } }] })).toHaveLength(1);
+    });
+
+    // CONTROLS — a hook that fired unconditionally would pass every assertion above while
+    // teaching a requirement the caller had already met, on calls that are not closes at all.
+    it('stays silent when assumptions is present, at either level', () => {
+      expect(preconditions({ id: 'WI-1', state: 'resolved', assumptions: 'none' })).toEqual([]);
+      expect(preconditions({ state: 'resolved', assumptions: 'none', items: [{ id: 'WI-1' }] })).toEqual([]);
+      expect(preconditions({ items: [{ id: 'WI-1', state: 'resolved', assumptions: ['k'] }] })).toEqual([]);
+    });
+
+    it('stays silent for a D-004 record-only completion — the case the gate must never touch', () => {
+      expect(preconditions({ id: 'WI-1', completion: { summary: 'progress note' } })).toEqual([]);
+      expect(preconditions({ id: 'WI-1', state: 'wip', completion: { summary: 'progress note' } })).toEqual([]);
+    });
+
+    it('is total: never throws on the unvalidated shapes it exists to see', () => {
+      for (const raw of [null, undefined, 'string', 42, [], { items: 'not-an-array' }, { items: [null, 7] }, {}]) {
+        expect(() => preconditions(raw)).not.toThrow();
+      }
+    });
+  });
+
   describe('published JSON schema (tools/list projection) preserves conditional assumptions', () => {
     it('still advertises id / completion / items in both single and bulk object branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {

@@ -22,13 +22,21 @@ import { mergeRoleQuota } from './quota-overrides';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
+  sameKernelRevision,
+  wrapKernelSpawn,
   type CapabilityEnvelopeVerdict,
   type DispatchProjectedDeps,
+  type KernelContextState,
+  type KernelEnforcementPort,
+  type KernelEnforcementRequest,
+  type KernelEnforcementResult,
+  type KernelExecutionRevision,
   type PostInvokeEvent,
   type PreconditionFireRequest,
   type ToolDispatchOverrideFn,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import type { PluginSpawn } from '@papercusp/tooldef';
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -142,6 +150,146 @@ export function setPreconditionFire(handler: ((req: PreconditionFireRequest) => 
   preconditionFire = handler;
 }
 
+/**
+ * Optional operator-side policy resolver for the generic D-030 kernel port.
+ * The resolver is installed by the activation/control-plane owner when it has
+ * a richer live store. Keeping it behind a setter avoids a hard import cycle
+ * from this shared dispatch adapter into the control-anchor implementation.
+ */
+let kernelEnforcementResolver: KernelEnforcementPort | null = null;
+
+export function setKernelEnforcementResolver(resolver: KernelEnforcementPort | null): void {
+  kernelEnforcementResolver = resolver;
+}
+
+/** Compatibility name used by early P-041 host adapters. */
+export const setKernelEnforcementPort = setKernelEnforcementResolver;
+
+function operatorKernelDenial(
+  code: string,
+  reason: string,
+  policyRevision?: string | null,
+): KernelEnforcementResult {
+  return {
+    decision: 'deny',
+    availability: 'available',
+    applied: true,
+    code,
+    reason,
+    ...(policyRevision !== undefined ? { policyRevision } : {}),
+  };
+}
+
+/**
+ * Default Papercusp implementation of the host-neutral kernel port.
+ *
+ * It consumes only explicit, host-resolved state. In particular it never
+ * treats a capability/tool name as proof of shell confinement, and it never
+ * turns a missing optional state row into a denial. A control-plane owner can
+ * install a resolver with `setKernelEnforcementResolver` for a live DB-backed
+ * activation/revocation read; the structural checks below still protect the
+ * common path and make negative behavior unit-testable without PG.
+ */
+export const operatorKernelEnforcement: KernelEnforcementPort = async (request: KernelEnforcementRequest) => {
+  if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
+
+  const state: KernelContextState | undefined = request.ctx.kernelState;
+  const policyRevision = state?.policyRevision ?? null;
+  if (state?.revoked === true) {
+    return operatorKernelDenial('revoked', 'session or identity authority has been revoked', policyRevision);
+  }
+
+  const ownership = request.ownership ?? state?.ownership;
+  if (ownership?.required) {
+    let ownerId: string | null = null;
+    try {
+      ownerId = resolveAgentIdentity(request.ctx).ownerId ?? null;
+    } catch {
+      ownerId = null;
+    }
+    const expected = ownership.resourceOwnerId?.trim() || null;
+    if (!ownerId || !expected || ownerId !== expected) {
+      return operatorKernelDenial(
+        'ownership',
+        expected
+          ? `resource ${ownership.resourceId ?? '(unknown)'} is owned by ${expected}, not this caller`
+          : `resource ${ownership.resourceId ?? '(unknown)'} has no resolved owner`,
+        policyRevision,
+      );
+    }
+  }
+
+  const activation = state?.activation;
+  const applied = request.appliedRevision ?? state?.appliedRevision ?? activation?.applied ?? null;
+  const requested = request.requestedRevision ?? state?.requestedRevision ?? activation?.desired ?? null;
+  if (requested && (!applied || !sameKernelRevision(requested, applied))) {
+    // A prepared/desired revision may be surfaced to explain the refusal, but
+    // it must never be stamped as execution truth. Both phases deny here: a
+    // call must not proceed merely because a prompt was prepared while the
+    // host has not acknowledged that revision as applied.
+    return operatorKernelDenial(
+      'stale-activation',
+      `requested revision ${requested.specificationRevision}:${requested.stateRevision} is not the applied revision`,
+      policyRevision,
+    );
+  }
+
+  if (applied) {
+    return {
+      decision: 'allow',
+      availability: 'available',
+      applied: true,
+      executionRevision: applied,
+      revisionSource: 'applied',
+      ...(policyRevision !== undefined ? { policyRevision } : {}),
+    };
+  }
+
+  if (activation?.prepared) {
+    return {
+      decision: 'allow',
+      availability: 'available',
+      applied: false,
+      executionRevision: activation.prepared,
+      revisionSource: 'prepared',
+      ...(policyRevision !== undefined ? { policyRevision } : {}),
+    };
+  }
+
+  // No explicit state is a normal compatibility path for pre-P-041 callers.
+  return { decision: 'allow', availability: 'unavailable', applied: false };
+};
+
+/** Adapter alias matching the generic dependency field's migration names. */
+export const kernelEnforcement = operatorKernelEnforcement;
+
+/**
+ * Native/shell boundary adapter for host code that exposes a `PluginSpawn`.
+ * Capability declarations are passed as evidence to the policy port, never
+ * interpreted here as proof that a binary is confined. The wrapped executor
+ * is called only after an explicit allow.
+ */
+export function wrapOperatorKernelSpawn(
+  spawn: PluginSpawn,
+  ctx: UnifiedToolContext,
+  capabilities: readonly string[] = [],
+  toolName = 'native:shell',
+): PluginSpawn {
+  return wrapKernelSpawn(
+    spawn,
+    operatorKernelEnforcement,
+    (bin, args, opts) => ({
+      toolName,
+      capabilities,
+      args: { bin, args: [...args], options: opts ?? null },
+      ctx,
+    }),
+  );
+}
+
+/** Naming alias for hosts that call the same adapter a native boundary. */
+export const wrapOperatorNativeSpawn = wrapOperatorKernelSpawn;
+
 async function readQuotaStateImpl(
   toolName: string,
   ctx: UnifiedToolContext,
@@ -239,6 +387,11 @@ interface RecordInvocationInput {
   args?: unknown;
   eventCount?: number;
   metadataJson?: Record<string, unknown> | null;
+  /** Actual applied revision from the final kernel enforcement seat. */
+  executionRevision?: KernelExecutionRevision | null;
+  /** Structured kernel decisions for audit/debug consumers. */
+  kernelPreflight?: KernelEnforcementResult | null;
+  kernelEnforcement?: KernelEnforcementResult | null;
 }
 
 /* ─── P-003 deferred, batched telemetry writer ──────────────────────────────
@@ -621,12 +774,23 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   const metadataJson = (() => {
     const reaction = input.ctx.reactionCause;
     const requestOrigin = input.ctx.requestOrigin;
+    const kernel =
+      input.executionRevision || input.kernelPreflight || input.kernelEnforcement
+        ? {
+            ...(input.executionRevision ? { executionRevision: input.executionRevision } : {}),
+            ...(input.kernelPreflight ? { preflight: input.kernelPreflight } : {}),
+            ...(input.kernelEnforcement ? { enforce: input.kernelEnforcement } : {}),
+          }
+        : null;
     const meta =
-      input.metadataJson || reaction || requestOrigin
+      input.metadataJson || reaction || requestOrigin || kernel
         ? {
             ...(input.metadataJson ?? {}),
             ...(requestOrigin ? { requestOrigin } : {}),
             ...(reaction ? { reaction } : {}),
+            // Framework-owned kernel fields are applied after handler metadata
+            // so a tool cannot spoof what revision actually ran.
+            ...(kernel ? { kernel } : {}),
           }
         : null;
     return meta ? jsonbSafeStringify(meta) : null;
@@ -959,6 +1123,12 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  // D-030 kernel seat: the generic dispatcher invokes this before any
+  // decorators and immediately before handler execution. The resolver is
+  // replaceable by the activation/control owner without changing the shared
+  // transport adapter.
+  kernelEnforcement: operatorKernelEnforcement,
+  kernelPolicy: operatorKernelEnforcement,
   authorizationFailureHint,
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
   // as a projected dispatch starts, so a long-running handler remains visible

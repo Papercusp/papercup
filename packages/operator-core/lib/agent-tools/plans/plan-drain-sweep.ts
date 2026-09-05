@@ -73,6 +73,7 @@ import {
 import { applyPlanDrainTransition, type PlanDrainTransitionSkip } from './plan-drain-transition';
 import { listPlanIndexRowsForWorkspace, planItemsForRow, type PlanIndexRow } from './source';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { isHarnessInScope } from '../../work-scope-policy';
 
 /**
  * The only stored statuses `derivePlanStatusTransition` can move a plan OFF.
@@ -118,7 +119,7 @@ export interface PlanDrainSweepResult {
    * here means the locked re-derivation DISAGREED with the pre-derivation — the
    * staleness this design expects and absorbs, not an error.
    */
-  skipped: Partial<Record<PlanDrainTransitionSkip, number>>;
+  skipped: Partial<Record<PlanDrainTransitionSkip | 'scope_denied', number>>;
 }
 
 /**
@@ -169,6 +170,13 @@ export async function sweepDrainedPlanStatuses(
     });
     result.scanned += rows.length;
     for (const row of rows) {
+      // workspace-work-scope-policy-2026-09-04 P-007: a plan homed outside the workspace
+      // work-scope policy is left exactly where it is — no transition, no filing. Counted
+      // under `skipped.scope_denied` so the skip is visible. No policy ⇒ never skips.
+      if (!isHarnessInScope(row.harnessSlug)) {
+        result.skipped.scope_denied = (result.skipped.scope_denied ?? 0) + 1;
+        continue;
+      }
       // `{ ...row, content: '' }` is exactly a PlanRow — PlanIndexRow is
       // `Omit<PlanRow, 'content'>` — so the canonical adapter takes it with no cast.
       const items = planItemsForRow({ ...row, content: '' });

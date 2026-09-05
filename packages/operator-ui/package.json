@@ -23,6 +23,11 @@
       "import": "./src/surfaces/index.tsx",
       "default": "./src/surfaces/index.tsx"
     },
+    "./grid-theme-bridge": {
+      "types": "./src/grid-theme-bridge.ts",
+      "import": "./src/grid-theme-bridge.ts",
+      "default": "./src/grid-theme-bridge.ts"
+    },
     "./accounts/AccountsTab": {
       "types": "./src/accounts/AccountsTab.tsx",
       "import": "./src/accounts/AccountsTab.tsx",
@@ -41,6 +46,7 @@
     "@types/react": "^19.2.15"
   },
   "dependencies": {
+    "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@radix-ui/react-collapsible": "^1.1.12",

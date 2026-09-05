@@ -75,6 +75,18 @@ export const attachPot = defineTool({
     const workspaceId = await resolveWorkspace(ctx as never);
     if (!workspaceId) return noWorkspace();
     await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as Sql);
+    // workspace-work-scope-policy-2026-09-04 P-007: a goal may not be bound to a pot outside
+    // the workspace work-scope policy — that binding is exactly how sidestage work leaked into
+    // work-on-everything. Refused + ledgered; no policy ⇒ byte-identical.
+    {
+      const { gateWorkScope, workScopeRefusal } = await import('@papercusp/operator-core/lib/work-scope-policy');
+      const scope = await gateWorkScope('goals:attach-pot', {
+        harness: args.harnessSlug,
+        goal: args.goalId,
+        actor: ctx.uiClientId ?? null,
+      });
+      if (!scope.allowed) return { data: workScopeRefusal(scope, { goalId: args.goalId }) };
+    }
     const link = await linkPot(ctx.tx as Sql, {
       workspaceId,
       goalId: args.goalId,
