@@ -58,6 +58,19 @@ describe('rubric template schema', () => {
     if (r.success) expect(r.data.criteria[0].ratingScale).toContain('n/a');
   });
 
+  it('accepts unpinned rubric composition refs', () => {
+    const r = rubricTemplateDataSchema.safeParse({
+      ...minimalData,
+      composes: ['goal-mode-e2e'],
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.composes).toEqual(['goal-mode-e2e']);
+  });
+
+  it('rejects an empty composition list', () => {
+    expect(rubricTemplateDataSchema.safeParse({ ...minimalData, composes: [] }).success).toBe(false);
+  });
+
   it('allows methodRef = null (explicit "no runbook")', () => {
     expect(rubricTemplateDataSchema.safeParse({ ...minimalData, methodRef: null }).success).toBe(true);
   });

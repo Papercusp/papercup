@@ -68,6 +68,7 @@ import {
   readAndEvaluateAcceptanceBarLifecycle,
   type AcceptanceBarLifecycleVerdict,
 } from './acceptance-bar-lifecycle-evaluator';
+import { ensureWorkItemSpecRevisionEdges } from './agent-tools/plans/spec-evidence-store';
 
 export interface PromotePlanResult {
   /** new work-items minted this call */
@@ -659,6 +660,19 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       harness: winnerHarness ?? undefined,
       by: opts.createdBy,
     });
+    // P-006: activation seeds the immutable BAR/spec projection before a work-item
+    // exists.  Promotion is the join point that can now attach the canonical
+    // work-item id to every CURRENT clause revision for this plan item.  The
+    // append-only edge preserves old proof when a later amendment supersedes it;
+    // the completion gate and BAR snapshot classify that old edge as stale.
+    await ensureWorkItemSpecRevisionEdges({
+      workspaceId: opts.workspaceId,
+      harnessSlug: winnerHarness ?? spec.harness,
+      planSlug: opts.planSlug,
+      planItemIds: [itemId],
+      workItemId: minted.id,
+      actorId: opts.createdBy,
+    });
     // EI-14024: if this item's plan-level blockers are still open (or it needs a
     // human decision), gate it the SAME way the periodic lane-sync sweep
     // (reconcile-linked-work-items.ts's syncLinkedWorkItemsToPlanLane, EI-14699)
@@ -741,6 +755,14 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     await linkWorkItem(adopted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
       harness: wi?.harness ?? spec.harness,
       by: opts.createdBy,
+    });
+    await ensureWorkItemSpecRevisionEdges({
+      workspaceId: opts.workspaceId,
+      harnessSlug: wi?.harness ?? spec.harness,
+      planSlug: opts.planSlug,
+      planItemIds: [item.id],
+      workItemId: adopted.id,
+      actorId: opts.createdBy,
     });
   }
 

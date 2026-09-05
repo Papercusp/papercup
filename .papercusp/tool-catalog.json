@@ -30413,7 +30413,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear one OR many work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. An uncovered absence premise returns advisory `absenceLint`; a matching stored check row suppresses it. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, confirmRetire:true`.",
+      "description": "Write or clear one OR many work-item checkpoints. Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. `rowsMode:\"merge\"` adds check rows while replacing the body; `\"replace\"` retires rows. Full body+rows replacement requires `append:false, rowsMode:\"replace\", confirmShrink:true, confirmRetire:true`.",
       "capabilities": [
         "work_items:write"
       ],
@@ -30438,7 +30438,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict.",
+        "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict. An unmeasured claim goes in `checks:[{claim,recheck}]`; no `verified` ⇒ ? PREDICTED.",
         "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` declaration belongs to work_items:complete / work_items:set_state, not this checkpoint tool; passing it is invalid. Not for a peer's item — claim it, or comment instead.",
         "chaining": "Call before work_items:complete / on yield; clear with checkpoint:null or clear:true. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
       }

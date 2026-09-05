@@ -397,6 +397,73 @@ export interface WorkItemSpecRevisionEdge {
   specFingerprint: string;
 }
 
+export interface EnsureWorkItemSpecRevisionEdgesInput {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  planItemIds: readonly string[];
+  workItemId: string;
+  actorId: string;
+}
+
+/**
+ * Attach a promoted work-item to every current spec revision owned by its plan
+ * item.  Promotion is the first moment the canonical work-item id exists, so
+ * this is the join that turns activation's BAR/spec projection into an
+ * executable behavior contract.  The edge is append-only: a later clause
+ * revision gets a new edge, while old edges remain auditable and are reported
+ * stale by the resolver.
+ */
+export async function ensureWorkItemSpecRevisionEdges(
+  input: EnsureWorkItemSpecRevisionEdgesInput,
+): Promise<WorkItemSpecRevisionEdge[]> {
+  const planItemIds = [...new Set(input.planItemIds.map((id) => id.trim()).filter(Boolean))];
+  if (planItemIds.length === 0) return [];
+  return withWorkspace(input.workspaceId, async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.work_item_spec_revision_edges (
+        workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+        spec_revision, spec_fingerprint, created_by
+      )
+      SELECT c.workspace_id, c.harness_slug, ${input.workItemId}, c.plan_slug,
+             c.spec_id, c.current_revision, r.content_hash, ${input.actorId}
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id
+         AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug
+         AND r.spec_id = c.spec_id
+         AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${input.workspaceId}
+         AND c.harness_slug = ${input.harnessSlug}
+         AND c.plan_slug = ${input.planSlug}
+         AND r.plan_item_id = ANY(${planItemIds}::text[])
+      ON CONFLICT DO NOTHING`;
+
+    const rows = await tx<{
+      work_item_id: string;
+      plan_slug: string;
+      spec_id: string;
+      spec_revision: number | string;
+      spec_fingerprint: string;
+    }[]>`
+      SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
+        FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${input.workspaceId}
+         AND harness_slug = ${input.harnessSlug}
+         AND work_item_id = ${input.workItemId}
+         AND plan_slug = ${input.planSlug}
+       ORDER BY spec_id, spec_revision`;
+    return rows.map((row) => ({
+      workItemId: row.work_item_id,
+      planSlug: row.plan_slug,
+      specId: row.spec_id,
+      specRevision: Number(row.spec_revision),
+      specFingerprint: row.spec_fingerprint,
+    }));
+  });
+}
+
 /** Read the explicit many-to-many coverage edges for one work item. */
 export async function listWorkItemSpecRevisionEdges(options: {
   harnessSlug?: string;

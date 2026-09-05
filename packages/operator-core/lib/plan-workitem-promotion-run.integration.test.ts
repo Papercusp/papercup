@@ -81,41 +81,53 @@ vi.mock('@papercusp/flags/server', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
   return { ...actual, getFlag: async () => h.flagOn };
 });
-vi.mock('./agent-tools/plans/source', () => ({
-  readPlanBySlug: async (slug: string) => {
-    const p = h.plans.get(slug);
-    if (!p) return null;
-    return {
-      archived: false,
-      parsed: {
-        frontmatter: p.title ? { title: p.title } : {},
-        now: null,
-        decisions: [],
-        items: p.items.map((i) => ({
-          id: i.id,
-          storedStatus: i.status,
-          text: i.text ?? '',
-          decisionRefs: [],
-          blockedBy: i.blockedBy ?? [],
-          phase: i.phase ?? null,
-        })),
-      },
-      row: {
-        content: p.content ?? '',
-        created: p.created ?? null,
-        nowState: p.nowState ?? null,
-        opStatus: p.opStatus ?? null,
-        items: p.items.map((i) => ({
-          id: i.id,
-          status: i.status,
-          text: i.text ?? '',
-          blockedBy: i.blockedBy ?? [],
-          phase: i.phase ?? null,
-        })),
-      },
-    };
-  },
-}));
+vi.mock('./agent-tools/plans/source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-tools/plans/source')>();
+  return {
+    ...actual,
+    readPlanBySlug: async (slug: string) => {
+      const p = h.plans.get(slug);
+      if (!p) return null;
+      return {
+        archived: false,
+        parsed: {
+          frontmatter: p.title ? { title: p.title } : {},
+          now: null,
+          decisions: [],
+          items: p.items.map((i) => ({
+            id: i.id,
+            storedStatus: i.status,
+            text: i.text ?? '',
+            decisionRefs: [],
+            blockedBy: i.blockedBy ?? [],
+            phase: i.phase ?? null,
+          })),
+        },
+        row: {
+          content: p.content ?? '',
+          created: p.created ?? null,
+          nowState: p.nowState ?? null,
+          opStatus: p.opStatus ?? null,
+          items: p.items.map((i) => ({
+            id: i.id,
+            status: i.status,
+            text: i.text ?? '',
+            blockedBy: i.blockedBy ?? [],
+            phase: i.phase ?? null,
+          })),
+        },
+      };
+    },
+  };
+});
+// This fixture exercises plan/work-item promotion and intentionally does not
+// materialize the first-class spec tables. The production seam is covered by
+// spec-evidence-store.integration.test.ts; keep this legacy promotion fixture
+// focused on its own dependency-edge contract.
+vi.mock('./agent-tools/plans/spec-evidence-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./agent-tools/plans/spec-evidence-store')>();
+  return { ...actual, ensureWorkItemSpecRevisionEdges: async () => [] };
+});
 vi.mock('./agent-tools/plans/plan-spec-quality-gate', () => ({
   evaluatePlanSpecQualityGate: vi.fn(async () => h.specQuality),
 }));

@@ -41,6 +41,7 @@ const migration = (name: string) => path.resolve(here, `../../../../../libs/pape
 const MIGRATION_851 = migration('851-first-class-plan-spec-clauses.sql');
 const MIGRATION_852 = migration('852-plan-spec-clause-integrity.sql');
 const MIGRATION_855 = migration('855-work-item-spec-evidence-bindings.sql');
+const MIGRATION_1111 = migration('1111-acceptance-bar-contract-seed.sql');
 // 929/930 add plan_spec_clause_revisions.falsifier and its shape CHECK. Required here
 // even though this suite is about EVIDENCE: it seeds clauses through setSpecClause, which
 // writes the column. A sibling fixture silently falling one column behind a harness_shared
@@ -101,6 +102,7 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
+      template text,
       -- P-022: the ad-hoc spec scope is materialised WITH a self-explaining body, so this
       -- fixture needs the column the real table has. Same class of drift the MIGRATION_929
       -- note above records (EI-21270668928342264): a hand-rolled fixture silently falling
@@ -157,6 +159,7 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, MIGRATION_851);
   await applyMigrationForTest(db.sql, MIGRATION_852);
+  await applyMigrationForTest(db.sql, MIGRATION_1111);
   await applyMigrationForTest(db.sql, MIGRATION_855);
   await applyMigrationForTest(db.sql, MIGRATION_855);
   await applyMigrationForTest(db.sql, MIGRATION_929);
@@ -636,5 +639,43 @@ describe('cross-namespace spec revision edges (D-013)', () => {
     expect(
       await evidenceStore.listWorkItemSpecRevisionEdges({ harnessSlug: HARNESS, workItemId: 'WI-102' }),
     ).toHaveLength(1);
+  });
+});
+
+describe('promotion contract join (P-006)', () => {
+  it('attaches a promoted work-item to each current clause revision and is idempotent', async () => {
+    const authored = await specs.setSpecClause(clause());
+    expect(authored).toMatchObject({ status: 'created', revision: 1 });
+
+    const first = await evidenceStore.ensureWorkItemSpecRevisionEdges({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      planItemIds: ['P-003'],
+      workItemId: 'WI-101',
+      actorId: 'su-test',
+    });
+    expect(first).toEqual([
+      {
+        workItemId: 'WI-101',
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    ]);
+
+    const replay = await evidenceStore.ensureWorkItemSpecRevisionEdges({
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      planItemIds: ['P-003'],
+      workItemId: 'WI-101',
+      actorId: 'su-test',
+    });
+    expect(replay).toEqual(first);
+    expect(
+      await evidenceStore.listWorkItemSpecRevisionEdges({ harnessSlug: HARNESS, workItemId: 'WI-101' }),
+    ).toEqual(first);
   });
 });

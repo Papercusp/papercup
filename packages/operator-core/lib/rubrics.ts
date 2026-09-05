@@ -198,6 +198,9 @@ export interface Rubric {
   subjectGoal?: string | null;
   /** acceptance-kind only: the standard-kind CLASS rubric it builds on (plan D-006/D-009). */
   classRef?: string | null;
+  /** Standard rubrics this rubric composes. Refs are intentionally unpinned: each
+   * rubric resolves its current independent definition at grading time. */
+  composes?: string[];
   /** Server-derived complete BAR-set identity and the cohort/revision pin that produced it. */
   barSetHash?: string;
   barContract?: AcceptanceBarContract;
@@ -399,6 +402,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
     ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
     ...(d.subjectGoal ? { subjectGoal: d.subjectGoal } : {}),
     ...(d.classRef ? { classRef: d.classRef } : {}),
+    ...(d.composes ? { composes: d.composes } : {}),
     ...(d.barSetHash ? { barSetHash: d.barSetHash } : {}),
     ...(d.barContract ? { barContract: d.barContract } : {}),
     characteristic: d.characteristic,
@@ -1194,6 +1198,8 @@ export interface ProposeRubricInput {
   subjectGoal?: string;
   /** acceptance-kind only: the standard-kind class rubric it builds on (validated to exist). */
   classRef?: string;
+  /** Unpinned standard-rubric composition refs; each rubric evolves independently. */
+  composes?: string[];
   /** Internal/server-owned BAR-set pin. Agent-facing propose schemas do not expose it. */
   barSetHash?: string;
   /** Internal/server-owned cohort/subject-revision pin. */
@@ -1604,6 +1610,7 @@ function buildRubricTemplateData(
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
+    ...(input.composes ? { composes: [...new Set(input.composes)] } : {}),
     ...(input.barSetHash ? { barSetHash: input.barSetHash } : {}),
     ...(input.barContract ? { barContract: input.barContract } : {}),
     characteristic: input.characteristic,

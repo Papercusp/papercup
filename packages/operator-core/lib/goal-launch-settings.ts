@@ -465,6 +465,19 @@ export interface GoalBudgetTruth {
   budgetCents: number | null;
   spentCents: number | null;
   spentCentsAt: string | null;
+  /**
+   * The provenance marker actually stored beside the number
+   * (`goals.metadata.spentCentsSource`), or null when the value predates the
+   * marker or was written by something that did not set one.
+   *
+   * Read (spend-attribution…-2026-09-04 P-004) so the ceiling refusal can NAME
+   * the population its number measured instead of asserting one. The doc above
+   * says this gate "never trusts any other figure", but the SELECT that feeds it
+   * filters on nothing — so an unmarked legacy value reaches the ceiling exactly
+   * like a rollup-written one, and the two are indistinguishable downstream
+   * unless the marker travels with the cents. It now does.
+   */
+  spentCentsSource: string | null;
 }
 
 export type GoalPlanPlacementState =
