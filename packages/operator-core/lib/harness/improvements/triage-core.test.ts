@@ -80,9 +80,19 @@ describe('reopenRejectedTriageForCompensation', () => {
   });
 });
 
+/**
+ * The deployment-staleness screen (P-003) is a real git+registry read in production, so
+ * the default fixture stands in for "this filing carries no structured toolFailure" —
+ * the branch every pre-existing test is in. A test exercising the divert passes its own.
+ */
+function noStaleness(): TriageCoreDeps['deploymentStalenessScreen'] {
+  return vi.fn(async () => ({ screened: false, divert: false, skipReason: 'no-structured-tool-failure' }) as const);
+}
+
 function depsOf(
   issue: EngineerIssue | null,
   registry: Record<string, EngineerIssue | null> = {},
+  overrides: Partial<TriageCoreDeps> = {},
 ): TriageCoreDeps & {
   merged: Record<string, unknown>[];
   states: string[];
@@ -116,6 +126,8 @@ function depsOf(
       reviews.push(id);
       return { entered: true };
     }),
+    deploymentStalenessScreen: noStaleness(),
+    ...overrides,
   };
 }
 
@@ -421,5 +433,120 @@ describe('selectUntriaged — the scheduled pass picker (P-011)', () => {
     const items = [scored({ id: 'a', score: 5 }), scored({ id: 'b', score: 50 }), scored({ id: 'c', score: 20 })];
     expect(selectUntriaged(items, 2).map((i) => i.id)).toEqual(['b', 'c']);
     expect(selectUntriaged(items, 0)).toEqual([]);
+  });
+});
+
+/**
+ * P-003 (EI-22450280531836927): deployment state is resolved BEFORE the route.
+ *
+ * The failure being closed is a filing whose subject is already repaired in the tree and
+ * merely undeployed being routed as an open code-bug, dispatching an agent to fix correct
+ * code. The controls below are the falsifiability set: a stale verdict must divert, and a
+ * current/unknown verdict must NOT (an unknown converted into a clean bill is the exact
+ * false-reassurance the three-valued verdict exists to prevent).
+ */
+describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
+  const staleScreen = () =>
+    vi.fn(async () => ({
+      screened: true,
+      divert: true,
+      state: 'stale',
+      toolName: 'improvements:capture',
+      relPath: 'packages/operator-core/lib/agent-tools/improvements/capture.ts',
+      deployedSha: 'deadbee',
+      treeRef: 'staging',
+    }) as const);
+
+  it('diverts a place to gate/land-the-deploy when the tool source is stale', async () => {
+    const issue = issueOf({ id: 'stale-1', kind: 'bug' });
+    const deps = depsOf(issue, {}, { deploymentStalenessScreen: staleScreen() });
+    const res = await applyTriageDecision({ id: 'stale-1', decision: 'place', reason: 'code-bug, tier=auto' }, deps);
+
+    expect(res.ok).toBe(true);
+    // The whole point: it does NOT reach the auto-implement lane.
+    expect(res.decision).toBe('gate');
+    expect(res.deploymentStalenessDivert).toEqual({ requestedDecision: 'place', target: 'land-the-deploy' });
+    expect(res.lifecycle?.triageReason).toContain('LAND THE DEPLOY');
+    expect(res.lifecycle?.triageReason).toContain('capture.ts');
+    // Durable, so "how many filings did the screen keep out of the code-fix lane" is
+    // answerable from the rows rather than from a tool result nobody kept.
+    const screenPatch = deps.merged.find((p) => 'deploymentStalenessScreen' in p);
+    expect(screenPatch?.deploymentStalenessScreen).toMatchObject({ state: 'stale', divertedFrom: 'place' });
+  });
+
+  it('diverts a gate too — the recorded repair is the deploy, not a code change', async () => {
+    const issue = issueOf({ id: 'stale-2', kind: 'bug' });
+    const deps = depsOf(issue, {}, { deploymentStalenessScreen: staleScreen() });
+    const res = await applyTriageDecision({ id: 'stale-2', decision: 'gate', reason: 'code-bug, tier=human' }, deps);
+    expect(res.decision).toBe('gate');
+    expect(res.deploymentStalenessDivert?.requestedDecision).toBe('gate');
+    expect(res.lifecycle?.triageReason).toContain('land-the-deploy');
+  });
+
+  it('a CURRENT verdict routes unchanged and records the screen it ran', async () => {
+    const issue = issueOf({ id: 'current-1', kind: 'bug' });
+    const deps = depsOf(
+      issue,
+      {},
+      {
+        deploymentStalenessScreen: vi.fn(async () => ({
+          screened: true,
+          divert: false,
+          state: 'current',
+          toolName: 'improvements:capture',
+          relPath: 'packages/operator-core/lib/agent-tools/improvements/capture.ts',
+          deployedSha: 'deadbee',
+          treeRef: 'staging',
+        }) as const),
+      },
+    );
+    const res = await applyTriageDecision({ id: 'current-1', decision: 'place', reason: 'code-bug' }, deps);
+    expect(res.decision).toBe('place');
+    expect(res.deploymentStalenessDivert).toBeUndefined();
+    expect(res.deploymentStaleness).toMatchObject({ state: 'current' });
+  });
+
+  it('an UNKNOWN verdict never diverts and is recorded as unknown, not as current', async () => {
+    const issue = issueOf({ id: 'unknown-1', kind: 'bug' });
+    const deps = depsOf(
+      issue,
+      {},
+      {
+        deploymentStalenessScreen: vi.fn(async () => ({
+          screened: true,
+          divert: false,
+          state: 'unknown',
+          toolName: 'improvements:capture',
+          unknownReason: 'git-unreadable',
+        }) as const),
+      },
+    );
+    const res = await applyTriageDecision({ id: 'unknown-1', decision: 'place', reason: 'code-bug' }, deps);
+    expect(res.decision).toBe('place');
+    expect(res.deploymentStaleness).toMatchObject({ state: 'unknown', unknownReason: 'git-unreadable' });
+  });
+
+  it('does not pay for the screen on reject or gym — neither routes anyone at a code fix', async () => {
+    const rejectDeps = depsOf(issueOf({ id: 'rej-1' }), {}, { deploymentStalenessScreen: staleScreen() });
+    await applyTriageDecision({ id: 'rej-1', decision: 'reject', reason: 'not a defect' }, rejectDeps);
+    expect(rejectDeps.deploymentStalenessScreen).not.toHaveBeenCalled();
+
+    const gymDeps = depsOf(issueOf({ id: 'gym-1' }), {}, { deploymentStalenessScreen: staleScreen() });
+    await applyTriageDecision({ id: 'gym-1', decision: 'gym', reason: 'prompt A/B' }, gymDeps);
+    expect(gymDeps.deploymentStalenessScreen).not.toHaveBeenCalled();
+  });
+
+  it('a filing with no structured toolFailure writes no screen record and routes as before', async () => {
+    const deps = depsOf(issueOf({ id: 'plain-1' }));
+    const res = await applyTriageDecision({ id: 'plain-1', decision: 'place', reason: 'code-bug' }, deps);
+    expect(res.decision).toBe('place');
+    // The skip is REPORTED (a 'screen-unavailable' fault must be visible, not silent)
+    // but nothing durable is written for a filing the screen does not apply to.
+    expect(res.deploymentStaleness).toEqual({
+      screened: false,
+      divert: false,
+      skipReason: 'no-structured-tool-failure',
+    });
+    expect(deps.merged.some((p) => 'deploymentStalenessScreen' in p)).toBe(false);
   });
 });

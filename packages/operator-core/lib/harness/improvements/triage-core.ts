@@ -35,6 +35,12 @@ import {
 import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+import {
+  deploymentStalenessScreen,
+  renderDeploymentStalenessDivert,
+  LAND_THE_DEPLOY_TARGET,
+  type DeploymentStalenessScreen,
+} from './deployment-staleness-screen';
 
 export interface ApplyTriageInput {
   id: string;
@@ -65,6 +71,18 @@ export interface ApplyTriageResult {
     unresolvedIds?: string[];
     circularIds?: string[];
   };
+  /**
+   * The deployment-staleness screen's verdict (P-003), present whenever the screen ran
+   * — i.e. on any routing decision for a filing carrying a structured `toolFailure`.
+   * `divert:true` means the decision below is "land the deploy", not a code repair.
+   * A `state:'unknown'` verdict is reported as such and never as a clean bill.
+   */
+  deploymentStaleness?: DeploymentStalenessScreen;
+  /** Present when the staleness screen diverted the requested decision. */
+  deploymentStalenessDivert?: {
+    requestedDecision: TriageDecision;
+    target: typeof LAND_THE_DEPLOY_TARGET;
+  };
   error?: string;
 }
 
@@ -85,6 +103,11 @@ export interface TriageCoreDeps {
     opts?: { unset?: readonly string[] },
   ) => Promise<EngineerIssue | null>;
   enterAgentReview: typeof enterAgentReview;
+  /**
+   * P-003: resolve DEPLOYMENT STATE before the routing decision is recorded. Injected
+   * so the divert branch is unit-testable without a repo, a build sha, or git.
+   */
+  deploymentStalenessScreen: typeof deploymentStalenessScreen;
 }
 
 const defaultDeps: TriageCoreDeps = {
@@ -93,6 +116,7 @@ const defaultDeps: TriageCoreDeps = {
   commentIssue,
   mergeIssuePayload,
   enterAgentReview,
+  deploymentStalenessScreen,
 };
 
 export type ReopenRejectedTriageResult = 'reopened' | 'already_open' | 'not_found' | 'source_changed';
@@ -274,13 +298,43 @@ export async function applyTriageDecision(
     };
   }
 
+  let decision: TriageDecision = input.decision;
+  let reason = input.reason;
+  let evidenceDowngrade: ApplyTriageResult['evidenceDowngrade'];
+
+  // ── P-003: DEPLOYMENT-STALENESS SCREEN, ahead of every other routing step
+  // (EI-22450280531836927).
+  //
+  // The D-005 taxonomy below cannot see deployment state, so a filing whose subject is
+  // already repaired in the tree and merely UNDEPLOYED classifies as an open `code-bug`
+  // and routes an agent to fix correct code. Three filers hit one such condition on a
+  // single day, each proposing a different code repair; the actual repair was to land
+  // the deploy. Screening AFTER the route was considered and rejected in the plan's
+  // Design: by then the work-item is filed against the wrong owner with the wrong
+  // repair, and the cost this removes has already been paid.
+  //
+  // It runs on the routing decisions only (place/gate). `reject` is a decided idea that
+  // closes the row and dispatches nobody, and `gym` is an A/B, so neither can route an
+  // agent at a code fix — paying two git reads for them would be cost without a verdict.
+  // Never throws: the screen returns `screened:false` rather than blocking a triage.
+  let deploymentStaleness: DeploymentStalenessScreen | undefined;
+  let deploymentStalenessDivert: ApplyTriageResult['deploymentStalenessDivert'];
+  if (decision === 'place' || decision === 'gate') {
+    deploymentStaleness = await deps.deploymentStalenessScreen(issue);
+    if (deploymentStaleness.divert) {
+      deploymentStalenessDivert = { requestedDecision: decision, target: LAND_THE_DEPLOY_TARGET };
+      // A divert is a GATE, never a reject: the reporter's condition is real on the
+      // build they hit, so the row must stay open until the deploy lands. It is also
+      // never a place — placing it is the dispatch this screen exists to prevent.
+      decision = 'gate';
+      reason = `${input.reason} — ${renderDeploymentStalenessDivert(deploymentStaleness)} Routed to ${LAND_THE_DEPLOY_TARGET}.`;
+    }
+  }
+
   // Evidence-staleness guard (EI-18696839552593260): a 'place' recommendation whose
   // OWN cited evidence is already terminal-with-completion-ref gets downgraded to
   // 'gate' before it ever reaches the auto-implement lane. Best-effort — never
   // throws, never touches a non-'place' decision.
-  let decision: TriageDecision = input.decision;
-  let reason = input.reason;
-  let evidenceDowngrade: ApplyTriageResult['evidenceDowngrade'];
   if (decision === 'place') {
     try {
       const check = await inspectEvidenceCitations(issue, deps);
@@ -334,6 +388,17 @@ export async function applyTriageDecision(
 
   const by = input.by ?? 'improvement-triage';
   const patch: Record<string, unknown> = { ideaLifecycle: lifecycle };
+  // Durable so the divert is auditable and countable after the fact: "how many filings
+  // did the screen keep out of the code-fix lane" must be answerable from the rows
+  // themselves, not reconstructed from a tool result nobody kept. Recorded whenever the
+  // screen RAN — a 'current' or 'unknown' verdict is evidence about this triage too.
+  if (deploymentStaleness?.screened) {
+    patch.deploymentStalenessScreen = {
+      ...deploymentStaleness,
+      at: new Date().toISOString(),
+      ...(deploymentStalenessDivert ? { divertedFrom: deploymentStalenessDivert.requestedDecision } : {}),
+    };
+  }
   // Reject = a DECIDED idea: record the durable reason for the recall matcher
   // ("already decided: <reason>") and close it so it leaves the open queue.
   if (decision === 'reject') patch.decidedReason = reason;
@@ -376,7 +441,16 @@ export async function applyTriageDecision(
     .then((m) => m.refreshHealthPanel('improvements'))
     .catch(() => {});
 
-  return { ok: true, id: input.id, decision, lifecycle, closed, ...(evidenceDowngrade ? { evidenceDowngrade } : {}) };
+  return {
+    ok: true,
+    id: input.id,
+    decision,
+    lifecycle,
+    closed,
+    ...(evidenceDowngrade ? { evidenceDowngrade } : {}),
+    ...(deploymentStaleness ? { deploymentStaleness } : {}),
+    ...(deploymentStalenessDivert ? { deploymentStalenessDivert } : {}),
+  };
 }
 
 /**
