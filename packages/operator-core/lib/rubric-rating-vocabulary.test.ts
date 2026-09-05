@@ -67,6 +67,24 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     expect(instructions).toEqual([]);
   });
 
+  it('ignores directive words inside SQL/code literals without hiding real rating instructions', () => {
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({
+          key: 'grade-vs-test-split',
+          replication:
+            "Query modes with mode IN ('grade','test') and inspect the `rating` column. " +
+            "Grade 'healthy' when the two populations remain separate.",
+        }),
+      ],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.instructions.map((instruction) => instruction.rating)).toEqual(['healthy']);
+    expect(result.violations).toEqual([]);
+  });
+
   it('uses a criterion ratingScale override instead of the rubric default', () => {
     const result = validateRubricRatingVocabulary(
       [

@@ -204,3 +204,49 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
     expect(decisions[0].n).toBe(0);
   });
 });
+
+describe('acceptance BAR subject pin follows only completion bookkeeping', () => {
+  it.each([
+    ['completion backlink', 'alpha — note: ← WI-100 completed (done)', 'alpha — note: ← EI-200 completed (done)', true],
+    ['item meaning', 'alpha — note: ← WI-100 completed (done)', 'beta — note: ← WI-100 completed (done)', false],
+    ['authored note', 'alpha — note: strict acceptance', 'alpha — note: relaxed acceptance', false],
+  ])('%s preserves the appropriate revision boundary', async (_label, before, after, follows) => {
+    const rubricSlug = `${SLUG}-acceptance`;
+    const initial = body({ items: [`- **P-001** \`done\` ${before}`] });
+    await write(initial);
+    const [subject] = await admin`
+      SELECT version FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    const priorVersion = Number(subject.version);
+    const data = {
+      kind: 'acceptance', subjectPlan: SLUG, characteristic: 'plan-acceptance',
+      barSetHash: 'a'.repeat(64),
+      criteria: [{ key: 'r-1', model: 'Preserve the approved outcome', method: 'Inspect the outcome' }],
+      barContract: { schemaVersion: 1, adoptionEpoch: 1, cohort: 'legacy-backfilled',
+        subjectPlanRevision: priorVersion, seededAt: '2026-09-05T00:00:00.000Z', seededBy: 'su-author' },
+    };
+    await admin`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, version, template, template_data)
+      VALUES (${wsId}, ${HARNESS}, ${rubricSlug}, '', 25, 'rubric', ${JSON.stringify(data)}::text::jsonb)
+      ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE
+        SET template_data = EXCLUDED.template_data, version = 25`;
+    await admin`
+      UPDATE harness_shared.harness_plans
+         SET acceptance_bar_epoch = 1, acceptance_bar_cohort = 'legacy-backfilled',
+             acceptance_bar_rubric_slug = ${rubricSlug}, acceptance_bar_rubric_revision = 25,
+             acceptance_bar_set_hash = ${data.barSetHash}, acceptance_bar_seeded_at = now(),
+             acceptance_bar_seeded_by = 'su-author'
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+
+    await write(body({ items: [`- **P-001** \`done\` ${after}`] }));
+    const [rubric] = await admin`
+      SELECT version, template_data FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${rubricSlug}`;
+    expect(Number(rubric.version)).toBe(25);
+    expect(rubric.template_data).toEqual({
+      ...data,
+      barContract: { ...data.barContract, subjectPlanRevision: follows ? priorVersion + 1 : priorVersion },
+    });
+  });
+});

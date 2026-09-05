@@ -158,9 +158,17 @@ export function extractRubricRatingInstructions(
   for (const match of text.matchAll(DIRECTIVE_RE)) {
     const directive = match[1];
     const directiveStart = match.index ?? 0;
+    // A directive-shaped word inside a quoted/code literal is data, not an
+    // instruction. Without this guard, SQL such as `mode IN ('grade','test')`
+    // starts parsing at the closing quote after `grade`, treats the next quote
+    // as a new opener, and reports the intervening comma as an off-scale
+    // rating. Real directives such as `Grade 'partial' if ...` remain visible
+    // because the directive word itself is not quote-bounded.
+    const following = text[directiveStart + match[0].length];
     // A directive embedded in a compound label (for example `GOAL+GRADE
     // mode`) is a noun/heading, not an instruction to emit `mode`.
     const preceding = text[directiveStart - 1];
+    if (isQuote(preceding) && following === closingQuote(preceding)) continue;
     if (preceding === '+' || preceding === '-' || preceding === '/') continue;
     const target = parseDirectiveTarget(text.slice(directiveStart + match[0].length), directive);
     if (!target) continue;
