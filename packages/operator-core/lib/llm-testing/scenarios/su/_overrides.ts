@@ -26,8 +26,9 @@ function canonical(name: string): string {
 export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
   override(name, args) {
     const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
     if (/^(docs|plans):/.test(canon)) {
-      const h = (args as Record<string, unknown> | null | undefined)?.harness;
+      const h = a.harness;
       if (typeof h !== 'string' || !h.trim()) {
         return {
           isError: true,
@@ -42,6 +43,134 @@ export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
           ],
         };
       }
+
+      // Once the engineer has supplied the load-bearing harness scope, give it
+      // enough evidence to answer the user's orientation request. Returning an
+      // empty read here made the scenario self-contradictory: its deterministic
+      // gate passed on the harness arg while the judge correctly penalised the
+      // model for inventing the requested plan/owner/status from a vacuum.
+      if (canon === 'plans:search' || canon === 'plans:list') {
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              harness: h,
+              plans: [{
+                slug: 'spec-md-deprecation-2026-08-18',
+                title: 'Retire spec-md compatibility paths',
+                status: 'ready',
+                itemCounts: { done: 4, wip: 1, todo: 2 },
+                now: {
+                  state: 'P-005 removes the final write-side compatibility adapter',
+                  next: 'P-006 migrate the remaining readers; P-007 delete the adapter',
+                },
+              }],
+            }),
+          }],
+        };
+      }
+      if (canon === 'plans:get') {
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              plan: {
+                slug: 'spec-md-deprecation-2026-08-18',
+                title: 'Retire spec-md compatibility paths',
+                status: 'ready',
+                owner: 'platform-maintainers',
+                now: {
+                  state: 'P-005 is in progress; four earlier migration items are done',
+                  next: 'Migrate the two remaining readers, then remove the adapter',
+                },
+              },
+            }),
+          }],
+        };
+      }
+      if (canon === 'docs:search' || canon === 'docs:outline') {
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              hits: [{
+                slug: 'agent-insights/spec-md-deprecation-migration',
+                title: 'Spec-md deprecation migration',
+                excerpt:
+                  'The plan store is canonical. Migrate remaining readers before deleting the compatibility adapter.',
+              }],
+            }),
+          }],
+        };
+      }
+      if (canon === 'docs:get') {
+        return {
+          content: [{
+            text: JSON.stringify({
+              ok: true,
+              pages: [{
+                slug: 'agent-insights/spec-md-deprecation-migration',
+                title: 'Spec-md deprecation migration',
+                body:
+                  'Use plans:get for live status. The migration is incomplete until the two remaining readers move and the compatibility adapter is deleted.',
+              }],
+            }),
+          }],
+        };
+      }
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * Source-backed read results for SU-S02. The scenario asks for concrete UI
+ * verification guidance, so an all-empty docs world is not a valid test of the
+ * playbook: it rewards either refusing the task or fabricating remembered
+ * commands. These excerpts mirror the canonical `testing/agent-e2e` and
+ * `verify-ui-via-staging-3170-dedicated-webview` docs while leaving the model
+ * to select the docs tools and synthesize the answer itself.
+ */
+export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
+  override(name) {
+    const canon = canonical(name);
+    if (canon === 'docs:search' || canon === 'docs:outline') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            hits: [
+              {
+                slug: 'testing/agent-e2e',
+                title: 'Agent E2E playbook — driving the operator like a user',
+                excerpt:
+                  'Drive the Papercusp Tauri desktop shell with tauri-agent-tools; the standalone web app is retired.',
+              },
+              {
+                slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
+                title: 'Verifying UI changes end-to-end via :3170 + a dedicated webview instance',
+                excerpt:
+                  'Use a dedicated debug webview pinned to staging and target its bridge by exact process id.',
+              },
+            ],
+          }),
+        }],
+      };
+    }
+    if (canon === 'docs:get') {
+      return {
+        content: [{
+          text: JSON.stringify({
+            ok: true,
+            pages: [{
+              slug: 'testing/agent-e2e',
+              title: 'Agent E2E playbook — driving the operator like a user',
+              body:
+                'Start the Tauri shell with `cd papercusp-desktop && npm run dev`, or attach to an already-running debug shell. Drive the webview with `tauri-agent-tools` and pin commands to the selected process id. Use an exit-coded `check` assertion for DOM-verifiable acceptance; a screenshot alone is observational.',
+            }],
+          }),
+        }],
+      };
     }
     return PASS_THROUGH;
   },
