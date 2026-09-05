@@ -400,6 +400,7 @@ export function MarkdownPreview({
   useEffect(() => {
     if (!ref.current) return;
     let cancelled = false;
+    let disposeOutline: (() => void) | undefined;
     setLoadError(false);
     (async () => {
       await loadVditorCss();
@@ -419,30 +420,54 @@ export function MarkdownPreview({
       if (cancelled || !ref.current) return;
       try { onParsedRef.current?.(ref.current); } catch { /* decorator errors don't fail render */ }
       if (outline && outlineRef.current && ref.current) {
-        outlineRef.current.innerHTML = '';
-        Vditor.outlineRender(ref.current, outlineRef.current);
+        const outlineRoot = outlineRef.current;
+        const previewRoot = ref.current;
+        outlineRoot.innerHTML = '';
+        Vditor.outlineRender(previewRoot, outlineRoot);
+
+        const links = Array.from(outlineRoot.querySelectorAll<HTMLAnchorElement>('a'));
+        for (const link of links) {
+          const targetId = getOutlineTargetId(link);
+          const identity = `${targetId ?? ''} ${link.textContent ?? ''}`;
+          link.dataset.planOutlineKind = /\bp-\d{3,}\b/i.test(identity)
+            ? 'item'
+            : /\bd-\d{3,}\b/i.test(identity)
+              ? 'decision'
+              : 'section';
+          // Vditor normally emits anchors, but keep custom-renderer entries in
+          // the keyboard order even when they only carry `data-target-id`.
+          link.tabIndex = 0;
+        }
+
+        const markCurrent = (active: HTMLAnchorElement) => {
+          for (const link of links) {
+            if (link === active) link.setAttribute('aria-current', 'location');
+            else link.removeAttribute('aria-current');
+          }
+        };
+
         // Vditor's standalone outlineRender attaches a click handler that does
         // `window.scrollTo(0, idElement.offsetTop)` — but our preview lives inside
         // a flex container with its own overflow, so window-level scroll is wrong.
         // Intercept and scrollIntoView() the heading instead so it scrolls
         // whichever ancestor is actually scrollable.
         const onClick = (event: Event) => {
-          let t = event.target as HTMLElement | null;
-          while (t && t !== outlineRef.current) {
-            const tid = t.getAttribute?.('data-target-id');
-            if (tid) {
-              const heading = ref.current?.querySelector(`#${CSS.escape(tid)}`) as HTMLElement | null;
-              if (heading) {
-                event.preventDefault();
-                event.stopPropagation();
-                heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
-              }
-              return;
-            }
-            t = t.parentElement;
-          }
+          const target = event.target instanceof Element
+            ? event.target.closest<HTMLAnchorElement>('a')
+            : null;
+          if (!target || !outlineRoot.contains(target)) return;
+          const targetId = getOutlineTargetId(target);
+          if (!targetId) return;
+          const heading = Array.from(previewRoot.querySelectorAll<HTMLElement>('[id]'))
+            .find((candidate) => candidate.id === targetId);
+          if (!heading) return;
+          event.preventDefault();
+          event.stopPropagation();
+          markCurrent(target);
+          heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
         };
-        outlineRef.current.addEventListener('click', onClick, true);
+        outlineRoot.addEventListener('click', onClick, true);
+        disposeOutline = () => outlineRoot.removeEventListener('click', onClick, true);
       }
     })().catch((err: unknown) => {
       if (cancelled) return;
@@ -452,7 +477,10 @@ export function MarkdownPreview({
       // eslint-disable-next-line no-console
       console.error('[MarkdownPreview] vditor failed to load:', err);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      disposeOutline?.();
+    };
   }, [value, outline, colorScheme]);
 
   if (loadError) {
@@ -461,26 +489,35 @@ export function MarkdownPreview({
 
   if (outline) {
     const position = outline === 'right' ? 'right' : 'left';
+    const outlinePanel = (
+      <nav
+        aria-label="Plan outline"
+        className={`pc-md-outline-shell pc-md-outline-shell--${position}`}
+      >
+        <div className="pc-md-outline__header">
+          <span>Plan outline</span>
+          <span className="pc-md-outline__legend" aria-hidden="true">
+            P items · D decisions
+          </span>
+        </div>
+        <div ref={outlineRef} className="pc-md-outline" />
+      </nav>
+    );
     return (
-      <div className={className} style={{ display: 'flex', flex: '1 1 auto', minHeight: 0, gap: 16, background: 'var(--bg-1, #19232a)', ...style }}>
-        {position === 'left' && (
-          <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
-        )}
+      <div
+        className={['pc-md-preview-layout', `pc-md-preview-layout--outline-${position}`, className]
+          .filter(Boolean)
+          .join(' ')}
+        style={style}
+      >
+        {position === 'left' && outlinePanel}
         <div
           ref={ref}
           className="vditor-reset pc-md-preview"
-          style={{ flex: 1, background: 'var(--bg-1, #19232a)', color: 'var(--fg, #e6e6e6)', minWidth: 0, minHeight: 0 }}
         />
-        {position === 'right' && (
-          <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
-        )}
+        {position === 'right' && outlinePanel}
         <style>{`
-          .pc-md-outline ul { list-style: none; padding-left: 12px; margin: 0; }
-          .pc-md-outline > ul { padding-left: 0; }
-          .pc-md-outline li { margin: 2px 0; }
-          .pc-md-outline a { color: var(--fg-mute, #7f9bb4); text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
-          .pc-md-outline a:hover { color: var(--fg, #e7f7ff); background: var(--bg-3, rgba(255,255,255,0.075)); }
-          .pc-md-preview, .pc-md-preview pre, .pc-md-preview code { background-color: var(--bg-1, #0b1220) !important; }
+          ${markdownPreviewOutlineCss}
           ${markdownPreviewReadableCodeCss}
         `}</style>
       </div>
@@ -498,6 +535,161 @@ export function MarkdownPreview({
     </>
   );
 }
+
+function getOutlineTargetId(link: HTMLAnchorElement): string | null {
+  const explicit = link.dataset.targetId?.trim();
+  if (explicit) return explicit;
+  const href = link.getAttribute('href') ?? '';
+  if (!href.startsWith('#') || href.length === 1) return null;
+  try {
+    return decodeURIComponent(href.slice(1));
+  } catch {
+    return href.slice(1);
+  }
+}
+
+const markdownPreviewOutlineCss = `
+  .pc-md-preview-layout {
+    container-type: inline-size;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    gap: clamp(10px, 2vw, 18px);
+    background: var(--bg-1, #19232a);
+  }
+  .pc-md-preview-layout > .pc-md-preview {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    color: var(--fg, #e6e6e6);
+  }
+  .pc-md-outline-shell {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    display: flex;
+    flex: 0 0 clamp(190px, 22cqi, 248px);
+    flex-direction: column;
+    width: clamp(190px, 22cqi, 248px);
+    max-height: min(72vh, calc(100vh - 100px));
+    overflow: hidden;
+    color: var(--fg-mute, #7f9bb4);
+    background: color-mix(in srgb, var(--bg-2, #111b2d), transparent 8%);
+    border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+    border-radius: 10px;
+  }
+  .pc-md-outline__header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 10px 8px;
+    color: var(--fg, #e7f7ff);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+  }
+  .pc-md-outline__legend {
+    color: var(--fg-dim, #9db5c8);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    white-space: nowrap;
+  }
+  .pc-md-outline.vditor-outline {
+    display: block;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .pc-md-outline ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .pc-md-outline ul ul {
+    margin-inline-start: 7px;
+    padding-inline-start: 8px;
+    border-inline-start: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+  }
+  .pc-md-outline li {
+    margin: 2px 0;
+  }
+  .pc-md-outline a {
+    --pc-outline-kind: transparent;
+    position: relative;
+    display: block;
+    padding: 4px 7px 4px 10px;
+    color: var(--fg-mute, #7f9bb4);
+    font-size: 12px;
+    line-height: 1.4;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+    border: 1px solid transparent;
+    border-radius: 6px;
+  }
+  .pc-md-outline a::before {
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    left: 3px;
+    width: 2px;
+    content: '';
+    background: var(--pc-outline-kind);
+    border-radius: 999px;
+  }
+  .pc-md-outline a[data-plan-outline-kind='section'] {
+    color: var(--fg-dim, #b9d4e8);
+    font-weight: 650;
+  }
+  .pc-md-outline a[data-plan-outline-kind='item'] {
+    --pc-outline-kind: var(--accent, #57d7ff);
+  }
+  .pc-md-outline a[data-plan-outline-kind='decision'] {
+    --pc-outline-kind: var(--warning, #fb923c);
+  }
+  .pc-md-outline a:hover {
+    color: var(--fg, #e7f7ff);
+    background: var(--bg-3, rgba(255, 255, 255, 0.075));
+  }
+  .pc-md-outline a:focus-visible {
+    color: var(--fg, #e7f7ff);
+    background: color-mix(in srgb, var(--accent, #57d7ff) 11%, transparent);
+    border-color: color-mix(in srgb, var(--accent, #57d7ff) 58%, transparent);
+    outline: 2px solid color-mix(in srgb, var(--accent, #57d7ff) 56%, transparent);
+    outline-offset: 1px;
+  }
+  .pc-md-outline a[aria-current='location'] {
+    color: var(--fg, #e7f7ff);
+    font-weight: 650;
+    background: color-mix(in srgb, var(--accent, #57d7ff) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent, #57d7ff) 36%, transparent);
+  }
+  .pc-md-preview-layout .pc-md-preview,
+  .pc-md-preview-layout .pc-md-preview pre,
+  .pc-md-preview-layout .pc-md-preview code {
+    background-color: var(--bg-1, #0b1220) !important;
+  }
+  @container (max-width: 680px) {
+    .pc-md-preview-layout {
+      flex-direction: column;
+    }
+    .pc-md-outline-shell {
+      position: relative;
+      order: -1;
+      width: 100%;
+      max-height: none;
+      flex-basis: auto;
+    }
+    .pc-md-outline.vditor-outline {
+      max-height: 190px;
+    }
+  }
+`;
 
 const markdownPreviewReadableCodeCss = `
   .pc-md-preview :is(pre, pre code) {
@@ -518,21 +710,6 @@ const markdownPreviewReadableCodeCss = `
     color: var(--fg-dim, #b9d4e8) !important;
   }
 `;
-
-const outlinePanelStyle: React.CSSProperties = {
-  // Override Vditor's default `.vditor-outline { display: none }` — outlineRender
-  // adds that class to whatever element it renders into.
-  display: 'block',
-  width: 220,
-  flexShrink: 0,
-  position: 'sticky',
-  top: 0,
-  alignSelf: 'flex-start',
-  maxHeight: 'calc(100vh - 100px)',
-  overflowY: 'auto',
-  padding: '8px 4px',
-  borderRight: '1px solid var(--border, #2a2a2a)',
-};
 
 const DEFAULT_TOOLBAR: MarkdownEditorToolbar = [
   'headings', 'bold', 'italic', 'strike', '|',
