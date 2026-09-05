@@ -2534,6 +2534,16 @@ export interface AcceptanceBarAmendmentPreview {
   changedBars: string[];
   projectionCount: number;
   approval: AcceptanceBarApproval;
+  approvalRequired: boolean;
+  sourceSnapshotHash: string;
+  changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
+  revisionMovement: { rubric: { from: number; to: number }; subject: { from: number; to: number } };
+  invalidatedProofRefs: string[];
+  invalidatedScorecardIds: string[];
+  authorVerdictBecomesStale: boolean;
+  reboundWorkItemIds: string[];
+  cohortDisposition: { cohort: string | null; adoptionEpoch: number | null; action: 'preserve' };
+  nextRepair: { code: string; action: string };
 }
 
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
@@ -2681,7 +2691,7 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
-      if (changedBars.length === 0) return null;
+      if (changedBars.length === 0 && !preview) return null;
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
@@ -2774,14 +2784,63 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      if (preview) return {
-        rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
-        subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!, changedBars,
-        reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey,
-        preview: { rubricRevision: oldRubricRevision, subjectPlanRevision: oldSubjectRevision,
-          priorBarSetHash: stored.barSetHash!, nextBarSetHash: String(guard.data.barSetHash),
-          changedBars, projectionCount: clauses.length, approval: approvalRequest },
-      };
+      if (preview) {
+        const { readAcceptanceBarContractSnapshot, diffAcceptanceBarContractSnapshots } =
+          await import('./acceptance-bar-contract-snapshot');
+        // One bounded source snapshot. The candidate is used ONLY for the
+        // shared semantic comparison, never as an authoritative gate verdict.
+        const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint);
+        if (snapshot.completeness.truncated || snapshot.completeness.problems.some((problem) =>
+          problem.code === 'bar_snapshot_source_unavailable')) {
+          throw new Error('acceptance_bar_amendment_preview_source_incomplete');
+        }
+        const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
+        const byKey = new Map(nextCriteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
+        const candidate = { ...snapshot, bars: snapshot.bars.map((bar) => {
+          const criterion = byKey.get(bar.barKey)!;
+          return { ...bar, barHash: criterion.barHash ?? null, model: criterion.model ?? '',
+            method: criterion.method ?? '', falsifier: criterion.driftMarkers ?? '',
+            role: criterion.role ?? null, mandatory: criterion.mandatory ?? null,
+            requiredScope: criterion.requiredScope ?? [], evidencePlane: criterion.evidencePlane ?? null,
+            passRatings: criterion.passRatings ?? [], coversBarKeys: criterion.coversBarKeys ?? [],
+            provenance: criterion.barProvenance ?? null };
+        }) };
+        const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
+        const open = changedBars.length ? await tx<Array<{ work_item_id: string }>>`
+          SELECT DISTINCT e.work_item_id FROM harness_shared.work_item_spec_revision_edges e
+            JOIN harness_shared.work_items w ON w.workspace_id=e.workspace_id
+             AND w.harness_slug=e.harness_slug AND w.feature_id=e.work_item_id
+            JOIN harness_shared.plan_spec_clauses c ON c.workspace_id=e.workspace_id
+             AND c.harness_slug=e.harness_slug AND c.plan_slug=e.plan_slug AND c.spec_id=e.spec_id
+           WHERE e.workspace_id=${subjectScope.workspaceId} AND e.harness_slug=${subjectScope.harnessSlug}
+             AND e.plan_slug=${subjectPlanHint} AND e.spec_id=ANY(${clauses.map((clause) => clause.spec_id)}::text[])
+             AND e.spec_revision=c.current_revision
+             AND w.status NOT IN ('done','dropped','resolved','closed','passed','deprecated')
+           ORDER BY e.work_item_id LIMIT 1001` : [];
+        if (open.length > 1000) throw new Error('acceptance_bar_amendment_preview_work_truncated');
+        const missingMethod = nextCriteria.some((criterion) => criterion.mandatory && !criterion.method?.trim());
+        return {
+          rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+          subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!, changedBars,
+          reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey,
+          preview: { rubricRevision: oldRubricRevision, subjectPlanRevision: oldSubjectRevision,
+            priorBarSetHash: stored.barSetHash!, nextBarSetHash: String(guard.data.barSetHash),
+            changedBars, projectionCount: clauses.length, approval: approvalRequest,
+            approvalRequired: changedBars.length > 0, sourceSnapshotHash: snapshot.contentHash, changes,
+            revisionMovement: { rubric: { from: oldRubricRevision, to: nextRubricRevision },
+              subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision } },
+            invalidatedProofRefs: [...new Set(snapshot.bars.flatMap((bar) => bar.proof.evidenceRefs))].sort(),
+            invalidatedScorecardIds: [...snapshot.sourceRevisions.scorecardIds].sort(),
+            authorVerdictBecomesStale: ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
+            reboundWorkItemIds: open.map((row) => row.work_item_id),
+            cohortDisposition: { cohort: snapshot.plan?.cohort ?? null,
+              adoptionEpoch: snapshot.plan?.adoptionEpoch ?? null, action: 'preserve' as const },
+            nextRepair: missingMethod
+              ? { code: 'bar_snapshot_method_missing', action: 'Fill every mandatory METHOD before vetting or grading.' }
+              : { code: 'bar_snapshot_proof_stale', action: 'Bind proof to the new spec revisions, then refresh vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.' },
+          },
+        };
+      }
       const decisionId = allocateNextDecisionId(subjectRow.content);
       const decisionBody = [
         `Amendment-Id: ${idempotencyKey}`,
