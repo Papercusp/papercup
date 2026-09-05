@@ -34,7 +34,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   listRelations: listRelationsMock,
 }));
 
-import pgQueryTool from './pg_query';
+import pgQueryTool, { PG_QUERY_MODE } from './pg_query';
 import { PgReadQueryTimeoutError } from '../../pg-read-query';
 
 const OK_RESULT = { rowCount: 1, truncated: false, fields: ['x'], elapsedMs: 3, rows: [{ x: 1 }] };
@@ -113,7 +113,9 @@ describe('dev:pg_query — P-005 guard wiring', () => {
 
   it('documents the unwrapped root shape for code:run callers', () => {
     const returns = (pgQueryTool as unknown as { guidance?: { returns?: string } }).guidance?.returns;
-    expect(returns).toContain('{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }');
+    // P-011 added the `mode` discriminator to the front of this shape; the rest of
+    // the documented root is unchanged, and code:run still receives it unwrapped.
+    expect(returns).toContain('{ mode, rowCount, truncated, fields, elapsedMs, rows, advisory?, positiveControl?, absence? }');
     expect(returns).toContain('absence.status:"unverified"');
     expect(returns).toContain('`code:run` returns this root directly');
   });
@@ -141,7 +143,9 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       {} as never,
     );
 
-    expect(res).toEqual({ data: description });
+    // P-011: the envelope carries its `mode` discriminator alongside the
+    // description's own fields, which are passed through unchanged.
+    expect(res).toEqual({ data: { mode: 'describe', ...description } });
     expect(res).not.toHaveProperty('content');
   });
 
@@ -152,7 +156,8 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     const res = await pgQueryTool.handler({ describe: 'harness_shared.tool_*' } as never, {} as never);
 
     expect(res).toEqual({
-      data: { pattern: 'harness_shared.tool_*', relationCount: 1, relations },
+      // P-011: a glob LIST is its own mode — it returns names, not column metadata.
+      data: { mode: 'describe-list', pattern: 'harness_shared.tool_*', relationCount: 1, relations },
     });
     expect(res).not.toHaveProperty('content');
   });
@@ -761,5 +766,74 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payload.error)).toContain('WHOLE call');
     expect(payload).not.toHaveProperty('knownColumns');
     expect(describeColumnsMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P-011 (fleet-friction-remediation-2026-08-21) — the OUTPUT counterpart to the
+ * "mutually exclusive input alternatives" test above. The input side was already a
+ * discriminated union; the RESULT side was not, and callers had to tell three
+ * structurally disjoint payloads apart by probing for `rows` vs `columns` vs
+ * `relations` — the schema-guessing the describe path exists to end.
+ */
+describe('dev:pg_query — result envelope is a discriminated union (P-011)', () => {
+  const dataOf = (res: unknown) => (res as { data: Record<string, unknown> }).data;
+
+  it('stamps mode:"query" on a SQL result', async () => {
+    const res = await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never);
+    expect(payloadOf(res as never).mode).toBe(PG_QUERY_MODE.query);
+  });
+
+  it('stamps mode:"describe" on a single-relation description, without dropping its fields', async () => {
+    describeRelationMock.mockResolvedValue({
+      relation: 'harness_shared.work_items',
+      kind: 'table',
+      columns: [{ name: 'feature_id' }],
+      indexes: [],
+      constraints: [],
+    });
+    const d = dataOf(await pgQueryTool.handler({ describe: 'harness_shared.work_items' } as never, {} as never));
+    expect(d.mode).toBe(PG_QUERY_MODE.describe);
+    // The discriminator is SPREAD ONTO the description, so adding it must not
+    // shadow or drop what the caller actually came for.
+    expect(d.relation).toBe('harness_shared.work_items');
+    expect(d.columns).toEqual([{ name: 'feature_id' }]);
+  });
+
+  it('stamps mode:"describe-list" on a glob listing', async () => {
+    listRelationsMock.mockResolvedValue([{ relation: 'harness_shared.work_items' }]);
+    const d = dataOf(await pgQueryTool.handler({ describe: 'harness_shared.work_*' } as never, {} as never));
+    expect(d.mode).toBe(PG_QUERY_MODE.describeList);
+    expect(d.relationCount).toBe(1);
+  });
+
+  it('documents EVERY mode in `returns`, so the published union cannot drift from the emitted one', () => {
+    const modes = Object.values(PG_QUERY_MODE);
+    expect(new Set(modes).size).toBe(modes.length); // distinct, or the discriminator discriminates nothing
+
+    // Read the contract the way the projection does — `guidance.returns`, not a
+    // top-level field. Assert it RESOLVED before asserting on its content: an
+    // undefined here would make every toContain below vacuous, which is how a
+    // doc-pin silently stops pinning anything.
+    const returns = pgQueryTool.guidance?.returns;
+    expect(typeof returns).toBe('string');
+
+    // Add a mode to PG_QUERY_MODE without documenting it and this fails. That is
+    // the point: the contract is PINNED to the code rather than hand-maintained.
+    for (const mode of modes) expect(returns).toContain(`"${mode}"`);
+  });
+
+  it('CONTROL: `mode` is the ONLY key all three envelopes share — which is why probing was unsound', async () => {
+    describeRelationMock.mockResolvedValue({ relation: 'r', kind: 'table', columns: [], indexes: [], constraints: [] });
+    listRelationsMock.mockResolvedValue([]);
+    const query = payloadOf((await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never)) as never);
+    const one = dataOf(await pgQueryTool.handler({ describe: 'r' } as never, {} as never));
+    const list = dataOf(await pgQueryTool.handler({ describe: 'r*' } as never, {} as never));
+
+    const shared = Object.keys(query).filter((k) => k in one && k in list);
+    expect(shared).toEqual(['mode']);
+    // Guard the premise too: if these ever genuinely converge, the union above is
+    // no longer the right shape and this test should be the thing that says so.
+    expect(Object.keys(one)).not.toEqual(Object.keys(list));
   });
 });

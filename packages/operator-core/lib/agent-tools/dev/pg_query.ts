@@ -172,7 +172,15 @@ export default defineTool({
     chaining:
       "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. Do not search `tool_invocations.args_json::text` or `metadata_json::text` with LIKE/ILIKE without a SQL LIMIT; `maxRows` does not bound the WHERE scan. Prefer indexed scalar predicates or `activity:tool-log`/`dev:telemetry`; pass `allowUnboundedJsonSearch: true` only for deliberate forensic work. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
-      'SQL: `{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }`; zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. `code:run` returns this root directly. Describe returns relation metadata. bigint/int8 stays exact.',
+      'A DISCRIMINATED UNION on `mode` — switch on it, do not probe for `rows` vs `columns`. ' +
+      `\`mode:"${PG_QUERY_MODE.query}"\` (you passed \`sql\`): ` +
+      '`{ mode, rowCount, truncated, fields, elapsedMs, rows, advisory?, positiveControl?, absence? }`; ' +
+      'zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. ' +
+      `\`mode:"${PG_QUERY_MODE.describe}"\` (you passed a relation name): ` +
+      '`{ mode, relation, kind, columns[], indexes[], constraints[] }`. ' +
+      `\`mode:"${PG_QUERY_MODE.describeList}"\` (you passed a \`*\`/glob): ` +
+      '`{ mode, pattern, relationCount, relations[] }` — names only, NOT column metadata. ' +
+      'Errors are `{ error, reason }` and carry no `mode`. `code:run` returns this root directly. bigint/int8 stays exact.',
     seeAlso: [
       'work_items:claimable',
       'plans:list',
