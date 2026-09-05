@@ -185,10 +185,13 @@ BACKUP_DB_PORT="${BACKUP_DB_PORT:-5432}"
 BACKUP_CONSUMERS_TIMEOUT_S="${BACKUP_CONSUMERS_TIMEOUT_S:-10}"
 # TOAST-bloat signature. A high-churn large-bytea table ratchets its TOAST relation
 # upward forever because plain VACUUM marks TOAST pages reusable but never returns
-# them to the OS. The discriminator is TOAST BYTES PER LIVE ROW, which separates bloat
-# from a legitimately large table without detoasting anything: measured 2026-09-02,
-# gateway_payload_blobs was 51 MiB/row (60.59 GiB of TOAST over 1,176 rows, ~98.7%
-# bloat) while session_archive_files — genuine stored content — was 0.23 MiB/row.
+# them to the OS. The discriminator is TOAST BYTES PER CATALOG-ESTIMATED ROW, which
+# separates bloat from a legitimately large table without detoasting anything:
+# measured 2026-09-02, gateway_payload_blobs was 51 MiB/row (60.59 GiB of TOAST over
+# 1,176 rows, ~98.7% bloat) while session_archive_files — genuine stored content —
+# was 0.23 MiB/row. The denominator must come from persisted pg_class metadata:
+# pg_stat_user_tables.n_live_tup is a volatile stats estimate that can reset to a
+# tiny value while the catalog's reltuples estimate remains accurate.
 BACKUP_BLOAT_MIN_TOAST_GIB="${BACKUP_BLOAT_MIN_TOAST_GIB:-5}"
 BACKUP_BLOAT_MIB_PER_ROW="${BACKUP_BLOAT_MIB_PER_ROW:-8}"
 # This tracks the volume the DUMPS land on — a separate capacity domain from PGDATA/root,
@@ -385,21 +388,30 @@ top_db_consumers() {
   # embedded in generated prose is invisible to every typecheck and test in the repo,
   # so the only safe form is the one that cannot go stale: read it at alert time.
   local sql out
-  sql="SELECT round(pg_total_relation_size(c.oid)/1073741824.0,2)||' GiB  '||n.nspname||'.'||c.relname||
-              CASE WHEN COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::bigint
-                        AND COALESCE(s.n_live_tup,0) > 0
-                        AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
-                   THEN '   <<< LIKELY TOAST BLOAT: '||round(pg_total_relation_size(c.reltoastrelid)/1073741824.0,2)
-                        ||' GiB of TOAST over only '||s.n_live_tup||' live rows ('
-                        ||round((pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup,1)
-                        ||' MiB/row). Plain VACUUM cannot return TOAST pages to the OS; only a rewrite can.'
-                   ELSE '' END
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-        WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
-        ORDER BY pg_total_relation_size(c.oid) DESC
-        LIMIT 6"
+  sql="WITH relation_sizes AS (
+           SELECT c.oid,
+                  n.nspname,
+                  c.relname,
+                  pg_total_relation_size(c.oid)::numeric AS relation_bytes,
+                  COALESCE(pg_total_relation_size(c.reltoastrelid),0)::numeric AS toast_bytes,
+                  GREATEST(c.reltuples,0)::numeric AS estimated_rows
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r','p')
+              AND n.nspname NOT IN ('pg_catalog','information_schema')
+         )
+         SELECT round(relation_bytes/1073741824.0,2)||' GiB  '||nspname||'.'||relname||
+                CASE WHEN toast_bytes > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::numeric
+                           AND estimated_rows > 0
+                           AND (toast_bytes/1048576.0)/estimated_rows > ${BACKUP_BLOAT_MIB_PER_ROW}
+                     THEN '   <<< LIKELY TOAST BLOAT: '||round(toast_bytes/1073741824.0,2)
+                          ||' GiB of TOAST over '||round(estimated_rows,0)||' catalog-estimated live rows ('
+                          ||round((toast_bytes/1048576.0)/estimated_rows,1)
+                          ||' MiB/estimated row). Plain VACUUM cannot return TOAST pages to the OS; only a rewrite can.'
+                     ELSE '' END
+           FROM relation_sizes
+          ORDER BY relation_bytes DESC
+          LIMIT 6"
   # 2>&1, deliberately. Sending stderr to /dev/null makes a BROKEN QUERY indistinguishable
   # from an empty result, so the detector reads as "nothing to report" while being dead.
   # That is not hypothetical: the first version of this query multiplied two int4 literals
@@ -513,21 +525,34 @@ check_db_relation_bloat() {
   # that continuously writes and deletes large bytea rows therefore ratchets its TOAST
   # relation upward permanently, and a HIGH autovacuum_count is evidence of that
   # treadmill rather than of health. Only a rewrite reclaims the space.
+  #
+  # Use pg_class.reltuples as the denominator. It is persisted relation metadata
+  # refreshed by VACUUM/ANALYZE and survives a stats-collector reset; the volatile
+  # pg_stat_user_tables.n_live_tup estimate can temporarily collapse to a tiny
+  # number, turning a healthy large archive into a false bloat alarm. A non-positive
+  # reltuples value means the catalog has no usable estimate, so this heuristic
+  # deliberately emits no verdict instead of dividing by a made-up row count.
   local bloated red_marker sql host title body
-  sql="SELECT n.nspname||'.'||c.relname||'  '
-              ||round(pg_total_relation_size(c.reltoastrelid)/1073741824.0,2)||' GiB of TOAST over '
-              ||s.n_live_tup||' live rows ('
-              ||round((pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup,1)||' MiB/row)'
-         FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         JOIN pg_stat_user_tables s ON s.relid = c.oid
-        WHERE c.relkind IN ('r','p')
-          AND n.nspname NOT IN ('pg_catalog','information_schema')
-          AND COALESCE(pg_total_relation_size(c.reltoastrelid),0) > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::bigint
-          AND s.n_live_tup > 0
-          AND (pg_total_relation_size(c.reltoastrelid)/1048576.0)/s.n_live_tup > ${BACKUP_BLOAT_MIB_PER_ROW}
-        ORDER BY pg_total_relation_size(c.reltoastrelid) DESC
-        LIMIT 5"
+  sql="WITH relation_sizes AS (
+           SELECT n.nspname,
+                  c.relname,
+                  COALESCE(pg_total_relation_size(c.reltoastrelid),0)::numeric AS toast_bytes,
+                  GREATEST(c.reltuples,0)::numeric AS estimated_rows
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r','p')
+              AND n.nspname NOT IN ('pg_catalog','information_schema')
+         )
+         SELECT nspname||'.'||relname||'  '
+                ||round(toast_bytes/1073741824.0,2)||' GiB of TOAST over '
+                ||round(estimated_rows,0)||' catalog-estimated live rows ('
+                ||round((toast_bytes/1048576.0)/estimated_rows,1)||' MiB/estimated row)'
+           FROM relation_sizes
+          WHERE toast_bytes > ${BACKUP_BLOAT_MIN_TOAST_GIB}*1073741824::numeric
+            AND estimated_rows > 0
+            AND (toast_bytes/1048576.0)/estimated_rows > ${BACKUP_BLOAT_MIB_PER_ROW}
+          ORDER BY toast_bytes DESC
+          LIMIT 5"
   # 2>&1 for the same reason as top_db_consumers: a detector whose query errors must say
   # so, not fall silent. A silent detector is indistinguishable from a healthy database.
   bloated="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
@@ -543,19 +568,23 @@ check_db_relation_bloat() {
     rm -f "$red_marker"
     return 0
   fi
-  log "TOAST-bloat signature detected on $(printf '%s\n' "$bloated" | grep -c .) relation(s) (threshold: >${BACKUP_BLOAT_MIN_TOAST_GIB} GiB TOAST and >${BACKUP_BLOAT_MIB_PER_ROW} MiB/row)."
+  log "TOAST-bloat signature detected on $(printf '%s\n' "$bloated" | grep -c .) relation(s) (threshold: >${BACKUP_BLOAT_MIN_TOAST_GIB} GiB TOAST and >${BACKUP_BLOAT_MIB_PER_ROW} MiB/estimated row)."
   host="$(hostname 2>/dev/null || echo unknown-host)"
   title="Postgres TOAST bloat: $(printf '%s\n' "$bloated" | head -1 | awk '{print $1}') is mostly dead TOAST pages on ${host}"
-  body="Relations carrying the TOAST-bloat signature (>${BACKUP_BLOAT_MIN_TOAST_GIB} GiB of TOAST AND >${BACKUP_BLOAT_MIB_PER_ROW} MiB of TOAST per live row):
+  body="Relations carrying the TOAST-bloat signature (>${BACKUP_BLOAT_MIN_TOAST_GIB} GiB of TOAST AND >${BACKUP_BLOAT_MIB_PER_ROW} MiB of TOAST per catalog-estimated row):
 
 ${bloated}
 
-WHY THIS IS ALMOST CERTAINLY RECLAIMABLE, NOT DATA: TOAST bytes per live row is the
+WHY THIS IS ALMOST CERTAINLY RECLAIMABLE, NOT DATA: TOAST bytes per catalog-estimated row is the
 discriminator. A legitimately large table holds a plausible amount per row; a bloated
 one holds an absurd amount, because the rows it is charged for are long deleted. Plain
 VACUUM marks TOAST pages reusable but never hands them back to the OS, so a high-churn
 large-bytea table ratchets upward forever and a high autovacuum_count means the
 treadmill is running, not that the table is healthy.
+
+The row denominator is pg_class.reltuples, a persisted catalog estimate. The volatile
+pg_stat_user_tables.n_live_tup estimate is intentionally not used: after a stats reset it
+can briefly report a tiny count for a healthy large table and create a false bloat alarm.
 
 CONFIRM before reclaiming — compare the TOAST size against the live payload:
   SELECT pg_size_pretty(pg_total_relation_size(reltoastrelid)) FROM pg_class c
@@ -1232,6 +1261,67 @@ $(trend_seed 7200 10485760)" \
   else
     printf '  ok    database helpers capture and screen psql errors instead of falling silent\n'; p=$((p+1))
   fi
+
+  # ── WI-2147002 regression guard: persisted row estimate, not volatile stats ──
+  # Reproduce the incident with a fake psql wrapper. In the stale-stats fixture,
+  # pg_stat_user_tables.n_live_tup is 25 while pg_class.reltuples is ~99k for a
+  # healthy 22 GiB archive; an implementation that trusts n_live_tup therefore
+  # returns a false-positive row. The genuine-bloat fixture is the positive control:
+  # the persisted estimate is small enough that 60 GiB of TOAST must still alarm.
+  selftest_db_bin="$t/db-bin"; mkdir -p "$selftest_db_bin"
+  cat >"$selftest_db_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+query=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-c" ]; then
+    shift
+    query="${1:-}"
+    break
+  fi
+  shift
+done
+if [ -n "${SELFTEST_PSQL_QUERY_LOG:-}" ]; then
+  printf '%s\n---QUERY---\n' "$query" >>"$SELFTEST_PSQL_QUERY_LOG"
+fi
+case "${SELFTEST_PSQL_MODE:-}" in
+  stale-stats)
+    [[ "$query" == *n_live_tup* ]] &&
+      printf '%s\n' 'harness_shared.session_archive_files 22.02 GiB of TOAST over 25 live rows (11274.5 MiB/row)'
+    ;;
+  genuine-bloat)
+    [[ "$query" == *reltuples* ]] &&
+      printf '%s\n' 'harness_shared.gateway_payload_blobs 60.59 GiB of TOAST over 1176 catalog-estimated live rows (51.0 MiB/estimated row)'
+    ;;
+esac
+EOF
+  chmod +x "$selftest_db_bin/sudo"
+  check_bloat_estimate() {
+    local name="$1" mode="$2" want_marker="$3"; shift 3
+    rm -rf "${t:?}/state" "$t/dump/pg" "$t/db-data" "$t/psql-query.log"
+    mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart" "$t/db-data"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/db-data" BACKUP_DISK_WARN_PCT=0 \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" BACKUP_ALERT_FORCE=1 \
+        SELFTEST_PSQL_MODE="$mode" SELFTEST_PSQL_QUERY_LOG="$t/psql-query.log" \
+        PATH="$selftest_db_bin:$PATH" \
+        "$@" bash "$self" >/dev/null 2>>"$selftest_stderr"
+    local got_marker=no query_count=0 persisted_count=0
+    [ -f "$t/state/db-relation-bloat-ei-filed" ] && got_marker=yes
+    query_count="$(grep -c -- '---QUERY---' "$t/psql-query.log" 2>/dev/null || true)"
+    persisted_count="$(grep -c -- 'reltuples' "$t/psql-query.log" 2>/dev/null || true)"
+    if [ "$got_marker" = "$want_marker" ] && [ "$query_count" -eq 2 ] && [ "$persisted_count" -eq 2 ]; then
+      printf '  ok    %s (marker=%s, persisted-estimate queries=%s)\n' "$name" "$got_marker" "$persisted_count"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s and two persisted-estimate queries, got marker=%s, queries=%s, persisted=%s\n' \
+        "$name" "$want_marker" "$got_marker" "$query_count" "$persisted_count"; f=$((f+1))
+    fi
+  }
+  check_bloat_estimate "stale stats do not create a false TOAST-bloat alarm" stale-stats no
+  check_bloat_estimate "persisted row estimate still flags genuine TOAST bloat" genuine-bloat yes
+  printf '  ---- %d passed, %d failed (post TOAST-row-estimate block)\n' "$p" "$f"
 
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
 
