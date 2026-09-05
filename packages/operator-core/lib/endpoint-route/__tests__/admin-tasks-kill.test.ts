@@ -97,7 +97,8 @@ describe('the CSRF edge', () => {
   it('403s a cross-origin browser POST BEFORE anything is signalled', async () => {
     const res = await post(LOOPBACK, { taskId: 't1' }, { origin: 'https://evil.example' });
     expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({ error: 'cross_origin_blocked' });
+    // route-stack's errorResponse envelope: { error: { code, message } }.
+    expect(await res.json()).toMatchObject({ error: { code: 'cross_origin_blocked' } });
     expect(killTask).not.toHaveBeenCalled();
   });
 
