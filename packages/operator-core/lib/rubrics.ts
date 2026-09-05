@@ -2326,6 +2326,13 @@ export type AmendableCriterionField = (typeof AMENDABLE_CRITERION_FIELDS)[number
 
 export interface AmendRubricInput {
   rubricId: string;
+  /**
+   * Acceptance-kind only: replace the COMPLETE criterion set through the
+   * cross-plan BAR amendment transaction. This is the post-seed escape hatch
+   * for adding a declared R-N BAR or binding structured checks without routing
+   * through rubrics:propose's pre-start readiness gate.
+   */
+  criteria?: ProposeRubricCriterion[];
   /** Patch ONE criterion's prose field. `append` adds a paragraph (never guarded — it
    *  can only grow the procedure); `replace` swaps the field and inherits the WI-4287
    *  shrink guard via proposeRubric. */
@@ -2374,6 +2381,8 @@ export interface AmendRubricInput {
   approvedAt?: string;
   /** Test-only rollback probe; production callers should omit it. */
   faultInjection?: 'after-decision' | 'after-rubric' | 'after-projection' | 'after-rebind';
+  /** Workspace root used to validate structured test checks and cited paths. */
+  checkPathRoot?: string;
   by?: string;
 }
 
@@ -2384,11 +2393,32 @@ export interface AmendRubricInput {
  * throws teaching errors on an unknown criterion key / an empty amendment.
  */
 export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
-  if (!input.criterion && !input.criterionClass && !input.criterionEvidencePlane && input.methodRef === undefined && input.composes === undefined) {
-    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes');
+  if (
+    !input.criteria &&
+    !input.criterion &&
+    !input.criterionClass &&
+    !input.criterionEvidencePlane &&
+    input.methodRef === undefined &&
+    input.composes === undefined
+  ) {
+    throw new Error(
+      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes',
+    );
+  }
+  if (input.criteria && (input.criterion || input.criterionClass || input.criterionEvidencePlane)) {
+    throw new Error(
+      'invalid_args: amendRubric: criteria is the complete replacement set and cannot be combined with criterion, criterionClass, or criterionEvidencePlane patches',
+    );
+  }
+  if (input.criteria && stored.kind !== 'acceptance') {
+    throw new Error(
+      'invalid_args: amendRubric: complete criteria replacement is acceptance-kind only; use rubrics:propose for a standard rubric revision',
+    );
   }
 
-  let criteria = stored.criteria;
+  let criteria: ProposeRubricCriterion[] = input.criteria
+    ? input.criteria.map((criterion) => ({ ...criterion }))
+    : stored.criteria;
   if (input.criterion) {
     const { key, field, mode, text } = input.criterion;
     const target = stored.criteria.find((c) => c.key === key);
@@ -2472,6 +2502,7 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(stored.status === 'active' && stored.ratifiedBy ? { ratifiedBy: stored.ratifiedBy } : {}),
     ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
+    ...(input.checkPathRoot !== undefined ? { checkPathRoot: input.checkPathRoot } : {}),
   };
 }
 
@@ -2565,13 +2596,22 @@ function decisionHasAmendmentKey(body: string, key: string): boolean {
 }
 
 function amendmentRequestHash(input: AmendRubricInput): string {
-  return hashPlanContent(JSON.stringify([
-    input.rubricId, input.actorId ?? input.by ?? null, input.reason ?? null,
-    input.criterion ? [input.criterion.key, input.criterion.field, input.criterion.mode, input.criterion.text] : null,
-    input.criterionClass ? [input.criterionClass.key, input.criterionClass.class] : null,
-    input.criterionEvidencePlane ? [input.criterionEvidencePlane.key, input.criterionEvidencePlane.evidencePlane] : null,
-    input.methodRef ?? null, input.composes ?? null, input.approvalRef ?? null,
-  ]));
+  return hashPlanContent(
+    JSON.stringify([
+      input.rubricId,
+      input.actorId ?? input.by ?? null,
+      input.reason ?? null,
+      input.criteria ?? null,
+      input.criterion ? [input.criterion.key, input.criterion.field, input.criterion.mode, input.criterion.text] : null,
+      input.criterionClass ? [input.criterionClass.key, input.criterionClass.class] : null,
+      input.criterionEvidencePlane
+        ? [input.criterionEvidencePlane.key, input.criterionEvidencePlane.evidencePlane]
+        : null,
+      input.methodRef ?? null,
+      input.composes ?? null,
+      input.approvalRef ?? null,
+    ]),
+  );
 }
 
 function amendmentDate(): string {
@@ -2659,6 +2699,8 @@ async function amendAcceptanceBarRubric(
       const amended = applyRubricAmendment(stored, input);
       const built = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
+      assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+      assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
       const actorId = (input.actorId ?? input.by ?? stored.createdBy ?? '').trim();
       const reason = (input.reason ?? `rubrics:amend ${input.rubricId}`).trim();
       const oldRubricRevision = Number(rubricRow.version);
@@ -2700,18 +2742,29 @@ async function amendAcceptanceBarRubric(
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
       const approvalRequest: AcceptanceBarApproval = {
-        schemaVersion: 1, kind: 'acceptance-bar-amendment-approval',
-        rubricRef: input.rubricId, subjectPlan: subjectPlanHint,
-        bars: changedBars.map((barKey) => ({ barKey,
-          priorBarHash: stored.criteria.find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? '',
-          nextBarHash: String((guard.data.criteria as Array<Record<string, unknown>>)
-            .find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? ''),
+        schemaVersion: 1,
+        kind: 'acceptance-bar-amendment-approval',
+        rubricRef: input.rubricId,
+        subjectPlan: subjectPlanHint,
+        bars: changedBars.map((barKey) => ({
+          barKey,
+          priorBarHash:
+            stored.criteria.find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? null,
+          nextBarHash:
+            ((guard.data.criteria as Array<Record<string, unknown>>).find(
+              (criterion) => (criterion.barKey ?? criterion.key) === barKey,
+            )?.barHash as string | undefined) ?? null,
         })),
       };
-      const approval = preview ? null : await resolveAcceptanceBarApproval(tx as never, {
-        workspaceId: subjectScope.workspaceId, approvalRef: input.approvalRef,
-        approvedBy: input.approvedBy, expected: approvalRequest,
-      });
+      const approval =
+        preview || changedBars.length === 0
+          ? null
+          : await resolveAcceptanceBarApproval(tx as never, {
+              workspaceId: subjectScope.workspaceId,
+              approvalRef: input.approvalRef,
+              approvedBy: input.approvedBy,
+              expected: approvalRequest,
+            });
       if (approval) {
         const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
           sql: tx as never, workspaceId: subjectScope.workspaceId,
@@ -2769,7 +2822,26 @@ async function amendAcceptanceBarRubric(
            AND r.source_bar_key IS NOT NULL
          ORDER BY c.spec_id LIMIT 1001`;
       if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
-      const itemIds = [...new Set(clauses.map((clause) => clause.plan_item_id))];
+      const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+      const requirements = parseRequirementBars(subjectRow.content);
+      if (!requirements.ok) {
+        throw new Error(
+          `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
+        );
+      }
+      const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      if (!desiredMappings.ok) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) => problem.code).join(',')}`,
+        );
+      }
+      const desiredMappingByBar = new Map(desiredMappings.mappings.map((mapping) => [mapping.barKey, mapping]));
+      const itemIds = [
+        ...new Set([
+          ...clauses.map((clause) => clause.plan_item_id),
+          ...desiredMappings.mappings.flatMap((mapping) => mapping.planItemIds),
+        ]),
+      ];
       const itemRows = itemIds.length
         ? await tx<{ item_id: string; status: string }[]>`
             SELECT item_id, status FROM harness_shared.plan_items
@@ -2780,8 +2852,11 @@ async function amendAcceptanceBarRubric(
         : [];
       const liveItems = new Set(itemRows.filter((row) => row.status !== 'dropped').map((row) => row.item_id));
       for (const barKey of changedBars) {
-        const mapped = clauses.filter((clause) => clause.source_bar_key === barKey);
-        if (!mapped.some((clause) => liveItems.has(clause.plan_item_id))) {
+        const mappedItemIds = new Set([
+          ...clauses.filter((clause) => clause.source_bar_key === barKey).map((clause) => clause.plan_item_id),
+          ...(desiredMappingByBar.get(barKey)?.planItemIds ?? []),
+        ]);
+        if (![...mappedItemIds].some((planItemId) => liveItems.has(planItemId))) {
           throw new Error(
             `acceptance_bar_amendment_no_live_discharge_mapping: BAR '${barKey}' has no live mapped plan item`,
           );
@@ -2799,16 +2874,36 @@ async function amendAcceptanceBarRubric(
           throw new Error('acceptance_bar_amendment_preview_source_incomplete');
         }
         const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
-        const byKey = new Map(nextCriteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
-        const candidate = { ...snapshot, bars: snapshot.bars.map((bar) => {
-          const criterion = byKey.get(bar.barKey)!;
-          return { ...bar, barHash: criterion.barHash ?? null, model: criterion.model ?? '',
-            method: criterion.method ?? '', falsifier: criterion.driftMarkers ?? '',
-            role: criterion.role ?? null, mandatory: criterion.mandatory ?? null,
-            requiredScope: criterion.requiredScope ?? [], evidencePlane: criterion.evidencePlane ?? null,
-            passRatings: criterion.passRatings ?? [], coversBarKeys: criterion.coversBarKeys ?? [],
-            provenance: criterion.barProvenance ?? null };
-        }) };
+        const priorByKey = new Map(snapshot.bars.map((bar) => [bar.barKey, bar]));
+        const candidate = {
+          ...snapshot,
+          bars: nextCriteria
+            .filter((criterion) => criterion.role !== 'disclosure')
+            .map((criterion) => {
+              const barKey = criterion.barKey ?? criterion.key;
+              const prior = priorByKey.get(barKey);
+              const mapping = desiredMappingByBar.get(barKey);
+              return {
+                ...(prior ?? {}),
+                barKey,
+                barHash: criterion.barHash ?? null,
+                model: criterion.model ?? '',
+                method: criterion.method ?? '',
+                falsifier: criterion.driftMarkers ?? '',
+                role: criterion.role ?? null,
+                mandatory: criterion.mandatory ?? null,
+                requiredScope: criterion.requiredScope ?? [],
+                evidencePlane: criterion.evidencePlane ?? null,
+                passRatings: criterion.passRatings ?? [],
+                coversBarKeys: criterion.coversBarKeys ?? [],
+                provenance: criterion.barProvenance ?? null,
+                mappings: (mapping?.planItemIds ?? []).map((planItemId) => ({
+                  planItemId,
+                  specId: `AUTO-BAR-${barKey}-${planItemId}`,
+                })),
+              };
+            }),
+        };
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
         const open = changedBars.length ? await tx<Array<{ work_item_id: string }>>`
           SELECT DISTINCT e.work_item_id FROM harness_shared.work_item_spec_revision_edges e
@@ -2824,24 +2919,49 @@ async function amendAcceptanceBarRubric(
         if (open.length > 1000) throw new Error('acceptance_bar_amendment_preview_work_truncated');
         const missingMethod = nextCriteria.some((criterion) => criterion.mandatory && !criterion.method?.trim());
         return {
-          rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
-          subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!, changedBars,
-          reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey,
-          preview: { rubricRevision: oldRubricRevision, subjectPlanRevision: oldSubjectRevision,
-            priorBarSetHash: stored.barSetHash!, nextBarSetHash: String(guard.data.barSetHash),
-            changedBars, projectionCount: clauses.length, approval: approvalRequest,
-            approvalRequired: changedBars.length > 0, sourceSnapshotHash: snapshot.contentHash, changes,
-            revisionMovement: { rubric: { from: oldRubricRevision, to: nextRubricRevision },
-              subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision } },
+          rubric: stored,
+          decisionId: '',
+          rubricRevision: oldRubricRevision,
+          subjectPlanRevision: oldSubjectRevision,
+          barSetHash: stored.barSetHash!,
+          changedBars,
+          reboundContracts: 0,
+          invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey,
+          preview: {
+            rubricRevision: oldRubricRevision,
+            subjectPlanRevision: oldSubjectRevision,
+            priorBarSetHash: stored.barSetHash!,
+            nextBarSetHash: String(guard.data.barSetHash),
+            changedBars,
+            projectionCount: candidate.bars.reduce((count, bar) => count + bar.mappings.length, 0),
+            approval: approvalRequest,
+            approvalRequired: changedBars.length > 0,
+            sourceSnapshotHash: snapshot.contentHash,
+            changes,
+            revisionMovement: {
+              rubric: { from: oldRubricRevision, to: nextRubricRevision },
+              subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision },
+            },
             invalidatedProofRefs: [...new Set(snapshot.bars.flatMap((bar) => bar.proof.evidenceRefs))].sort(),
             invalidatedScorecardIds: [...snapshot.sourceRevisions.scorecardIds].sort(),
             authorVerdictBecomesStale: ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
             reboundWorkItemIds: open.map((row) => row.work_item_id),
-            cohortDisposition: { cohort: snapshot.plan?.cohort ?? null,
-              adoptionEpoch: snapshot.plan?.adoptionEpoch ?? null, action: 'preserve' as const },
+            cohortDisposition: {
+              cohort: snapshot.plan?.cohort ?? null,
+              adoptionEpoch: snapshot.plan?.adoptionEpoch ?? null,
+              action: 'preserve' as const,
+            },
             nextRepair: missingMethod
-              ? { code: 'bar_snapshot_method_missing', action: 'Fill every mandatory METHOD before vetting or grading.' }
-              : { code: 'bar_snapshot_proof_stale', action: 'Bind proof to the new spec revisions, then refresh vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.' },
+              ? {
+                  code: 'bar_snapshot_method_missing',
+                  action: 'Fill every mandatory METHOD before vetting or grading.',
+                }
+              : {
+                  code: 'bar_snapshot_proof_stale',
+                  action:
+                    'Bind proof to the new spec revisions, then refresh vetting and independent grading; historical ship verdicts remain recorded but cannot authorize this revision.',
+                },
           },
         };
       }
@@ -2851,9 +2971,13 @@ async function amendAcceptanceBarRubric(
         `Request-Hash: ${amendmentRequestHash(input)}`,
         `Actor: ${actorId}`,
         `Reason: ${reason}`,
-        `Approved-By: ${approval!.approvedBy}`,
-        `Approval-Ref: ${approval!.approvalRef}`,
-        `Approved-At: ${approval!.approvedAt}`,
+        ...(approval
+          ? [
+              `Approved-By: ${approval.approvedBy}`,
+              `Approval-Ref: ${approval.approvalRef}`,
+              `Approved-At: ${approval.approvedAt}`,
+            ]
+          : []),
         `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
@@ -2928,11 +3052,32 @@ async function amendAcceptanceBarRubric(
       });
       injectAmendmentFault(input, 'after-projection');
 
+      const currentClauses = await tx<
+        Array<{
+          spec_id: string;
+          current_revision: number | string;
+          plan_item_id: string;
+        }>
+      >`
+        SELECT c.spec_id, c.current_revision, r.plan_item_id
+          FROM harness_shared.plan_spec_clauses c
+          JOIN harness_shared.plan_spec_clause_revisions r
+            ON r.workspace_id=c.workspace_id AND r.harness_slug=c.harness_slug
+           AND r.plan_slug=c.plan_slug AND r.spec_id=c.spec_id AND r.revision=c.current_revision
+         WHERE c.workspace_id=${subjectScope.workspaceId} AND c.harness_slug=${subjectScope.harnessSlug}
+           AND c.plan_slug=${subjectPlanHint} AND r.source_bar_key IS NOT NULL
+         ORDER BY c.spec_id LIMIT 1001`;
+      if (currentClauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+      const priorRevisionBySpec = new Map(clauses.map((clause) => [clause.spec_id, Number(clause.current_revision)]));
       let reboundContracts = 0;
-      for (const clause of clauses) {
-        const revision = newClauseRevisions.get(clause.spec_id);
-        if (!revision || revision === Number(clause.current_revision)) continue;
-        const open = await tx<{ work_item_id: string }[]>`
+      for (const clause of currentClauses) {
+        const revision = newClauseRevisions.get(clause.spec_id) ?? Number(clause.current_revision);
+        const priorRevision = priorRevisionBySpec.get(clause.spec_id);
+        if (priorRevision !== undefined && revision === priorRevision) continue;
+        const explicit =
+          priorRevision === undefined
+            ? []
+            : await tx<{ work_item_id: string }[]>`
           SELECT e.work_item_id
             FROM harness_shared.work_item_spec_revision_edges e
             JOIN harness_shared.work_items w
@@ -2942,21 +3087,31 @@ async function amendAcceptanceBarRubric(
              AND e.harness_slug = ${subjectScope.harnessSlug}
              AND e.plan_slug = ${subjectPlanHint}
              AND e.spec_id = ${clause.spec_id}
-             AND e.spec_revision = ${Number(clause.current_revision)}
+             AND e.spec_revision = ${priorRevision}
              AND w.status NOT IN ('done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated')`;
+        const covered = await tx<{ work_item_id: string }[]>`
+          SELECT w.feature_id AS work_item_id
+            FROM harness_shared.work_items w
+           WHERE w.workspace_id=${subjectScope.workspaceId} AND w.harness_slug=${subjectScope.harnessSlug}
+             AND w.status NOT IN ('done','dropped','resolved','closed','passed','deprecated')
+             AND (
+               (w.source_plan_slug=${subjectPlanHint} AND ${clause.plan_item_id}=ANY(COALESCE(w.source_plan_item_ids,ARRAY[]::text[])))
+               OR (w.payload->'plan_item'->>'slug'=${subjectPlanHint} AND w.payload->'plan_item'->>'item'=${clause.plan_item_id})
+             )`;
+        const open = [...new Set([...explicit, ...covered].map((row) => row.work_item_id))];
         const current = await tx<{ content_hash: string }[]>`
           SELECT content_hash FROM harness_shared.plan_spec_clause_revisions
            WHERE workspace_id = ${subjectScope.workspaceId} AND harness_slug = ${subjectScope.harnessSlug}
              AND plan_slug = ${subjectPlanHint} AND spec_id = ${clause.spec_id} AND revision = ${revision}`;
         const fingerprint = current[0]?.content_hash;
         if (!fingerprint) continue;
-        for (const row of open) {
+        for (const workItemId of open) {
           await tx`
             INSERT INTO harness_shared.work_item_spec_revision_edges (
               workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
               spec_revision, spec_fingerprint, created_by
             ) VALUES (
-              ${subjectScope.workspaceId}, ${subjectScope.harnessSlug}, ${row.work_item_id}, ${subjectPlanHint},
+              ${subjectScope.workspaceId}, ${subjectScope.harnessSlug}, ${workItemId}, ${subjectPlanHint},
               ${clause.spec_id}, ${revision}, ${fingerprint}, ${actorId}
             ) ON CONFLICT DO NOTHING`;
           reboundContracts += 1;
@@ -2970,7 +3125,7 @@ async function amendAcceptanceBarRubric(
             ON c.workspace_id = e.workspace_id AND c.harness_slug = e.harness_slug
            AND c.plan_slug = e.plan_slug AND c.spec_id = e.spec_id
          WHERE e.workspace_id = ${subjectScope.workspaceId} AND e.harness_slug = ${subjectScope.harnessSlug}
-           AND e.plan_slug = ${subjectPlanHint} AND e.spec_id = ANY(${clauses.map((c) => c.spec_id)}::text[])
+           AND e.plan_slug = ${subjectPlanHint} AND e.spec_id = ANY(${currentClauses.map((c) => c.spec_id)}::text[])
            AND e.spec_revision < c.current_revision`;
       const scorecards = await tx<{ count: string }[]>`
         SELECT count(*)::text AS count FROM harness_shared.work_items
@@ -3079,8 +3234,9 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   if (
     currentForRouting?.kind === 'acceptance' &&
     currentForRouting.barContract &&
-    (input.criterionEvidencePlane || (input.criterion &&
-    (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
+    (input.criteria ||
+      input.criterionEvidencePlane ||
+      (input.criterion && (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
   ) {
     const amended = await amendAcceptanceBarRubric(input, scope);
     // Do not fall back to the single-plan path when the locked reread no longer
