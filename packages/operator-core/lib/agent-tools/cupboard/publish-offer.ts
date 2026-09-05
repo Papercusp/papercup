@@ -9,6 +9,49 @@ const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
+const offerArgs = z
+  .object({
+    productId: z.string().min(1).max(200),
+    offerId: z.string().min(1).max(200),
+    skuRef: z.string().min(1).max(300),
+    title: z.string().min(1).max(300),
+    pricingModel: z.enum(['free', 'one-time', 'subscription', 'per-use']),
+    amountMinor: z.number().int().nonnegative().default(0),
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    active: z.boolean().optional(),
+    unitPriceMicros: z.number().int().positive().optional(),
+    meterUnit: z.string().min(1).max(200).optional(),
+    priceVersion: z.string().min(1).max(200).optional(),
+    splitManifestHash: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/i)
+      .optional(),
+  })
+  .superRefine((args, ctx) => {
+    const termFields = ['unitPriceMicros', 'meterUnit', 'priceVersion', 'splitManifestHash'] as const;
+    if (args.pricingModel === 'per-use') {
+      for (const field of termFields) {
+        if (args[field] === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [field],
+            message: `${field} is required for a per-use offer`,
+          });
+        }
+      }
+      return;
+    }
+    for (const field of termFields) {
+      if (args[field] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `${field} is only valid for a per-use offer`,
+        });
+      }
+    }
+  });
+
 export default defineTool({
   name: 'cupboard:publish-offer',
   capability: 'harness:write',
@@ -22,24 +65,9 @@ export default defineTool({
       'Read it back with cupboard:commerce-dashboards dashboards:["catalog"], then use cupboard:checkout with maxSpendMicros for a per-use offer.',
     seeAlso: ['cupboard:checkout', 'cupboard:commerce-dashboards'],
   },
-  args: z.object({
-    productId: z.string().min(1).max(200),
-    offerId: z.string().min(1).max(200),
-    skuRef: z.string().min(1).max(300),
-    title: z.string().min(1).max(300),
-    pricingModel: z.enum(['free', 'one-time', 'subscription', 'per-use']),
-    amountMinor: z.number().int().nonnegative().default(0),
-    currency: z.string().regex(/^[A-Z]{3}$/),
-    active: z.boolean().optional(),
-    unitPriceMicros: z.number().int().positive().optional(),
-    meterUnit: z.string().min(1).max(200).optional(),
-    priceVersion: z.string().min(1).max(200).optional(),
-    splitManifestHash: z.string().regex(/^sha256:[0-9a-f]{64}$/i).optional(),
-  }),
+  args: offerArgs,
   async handler(args) {
-    const { postCommerceOffer } = await import(
-      '../../cupboard/commerce-door-gate-io'
-    );
+    const { postCommerceOffer } = await import('../../cupboard/commerce-door-gate-io');
     const result = await postCommerceOffer({
       productId: args.productId,
       offerId: args.offerId,

@@ -47,13 +47,6 @@ export default defineTool({
       mutationClass: args.mutationClass,
       sinceMs: args.sinceHours != null ? Date.now() - args.sinceHours * 3_600_000 : undefined,
     });
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ workspaceId, count: rows.length, changes: rows }, null, 2),
-        },
-      ],
-    };
+    return { data: { workspaceId, count: rows.length, changes: rows } };
   },
 });

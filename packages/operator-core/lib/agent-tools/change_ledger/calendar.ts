@@ -43,13 +43,6 @@ export default defineTool({
       sinceMs: Date.now() - liveWindowMs * 4,
     });
     const calendar = computeMutationCalendar(rows, { nowMs: Date.now(), liveWindowMs });
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ workspaceId, rowsConsidered: rows.length, ...calendar }, null, 2),
-        },
-      ],
-    };
+    return { data: { workspaceId, rowsConsidered: rows.length, ...calendar } };
   },
 });

@@ -41,8 +41,14 @@ async function loadTopics(): Promise<{ listTopics: typeof import('./topics').lis
     }
     return { kind: 'fragment', text } satisfies SqlFragment;
   });
+  (sql as SqlMock & { begin: ReturnType<typeof vi.fn> }).begin = vi.fn(
+    async (run: (tx: SqlMock) => unknown) => run(sql),
+  );
 
-  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+  vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+    getOrgPg: () => ({ sql }),
+  }));
   vi.doMock('@papercusp/coordination/capabilities', () => ({
     PgTopicStore: class {
       constructor(public readonly opts: { getWorkspaceId: () => string }) {}
