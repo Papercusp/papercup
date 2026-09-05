@@ -483,9 +483,33 @@ const CORPUS_NAMESPACED_TABLES = new Set([
   // mixed (10,453 'default' vs 4,706 'papercusp-workspace'), so the advisory is right about
   // it. session_turns is 362,038 vs 15 strays — already here, correctly.
   'session_turn_parts',
+  // EI-20105490569127338. The sibling EI-20103748074297088 deliberately did NOT add this on row
+  // counts alone and split out the writer read; this is that read. Measured 2026-09-05:
+  // 1,071,004 'default' vs 6 'papercusp-workspace' (99.9994%).
+  //
+  // The writer (search/turn-chunk-sync.ts) does NOT hardcode 'default' the way session_ingest
+  // does — and that distinction is the whole reason this entry is justified rather than assumed.
+  // Its DELETE+INSERT pair writes `t.workspace_id` copied VERBATIM from its own source query,
+  // `SELECT st.workspace_id ... FROM harness_shared.session_turns st`. It never synthesizes or
+  // threads a workspace id of its own, so this table is a pure DERIVED projection of
+  // session_turns.workspace_id and cannot hold a value its parent does not already hold. It
+  // therefore inherits, by construction, exactly the dual-scope shape that put `session_turns`
+  // in this set — the 6 strays here are the copied image of that table's own 214.
+  'session_turn_chunks',
   'event_awaits',
   'event_wake_deliveries',
   'event_key_fires',
+  // EI-20105490569127338. Measured 2026-09-05: 331 rows, ALL 'default', zero non-default.
+  // The filing correctly refused to add this on that count alone — "no non-default rows yet" and
+  // "cannot have non-default rows by design" are different claims, and only the writer separates
+  // them. The writer settles it as the second: events/await/compose-store.ts holds the ONLY two
+  // inserts (insertRootNode, insertInteriorNode) and both write `${ws}` from
+  // `const eventsWs = (): string => DEFAULT_COORD_WORKSPACE`, which is the literal 'default'
+  // (packages/coordination/src/event-log/pg-log.ts). No migration backfills the table, and every
+  // read/update filters on that same constant — there is no code path that can write a tenant id.
+  // Same constant its three siblings above already use, so this is consistency verified at the
+  // writer, not inferred from their membership.
+  'event_await_nodes',
 ]);
 
 /**

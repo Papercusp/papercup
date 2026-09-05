@@ -934,6 +934,80 @@ describe('buildTenantScopeAdvisory — corpus-namespaced tables (WI-6847)', () =
   });
 });
 
+// EI-20105490569127338: two more corpus-family tables, each admitted on its WRITER rather than
+// on its row counts — the distinction the filing split out precisely so a registry whose value
+// is trustworthiness does not accumulate entries justified by "looks corpus-shaped".
+//
+// session_turn_chunks: turn-chunk-sync.ts copies `st.workspace_id` straight from session_turns,
+// so it is a derived projection that cannot hold a value its parent does not (1,071,004
+// 'default' vs 6, mirroring the parent's own 1,181,873 vs 214).
+// event_await_nodes: compose-store.ts's only two inserts both write DEFAULT_COORD_WORKSPACE,
+// the literal 'default' — so all-331-rows-'default' is by construction, not a young table.
+//
+// The third case is the load-bearing one: it pins that the set still DISCRIMINATES. Sweeping in
+// every session_*/event_* table by name would silence correct advisories and train callers to
+// ignore the warning, which is the failure in the opposite direction from a missing entry.
+describe('buildTenantScopeAdvisory — corpus-namespaced tables (EI-20105490569127338)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('is silent for session_turn_chunks, which inherits its workspace_id from session_turns', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'session_turn_chunks', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'session_turn_chunks', column_name: 'session_id' },
+      { table_schema: 'harness_shared', table_name: 'session_turn_chunks', column_name: 'content' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT content FROM harness_shared.session_turn_chunks WHERE session_id = 'abc'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  it('is silent for event_await_nodes the same way its three event_* siblings already are', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'event_await_nodes', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'event_await_nodes', column_name: 'root_id' },
+      { table_schema: 'harness_shared', table_name: 'event_await_nodes', column_name: 'subscriber_id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.event_await_nodes WHERE parent_id IS NULL',
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
+
+  // The counter-example, deliberately NOT added to the set. Re-measured 2026-09-05 it has
+  // INVERTED since it was first cited: 20,739 'papercusp-workspace' vs 2,721 'default' (88%
+  // tenant, up from 31%), so a tenant predicate there is more legitimate now than when the
+  // filing named it. This asserts the neighbouring entries did not sweep it in by name.
+  it('STILL fires for session_turn_journal — genuinely tenant-mixed, so the advisory is right about it', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'session_turn_journal', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'session_turn_journal', column_name: 'session_id' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.session_turn_journal WHERE session_id = 'abc'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('session_turn_journal');
+  });
+
+  it('still fires for a real tenant table joined alongside session_turn_chunks, while the chunk table is silenced', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'session_turn_chunks', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.session_turn_chunks c JOIN harness_shared.harness_plans p ' +
+        "ON true WHERE c.session_id = 'abc'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('harness_plans');
+    expect(advisory).not.toContain('session_turn_chunks');
+  });
+});
+
 // EI-19324633485547042: the ORIGINAL instance this item reports. harness_shared.test_runs is
 // unlike the corpus-namespaced tables above — its workspace_id/harness_slug columns genuinely
 // hold real values for SOME rows (the per-hive Tests-tab ingestion path) — but every CI/gate row
