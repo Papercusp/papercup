@@ -30,13 +30,12 @@ function orgs(): Map<string, Organization> {
       ORG_ID,
       {
         orgId: ORG_ID,
-        name: 'Acme',
+        displayName: 'Acme',
         memberships: [
           { userId: MEMBER, role: 'admin', addedAtMs: 1_000 },
           { userId: 'user-sam', role: 'member', addedAtMs: 1_000 },
         ],
-        createdAtMs: 1_000,
-      } as Organization,
+      },
     ],
   ]);
 }
@@ -201,10 +200,9 @@ describe('gateRefundRequest', () => {
     const orgsWithBoth = new Map(other.orgs);
     orgsWithBoth.set('org-other', {
       orgId: 'org-other',
-      name: 'Other',
+      displayName: 'Other',
       memberships: [{ userId: MEMBER, role: 'owner', addedAtMs: 1_000 }],
-      createdAtMs: 1_000,
-    } as Organization);
+    });
     const decision = gateRefundRequest(
       { ...base, buyerOrgId: 'org-other' },
       { ...other, orgs: orgsWithBoth },

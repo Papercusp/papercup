@@ -37,6 +37,8 @@
  * the real `POST /commerce/checkout-sessions` on the resolved Cupboard base
  * URL, so once a roster exists the path is live end to end.
  */
+import { pinModuleState } from '@papercusp/module-singleton';
+
 import { resolveCupboardBaseUrl } from './base-url';
 import type { Installation, Organization, SeatPolicy, CreatorProfile } from './commerce-accounts';
 import { reduceLedger, type LedgerEvent } from './commerce-ledger';
@@ -69,7 +71,48 @@ export async function loadCommerceLedgerEvents(): Promise<readonly LedgerEvent[]
   return [];
 }
 
+/** Where a door's commerce snapshot comes from. See `configureCommerceIo`. */
+export type CommerceStateLoader = () => Promise<CommerceSnapshot> | CommerceSnapshot;
+
+export interface CommerceIoSources {
+  /** Supplies the snapshot every commerce door gates against. */
+  readonly loadState?: CommerceStateLoader;
+  /** Transport for the hosted checkout leg — merged UNDER any per-call deps. */
+  readonly transport?: CheckoutTransportDeps;
+}
+
+const ioState = pinModuleState('@papercusp/operator-core.cupboard.commerce-door-io', () => ({
+  sources: null as CommerceIoSources | null,
+}));
+
+/**
+ * Register where this process's commerce doors read their state and reach the
+ * hosted provider.
+ *
+ * The doors deliberately hold no state of their own, and `loadCommerceState`
+ * below is honest-but-empty while no local writer exists (see its header). That
+ * makes the door layer unreachable end to end: every door refuses `unknown-org`
+ * against an empty fold, so nothing downstream of the gate is ever exercised.
+ * This is the host seam that closes that gap — the SAME `configure*()` shape the
+ * repo uses elsewhere to keep a domain module free of its environment.
+ *
+ * Two callers are expected: a future desktop persistence layer registering the
+ * real reader, and P-012's journey suite registering a fold it built from real
+ * signed webhook bytes. Passing `null` restores the production default, which is
+ * what a test teardown must do — the pin is process-wide.
+ */
+export function configureCommerceIo(sources: CommerceIoSources | null): void {
+  ioState.sources = sources;
+}
+
+/** The sources currently registered, or null when the default is in force. */
+export function commerceIoSources(): CommerceIoSources | null {
+  return ioState.sources;
+}
+
 export async function loadCommerceState(): Promise<CommerceSnapshot> {
+  const configured = ioState.sources?.loadState;
+  if (configured) return await configured();
   const events = await loadCommerceLedgerEvents();
   return {
     ledger: reduceLedger(events),
@@ -94,10 +137,30 @@ export async function loadCommerceState(): Promise<CommerceSnapshot> {
  */
 export const CHECKOUT_SESSIONS_PATH = '/commerce/checkout-sessions';
 
+/**
+ * The identity form both halves must agree on.
+ *
+ * Org membership is matched by STRING EQUALITY on `OrgMembership.userId`, so a
+ * desktop door writing `mia` while the Worker authenticates `gh:1234` would not
+ * error — it would silently find no membership and refuse every legitimate
+ * member as a stranger. A silent miss, not a loud one, which is why the form is
+ * pinned here as a constant rather than left to convention (agreed with
+ * su-57f4104a, WI-2146391).
+ */
+export const USER_ID_FORM = 'gh:<numeric github id>' as const;
+
+export function isCanonicalUserId(userId: string): boolean {
+  return /^gh:\d+$/.test(userId);
+}
+
 /** Error vocabulary the hosted route returns, as amended by its owner. */
 export type CheckoutHostedErrorCode =
   | 'invalid_request'
   | 'unauthorized'
+  /** 403 — buyerOrgId names an org the Worker cannot resolve. */
+  | 'org_membership_unknown'
+  /** 403 — the authenticated principal is not a member of buyerOrgId. */
+  | 'not_org_member'
   | 'unknown_offer'
   | 'unknown_product'
   | 'inactive_offer'
@@ -244,7 +307,10 @@ export async function checkoutDoor(
   const decision: CheckoutDoorDecision = gateCheckout(input, snapshot);
   if (!decision.ok) return { ok: false, code: decision.code, detail: decision.detail };
 
-  const session = await postCheckoutSession(decision.request, deps);
+  // Per-call deps win key by key, so an explicit argument is never overridden by
+  // a registered default — the registration is a fallback, not a hijack.
+  const transport: CheckoutTransportDeps = { ...(ioState.sources?.transport ?? {}), ...deps };
+  const session = await postCheckoutSession(decision.request, transport);
   if (!session.ok) {
     return { ok: false, code: session.error, detail: session.detail ?? '', status: session.status };
   }

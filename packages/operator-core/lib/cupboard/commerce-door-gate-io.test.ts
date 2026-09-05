@@ -13,7 +13,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CHECKOUT_SESSIONS_PATH,
+  isCanonicalUserId,
   postCheckoutSession,
+  USER_ID_FORM,
   type CheckoutSessionResult,
 } from './commerce-door-gate-io';
 
@@ -103,6 +105,8 @@ describe('postCheckoutSession', () => {
   });
 
   it.each([
+    [403, 'org_membership_unknown'],
+    [403, 'not_org_member'],
     [404, 'unknown_offer'],
     [404, 'unknown_product'],
     [422, 'inactive_offer'],
@@ -124,6 +128,18 @@ describe('postCheckoutSession', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
     expect(result.error).toBe('malformed_response');
+  });
+
+  it('pins the shared userId form — a mismatch here MISSES silently', () => {
+    // Org membership is matched by string equality, so a desktop door writing
+    // `mia` against a Worker authenticating `gh:1234` does not error: it finds
+    // no membership and refuses every legitimate member as a stranger. That is
+    // why this is pinned rather than left to convention.
+    expect(USER_ID_FORM).toBe('gh:<numeric github id>');
+    expect(isCanonicalUserId('gh:1234')).toBe(true);
+    expect(isCanonicalUserId('mia')).toBe(false);
+    expect(isCanonicalUserId('gh:not-numeric')).toBe(false);
+    expect(isCanonicalUserId('GH:1234')).toBe(false);
   });
 
   it('reports a transport failure rather than throwing', async () => {
