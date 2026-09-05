@@ -462,8 +462,10 @@ const CHAT_TOOLBAR_LEFT_STYLE: React.CSSProperties = {
 };
 
 /* The panel-toggle chevron and the compact toolbar button both live in
-   PanelToggleButton now (2026-08-10) — the goal popup renders the same five
-   toggles, and two copies of this grammar is how the popups drift apart. */
+   PanelToggleButton now (2026-08-10) — two copies of this grammar is how the
+   popups drift apart. The goal popup rendered the same five toggles until
+   WI-38428 (2026-08-13) replaced its row with GoalPanelVisibilityMenu; it still
+   shares PANEL_TOOLBAR_BUTTON_STYLE, so the two toolbars stay matched. */
 
 /**
  * Badge tone → the P-003 vocabulary's State-pill tone class.
