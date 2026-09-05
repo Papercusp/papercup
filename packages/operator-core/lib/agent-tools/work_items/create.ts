@@ -251,6 +251,17 @@ export default defineTool({
     // weight, paid only on the failure.
     argRedirects: {
       paths: 'payload.paths',
+      // EI-21828065229363197: `goal` is a REAL work-item field, just not a create-time
+      // one — stampGoalProvenance writes goal_id in an UPDATE after the insert (WI-37711),
+      // so there is nothing here to accept it into. suggestArgName finds no near-miss
+      // among the declared keys, so without this the caller reads the rejection as "this
+      // system has no goal concept" while a goal-scoped drain lane is exactly what they
+      // were reaching for.
+      goal: {
+        tool: 'work_items:update',
+        args: { id: '<work-item-id>', goal: '<goal-id>' },
+        note: 'a goal cannot be set while the row is being created: it is stamped in an UPDATE after the insert (WI-37711), which is also why a goal-pinned cohort refuses an unstamped subject. Adopt the item into the goal with work_items:update { goal } once it exists; `goal: null` there clears it. If you meant the item\'s own one-line objective rather than a goal cohort, that is `title`, with `summary` for the body.',
+      },
     },
     seeAlso: [
       'work_items:list (dedup against existing items before filing)',
