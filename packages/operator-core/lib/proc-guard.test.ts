@@ -16,7 +16,7 @@
  * embeds the pattern) and assert the guard is immune to it while still catching
  * a genuinely unrelated external process.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -39,6 +39,8 @@ import {
   formatBusy,
   formatProcessCmdline,
   walkProcessTree,
+  resolveOwningTree,
+  sameTreePath,
 } from '../../../scripts/proc-guard.mjs';
 
 let fixtureRoot: string | null = null;
@@ -58,10 +60,18 @@ function fixtureChildren(root: string, pid: number, children: number[]) {
   writeFileSync(join(root, String(pid), 'task', String(pid), 'children'), children.join(' '));
 }
 
-function fixtureIdentity(root: string, pid: number, options: { environment?: string[]; cgroupPath?: string }) {
+function fixtureIdentity(
+  root: string,
+  pid: number,
+  options: { environment?: string[]; cgroupPath?: string; cwd?: string },
+) {
   const dir = join(root, String(pid));
   if (options.environment) writeFileSync(join(dir, 'environ'), options.environment.join('\0') + '\0');
   if (options.cgroupPath) writeFileSync(join(dir, 'cgroup'), `0::${options.cgroupPath}\n`);
+  // Real /proc/<pid>/cwd is a symlink to the working directory; resolveOwningTree
+  // readlink()s it, so the fixture must be a symlink too and not a regular file.
+  // The target need not exist — readlink reports the link body either way.
+  if (options.cwd) symlinkSync(options.cwd, join(dir, 'cwd'));
 }
 
 afterEach(() => {
@@ -738,5 +748,93 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       expect(lines.join(' ')).toContain('UNKNOWN');
       expect(lines.join(' ')).toMatch(/NOT "idle"/);
     });
+  });
+});
+
+/**
+ * EI-21295926764996833 — cross-pot attribution.
+ *
+ * Every pot executes the SAME `apps/operator/lib/release/green-checkpoint.ts`
+ * out of the papercusp tree, so script path, node binary and tsx loader flags
+ * are byte-identical across pots. A reader watching successive pids appear and
+ * die reads N pots firing on the same hourly cron as ONE pot thrashing. That
+ * misreading has already been paid for twice: a wrong "green-checkpoint is
+ * CRASH-LOOPING" broadcast to two owners with wake:required (retracted ~12min
+ * later), and a second agent claiming a work-item off the same misleading row.
+ *
+ * `PAPERCUSP_INTEGRATION_ROOT` is the field that ends it: the launcher sets it
+ * explicitly on the detached spawn (release-checkpoint-launch.ts) and the
+ * periodic routine inherits it from the operator's unit env, and it is the same
+ * value green-checkpoint's own `cfg.integrationRoot` resolves from.
+ */
+describe('proc-guard: which TREE does this process belong to (EI-21295926764996833)', () => {
+  const GATE_CGROUP = '/user.slice/user-1000.slice/papercup-green-checkpoint.service';
+
+  it('prefers the DECLARED integration root over cwd, and reports which source it used', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    fixtureProc(fixtureRoot, 500, 1, ['node', 'apps/operator/lib/release/green-checkpoint.ts']);
+    fixtureIdentity(fixtureRoot, 500, {
+      environment: ['PAPERCUSP_INTEGRATION_ROOT=/home/x/papercupai-workspace/papercusp'],
+      // cwd deliberately DISAGREES: the launcher's own statement must win over
+      // an inference, or a gate started from a sibling directory misattributes.
+      cwd: '/home/x/somewhere-else',
+    });
+    const [row] = listProcesses(fixtureRoot, { readIdentity: true });
+    expect(resolveOwningTree(fixtureRoot, row)).toEqual({
+      path: '/home/x/papercupai-workspace/papercusp',
+      source: 'integration-root-env',
+    });
+  });
+
+  it('falls back to cwd when the root was never declared, and LABELS it an inference', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    fixtureProc(fixtureRoot, 501, 1, ['node', 'apps/operator/lib/release/green-checkpoint.ts']);
+    fixtureIdentity(fixtureRoot, 501, { cwd: '/home/x/.papercusp/hives/hello-world-3-pot' });
+    const [row] = listProcesses(fixtureRoot, { readIdentity: true });
+    expect(resolveOwningTree(fixtureRoot, row)).toEqual({
+      path: '/home/x/.papercusp/hives/hello-world-3-pot',
+      source: 'cwd',
+    });
+  });
+
+  it('returns UNKNOWN rather than a confident answer when neither source resolves', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    fixtureProc(fixtureRoot, 502, 1, ['node', 'apps/operator/lib/release/green-checkpoint.ts']);
+    const [row] = listProcesses(fixtureRoot, { readIdentity: true });
+    // null is UNKNOWN — a failed measurement. It must never be read as "no
+    // tree" or as "not the tree you asked about".
+    expect(resolveOwningTree(fixtureRoot, row)).toBeNull();
+  });
+
+  it('distinguishes the four concurrent pots that were previously indistinguishable', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    // The measured 2026-08-24T01:20:40Z population, byte-identical in argv.
+    const ARGV = ['node', 'apps/operator/lib/release/green-checkpoint.ts'];
+    const roots: Record<number, string> = {
+      3027831: '/tmp/papercusp-mobile-greenfield-20260821/stonebrook-android-20260821',
+      3030113: '/home/x/.papercusp-workspaces/clones/hello-world-3',
+      3033727: '/home/x/.papercusp-workspaces/clones/oddsmith',
+      3046776: '/home/x/.papercusp/hives/hello-world-3-pot',
+    };
+    for (const [pid, root] of Object.entries(roots)) {
+      fixtureProc(fixtureRoot, Number(pid), 1, ARGV);
+      fixtureIdentity(fixtureRoot, Number(pid), {
+        environment: [`PAPERCUSP_INTEGRATION_ROOT=${root}`],
+        cgroupPath: GATE_CGROUP,
+      });
+    }
+    const rows = listProcesses(fixtureRoot, { readIdentity: true });
+    // The precondition that made this bug possible: argv alone cannot separate them.
+    expect(new Set(rows.map((r) => r.cmdline)).size).toBe(1);
+    // The fix: every row now resolves to its own distinct tree.
+    const trees = rows.map((r) => resolveOwningTree(fixtureRoot as string, r)?.path);
+    expect(new Set(trees).size).toBe(4);
+    expect(trees).toEqual(expect.arrayContaining(Object.values(roots)));
+  });
+
+  it('sameTreePath normalises trailing slashes and relative segments', () => {
+    expect(sameTreePath('/a/b', '/a/b/')).toBe(true);
+    expect(sameTreePath('/a/b', '/a/b/../b')).toBe(true);
+    expect(sameTreePath('/a/b', '/a/c')).toBe(false);
   });
 });

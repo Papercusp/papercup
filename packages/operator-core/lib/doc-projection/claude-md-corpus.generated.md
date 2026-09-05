@@ -680,6 +680,10 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > and for the same reason: on a swept tree, identity is decidable where working-tree
 > status is not.
 
+
+> @papercupai/papercusp-monorepo@0.0.1 set-doc-part
+> tsx scripts/set-doc-part.ts --part-key commit-discipline-git-sync-o-git-blame-on-this-r --show
+
 > ⚠ **Neither `git blame` NOR a commit's SUBJECT is evidence about a change in this
 > repo — never cite either, least of all in an escalation.** git-sync sweeps the WHOLE
 > tree on a schedule, commits it under ONE identity, and labels it with whatever
@@ -734,6 +738,16 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > `git rev-parse --verify --quiet "staging:$p" || echo ABSENT` in the superproject, and
 > `git -C libs/papercusp rev-parse --verify --quiet "HEAD:$p" || echo ABSENT` under a submodule.
 > An unresolvable REF and an absent PATH look identical — tell them apart before acting.
+>
+> ⛔ **`git show <ref>:<submodule path> > file` leaves a ZERO-BYTE file behind, so a POSITIVE
+> CONTROL built from it reports 0.** The shell creates the redirect BEFORE git runs, so the
+> `fatal: path '…' exists on disk, but not in 'HEAD'` (exit 128) still leaves an empty file, and
+> every later `grep -c` on it returns 0 — the exact reading that means "the string is already gone
+> / my pattern is wrong". So it defeats the one check meant to catch a broken instrument: the
+> control that MUST come back non-zero comes back zero, and the whole scan is then believed. Same
+> false-zero family as a `| head` SIGPIPE truncation or a wrong-relation SQL zero-row. Extract
+> INSIDE the submodule with a SUBMODULE-relative path, and check the exit status:
+> `git -C libs/papercusp show "HEAD:plugins/design-phase/index.cjs" > /tmp/before.cjs || { echo EXTRACT-FAILED; exit 1; }`
 >
 > ⚠ **Equal blobs prove that PATH is current — NOT that the candidate is.** When a failing
 > test's runtime SUBJECT lives in a submodule (e.g. `readdirSync('…/libs/papercusp/libs/db/sql')`),

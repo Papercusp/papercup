@@ -86,7 +86,7 @@
  *   matchExternalProcesses(pattern, opts) -> operational/identity matching rows, self + ancestors excluded
  *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import path from "node:path";
 
 const DEFAULT_PROC_ROOT = "/proc";
@@ -102,8 +102,9 @@ const GREEN_CHECKPOINT_CGROUP =
  * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
  * @property {string[]} argv - Raw process arguments, decoded from NUL-separated cmdline.
  * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
- * @property {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }} [identity]
- *   Non-secret identity evidence read from PAPERCUSP_SID and known gate markers.
+ * @property {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null; integrationRoot: string | null }} [identity]
+ *   Non-secret identity evidence read from PAPERCUSP_SID, known gate markers,
+ *   and PAPERCUSP_INTEGRATION_ROOT (which tree this process is working on).
  */
 
 /**
@@ -319,12 +320,13 @@ export function matchesAdjacentArgvSequence(argv, sequence, opts = {}) {
  * @param {string} procRoot
  * @param {number} pid
  * @param {{ readCgroup?: boolean }} [opts]
- * @returns {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }}
+ * @returns {{ ownerId: string | null; greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null; integrationRoot: string | null }}
  */
 function readProcessIdentity(procRoot, pid, opts = {}) {
   let ownerId = null;
   let greenCheckpointMarker = false;
   let releaseGateMarker = false;
+  let integrationRoot = null;
   try {
     const environment = String(
       readFileSync(path.join(procRoot, String(pid), "environ")),
@@ -339,6 +341,17 @@ function readProcessIdentity(procRoot, pid, opts = {}) {
         greenCheckpointMarker = true;
       if (key === "PC_HEAVY_RELEASE_GATE" && value === "1")
         releaseGateMarker = true;
+      // EI-21295926764996833: every pot runs the SAME green-checkpoint.ts out of
+      // the papercusp tree, so script path, node binary and tsx loader flags are
+      // byte-identical across pots and the printed row cannot say WHOSE gate it
+      // is. This is the one field that can: the launcher sets it explicitly on
+      // the detached spawn (release-checkpoint-launch.ts's `inner`) and the
+      // periodic routine inherits it from the operator's unit env, so it is
+      // present on both paths. It is also exactly what green-checkpoint's own
+      // `cfg.integrationRoot` resolves from, so the attribution agrees with the
+      // run's own idea of which tree it is judging. Free to collect: `environ`
+      // is already being read for the fields above.
+      if (key === "PAPERCUSP_INTEGRATION_ROOT" && value) integrationRoot = value;
     }
   } catch {
     // Processes can exit between cmdline and identity reads. argv remains useful.
@@ -354,7 +367,66 @@ function readProcessIdentity(procRoot, pid, opts = {}) {
       // cgroup identity is supplementary; an unreadable file is not a match.
     }
   }
-  return { ownerId, greenCheckpointMarker, releaseGateMarker, cgroupPath };
+  return {
+    ownerId,
+    greenCheckpointMarker,
+    releaseGateMarker,
+    cgroupPath,
+    integrationRoot,
+  };
+}
+
+/**
+ * Resolve WHICH TREE a matched process belongs to, so one pot's gate cannot be
+ * read as another pot retrying (EI-21295926764996833).
+ *
+ * Two sources, strongest first, and the source is RETURNED rather than folded
+ * away: `PAPERCUSP_INTEGRATION_ROOT` is the launcher's own explicit statement of
+ * the root being judged, while `cwd` is an inference that merely happens to be
+ * right for a run started from its own tree. A caller that filters on the tree
+ * needs to know which one it got.
+ *
+ * `null` means UNKNOWN — the process exited, or /proc was unreadable. It is
+ * deliberately NOT collapsed into "not my tree": an unreadable row is a failed
+ * measurement, and treating it as a confident exclusion is the false-negative
+ * this whole tool exists to prevent.
+ *
+ * Called only for rows that already matched, so the extra `cwd` readlink is
+ * bounded by the match count and never paid per-process across all of /proc.
+ *
+ * @param {string} procRoot
+ * @param {ProcRow} processRow
+ * @returns {{ path: string; source: 'integration-root-env' | 'cwd' } | null}
+ */
+export function resolveOwningTree(procRoot, processRow) {
+  const declared = processRow.identity?.integrationRoot;
+  if (typeof declared === "string" && declared)
+    return { path: declared, source: "integration-root-env" };
+  try {
+    const cwd = readlinkSync(
+      path.join(procRoot, String(processRow.pid), "cwd"),
+    );
+    if (cwd) return { path: cwd, source: "cwd" };
+  } catch {
+    // Exited between match and readlink, or /proc/<pid>/cwd unreadable (it is
+    // owner-restricted). UNKNOWN, not "no tree".
+  }
+  return null;
+}
+
+/**
+ * Compare two tree paths for the `--integration-root` filter. Trailing slashes
+ * and `..` segments are normalised away so a caller passing `$PWD/` or a
+ * relative path still matches the launcher's absolute form. Symlinks are NOT
+ * resolved here: `realpath` would touch the filesystem for every row, and the
+ * paths being compared are both produced by the same launcher.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function sameTreePath(a, b) {
+  return path.resolve(a) === path.resolve(b);
 }
 
 function isGreenCheckpointPattern(pattern) {
@@ -877,6 +949,12 @@ async function main(argv) {
     : undefined;
   const busy = flags.includes("--busy");
   const verbose = flags.includes("--verbose");
+  const integrationRootFlag = flags.find((f) =>
+    f.startsWith("--integration-root="),
+  );
+  const integrationRootFilter = integrationRootFlag
+    ? integrationRootFlag.slice("--integration-root=".length).trim()
+    : undefined;
   const sampleMsFlag = flags.find((f) => f.startsWith("--sample-ms="));
   const sampleMs = sampleMsFlag
     ? Number(sampleMsFlag.slice("--sample-ms=".length))
@@ -929,14 +1007,20 @@ async function main(argv) {
     cmd !== "check" ||
     !pattern ||
     (argvSequenceFlag && (!argvSequence || argvSequence.length < 2)) ||
+    (integrationRootFlag && !integrationRootFilter) ||
     !(sampleMs > 0) ||
     !Number.isFinite(sampleMs) ||
     !(budgetMs > 0) ||
     !Number.isFinite(budgetMs)
   ) {
     console.error(
-      "usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--verbose] [--sample-ms=<n>] [--budget-ms=<n>]\n" +
+      "usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--integration-root=<path>] [--busy] [--verbose] [--sample-ms=<n>] [--budget-ms=<n>]\n" +
         "  --argv-sequence=<csv>  require literal adjacent argv tokens; the first token is matched by basename\n" +
+        "  --integration-root=<path>  keep only processes working on THIS tree. Every pot runs the\n" +
+        "          same script out of the papercusp tree, so an unfiltered population mixes pots and\n" +
+        "          reads as one pot retrying. A row is dropped ONLY when it is positively attributed\n" +
+        "          to a different tree; an unattributable row is RETAINED and counted, so this can\n" +
+        "          never turn a live process into a false 'nothing is running'.\n" +
         '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
         "          which sees every descendant at any depth (a /proc tree walk does not).\n" +
         "  --verbose  print each matching process's full command line (default: first 200 chars)\n" +
@@ -946,8 +1030,9 @@ async function main(argv) {
     return;
   }
   const report = matchExternalProcessesDetailed(pattern, { argvSequence });
-  const { matches, fullMatches, argvTextOnly, identityMatches } = report;
-  if (matches.length === 0) {
+  const { fullMatches, argvTextOnly, identityMatches } = report;
+  const allMatches = report.matches;
+  if (allMatches.length === 0) {
     if (fullMatches.length > 0) {
       console.log(
         `proc-guard: no external process matches /${pattern}/ (${fullMatches.length} full-argv match(es), all ${argvTextOnly.length} argv-text-only; ignored)`,
@@ -958,12 +1043,51 @@ async function main(argv) {
     process.exit(1);
     return;
   }
+  // EI-21295926764996833: attribute every match to its owning tree BEFORE
+  // printing. Resolved per match (not per process across all of /proc), so the
+  // extra cwd readlink is bounded by the match count.
+  /** @type {Map<number, ReturnType<typeof resolveOwningTree>>} */
+  const owningTree = new Map(
+    allMatches.map((m) => [m.pid, resolveOwningTree(DEFAULT_PROC_ROOT, m)]),
+  );
+  // A row is excluded ONLY on positive evidence that it belongs to a different
+  // tree. An unattributable row is RETAINED: dropping it would let this filter
+  // answer "nothing is running" while a live process it merely failed to read
+  // keeps running — the false-negative class this tool exists to prevent.
+  let unattributedRetained = 0;
+  const matches = integrationRootFilter
+    ? allMatches.filter((m) => {
+        const tree = owningTree.get(m.pid);
+        if (!tree) {
+          unattributedRetained += 1;
+          return true;
+        }
+        return sameTreePath(tree.path, integrationRootFilter);
+      })
+    : allMatches;
+  const excludedOtherTree = allMatches.length - matches.length;
+  if (matches.length === 0) {
+    console.log(
+      `proc-guard: no external process matches /${pattern}/ for tree ${path.resolve(String(integrationRootFilter))} ` +
+        `(${excludedOtherTree} match(es) attributed to another tree; 0 unattributable)`,
+    );
+    process.exit(1);
+    return;
+  }
   const rawSuffix =
-    fullMatches.length === matches.length && identityMatches.length === 0
+    fullMatches.length === allMatches.length && identityMatches.length === 0
       ? ""
       : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via PAPERCUSP_SID or checkpoint cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
+  const treeSuffix = integrationRootFilter
+    ? ` for tree ${path.resolve(integrationRootFilter)}` +
+      ` (${excludedOtherTree} attributed to another tree` +
+      (unattributedRetained > 0
+        ? `; ${unattributedRetained} unattributable, RETAINED`
+        : "") +
+      ")"
+    : "";
   console.log(
-    `proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`,
+    `proc-guard: ${matches.length} external process(es) match /${pattern}/${treeSuffix}${rawSuffix}:`,
   );
   const samples = busy
     ? await sampleBusyMatches(matches, { sampleMs, budgetMs })
@@ -977,6 +1101,19 @@ async function main(argv) {
           : "         identity: green-checkpoint checkpoint cgroup",
       );
     }
+    // The column that ends the cross-pot ambiguity. The SOURCE is printed, not
+    // folded away: a declared root is the launcher's own statement of the tree
+    // it is judging, while cwd is an inference. UNKNOWN is printed as UNKNOWN.
+    const tree = owningTree.get(m.pid);
+    console.log(
+      tree
+        ? `         tree: ${tree.path}${
+            tree.source === "integration-root-env"
+              ? " (declared: PAPERCUSP_INTEGRATION_ROOT)"
+              : " (inferred from cwd)"
+          }`
+        : "         tree: UNKNOWN — unattributable (exited, or /proc unreadable)",
+    );
     if (!busy) continue;
     for (const line of formatBusy(samples[index]))
       console.log(`         ${line}`);

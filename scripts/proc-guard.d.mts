@@ -80,6 +80,44 @@ export function matchesAdjacentArgvSequence(argv: string[], sequence: string[], 
     commandBasenames?: string[];
 }): boolean;
 /**
+ * Resolve WHICH TREE a matched process belongs to, so one pot's gate cannot be
+ * read as another pot retrying (EI-21295926764996833).
+ *
+ * Two sources, strongest first, and the source is RETURNED rather than folded
+ * away: `PAPERCUSP_INTEGRATION_ROOT` is the launcher's own explicit statement of
+ * the root being judged, while `cwd` is an inference that merely happens to be
+ * right for a run started from its own tree. A caller that filters on the tree
+ * needs to know which one it got.
+ *
+ * `null` means UNKNOWN — the process exited, or /proc was unreadable. It is
+ * deliberately NOT collapsed into "not my tree": an unreadable row is a failed
+ * measurement, and treating it as a confident exclusion is the false-negative
+ * this whole tool exists to prevent.
+ *
+ * Called only for rows that already matched, so the extra `cwd` readlink is
+ * bounded by the match count and never paid per-process across all of /proc.
+ *
+ * @param {string} procRoot
+ * @param {ProcRow} processRow
+ * @returns {{ path: string; source: 'integration-root-env' | 'cwd' } | null}
+ */
+export function resolveOwningTree(procRoot: string, processRow: ProcRow): {
+    path: string;
+    source: "integration-root-env" | "cwd";
+} | null;
+/**
+ * Compare two tree paths for the `--integration-root` filter. Trailing slashes
+ * and `..` segments are normalised away so a caller passing `$PWD/` or a
+ * relative path still matches the launcher's absolute form. Symlinks are NOT
+ * resolved here: `realpath` would touch the filesystem for every row, and the
+ * paths being compared are both produced by the same launcher.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function sameTreePath(a: string, b: string): boolean;
+/**
  * Parse the ppid out of a /proc/<pid>/stat line. The comm field (2nd field) is
  * parenthesized and may itself contain spaces/parens, so field-splitting must
  * resume from the LAST `)` rather than naively splitting on whitespace — the
@@ -287,13 +325,15 @@ export type ProcRow = {
      */
     cmdline: string;
     /**
-     * Non-secret identity evidence read from PAPERCUSP_SID and known gate markers.
+     * Non-secret identity evidence read from PAPERCUSP_SID, known gate markers,
+     * and PAPERCUSP_INTEGRATION_ROOT (which tree this process is working on).
      */
     identity?: {
         ownerId: string | null;
         greenCheckpointMarker: boolean;
         releaseGateMarker: boolean;
         cgroupPath: string | null;
+        integrationRoot: string | null;
     } | undefined;
 };
 /**
