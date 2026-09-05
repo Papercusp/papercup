@@ -35,6 +35,8 @@ import {
 import { looksLikeResidualClosure } from '../../plan-items/convert';
 import { TERMINAL_WORK_ITEM_STATES } from '../../work-items';
 import { LINK_RELS } from './link';
+import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
+import { derivePlanSlug } from '../coordination/derived-plan-slug';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
@@ -571,6 +573,67 @@ export default defineTool({
                   'fleet lane instead of surfacing later as an orphaned, untracked item.',
               }
             : {};
+        // EI-20450339646861882 non-blocking nudge: a high-severity issue filed while the
+        // caller holds a declared plan lane, carrying NO plan-item edge of any kind, is
+        // the exact failure that item describes — such a row is invisible in BOTH
+        // directions at once (the plan-scoped claim spec will not admit it, AND a
+        // mechanical enumeration of the plan's open blockers omits it, so the release
+        // criteria read greener than reality), and both silences are total: nothing
+        // errors and the filer gets no signal. It was caught only by a leader's manual
+        // census — a detector that does not scale.
+        //
+        // ⚠ THIS ADVISES THE `blocks` EDGE, DELIBERATELY NOT `plan_item:{slug,item}`.
+        // That stamp is the one-live-row-per-lane COVERAGE surface (D-046, enforced at
+        // write by findOpenPlanItemCollision), and finishPlanStamp flips the stamped
+        // plan item to `done` when the row completes. So steering a BLOCKER there would
+        // (a) collide with the lane's real row and refuse the filing outright, and
+        // (b) arm EI-20576535595925497's false-close on every such row. The blocker
+        // population is a MANY-to-one relation, already modelled as coord_links
+        // rel='blocks' → plan_item and already read by getBlockingIssuesForPlan /
+        // getAllBlockedPlanItems (issue-blocks-merge.ts) into plans:items. That edge
+        // carries no uniqueness constraint and no completion propagation, so N blockers
+        // may point at one plan item safely. The original convention this bug reports
+        // ("stamp every fix-loop bug with {plan, P-009}") picked the wrong field; it is
+        // unimplementable as stated, because the second concurrent filing is refused.
+        //
+        // NOT auto-derived, on purpose: "filed while on lane X" does not entail
+        // "blocks X", and a spurious `blocks` edge marks that plan item blocked in
+        // plans:items — reading the plan RED where it is not, which is the mirror image
+        // of the false-green this exists to fix. Deriving the SLUG is safe (it is fixed
+        // at write time); asserting the RELATION is the caller's call. So we tell them.
+        //
+        // Gated to critical/major so the hot path pays the presence read only for the
+        // population the rule was written for (`severity` is issue-family-only, so this
+        // also excludes features/tasks and the high-volume observation lane).
+        const hasPlanItemEdge =
+          Boolean(spec.targetPlanItem) ||
+          Boolean((spec.payload as { plan_item?: unknown } | undefined)?.plan_item) ||
+          (spec.links ?? []).some((link) => link.target_kind === PLAN_ITEM_KIND);
+        let planItemBlockerNudge: Record<string, never> | { planItemBlockerNudge: string } = {};
+        if ((spec.severity === 'critical' || spec.severity === 'major') && !hasPlanItemEdge) {
+          // ⚠ DYNAMIC IMPORT, DELIBERATELY (EI-19281789650149592) — a STATIC import of
+          // the presence module from a hot tool path transitively reaches
+          // `presence-wakeability`, whose module-scope constant makes any suite that
+          // PARTIALLY mocks presence fail at COLLECTION, naming a constant this change
+          // never mentions. Same remedy the coord send seam uses for the same reader.
+          const lane = await derivePlanSlug({
+            ownerId: ident.ownerId,
+            readPlanSlug: async (id) =>
+              (await (await import('../coordination/presence')).getPresence(id))?.currentPlanSlug ?? null,
+          });
+          if (lane) {
+            planItemBlockerNudge = {
+              planItemBlockerNudge:
+                `Filed with NO plan-item edge while you hold plan lane '${lane}'. If this blocks that plan, ` +
+                `link it so it joins the plan's blocker population (plans:items reads rel='blocks' edges) — ` +
+                `otherwise it is invisible both to the plan-scoped claim spec and to any enumeration of that ` +
+                `plan's open blockers, silently: work_items:link { id: '${res.workItem.id}', rel: 'blocks', ` +
+                `target_kind: '${PLAN_ITEM_KIND}', target_ref: '${planItemRef(lane, '<P-NNN>')}' }. ` +
+                `Do NOT use plan_item: { slug, item } for a blocker — that is the one-live-row-per-lane ` +
+                `COVERAGE stamp (D-046), and completing this item would flip that plan item to done.`,
+            };
+          }
+        }
         return {
           ok: true as const,
           id: res.workItem.id,
@@ -578,6 +641,9 @@ export default defineTool({
           workItem: res.workItem,
           ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
+          // EI-20450339646861882: filed, but nothing links it to the plan lane the
+          // caller is on — advisory, never fatal (a filing must not fail over an edge).
+          ...planItemBlockerNudge,
           // EI-18784357226895330: filed, but the requested self-assignment was refused
           // by the fleet lane — the caller must see this on an ok:true result.
           ...fleetScopeDowngrade,

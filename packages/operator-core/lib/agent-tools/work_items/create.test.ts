@@ -20,6 +20,11 @@ const drainAdmission = vi.hoisted(() => ({
   blocked: false,
   gate: vi.fn(),
 }));
+// EI-20450339646861882: the caller's DECLARED plan lane, read through the same
+// presence seam the coord send path uses. Null = "on no plan", which must never nudge.
+const presenceState = vi.hoisted(() => ({
+  currentPlanSlug: null as string | null,
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'me' }),
@@ -36,6 +41,12 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
+// EI-20450339646861882: create.ts reaches this module through a DYNAMIC import
+// (EI-19281789650149592 — a static one makes partially-mocked suites fail at
+// collection), so the mock is what the nudge's lane lookup resolves to.
+vi.mock('../coordination/presence', () => ({
+  getPresence: vi.fn(async () => ({ currentPlanSlug: presenceState.currentPlanSlug })),
+}));
 
 import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
 import type { WorkItem } from '../../work-items';
@@ -249,6 +260,73 @@ describe('residualLinkNudge (EI-18655063958515097)', () => {
     });
     expect(b.results[0].residualLinkNudge).toMatch(/plan_item/);
     expect(b.results[1].residualLinkNudge).toBeUndefined();
+  });
+});
+
+// EI-20450339646861882: "a high-severity bug filed while on a plan lane, with no
+// plan-item edge, is invisible in BOTH directions at once — unclaimable by the
+// plan-scoped spec AND missing from any enumeration of that plan's open blockers".
+// The nudge must point at the `blocks` EDGE, never at the plan_item COVERAGE stamp:
+// that stamp is one-live-row-per-lane (D-046) and flips its plan item done on
+// completion, so steering a blocker there would collide and arm EI-20576535595925497.
+describe('planItemBlockerNudge (EI-20450339646861882)', () => {
+  beforeEach(() => {
+    presenceState.currentPlanSlug = null;
+  });
+
+  it('nudges a critical issue filed on a declared lane with no plan-item edge', async () => {
+    presenceState.currentPlanSlug = 'sidestage-public-release-testing-2026-08-14';
+    const b = await body({ kind: 'bug', severity: 'critical', title: 'deploy.sh --help performs a real deploy' });
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(b.results[0].planItemBlockerNudge).toContain('sidestage-public-release-testing-2026-08-14');
+  });
+
+  // The load-bearing assertion: this is what makes the nudge a FIX rather than a
+  // restatement of the refuted proposal. Steering a blocker to plan_item is the bug.
+  it("recommends the blocks EDGE and explicitly warns OFF the plan_item coverage stamp", async () => {
+    presenceState.currentPlanSlug = 'some-plan';
+    const b = await body({ kind: 'bug', severity: 'major', title: 'unauthenticated revenue endpoint' });
+    const nudge = b.results[0].planItemBlockerNudge as string;
+    expect(nudge).toMatch(/rel: 'blocks'/);
+    expect(nudge).toMatch(/target_kind: 'plan_item'/);
+    expect(nudge).toMatch(/Do NOT use plan_item/);
+  });
+
+  it('does NOT nudge when the caller is on no plan lane', async () => {
+    presenceState.currentPlanSlug = null;
+    const b = await body({ kind: 'bug', severity: 'critical', title: 'prod npm advisories' });
+    expect(b.results[0].planItemBlockerNudge).toBeUndefined();
+  });
+
+  it('does NOT nudge when a plan_item is already set', async () => {
+    presenceState.currentPlanSlug = 'some-plan';
+    const b = await body({
+      kind: 'bug',
+      severity: 'critical',
+      title: 'already linked',
+      plan_item: { slug: 'some-plan', item: 'P-009' },
+    });
+    expect(b.results[0].planItemBlockerNudge).toBeUndefined();
+  });
+
+  it('does NOT nudge when an inline links[] entry already targets a plan_item', async () => {
+    presenceState.currentPlanSlug = 'some-plan';
+    const b = await body({
+      kind: 'bug',
+      severity: 'critical',
+      title: 'linked via the blocks edge at birth',
+      links: [{ rel: 'blocks', target_kind: 'plan_item', target_ref: 'some-plan#P-009' }],
+    });
+    expect(b.results[0].planItemBlockerNudge).toBeUndefined();
+  });
+
+  // Volume guard: severity is issue-family-only, and minor/nit are not the
+  // "fix-loop / prod-surface blocker" population the rule was written for. Without
+  // this the advisory would fire across the high-volume observation lane.
+  it('does NOT nudge a minor issue, even on a declared lane', async () => {
+    presenceState.currentPlanSlug = 'some-plan';
+    const b = await body({ kind: 'bug', severity: 'minor', title: 'tidy a log line' });
+    expect(b.results[0].planItemBlockerNudge).toBeUndefined();
   });
 });
 
