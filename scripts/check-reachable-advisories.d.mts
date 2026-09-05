@@ -40,11 +40,18 @@ export function collectInstalledVersions(lsTree: any, advisoryNames: Iterable<st
  * been CORRECTED silently reverted to reading patch-compatible with nothing failing. Keying
  * on the shape of a third party's payload gives a fix an expiry date; key on the invariant.
  *
- * THE INVARIANT. If `^<installed>` is a semver SUBSET of the vulnerable range, then every
- * version reachable without a breaking bump is still vulnerable — no compatible version
- * escapes, so the fix is necessarily semver-major. If it is NOT a subset, some
- * semver-compatible version lies outside the advisory. That is computable from the audit
- * payload plus the installed versions alone: no manifest read, no registry call.
+ * THE INVARIANT, AND ITS ASYMMETRY. If `^<installed>` is a semver SUBSET of the vulnerable
+ * range, then every version reachable without a breaking bump is still vulnerable — no
+ * compatible version escapes, so the fix is necessarily semver-major. That direction is a
+ * PROOF, computable from the audit payload plus the installed versions alone: no manifest
+ * read, no registry call.
+ *
+ * The other direction is NOT the mirror image. `escapable` means only that the range fails
+ * to trap every compatible version — the range algebra leaves room for an escape, which is
+ * not the same as one being PUBLISHED. Measured 2026-09-05: `^6.7.0` is not a subset of
+ * d3's `4.4.0 - 5.0.0-rc.4 || 6.0.0-rc.1 - 6.7.0`, yet the only real fix is d3 7.x. So
+ * `escapable` never yields patch-eligible on its own; analyze() conjoins it with a lens
+ * reporting an actual available fix, which is the half that knows the registry.
  *
  * Verified against published-registry ground truth on all four of this tree's bare-boolean
  * rows (2026-09-05): lodash-es 4.17.21 / `<=4.17.23` -> escapable (4.18.1 exists);
@@ -158,6 +165,13 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
         disposition: string;
     }[];
     stale: any[];
+    dispositionDrift: {
+        name: string;
+        stored: any;
+        derived: string;
+        kind: string;
+        reason: string;
+    }[];
     unattributed: string[];
     nonShippingOnly: number;
 };

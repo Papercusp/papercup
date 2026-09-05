@@ -80,6 +80,11 @@ import { issuesScopeWorkspace } from './issues-engineer';
 // under a partial mock), but note it CANNOT join the reader-throws assertion below: calling its
 // reader returns a promise, so the arm's throw would surface as a rejection, not a throw.
 import { isWorkspaceCoordinationOn } from './workspace-brain-scope';
+// Migrated 2026-09-05 (WI-6650). Worth listing for a reason beyond the class: this module
+// is pulled in by flag-bus.ts as a SIDE-EFFECT import, and it had TWO module-scope accesses
+// (an eager `void refreshLexiconPack()` reaching getFlag, plus the visible `onFlagChange(`),
+// so the source lint could only ever have seen half of it. This assertion sees both.
+import { activeServerPackId } from './lexicon/configure';
 // EI-19416650993725684's ORIGINALLY REPORTED entry point, added 2026-08-30 — every import above is a
 // module that was itself migrated, so together they guard the CLASS; this one guards the reported
 // REPRODUCTION. The filed chain is `agent-tools/locks/configure.ts` → `txn-timeouts-config.ts`, whose
@@ -115,7 +120,7 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
     expect(() => workItemClaimLeaseEnabled()).toThrow(/onFlagChange/);
-    // The last three are SEEDED callers, and they belong in this list for a reason worth stating:
+    // The last four are SEEDED callers, and they belong in this list for a reason worth stating:
     // `seed` populates the cache correctly BEFORE `onFlagChange` is touched, which invites the
     // reading that a seeded caller is exempt from this boundary. It is not — the seed is wrapped in
     // its own try/catch (a seed must never reach a hot-path reader) while the subscription is not,
@@ -123,6 +128,11 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
     expect(() => cacheTagEcaEnabled()).toThrow(/onFlagChange/);
     expect(() => issuesScopeWorkspace()).toThrow(/onFlagChange/);
+    // activeServerPackId is also the module's SOLE arm site — `configureLexicon` is pointed at
+    // this same function so `term()` arms through it. That makes this assertion do double duty:
+    // it pins the boundary above, and it fails if the arm is ever dropped back out of the getter
+    // (which would silently un-arm the hot `term()` read path while every other signal stays green).
+    expect(() => activeServerPackId()).toThrow(/onFlagChange/);
   });
 
   it('an ASYNC reader surfaces the same arm as a REJECTION, not a throw', () => {

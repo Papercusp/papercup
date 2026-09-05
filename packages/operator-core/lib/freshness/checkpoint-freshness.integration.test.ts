@@ -408,3 +408,103 @@ describe('dependsOn tri-state', () => {
     expect((await getWorkItemCheckpointFreshness(ref('WI-403')))?.verdict).toBe('fresh');
   });
 });
+
+/**
+ * The LOOP carry-note — the second carrier on this same axis (EI-19470389781357111).
+ *
+ * `work_items:checkpoint` had the declared-dependency axis; `loop:checkpoint` did not,
+ * and a cold loop's carry-note is the case that needs it MOST: it is that session's
+ * ONLY continuity surface, so an age heuristic getting freshness backwards there is
+ * unrecoverable. The write/read contract is deliberately the SHARED one (same
+ * `stampDeclaredDeps`, same verdict computation), proved by ./stamp.test.ts with no
+ * database. What can only be proved HERE is where the loop note DIFFERS from the
+ * work-item checkpoint: its row is pinned to ONE workspace while its refs must resolve
+ * under the CALLER's.
+ */
+describe('the loop carry-note carries the same axis', () => {
+  const LOOP = { harness: HARNESS, ownerId: 'su-loop-owner' };
+
+  it('CALIBRATION: a declared file dep reads fresh, then stale when a peer edits it', async () => {
+    // If this fails, every assertion below is meaningless — a loop note that stamps
+    // nothing trivially "passes" the refusal tests further down.
+    const dep = await seedFile('loop-calib.ts', 'v1');
+    await setLoopCarryNoteWithPrior(LOOP, 'did X; next Y', { dependsOn: [dep], depsResolveWorkspaceId: WS });
+
+    expect((await getLoopCarryNoteFreshness(LOOP, WS))?.verdict).toBe('fresh');
+
+    await writeFile(join(repoRoot, 'loop-calib.ts'), 'v2');
+    const after = await getLoopCarryNoteFreshness(LOOP, WS);
+    expect(after?.verdict).toBe('stale');
+    expect(after?.changed.map((c) => c.dep)).toEqual([dep]);
+  });
+
+  it('resolves refs under the CALLER workspace, not the workspace its row is pinned to', async () => {
+    // THE loop-specific invariant. The row lives in the coord workspace because the
+    // loop's whole lifecycle rides the coord subsystem; but `work-item:`/`plan:` refs
+    // are filtered by a strict workspace_id, so resolving them under the PINNED
+    // namespace would drop every one of them and silently reduce the loop note to
+    // `file:`-only dependencies. Nothing about the stored row would look wrong.
+    const TENANT = 'ws-tenant';
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, status, updated_ts)
+      VALUES (${TENANT}, ${HARNESS}, 'WI-TENANT', 'open', 5000)`;
+
+    const res = await setLoopCarryNoteWithPrior(LOOP, 'blocked on WI-TENANT', {
+      dependsOn: ['work-item:WI-TENANT'],
+      depsResolveWorkspaceId: TENANT,
+    });
+    expect(res.depsWarnings).toBeUndefined();
+    expect((await getLoopCarryNoteDeps(LOOP))?.stamps[0]?.token).toBe('open@5000');
+
+    // CONTROL: the same ref under the ROW's workspace resolves to NOTHING. That is
+    // what conflating the two workspaces would have produced — and it is
+    // indistinguishable from "the agent declared no work-item deps".
+    const pinned = await resolveCurrentTokens(['work-item:WI-TENANT'], {
+      workspaceId: WS,
+      harness: HARNESS,
+      repoRoot,
+    });
+    // `null`, not absent: resolveCurrentTokens returns Map<string, string | null> and
+    // records an unresolvable ref explicitly. Asserting `toBeUndefined()` here fails
+    // against a correct implementation — the control has to match the instrument.
+    expect(pinned.get('work-item:WI-TENANT')).toBeNull();
+  });
+
+  it('REFUSES to stamp when no concrete caller workspace was supplied', async () => {
+    // A `?superuser=1` session with no workspace chosen sends the '*' read sentinel.
+    // Stamping it would resolve refs under whatever workspace the sidecar process
+    // happens to be pinned to — a verdict about a DIFFERENT tenant's rows, stored as
+    // if it were authoritative. `undeclared` routes the reader to the age heuristics,
+    // which is an honest "we don't know".
+    //
+    // This is the case that shipped BROKEN: the guard asked `resolveConcreteWorkspaceId`,
+    // whose ambient fallback never returns null, so the refusal branch was unreachable
+    // and '*' was quietly stamped against the process-global workspace.
+    const dep = await seedFile('loop-refuse.ts', 'v1');
+    const res = await setLoopCarryNoteWithPrior(LOOP, 'note', { dependsOn: [dep], depsResolveWorkspaceId: '*' });
+
+    expect(res.depsWarnings?.join(' ')).toContain('no concrete workspace');
+    expect(await getLoopCarryNoteDeps(LOOP)).toBeNull();
+    // The READ side refuses on the same input for the same reason.
+    expect(await getLoopCarryNoteFreshness(LOOP, '*')).toBeUndefined();
+  });
+
+  it('treats a CLEARED note as undeclared even though the journal ring keeps its row', async () => {
+    // Loop notes journal: a clear sets note→null but the row survives, still carrying
+    // the cleared note's `deps`. Reporting those would hand back a verdict for a note
+    // that no longer exists — worse than falling through to the heuristics.
+    const dep = await seedFile('loop-cleared.ts', 'v1');
+    await setLoopCarryNoteWithPrior(LOOP, 'about to be cleared', { dependsOn: [dep], depsResolveWorkspaceId: WS });
+    expect(await getLoopCarryNoteDeps(LOOP)).not.toBeNull();
+
+    await setLoopCarryNote(LOOP, null);
+
+    const scope = loopScope(LOOP.harness, LOOP.ownerId);
+    const row = await db.sql<{ note: string | null; deps: unknown }[]>`
+      SELECT note, deps FROM harness_shared.carry_notes WHERE scope = ${scope}`;
+    expect(row[0]?.note).toBeNull();
+    expect(row[0]?.deps).not.toBeNull(); // the stamps genuinely survive the clear
+    expect(await getLoopCarryNoteDeps(LOOP)).toBeNull();
+    expect(await getLoopCarryNoteFreshness(LOOP, WS)).toBeUndefined();
+  });
+});

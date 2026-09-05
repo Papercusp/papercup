@@ -253,7 +253,7 @@ export function checkUnpopulatedDeclaration(callText) {
   return null;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 5. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 2. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
 //
@@ -307,6 +307,22 @@ export function checkUnpopulatedDeclaration(callText) {
 // Landing it also unblocked work-item-redundancy.ts and events/cache-eca-rule.ts for
 // flags-partial-mock-importable.test.ts: both reach issues-engineer via work-items.ts, so
 // the graph guard had been surfacing the blockers one hop at a time.
+//
+// Removed 2026-09-05 (WI-6650): lexicon/configure.ts, onto the same helper, SEEDED.
+// It is the worked example of this header's own half-blindness warning — it had BOTH
+// module-scope forms (`void refreshLexiconPack()` at :43, whose body reaches getFlag,
+// and `onFlagChange(` at :44), so migrating only the visible one would have gone green
+// on a still-unimportable file with the BASELINE then certifying it fixed.
+//   It also had a HIDDEN reader, the shape that keeps auth-config-overrides.ts below:
+// `configureLexicon({ activePackId: () => cachedPackId })` — and `term()` calls
+// `host.activePackId()` LIVE on every call, so that closure, not the exported getter,
+// is the hot read path. Fixed by pointing the seam at `activeServerPackId` itself, so
+// there is exactly ONE arm site and `term()` arms through it.
+//   Seeded from FLAG_DEFAULTS[THE_HIVE] (false — THE_HIVE is DARK_FLAGS/'parked'), which
+// resolves to the same `classic` literal the cache already initialised with, so the
+// pre-refresh window is unchanged. The seed is guarded on a `packIdResolved` flag
+// because `refreshLexiconPack` is EXPORTED: an arm occurring after an explicit refresh
+// must not reset a resolved value back to the flag default.
 export const BASELINE = new Set([
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
   // siblings above. It looks identical (same config-override family, same timer,
@@ -345,7 +361,6 @@ export const BASELINE = new Set([
   // FLAG_DEFAULTS is the right first move — AFTER the arm-site problem above is solved, not
   // instead of solving it.
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
-  'packages/operator-core/lib/lexicon/configure.ts',
 ]);
 
 /**

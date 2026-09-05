@@ -194,11 +194,18 @@ export function collectInstalledVersions(lsTree, advisoryNames) {
  * been CORRECTED silently reverted to reading patch-compatible with nothing failing. Keying
  * on the shape of a third party's payload gives a fix an expiry date; key on the invariant.
  *
- * THE INVARIANT. If `^<installed>` is a semver SUBSET of the vulnerable range, then every
- * version reachable without a breaking bump is still vulnerable — no compatible version
- * escapes, so the fix is necessarily semver-major. If it is NOT a subset, some
- * semver-compatible version lies outside the advisory. That is computable from the audit
- * payload plus the installed versions alone: no manifest read, no registry call.
+ * THE INVARIANT, AND ITS ASYMMETRY. If `^<installed>` is a semver SUBSET of the vulnerable
+ * range, then every version reachable without a breaking bump is still vulnerable — no
+ * compatible version escapes, so the fix is necessarily semver-major. That direction is a
+ * PROOF, computable from the audit payload plus the installed versions alone: no manifest
+ * read, no registry call.
+ *
+ * The other direction is NOT the mirror image. `escapable` means only that the range fails
+ * to trap every compatible version — the range algebra leaves room for an escape, which is
+ * not the same as one being PUBLISHED. Measured 2026-09-05: `^6.7.0` is not a subset of
+ * d3's `4.4.0 - 5.0.0-rc.4 || 6.0.0-rc.1 - 6.7.0`, yet the only real fix is d3 7.x. So
+ * `escapable` never yields patch-eligible on its own; analyze() conjoins it with a lens
+ * reporting an actual available fix, which is the half that knows the registry.
  *
  * Verified against published-registry ground truth on all four of this tree's bare-boolean
  * rows (2026-09-05): lodash-es 4.17.21 / `<=4.17.23` -> escapable (4.18.1 exists);
@@ -272,12 +279,20 @@ export function deriveFixFeasibility(vulnerableRange, installedVersions) {
       vulnerableCopies,
     };
   }
+  // NOTE THE ASYMMETRY, and do not strengthen this wording. `requires-major` is a PROOF:
+  // if `^v` is contained in the vulnerable range then no compatible version escapes, full
+  // stop. `escapable` is the mere ABSENCE of that proof — the range algebra leaves room
+  // for a compatible escape, but says nothing about whether one is PUBLISHED. d3 measured
+  // 2026-09-05 is the live example: `^6.7.0` is not a subset of `4.4.0 - 5.0.0-rc.4 ||
+  // 6.0.0-rc.1 - 6.7.0`, yet the only real fix is d3 7.x. That is why `escapable` alone
+  // never yields patch-eligible — it must be conjoined with a lens reporting an actual
+  // available fix, which is the half that knows what the registry published.
   return {
     verdict: 'escapable',
     reason:
       `${vulnerableCopies.map((v) => `^${v}`).join(' and ')} ` +
       `${vulnerableCopies.length > 1 ? 'are' : 'is'} NOT a subset of the vulnerable range "${range}" — ` +
-      'a semver-compatible version outside the advisory exists',
+      'the advisory does not trap every semver-compatible version, so a reported fix may be reachable without a breaking bump',
     vulnerableCopies,
   };
 }
@@ -408,12 +423,44 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
   // Shrink-only bookkeeping: a baseline entry that no longer gates is now fixed.
   const stale = [...accepted].filter((n) => !gating.some((f) => f.name === n));
 
+  /**
+   * PIN the curated dispositions against the derivation — rung 2 of CLAUDE.md's
+   * derived-truth ladder, with a stated reason why rung 1 does not apply here.
+   *
+   * A baseline entry's `disposition` describes measurable reality, so it drifts; the
+   * obvious repair is to DERIVE it outright and delete the stored copy. That would be
+   * wrong, and the langsmith row measured 2026-09-05 shows why: `npm audit --omit=dev`
+   * reports it vulnerable over `<=0.5.26` while the prod `npm ls` tree contains only the
+   * clean 0.8.7, so the derivation is honestly UNDETERMINED where a human has real
+   * evidence about a dev-reachable copy. Deriving would silently DOWNGRADE a correct
+   * judgment to "unknown".
+   *
+   * So the stored disposition stays curated and the derivation POLICES it. The two
+   * outcomes are deliberately different: `contradicted` means the derivation measured
+   * something and it disagrees — the case that silently reverted twice on 2026-09-05, and
+   * the one worth a reviewer's attention. `uncorroborated` means the derivation could not
+   * measure at all, which is a gap in the instrument, never evidence against the entry.
+   */
+  const dispositionDrift = gating
+    .filter((f) => {
+      const stored = baseline?.entries?.[f.name]?.disposition;
+      return typeof stored === 'string' && stored !== f.disposition;
+    })
+    .map((f) => ({
+      name: f.name,
+      stored: baseline.entries[f.name].disposition,
+      derived: f.disposition,
+      kind: f.disposition === 'undetermined' ? 'uncorroborated' : 'contradicted',
+      reason: f.fixFeasibility.reason,
+    }));
+
   return {
     total: findings.length,
     findings,
     gating,
     offenders,
     stale,
+    dispositionDrift,
     unattributed: findings.filter((f) => !f.attributed).map((f) => f.name),
     nonShippingOnly: findings.filter((f) => f.attributed && !f.shipping).length,
   };
@@ -628,9 +675,15 @@ function main() {
   if (has('--json')) {
     console.log(JSON.stringify(r, null, 2));
   } else if (has('--list')) {
-    // The re-seed surface: the measured gating population, for the baseline file.
+    // The re-seed surface: the measured gating population, for the baseline file. The
+    // DERIVED disposition is printed here so a re-seed copies a measurement rather than
+    // re-deriving one by hand — the exact hand-maintenance that drifted twice on
+    // 2026-09-05. An `undetermined` row is the one a human must still adjudicate.
     for (const f of r.gating.sort((a, b) => a.name.localeCompare(b.name))) {
-      console.log(`${f.severity.padEnd(9)} ${f.name.padEnd(34)} fix=${f.fix} owners=${f.owners.join(',') || 'UNATTRIBUTED'}`);
+      console.log(
+        `${f.severity.padEnd(9)} ${f.name.padEnd(34)} ${f.disposition.padEnd(22)} fix=${f.fix} owners=${f.owners.join(',') || 'UNATTRIBUTED'}`,
+      );
+      console.log(`${''.padEnd(10)}range=${f.fixFeasibility.vulnerableRange || '(none)'} — ${f.fixFeasibility.reason}`);
     }
     console.log(`\n${r.gating.length} gating (shipping high/critical) of ${r.total} total advisories`);
   } else {
@@ -648,6 +701,23 @@ function main() {
     if (r.stale.length) {
       console.log(`\nSTALE baseline entries (advisory resolved — remove them, the baseline is shrink-only):`);
       for (const s of r.stale) console.log(`  ${s}`);
+    }
+    const contradicted = r.dispositionDrift.filter((d) => d.kind === 'contradicted');
+    const uncorroborated = r.dispositionDrift.filter((d) => d.kind === 'uncorroborated');
+    if (contradicted.length) {
+      // Greppable on purpose: this is the signal that a curated disposition has gone
+      // stale under third-party data movement, which is silent by construction.
+      console.log(`\nADVISORY_DISPOSITION_DRIFT: ${contradicted.length} baseline entry(ies) the range derivation contradicts:`);
+      for (const d of contradicted) {
+        console.log(`  ${d.name}: baseline says ${d.stored}, derived ${d.derived} — ${d.reason}`);
+      }
+      console.log('  Re-adjudicate the entry (or its reason) — do not edit the derivation to agree with it.');
+    }
+    if (uncorroborated.length) {
+      // NOT drift: the instrument could not measure. Reported separately so it can never
+      // be mistaken for evidence against a curated entry.
+      console.log(`\nUNCORROBORATED dispositions (derivation could not measure — the entry stands):`);
+      for (const d of uncorroborated) console.log(`  ${d.name}: ${d.reason}`);
     }
   }
 
