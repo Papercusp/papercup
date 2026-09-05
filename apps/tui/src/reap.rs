@@ -12,6 +12,13 @@
 //! scheme) are still swept when their owner pid is gone. On clean exit we kill
 //! our own. Sessions not named `pui-*` are never touched — they belong to
 //! humans or other tools.
+//!
+//! Stable names need their own dead-owner rule (pui-tui-next-wave P-004,
+//! EI-22440755576757822): a live `pui-wb` whose LAUNCHER is gone — recorded in
+//! the identity stamp, see [`crate::identity::launcher_alive`] — is an orphan
+//! that the next launch would otherwise ATTACH to, inheriting the dead
+//! launcher's environment. [`plan_stable`] reaps those; a stamp-less or legacy
+//! (launcher-unknown) survivor is left alone and surfaced by `pui doctor`.
 
 use std::process::Command;
 
@@ -105,9 +112,62 @@ pub fn plan(list_output: &str, own: &str, is_alive: impl Fn(u32) -> bool) -> Vec
     actions
 }
 
+/// Stable-name rules (P-004), run beside [`plan`] on every sweep:
+///  1. Stable EXITED husk (`pui-wb (EXITED …)`) → `Delete`.
+///  2. Live stable session whose recorded launcher is DEAD
+///     (`launcher_alive(name) == Some(false)`) → `KillAndDelete`.
+///
+/// Own name, foreign names, and launcher-unknown (`None`) sessions are never
+/// touched — unknown means "cannot judge", and a wrong kill costs a live
+/// owner their workbench.
+pub fn plan_stable(
+    list_output: &str,
+    own: &str,
+    launcher_alive: impl Fn(&str) -> Option<bool>,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    for line in list_output.lines() {
+        let Some(name) = line.split_whitespace().next() else {
+            continue;
+        };
+        if stable_kind(name).is_none() || name == own {
+            continue;
+        }
+        if line.contains("EXITED") {
+            actions.push(Action::Delete(name.to_string()));
+        } else if launcher_alive(name) == Some(false) {
+            actions.push(Action::KillAndDelete(name.to_string()));
+        }
+    }
+    actions
+}
+
+/// Every app-managed STABLE-named session in `list-sessions` output, as
+/// `(name, exited)` — the doctor's inventory.
+pub fn stable_sessions(list_output: &str) -> Vec<(String, bool)> {
+    list_output
+        .lines()
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?;
+            stable_kind(name)?;
+            Some((name.to_string(), line.contains("EXITED")))
+        })
+        .collect()
+}
+
+/// Raw `zellij list-sessions --no-formatting` stdout; empty when zellij is
+/// absent or has no server.
+pub fn list_sessions_output() -> String {
+    Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default()
+}
+
 /// A pid is alive iff `/proc/<pid>` exists. Non-Linux: assume alive, so
 /// reaping degrades to exited-husk cleanup and can never wrongly kill.
-fn pid_alive(pid: u32) -> bool {
+pub(crate) fn pid_alive(pid: u32) -> bool {
     if cfg!(target_os = "linux") {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     } else {
@@ -142,6 +202,18 @@ pub fn reap_stale(own: &str) {
         match action {
             Action::Delete(n) => zellij(&["delete-session", &n]),
             Action::KillAndDelete(n) => kill_and_delete(&n),
+        }
+    }
+    for action in plan_stable(&list, own, crate::identity::launcher_alive) {
+        match action {
+            Action::Delete(n) => {
+                zellij(&["delete-session", &n]);
+                crate::identity::clear(&n);
+            }
+            Action::KillAndDelete(n) => {
+                kill_and_delete(&n);
+                crate::identity::clear(&n);
+            }
         }
     }
     if let Some(line) = list
@@ -269,6 +341,74 @@ pui-wb-300 [Created 3h ago]
         assert!(!session_is_live(list, "pui-dock")); // EXITED husk is not live
         assert!(!session_is_live(list, "pui-hud")); // absent
         assert!(session_is_live(list, "pui-wb-300")); // legacy names probe too
+    }
+
+    #[test]
+    fn plan_stable_reaps_live_stable_session_with_dead_launcher() {
+        // EI-22440755576757822: an ended codex agent's `pui-wb` was still live
+        // and the owner's launch attached to it. Dead launcher → reap.
+        let list = "\
+pui-wb [Created 17h ago]
+pui-dock [Created 2h ago]
+likable-petunia [Created 2days ago]
+";
+        let alive = |name: &str| match name {
+            "pui-wb" => Some(false),
+            "pui-dock" => Some(true),
+            _ => None,
+        };
+        assert_eq!(
+            plan_stable(list, "pui-reap", alive),
+            vec![Action::KillAndDelete("pui-wb".into())]
+        );
+    }
+
+    #[test]
+    fn plan_stable_keeps_alive_unknown_and_own_sessions() {
+        // CONTROL: the rule must not fire on a live launcher, an unjudgeable
+        // (legacy / stamp-less) one, a foreign session, or our own name.
+        let list = "\
+pui-wb [Created 1h ago]
+pui-dock [Created 2h ago]
+pui-hud [Created 3h ago]
+likable-petunia [Created 2days ago]
+";
+        let alive = |name: &str| match name {
+            "pui-wb" => Some(true),
+            "pui-dock" => None,
+            "pui-hud" => Some(false), // own → skipped even though dead
+            _ => Some(false),         // foreign → never considered
+        };
+        assert!(plan_stable(list, "pui-hud", alive).is_empty());
+    }
+
+    #[test]
+    fn plan_stable_deletes_stable_exited_husks() {
+        let list = "\
+pui-wb [Created 3h ago] (EXITED - attach to resurrect)
+pui-dock-300 [Created 3h ago] (EXITED - attach to resurrect)
+";
+        // pid-keyed husks belong to `plan`; only the stable one is ours here.
+        assert_eq!(
+            plan_stable(list, "pui-reap", |_| None),
+            vec![Action::Delete("pui-wb".into())]
+        );
+    }
+
+    #[test]
+    fn stable_sessions_inventories_stable_names_with_exited_flag() {
+        let list = "\
+pui-wb [Created 1h ago]
+pui-dock [Created 2h ago] (EXITED - attach to resurrect)
+pui-wb-300 [Created 3h ago]
+likable-petunia [Created 2days ago]
+No active zellij sessions found.
+";
+        assert_eq!(
+            stable_sessions(list),
+            vec![("pui-wb".to_string(), false), ("pui-dock".to_string(), true)]
+        );
+        assert!(stable_sessions("").is_empty());
     }
 
     #[test]

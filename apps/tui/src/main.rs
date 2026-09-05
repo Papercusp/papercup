@@ -739,6 +739,74 @@ fn operator_failure_lines(endpoint_label: &str, error: &anyhow::Error) -> Vec<St
     ]
 }
 
+/// One doctor line per app-managed stable session + whether it is an orphan
+/// (counts as a doctor failure). Pure so the verdict wording is testable.
+fn doctor_session_line(
+    name: &str,
+    exited: bool,
+    verdict: Option<identity::LauncherVerdict>,
+) -> (String, bool) {
+    use identity::LauncherVerdict as V;
+    match (exited, verdict) {
+        (true, _) => (format!("{name} — EXITED husk (deleted on next launch)"), false),
+        (false, Some(V::Alive(l))) => (format!("{name} — live, launcher alive ({})", l.label()), false),
+        (false, Some(V::Dead { launcher, reason })) => (
+            format!(
+                "{name} — ORPHAN: {reason}; launched by {} — the next launch would attach to it",
+                launcher.label()
+            ),
+            true,
+        ),
+        (false, Some(V::Unknown)) => (
+            format!("{name} — live, launcher unknown (legacy stamp; attach allowed)"),
+            false,
+        ),
+        (false, None) => (
+            format!("{name} — live, no identity stamp (attach is refused; `zellij kill-session {name}` to clear)"),
+            false,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod doctor_session_tests {
+    use super::*;
+    use identity::{Launcher, LauncherVerdict};
+
+    fn l(pid: u32) -> Launcher {
+        Launcher {
+            pid,
+            boot_id: None,
+            sid: Some("su-ed29de9b-4ca0".into()),
+            agent: Some("codex".into()),
+            created_at_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn orphan_is_the_only_failing_verdict_and_names_the_launcher() {
+        let (line, fail) = doctor_session_line(
+            "pui-wb",
+            false,
+            Some(LauncherVerdict::Dead {
+                launcher: l(2053474),
+                reason: "launcher pid 2053474 is gone".into(),
+            }),
+        );
+        assert!(fail);
+        assert!(line.contains("ORPHAN") && line.contains("2053474") && line.contains("codex"), "{line}");
+        for (exited, v) in [
+            (false, Some(LauncherVerdict::Alive(l(1)))),
+            (false, Some(LauncherVerdict::Unknown)),
+            (false, None),
+            (true, None),
+        ] {
+            let (line, fail) = doctor_session_line("pui-wb", exited, v);
+            assert!(!fail, "{line}");
+        }
+    }
+}
+
 /// The status-line form of the same classified failure (R1, UI half).
 ///
 /// The status bar is ONE line and is the only place most users will ever see
@@ -878,6 +946,23 @@ async fn run_doctor() -> Result<()> {
         }
     }
 
+    // Stable-session launcher audit (pui-tui-next-wave P-005,
+    // EI-22440755576757822): a live `pui-*` session whose launcher is gone is
+    // an ORPHAN the next launch would have attached to; name it and the repair.
+    let sessions = reap::stable_sessions(&reap::list_sessions_output());
+    if sessions.is_empty() {
+        println!("zellij sessions: none");
+    } else {
+        for (name, exited) in sessions {
+            let (line, orphan) = doctor_session_line(&name, exited, identity::launcher_verdict(&name));
+            println!("session:        {line}");
+            if orphan {
+                failures += 1;
+                println!("repair:         pui reap   (or `zellij kill-session {name}`)");
+            }
+        }
+    }
+
     if failures > 0 {
         // Each problem printed its OWN repair line above; pointing at the local
         // install command unconditionally would misdirect a backend failure,
@@ -890,11 +975,46 @@ async fn run_doctor() -> Result<()> {
     Ok(())
 }
 
+/// Attach-if-exists (P-001) with the ORPHAN rule (pui-tui-next-wave P-004,
+/// EI-22440755576757822): a live survivor is attached to only while its
+/// recorded launcher is alive. A survivor whose launcher is gone (an ended
+/// agent's `pui-wb`, a killed background launch) is reaped and re-stamped so
+/// the new user never inherits the dead launcher's environment. Returns
+/// whether the caller should ATTACH (`true`) or CREATE (`false`).
+fn resolve_survivor(session: &str, backend: &client::BackendIdentity) -> Result<bool> {
+    let live = reap::live_session_exists(session);
+    match identity::bind(session, backend, live)? {
+        identity::Binding::Attached => Ok(true),
+        identity::Binding::Created => Ok(false),
+        identity::Binding::Orphaned { reason } => {
+            eprintln!("pui: {session} is an orphaned survivor — {reason}; reaping it instead of attaching");
+            reap::kill_and_delete(session);
+            identity::clear(session);
+            identity::bind(session, backend, false)?;
+            Ok(false)
+        }
+    }
+}
+
+/// zellij needs a real terminal. A non-PTY launch (a backgrounded
+/// `pui workbench`, EI-22373168217321170) used to create the session, fail to
+/// hand off, and exit 0 — leaving a half-built `pui-wb` for the next launch to
+/// attach to. Refuse up front, loudly, before any session exists.
+fn require_interactive_terminal(command: &str) -> Result<()> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`pui {command}` needs an interactive terminal (stdin/stdout are not a TTY): run it in a terminal window, from the desktop launcher, or via capability:terminal — a background launch would leave an incomplete zellij session behind"
+    )
+}
+
 async fn run_workbench() -> Result<()> {
+    require_interactive_terminal("workbench")?;
     let session = layout::session_name("wb");
     let (_client, backend) = selected_backend_identity().await?;
-    let live = reap::live_session_exists(&session);
-    identity::bind(&session, &backend, live)?;
+    let live = resolve_survivor(&session, &backend)?;
     identity::inherit(&backend);
     let argv = if live {
         layout::attach_argv(&session)
@@ -927,10 +1047,10 @@ async fn run_chat_dock() -> Result<()> {
     // so dock content is identical regardless of which window owns it.
     // Legacy pid-keyed `pui-dock-*` sessions (EI-186 scheme) are still reaped
     // on the create path, and zellij returning kills our own session.
+    require_interactive_terminal("chat")?;
     let session = layout::session_name("dock");
     let (client, backend) = selected_backend_identity().await?;
-    let live = reap::live_session_exists(&session);
-    identity::bind(&session, &backend, live)?;
+    let live = resolve_survivor(&session, &backend)?;
     identity::inherit(&backend);
     let argv = if live {
         layout::attach_argv(&session)
