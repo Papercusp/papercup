@@ -20,7 +20,12 @@ import { join } from 'node:path';
 // arity at the call site, so a call that silently dropped the 4th argument — quietly
 // restoring the optimistic single-lens fix reading this file exists to prevent — fails
 // to compile instead of passing.
-import { analyze, attributeAdvisories, isNonShipping } from '../../../scripts/check-reachable-advisories.mjs';
+import {
+  analyze,
+  attributeAdvisories,
+  isNonShipping,
+  measureJson,
+} from '../../../scripts/check-reachable-advisories.mjs';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const BASELINE_PATH = join(REPO_ROOT, 'scripts', 'reachable-advisories-baseline.json');
@@ -265,5 +270,109 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
   it('a missing second lens degrades to the single-lens reading without throwing', () => {
     expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, null)).not.toThrow();
     expect(() => analyze(AUDIT_FIXTURE, LS_FIXTURE, { accepted: [] }, {})).not.toThrow();
+  });
+});
+
+/**
+ * WI-2144851 — the THIRD verdict: UNDETERMINED.
+ *
+ * `npm audit` is the one input to this gate that needs the network, and once the gate is
+ * wired into the fleet green-checkpoint a registry blip has two wrong readings, both of
+ * which look like a well-formed answer:
+ *
+ *   - read as CLEAN — an empty result from a bounded instrument taken as a negative
+ *     finding, the failure this repo names everywhere; or
+ *   - read as an ordinary RED — which red-pins `main` for the whole fleet and reads to the
+ *     triager exactly like "a new shipping high/critical advisory landed". The response to
+ *     that is "patch a dependency"; the response to a blip is "re-run". Indistinguishable
+ *     inputs producing opposite correct actions is the defect.
+ *
+ * So measureJson() retries the transient case and, if it still cannot measure, fails CLOSED
+ * with a message leading `ADVISORY_GATE_UNDETERMINED`. The controls below are a matched
+ * set: without the empty-output case, a `{}` default would satisfy every other assertion
+ * here while silently restoring the "blank reads as no advisories" behaviour.
+ */
+describe('reachable-advisory gate: undetermined vs clean vs red', () => {
+  const noSleep = () => {};
+
+  it('parses a first-attempt success without retrying', () => {
+    let calls = 0;
+    const r = measureJson(
+      'probe',
+      () => {
+        calls++;
+        return '{"ok":1}';
+      },
+      { sleep: noSleep },
+    );
+    expect(r).toEqual({ ok: 1 });
+    expect(calls).toBe(1);
+  });
+
+  it('reads stdout from a NON-ZERO npm exit — advisories present is the expected case', () => {
+    const r = measureJson(
+      'probe',
+      () => {
+        const err = new Error('npm exited 1') as Error & { stdout?: string };
+        err.stdout = '{"vulnerabilities":{}}';
+        throw err;
+      },
+      { sleep: noSleep },
+    );
+    expect(r).toEqual({ vulnerabilities: {} });
+  });
+
+  it('RETRIES a transient failure and succeeds — not vacuous: the first attempt really failed', () => {
+    let calls = 0;
+    const slept: number[] = [];
+    const r = measureJson(
+      'probe',
+      () => {
+        calls++;
+        if (calls < 3) throw new Error('ETIMEDOUT');
+        return '{"recovered":true}';
+      },
+      { sleep: (ms: number) => slept.push(ms), delaysMs: [7, 11] },
+    );
+    expect(r).toEqual({ recovered: true });
+    expect(calls).toBe(3);
+    expect(slept).toEqual([7, 11]);
+  });
+
+  it('an unmeasurable input is UNDETERMINED, never an empty/clean reading', () => {
+    expect(() => measureJson('npm audit', () => '', { sleep: noSleep, attempts: 2 })).toThrow(
+      /ADVISORY_GATE_UNDETERMINED/,
+    );
+    expect(() => measureJson('npm audit', () => 'not json at all', { sleep: noSleep, attempts: 2 })).toThrow(
+      /ADVISORY_GATE_UNDETERMINED/,
+    );
+  });
+
+  it('says WHICH measurement failed and that re-running is the fix, not patching a dependency', () => {
+    let message = '';
+    try {
+      measureJson('npm audit (full tree)', () => '', { sleep: noSleep, attempts: 2 });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('npm audit (full tree)');
+    expect(message).toContain('2 attempt(s)');
+    expect(message).toContain('MEASUREMENT failure, not an advisory finding');
+    expect(message).toContain('Re-run the gate');
+  });
+
+  it('stops after the configured attempt budget instead of retrying forever', () => {
+    let calls = 0;
+    expect(() =>
+      measureJson(
+        'probe',
+        () => {
+          calls++;
+          return '';
+        },
+        { sleep: noSleep, attempts: 4 },
+      ),
+    ).toThrow(/ADVISORY_GATE_UNDETERMINED/);
+    expect(calls).toBe(4);
   });
 });
