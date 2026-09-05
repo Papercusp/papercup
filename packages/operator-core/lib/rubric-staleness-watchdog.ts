@@ -22,7 +22,7 @@
  * into the shared routinesTick as one durable step, fail-soft throughout, an
  * env `<=0` kill switch, and the shared fires-ledger debounce.
  */
-import { listRubrics, type Rubric } from './rubrics';
+import { listRubrics, type Rubric, type RubricCriterion } from './rubrics';
 import { checkScorecardFreshness, type ScorecardFreshness } from './scorecard-freshness';
 import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
@@ -46,6 +46,59 @@ export function rubricProposalDwellThresholdSec(): number {
 
 // ── pure decider (unit-tested with no DB) ──────────────────────────────────────
 
+/**
+ * Instrument bindings whose measured SUBSYSTEM no longer runs (WI-2145252). The
+ * Mug/Cup/Kettle tier was retired 2026-08-09 (plan retire-mug-kettle-su-only-2026-08-09
+ * D-001; the `papercusp-mug-kettle-system` flag is DELETED, not default-OFF, and the
+ * actuator tools REFUSE — see agent-tools/_mug-kettle-gate.ts), so a criterion bound to
+ * one of these can never earn a rating above `unknown`, and the rubric holding it can
+ * never produce a COMPLETE scorecard.
+ *
+ * WHY THIS LIVES IN THE WATCHDOG and not in a standalone lint: a rubric is a DB row, so
+ * no build-time check can see one. This is the one place that already reads every ACTIVE
+ * releaseGating rubric on a cadence, which makes it the only surface that can catch a
+ * retired-tier criterion being re-added later — the "pin the removal" half of the
+ * precedent set one level up in apps/operator/lib/release/release-profile.ts
+ * (AUTOLOOP_COMPONENT_RUBRIC_REFS, WI-5379): a mandatory component that CANNOT be graded
+ * is not a strict gate, it is a permanently-red one.
+ */
+export const RETIRED_TIER_INSTRUMENT_KEYS: Readonly<Record<string, string>> = {
+  'pot-throughput-ticks': 'Mug placement (harness_shared.pot_placements — 0 rows since 2026-07-19)',
+  'mug-dispatched-cup-spawns': 'Cup execution (spawned_agents child_role=cup — none since 2026-08-17)',
+  'kettle-autoloop-state': 'Kettle supervision',
+  'e2e-traversal-trace': 'the Mug -> Cup -> Kettle traversal',
+};
+
+/** PURE: which of a rubric's criteria are bound to a retired subsystem's instrument. */
+export function retiredTierCriteria(
+  criteria: ReadonlyArray<Pick<RubricCriterion, 'key'> & { instrumentKey?: string | null }> | undefined,
+): Array<{ key: string; instrumentKey: string; subsystem: string }> {
+  if (!criteria) return [];
+  const out: Array<{ key: string; instrumentKey: string; subsystem: string }> = [];
+  for (const c of criteria) {
+    const ik = c.instrumentKey ?? '';
+    const subsystem = RETIRED_TIER_INSTRUMENT_KEYS[ik];
+    if (subsystem) out.push({ key: c.key, instrumentKey: ik, subsystem });
+  }
+  return out;
+}
+
+/** The diagnosis appended to a STALE reason when the rubric cannot be graded at all.
+ *  Empty string when no criterion is retired-tier bound, so the reason is unchanged. */
+function ungradeableSuffix(
+  criteria: ReadonlyArray<Pick<RubricCriterion, 'key'> & { instrumentKey?: string | null }> | undefined,
+): string {
+  const dead = retiredTierCriteria(criteria);
+  if (dead.length === 0) return '';
+  const named = dead.map((d) => `${d.key} (instrument ${d.instrumentKey} -> ${d.subsystem})`).join('; ');
+  return (
+    ` ⚠ UNGRADEABLE BY CONSTRUCTION — this is NOT a dead grader: ${dead.length} criteri` +
+    `${dead.length === 1 ? 'on is' : 'a are'} bound to a RETIRED subsystem, so no complete scorecard is ` +
+    `reachable no matter how often it is graded: ${named}. The repair is a rubrics:propose ` +
+    `whole-document revision dropping them (rubrics:amend REFUSES criteria removal), not more grading.`
+  );
+}
+
 export interface RubricStalenessVerdict {
   stale: boolean;
   /** Human-readable reason — the alert body for a stale read, the "why not" for a healthy one. */
@@ -58,9 +111,16 @@ export interface RubricStalenessVerdict {
  * means a COMPLETE scorecard landed in-window (the mandate). A partial-only window
  * is called out distinctly — grading that silently truncates is a different failure
  * from grading that stopped, and the responder should know which they are chasing.
+ *
+ * A THIRD failure the first two cannot express (WI-2145252): the rubric is not
+ * gradeable AT ALL because a criterion measures a subsystem that no longer runs. That
+ * read fired here every ~3h for ~27 days on `autoloop-release-readiness` while blaming
+ * "a dead grader loop", which sent every responder looking for a grader that was never
+ * the problem. `criteria` is optional so no existing caller is stranded; when supplied,
+ * a retired-tier binding is named in the reason.
  */
 export function evaluateRubricStaleness(
-  rubric: Pick<Rubric, 'rubricId'>,
+  rubric: Pick<Rubric, 'rubricId'> & Partial<Pick<Rubric, 'criteria'>>,
   freshness: Pick<ScorecardFreshness, 'status' | 'complete' | 'count' | 'lastCompleteAt' | 'lastEmittedAt'>,
   thresholdMs: number,
 ): RubricStalenessVerdict {
@@ -72,13 +132,15 @@ export function evaluateRubricStaleness(
     };
   }
   const hours = Math.max(1, Math.round(thresholdMs / 3_600_000));
+  const ungradeable = ungradeableSuffix(rubric.criteria);
   if (freshness.status === 'partial-only') {
     return {
       stale: true,
       reason:
         `release-gating rubric '${rubric.rubricId}' has ${freshness.count} scorecard(s) in the last ${hours}h ` +
         `but NONE complete (silent truncation — the grader is filing partial cards). ` +
-        `Newest emission ${freshness.lastEmittedAt ?? 'unknown'}; last COMPLETE grade predates the window.`,
+        `Newest emission ${freshness.lastEmittedAt ?? 'unknown'}; last COMPLETE grade predates the window.` +
+        ungradeable,
     };
   }
   return {
@@ -86,7 +148,8 @@ export function evaluateRubricStaleness(
     reason:
       `release-gating rubric '${rubric.rubricId}' has NO scorecard in the last ${hours}h ` +
       `(grading stopped — a dead grader loop, not a healthy quiet period). ` +
-      `The newest verdict on record predates the window; a release call reading it is reading stale evidence.`,
+      `The newest verdict on record predates the window; a release call reading it is reading stale evidence.` +
+      ungradeable,
   };
 }
 

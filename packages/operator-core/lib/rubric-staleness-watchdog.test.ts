@@ -10,10 +10,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   evaluateRubricProposalDwell,
   evaluateRubricStaleness,
+  retiredTierCriteria,
   rubricProposalDwellSweep,
   rubricProposalDwellThresholdSec,
   rubricStalenessSweep,
   rubricStalenessThresholdSec,
+  RETIRED_TIER_INSTRUMENT_KEYS,
 } from './rubric-staleness-watchdog';
 import type { Rubric } from './rubrics';
 import type { ScorecardFreshness } from './scorecard-freshness';
@@ -70,6 +72,96 @@ describe('evaluateRubricStaleness — the pure decider', () => {
   it('kill switch (thresholdMs <= 0) is never stale', () => {
     expect(evaluateRubricStaleness(rubric, freshness(), 0).stale).toBe(false);
     expect(evaluateRubricStaleness(rubric, freshness(), -1).stale).toBe(false);
+  });
+
+  /**
+   * WI-2145252 — the third failure mode. `autoloop-release-readiness` alerted here every
+   * ~3h for ~27 days blaming "a dead grader loop" while three of its eight criteria
+   * measured the Mug/Cup/Kettle tier retired 2026-08-09: no amount of grading could ever
+   * have produced the COMPLETE scorecard the alert demanded. The alert was correct that
+   * it was stale and wrong about why, which is what made it unactionable.
+   */
+  const criterion = (key: string, instrumentKey: string) =>
+    ({ key, instrumentKey }) as unknown as Rubric['criteria'][number];
+
+  it('names a RETIRED-TIER criterion as ungradeable-by-construction, not a dead grader', () => {
+    const v = evaluateRubricStaleness(
+      {
+        rubricId: 'autoloop-release-readiness',
+        criteria: [
+          criterion('placement-throughput', 'pot-throughput-ticks'),
+          criterion('blender-leg-health', 'blender-leg-scorecard'),
+        ],
+      },
+      freshness(),
+      SIX_H,
+    );
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('UNGRADEABLE BY CONSTRUCTION');
+    expect(v.reason).toContain('placement-throughput');
+    expect(v.reason).toContain('pot-throughput-ticks');
+    expect(v.reason).toContain('rubrics:propose');
+    // The LIVE criterion must not be blamed — a diagnosis that indicts everything is noise.
+    expect(v.reason).not.toContain('blender-leg-scorecard');
+  });
+
+  it('adds NO ungradeable diagnosis when every criterion measures a live subsystem', () => {
+    const v = evaluateRubricStaleness(
+      {
+        rubricId: 'autoloop-release-readiness',
+        criteria: [
+          criterion('blender-leg-health', 'blender-leg-scorecard'),
+          criterion('capacity-admission', 'accounts-capacity'),
+          criterion('owner-controls', 'owner-controls-probe'),
+          criterion('release-parity', 'release-generation-parity'),
+        ],
+      },
+      freshness(),
+      SIX_H,
+    );
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain('dead grader loop');
+    expect(v.reason).not.toContain('UNGRADEABLE BY CONSTRUCTION');
+  });
+
+  it('leaves a criteria-less caller byte-identical (no stranded call sites)', () => {
+    const without = evaluateRubricStaleness(rubric, freshness(), SIX_H).reason;
+    const withLive = evaluateRubricStaleness(
+      { ...rubric, criteria: [criterion('blender-leg-health', 'blender-leg-scorecard')] },
+      freshness(),
+      SIX_H,
+    ).reason;
+    expect(withLive).toBe(without);
+  });
+});
+
+describe('retiredTierCriteria — the pin on the WI-5379 removal', () => {
+  it('flags exactly the four Mug/Cup/Kettle instrument bindings dropped from the composite', () => {
+    const flagged = retiredTierCriteria([
+      { key: 'placement-throughput', instrumentKey: 'pot-throughput-ticks' },
+      { key: 'cup-execution-health', instrumentKey: 'mug-dispatched-cup-spawns' },
+      { key: 'kettle-supervision-health', instrumentKey: 'kettle-autoloop-state' },
+      { key: 'e2e-loop-closure', instrumentKey: 'e2e-traversal-trace' },
+      { key: 'capacity-admission', instrumentKey: 'accounts-capacity' },
+      { key: 'release-parity', instrumentKey: 'release-generation-parity' },
+    ]);
+    expect(flagged.map((f) => f.key)).toEqual([
+      'placement-throughput',
+      'cup-execution-health',
+      'kettle-supervision-health',
+      'e2e-loop-closure',
+    ]);
+    expect(Object.keys(RETIRED_TIER_INSTRUMENT_KEYS).sort()).toEqual([
+      'e2e-traversal-trace',
+      'kettle-autoloop-state',
+      'mug-dispatched-cup-spawns',
+      'pot-throughput-ticks',
+    ]);
+  });
+
+  it('is empty for undefined / no-instrument criteria rather than throwing', () => {
+    expect(retiredTierCriteria(undefined)).toEqual([]);
+    expect(retiredTierCriteria([{ key: 'x' }, { key: 'y', instrumentKey: null }])).toEqual([]);
   });
 });
 
