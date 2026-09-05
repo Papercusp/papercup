@@ -13,13 +13,17 @@
  * independently scheduled action admits rows older than two ticks as
  * `unreviewed` and measures the promoter's successful-run watermark.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
+import { activeExternalBlockers } from './external-blockers';
+import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
+import { hasStrictOwnerAction, readAgentReviewState } from './harness/improvements/agent-review-policy';
 import { selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
-import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import { isSufficientEvidence } from './work-item-completion-authority';
 import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
 import { isHarnessInScope, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
 import type { OrgSql } from './work-items';
@@ -67,6 +71,94 @@ export interface PromoterItem {
   admission: string | null;
   conditionKey: string | null;
   createdAtMs: number;
+  /**
+   * D-008: the complete mutable identity/evidence snapshot this exact model
+   * judgement was made against.  It is intentionally separate from the terse
+   * prompt-facing fields above: persistence compares the full fingerprint,
+   * while the prompt receives a bounded evidence projection.
+   */
+  mergeSnapshot?: AdmissionMergeSnapshot;
+}
+
+export interface AdmissionMergeIncomingReference {
+  sourceId: string;
+  sourceUpdatedAtMs: number;
+}
+
+export interface AdmissionMergeDependency {
+  blockedKind: string;
+  blockedRef: string;
+  blockerKind: string;
+  blockerRef: string;
+  satisfaction: 'settled' | 'success';
+  active: boolean;
+}
+
+/**
+ * Versioned endpoint/reference identity captured immediately before judging.
+ * Any difference at the transactional re-read invalidates the judgement; no
+ * stale adjudication, relation, occurrence, promotion, or terminal write is
+ * allowed to escape.
+ */
+export interface AdmissionMergeSnapshot {
+  id: string;
+  workspaceId: string;
+  harnessSlug: string;
+  title: string;
+  summary: string;
+  state: string;
+  kind: string;
+  admission: string | null;
+  conditionKey: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+  origin: string | null;
+  assignee: string | null;
+  payload: unknown;
+  completionRef: unknown;
+  terminalCompletionRef: string | null;
+  terminalOwner: string | null;
+  completionAuthority: string | null;
+  sourcePlanSlug: string | null;
+  sourcePlanItemIds: string[];
+  seeAlso: string[];
+  incomingSeeAlso: AdmissionMergeIncomingReference[];
+  dependencies: AdmissionMergeDependency[];
+  fingerprint: string;
+}
+
+export interface AdmissionMergeGuardRefusal {
+  itemId: string;
+  canonicalId: string | null;
+  reason:
+    | 'snapshot-missing'
+    | 'snapshot-drift'
+    | 'scope-or-identity-changed'
+    | 'remote-owned'
+    | 'claimed'
+    | 'claim-held'
+    | 'blocked-state'
+    | 'review-gated'
+    | 'owner-blocked'
+    | 'external-blocked'
+    | 'active-dependency'
+    | 'terminal-loser'
+    | 'terminal-canonical-without-completion'
+    | 'producer-identity-mismatch'
+    | 'plan-obligation-mismatch'
+    | 'conditional-write-miss';
+  detail: string;
+}
+
+export interface AdmissionPlanPersistenceResult {
+  promotedIds: string[];
+  mergedIds: string[];
+  replayedIds: string[];
+  held: Array<{ itemId: string; reason: string }>;
+  adjudications: PromoterAdjudication[];
+  adjudicationsInserted: number;
+  guardRefusals: AdmissionMergeGuardRefusal[];
+  uniqueRowsChanged: number;
 }
 
 export interface PromoterPair {
@@ -91,6 +183,8 @@ export interface PromoterAdjudication extends PromoterJudgement {
   canonical: string | null;
   signals: PromoterPair['signals'];
   cosine: number | null;
+  /** Exact pre-judgement endpoint identities persisted with the verdict. */
+  judgmentIdentity?: { a: string; b: string; canonical: string | null };
 }
 
 export type PromoterDisposition =
@@ -126,6 +220,8 @@ export interface PromoterRunResult {
   tokensOut: number;
   censusBefore: number;
   censusAfter: number;
+  /** Guard refusals are held/no-mutation outcomes, never inferred failures. */
+  guardRefusals?: AdmissionMergeGuardRefusal[];
   /**
    * pairKeys this run rendered a FINAL (non-hold) judgement for that still lack a
    * `dedup_adjudications` row after persisting — the targeted writer-integrity signal.
@@ -693,6 +789,245 @@ interface WorkItemRow {
   created_ts: string | number | null;
 }
 
+interface AdmissionMergeSnapshotRow extends WorkItemRow {
+  workspace_id: string;
+  harness_slug: string;
+  updated_ts: string | number | null;
+  origin: string | null;
+  taken_by: string | null;
+  payload: unknown;
+  completion_ref: unknown;
+  terminal_completion_ref: string | null;
+  terminal_owner: string | null;
+  authority: string | null;
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  see_also: string[] | null;
+}
+
+interface IncomingReferenceRow {
+  target_id: string;
+  source_id: string;
+  source_updated_ts: string | number | null;
+}
+
+interface DependencyRow {
+  blocked_kind: string;
+  blocked_ref: string;
+  blocker_kind: string;
+  blocker_ref: string;
+  satisfaction: string | null;
+}
+
+interface ReferencedStateRow {
+  feature_id: string;
+  harness_slug: string;
+  status: string | null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function normalizedStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0))].sort()
+    : [];
+}
+
+/** Canonical JSON for a fingerprint: object key insertion order is not evidence. */
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === 'object') {
+    if (value instanceof Date) return value.toISOString();
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return typeof value === 'bigint' ? value.toString() : (value ?? null);
+}
+
+function snapshotFingerprint(snapshot: Omit<AdmissionMergeSnapshot, 'fingerprint'>): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJsonValue(snapshot)))
+    .digest('hex');
+}
+
+function snapshotRefKeys(snapshot: Pick<AdmissionMergeSnapshotRow, 'feature_id' | 'harness_slug'>): string[] {
+  return [snapshot.feature_id, `${snapshot.harness_slug}#${snapshot.feature_id}`];
+}
+
+function dependencyIsActive(
+  dependency: DependencyRow,
+  endpointKeys: ReadonlySet<string>,
+  resolveState: (ref: string) => string | null,
+): boolean {
+  const counterpartRef = endpointKeys.has(dependency.blocked_ref) ? dependency.blocker_ref : dependency.blocked_ref;
+  const counterpartState = resolveState(counterpartRef);
+  if (!counterpartState) return true;
+  return dependency.satisfaction === 'success'
+    ? !ALL_SUCCESSFUL_STATUSES.has(counterpartState)
+    : !ALL_TERMINAL_STATUSES.has(counterpartState);
+}
+
+/**
+ * Read the complete judgement identity for a bounded endpoint set. `lockRows`
+ * is used only by persistAdmissionPlan's transaction: every loser/canonical is
+ * locked for update before its current endpoint/reference identity is compared.
+ * Referencing rows are deliberately observed, not locked: locking A then an
+ * incoming reference from B while another run locks B then A creates a cycle.
+ */
+export async function readAdmissionMergeSnapshots(
+  sql: OrgSql,
+  input: { workspaceId: string; harnessSlug: string; ids: readonly string[]; lockRows?: boolean },
+): Promise<Map<string, AdmissionMergeSnapshot>> {
+  const ids = [...new Set(input.ids.filter(Boolean))].sort();
+  if (ids.length === 0) return new Map();
+  const endpointLock = input.lockRows ? sql`FOR UPDATE OF wi` : sql``;
+  const rows = await sql<AdmissionMergeSnapshotRow[]>`
+    SELECT wi.workspace_id, wi.harness_slug, wi.feature_id, wi.title, wi.summary,
+           wi.status, wi.item_kind, wi.admission, wi.condition_key, wi.created_ts,
+           wi.updated_ts, wi.origin, wi.taken_by, wi.payload, wi.completion_ref,
+           wi.terminal_completion_ref, wi.terminal_owner, wi.authority,
+           wi.source_plan_slug, wi.source_plan_item_ids, wi.see_also
+      FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ${input.workspaceId}
+       AND wi.harness_slug = ${input.harnessSlug}
+       AND wi.feature_id = ANY(${ids}::text[])
+     ORDER BY wi.feature_id
+     ${endpointLock}`;
+
+  const incoming = await sql<IncomingReferenceRow[]>`
+    SELECT target.target_id, source.feature_id AS source_id,
+           source.updated_ts AS source_updated_ts
+      FROM harness_shared.work_items source
+      JOIN unnest(${ids}::text[]) AS target(target_id)
+        ON target.target_id = ANY(COALESCE(source.see_also, ARRAY[]::text[]))
+     WHERE source.workspace_id = ${input.workspaceId}
+       AND source.harness_slug = ${input.harnessSlug}
+     ORDER BY target.target_id, source.feature_id`;
+
+  const endpointRefs = [...new Set(rows.flatMap(snapshotRefKeys))].sort();
+  const dependencies = endpointRefs.length
+    ? await sql<DependencyRow[]>`
+        SELECT d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref,
+               d.satisfaction
+          FROM harness_shared.work_item_deps d
+         WHERE d.workspace_id = ${input.workspaceId}
+           AND d.dep_type = 'blocks'
+           AND (
+             d.blocked_ref = ANY(${endpointRefs}::text[])
+             OR d.blocker_ref = ANY(${endpointRefs}::text[])
+           )
+         ORDER BY d.blocked_kind, d.blocked_ref, d.blocker_kind, d.blocker_ref`
+    : [];
+
+  const referencedIds = [
+    ...new Set(
+      dependencies
+        .flatMap((dependency) => [dependency.blocked_ref, dependency.blocker_ref])
+        .map((ref) => {
+          const hash = ref.indexOf('#');
+          return hash >= 0 ? ref.slice(hash + 1) : ref;
+        }),
+    ),
+  ].filter(Boolean);
+  const relatedRows = referencedIds.length
+    ? await sql<ReferencedStateRow[]>`
+        SELECT related.feature_id, related.harness_slug, related.status
+          FROM harness_shared.work_items related
+         WHERE related.workspace_id = ${input.workspaceId}
+           AND related.feature_id = ANY(${referencedIds}::text[])
+         ORDER BY related.harness_slug, related.feature_id`
+    : [];
+  const relatedByQualifiedRef = new Map(
+    relatedRows.map((row) => [`${row.harness_slug}#${row.feature_id}`, row.status ?? 'open']),
+  );
+  const relatedByBareRef = new Map<string, string>();
+  for (const row of relatedRows) {
+    const prior = relatedByBareRef.get(row.feature_id);
+    if (row.harness_slug === input.harnessSlug || prior === undefined) {
+      relatedByBareRef.set(row.feature_id, row.status ?? 'open');
+    }
+  }
+  const resolveState = (ref: string): string | null =>
+    (ref.includes('#') ? relatedByQualifiedRef.get(ref) : relatedByBareRef.get(ref)) ?? null;
+
+  const incomingByTarget = new Map<string, AdmissionMergeIncomingReference[]>();
+  for (const row of incoming) {
+    const entries = incomingByTarget.get(row.target_id) ?? [];
+    entries.push({ sourceId: row.source_id, sourceUpdatedAtMs: finiteMs(row.source_updated_ts) });
+    incomingByTarget.set(row.target_id, entries);
+  }
+
+  const result = new Map<string, AdmissionMergeSnapshot>();
+  for (const row of rows) {
+    const endpointKeys = new Set(snapshotRefKeys(row));
+    const endpointDependencies = dependencies
+      .filter((dependency) => endpointKeys.has(dependency.blocked_ref) || endpointKeys.has(dependency.blocker_ref))
+      .map(
+        (dependency): AdmissionMergeDependency => ({
+          blockedKind: dependency.blocked_kind,
+          blockedRef: dependency.blocked_ref,
+          blockerKind: dependency.blocker_kind,
+          blockerRef: dependency.blocker_ref,
+          satisfaction: dependency.satisfaction === 'success' ? 'success' : 'settled',
+          active: dependencyIsActive(dependency, endpointKeys, resolveState),
+        }),
+      );
+    const base: Omit<AdmissionMergeSnapshot, 'fingerprint'> = {
+      id: row.feature_id,
+      workspaceId: row.workspace_id,
+      harnessSlug: row.harness_slug,
+      title: row.title ?? '',
+      summary: row.summary ?? '',
+      state: row.status ?? 'open',
+      kind: row.item_kind ?? 'task',
+      admission: row.admission ?? null,
+      conditionKey: row.condition_key ?? null,
+      createdAtMs: finiteMs(row.created_ts),
+      updatedAtMs: finiteMs(row.updated_ts),
+      origin: row.origin ?? null,
+      assignee: row.taken_by?.trim() || null,
+      payload: row.payload ?? null,
+      completionRef: row.completion_ref ?? null,
+      terminalCompletionRef: row.terminal_completion_ref?.trim() || null,
+      terminalOwner: row.terminal_owner?.trim() || null,
+      completionAuthority: row.authority?.trim() || null,
+      sourcePlanSlug: row.source_plan_slug?.trim() || null,
+      sourcePlanItemIds: normalizedStringArray(row.source_plan_item_ids),
+      seeAlso: normalizedStringArray(row.see_also),
+      incomingSeeAlso: (incomingByTarget.get(row.feature_id) ?? []).sort((a, b) =>
+        a.sourceId.localeCompare(b.sourceId),
+      ),
+      dependencies: endpointDependencies,
+    };
+    result.set(row.feature_id, { ...base, fingerprint: snapshotFingerprint(base) });
+  }
+  return result;
+}
+
+/** Replace the terse row projection with the exact row used for judging. */
+export function bindAdmissionMergeSnapshot(
+  item: PromoterItem,
+  snapshot: AdmissionMergeSnapshot | undefined,
+): PromoterItem {
+  if (!snapshot) return item;
+  return {
+    ...item,
+    title: snapshot.title,
+    summary: snapshot.summary,
+    state: snapshot.state,
+    kind: snapshot.kind,
+    admission: snapshot.admission,
+    conditionKey: snapshot.conditionKey,
+    createdAtMs: snapshot.createdAtMs,
+    mergeSnapshot: snapshot,
+  };
+}
+
 export interface PromoterPairRow {
   pending_id: string;
   candidate_id: string;
@@ -760,6 +1095,46 @@ function signalsFor(a: PromoterItem, b: PromoterItem, cosine: number | null): Pr
   return signals;
 }
 
+const PROMOTER_EVIDENCE_PROMPT_CHARS = 6_000;
+
+/**
+ * Bounded evidence projection for the duplication-only judge. The full value is
+ * fingerprinted and re-read at persistence; truncation here limits model input
+ * without weakening the write guard.
+ */
+export function promoterEvidenceForPrompt(item: PromoterItem): string {
+  const snapshot = item.mergeSnapshot;
+  if (!snapshot) return '(snapshot unavailable — persistence will refuse mutation)';
+  const payload = recordValue(snapshot.payload);
+  const evidence = {
+    version: snapshot.updatedAtMs,
+    origin: snapshot.origin,
+    assignee: snapshot.assignee,
+    hold: payload._claimHold ?? null,
+    agentReview: payload.agentReview ?? null,
+    needsOwnerAction: payload.needsOwnerAction ?? null,
+    externalBlockers: payload.externalBlockers ?? null,
+    sourcePlan: snapshot.sourcePlanSlug ? { slug: snapshot.sourcePlanSlug, items: snapshot.sourcePlanItemIds } : null,
+    completion: {
+      ref: snapshot.completionRef,
+      terminalRef: snapshot.terminalCompletionRef,
+      owner: snapshot.terminalOwner,
+      authority: snapshot.completionAuthority,
+      evidence: payload._completionEvidence ?? null,
+    },
+    references: {
+      outgoing: snapshot.seeAlso,
+      incoming: snapshot.incomingSeeAlso,
+      dependencies: snapshot.dependencies,
+    },
+    payload,
+  };
+  const rendered = JSON.stringify(canonicalJsonValue(evidence));
+  return rendered.length <= PROMOTER_EVIDENCE_PROMPT_CHARS
+    ? rendered
+    : `${rendered.slice(0, PROMOTER_EVIDENCE_PROMPT_CHARS)}…[truncated; full fingerprint=${snapshot.fingerprint}]`;
+}
+
 /** Convert the SQL neighbour rows into stable, de-duplicated model pairs. */
 export function buildPromoterPairs(rows: readonly PromoterPairRow[], pendingIds: ReadonlySet<string>): PromoterPair[] {
   const pairs = new Map<string, PromoterPair>();
@@ -819,20 +1194,37 @@ export function buildPromoterPrompt(pairs: readonly PromoterPair[]): { system: s
     'Return strict JSON only: {"judgements":[{"pairKey":"a::b","verdict":"distinct|r-finding-merge|r-remedy-keep|r-related|hold","reason":"brief evidence"}]}',
     'Return one judgement for every supplied pairKey and no unknown pairKeys.',
   ].join('\n');
-  const user = pairs
+  const items = new Map<string, PromoterItem>();
+  for (const pair of pairs) {
+    items.set(pair.a.id, pair.a);
+    items.set(pair.b.id, pair.b);
+  }
+  // Render each endpoint's body/evidence ONCE. A 20-item complete graph has
+  // 190 pairs; repeating the same 6k evidence block per edge would turn the
+  // guard's extra context into a model-context overflow.
+  const itemSet = [...items.values()]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((item) =>
+      [
+        `### item ${item.id} state=${item.state} admission=${item.admission ?? 'legacy'} kind=${item.kind}`,
+        `<title>${item.title.slice(0, 1_000)}</title>`,
+        `<summary>${item.summary.slice(0, 4_000)}</summary>`,
+        `<evidence>${promoterEvidenceForPrompt(item)}</evidence>`,
+      ].join('\n'),
+    )
+    .join('\n\n');
+  const pairSet = pairs
     .map((pair) =>
       [
         `## ${pair.pairKey}`,
         `signals: ${pair.signals.join(', ')}${pair.cosine == null ? '' : `; cosine=${pair.cosine.toFixed(4)}`}`,
-        `A id=${pair.a.id} state=${pair.a.state} admission=${pair.a.admission ?? 'legacy'} kind=${pair.a.kind}`,
-        `<a-title>${pair.a.title.slice(0, 1_000)}</a-title>`,
-        `<a-summary>${pair.a.summary.slice(0, 4_000)}</a-summary>`,
-        `B id=${pair.b.id} state=${pair.b.state} admission=${pair.b.admission ?? 'legacy'} kind=${pair.b.kind}`,
-        `<b-title>${pair.b.title.slice(0, 1_000)}</b-title>`,
-        `<b-summary>${pair.b.summary.slice(0, 4_000)}</b-summary>`,
+        `A=${pair.a.id}; B=${pair.b.id}`,
       ].join('\n'),
     )
     .join('\n\n');
+  const user = ['# ITEM EVIDENCE — authoritative endpoint snapshots', itemSet, '# PAIRS TO JUDGE', pairSet].join(
+    '\n\n',
+  );
   return { system, user };
 }
 
@@ -1710,26 +2102,159 @@ async function persistAdmissionLinks(
   }
 }
 
-export async function persistAdmissionPlan(
+type MergeEndpointRole = 'loser' | 'canonical' | 'reference' | 'promote' | 'hold';
+
+function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean {
+  if (snapshot.completionAuthority === 'committed' || snapshot.completionAuthority === 'validated') return true;
+  if (snapshot.terminalCompletionRef) return true;
+  if (isCompletionRef(snapshot.completionRef)) return true;
+  const completionEvidence = recordValue(snapshot.payload)._completionEvidence;
+  return isSufficientEvidence(completionEvidence as Parameters<typeof isSufficientEvidence>[0]);
+}
+
+function endpointProtection(
+  snapshot: AdmissionMergeSnapshot,
+  role: MergeEndpointRole,
+): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
+  const payload = recordValue(snapshot.payload);
+  if (snapshot.origin === 'remote') {
+    return { reason: 'remote-owned', detail: `${role} ${snapshot.id} is remote-owned` };
+  }
+  if (snapshot.assignee) {
+    return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
+  }
+  if (String(payload._claimHold) === 'true') {
+    return { reason: 'claim-held', detail: `${role} ${snapshot.id} carries payload._claimHold` };
+  }
+  if (snapshot.state === 'blocked' || snapshot.state === 'needs-human') {
+    return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
+  }
+  const review = readAgentReviewState(snapshot.payload);
+  if (review?.status === 'pending' || review?.status === 'revision-requested') {
+    return { reason: 'review-gated', detail: `${role} ${snapshot.id} is agent-review ${review.status}` };
+  }
+  if (hasStrictOwnerAction(snapshot.payload)) {
+    return { reason: 'owner-blocked', detail: `${role} ${snapshot.id} requires a strict owner capability` };
+  }
+  const blockers = activeExternalBlockers(snapshot.payload);
+  if (blockers.length > 0) {
+    return {
+      reason: 'external-blocked',
+      detail: `${role} ${snapshot.id} has active external blocker(s): ${blockers.map((b) => b.ref).join(', ')}`,
+    };
+  }
+  const activeDependencies = snapshot.dependencies.filter((dependency) => dependency.active);
+  if (activeDependencies.length > 0) {
+    return {
+      reason: 'active-dependency',
+      detail: `${role} ${snapshot.id} participates in ${activeDependencies.length} active dependency edge(s)`,
+    };
+  }
+  if (role === 'loser' && ALL_TERMINAL_STATUSES.has(snapshot.state)) {
+    return { reason: 'terminal-loser', detail: `loser ${snapshot.id} is already terminal (${snapshot.state})` };
+  }
+  if (role !== 'loser' && ALL_TERMINAL_STATUSES.has(snapshot.state) && !applicableTerminalCompletion(snapshot)) {
+    return {
+      reason: 'terminal-canonical-without-completion',
+      detail: `${role} ${snapshot.id} is terminal without applicable completion evidence`,
+    };
+  }
+  return null;
+}
+
+function producerIdentities(snapshot: AdmissionMergeSnapshot): string[] {
+  const payload = recordValue(snapshot.payload);
+  const keys = [
+    snapshot.conditionKey ? `condition:${snapshot.conditionKey}` : null,
+    typeof payload.watchdogKey === 'string' && payload.watchdogKey.trim()
+      ? `watchdog:${payload.watchdogKey.trim()}`
+      : null,
+  ];
+  return keys.filter((key): key is string => key !== null).sort();
+}
+
+function mergePairProtection(
+  loser: AdmissionMergeSnapshot,
+  canonical: AdmissionMergeSnapshot,
+): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
+  const canonicalIdentities = new Set(producerIdentities(canonical));
+  const missingIdentities = producerIdentities(loser).filter((identity) => !canonicalIdentities.has(identity));
+  if (missingIdentities.length > 0) {
+    return {
+      reason: 'producer-identity-mismatch',
+      detail: `canonical ${canonical.id} would not preserve ${loser.id} producer identity: ${missingIdentities.join(', ')}`,
+    };
+  }
+  if (loser.sourcePlanSlug) {
+    const canonicalItems = new Set(canonical.sourcePlanItemIds);
+    const missingItems = loser.sourcePlanItemIds.filter((itemId) => !canonicalItems.has(itemId));
+    if (canonical.sourcePlanSlug !== loser.sourcePlanSlug || missingItems.length > 0) {
+      return {
+        reason: 'plan-obligation-mismatch',
+        detail:
+          `canonical ${canonical.id} does not carry ${loser.id}'s plan obligation ` +
+          `${loser.sourcePlanSlug}${missingItems.length ? `/${missingItems.join(',')}` : ''}`,
+      };
+    }
+  }
+  return null;
+}
+
+function alreadyMergedByThisRun(snapshot: AdmissionMergeSnapshot, canonicalId: string, runId: string): boolean {
+  if (!ALL_TERMINAL_STATUSES.has(snapshot.state)) return false;
+  const merge = recordValue(recordValue(snapshot.payload).admissionMerge);
+  return merge.canonicalId === canonicalId && merge.runId === runId;
+}
+
+function snapshotIdentityProblem(
+  captured: AdmissionMergeSnapshot | undefined,
+  live: AdmissionMergeSnapshot | undefined,
+  role: MergeEndpointRole,
+): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
+  if (!captured) return { reason: 'snapshot-missing', detail: `${role} was not captured before judging` };
+  if (!live) {
+    return {
+      reason: 'scope-or-identity-changed',
+      detail: `${role} ${captured.id} no longer resolves in the judged workspace/harness`,
+    };
+  }
+  if (captured.fingerprint !== live.fingerprint) {
+    return {
+      reason: 'snapshot-drift',
+      detail:
+        `${role} ${captured.id} changed after judging ` +
+        `(${captured.fingerprint.slice(0, 12)} -> ${live.fingerprint.slice(0, 12)})`,
+    };
+  }
+  return endpointProtection(live, role);
+}
+
+interface PersistAdmissionPlanInput {
+  workspaceId: string;
+  harnessSlug: string;
+  runId: string;
+  modelId: string;
+  nowMs: number;
+  pending: readonly PromoterItem[];
+  plan: PromoterPlan;
+  /** Exact endpoint/reference identities captured before the model call. */
+  snapshots: readonly AdmissionMergeSnapshot[];
+  /** Bulk already owns the encompassing transaction (including its post-write census). */
+  withinTransaction?: boolean;
+  /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
+  promoteUnmerged?: boolean;
+  /**
+   * Allow merge writes to cover any still-live noncanonical endpoint. When
+   * omitted, infer this from the plan so a normal promoter tick widens its
+   * WHERE clause only when it actually carries an out-of-batch loser.
+   */
+  mergeAnyAdmission?: boolean;
+  actor?: string;
+}
+
+async function persistAdmissionPlanUnchecked(
   sql: OrgSql,
-  input: {
-    workspaceId: string;
-    harnessSlug: string;
-    runId: string;
-    modelId: string;
-    nowMs: number;
-    pending: readonly PromoterItem[];
-    plan: PromoterPlan;
-    /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
-    promoteUnmerged?: boolean;
-    /**
-     * Allow merge writes to cover any still-live noncanonical endpoint.  When
-     * omitted, infer this from the plan so a normal promoter tick widens its
-     * WHERE clause only when it actually carries an out-of-batch loser.
-     */
-    mergeAnyAdmission?: boolean;
-    actor?: string;
-  },
+  input: Omit<PersistAdmissionPlanInput, 'snapshots' | 'withinTransaction'>,
 ): Promise<void> {
   const actor = input.actor ?? PROMOTER_ACTOR;
   const promoteUnmerged = input.promoteUnmerged ?? true;
@@ -1755,6 +2280,7 @@ export async function persistAdmissionPlan(
         reason: adjudication.reason,
         signals: adjudication.signals,
         cosine: adjudication.cosine,
+        judgmentIdentity: adjudication.judgmentIdentity ?? null,
       },
     };
   });
@@ -1950,6 +2476,262 @@ export async function persistAdmissionPlan(
   }
 }
 
+async function persistAdmissionPlanInTransaction(
+  sql: OrgSql,
+  input: PersistAdmissionPlanInput,
+): Promise<AdmissionPlanPersistenceResult> {
+  const actor = input.actor ?? PROMOTER_ACTOR;
+  const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const relevantIds = [
+    ...new Set(
+      input.plan.dispositions
+        .flatMap((disposition) =>
+          disposition.action === 'merge' ? [disposition.itemId, disposition.canonicalId] : [disposition.itemId],
+        )
+        .concat(input.plan.adjudications.flatMap((adjudication) => [adjudication.a, adjudication.b]))
+        .concat(input.plan.relatedPairs.flatMap((pair) => [pair.a, pair.b])),
+    ),
+  ].sort();
+  const liveById = await readAdmissionMergeSnapshots(sql, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    ids: relevantIds,
+    lockRows: true,
+  });
+
+  const guardRefusals: AdmissionMergeGuardRefusal[] = [];
+  const refusalKeys = new Set<string>();
+  const heldById = new Map<string, string>();
+  const registerRefusal = (
+    itemId: string,
+    canonicalId: string | null,
+    problem: Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'>,
+  ): void => {
+    // One endpoint can be visited once through its disposition and again
+    // through a non-merge adjudication. Count the protected endpoint once;
+    // internal validation passes are not separate outcomes.
+    const key = `${itemId}\0${canonicalId ?? ''}\0${problem.reason}`;
+    if (!refusalKeys.has(key)) {
+      refusalKeys.add(key);
+      guardRefusals.push({ itemId, canonicalId, ...problem });
+    }
+    heldById.set(itemId, `merge guard ${problem.reason}: ${problem.detail}`);
+  };
+
+  const approvedDispositionIds = new Set<string>();
+  const replayedIds = new Set<string>();
+  for (const disposition of input.plan.dispositions) {
+    if (disposition.action === 'hold') {
+      heldById.set(disposition.itemId, disposition.reason);
+      const problem = snapshotIdentityProblem(
+        capturedById.get(disposition.itemId),
+        liveById.get(disposition.itemId),
+        'hold',
+      );
+      if (problem) registerRefusal(disposition.itemId, null, problem);
+      else approvedDispositionIds.add(disposition.itemId);
+      continue;
+    }
+    if (disposition.action === 'promote') {
+      const problem = snapshotIdentityProblem(
+        capturedById.get(disposition.itemId),
+        liveById.get(disposition.itemId),
+        'promote',
+      );
+      if (problem) registerRefusal(disposition.itemId, null, problem);
+      else approvedDispositionIds.add(disposition.itemId);
+      continue;
+    }
+
+    const capturedLoser = capturedById.get(disposition.itemId);
+    const liveLoser = liveById.get(disposition.itemId);
+    if (liveLoser && alreadyMergedByThisRun(liveLoser, disposition.canonicalId, input.runId)) {
+      replayedIds.add(disposition.itemId);
+      continue;
+    }
+    const loserProblem = snapshotIdentityProblem(capturedLoser, liveLoser, 'loser');
+    if (loserProblem) {
+      registerRefusal(disposition.itemId, disposition.canonicalId, loserProblem);
+      continue;
+    }
+    const capturedCanonical = capturedById.get(disposition.canonicalId);
+    const liveCanonical = liveById.get(disposition.canonicalId);
+    const canonicalProblem = snapshotIdentityProblem(capturedCanonical, liveCanonical, 'canonical');
+    if (canonicalProblem) {
+      registerRefusal(disposition.itemId, disposition.canonicalId, canonicalProblem);
+      continue;
+    }
+    const pairProblem = mergePairProtection(liveLoser!, liveCanonical!);
+    if (pairProblem) {
+      registerRefusal(disposition.itemId, disposition.canonicalId, pairProblem);
+      continue;
+    }
+    approvedDispositionIds.add(disposition.itemId);
+  }
+
+  const approvedNonMergePairs = new Set<string>();
+  for (const adjudication of input.plan.adjudications) {
+    if (adjudication.verdict === 'r-finding-merge') continue;
+    const aProblem = snapshotIdentityProblem(
+      capturedById.get(adjudication.a),
+      liveById.get(adjudication.a),
+      'reference',
+    );
+    if (aProblem) {
+      registerRefusal(adjudication.a, null, aProblem);
+      continue;
+    }
+    const bProblem = snapshotIdentityProblem(
+      capturedById.get(adjudication.b),
+      liveById.get(adjudication.b),
+      'reference',
+    );
+    if (bProblem) {
+      registerRefusal(adjudication.b, null, bProblem);
+      continue;
+    }
+    approvedNonMergePairs.add(admissionPairKey(adjudication.a, adjudication.b));
+  }
+
+  const logicallyMergeable = new Set(
+    input.plan.dispositions
+      .filter(
+        (disposition): disposition is Extract<PromoterDisposition, { action: 'merge' }> =>
+          disposition.action === 'merge' &&
+          (approvedDispositionIds.has(disposition.itemId) || replayedIds.has(disposition.itemId)),
+      )
+      .map((disposition) => disposition.itemId),
+  );
+  const safeAdjudications = input.plan.adjudications
+    .filter((adjudication) => {
+      if (adjudication.verdict !== 'r-finding-merge') {
+        return approvedNonMergePairs.has(admissionPairKey(adjudication.a, adjudication.b));
+      }
+      if (!adjudication.canonical) return false;
+      return [adjudication.a, adjudication.b].every(
+        (id) => id === adjudication.canonical || logicallyMergeable.has(id),
+      );
+    })
+    .map(
+      (adjudication): PromoterAdjudication => ({
+        ...adjudication,
+        judgmentIdentity: {
+          a: capturedById.get(adjudication.a)?.fingerprint ?? 'missing',
+          b: capturedById.get(adjudication.b)?.fingerprint ?? 'missing',
+          canonical: adjudication.canonical
+            ? (capturedById.get(adjudication.canonical)?.fingerprint ?? 'missing')
+            : null,
+        },
+      }),
+    );
+  const safePairKeys = new Set(
+    safeAdjudications.map((adjudication) => admissionPairKey(adjudication.a, adjudication.b)),
+  );
+  const safePlan: PromoterPlan = {
+    dispositions: input.plan.dispositions.filter(
+      (disposition) => approvedDispositionIds.has(disposition.itemId) && !replayedIds.has(disposition.itemId),
+    ),
+    adjudications: safeAdjudications,
+    relatedPairs: input.plan.relatedPairs.filter((pair) => safePairKeys.has(admissionPairKey(pair.a, pair.b))),
+  };
+
+  await persistAdmissionPlanUnchecked(sql, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    runId: input.runId,
+    modelId: input.modelId,
+    nowMs: input.nowMs,
+    pending: input.pending,
+    plan: safePlan,
+    promoteUnmerged: input.promoteUnmerged,
+    mergeAnyAdmission: input.mergeAnyAdmission,
+    actor,
+  });
+
+  const postRows = relevantIds.length
+    ? await sql<Array<{ feature_id: string; status: string | null; admission: string | null; payload: unknown }>>`
+        SELECT feature_id, status, admission, payload
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND feature_id = ANY(${relevantIds}::text[])
+         ORDER BY feature_id`
+    : [];
+  const postById = new Map(postRows.map((row) => [row.feature_id, row]));
+  const promotedIds: string[] = [];
+  const mergedIds: string[] = [];
+  for (const disposition of safePlan.dispositions) {
+    if (disposition.action === 'hold') continue;
+    const post = postById.get(disposition.itemId);
+    if (disposition.action === 'promote') {
+      if (input.promoteUnmerged === false) continue;
+      if (post?.admission === 'admitted') {
+        promotedIds.push(disposition.itemId);
+        continue;
+      }
+      throw new Error(`admission merge guard conditional-write-miss: promotion ${disposition.itemId}`);
+    }
+    const merge = recordValue(recordValue(post?.payload).admissionMerge);
+    if (
+      post &&
+      ALL_TERMINAL_STATUSES.has(post.status ?? '') &&
+      merge.canonicalId === disposition.canonicalId &&
+      merge.runId === input.runId
+    ) {
+      mergedIds.push(disposition.itemId);
+      continue;
+    }
+    throw new Error(
+      `admission merge guard conditional-write-miss: merge ${disposition.itemId} -> ${disposition.canonicalId}`,
+    );
+  }
+
+  const adjudicationRows = safeAdjudications.length
+    ? await sql<Array<{ a: string; b: string; verdict: string; canonical: string | null; run_id: string }>>`
+        SELECT a, b, verdict, canonical, run_id
+          FROM harness_shared.dedup_adjudications
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND (a, b) IN (
+             SELECT * FROM unnest(
+               ${safeAdjudications.map((row) => canonicalIds(row.a, row.b)[0])}::text[],
+               ${safeAdjudications.map((row) => canonicalIds(row.a, row.b)[1])}::text[]
+             )
+           )`
+    : [];
+  const adjudicationByPair = new Map(adjudicationRows.map((row) => [admissionPairKey(row.a, row.b), row]));
+  const adjudications = safeAdjudications.filter((adjudication) => {
+    const stored = adjudicationByPair.get(admissionPairKey(adjudication.a, adjudication.b));
+    return stored?.verdict === adjudication.verdict && stored.canonical === adjudication.canonical;
+  });
+
+  return {
+    promotedIds: promotedIds.sort(),
+    mergedIds: mergedIds.sort(),
+    replayedIds: [...replayedIds].sort(),
+    held: [...heldById.entries()]
+      .map(([itemId, reason]) => ({ itemId, reason }))
+      .sort((a, b) => a.itemId.localeCompare(b.itemId)),
+    adjudications,
+    adjudicationsInserted: adjudicationRows.filter((row) => row.run_id === input.runId).length,
+    guardRefusals: guardRefusals.sort((a, b) => a.itemId.localeCompare(b.itemId)),
+    uniqueRowsChanged: promotedIds.length + mergedIds.length,
+  };
+}
+
+/**
+ * Shared guarded writer for both the recurring promoter and bulk cleanup.
+ * Normal promoter calls get their own transaction; bulk passes the transaction
+ * it already uses for persistence + the post-stage census.
+ */
+export async function persistAdmissionPlan(
+  sql: OrgSql,
+  input: PersistAdmissionPlanInput,
+): Promise<AdmissionPlanPersistenceResult> {
+  if (input.withinTransaction) return persistAdmissionPlanInTransaction(sql, input);
+  return sql.begin((rawTx) => persistAdmissionPlanInTransaction(rawTx as unknown as OrgSql, input));
+}
+
 export async function runWorkItemAdmissionPromoter(opts: {
   workspaceId: string;
   harnessSlug: string;
@@ -1998,21 +2780,39 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensOut: 0,
       censusBefore: 0,
       censusAfter: 0,
+      guardRefusals: [],
       writerCoverageGap: [],
     };
   }
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
-    const pending = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize);
-    const pairs = await readPromoterPairs(
+    const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize);
+    const pairRows = await readPromoterPairs(
       sql,
       opts.workspaceId,
       opts.harnessSlug,
-      pending,
+      pendingRows,
       recentTerminalDays,
       startedAt,
     );
+    // Capture ONE authoritative endpoint/reference identity immediately before
+    // the model call. Both the prompt and the writer are bound to these exact
+    // values; persistence re-reads them under row locks.
+    const snapshotIds = [
+      ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
+    ];
+    const snapshotsById = await readAdmissionMergeSnapshots(sql, {
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      ids: snapshotIds,
+    });
+    const pending = pendingRows.map((item) => bindAdmissionMergeSnapshot(item, snapshotsById.get(item.id)));
+    const pairs = pairRows.map((pair) => ({
+      ...pair,
+      a: bindAdmissionMergeSnapshot(pair.a, snapshotsById.get(pair.a.id)),
+      b: bindAdmissionMergeSnapshot(pair.b, snapshotsById.get(pair.b.id)),
+    }));
     let judgements: PromoterJudgement[] = [];
     let tokensIn = 0;
     let tokensOut = 0;
@@ -2033,7 +2833,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensOut = response.outputTokens;
     }
     const plan = planPromoterDispositions(pending, pairs, judgements);
-    await persistAdmissionPlan(sql, {
+    const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       runId,
@@ -2041,10 +2841,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
       nowMs: now(),
       pending,
       plan,
+      snapshots: [...snapshotsById.values()],
     });
-    const promoted = plan.dispositions.filter((d) => d.action === 'promote').length;
-    const merged = plan.dispositions.filter((d) => d.action === 'merge').length;
-    const held = plan.dispositions.filter((d) => d.action === 'hold').length;
+    const promoted = persisted.promotedIds.length;
+    const merged = persisted.mergedIds.length;
+    const held = persisted.held.length;
     // Targeted writer-integrity check, scoped to exactly the pairs THIS tick rendered a final
     // (non-hold) judgement for — immune to concurrent corpus growth and to legitimate holds.
     // See judgedPairsMissingAdjudication for why the raw global census delta cannot be trusted.
@@ -2052,18 +2853,14 @@ export async function runWorkItemAdmissionPromoter(opts: {
       sql,
       opts.workspaceId,
       opts.harnessSlug,
-      plan.adjudications.map((adjudication) => ({
+      persisted.adjudications.map((adjudication) => ({
         pairKey: admissionPairKey(adjudication.a, adjudication.b),
         a: adjudication.a,
         b: adjudication.b,
       })),
     );
     const censusAfter = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
-    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
-      sql,
-      opts.workspaceId,
-      opts.harnessSlug,
-    );
+    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(sql, opts.workspaceId, opts.harnessSlug);
     const latencyMs = Math.max(0, now() - startedAt);
     await finishRun(sql, {
       runId,
@@ -2084,10 +2881,11 @@ export async function runWorkItemAdmissionPromoter(opts: {
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
         flaggedPairs: pairs.length,
-        verdicts: plan.adjudications.reduce<Record<string, number>>((acc, row) => {
+        verdicts: persisted.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
           return acc;
         }, {}),
+        guardRefusals: persisted.guardRefusals,
         // Only ever non-empty on a genuine writer defect; see writerCoverageGap on the result.
         writerCoverageGap,
       },
@@ -2104,6 +2902,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensOut,
       censusBefore,
       censusAfter,
+      guardRefusals: persisted.guardRefusals,
       writerCoverageGap,
     };
   } catch (error) {
