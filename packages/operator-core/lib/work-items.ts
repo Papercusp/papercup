@@ -213,6 +213,11 @@ import {
 // surface would call the engine and inherit NO floor, which is the exact
 // hand-propagation failure P-016 removes.
 import './search/configure-search-defaults';
+import {
+  createQueryEmbedderWarmup,
+  type QueryEmbedderResolver as SharedQueryEmbedderResolver,
+  type ResolvedQueryEmbedder as SharedResolvedQueryEmbedder,
+} from './search/query-embedder-warmup';
 
 /** Per-query embed budget for a work-item search (see `searchWorkItems`). */
 const WORK_ITEM_EMBED_TIMEOUT_MS = 4000;
@@ -1788,111 +1793,44 @@ export async function readVettingWorkItemCritique(
 /** Test seam for the P-008 semantic leg: the query-embedder resolver to use
  *  (defaults to the real `buildQueryEmbedderResolved`). Injectable because the
  *  real one lazy-loads an ONNX model — a unit test must never pay that. */
-export type QueryEmbedderResolver = () => Promise<{
-  mode: string;
-  dims: number;
-  embed: (t: string) => Promise<number[]>;
-} | null>;
-
-type ResolvedWorkItemQueryEmbedder = Awaited<ReturnType<QueryEmbedderResolver>>;
+export type QueryEmbedderResolver = SharedQueryEmbedderResolver;
 
 /**
  * Process-local query-embedder warm state for `searchWorkItems`.
  *
- * The resolver can discover and construct a local ONNX pipeline on its first
- * call. That work must never sit on an interactive search's 4s query-embed
- * budget: a cold request reports the semantic leg as blocked, returns its
- * lexical results immediately, and leaves one warmup running for the next
- * request. The promise is the single-flight latch; the resolved embedder is
- * only published after a real warmup embed succeeds.
+ * Keep this surface's warm latch in the shared helper so every interactive
+ * prose search makes the same identity guarantee: the engine receives the
+ * exact stamped embedder instance, or a throw-only signal while cold.
  */
-const WORK_ITEM_EMBEDDER_WARMUP_TEXT = 'work-items search embedder warmup';
-const WORK_ITEM_EMBEDDER_RETRY_AFTER_MS = 1_000;
-let warmWorkItemEmbedder: ResolvedWorkItemQueryEmbedder = null;
-let workItemEmbedderWarmupInFlight: Promise<void> | null = null;
-let workItemEmbedderWarmupFailure: string | null = null;
-let workItemEmbedderWarmupGeneration = 0;
-let workItemEmbedderWarmupAttempt = 0;
-let workItemEmbedderWarmupRetryToken: string | null = null;
-
-async function resolveWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<ResolvedWorkItemQueryEmbedder> {
-  const resolve = resolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
-  return await resolve();
-}
-
-function startWorkItemQueryEmbedderWarmup(resolver?: QueryEmbedderResolver): Promise<void> {
-  // A successful warm is process-local and remains valid for the lifetime of
-  // this module. Keeping the exported boot hook idempotent matters because a
-  // host can observe more than one listening callback during a bind retry.
-  if (warmWorkItemEmbedder) return Promise.resolve();
-  if (workItemEmbedderWarmupInFlight) return workItemEmbedderWarmupInFlight;
-
-  const generation = workItemEmbedderWarmupGeneration;
-  workItemEmbedderWarmupRetryToken = `work-items-embedder-warmup:${generation}:${++workItemEmbedderWarmupAttempt}`;
-  // NOTE: the PREVIOUS attempt's workItemEmbedderWarmupFailure deliberately
-  // SURVIVES here (cleared only by a successful resolve+embed below) —
-  // re-nulling it per attempt made every search after a settled failure
-  // re-report an endless "warming up" cold start whose retry-after-1s advice
-  // could never succeed (EI-21490058173504687).
-  const started = (async () => {
-    try {
-      const resolved = await resolveWorkItemQueryEmbedder(resolver);
-      if (generation !== workItemEmbedderWarmupGeneration) return;
-      if (!resolved) {
-        workItemEmbedderWarmupFailure = 'no query embedder resolved (unavailable or disabled)';
-        return;
-      }
-      if (!fitsProseColumns(resolved.dims)) {
-        workItemEmbedderWarmupFailure = `query embedder dims ${resolved.dims} do not fit the prose embedding columns`;
-        return;
-      }
-
-      // Acquiring the resolver is not enough for local ONNX: the first real
-      // embed can still pay model/session initialization. Pay that cost here,
-      // outside the request's query-embed budget.
-      await resolved.embed(WORK_ITEM_EMBEDDER_WARMUP_TEXT);
-      if (generation === workItemEmbedderWarmupGeneration) {
-        warmWorkItemEmbedder = resolved;
-        workItemEmbedderWarmupFailure = null;
-      }
-    } catch (err) {
-      if (generation === workItemEmbedderWarmupGeneration) {
-        workItemEmbedderWarmupFailure = `query embedder warmup failed: ${(err as Error)?.message ?? String(err)}`;
-      }
-    } finally {
-      if (generation === workItemEmbedderWarmupGeneration) {
-        workItemEmbedderWarmupInFlight = null;
-        workItemEmbedderWarmupRetryToken = null;
-      }
-    }
-  })();
-  workItemEmbedderWarmupInFlight = started;
-  return started;
-}
+const workItemEmbedderWarmup = createQueryEmbedderWarmup<SharedResolvedQueryEmbedder>({
+  warmupText: 'work-items search embedder warmup',
+  retryTokenPrefix: 'work-items-embedder-warmup',
+  resolve: async () => {
+    const { buildQueryEmbedderResolved } = await import('./agent-tools/search/embedder');
+    return await buildQueryEmbedderResolved();
+  },
+  validate: (resolved) =>
+    fitsProseColumns(resolved.dims)
+      ? null
+      : `query embedder dims ${resolved.dims} do not fit the prose embedding columns`,
+  retryAfterMs: 1_000,
+});
 
 /**
  * Pre-warm the exact query embedder state used by `searchWorkItems`.
  *
  * The generic transcript-search warmup also exercises `buildQueryEmbedder`,
- * but `searchWorkItems` has a separate single-flight latch so it can report a
- * truthful retry receipt while a cold model loads. Boot must warm that latch,
- * not merely the shared model, or the first dedup search still degrades.
- * Returns whether a usable, dimension-compatible embedder was published;
- * failures remain fail-open and are reported by the next search as before.
- * The resolver seam keeps this callable without a model in unit tests.
+ * but `searchWorkItems` has a separate warm latch so it can report a truthful
+ * retry receipt while a cold model loads. Boot must warm that latch, not merely
+ * the shared model, or the first semantic dedup search still degrades.
  */
 export async function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<boolean> {
-  await startWorkItemQueryEmbedderWarmup(resolver);
-  return warmWorkItemEmbedder !== null;
+  return await workItemEmbedderWarmup.warm(resolver);
 }
 
 /** Test seam: clear process-local warm state between search-work-item cases. */
 export function resetWorkItemEmbedderWarmup(): void {
-  workItemEmbedderWarmupGeneration += 1;
-  warmWorkItemEmbedder = null;
-  workItemEmbedderWarmupInFlight = null;
-  workItemEmbedderWarmupFailure = null;
-  workItemEmbedderWarmupRetryToken = null;
+  workItemEmbedderWarmup.reset();
 }
 
 /** Domain filters both work-item search sources honour — applied IN SQL, so the
@@ -2263,32 +2201,10 @@ export async function searchWorkItems(
      * sets `legs.semantic.blocked = 'query embed failed: <reason>'`, which
      * IS flagged, and carries the reason to the caller.
      */
-    if (warmWorkItemEmbedder) {
-      embedder = warmWorkItemEmbedder.embed;
-      embeddingMode = warmWorkItemEmbedder.mode;
-    } else {
-      // Cold acquisition and the first model embed run behind this request.
-      // Every concurrent cold caller shares the same promise and returns its
-      // lexical result without awaiting it.
-      void startWorkItemQueryEmbedderWarmup(opts.embedderResolver);
-      // A previously SETTLED warm-up failure is reported as-is: a persistent
-      // substrate outage (sidecar saturated / unavailable) must not be
-      // re-masked as an endless "cold start" whose retry-after-1s advice has
-      // already proven useless (EI-21490058173504687).
-      const hadWarmupFailure = workItemEmbedderWarmupFailure !== null;
-      if (!hadWarmupFailure && workItemEmbedderWarmupRetryToken) {
-        retry = {
-          token: workItemEmbedderWarmupRetryToken,
-          afterMs: WORK_ITEM_EMBEDDER_RETRY_AFTER_MS,
-          reason: 'query_embedder_warming',
-        };
-      }
-      embedder = async (): Promise<number[]> => {
-        throw new Error(
-          workItemEmbedderWarmupFailure ?? 'query embedder warming up (cold start; retry for semantic results)',
-        );
-      };
-    }
+    const selection = workItemEmbedderWarmup.select(opts.embedderResolver);
+    embedder = selection.embedder;
+    embeddingMode = selection.resolved?.mode ?? null;
+    retry = selection.retry;
   }
 
   const sources: SearchSource[] = [
@@ -4184,6 +4100,22 @@ export async function setWorkItemState(
     // Await this cleanup: a fire-and-forget miss after the terminal write would
     // have no later lifecycle edge on which to retry.
     await retireLifecycleBindingsForWorkItem(settled);
+    // EI-22414305411561114: close the routed-idea feedback loop at the same
+    // lifecycle chokepoint used by both work_items:complete and
+    // work_items:set_state. The refresh sweep remains the reconciliation
+    // backstop, but a freshly terminalized wi: route must not stay actionable
+    // until the next sweep. Lazy import avoids a static work-items ↔ Scout
+    // module cycle; failures remain best-effort and never undo the close.
+    await trackDetached(import('./scout/routed-ledger'))
+      .then((m) =>
+        m.propagateWorkItemOutcome({
+          workItemId: settled.id,
+          state: settled.state,
+          workspaceId: activeWorkspaceId(),
+          harnessSlug: settled.harness ?? wi.harness ?? opts.harness ?? null,
+        }),
+      )
+      .catch(() => {});
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemSettledEvents(settled, { priorAssignee }))
       .catch(() => {});
