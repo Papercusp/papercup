@@ -79,7 +79,10 @@ pub enum Binding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LauncherVerdict {
     Alive(Launcher),
-    Dead { launcher: Launcher, reason: String },
+    Dead {
+        launcher: Launcher,
+        reason: String,
+    },
     /// Legacy schema-1 stamp — no launcher recorded, liveness unknown.
     Unknown,
 }
@@ -323,8 +326,10 @@ mod tests {
         assert!(text.contains("\"pid\": 4242"), "{text}");
         assert!(text.contains("\"schemaVersion\": 2"), "{text}");
         // CONTROL for the orphan rule below: an ALIVE launcher must attach.
-        let attached =
-            bind_at(&path, "pui-wb", &current, true, &me, BOOT_A, |pid| pid == 4242).unwrap();
+        let attached = bind_at(&path, "pui-wb", &current, true, &me, BOOT_A, |pid| {
+            pid == 4242
+        })
+        .unwrap();
         assert_eq!(attached, Binding::Attached);
     }
 
@@ -334,7 +339,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pui-wb.identity.json");
         let current = ident("http://127.0.0.1:3070", "ws", "pg-a");
-        bind_at(&path, "pui-wb", &current, false, &launcher(2053474), BOOT_A, |_| true).unwrap();
+        bind_at(
+            &path,
+            "pui-wb",
+            &current,
+            false,
+            &launcher(2053474),
+            BOOT_A,
+            |_| true,
+        )
+        .unwrap();
         let verdict = bind_at(
             &path,
             "pui-wb",
@@ -359,10 +373,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pui-wb.identity.json");
         let current = ident("http://127.0.0.1:3070", "ws", "pg-a");
-        bind_at(&path, "pui-wb", &current, false, &launcher(77), BOOT_A, |_| true).unwrap();
+        bind_at(
+            &path,
+            "pui-wb",
+            &current,
+            false,
+            &launcher(77),
+            BOOT_A,
+            |_| true,
+        )
+        .unwrap();
         // pid 77 "alive" again after reboot — pid reuse must not count.
-        let verdict = bind_at(&path, "pui-wb", &current, true, &launcher(1), Some("boot-B"), |_| true)
-            .unwrap();
+        let verdict = bind_at(
+            &path,
+            "pui-wb",
+            &current,
+            true,
+            &launcher(1),
+            Some("boot-B"),
+            |_| true,
+        )
+        .unwrap();
         assert!(matches!(verdict, Binding::Orphaned { ref reason } if reason.contains("rebooted")));
     }
 
@@ -408,8 +439,16 @@ mod tests {
             "identity": current,
         });
         std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let verdict =
-            bind_at(&path, "pui-wb", &current, true, &launcher(1), BOOT_A, |_| false).unwrap();
+        let verdict = bind_at(
+            &path,
+            "pui-wb",
+            &current,
+            true,
+            &launcher(1),
+            BOOT_A,
+            |_| false,
+        )
+        .unwrap();
         assert_eq!(verdict, Binding::Attached);
         let bytes = std::fs::read(&path).unwrap();
         let stamp: SessionStamp = serde_json::from_slice(&bytes).unwrap();
@@ -441,7 +480,10 @@ mod tests {
             launcher_verdict_for(Some(&no_boot), None, |_| true),
             LauncherVerdict::Alive(no_boot)
         );
-        assert_eq!(launcher_verdict_for(None, BOOT_A, |_| true), LauncherVerdict::Unknown);
+        assert_eq!(
+            launcher_verdict_for(None, BOOT_A, |_| true),
+            LauncherVerdict::Unknown
+        );
     }
 
     #[test]

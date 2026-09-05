@@ -406,7 +406,10 @@ No active zellij sessions found.
 ";
         assert_eq!(
             stable_sessions(list),
-            vec![("pui-wb".to_string(), false), ("pui-dock".to_string(), true)]
+            vec![
+                ("pui-wb".to_string(), false),
+                ("pui-dock".to_string(), true)
+            ]
         );
         assert!(stable_sessions("").is_empty());
     }
