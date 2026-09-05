@@ -789,17 +789,6 @@ export async function deactivateLoop(
     });
   }
 
-  // EI-21178284518430314: loop:end is also the lifecycle exit for a leader's
-  // automatically armed fleet watches. The row update is intentionally not the
-  // gate here: an already-inactive/dead predecessor still needs its stale
-  // non-expiring awaits retired. This cleanup is advisory and must never make
-  // the always-available stop operation fail if the await store is unavailable.
-  try {
-    const { retireFleetLeadershipWatchesForOwners } = await import('../../events/await/store');
-    await retireFleetLeadershipWatchesForOwners([ownerId], { client: sql });
-  } catch {
-    // Best-effort teardown; the loop is already inactive (or was already so).
-  }
   return ended.length > 0;
 }
 
