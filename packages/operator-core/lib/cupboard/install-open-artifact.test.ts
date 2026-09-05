@@ -71,12 +71,15 @@ const release: CupboardReleaseManifest = {
 };
 
 /** Publish once, then reuse: this is the publisher's half of the same P-027 pair. */
-async function published(recipientIds: readonly string[] = [BUYER]) {
+async function published(recipientIds: readonly string[] = [BUYER], keyVersion = 3) {
   const publication = await publishPrivateArtifact({
     plaintext: PLAINTEXT,
     release,
-    contentKey: Buffer.alloc(CONTENT_KEY_BYTES, 7),
-    keyVersion: 3,
+    // A rotation re-keys the artifact, so the content key is derived from the
+    // version rather than fixed — two versions sharing one key would make the
+    // rotation test pass for the wrong reason.
+    contentKey: Buffer.alloc(CONTENT_KEY_BYTES, keyVersion),
+    keyVersion,
     recipientIds,
     adapter: wrapAdapter,
     chunkSizeBytes: CHUNK,
@@ -175,6 +178,30 @@ describe('createOpenArtifactSeam — the install door decrypts before it applies
     ).rejects.toThrow(/key-revoked/);
     expect(unwrap).not.toHaveBeenCalled();
     expect(applyPlaintext).not.toHaveBeenCalled();
+  });
+
+  it('after a ROTATION the new key version opens and the retired one does not', async () => {
+    // The pair is the point: `key-revoked` alone could also be produced by a
+    // seam that refuses every version, so the rotated version must be shown to
+    // still install while only the old one is refused.
+    const rotated = await published([BUYER], 4);
+    const rotatedRun = access(rotated.publication, {
+      deliveryAdapter: rotated.deliveryAdapter,
+      revokedKeyVersions: () => [3],
+    });
+    await createOpenArtifactSeam(rotatedRun.deps, { subject: BUYER })(applyInput(rotated.publication));
+    expect(rotatedRun.applyPlaintext).toHaveBeenCalledTimes(1);
+    expect(rotatedRun.applyPlaintext.mock.calls[0]![1].equals(PLAINTEXT)).toBe(true);
+
+    const retired = await published([BUYER], 3);
+    const retiredRun = access(retired.publication, {
+      deliveryAdapter: retired.deliveryAdapter,
+      revokedKeyVersions: () => [3],
+    });
+    await expect(
+      createOpenArtifactSeam(retiredRun.deps, { subject: BUYER })(applyInput(retired.publication)),
+    ).rejects.toThrow(/key-revoked/);
+    expect(retiredRun.applyPlaintext).not.toHaveBeenCalled();
   });
 
   it('REFUSES when no wrapped-key delivery provider is configured', async () => {
