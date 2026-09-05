@@ -406,7 +406,12 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('role=sentinel dispatches <handoff_to_mug> and <delegate_deep> but never spawn', async () => {
+  // Uses the CURRENT wire spelling `<handoff>` — what the prompts now emit, so the
+  // dispatch wiring is exercised on the tag that actually ships. The legacy
+  // `<handoff_to_mug>` spelling stays covered at the parse+shape layer by
+  // operator-sentinel-handoff.test.ts and by the 3-spelling block in
+  // operator-converse-tags.test.ts.
+  it('role=sentinel dispatches <handoff> and <delegate_deep> but never spawn', async () => {
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
     const { readSystemPrincipal } = await import('../../../system-principal');
     vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
@@ -415,7 +420,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
         type: 'delta',
         text:
           '<say>On it.</say>' +
-          '<handoff_to_mug summary="ship the export flow" harness="papercup">' +
+          '<handoff summary="ship the export flow" harness="papercup">' +
           '<delegate_deep summary="compare the migration strategies" brief="Need the safer recommendation." harness="papercup">' +
           '<spawn role="worker" harness="demo" feature="F-1">',
       };

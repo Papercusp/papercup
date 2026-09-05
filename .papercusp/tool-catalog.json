@@ -20954,9 +20954,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.",
+        "when": "Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the plan will be started, include substantive Requirements + Design sections and canonical P-NNN item lines.",
         "notWhen": "You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.",
-        "chaining": "Author-in-one: plans:new { slug, title, content }. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items."
+        "chaining": "Author-in-one: plans:new { slug, title, content }. For plans:start promotion, include substantive ## Requirements + ## Design sections and canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items."
       }
     },
     {

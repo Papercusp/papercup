@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 308
-  corpus-blocks: 266
+  corpus-parts: 309
+  corpus-blocks: 267
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -2623,6 +2623,22 @@ separate changes on 2026-07-26 alone (`AgentFact.confidence`,
 committed files, caught ~10 min before the gate run that would have red-pinned on them).
 
 **Don't do that by hand — `npm run lint:required-field-strands`** AST-diffs your change against `HEAD` and names every exported type that gained a required field, nested paths included. It also catches a field TIGHTENED from optional to required, which strands sites just as hard. It is ADVISORY by design — adding a required field is usually correct, so the mere addition is never a failure; `--typecheck` runs `lint:tsc` and exits non-zero only on real stranded sites. Finding the sites was never the hard part — `tsc` already does that perfectly; the gap this closes is *knowing to run it*. ⚠ Do NOT "fix" the errors by making the new field optional: that silently reintroduces whatever under-reporting the required field was added to prevent.Shipped as WI-6814. The 2026-08-02 case lived one level down, inside `excluded: {}`, where a top-level scan reports nothing and reads exactly like "no trap here". Making the field optional again is exactly the WI-6409 claim-floor bug.
+
+**The behavioural sibling — adding a CALL to an injected collaborator strands call-COUNT
+assertions in ANOTHER workspace**, and nothing you run locally sees it: `lint:tsc` is clean
+(no type changed, only a runtime count) and `test:affected` selects by the workspaces your
+changed PATHS map into, so it cannot select the stranded fixtures by construction. One
+instance (WI-37582, a second `source.lexical()` call in `libs/generic/search`) cost ~3 gate
+reds and ~2h of frozen `main`.
+
+`npm run lint:behavioural-strands` is the detector; a PostToolUse hook fires it at the edit,
+which is the only moment it works — git-sync sweeps your edit into HEAD within minutes, and
+`--base HEAD` then diffs content that already contains it. Read the EXIT CODE, not the prose:
+0 = checked, no strands · 1 = strands named · 2 = NOT CHECKED (not a clean bill). The named
+set is a RANKING, not a boundary (`--wide` runs the full reachable band). If a downstream
+count assertion fails, UPDATE the count — deleting or loosening it removes the only thing
+that makes the next such change detectable.
+
 
 **A migration that ADDS a column to a `harness_shared` table can silently strand a
 sibling `*.integration.test.ts` fixture** that hand-rolls that same table via an inline

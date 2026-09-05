@@ -24,7 +24,7 @@
  *   answer-return seam.
  *
  * Split of lanes (D-003): WORK ("build X") still goes to the Mug via
- * <handoff_to_mug> (operator-sentinel-handoff.ts) — she PLACES it. THINKING
+ * <handoff> (operator-sentinel-handoff.ts) — she PLACES it. THINKING
  * goes here — the user gets the answer back in conversation. The Mug was the
  * wrong tool for cognition: her wake loop is cadenced and placement-shaped.
  *

@@ -5,7 +5,7 @@
  * The Sentinel is the Herald: it SUGGESTS and HANDS OFF, it never places work
  * itself. Its capability envelope denies cup:spawn/placement by design (the whole
  * point of the role), so where the OPERATOR turn dispatches `<spawn>` directly into
- * the nursery, the SENTINEL turn dispatches `<handoff_to_mug>` THROUGH HERE:
+ * the nursery, the SENTINEL turn dispatches `<handoff>` THROUGH HERE:
  *
  *   1. (P-015) Resolve the action's TIER through the EXISTING standing-approval /
  *      tier system — the Sentinel is the user-facing approval tier.
@@ -29,7 +29,7 @@
  *      pending-handoff registry the lifecycle observer drains.
  *
  * The Sentinel NEVER calls cup:spawn — the converse dispatch (converse.ts) only
- * reads `<handoff_to_mug>` for role==='sentinel' and only reads `<spawn>` for the
+ * reads `<handoff>` for role==='sentinel' and only reads `<spawn>` for the
  * operator, so the two paths can't cross.
  *
  * Dependency-injected (the `deps` arg) so the dispatch unit-tests without PG: the
@@ -148,7 +148,7 @@ export function resolveHandoffTier(h: HandoffRequest): CapabilityTier {
 }
 
 /**
- * Dispatch ONE `<handoff_to_mug>` request. Tier-gated (P-015), then file +
+ * Dispatch ONE `<handoff>` request. Tier-gated (P-015), then file +
  * nudge (P-014) + subscribe-for-hindsight (P-016). Never throws — a failure is
  * returned as `{ status: 'error' }` so a bad handoff can't crash the user-visible
  * turn (same contract as the operator's `<spawn>` dispatch).

@@ -126,7 +126,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + byte-integrity guard +
     // workitem-nudge +
-    // required-field-strand nudge (EI-19374535041074908) + ts-parse nudge
+    // required-field-strand nudge (EI-19374535041074908) +
+    // behavioural-strand nudge (EI-20022235111425919) + ts-parse nudge
     // (EI-19457231269012320) + MDX nudge (EI-19450114644493388) +
     // no-proc-path-fixture nudge (EI-19968483416347685) +
     // migration-fixture-drift nudge (EI-19359711978838614) +
@@ -144,6 +145,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
+      `${DEST}/posttooluse-behavioural-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
       `${DEST}/posttooluse-mdx-nudge.mjs`,
       `${DEST}/posttooluse-no-proc-path-fixture-nudge.mjs`,
@@ -177,6 +179,10 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.
     expect(postMatcherOf('workitem-verify-nudge.sh')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-required-field-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    // EI-20022235111425919 — the behavioural sibling. It shipped in hooks/cc unregistered,
+    // so packaged installs copied an inert file; this assertion is what a re-orphaning would
+    // have to get past, alongside orphaned-cc-hooks.test.ts's list sweep.
+    expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-no-proc-path-fixture-nudge.mjs')).toBe('Edit|Write|MultiEdit');

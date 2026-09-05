@@ -744,6 +744,192 @@ export function formatTreeDriftAdvisory({
   return lines;
 }
 
+/** @see formatFailureScopeSummary — the greppable marker it always emits. */
+export const AFFECTED_TESTS_FAILURE_SCOPE_TOKEN = "AFFECTED_TESTS_FAILURE_SCOPE";
+
+/**
+ * Attribute each failing test file to the CALLER'S OWN change set — or say plainly that the
+ * run had no caller scope to attribute against.
+ *
+ * EI-20072082961786945. {@link formatTreeDriftAdvisory} answers "did the tree move under this
+ * run"; {@link classifyStaleFailureEntries} answers "did THIS failing file's blob move". Neither
+ * answers the question a triager actually asks first — *is this red MINE?* — so today the result
+ * hands back a workspace + filename and the reader reconstructs the answer by hand (the filing
+ * agent spent ~4 calls doing exactly that: re-run the two files, grep the run log for the
+ * assertion text, `git log --since` on each implicated path).
+ *
+ * Both directions of that guess are expensive on this box. CLAUDE.md makes every agent
+ * responsible for greening reds, so a red misattributed to YOU sends you to "fix" a file a peer
+ * is actively editing — a collision with a live lock-holder. The symmetric error is worse: an
+ * agent who has learned that unrelated reds are usually peer churn dismisses a genuine
+ * regression of their own as "not mine".
+ *
+ * THE UNSCOPED CASE IS THE MEASURED ONE, and it is why this returns a label rather than a
+ * verdict. The filing run was a bare `npm run test:affected`, whose radius is derived from the
+ * shared tree's git state — i.e. the whole fleet's in-flight work, not the caller's. There is
+ * then no caller scope to intersect against, and the honest answer is to say so (`unscoped-run`
+ * / `scope=derived`) instead of manufacturing a per-file verdict from a set that was never the
+ * caller's. That reading also names its own repair: re-run with `--changed-paths`.
+ *
+ * A missing/unresolvable workspace dir routes to `unknown`, never to `outside-caller-scope` —
+ * the same rule {@link classifyStaleFailureEntries} applies when it routes a missing blob to
+ * `unknown`. A failed lookup is an attribution GAP; spending it as evidence would invent the
+ * confident answer this whole helper exists to stop inventing.
+ *
+ * @param {{
+ *   entries?: Array<{workspace: string, file: string}>,
+ *   callerPaths?: string[]|null,
+ *   workspaceDirs?: Record<string, string>,
+ * }} args `callerPaths` is the caller's EXPLICIT `--changed-paths` set, or null when the run
+ *   derived its own radius. `workspaceDirs` maps workspace name -> repo-relative dir.
+ * @returns {{
+ *   scoped: boolean,
+ *   rows: Array<{workspace: string, file: string, attribution: string, matchedPaths: string[]}>,
+ *   counts: {callerFile: number, callerWorkspace: number, outside: number, unknown: number, unscoped: number},
+ * }}
+ */
+export function classifyFailureScope({
+  entries = [],
+  callerPaths = null,
+  workspaceDirs = {},
+} = {}) {
+  const scoped = Array.isArray(callerPaths);
+  const paths = scoped
+    ? [
+        ...new Set(
+          callerPaths
+            .filter((p) => typeof p === "string" && p.trim())
+            .map((p) => p.trim().replaceAll("\\", "/").replace(/\/+$/, "")),
+        ),
+      ]
+    : [];
+  const rows = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const workspace = String(entry?.workspace ?? "").trim();
+    const file = String(entry?.file ?? "")
+      .replaceAll("\\", "/")
+      .trim();
+    if (!scoped) {
+      rows.push({ workspace, file, attribution: "unscoped-run", matchedPaths: [] });
+      continue;
+    }
+    const dir = workspaceDirs?.[workspace];
+    if (typeof dir !== "string" || !dir.trim()) {
+      rows.push({ workspace, file, attribution: "unknown", matchedPaths: [] });
+      continue;
+    }
+    const wsDir = dir.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+    // `p === wsDir` is the SUBMODULE case, for the same reason `resolveAffected` carries that
+    // arm: a gitlink change is reported as the bare directory, not as a path beneath it.
+    const matchedPaths = paths.filter(
+      (p) => p === wsDir || p.startsWith(`${wsDir}/`),
+    );
+    const repoPath = file ? `${wsDir}/${file}` : null;
+    rows.push({
+      workspace,
+      file,
+      attribution:
+        repoPath && matchedPaths.includes(repoPath)
+          ? "caller-file"
+          : matchedPaths.length
+            ? "caller-workspace"
+            : "outside-caller-scope",
+      matchedPaths: matchedPaths.slice(0, 4),
+    });
+  }
+  const count = (attribution) =>
+    rows.filter((r) => r.attribution === attribution).length;
+  return {
+    scoped,
+    rows,
+    counts: {
+      callerFile: count("caller-file"),
+      callerWorkspace: count("caller-workspace"),
+      outside: count("outside-caller-scope"),
+      unknown: count("unknown"),
+      unscoped: count("unscoped-run"),
+    },
+  };
+}
+
+/**
+ * Render {@link classifyFailureScope} as advisory stderr lines plus one greppable marker.
+ *
+ * ADVISORY ONLY, like every sibling block in this family: the exit code, the
+ * `AFFECTED_TESTS_RESULT` line and the `AFFECTED_TESTS_FAILING_FILES` break set are verdict
+ * contracts the gate parses, and widening a verdict to carry an attribution GUESS is how a
+ * guess comes to be read as a verdict.
+ *
+ * `possible-peer-churn` is deliberately the CONJUNCTION of two independent facts — the failure
+ * is outside the caller's paths AND the tree moved mid-run — because either alone is common and
+ * uninformative. Even then it only narrows: a red outside your paths can still be your own
+ * regression reached through the dependency graph, which is exactly why the runner selected that
+ * workspace at all. The lines say so, because the cost of this label being read as a verdict is
+ * a real regression dismissed as someone else's.
+ *
+ * @param {{
+ *   runToken?: string|null,
+ *   classification?: ReturnType<typeof classifyFailureScope>|null,
+ *   treeDrifted?: boolean,
+ *   sampleLimit?: number,
+ * }} args
+ * @returns {string[]}
+ */
+export function formatFailureScopeSummary({
+  runToken = null,
+  classification = null,
+  treeDrifted = false,
+  sampleLimit = 8,
+} = {}) {
+  const rows = Array.isArray(classification?.rows) ? classification.rows : [];
+  if (!rows.length) return [];
+  const { scoped, counts } = classification;
+  const lines = [];
+  if (!scoped) {
+    lines.push(
+      `\n⚠ NO CALLER SCOPE — this run derived its own radius from the shared tree's git state,`,
+      `  not from paths you named, so NOTHING in the break set above is attributable to your`,
+      `  change. On this box that radius is the whole fleet's in-flight work. Before treating any`,
+      `  red above as yours — or as someone else's — re-run scoped:`,
+      `    npm run test:affected -- --changed-paths <the files you edited>`,
+    );
+  } else {
+    const outside = rows.filter((r) => r.attribution === "outside-caller-scope");
+    if (outside.length) {
+      lines.push(
+        `\n⚠ ${outside.length} of ${rows.length} failing file(s) are OUTSIDE the paths you named` +
+          (treeDrifted
+            ? ` — and HEAD moved mid-run, so this is the possible-peer-churn shape:`
+            : `:`),
+      );
+      for (const r of outside.slice(0, sampleLimit)) {
+        lines.push(
+          `  - ${r.workspace} :: ${r.file}  attribution=` +
+            (treeDrifted ? "possible-peer-churn" : "outside-caller-scope"),
+        );
+      }
+      if (outside.length > sampleLimit) {
+        lines.push(`  … and ${outside.length - sampleLimit} more`);
+      }
+      lines.push(
+        `  This NARROWS the search; it does not settle it. A red outside your paths can still be`,
+        `  YOUR regression reached through the dependency graph — that is why the runner selected`,
+        `  that workspace. Confirm before fixing, and check locks:queue { paths } first: a peer`,
+        `  may be mid-edit in the very file this points you at.`,
+      );
+    }
+  }
+  lines.push(
+    `${AFFECTED_TESTS_FAILURE_SCOPE_TOKEN} run=${runToken ?? "unknown"} ` +
+      `scope=${scoped ? "explicit" : "derived"} files=${rows.length} ` +
+      `callerFile=${counts.callerFile} callerWorkspace=${counts.callerWorkspace} ` +
+      `outside=${counts.outside} unknown=${counts.unknown} unscoped=${counts.unscoped} ` +
+      `treeMoved=${treeDrifted ? "true" : "false"} ` +
+      `possiblePeerChurn=${scoped && treeDrifted ? counts.outside : 0}`,
+  );
+  return lines;
+}
+
 /**
  * Parse the canonical, machine-readable break-set line emitted by
  * {@link formatFailingFilesLine}.

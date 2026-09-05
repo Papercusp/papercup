@@ -1102,6 +1102,22 @@ for the rest. Read the `LINT_TSC_RESULT status=`, not just the exit code — `pa
 
 **Don't do that by hand — `npm run lint:required-field-strands`** AST-diffs your change against `HEAD` and names every exported type that gained a required field, nested paths included. It also catches a field TIGHTENED from optional to required, which strands sites just as hard. It is ADVISORY by design — adding a required field is usually correct, so the mere addition is never a failure; `--typecheck` runs `lint:tsc` and exits non-zero only on real stranded sites. Finding the sites was never the hard part — `tsc` already does that perfectly; the gap this closes is *knowing to run it*. ⚠ Do NOT "fix" the errors by making the new field optional: that silently reintroduces whatever under-reporting the required field was added to prevent.
 
+**The behavioural sibling — adding a CALL to an injected collaborator strands call-COUNT
+assertions in ANOTHER workspace**, and nothing you run locally sees it: `lint:tsc` is clean
+(no type changed, only a runtime count) and `test:affected` selects by the workspaces your
+changed PATHS map into, so it cannot select the stranded fixtures by construction. One
+instance (WI-37582, a second `source.lexical()` call in `libs/generic/search`) cost ~3 gate
+reds and ~2h of frozen `main`.
+
+`npm run lint:behavioural-strands` is the detector; a PostToolUse hook fires it at the edit,
+which is the only moment it works — git-sync sweeps your edit into HEAD within minutes, and
+`--base HEAD` then diffs content that already contains it. Read the EXIT CODE, not the prose:
+0 = checked, no strands · 1 = strands named · 2 = NOT CHECKED (not a clean bill). The named
+set is a RANKING, not a boundary (`--wide` runs the full reachable band). If a downstream
+count assertion fails, UPDATE the count — deleting or loosening it removes the only thing
+that makes the next such change detectable.
+
+
 **A migration that ADDS a column to a `harness_shared` table can silently strand a
 sibling `*.integration.test.ts` fixture** that hand-rolls that same table via an inline
 `CREATE TABLE` instead of applying real migrations — the fixture used to be

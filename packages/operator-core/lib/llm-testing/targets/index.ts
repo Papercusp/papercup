@@ -19,7 +19,7 @@ const TARGETS: Record<string, TargetFactory> = {
   // papercup — the SAME converse brain loaded with role='papercup' (the
   // Papercup-as-Herald persona). The agent-mcp/operator-converse route honors
   // the explicit body.role, so this exercises Papercup-only behavior the
-  // operator role can't reach — notably the `<handoff_to_mug>` routing
+  // operator role can't reach — notably the `<handoff>` routing
   // (sentinel-as-claude-tui-2026-06-22; converse.ts only honors handoffs for
   // role==='papercup'). Same HTTP transport as `operator`.
   papercup: () => new OperatorTarget({ role: 'papercup' }),

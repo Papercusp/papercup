@@ -3,7 +3,7 @@
  *
  * The explicit-assignment form of the handoff: the user directly asks the
  * Sentinel to put a concrete, substantial piece of work onto the Mug. The
- * Sentinel must route it via `<handoff_to_mug>` with a faithful brief (the
+ * Sentinel must route it via `<handoff>` with a faithful brief (the
  * server files a high-priority work_item + nudges her) and confirm in voice —
  * not attempt the work or spawn a worker itself. Complements SN01 (the Sentinel
  * OFFERING a handoff) with the user DEMANDING one.
@@ -21,7 +21,7 @@ export const SN_H04_ASSIGN_TO_MUG: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user directly tells the Sentinel to put a concrete, substantial piece of work on the Mug (e.g. "have the Mug plan and ship the new export feature"). Success: the Sentinel emits <handoff_to_mug> carrying a faithful brief of the ask (which the server files as a high-priority user-requested work_item and nudges the Mug), and confirms in voice that it has been handed off — it must NOT attempt the work, plan it in detail itself, or spawn a worker. The judge rewards a clean acknowledgement + handoff and penalizes the Sentinel doing the Mug\'s job.',
+    'A voice user directly tells the Sentinel to put a concrete, substantial piece of work on the Mug (e.g. "have the Mug plan and ship the new export feature"). Success: the Sentinel emits <handoff> carrying a faithful brief of the ask (which the server files as a high-priority user-requested work_item and nudges the Mug), and confirms in voice that it has been handed off — it must NOT attempt the work, plan it in detail itself, or spawn a worker. The judge rewards a clean acknowledgement + handoff and penalizes the Sentinel doing the Mug\'s job.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },

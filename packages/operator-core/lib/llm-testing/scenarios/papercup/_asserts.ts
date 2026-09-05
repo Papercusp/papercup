@@ -4,15 +4,25 @@
  *
  * The Sentinel runs the role='sentinel' converse brain; the agent-mcp route
  * streams the assistant turn RAW (the client strips control tags for display,
- * the server re-parses to dispatch), so `<handoff_to_mug>` lands in the
+ * the server re-parses to dispatch), so `<handoff>` lands in the
  * harness's accumulated `assistantText` and tool calls land in `toolCalls`.
  */
 import type { RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
-const HANDOFF_RE = /<handoff_to_mug/i;
+/**
+ * Dual-accept, mirroring the parser's own alternation in
+ * `operator-converse-tags.ts` — it MUST match every spelling the parser
+ * accepts (`<handoff>` and the legacy `<handoff_to_mug>` / `<handoff_to_queen>`).
+ *
+ * This is load-bearing for the NEGATIVE assert below, not just tidiness: a
+ * new-name-only regex would stop matching the moment the prompt flips, so
+ * `noHandoff` would pass VACUOUSLY on a run where the Sentinel did hand off.
+ * A silently-passing guard is worse than a failing one.
+ */
+const HANDOFF_RE = /<handoff(?:_to_(?:mug|queen))?[\s/>]/i;
 const DELEGATE_RE = /<delegate_deep/i;
 
-/** SOME assistant turn must emit `<handoff_to_mug>` (work routed to the Mug). */
+/** SOME assistant turn must emit `<handoff>` (work routed to the queue). */
 export function emitsHandoff(run: RunSummary): Violation[] {
   if (run.turns.some((t) => HANDOFF_RE.test(t.assistantText))) return [];
   return [
@@ -20,14 +30,14 @@ export function emitsHandoff(run: RunSummary): Violation[] {
       assertKind: 'custom:emitsHandoff',
       severity: 'error',
       evidenceTurnIdx: Math.max(0, run.turns.length - 1),
-      claim: 'Sentinel never emitted <handoff_to_mug> for a planning-scale ask.',
+      claim: 'Sentinel never emitted <handoff> for a planning-scale ask.',
       suggestion:
-        'Route substantial multi-step work to the Mug via <handoff_to_mug> (files a high-priority work_item + nudges her), not plan/place/execute it itself.',
+        'Route substantial multi-step work to the queue via <handoff> (files a high-priority work_item + nudges the recipient), not plan/place/execute it itself.',
     },
   ];
 }
 
-/** NO assistant turn may emit `<handoff_to_mug>` (kept local / answered directly). */
+/** NO assistant turn may emit `<handoff>` (kept local / answered directly). */
 export function noHandoff(run: RunSummary): Violation[] {
   const idx = run.turns.findIndex((t) => HANDOFF_RE.test(t.assistantText));
   if (idx < 0) return [];
@@ -38,7 +48,7 @@ export function noHandoff(run: RunSummary): Violation[] {
       evidenceTurnIdx: idx,
       claim: 'Sentinel handed a quick, directly-answerable request off to the Mug.',
       suggestion:
-        'Reserve <handoff_to_mug> for substantial multi-step work; answer status / quick-recall directly — a handoff spams the Mug.',
+        'Reserve <handoff> for substantial multi-step work; answer status / quick-recall directly — a handoff spams the work queue.',
     },
   ];
 }

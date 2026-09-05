@@ -1,3 +1,8 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 /**
@@ -450,17 +455,13 @@ export function firstLiveMatch(raw, masked, re) {
 /** .ts and .tsx disagree only on `<T>expr` vs JSX, but they disagree HARD — guessing wrong
  *  mis-blanks real code, which is the failure this module exists to prevent. */
 function parseSource(text, fileName) {
-  const byExt = !fileName
-    ? null
-    : fileName.endsWith('.tsx')
-      ? ts.ScriptKind.TSX
-      : fileName.endsWith('.ts') ||
-          fileName.endsWith('.mts') ||
-          fileName.endsWith('.cts')
-        ? ts.ScriptKind.TS
-        : fileName.endsWith('.jsx')
-          ? ts.ScriptKind.JSX
-          : ts.ScriptKind.JS;
+  // ⚠ DERIVED FROM `kindTag`, NOT a second extension ladder — and that is load-bearing, not
+  // tidiness. The range cache keys on `kindTag(fileName)`, so the moment these two disagree
+  // about ANY extension, two genuinely different parses share one cache entry and the second
+  // one silently gets the first one's mask. Two copies of the same ladder would drift the
+  // first time someone adds an extension to one of them; one function cannot.
+  const tag = kindTag(fileName);
+  const byExt = tag === 'auto' ? null : SCRIPT_KIND_BY_TAG[tag];
   // setParentNodes=false, and it is SAFE here: nothing in this module reads `node.parent`.
   // `collectRanges` only walks downward, and it passes `sf` EXPLICITLY to both
   // `node.getChildren(sf)` and `node.getStart(sf)` — that argument exists precisely so neither
@@ -509,7 +510,268 @@ function parseSource(text, fileName) {
     : asTs;
 }
 
-function collectRanges(text, fileName, { strings, regex }) {
+/* ══════════════════════════════════════════════════════════════════════════════════
+   CONTENT-ADDRESSED RANGE CACHE (EI-20068047132832988)
+
+   WHAT IT BUYS, measured 2026-09-05 over this repo's 17,655 code files / 387.5 MB:
+
+       readFileSync all of them      1,287 ms
+       sha256 all of them              724 ms
+       collectRanges all of them    82,408 ms   <-- the whole cost of this module
+
+   The parse is ~114x the hash. So keying the RANGES by the hash of their input turns the
+   dominant cost into a rounding error for every run whose files have not changed — which,
+   on a 17.6k-file tree where a change touches a handful, is essentially every run.
+
+   WHY A *DISK* CACHE AND NOT A Map. This module has 55 importers, ~48 of them separate
+   guard scripts in `scripts/`, several registered as REPO_WIDE_INVARIANT_GUARDS (so they
+   run on essentially every `test:affected` and every gate tick). Each is its OWN process:
+   an in-process memo — which both public entry points already have via their callers — can
+   never help the 47 other processes re-parsing the same unchanged files. The cache is
+   therefore cross-PROCESS, cross-RUN and cross-CHECKOUT: keyed by content, it does not care
+   which tree the bytes came from, so a `papercusp-checkpoint` gate run hits entries written
+   by a staging-tree run of a different guard an hour earlier.
+
+   WHY IT LIVES OUTSIDE THE REPO. `papercusp-checkpoint` is reset and cleaned on every gate
+   run, so an in-tree cache would be wiped exactly where the win is largest.
+
+   ⚠ THE KEY IS DERIVED, NEVER HAND-MAINTAINED. A hand-bumped `CACHE_VERSION` is a second
+   copy of a truth this file owns, and the failure mode when it drifts is silent: stale
+   ranges mask the wrong bytes, and a guard that reports clean on an offending line is the
+   worst failure this class has. So the salt is sha256 OF THIS FILE'S OWN BYTES plus
+   `ts.version` — the only two inputs that can change what `collectRanges` returns for a
+   given (text, ScriptKind, flags). Edit anything in this file, or upgrade TypeScript, and
+   every prior entry is unreachable by construction. The salt is the DIRECTORY name, so an
+   implementation change also orphans the whole previous tree in one move; init deletes
+   those siblings.
+
+   FAIL-SAFE IN ONE DIRECTION ONLY: every cache operation is wrapped so that any failure
+   (no home dir, read-only fs, a truncated entry, a concurrent writer) degrades to "parse it
+   again". A miss costs time; it can never cost correctness. Set PAPERCUSP_STRIP_CACHE=0 to
+   disable entirely.
+   ══════════════════════════════════════════════════════════════════════════════════ */
+
+/** Entries per 2-hex-char shard before the oldest are dropped. 256 shards x this. */
+const SHARD_MAX = 256;
+/** Written on every init so a salt tree that is still in use is distinguishable from a dead one. */
+const USED_MARKER = '.last-used';
+/** How long a salt tree must go un-initialised before another implementation may reclaim it. */
+const RECLAIM_IDLE_DAYS = 7;
+/** Undefined = not yet initialised; null = disabled/unavailable. */
+let cacheDir;
+const prunedShards = new Set();
+
+function cacheRoot() {
+  if (cacheDir !== undefined) return cacheDir;
+  cacheDir = null;
+  try {
+    if (process.env.PAPERCUSP_STRIP_CACHE === '0') return cacheDir;
+    const salt = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(fileURLToPath(import.meta.url)))
+      .update('|ts|')
+      .update(ts.version)
+      .digest('hex')
+      .slice(0, 16);
+    const base =
+      process.env.PAPERCUSP_STRIP_CACHE_DIR ||
+      path.join(os.homedir(), '.papercusp', 'cache', 'strip-ranges');
+    const dir = path.join(base, salt);
+    const fresh = !fs.existsSync(dir);
+    fs.mkdirSync(dir, { recursive: true });
+    // Stamp this salt as in use on EVERY init, so the reclaim below can tell a tree that is
+    // still being read from one that is genuinely dead.
+    try {
+      fs.writeFileSync(path.join(dir, USED_MARKER), '');
+    } catch {
+      /* a marker we cannot write only makes this tree look idle sooner */
+    }
+    // A new salt means this file (or TypeScript) changed, so older trees are unreachable BY
+    // THIS implementation — but NOT necessarily by any other.
+    //
+    // ⚠ DO NOT "SIMPLIFY" THIS TO `delete every sibling`. Two implementations run side by
+    // side here as a matter of routine: `papercusp-release` executes green `main` while the
+    // shared checkout is on `staging`, and the two carry different bytes of this file for as
+    // long as a change is in flight. Delete-on-sight makes those two salts THRASH — each
+    // side's next process re-creates its own tree and wipes the other's, so both run
+    // permanently cold and the cache is worse than not having one. Correctness is untouched
+    // either way (a miss only costs a parse), which is exactly why the failure would be
+    // invisible: nothing goes red, the gate just quietly stops getting faster.
+    //
+    // So reclaim on IDLENESS, not on difference: a sibling nothing has initialised for
+    // RECLAIM_IDLE_DAYS is dead, and a live one is left alone however old its salt is.
+    if (fresh) {
+      const cutoff = Date.now() - RECLAIM_IDLE_DAYS * 86_400_000;
+      for (const name of fs.readdirSync(base)) {
+        if (name === salt) continue;
+        const sibling = path.join(base, name);
+        try {
+          const marker = path.join(sibling, USED_MARKER);
+          const seen = fs.existsSync(marker)
+            ? fs.statSync(marker).mtimeMs
+            : fs.statSync(sibling).mtimeMs;
+          if (seen < cutoff) fs.rmSync(sibling, { recursive: true, force: true });
+        } catch {
+          /* mid-write, or racing another reclaimer; collected next time */
+        }
+      }
+    }
+    cacheDir = dir;
+  } catch {
+    cacheDir = null;
+  }
+  return cacheDir;
+}
+
+/**
+ * THE ScriptKind selector — the ONE place an extension is mapped to a parse mode.
+ *
+ * `parseSource` reads it, and the cache key is built from it, so the kind that produced a set
+ * of ranges and the kind recorded in the key are the same value by construction. A cached
+ * entry can therefore never be served to a parse that would have used a different ScriptKind.
+ * The path itself is deliberately NOT part of the key: two identical files at different paths
+ * are the same problem and should share one entry.
+ */
+const SCRIPT_KIND_BY_TAG = {
+  tsx: ts.ScriptKind.TSX,
+  ts: ts.ScriptKind.TS,
+  jsx: ts.ScriptKind.JSX,
+  js: ts.ScriptKind.JS,
+};
+
+function kindTag(fileName) {
+  if (!fileName) return 'auto';
+  if (fileName.endsWith('.tsx')) return 'tsx';
+  if (
+    fileName.endsWith('.ts') ||
+    fileName.endsWith('.mts') ||
+    fileName.endsWith('.cts')
+  )
+    return 'ts';
+  if (fileName.endsWith('.jsx')) return 'jsx';
+  return 'js';
+}
+
+function cacheEntryPath(root, text, fileName, { strings, regex }) {
+  const digest = crypto
+    .createHash('sha256')
+    .update(kindTag(fileName))
+    .update(strings ? '|S|' : '|s|')
+    .update(regex ? '|R|' : '|r|')
+    .update(text)
+    .digest('hex');
+  return path.join(root, digest.slice(0, 2), `${digest.slice(2)}.bin`);
+}
+
+/**
+ * Entry layout: a 4-byte magic, a 4-byte range COUNT, then two int32 per range, all LE.
+ *
+ * ⚠ THE HEADER IS LOAD-BEARING, NOT DECORATION — it is what makes a damaged entry
+ * DISTINGUISHABLE FROM A LEGITIMATE ONE, and this failed in test before it was added. A
+ * comment-free file legitimately caches ZERO ranges. Without a header that is a 0-byte
+ * file, which is byte-identical to a write that died before it put anything down — and
+ * "zero ranges" means `blankRanges` returns the source UNMASKED. So a truncated entry
+ * would have masked NOTHING while reporting success: every comment in that file read as
+ * live code, which is the false-NEGATIVE direction and the worst failure this class has.
+ * With the header, zero ranges is 8 bytes and a torn write is not.
+ */
+const ENTRY_MAGIC = 0x50435231; // 'PCR1'
+
+function decodeRanges(buf) {
+  if (buf.length < 8) return null;
+  if (buf.readUInt32LE(0) !== ENTRY_MAGIC) return null;
+  const count = buf.readUInt32LE(4);
+  if (buf.length !== 8 + count * 8) return null; // truncated or over-long: treat as a miss
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const at = 8 + i * 8;
+    out.push([buf.readInt32LE(at), buf.readInt32LE(at + 4)]);
+  }
+  return out;
+}
+
+function encodeRanges(ranges) {
+  const buf = Buffer.allocUnsafe(8 + ranges.length * 8);
+  buf.writeUInt32LE(ENTRY_MAGIC, 0);
+  buf.writeUInt32LE(ranges.length, 4);
+  for (let i = 0; i < ranges.length; i += 1) {
+    buf.writeInt32LE(ranges[i][0], 8 + i * 8);
+    buf.writeInt32LE(ranges[i][1], 8 + i * 8 + 4);
+  }
+  return buf;
+}
+
+/**
+ * Bound one shard, once per process, and only when we are already writing to it.
+ * Ordering is by max(atime, mtime): this filesystem is `relatime`, so a cache HIT
+ * refreshes atime at day granularity for free, which is exactly the LRU signal wanted —
+ * the valuable entries here are files that never change and are therefore never rewritten,
+ * so pure mtime ordering would evict precisely the hottest ones. Where atime is
+ * unavailable (noatime) this degrades to age ordering, which is still bounded and still
+ * only ever costs a re-parse.
+ */
+function pruneShard(shardDir) {
+  if (prunedShards.has(shardDir)) return;
+  prunedShards.add(shardDir);
+  try {
+    const names = fs.readdirSync(shardDir);
+    if (names.length <= SHARD_MAX) return;
+    const rows = [];
+    for (const name of names) {
+      const p = path.join(shardDir, name);
+      try {
+        const st = fs.statSync(p);
+        rows.push({ p, t: Math.max(st.atimeMs, st.mtimeMs) });
+      } catch {
+        /* vanished under a concurrent pruner */
+      }
+    }
+    rows.sort((a, b) => a.t - b.t);
+    const keep = Math.floor(SHARD_MAX * 0.75);
+    for (const row of rows.slice(0, Math.max(0, rows.length - keep))) {
+      try {
+        fs.unlinkSync(row.p);
+      } catch {
+        /* already gone */
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function collectRanges(text, fileName, opts) {
+  const root = cacheRoot();
+  if (!root) return collectRangesUncached(text, fileName, opts);
+
+  let entry = null;
+  try {
+    entry = cacheEntryPath(root, text, fileName, opts);
+    const hit = decodeRanges(fs.readFileSync(entry));
+    if (hit) return hit;
+  } catch {
+    /* miss, or an unreadable entry — parse below */
+  }
+
+  const ranges = collectRangesUncached(text, fileName, opts);
+  if (entry) {
+    try {
+      const shard = path.dirname(entry);
+      fs.mkdirSync(shard, { recursive: true });
+      pruneShard(shard);
+      // Write-then-rename so a reader never sees a half-written entry, and so two
+      // processes racing the same key both end up with a complete, identical file.
+      const tmp = `${entry}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      fs.writeFileSync(tmp, encodeRanges(ranges));
+      fs.renameSync(tmp, entry);
+    } catch {
+      /* the cache is an optimisation; never let it fail a scan */
+    }
+  }
+  return ranges;
+}
+
+function collectRangesUncached(text, fileName, { strings, regex }) {
   const sf = parseSource(text, fileName);
   const ranges = [];
   const seen = new Set();

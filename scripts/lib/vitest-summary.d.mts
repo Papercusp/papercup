@@ -501,6 +501,99 @@ export function formatTreeDriftAdvisory({ runStartHead, reportHead, changedPaths
     sampleLimit?: number;
 }): string[];
 /**
+ * Attribute each failing test file to the CALLER'S OWN change set — or say plainly that the
+ * run had no caller scope to attribute against.
+ *
+ * EI-20072082961786945. {@link formatTreeDriftAdvisory} answers "did the tree move under this
+ * run"; {@link classifyStaleFailureEntries} answers "did THIS failing file's blob move". Neither
+ * answers the question a triager actually asks first — *is this red MINE?* — so today the result
+ * hands back a workspace + filename and the reader reconstructs the answer by hand (the filing
+ * agent spent ~4 calls doing exactly that: re-run the two files, grep the run log for the
+ * assertion text, `git log --since` on each implicated path).
+ *
+ * Both directions of that guess are expensive on this box. CLAUDE.md makes every agent
+ * responsible for greening reds, so a red misattributed to YOU sends you to "fix" a file a peer
+ * is actively editing — a collision with a live lock-holder. The symmetric error is worse: an
+ * agent who has learned that unrelated reds are usually peer churn dismisses a genuine
+ * regression of their own as "not mine".
+ *
+ * THE UNSCOPED CASE IS THE MEASURED ONE, and it is why this returns a label rather than a
+ * verdict. The filing run was a bare `npm run test:affected`, whose radius is derived from the
+ * shared tree's git state — i.e. the whole fleet's in-flight work, not the caller's. There is
+ * then no caller scope to intersect against, and the honest answer is to say so (`unscoped-run`
+ * / `scope=derived`) instead of manufacturing a per-file verdict from a set that was never the
+ * caller's. That reading also names its own repair: re-run with `--changed-paths`.
+ *
+ * A missing/unresolvable workspace dir routes to `unknown`, never to `outside-caller-scope` —
+ * the same rule {@link classifyStaleFailureEntries} applies when it routes a missing blob to
+ * `unknown`. A failed lookup is an attribution GAP; spending it as evidence would invent the
+ * confident answer this whole helper exists to stop inventing.
+ *
+ * @param {{
+ *   entries?: Array<{workspace: string, file: string}>,
+ *   callerPaths?: string[]|null,
+ *   workspaceDirs?: Record<string, string>,
+ * }} args `callerPaths` is the caller's EXPLICIT `--changed-paths` set, or null when the run
+ *   derived its own radius. `workspaceDirs` maps workspace name -> repo-relative dir.
+ * @returns {{
+ *   scoped: boolean,
+ *   rows: Array<{workspace: string, file: string, attribution: string, matchedPaths: string[]}>,
+ *   counts: {callerFile: number, callerWorkspace: number, outside: number, unknown: number, unscoped: number},
+ * }}
+ */
+export function classifyFailureScope({ entries, callerPaths, workspaceDirs, }?: {
+    entries?: Array<{
+        workspace: string;
+        file: string;
+    }>;
+    callerPaths?: string[] | null;
+    workspaceDirs?: Record<string, string>;
+}): {
+    scoped: boolean;
+    rows: Array<{
+        workspace: string;
+        file: string;
+        attribution: string;
+        matchedPaths: string[];
+    }>;
+    counts: {
+        callerFile: number;
+        callerWorkspace: number;
+        outside: number;
+        unknown: number;
+        unscoped: number;
+    };
+};
+/**
+ * Render {@link classifyFailureScope} as advisory stderr lines plus one greppable marker.
+ *
+ * ADVISORY ONLY, like every sibling block in this family: the exit code, the
+ * `AFFECTED_TESTS_RESULT` line and the `AFFECTED_TESTS_FAILING_FILES` break set are verdict
+ * contracts the gate parses, and widening a verdict to carry an attribution GUESS is how a
+ * guess comes to be read as a verdict.
+ *
+ * `possible-peer-churn` is deliberately the CONJUNCTION of two independent facts — the failure
+ * is outside the caller's paths AND the tree moved mid-run — because either alone is common and
+ * uninformative. Even then it only narrows: a red outside your paths can still be your own
+ * regression reached through the dependency graph, which is exactly why the runner selected that
+ * workspace at all. The lines say so, because the cost of this label being read as a verdict is
+ * a real regression dismissed as someone else's.
+ *
+ * @param {{
+ *   runToken?: string|null,
+ *   classification?: ReturnType<typeof classifyFailureScope>|null,
+ *   treeDrifted?: boolean,
+ *   sampleLimit?: number,
+ * }} args
+ * @returns {string[]}
+ */
+export function formatFailureScopeSummary({ runToken, classification, treeDrifted, sampleLimit, }?: {
+    runToken?: string | null;
+    classification?: ReturnType<typeof classifyFailureScope> | null;
+    treeDrifted?: boolean;
+    sampleLimit?: number;
+}): string[];
+/**
  * Parse the canonical, machine-readable break-set line emitted by
  * {@link formatFailingFilesLine}.
  *
@@ -700,3 +793,5 @@ export const SELECTED_FILES_LINE_MAX_ENTRIES: 400;
 export const AFFECTED_TESTS_STALE_FAILURES_TOKEN: "AFFECTED_TESTS_STALE_FAILURES";
 /** A stable token for the separate mid-run tree-drift advisory block. */
 export const AFFECTED_TESTS_TREE_DRIFT_TOKEN: "AFFECTED_TESTS_TREE_DRIFT";
+/** @see formatFailureScopeSummary — the greppable marker it always emits. */
+export const AFFECTED_TESTS_FAILURE_SCOPE_TOKEN: "AFFECTED_TESTS_FAILURE_SCOPE";

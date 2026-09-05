@@ -1529,6 +1529,37 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     expect(footer).not.toContain('lines of non-JSON text');
   });
 
+  it('does not advertise `pipe` on a body it just wrote to the spill AS JSON (EI-20071580479842384)', () => {
+    // The seam the separate-item test above does NOT reach: the advisory rides
+    // in the SAME text item as the payload, so `classifyProjectionBody` misses
+    // on both the join and the per-item pass. The spill writer still recovers
+    // the payload via `findJsonPrefixSlice` — and the footer used to re-derive
+    // the shape with only the weaker half, so ONE string claimed both "JSON
+    // starts after cursor.bodyOffsetInPayload" and "`pick` does not apply here".
+    // That sent the reader to `pipe`, which on a JSON body is the all-or-nothing
+    // trap this very hint exists to warn about.
+    const footer = footerFor([
+      { type: 'text', text: `${longJson(BUDGET_CHARS * 2)}\n\nSee also: work_items:claimable (the claim floors as a tool)` },
+    ]);
+    expect(footer).toContain('JSON starts after cursor.bodyOffsetInPayload');
+    expect(footer).toContain('`pick` is what reduces it');
+    expect(footer).not.toContain('lines of non-JSON text');
+    expect(footer).not.toContain('`pick` does not apply');
+  });
+
+  it('honors a caller-supplied classification over re-deriving a weaker one', () => {
+    // Unit-level falsifier for the wiring itself: same textItems, opposite
+    // advice, decided solely by the shape the caller already acted on.
+    const sameItemSuffix = [{ text: '{"items":[{"id":"WI-1"}]}\n\nSee also: work_items:list' }];
+    expect(buildProjectionHint(sameItemSuffix, 'work_items:list')).toContain('non-JSON text');
+    expect(
+      buildProjectionHint(sameItemSuffix, 'work_items:list', {
+        json: { parsed: { items: [{ id: 'WI-1' }] }, itemIndex: 0 },
+        lineCount: 3,
+      }),
+    ).toContain('`pick` is what reduces it');
+  });
+
   it('a single-line non-JSON body says projection cannot help, and names the tool to re-call', () => {
     const footer = footerFor([{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 2) }], 'capability:read');
     expect(footer).toContain('`projection` cannot help');

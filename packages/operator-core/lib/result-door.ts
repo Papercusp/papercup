@@ -47,7 +47,7 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
-import { classifyProjectionBody } from './result-projection';
+import { classifyProjectionBody, type ProjectionBodyShape } from './result-projection';
 import {
   buildOutputEnvelope,
   OUTPUT_EVIDENCE_CLASSES,
@@ -280,8 +280,26 @@ function detectInnerTruncationMarkers(text: string): string[] {
  * `classifyProjectionBody`, the same function the projection stage itself uses
  * to find the body `pick` operates on, so the advertised operator cannot drift
  * from the one that would actually run.
+ *
+ * `preClassified` closes the one seam where that guarantee LEAKED. The spill
+ * writer classifies the body with `classifyProjectionBody` AND, when that
+ * misses, recovers a JSON payload carrying a same-item framework advisory
+ * suffix (`See also:` / `[batch-hint]` / `[nudge]`) via `findJsonPrefixSlice`.
+ * Re-deriving the shape here saw only the weaker half, so a body the door had
+ * just proven to be JSON — and written to the spill as JSON — was advertised as
+ * "N lines of non-JSON text … `pick` does not apply here", in the SAME `next`
+ * string that says "JSON starts after cursor.bodyOffsetInPayload". Measured on
+ * `work_items:claimable` (EI-20071580479842384): the same tool+args reduced 95%
+ * under `pick: ["claimable[].id"]` while the spill told the reader to use
+ * `pipe`, which on a JSON body is the all-or-nothing trap this hint exists to
+ * warn about — a no-match returns an EMPTY body that reads like a filter that
+ * worked. Callers that have already classified MUST pass their shape.
  */
-export function buildProjectionHint(textItems: ReadonlyArray<{ text: string }>, toolName: string): string {
+export function buildProjectionHint(
+  textItems: ReadonlyArray<{ text: string }>,
+  toolName: string,
+  preClassified?: ProjectionBodyShape | null,
+): string {
   // BUDGET NOTE (measured, not assumed — the correction in D-016): this string
   // is emitted on EVERY doored result, ~2,600 times per 6 days, 83% of them
   // JSON. A first cut of this function was 570 chars against the 420-char
@@ -293,7 +311,9 @@ export function buildProjectionHint(textItems: ReadonlyArray<{ text: string }>, 
   const asString = ` \`projection\` also accepts a JSON STRING.`;
   let shape: { json: unknown; lineCount: number };
   try {
-    shape = classifyProjectionBody(textItems);
+    // A caller-supplied classification is authoritative: it is the one the door
+    // actually acted on when it wrote the spill. Only re-derive when absent.
+    shape = preClassified ?? classifyProjectionBody(textItems);
   } catch {
     // Fail-soft to the payload-agnostic wording rather than losing the hint.
     return (
@@ -1228,7 +1248,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                       `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
                     : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
                       `every field in full.`) +
-              buildProjectionHint(textItems, opts.toolName),
+              buildProjectionHint(textItems, opts.toolName, bodyShape),
           }
         : {
             cursor: {
@@ -1245,7 +1265,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                 ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
                   `so those fields were never serialized either.`
                 : '') +
-              buildProjectionHint(textItems, opts.toolName),
+              buildProjectionHint(textItems, opts.toolName, bodyShape),
           };
     // plans:get's item text is the semantic payload of the detail read, not an
     // optional identity field. Promote it through the generic fallback so a

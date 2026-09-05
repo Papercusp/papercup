@@ -20,7 +20,7 @@ export const SN_H05_URGENT_HANDOFF: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user reports something urgent that needs real work ("production sign-up is broken for everyone — we need this fixed now"). Success: the Sentinel does NOT try to fix it itself; it routes it to the Mug via <handoff_to_mug> with a brief that conveys the urgency, and its spoken reply acknowledges the severity + that it has been escalated to the Mug (calm, not panicked, but not casual). The judge penalizes the Sentinel attempting the fix, downplaying urgency, or failing to hand off.',
+    'A voice user reports something urgent that needs real work ("production sign-up is broken for everyone — we need this fixed now"). Success: the Sentinel does NOT try to fix it itself; it routes it to the Mug via <handoff> with a brief that conveys the urgency, and its spoken reply acknowledges the severity + that it has been escalated to the Mug (calm, not panicked, but not casual). The judge penalizes the Sentinel attempting the fix, downplaying urgency, or failing to hand off.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },

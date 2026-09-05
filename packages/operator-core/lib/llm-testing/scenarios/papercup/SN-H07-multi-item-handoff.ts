@@ -2,7 +2,7 @@
  * SN-H07 — a multi-item ask is handed off without dropping items
  *
  * The user rattles off several distinct pieces of substantial work in one breath.
- * The Sentinel must route them to the Mug via <handoff_to_mug> with a brief
+ * The Sentinel must route them to the Mug via <handoff> with a brief
  * that captures ALL of them (not just the first / last), and confirm in voice
  * without trying to do any itself. Tests brief fidelity under a multi-part ask.
  *
@@ -19,7 +19,7 @@ export const SN_H07_MULTI_ITEM_HANDOFF: Scenario = {
   version: 1,
   target: 'papercup',
   description:
-    'A voice user lists several distinct pieces of substantial work in one turn ("get the onboarding redesign going, also fix the billing export, and start a plan for the mobile app"). Success: the Sentinel routes the work to the Mug via <handoff_to_mug> with a brief that captures ALL the listed items (none dropped), and confirms in voice without attempting any item itself or spawning a worker. The judge rewards full item coverage in the handoff/acknowledgement and penalizes dropped items or the Sentinel doing the work.',
+    'A voice user lists several distinct pieces of substantial work in one turn ("get the onboarding redesign going, also fix the billing export, and start a plan for the mobile app"). Success: the Sentinel routes the work to the Mug via <handoff> with a brief that captures ALL the listed items (none dropped), and confirms in voice without attempting any item itself or spawning a worker. The judge rewards full item coverage in the handoff/acknowledgement and penalizes dropped items or the Sentinel doing the work.',
   persona: VOICE_USER,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 150, maxCostUsd: 1.0 },
