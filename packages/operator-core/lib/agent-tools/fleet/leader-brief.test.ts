@@ -1421,6 +1421,22 @@ describe('projectMember recovery annotation (P-009)', () => {
     expect(m.recovery).toEqual(recovery);
   });
 
+  it('carries a reconciler reap reason too — disposition alone must not imply a respawn attempt', () => {
+    // Measured on this box: the MAJORITY of stranded closes are the task reconciler's reap
+    // (`process identity …`), not P-009 containment. Both are surfaced deliberately, so the
+    // reason is the only thing that distinguishes them — a leader that read `disposition`
+    // alone would conclude a recovery attempt ran when none did.
+    const reaped = {
+      disposition: 'stranded' as const,
+      reason: 'process identity linux:b6a537ff-4a0e-440b-99c1-4764f002dda9 absent from scan',
+      taskId: 'task-reaped',
+      strandedAt: '2026-09-01T12:11:52.415Z',
+    };
+    const m = projectMember(baseAgent({}), NOW, null, null, null, null, null, null, reaped);
+    expect(m.recovery?.reason).toContain('process identity');
+    expect(m.recovery?.disposition).toBe('stranded');
+  });
+
   it('omits the block entirely when the member was never stranded', () => {
     // Absent must mean "nothing surfaced", never a fabricated all-clear.
     const m = projectMember(baseAgent({}), NOW, null, null, null, null, null, null, null);

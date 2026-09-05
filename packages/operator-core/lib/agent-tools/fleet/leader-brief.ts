@@ -657,17 +657,29 @@ export interface LeaderBriefMember {
    *  process-local (see in-flight-calls.ts), so read absent as "nothing observed",
    *  never as "this member is idle". */
   longCallInFlight?: { tool: string; ageSec: number };
-  /** P-009: this member was CONTAINED by a recovery attempt — `fleet:respawn-member` could
-   *  not verify the kill or the cooperative drain, so it froze the member's tasks and
-   *  recorded WHY on the task ledger.
+  /** P-009: this member's most recent STRANDED close on the task ledger — a task that
+   *  stopped in the escape/anomaly class rather than in good order.
+   *
+   *  READ `reason`, NOT just `disposition`. Two different writers strand a task and this
+   *  block surfaces BOTH, because a leader triaging a quiet member wants either:
+   *    - `fleet:respawn-member` containment (P-009): a kill or cooperative drain it could
+   *      not VERIFY, so it froze the member's tasks and recorded the cause; or
+   *    - the task reconciler's reap: a row absent from the process scan (measured on this
+   *      box, the majority — reasons of the form `process identity …`).
+   *  `disposition:'stranded'` alone therefore does NOT mean a recovery attempt ran. Only
+   *  the reason distinguishes them, which is why it gets a longer shaper budget than the
+   *  other fields on this row.
    *
    *  Surfaced here because a stranded member is the one case where every other signal on
-   *  this row reads as benign: the processes are frozen, so it makes no tool calls and
-   *  emits no heartbeat — indistinguishable from a member that finished cleanly and went
-   *  quiet. Before this, the reason existed only on the transition edge and the ledger row,
-   *  neither of which a leader reads while triaging a roster.
+   *  this row reads as benign: the processes are frozen or gone, so it makes no tool calls
+   *  and emits no heartbeat — indistinguishable from a member that finished cleanly and
+   *  went quiet. Before this, the reason existed only on the transition edge and the ledger
+   *  row, neither of which a leader reads while triaging a roster.
    *
-   *  Exception-only: absent for every member that was never stranded. Absence is NOT a
+   *  `strandedAt` is load-bearing for the same reason: the ledger keeps closed rows, so a
+   *  member stranded days ago still carries a block. Age it before acting on it.
+   *
+   *  Exception-only: absent for every member with no stranded close. Absence is NOT a
    *  verdict that recovery succeeded — the read is bounded and may simply not have run. */
   recovery?: {
     disposition: 'stranded';
