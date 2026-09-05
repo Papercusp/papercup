@@ -247,7 +247,18 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     // only ever swept the global `~/.codex/sessions`, so every psu codex agent
     // (the codex everything-goal holder included) had ZERO usage samples and
     // its goal's spend rollup could not see the holder's own cost.
-    const codexIsoRoots = await codexSessionRoots(opts.codexIsolationBase);
+    // EI-22389989368696048: isolation must be SYMMETRIC. `codexSessionRoots()` defaults to
+    // the machine's REAL per-session codex homes, so a caller that pinned `isolationBase`
+    // (the documented test seam) but not `codexIsolationBase` silently swept that entire
+    // corpus — 149 homes / 4,329 rollouts / 28GB on this box — into its own DB, hanging the
+    // call and contaminating a test database with live agent transcripts. That broke the
+    // "zero risk of sweeping the real $HOME isolation tree into a test's temp DB" guarantee
+    // promised above, on the codex half only. Pinning EITHER seam now means "injected tree";
+    // the real base is reached only when NEITHER is pinned, so production is unchanged.
+    const codexIsoRoots =
+      opts.codexIsolationBase === undefined && opts.isolationBase !== undefined
+        ? []
+        : await codexSessionRoots(opts.codexIsolationBase);
     adapters = [
       ...adapters,
       // WI-2144763: an isolation root is `<base>/<coord-owner-id>/projects`, so the
