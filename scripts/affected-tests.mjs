@@ -1816,6 +1816,43 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // security-boundary-remediation-and-usability-2026-09-04 P-007 / WI-2144851 —
+    // the reachable-production-advisory gate. It attributes every npm advisory to the
+    // workspace(s) that pull it in, gates only on the SHIPPING high/critical set, and
+    // fails closed on an advisory it cannot attribute. Baseline is shrink-only
+    // (scripts/reachable-advisories-baseline.json), exactly like KNOWN_DARK_FLAGS.
+    //
+    // WIRED REPO-WIDE rather than left to workspace selection because the subject is not
+    // any workspace's source: it is the dependency GRAPH, and a new shipping advisory
+    // enters through a manifest/lockfile edit in a workspace whose own suite has no
+    // reason to know about it. Left unwired, the gate existed and was falsifiable but
+    // nothing ran it — the state this entry closes.
+    //
+    // TRIGGER SCOPE is deliberately narrow: only a dependency-manifest change can
+    // introduce or resolve an advisory, so it fires on package.json / package-lock.json,
+    // on the gate itself, and on its baseline. It does NOT fire on ordinary source edits.
+    // COST measured 2026-09-05 via this exact npm script: 15.34s, exit 0.
+    //
+    // Safe to wire NOW on the same precedent as the entries below: measured green over
+    // the whole real tree FIRST (99 advisories -> 9 gating, all 9 baselined with a stated
+    // reason, 0 NEW offenders), so registering it cannot red-pin the fleet on debt that
+    // accrued while it slept.
+    //
+    // A network failure is NOT a red here: measureJson() in the gate retries the
+    // registry-dependent audit and, if it still cannot measure, throws a message leading
+    // with ADVISORY_GATE_UNDETERMINED, so a triager can tell "re-run this" from "patch a
+    // dependency" without reading the gate's source.
+    workspace: "@papercusp/operator-core",
+    script: "lint:reachable-advisories",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      (f === "package-lock.json" ||
+        f === "package.json" ||
+        f.endsWith("/package.json") ||
+        f === "scripts/check-reachable-advisories.mjs" ||
+        f === "scripts/reachable-advisories-baseline.json"),
+  },
+  {
     // design-to-code-coverage-seam-2026-09-02 P-027 / WI-2143001 — the ordinary
     // gate lane is unit-only: it can drive HTTP/MCP observers but deliberately
     // cannot open real PG, while the broad integration lane can persist but may
