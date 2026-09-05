@@ -177,6 +177,20 @@ export interface TranscriptAdapter {
    * sample carried an unmatchable `rollout-…` session_id and a NULL goal_id.
    */
   sessionIdForFile?: (filePath: string) => string;
+  /**
+   * Coord owner id this adapter's transcripts belong to, when the root itself
+   * identifies one — the per-session isolation roots are shaped
+   * `~/.papercusp/session-claude/<coord-owner-id>/projects`, so the owner is
+   * already in hand and needs no join. Written to
+   * `agent_usage_samples.harness_slug` via
+   * `harness_shared.harness_slug_for_usage_attribution` (WI-2144763).
+   *
+   * Left undefined for the GLOBAL (non-isolation) roots, whose paths carry no
+   * owner; those fall back to the function's adv_sessions session route.
+   * Measured 2026-09-05: the owner route resolves a harness for 63.4% of the
+   * real on-disk isolation owners, against 0.0% written by this writer today.
+   */
+  ownerId?: string;
 }
 
 /** `rollout-2026-09-02T01-10-49-<uuid>.jsonl` → `<uuid>` — the same shape the

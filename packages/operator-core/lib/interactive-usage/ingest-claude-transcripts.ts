@@ -249,7 +249,16 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     const codexIsoRoots = await codexSessionRoots(opts.codexIsolationBase);
     adapters = [
       ...adapters,
-      ...isoRoots.map((root, i) => ({ name: `claude-iso-${i}`, root, parse: parseTranscriptChunk })),
+      // WI-2144763: an isolation root is `<base>/<coord-owner-id>/projects`, so the
+      // owner is the parent directory name — carry it so the INSERT can stamp
+      // harness_slug without a join. Derived from `root` (not the transcript path)
+      // because claudeProjectsRoots built that root from the owner dir itself.
+      ...isoRoots.map((root, i) => ({
+        name: `claude-iso-${i}`,
+        root,
+        parse: parseTranscriptChunk,
+        ownerId: path.basename(path.dirname(root)),
+      })),
       ...codexIsoRoots.map((root, i) => ({
         name: `codex-iso-${i}`,
         root,
@@ -314,11 +323,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               INSERT INTO harness_shared.agent_usage_samples
                 (workspace_id, ts, bucket_key, provider, model_class, source,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-                 model, cost_source, run_id, role, session_id, goal_id)
+                 model, cost_source, harness_slug, run_id, role, session_id, goal_id)
               VALUES (
                 ${ws}, ${Date.now()}, ${`${provider}:${modelClass}`}, ${provider}, ${modelClass}, ${'interactive'},
                 ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
+                (SELECT harness_shared.harness_slug_for_usage_attribution(
+                   ${ws}, ${adapter.ownerId ?? null}, ${sessionId})),
                 ${sessionId}, ${'interactive'}, ${sessionId},
                 (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sessionId}))
               )
