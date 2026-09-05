@@ -50,6 +50,26 @@ describe('_bulk', () => {
     expect(env.results[1]).toEqual({ ok: false, id: 'boom', error: 'kaboom' });
   });
 
+  it('runBulk bounds opt-in concurrency and preserves input-correlated result order', async () => {
+    let active = 0;
+    let peak = 0;
+    const env = await runBulk(
+      [1, 2, 3, 4, 5, 6],
+      async (id) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, id % 2 === 0 ? 2 : 6));
+        active -= 1;
+        return { ok: true as const, id };
+      },
+      { maxConcurrency: 3 },
+    );
+
+    expect(peak).toBe(3);
+    expect(env.results.map((result) => result.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(env.counts).toEqual({ ok: 6, failed: 0 });
+  });
+
   it('empty input → empty envelope', async () => {
     const env = await runBulk([], async () => ({ ok: true as const }));
     expect(env).toEqual({ ok: true, results: [], counts: { ok: 0, failed: 0 } });

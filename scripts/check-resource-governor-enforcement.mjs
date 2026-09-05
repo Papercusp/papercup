@@ -164,6 +164,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     paths: [
       "packages/operator-core/lib/db/",
       "packages/operator-core/lib/dbos/queue-concurrency.ts",
+      "packages/operator-core/lib/dbos/routines-workflow.ts",
       "packages/operator-core/lib/derived-",
       "packages/operator-core/lib/memory/embed-sidecar-",
     ],
@@ -173,18 +174,23 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     durableSource:
       "the DBOS workflow row and the routines table entry that scheduled it — both already durable, which is why this lane needs admission rather than a new queue",
     telemetry:
-      "connection-pool saturation and per-routine fire/skip counts; pool exhaustion must read as pressure, not as an error",
+      "fresh org-admin pool probes before additional per-queue routine starts, durable pool-shed events, and per-routine fire/skip counts; pool exhaustion reads as feedback pressure, not as a terminal error",
     contextAndRelease:
-      "sidecar process units carry durable Governor receipts and inherited AdmissionContext; DBOS queues have no local concurrency cap and rely on durable workflow state plus physical database feedback",
+      "sidecar process units carry durable Governor receipts and inherited AdmissionContext; DBOS queues have no local concurrency cap, preserve deferred work as unclaimed durable routine rows, and reopen starts on the next healthy physical-feedback probe",
     currentCaps:
       "no numeric ceiling in-lane; the effective limit is the Postgres connection pool, a physical upstream constraint to observe rather than duplicate",
     writerEvidence:
-      "packages/operator-core/lib/memory/embed-sidecar-server.ts is governed per sidecar unit; packages/operator-core/lib/dbos/queue-concurrency.ts removes the former profile-derived DBOS cap while workflow/routine rows remain durable execution state",
+      "packages/operator-core/lib/memory/embed-sidecar-server.ts is governed per sidecar unit; dbos/queue-concurrency.ts removes the former fixed cap while dbos/routines-workflow.ts feedback-paces each queue before claim/start and leaves withheld routine rows durably due",
     sites: [
       {
         path: "packages/operator-core/lib/dbos/bootstrap.ts",
         start:
           "DBOS workflow host — durable workflow state; queue capacity is delegated to governor/DB feedback",
+      },
+      {
+        path: "packages/operator-core/lib/dbos/routines-workflow.ts",
+        start:
+          "routineFire workflow fan-out — first start is the liveness floor, every additional per-queue start requires a fresh physical org-admin probe",
       },
       {
         path: "packages/operator-core/lib/memory/embed-sidecar-server.ts",

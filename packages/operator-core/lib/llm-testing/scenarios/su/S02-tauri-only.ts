@@ -15,10 +15,11 @@ import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertTextRequires } from './_asserts';
+import { TAURI_APP_VERIFICATION_CONTEXT } from './_overrides';
 
 export const SU_S02_TAURI_ONLY: Scenario = {
   id: 'su-S02-tauri-only',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -27,6 +28,7 @@ export const SU_S02_TAURI_ONLY: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  toolOverride: TAURI_APP_VERIFICATION_CONTEXT,
   asserts: [
     assertTextRequires(/tauri|papercusp-desktop|desktop shell|agent-e2e|npm run dev/i, {
       name: 'points-at-tauri-flow',

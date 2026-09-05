@@ -29,7 +29,7 @@ import { HARNESS_REQUIRED_GATE } from './_overrides';
 
 export const SU_S01_HARNESS_SCOPE: Scenario = {
   id: 'su-S01-harness-scope',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:

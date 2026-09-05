@@ -34,7 +34,9 @@ const { createIssue } = await import('../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
 
 const WS = 'ws-state-of-hive-test';
+const OTHER_WS = 'ws-state-of-hive-other';
 const T = Date.parse('2026-06-08T10:00:00Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe('state-of-Hive production readers (real PG)', () => {
   let db: OrgTestDb;
@@ -63,7 +65,10 @@ describe('state-of-Hive production readers (real PG)', () => {
       VALUES
         (${WS}, ${T}, 'b1', 'anthropic', 'opus', 'provider', 8.00, 800000, 120000, 'papercup', 'worker'),
         (${WS}, ${T}, 'b1', 'anthropic', 'opus', 'provider', 4.00, 400000,  60000, 'papercup', 'worker'),
-        (${WS}, ${T}, 'b2', 'anthropic', 'opus', 'provider', 2.50, 200000,  30000, 'papercup', 'validator')`;
+        (${WS}, ${T}, 'b2', 'anthropic', 'opus', 'provider', 2.50, 200000,  30000, 'papercup', 'validator'),
+        (${OTHER_WS}, ${T}, 'b3', 'anthropic', 'opus', 'provider', 100.00, 900000, 90000, 'papercup', 'foreign'),
+        (${WS}, ${T - 8 * DAY_MS}, 'b4', 'anthropic', 'opus', 'provider', 50.00, 700000, 70000, 'papercup', 'stale'),
+        (${WS}, ${T + 60_000}, 'b5', 'anthropic', 'opus', 'provider', 75.00, 600000, 60000, 'papercup', 'future')`;
 
     // — harness_plans: deferred items (blocked/needs-human) + a deferred decision. —
     await sql`
@@ -102,9 +107,10 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(sample.harness).toBe('papercup');
   });
 
-  it('spend reader rolls up by (harness, role) with summed cost', async () => {
-    const readers = buildStateOfHiveReaders();
+  it('spend reader scopes to the workspace and trailing 7d window', async () => {
+    const readers = buildStateOfHiveReaders({ workspaceId: WS, nowMs: T });
     const spend = await readers.spend();
+    expect(spend.map((s) => `${s.harness}:${s.role}`).sort()).toEqual(['papercup:validator', 'papercup:worker']);
     const worker = spend.find((s) => s.role === 'worker' && s.harness === 'papercup')!;
     expect(worker).toBeDefined();
     expect(worker.costUsd).toBeCloseTo(12.0, 5); // 8 + 4
@@ -128,7 +134,10 @@ describe('state-of-Hive production readers (real PG)', () => {
   });
 
   it('end-to-end: synthesize produces a populated digest from the real corpus', async () => {
-    const digest = await synthesizeStateOfHive(buildStateOfHiveReaders(), { nowMs: T });
+    const digest = await synthesizeStateOfHive(
+      buildStateOfHiveReaders({ workspaceId: WS, nowMs: T }),
+      { nowMs: T },
+    );
 
     // Sinks: worker ($12) ranks above validator ($2.50), normalised weight top=1.
     expect(digest.timeTokenSinks[0].summary).toContain('papercup · worker');

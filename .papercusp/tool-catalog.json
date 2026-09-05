@@ -25001,7 +25001,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is using CPU or memory right now, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
+        "chaining": "Pass `taskId` to inspect one exact ledger row, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
       }
     },
     {
@@ -26423,7 +26423,7 @@
           "POST"
         ]
       },
-      "description": "Amend one criterion prose field, structural evidence plane, rubric methodRef, or unpinned composition refs. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
+      "description": "Amend one criterion field, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
       "capabilities": [
         "coord:write"
       ],
@@ -26448,8 +26448,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
-        "notWhen": "Adding/removing criteria, renaming keys, or changing rating scales — those reshape grading history: use rubrics:propose (whole-document) so the loss-guards see the full picture.",
+        "when": "A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.",
+        "notWhen": "Adding/removing criteria on a standard rubric, renaming stored keys, or changing rating scales — use rubrics:propose. Complete `criteria` here is acceptance-kind only and must preserve every stored key unless the canonical amendment rules explicitly support its removal.",
         "chaining": "rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify."
       }
     },

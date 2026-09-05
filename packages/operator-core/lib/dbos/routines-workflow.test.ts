@@ -80,6 +80,7 @@ vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
+  evaluateRoutineDispatchAdmission,
   ROUTINE_FIRE_QUEUES,
   ROUTINE_FIRE_TIMEOUT_MS,
   routineFireTimeoutMs,
@@ -96,6 +97,40 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 beforeEach(() => {
   state.stepOutputs.length = 0;
   vi.clearAllMocks();
+});
+
+describe('evaluateRoutineDispatchAdmission — capless DBOS fan-out feedback (EI-224330)', () => {
+  it('admits one liveness-floor start per queue without probing', async () => {
+    const probe = vi.fn(async () => 'critical' as const);
+    await expect(evaluateRoutineDispatchAdmission(0, probe)).resolves.toEqual({
+      admitted: true,
+      pressure: null,
+    });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['ok', true],
+    ['elevated', false],
+    ['critical', false],
+  ] as const)('uses a fresh %s probe before every additional start', async (pressure, admitted) => {
+    const probe = vi.fn(async () => pressure);
+    await expect(evaluateRoutineDispatchAdmission(1, probe)).resolves.toEqual({ admitted, pressure });
+    expect(probe).toHaveBeenCalledOnce();
+  });
+
+  it('is wired before claim/start and leaves a pressured queue unclaimed for a later tick', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const loop = source.split('for (const r of due) {')[1]?.split('// EI-11171 critical-routine floor (cont.):')[0] ?? '';
+    const admission = loop.indexOf('evaluateRoutineDispatchAdmission(startedInQueue)');
+    const claim = loop.indexOf('claimDueRoutine(sql, r)');
+    const start = loop.indexOf('DBOS.startWorkflow');
+    expect(admission).toBeGreaterThan(-1);
+    expect(admission).toBeLessThan(claim);
+    expect(claim).toBeLessThan(start);
+    expect(loop).toContain('pausedQueues.add(queueName)');
+    expect(loop).toContain('startedByQueue.set(queueName, startedInQueue + 1)');
+  });
 });
 
 describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859486764076047)', () => {

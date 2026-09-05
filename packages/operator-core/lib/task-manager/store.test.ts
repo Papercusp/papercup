@@ -115,3 +115,24 @@ describe('listTasks pushes a label prefix into the query', () => {
     expect(text()).not.toMatch(/LIKE/i);
   });
 });
+
+describe('listTasks taskId filter', () => {
+  it('emits an exact task_id predicate carrying the durable id as a bound parameter', async () => {
+    const { sql, calls, text } = recordingSql();
+    const taskId = 'task-to-kill';
+
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, taskId }, sql);
+
+    expect(text()).toContain('task_id = ?');
+    expect(calls.flatMap((c) => c.args)).toContain(taskId);
+    expect(text()).not.toContain(taskId);
+  });
+
+  it('does not emit a task_id predicate when no exact task is requested', async () => {
+    const { sql, text } = recordingSql();
+
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true }, sql);
+
+    expect(text()).not.toContain('task_id =');
+  });
+});

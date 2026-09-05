@@ -118,25 +118,35 @@ export function bulkEnvelopeSchema<T extends z.ZodTypeAny>(item?: T) {
 }
 
 /**
- * Run an async per-item `op` over `items` SEQUENTIALLY, collecting one result
- * per item and NEVER throwing on a single failure. `op` returns the
+ * Run an async per-item `op` over `items`, collecting one result per item and
+ * NEVER throwing on a single failure. Execution is sequential by default;
+ * callers whose per-item operations are independent may opt into a bounded
+ * worker pool with `maxConcurrency`. `op` returns the
  * self-describing result (it embeds the item's key). A thrown error becomes
  * `{ ok:false, ...keyOf(item), error }` so even a crash self-describes its key.
  * Returns the house envelope `{ ok, results, counts }`.
  *
- * Sequential by design — matches work_items:batch and avoids hammering the PG
- * pool. Result order follows input order as a convenience; the CONTRACT is the
- * embedded key, not the index.
+ * The serial default matches work_items:batch and avoids hammering the PG pool.
+ * Opt-in concurrency remains bounded, and completion order never leaks into
+ * the envelope: result order follows input order as a convenience; the CONTRACT
+ * is the embedded key, not the index.
  */
 export async function runBulk<I, R extends BulkItemResult>(
   items: readonly I[],
   op: (item: I, index: number) => Promise<R>,
-  opts?: { keyOf?: (item: I, index: number) => Record<string, unknown> },
+  opts?: {
+    keyOf?: (item: I, index: number) => Record<string, unknown>;
+    maxConcurrency?: number;
+  },
 ): Promise<BulkEnvelope<R>> {
-  const results: R[] = [];
-  let ok = 0;
-  let failed = 0;
-  for (let i = 0; i < items.length; i += 1) {
+  const results = new Array<R>(items.length);
+  const requestedConcurrency = opts?.maxConcurrency ?? 1;
+  const maxConcurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.floor(requestedConcurrency))
+    : 1;
+  let nextIndex = 0;
+
+  const runOne = async (i: number): Promise<void> => {
     let r: R;
     try {
       r = await op(items[i], i);
@@ -147,10 +157,22 @@ export async function runBulk<I, R extends BulkItemResult>(
         error: e instanceof Error ? e.message : String(e),
       } as R;
     }
-    if (r.ok) ok += 1;
-    else failed += 1;
-    results.push(r);
-  }
+    results[i] = r;
+  };
+
+  const worker = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const i = nextIndex;
+      nextIndex += 1;
+      await runOne(i);
+    }
+  };
+
+  const workerCount = Math.min(items.length, maxConcurrency);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  const ok = results.filter((result) => result.ok).length;
+  const failed = results.length - ok;
   return { ok: true, results, counts: { ok, failed } };
 }
 
