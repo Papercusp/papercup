@@ -1901,6 +1901,42 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f === "scripts/rust-advisories-baseline.json"),
   },
   {
+    // security-boundary-remediation-and-usability-2026-09-04 P-007 / WI-2144851 — the
+    // SBOM/inventory half of the same audit clause. The two advisory gates above each
+    // scan exactly ONE hand-chosen lockfile; neither can see a dependency graph outside
+    // its own scope, and a graph nobody scans is not "reported clean" — it is NOT
+    // MEASURED, which reads identically from outside. This census DERIVES the lockfile
+    // population from the filesystem and forces every row into an explicit bucket, so a
+    // new blind spot fails loudly instead of being found months later by hand.
+    //
+    // TRIGGER SCOPE is deliberately the WIDEST of the three: the subject is the SET of
+    // lockfiles, so the event that matters is one APPEARING anywhere in the tree — a path
+    // no narrower matcher can enumerate in advance, because it does not exist yet. That is
+    // also why it cannot be left to workspace selection: a lockfile added under a package
+    // with no suite of its own selects nothing at all. The two blind spots that motivated
+    // the file (papercusp-desktop/src-tauri/Cargo.lock, then its sibling package-lock.json)
+    // both entered exactly this way.
+    //
+    // COST measured 2026-09-05 via this exact npm script: 0.6s, exit 0 — a filesystem walk
+    // and 13 lockfile parses, no network. The syft SBOM emission is deliberately NOT on
+    // this path (lint:lockfile-census:sbom is the separate on-demand entrypoint): syft is a
+    // dev-box binary, not a pipeline dependency, and emitSbom REFUSES when it is absent
+    // rather than skipping quietly, so wiring it here would red-pin any host without it.
+    //
+    // Safe to wire NOW on the same precedent as the two entries above: measured green over
+    // the whole real tree FIRST (13 lockfiles, every one classified, 0 offenders), so
+    // registering it cannot red-pin the fleet on debt that accrued while nothing looked.
+    workspace: "@papercusp/operator-core",
+    script: "lint:lockfile-census",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      (f.endsWith("/package-lock.json") ||
+        f === "package-lock.json" ||
+        f.endsWith("/Cargo.lock") ||
+        f === "Cargo.lock" ||
+        f === "scripts/check-lockfile-census.mjs"),
+  },
+  {
     // design-to-code-coverage-seam-2026-09-02 P-027 / WI-2143001 — the ordinary
     // gate lane is unit-only: it can drive HTTP/MCP observers but deliberately
     // cannot open real PG, while the broad integration lane can persist but may
@@ -3864,6 +3900,47 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         !/(?:^|\/)(?:_retired|dist|dist-sidecar|node_modules|build|\.next|target|coverage|env-sidecars)\//.test(
           f,
         )),
+  },
+  {
+    // EI-20094472685960957 — `.papercusp/testing-domains.json` is DERIVED from
+    // packages/operator-core/lib/testing-domains-registry.ts by
+    // scripts/gen-testing-domains-contract.ts, and also COMMITTED (the harness Tests
+    // tab reads it at runtime). Drift IS guarded — testing-domains-contract-freshness
+    // .test.ts asserts `expect(committed).toBe(generated)` — so the defect was never
+    // detection. It was WHERE detection landed: inside the full operator-core suite
+    // (~3978 tests, minutes, and behind pc-heavy on a loaded box), by which point a
+    // one-command fix presents as a red gate blocking every agent's deploys and
+    // attributed to whoever is looking. Three occurrences of that exact shape
+    // (WI-37793, EI-20081777912524409, WI-6235), the first two ~2.5h apart.
+    //
+    // The edit-time half of the fix regenerates the artifact while the source's lock
+    // is still held (apps/operator/scripts/hooks/cc/regenerate-declaration-before-
+    // lock-release.mjs), which makes the stale state unreachable for edits made
+    // through a client's edit tool. THIS entry is the other half: it covers every
+    // route that hook cannot see — `sed -i`, a client with no hooks enrolled, a human
+    // editor — and turns a minutes-deep suite red into a seconds-deep named failure.
+    //
+    // NO hostSuiteRatchet, deliberately, and it is the one entry here where declaring
+    // one would be actively wrong: the ratchet exists (the freshness test), but it
+    // lives in the very workspace that editing the registry ALWAYS makes affected, so
+    // declaring it would skip this guard in exactly its primary case and reinstate the
+    // slow signal this entry was added to replace. Attaching unconditionally is also
+    // the fail-safe direction the registry documents for narrow tasks.
+    // COST measured 2026-09-05 via this exact script: 2.3s, exit 0.
+    //
+    // TRIGGER SCOPE mirrors the generator's DATA inputs plus the generator itself,
+    // and — unlike the hook, which must not silently revert an edit the author is
+    // still looking at — ALSO the emitted contract, so a hand-edit of the artifact
+    // that slipped past pretooluse-generated-file-edit-guard is still caught.
+    workspace: "@papercusp/operator-core",
+    script: "gen:contract:check",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/lib/testing-domains-registry.ts" ||
+      f === "packages/operator-core/lib/harness-testing-registry.ts" ||
+      f === "scripts/gen-testing-domains-contract.ts" ||
+      f === ".papercusp/testing-domains.json",
   },
 ];
 
