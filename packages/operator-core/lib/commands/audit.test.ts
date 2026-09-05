@@ -136,7 +136,9 @@ describe('burst-window retention (WI-2145588)', () => {
     const rand = vi.spyOn(Math, 'random').mockReturnValue(0);
     try {
       __drainAuditForTests();
-      for (let i = 0; i < 10; i++) auditQuery(queryRow({ agent: 'hot-agent', sample: true }));
+      for (let i = 0; i < 10; i++) {
+        auditQuery(queryRow({ agent: 'hot-agent' as QueryRow['agent'], sample: true }));
+      }
       // The burst cap admits 2; the rest are dropped before reaching the buffer.
       expect(__drainAuditForTests().queries).toHaveLength(2);
     } finally {
