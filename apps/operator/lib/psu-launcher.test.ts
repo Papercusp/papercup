@@ -4455,6 +4455,12 @@ describe("psu-launcher arg parsing", () => {
     for (const stats of [
       { codexHealthyAccounts: 1, codexTotalAccounts: 7 },
       { codexTotalAccounts: 7 },
+      { codexHealthyAccounts: 0 },
+      {
+        codexHealthyAccounts: null,
+        codexTotalAccounts: 7,
+        codexEarliestRecoveryAt: null,
+      },
     ]) {
       const quietLog = vi.fn();
       await expect(
@@ -4462,7 +4468,10 @@ describe("psu-launcher arg parsing", () => {
           agent: "codex",
           model: "gpt-5.6-sol",
           account: "auto",
-          fetchImpl: vi.fn(async () => ({ ok: true, json: async () => stats })) as unknown as typeof fetch,
+          fetchImpl: vi.fn(async () => ({
+            ok: true,
+            json: async () => stats,
+          })) as unknown as typeof fetch,
           log: quietLog,
         }),
       ).resolves.toBeNull();
