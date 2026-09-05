@@ -222,8 +222,9 @@ export function lookupEntitlement(
  * intent: a yank is the publisher withdrawing a version, while a revocation
  * (entitlement or key) is the buyer's right to the bytes ending.
  */
-export const DELIVERY_INTENTS = ['install', 'update', 'repair'] as const;
-export type DeliveryIntent = (typeof DELIVERY_INTENTS)[number];
+// Re-exported, not redefined: the intent selects the yank rule, and that rule
+// lives with the retention window it depends on, in artifact-distribution.
+export { DELIVERY_INTENTS, type DeliveryIntent } from '../p2p/artifact-distribution';
 
 export type DeliveryRefusalCode =
   | 'no-entitlement'
@@ -325,53 +326,44 @@ export function authorizeDelivery(input: AuthorizeDeliveryInput): DeliveryAuthor
     return refuse('review-not-approved', `release ${ref} is ${manifest.reviewStatus}, not approved`);
   }
 
-  // ── 3. Yank, split by intent ──────────────────────────────────────────────
-  const yank = yankOutcome(distribution);
-  let servingYanked = false;
-  if (yank.yanked) {
-    if (intent !== 'repair') {
-      return refuse(
-        'release-yanked',
-        `release ${ref} was yanked${yank.reason ? `: ${yank.reason}` : ''} — a ${intent} may not acquire it`,
-      );
-    }
-    if (yank.retainUntilMs !== null && nowMs > yank.retainUntilMs) {
-      return refuse(
-        'yank-retention-expired',
-        `release ${ref} was yanked and its retention window closed at ${yank.retainUntilMs}`,
-      );
-    }
-    servingYanked = true;
-  }
-
-  // ── 4. Sources — delegated wholesale, never re-derived here ───────────────
+  // ── 3. Sources — ONE decision point, intent included ──────────────────────
+  // Deliverability, the yank rule and its retention window all live in
+  // `resolveDistributionSources` (D-040 ruling 4). This layer supplies the
+  // intent and reports the consequence; it keeps no second copy of the policy,
+  // which is what previously let the two answers disagree — authorization
+  // permitting a repair that the retrieval path, resolving again without an
+  // intent, then refused.
   const resolution = resolveDistributionSources(distribution, {
     nowMs,
     offline,
+    intent,
     ...(grant?.keyVersion != null ? { keyVersion: grant.keyVersion } : {}),
   });
 
   if (!resolution.deliverable) {
-    // `resolveDistributionSources` refuses a yanked release outright — correct
-    // for its own contract, but this layer has already made the intent-aware
-    // decision above, so a repair within retention continues past it.
-    if (!(resolution.reason === 'yanked' && servingYanked)) {
-      const code: DeliveryRefusalCode =
-        resolution.reason === 'no-manifest'
-          ? 'no-manifest'
-          : resolution.reason === 'key-revoked'
-            ? 'key-revoked'
-            : resolution.reason === 'offline-no-pin'
-              ? 'offline-no-pin'
-              : resolution.reason === 'yanked'
-                ? 'release-yanked'
+    const code: DeliveryRefusalCode =
+      resolution.reason === 'no-manifest'
+        ? 'no-manifest'
+        : resolution.reason === 'key-revoked'
+          ? 'key-revoked'
+          : resolution.reason === 'offline-no-pin'
+            ? 'offline-no-pin'
+            : resolution.reason === 'yanked'
+              ? 'release-yanked'
+              : resolution.reason === 'yank-retention-expired'
+                ? 'yank-retention-expired'
                 : 'no-sources';
-      return refuse(code, `distribution refused ${ref}: ${resolution.reason}`);
-    }
-    if (resolution.sources.length === 0) {
-      return refuse('no-sources', `no unexpired source holds yanked release ${ref}`);
-    }
+    const because =
+      resolution.reason === 'yanked'
+        ? `release ${ref} was yanked${yankOutcome(distribution).reason ? `: ${yankOutcome(distribution).reason}` : ''} — a ${intent} may not acquire it`
+        : `distribution refused ${ref}: ${resolution.reason}`;
+    return refuse(code, because);
   }
+
+  // Deliverable AND yanked can only mean one thing: a repair inside the
+  // retention window. The caller is told, because the install works while the
+  // version is withdrawn and must not be offered to anyone new.
+  const servingYanked = yankOutcome(distribution).yanked;
 
   return {
     deliverable: true,

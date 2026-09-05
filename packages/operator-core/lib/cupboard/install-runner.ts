@@ -248,6 +248,11 @@ export async function runInstallPlan(
       registry: deps.registry,
       nowMs,
       offline,
+      // The SAME intent the authorization was granted under. Retrieval resolves
+      // deliverability again (correctly — it is the one decision point);
+      // without the intent it would resolve a repair as a fresh acquisition and
+      // refuse bytes this caller was just authorized for.
+      intent: step.intent,
       ...(authorization.keyVersion !== null ? { keyVersion: authorization.keyVersion } : {}),
       ...(input.maxSourcesPerChunk !== undefined ? { maxSourcesPerChunk: input.maxSourcesPerChunk } : {}),
     });
