@@ -5,7 +5,7 @@
  * both machines later sign the complete evidence manifest. This adapter never
  * has either physical private key, so it deliberately keeps those OUTER
  * attestation bindings separate from the EPHEMERAL protocol keypairs used to
- * exercise handoff, fencing, cursor retry, restart, and Git push recovery.
+ * exercise owning-hive authority, fencing, cursor retry, restart, and Git push recovery.
  * Conflating those identities would manufacture a physical-host signature.
  */
 import Corestore from 'corestore';
@@ -18,11 +18,12 @@ import { decideWorktreeBridgePersistence } from '../../harness/git-sync/worktree
 import { readPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { runGitSync } from '../../harness/git-sync/run-git-sync';
 import { openOwnLog } from '../hyperbee/peer-log';
-import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from './authority-epoch';
-import { publishHandoffToken } from './handoff-token';
+import { nextHivePublicationTerm, type HiveEffectAuthority } from './hive-effect-authority';
+import { makeSignedProtocolContext, type SignedProtocolContext } from './signed-context';
 import { STAGING_REF } from './integrator';
 import {
   acceptStagingAdvanceFF,
+  acceptStagingAdvance,
   signStagingAdvance,
   type SignedStagingAdvance,
 } from './staging-advance';
@@ -35,16 +36,17 @@ import {
 } from './storage';
 import { runWorktreeBridgeTick, type WorktreeBridgeTickOutcome } from './worktree-bridge-tick';
 
-export const PHASE_G_INPUT_SCHEMA = 'hive-git-physical-phase-g-input/v1' as const;
-export const PHASE_G_RESULT_SCHEMA = 'hive-git-physical-phase-g-result/v1' as const;
+export const PHASE_G_INPUT_SCHEMA = 'hive-git-physical-phase-g-input/v2' as const;
+export const PHASE_G_RESULT_SCHEMA = 'hive-git-physical-phase-g-result/v2' as const;
 export const PHASE_G_PLAN_ITEM = 'P-308' as const;
 
 const RUN_ID = /^[A-Za-z0-9._:-]{8,160}$/;
 const DEVICE_KEY = /^[A-Za-z0-9+/]{43}=$/;
 const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const PRIOR_EPOCH = 7;
-const SUCCESSOR_EPOCH = 8;
+const PRIOR_TERM = 7;
+const SUCCESSOR_TERM = 8;
+const RECEIVER_REF = 'refs/heads/phase-g-receiver';
 const CURSOR_BEFORE = 41;
 const CURSOR_ROW = 42;
 
@@ -67,30 +69,37 @@ export type PhysicalPhaseGResult = {
   };
   protocolIdentities: {
     provenance: 'ephemeral-adapter-keypairs';
-    oldAuthority: string;
-    survivor: string;
+    owningHive: string;
+    priorPublisher: string;
+    publisher: string;
     stableRestartIdentity: string;
   };
   authorityFence: {
-    productionSurfaces: ['publishHandoffToken', 'deriveIntegratorGrant', 'signStagingAdvance', 'acceptStagingAdvanceFF'];
-    handoff: { epoch: number; seq: number; stagingSha: string; signature: string };
-    grant: { ready: boolean; basis: string; epoch: number | null; priorSeq: number | null };
+    productionSurfaces: ['nextHivePublicationTerm', 'requireHiveEffectAuthority', 'signStagingAdvance', 'acceptStagingAdvanceFF'];
+    model: 'single-owning-hive';
+    context: SignedProtocolContext;
+    priorContext: SignedProtocolContext;
+    publication: { epoch: number; priorSeq: number };
     successorAdvance: SignedStagingAdvance;
     successorAcceptance: { ok: boolean; reason: string | null };
     staleAdvance: SignedStagingAdvance;
     staleAcceptance: { ok: boolean; reason: string | null };
+    deviceOnlyAdvance: SignedStagingAdvance;
+    deviceOnlyAcceptance: { ok: boolean; reason: string | null };
+    receiverRefBeforeDeviceOnly: string;
+    receiverRefAfterDeviceOnly: string;
     receiverRefBeforeStaleReplay: string;
     receiverRefAfterStaleReplay: string;
   };
   retryPersistence: {
-    productionSurfaces: ['runWorktreeBridgeTick', 'decideWorktreeBridgePersistence', 'deriveMaxGrantedEpoch'];
+    productionSurfaces: ['runWorktreeBridgeTick', 'decideWorktreeBridgePersistence'];
     rowId: number;
     beforeRetry: number;
     duringUnknownSha: number;
     unknownShaReason: string | null;
-    duringUngrantedEpoch: number;
-    ungrantedEpochReason: string | null;
-    derivedGrantedEpoch: number | null;
+    duringUnknownGeneration: number;
+    unknownGenerationReason: string | null;
+    acceptedStoreGeneration: string;
     afterAccept: number;
     acceptedCount: number;
     acceptedStagingSha: string | null;
@@ -218,19 +227,38 @@ async function makeProtocolAuthority(input: {
   nowMs: number;
   runGit: RunGit;
 }): Promise<{
-  oldAuthority: ReturnType<typeof generateEd25519KeypairDer>;
-  survivor: ReturnType<typeof generateEd25519KeypairDer>;
+  owningHive: ReturnType<typeof generateEd25519KeypairDer>;
+  priorPublisher: ReturnType<typeof generateEd25519KeypairDer>;
+  publisher: ReturnType<typeof generateEd25519KeypairDer>;
   authorityRepo: string;
   priorStaging: string;
   successorStaging: string;
-  handoff: Awaited<ReturnType<typeof publishHandoffToken>>;
-  grant: Awaited<ReturnType<typeof deriveIntegratorGrant>>;
+  context: SignedProtocolContext;
+  priorContext: SignedProtocolContext;
+  publication: ReturnType<typeof nextHivePublicationTerm>;
   successorAdvance: SignedStagingAdvance;
   staleAdvance: SignedStagingAdvance;
+  deviceOnlyAdvance: SignedStagingAdvance;
 }> {
   const { root, runId, nowMs, runGit } = input;
-  const oldAuthority = generateEd25519KeypairDer();
-  const survivor = generateEd25519KeypairDer();
+  const owningHive = generateEd25519KeypairDer();
+  const priorPublisher = generateEd25519KeypairDer();
+  const publisher = generateEd25519KeypairDer();
+  const generation = (ordinal: number) => `sg2-${ordinal}-${createHash('sha256').update(`${runId}:${ordinal}`).digest('hex')}`;
+  const priorContext = makeSignedProtocolContext(owningHive.pubkeyBase64, `phase-g:${runId}`, generation(1));
+  const context = makeSignedProtocolContext(owningHive.pubkeyBase64, `phase-g:${runId}`, generation(2));
+  const owner: HiveEffectAuthority = {
+    hive_id: context.hive_id,
+    repo_key: context.repo_key,
+    sign: async (bytes) => signWithPrivateKeyDer(owningHive.privateKeyDer, bytes),
+  };
+  // A publisher/store change advances the OWNER'S publication term. No
+  // membership election, handoff token or replicated private key grants it.
+  const publication = nextHivePublicationTerm({
+    epoch: PRIOR_TERM, seq: 3,
+    authorityDevice: priorPublisher.pubkeyBase64,
+    storeGeneration: priorContext.store_generation,
+  }, publisher.pubkeyBase64, context.store_generation, PRIOR_TERM);
   const authorityRepo = join(root, 'authority.git');
   const authorWorktree = join(root, 'authority-worktree');
   await git(runGit, root, ['init', '--bare', authorityRepo]);
@@ -244,23 +272,7 @@ async function makeProtocolAuthority(input: {
     'physical Phase G pre-failure staging',
   );
   await git(runGit, authorWorktree, ['push', 'origin', 'HEAD:main']);
-  await writeNamespaceRef(authorityRepo, oldAuthority.pubkeyBase64, STAGING_REF, priorStaging, runGit);
-  const handoff = await publishHandoffToken(
-    authorityRepo,
-    oldAuthority.pubkeyBase64,
-    { epoch: PRIOR_EPOCH, seq: 3, stagingSha: priorStaging, nowMs },
-    async (bytes) => signWithPrivateKeyDer(oldAuthority.privateKeyDer, bytes),
-    { runGit },
-  );
-  const grant = await deriveIntegratorGrant({
-    repoPath: authorityRepo,
-    selfDevicePubkeyBase64: survivor.pubkeyBase64,
-    memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, survivor.pubkeyBase64],
-    priorIntegrator: { epoch: 1, seq: 0 },
-    bridgeWatermark: { epoch: PRIOR_EPOCH, seq: 3 },
-    runGit,
-  });
-  if (!grant.ready) throw new Error(`physical Phase G grant did not become ready: ${grant.detail}`);
+  await writeNamespaceRef(authorityRepo, priorPublisher.pubkeyBase64, STAGING_REF, priorStaging, runGit);
 
   const successorStaging = await writeCommit(
     runGit,
@@ -270,37 +282,49 @@ async function makeProtocolAuthority(input: {
     'physical Phase G successor staging',
   );
   await git(runGit, authorWorktree, ['push', 'origin', 'HEAD:main']);
-  await writeNamespaceRef(authorityRepo, survivor.pubkeyBase64, STAGING_REF, successorStaging, runGit);
+  await writeNamespaceRef(authorityRepo, publisher.pubkeyBase64, STAGING_REF, successorStaging, runGit);
   const successorAdvance = await signStagingAdvance(
     {
-      devicePubkeyBase64: survivor.pubkeyBase64,
-      epoch: grant.epoch,
-      seq: grant.priorSeq + 1,
+      devicePubkeyBase64: publisher.pubkeyBase64,
+      epoch: publication.epoch,
+      seq: publication.priorSeq + 1,
       stagingSha: successorStaging,
       nowMs: nowMs + 1,
+      context, authority: owner,
     },
-    async (bytes) => signWithPrivateKeyDer(survivor.privateKeyDer, bytes),
+    async (bytes) => signWithPrivateKeyDer(publisher.privateKeyDer, bytes),
   );
   const staleAdvance = await signStagingAdvance(
     {
-      devicePubkeyBase64: oldAuthority.pubkeyBase64,
-      epoch: PRIOR_EPOCH,
+      devicePubkeyBase64: priorPublisher.pubkeyBase64,
+      epoch: PRIOR_TERM,
       seq: 4,
       stagingSha: successorStaging,
       nowMs: nowMs + 2,
+      context: priorContext, authority: owner,
     },
-    async (bytes) => signWithPrivateKeyDer(oldAuthority.privateKeyDer, bytes),
+    async (bytes) => signWithPrivateKeyDer(priorPublisher.privateKeyDer, bytes),
   );
+  const unownedStaging = await writeCommit(runGit, authorWorktree, 'phase-g-unowned.txt', `${runId}:unowned\n`, 'unowned local edit');
+  await git(runGit, authorWorktree, ['push', 'origin', 'HEAD:main']);
+  const deviceOnlyAdvance = await signStagingAdvance({
+    devicePubkeyBase64: publisher.pubkeyBase64,
+    epoch: SUCCESSOR_TERM + 1, seq: 1, stagingSha: unownedStaging,
+    nowMs: nowMs + 3, context,
+  }, async (bytes) => signWithPrivateKeyDer(publisher.privateKeyDer, bytes));
   return {
-    oldAuthority,
-    survivor,
+    owningHive,
+    priorPublisher,
+    publisher,
     authorityRepo,
     priorStaging,
     successorStaging,
-    handoff,
-    grant,
+    context,
+    priorContext,
+    publication,
     successorAdvance,
     staleAdvance,
+    deviceOnlyAdvance,
   };
 }
 
@@ -310,8 +334,10 @@ async function exerciseRetryPersistence(input: {
   priorStaging: string;
   successorStaging: string;
   successorAdvance: SignedStagingAdvance;
-  oldAuthority: string;
-  survivor: string;
+  priorPublisher: string;
+  publisher: string;
+  context: SignedProtocolContext;
+  priorContext: SignedProtocolContext;
   nowMs: number;
   runGit: RunGit;
 }): Promise<PhysicalPhaseGResult['retryPersistence']> {
@@ -324,7 +350,7 @@ async function exerciseRetryPersistence(input: {
   await configureWorktree(input.runGit, retryWorktree);
 
   const prior = {
-    epochSeq: { epoch: PRIOR_EPOCH, seq: 3 },
+    epochSeq: { epoch: PRIOR_TERM, seq: 3 },
     stagingSha: input.priorStaging,
   };
   const unknown = await runWorktreeBridgeTick({
@@ -332,52 +358,49 @@ async function exerciseRetryPersistence(input: {
     worktreePath: retryWorktree,
     pending: [input.successorAdvance],
     prior,
-    accept: { allowedDevices: [input.oldAuthority, input.survivor], maxGrantedEpoch: SUCCESSOR_EPOCH },
+    accept: {
+      allowedDevices: [input.priorPublisher, input.publisher], expectedContext: input.context,
+      knownStoreGenerations: { [input.publisher]: input.context.store_generation },
+    },
     runGit: input.runGit,
   });
   const duringUnknownSha = cursorAfter(unknown, input.nowMs);
 
-  const survivorRef = `refs/namespaces/${deviceNamespaceKey(input.survivor)}/${STAGING_REF}`;
-  await git(input.runGit, retryRepo, ['fetch', input.authorityRepo, `+${survivorRef}:${survivorRef}`]);
-  const ungranted = await runWorktreeBridgeTick({
+  const publisherRef = `refs/namespaces/${deviceNamespaceKey(input.publisher)}/${STAGING_REF}`;
+  await git(input.runGit, retryRepo, ['fetch', input.authorityRepo, `+${publisherRef}:${publisherRef}`]);
+  const unknownGeneration = await runWorktreeBridgeTick({
     bareRepoPath: retryRepo,
     worktreePath: retryWorktree,
     pending: [input.successorAdvance],
     prior,
-    accept: { allowedDevices: [input.oldAuthority, input.survivor], maxGrantedEpoch: PRIOR_EPOCH },
+    accept: {
+      allowedDevices: [input.priorPublisher, input.publisher], expectedContext: input.context,
+      knownStoreGenerations: { [input.publisher]: input.priorContext.store_generation },
+    },
     runGit: input.runGit,
   });
-  const duringUngrantedEpoch = cursorAfter(ungranted, input.nowMs + 1);
-
-  const handoffRef = `refs/namespaces/${deviceNamespaceKey(input.oldAuthority)}/refs/rad/handoff`;
-  await git(input.runGit, retryRepo, ['fetch', input.authorityRepo, `+${handoffRef}:${handoffRef}`]);
-  const derivedGrantedEpoch = await deriveMaxGrantedEpoch({
-    repoPath: retryRepo,
-    memberDevicePubkeysBase64: [input.oldAuthority, input.survivor],
-    ownIntegratorEpoch: undefined,
-    runGit: input.runGit,
-  });
+  const duringUnknownGeneration = cursorAfter(unknownGeneration, input.nowMs + 1);
   const accepted = await runWorktreeBridgeTick({
     bareRepoPath: retryRepo,
     worktreePath: retryWorktree,
     pending: [input.successorAdvance],
     prior,
     accept: {
-      allowedDevices: [input.oldAuthority, input.survivor],
-      ...(derivedGrantedEpoch === undefined ? {} : { maxGrantedEpoch: derivedGrantedEpoch }),
+      allowedDevices: [input.priorPublisher, input.publisher], expectedContext: input.context,
+      knownStoreGenerations: { [input.publisher]: input.context.store_generation },
     },
     runGit: input.runGit,
   });
   const afterAccept = cursorAfter(accepted, input.nowMs + 2);
   return {
-    productionSurfaces: ['runWorktreeBridgeTick', 'decideWorktreeBridgePersistence', 'deriveMaxGrantedEpoch'],
+    productionSurfaces: ['runWorktreeBridgeTick', 'decideWorktreeBridgePersistence'],
     rowId: CURSOR_ROW,
     beforeRetry: CURSOR_BEFORE,
     duringUnknownSha,
     unknownShaReason: tickReason(unknown),
-    duringUngrantedEpoch,
-    ungrantedEpochReason: tickReason(ungranted),
-    derivedGrantedEpoch: derivedGrantedEpoch ?? null,
+    duringUnknownGeneration,
+    unknownGenerationReason: tickReason(unknownGeneration),
+    acceptedStoreGeneration: input.context.store_generation,
     afterAccept,
     acceptedCount: accepted.acceptedCount,
     acceptedStagingSha: accepted.watermark.stagingSha,
@@ -525,35 +548,41 @@ export async function executePhysicalPhaseG(
   let assembled: Omit<PhysicalPhaseGResult, 'temporaryStateRemoved'>;
   try {
     const authority = await makeProtocolAuthority({ root, runId: input.runId, nowMs, runGit });
+    const accept = {
+      allowedDevices: [authority.priorPublisher.pubkeyBase64, authority.publisher.pubkeyBase64],
+      expectedContext: { hive_id: authority.context.hive_id, repo_key: authority.context.repo_key },
+      knownStoreGenerations: {
+        [authority.priorPublisher.pubkeyBase64]: authority.priorContext.store_generation,
+        [authority.publisher.pubkeyBase64]: authority.context.store_generation,
+      },
+      runGit,
+    };
+    await git(runGit, authority.authorityRepo, ['update-ref', RECEIVER_REF, authority.priorStaging]);
     const successorAcceptance = await acceptStagingAdvanceFF(
       authority.authorityRepo,
       authority.successorAdvance,
-      { epoch: PRIOR_EPOCH, seq: 3 },
+      { epoch: PRIOR_TERM, seq: 3 },
       authority.priorStaging,
-      {
-        allowedDevices: [authority.oldAuthority.pubkeyBase64, authority.survivor.pubkeyBase64],
-        maxGrantedEpoch: SUCCESSOR_EPOCH,
-        runGit,
-      },
+      accept,
     );
-    const receiverRefBeforeStaleReplay = authority.successorStaging;
+    if (successorAcceptance.ok) await git(runGit, authority.authorityRepo, ['update-ref', RECEIVER_REF, authority.successorStaging, authority.priorStaging]);
+    const receiverRefBeforeDeviceOnly = await git(runGit, authority.authorityRepo, ['rev-parse', RECEIVER_REF]);
+    const deviceOnlyAcceptance = await acceptStagingAdvanceFF(
+      authority.authorityRepo, authority.deviceOnlyAdvance,
+      { epoch: SUCCESSOR_TERM, seq: 1 }, authority.successorStaging, accept,
+    );
+    if (deviceOnlyAcceptance.ok) await git(runGit, authority.authorityRepo, ['update-ref', RECEIVER_REF, authority.deviceOnlyAdvance.staging_sha]);
+    const receiverRefAfterDeviceOnly = await git(runGit, authority.authorityRepo, ['rev-parse', RECEIVER_REF]);
+    const receiverRefBeforeStaleReplay = receiverRefAfterDeviceOnly;
     const staleAcceptance = await acceptStagingAdvanceFF(
       authority.authorityRepo,
       authority.staleAdvance,
-      { epoch: SUCCESSOR_EPOCH, seq: 1 },
+      { epoch: SUCCESSOR_TERM, seq: 1 },
       authority.successorStaging,
-      {
-        allowedDevices: [authority.oldAuthority.pubkeyBase64, authority.survivor.pubkeyBase64],
-        maxGrantedEpoch: SUCCESSOR_EPOCH,
-        runGit,
-      },
+      accept,
     );
-    const receiverRefAfterStaleReplay = await readNamespaceRef(
-      authority.authorityRepo,
-      authority.survivor.pubkeyBase64,
-      STAGING_REF,
-      runGit,
-    );
+    if (staleAcceptance.ok) await git(runGit, authority.authorityRepo, ['update-ref', RECEIVER_REF, authority.staleAdvance.staging_sha]);
+    const receiverRefAfterStaleReplay = await git(runGit, authority.authorityRepo, ['rev-parse', RECEIVER_REF]);
     if (!receiverRefAfterStaleReplay) throw new Error('physical Phase G successor staging ref disappeared');
 
     const retryPersistence = await exerciseRetryPersistence({
@@ -562,8 +591,10 @@ export async function executePhysicalPhaseG(
       priorStaging: authority.priorStaging,
       successorStaging: authority.successorStaging,
       successorAdvance: authority.successorAdvance,
-      oldAuthority: authority.oldAuthority.pubkeyBase64,
-      survivor: authority.survivor.pubkeyBase64,
+      priorPublisher: authority.priorPublisher.pubkeyBase64,
+      publisher: authority.publisher.pubkeyBase64,
+      context: authority.context,
+      priorContext: authority.priorContext,
       nowMs,
       runGit,
     });
@@ -581,24 +612,17 @@ export async function executePhysicalPhaseG(
       },
       protocolIdentities: {
         provenance: 'ephemeral-adapter-keypairs',
-        oldAuthority: authority.oldAuthority.pubkeyBase64,
-        survivor: authority.survivor.pubkeyBase64,
+        owningHive: authority.owningHive.pubkeyBase64,
+        priorPublisher: authority.priorPublisher.pubkeyBase64,
+        publisher: authority.publisher.pubkeyBase64,
         stableRestartIdentity: restart.stableDeviceKey,
       },
       authorityFence: {
-        productionSurfaces: ['publishHandoffToken', 'deriveIntegratorGrant', 'signStagingAdvance', 'acceptStagingAdvanceFF'],
-        handoff: {
-          epoch: authority.handoff.epoch,
-          seq: authority.handoff.seq,
-          stagingSha: authority.handoff.staging_sha,
-          signature: authority.handoff.sig,
-        },
-        grant: {
-          ready: authority.grant.ready,
-          basis: authority.grant.basis,
-          epoch: authority.grant.ready ? authority.grant.epoch : null,
-          priorSeq: authority.grant.ready ? authority.grant.priorSeq : null,
-        },
+        productionSurfaces: ['nextHivePublicationTerm', 'requireHiveEffectAuthority', 'signStagingAdvance', 'acceptStagingAdvanceFF'],
+        model: 'single-owning-hive',
+        context: authority.context,
+        priorContext: authority.priorContext,
+        publication: authority.publication,
         successorAdvance: authority.successorAdvance,
         successorAcceptance: {
           ok: successorAcceptance.ok,
@@ -606,6 +630,10 @@ export async function executePhysicalPhaseG(
         },
         staleAdvance: authority.staleAdvance,
         staleAcceptance: { ok: staleAcceptance.ok, reason: rejectionReason(staleAcceptance) },
+        deviceOnlyAdvance: authority.deviceOnlyAdvance,
+        deviceOnlyAcceptance: { ok: deviceOnlyAcceptance.ok, reason: rejectionReason(deviceOnlyAcceptance) },
+        receiverRefBeforeDeviceOnly,
+        receiverRefAfterDeviceOnly,
         receiverRefBeforeStaleReplay,
         receiverRefAfterStaleReplay,
       },
@@ -647,28 +675,51 @@ export function validatePhysicalPhaseG(input: PhysicalPhaseGInput): PhysicalPhas
   pushError(errors, physical?.vmDeviceKey === input?.identities?.vmDeviceKey, 'Phase G vm physical binding must match the attesting device');
   const protocol = result?.protocolIdentities;
   pushError(errors, protocol?.provenance === 'ephemeral-adapter-keypairs', 'Phase G protocol identities must be explicitly ephemeral');
-  const protocolKeys = [protocol?.oldAuthority, protocol?.survivor, protocol?.stableRestartIdentity];
+  const protocolKeys = [protocol?.owningHive, protocol?.priorPublisher, protocol?.publisher, protocol?.stableRestartIdentity];
   pushError(errors, protocolKeys.every(validDeviceKey), 'Phase G protocol identities must be valid Ed25519 public keys');
-  pushError(errors, new Set(protocolKeys).size === 3, 'Phase G protocol identities must be distinct');
+  pushError(errors, new Set(protocolKeys).size === 4, 'Phase G protocol identities must be distinct');
   const physicalKeys = new Set([input?.identities?.towerDeviceKey, input?.identities?.vmDeviceKey]);
   pushError(errors, protocolKeys.every((key) => !physicalKeys.has(key)), 'Phase G ephemeral protocol signers must not be represented as physical hosts');
 
   const authority = result?.authorityFence;
-  pushError(errors, authority?.handoff?.epoch === PRIOR_EPOCH && authority?.handoff?.seq === 3, 'Phase G handoff must carry the prior accepted epoch and sequence');
-  pushError(errors, authority?.grant?.ready === true && authority?.grant?.basis === 'token-adoption', 'Phase G successor grant must be a ready token adoption');
-  pushError(errors, authority?.grant?.epoch === SUCCESSOR_EPOCH && authority?.grant?.priorSeq === 0, 'Phase G successor grant must advance to epoch 8 at a fresh sequence');
-  pushError(errors, authority?.successorAdvance?.device_pubkey === protocol?.survivor, 'Phase G successor advance must be signed by the ephemeral survivor');
+  pushError(errors, authority?.model === 'single-owning-hive', 'Phase G authority must be the single owning hive');
+  pushError(errors, authority?.context?.hive_id === protocol?.owningHive && authority?.context?.repo_key === `phase-g:${input?.runId}`, 'Phase G owner scope must match this run');
+  pushError(errors, authority?.publication?.epoch === SUCCESSOR_TERM && authority?.publication?.priorSeq === 0, 'Phase G owner publication must advance to term 8 at a fresh sequence');
+  pushError(errors, authority?.successorAdvance?.device_pubkey === protocol?.publisher, 'Phase G successor advance must be signed by the ephemeral publisher');
   pushError(errors, authority?.successorAcceptance?.ok === true, 'Phase G successor advance must pass real FF acceptance');
-  pushError(errors, authority?.staleAdvance?.device_pubkey === protocol?.oldAuthority, 'Phase G stale advance must be signed by the ephemeral old authority');
-  pushError(errors, authority?.staleAcceptance?.ok === false && authority?.staleAcceptance?.reason === 'stale-epoch-seq', 'Phase G stale authority must be rejected by the epoch fence');
+  pushError(errors, authority?.successorAdvance?.epoch === SUCCESSOR_TERM && authority?.successorAdvance?.seq === 1, 'Phase G successor advance must carry the owner publication term and sequence');
+  pushError(errors, authority?.staleAdvance?.device_pubkey === protocol?.priorPublisher, 'Phase G stale advance must be signed by the ephemeral prior publisher');
+  pushError(errors, authority?.staleAdvance?.epoch === PRIOR_TERM && authority?.staleAdvance?.seq === 4, 'Phase G stale advance must carry the previous owner publication term');
+  pushError(errors, authority?.staleAcceptance?.ok === false && authority?.staleAcceptance?.reason === 'stale-epoch-seq', 'Phase G stale owner publication must be rejected by the term/sequence fence');
+  pushError(errors, authority?.deviceOnlyAdvance?.device_pubkey === protocol?.publisher && authority?.deviceOnlyAdvance?.epoch === SUCCESSOR_TERM + 1, 'Phase G device-only attempt must claim a higher term from an admitted publisher');
+  pushError(errors, authority?.deviceOnlyAcceptance?.ok === false && authority?.deviceOnlyAcceptance?.reason === 'missing-hive-authority', 'Phase G device-only advance must be rejected without owning hive authority');
+  pushError(errors, authority?.receiverRefBeforeDeviceOnly === authority?.successorAdvance?.staging_sha && authority?.receiverRefAfterDeviceOnly === authority?.receiverRefBeforeDeviceOnly && authority?.deviceOnlyAdvance?.staging_sha !== authority?.receiverRefBeforeDeviceOnly, 'Phase G device-only attempt must not move the receiver ref');
+  if (authority?.context && authority?.priorContext && protocol) {
+    const opts = {
+      expectedContext: { hive_id: protocol.owningHive, repo_key: `phase-g:${input.runId}` },
+      allowedDevices: [protocol.priorPublisher, protocol.publisher],
+      knownStoreGenerations: {
+        [protocol.priorPublisher]: authority.priorContext.store_generation,
+        [protocol.publisher]: authority.context.store_generation,
+      },
+    };
+    const successor = acceptStagingAdvance(authority.successorAdvance, { epoch: PRIOR_TERM, seq: 3 }, opts);
+    pushError(errors, successor.ok && authority.successorAdvance.v === 3, 'Phase G successor must verify the owning hive countersignature and signed context');
+    const stale = acceptStagingAdvance(authority.staleAdvance, { epoch: SUCCESSOR_TERM, seq: 1 }, opts);
+    pushError(errors, !stale.ok && stale.reason === 'stale-epoch-seq' && authority.staleAdvance.v === 3, 'Phase G stale record must carry valid owner proof before failing the publication fence');
+    const deviceOnly = acceptStagingAdvance(authority.deviceOnlyAdvance, { epoch: SUCCESSOR_TERM, seq: 1 }, opts);
+    pushError(errors, !deviceOnly.ok && deviceOnly.reason === 'missing-hive-authority', 'Phase G device-only record must have a valid device signature but no owner proof');
+  } else {
+    errors.push('Phase G owner publication contexts are required');
+  }
   pushError(errors, authority?.receiverRefBeforeStaleReplay === authority?.receiverRefAfterStaleReplay, 'Phase G stale authority replay must not move the receiver ref');
   pushError(errors, OID.test(authority?.receiverRefAfterStaleReplay ?? ''), 'Phase G receiver staging ref must be a Git OID');
 
   const retry = result?.retryPersistence;
   pushError(errors, retry?.rowId === CURSOR_ROW && retry?.beforeRetry === CURSOR_BEFORE, 'Phase G retry row and starting cursor are invalid');
   pushError(errors, retry?.unknownShaReason === 'unknown-sha' && retry?.duringUnknownSha === CURSOR_BEFORE, 'Phase G retryable unknown-sha must hold the fed-event cursor');
-  pushError(errors, retry?.ungrantedEpochReason === 'ungranted-epoch' && retry?.duringUngrantedEpoch === CURSOR_BEFORE, 'Phase G retryable ungranted-epoch must hold the fed-event cursor');
-  pushError(errors, retry?.derivedGrantedEpoch === SUCCESSOR_EPOCH, 'Phase G receiver must derive the successor epoch from the replicated handoff token');
+  pushError(errors, retry?.unknownGenerationReason === 'unknown-generation' && retry?.duringUnknownGeneration === CURSOR_BEFORE, 'Phase G retryable unknown-generation must hold the fed-event cursor');
+  pushError(errors, retry?.acceptedStoreGeneration === authority?.context?.store_generation, 'Phase G retry must accept the signed publisher store generation');
   pushError(errors, retry?.afterAccept === CURSOR_ROW && retry?.acceptedCount === 1, 'Phase G cursor must advance exactly after acceptance');
   pushError(errors, retry?.acceptedStagingSha === authority?.successorAdvance?.staging_sha, 'Phase G accepted retry must persist the successor staging SHA');
 
