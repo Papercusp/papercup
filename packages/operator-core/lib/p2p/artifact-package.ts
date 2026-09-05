@@ -226,8 +226,16 @@ export type ReleasePublication =
  * imports `artifact-distribution` and that dependency is one-way; the reverse
  * direction (teaching `validateDistributionManifest` to recompute the root) is
  * what the cycle forbids.
+ *
+ * Pass `bytes` when the caller has them — a publisher always does. A root
+ * mismatch alone cannot distinguish a flat-derived address from a chunk list
+ * that does not correspond to it, so without the bytes the refusal names both
+ * causes; with them, the flat-digest diagnosis is PROVEN rather than assumed.
  */
-export function validatePublishableRelease(raw: unknown): ReleasePublication {
+export function validatePublishableRelease(
+  raw: unknown,
+  options: { readonly bytes?: Buffer } = {},
+): ReleasePublication {
   const shape = validateDistributionManifest(raw);
   if (!shape.ok) return { ok: false, code: shape.code, detail: shape.detail };
 
@@ -235,22 +243,54 @@ export function validatePublishableRelease(raw: unknown): ReleasePublication {
   const root = verifyManifestRoot(manifest);
   if (root.ok) return { ok: true, manifest };
 
-  // Re-attribute the one failure whose default message names the wrong thing.
-  // `validateDistributionManifest` has already established that `rootHash`
-  // equals the declared content address for this visibility, so a root that
-  // does not commit to the chunk list means that ADDRESS was computed the wrong
-  // way — the chunk list is a bystander.
+  // Re-attribute the one failure whose default message names the wrong thing —
+  // but only as far as the evidence actually reaches.
+  //
+  // `validateDistributionManifest` established that `rootHash` equals the
+  // DECLARED content address for this visibility. That is two declared fields
+  // agreeing with each other; it says nothing about whether the chunk list is
+  // authentic. So `root-hash-mismatch` has TWO causes that are indistinguishable
+  // from the manifest alone: the address was derived the flat way, or the chunk
+  // list does not correspond to the address. Naming only the first is how this
+  // door would reintroduce the very bug it exists to fix, pointed the other way
+  // (found in review by su-1b54ae19, verified by execution).
   if (root.code === 'root-hash-mismatch') {
     const recomputed = merkleRoot(manifest.chunks.map((chunk) => chunk.contentHash));
     const field = manifest.visibility === 'public' ? 'release contentHash' : 'encryption.ciphertextHash';
-    return {
-      ok: false,
-      code: 'root-hash-mismatch',
-      detail:
-        `${field} is ${manifest.rootHash}, but this chunk list addresses to ${recomputed}. ` +
-        `A ${manifest.visibility} listing's content address is merkleRoot(chunk digests), NOT sha256(bytes) — ` +
-        `the two never coincide, not even for a single chunk. Recompute it with buildArtifactPackage(bytes).rootHash.`,
-    };
+    const flat = options.bytes ? sha256Prefixed(options.bytes) : null;
+
+    // Safe under BOTH causes, which a one-sided remedy is not: rebuilding
+    // regenerates the chunk list and the address together, so a substituted
+    // list is discarded rather than blessed. "Recompute the address" keeps
+    // whatever list is present and launders tampering into a valid manifest.
+    const remedy =
+      `Rebuild both together with buildArtifactPackage(bytes) and take its chunks AND its rootHash; ` +
+      `recomputing only the address would bless whatever chunk list is present.`;
+
+    const addressRule =
+      `a ${manifest.visibility} listing's content address is merkleRoot(chunk digests), NOT sha256(bytes), ` +
+      `and the two never coincide, not even for a single chunk`;
+
+    let diagnosis: string;
+    if (flat !== null && flat.toLowerCase() === manifest.rootHash.toLowerCase()) {
+      // PROVEN: the address is byte-for-byte the flat digest of the supplied
+      // bytes, so the derivation mistake is established, not inferred.
+      diagnosis =
+        `${field} is ${manifest.rootHash}, which is exactly sha256(bytes) — this address was derived the flat way, ` +
+        `but ${addressRule}. This chunk list addresses to ${recomputed}.`;
+    } else if (flat !== null) {
+      // The flat-digest explanation is DISPROVEN for these bytes.
+      diagnosis =
+        `${field} is ${manifest.rootHash}, but this chunk list addresses to ${recomputed} and the supplied bytes ` +
+        `hash to ${flat} — the address is neither, so this manifest does not describe these bytes.`;
+    } else {
+      diagnosis =
+        `${field} is ${manifest.rootHash}, but this chunk list addresses to ${recomputed}. Either that address was ` +
+        `computed as sha256(bytes) — ${addressRule} — or the chunk list does not correspond to it. ` +
+        `This check cannot tell the two apart from the manifest alone; pass the release bytes to distinguish them.`;
+    }
+
+    return { ok: false, code: 'root-hash-mismatch', detail: `${diagnosis} ${remedy}` };
   }
 
   return { ok: false, code: root.code, detail: root.detail };

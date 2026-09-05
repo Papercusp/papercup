@@ -294,15 +294,52 @@ describe('publish-time admission (EI-22433992128803548)', () => {
     expect(verdict.ok === false && verdict.code).toBe('missing-signature');
   });
 
-  it('still refuses a swapped chunk digest, which is a real bytes fault', () => {
-    // Here the chunk list genuinely IS the problem, so the re-attributed
-    // message would be wrong. The root check fires before the door can
-    // re-attribute anything, because rootHash no longer matches the list.
+  it('does NOT blame the address when the chunk list is what was tampered with', () => {
+    // A correct address whose chunk list was substituted. There is only ONE root
+    // check and its mismatch is what feeds the re-attribution branch, so this
+    // case reaches the SAME branch as the flat-digest case — the door cannot
+    // tell them apart from the manifest alone and must not pretend otherwise.
+    // Asserting `code` alone passes here for the wrong reason; that is exactly
+    // how the confident-but-wrong message survived review (su-1b54ae19).
     const tampered = manifest({
       chunks: [{ ...PKG.chunks[0]!, contentHash: sha256Prefixed(Buffer.from('evil')) }, ...PKG.chunks.slice(1)],
     });
     const verdict = validatePublishableRelease(tampered);
     expect(verdict.ok === false && verdict.code).toBe('root-hash-mismatch');
+
+    const detail = verdict.ok === false ? verdict.detail : '';
+    // It must NOT assert the flat-digest derivation, which is false here...
+    expect(detail).toContain('or the chunk list does not correspond to it');
+    expect(detail).not.toContain('was derived the flat way');
+    // ...and must NOT hand out a remedy that keeps the substituted list. That
+    // is the laundering risk: recomputing only the address over tampered chunks
+    // mints a well-formed manifest committing to bytes nobody published.
+    expect(detail).not.toContain('buildArtifactPackage(bytes).rootHash');
+    expect(detail).toContain('recomputing only the address would bless');
+  });
+
+  it('PROVES the flat-digest derivation when the publisher supplies the bytes', () => {
+    const wrong = manifest({ rootHash: FLAT, release: release({ contentHash: FLAT }) });
+
+    const verdict = validatePublishableRelease(wrong, { bytes: BYTES });
+    expect(verdict.ok === false && verdict.code).toBe('root-hash-mismatch');
+    const detail = verdict.ok === false ? verdict.detail : '';
+    // With the bytes in hand the diagnosis is established, not inferred.
+    expect(detail).toContain('exactly sha256(bytes)');
+    expect(detail).toContain('was derived the flat way');
+    expect(detail).not.toContain('cannot tell the two apart');
+  });
+
+  it('reports that the manifest describes different bytes when neither address matches', () => {
+    // Bytes supplied, but they are not the ones this manifest was built from:
+    // the flat-digest explanation is DISPROVEN rather than merely unconfirmed.
+    const tampered = manifest({
+      chunks: [{ ...PKG.chunks[0]!, contentHash: sha256Prefixed(Buffer.from('evil')) }, ...PKG.chunks.slice(1)],
+    });
+    const verdict = validatePublishableRelease(tampered, { bytes: Buffer.from('some other release') });
+    const detail = verdict.ok === false ? verdict.detail : '';
+    expect(detail).toContain('does not describe these bytes');
+    expect(detail).not.toContain('was derived the flat way');
   });
 });
 
