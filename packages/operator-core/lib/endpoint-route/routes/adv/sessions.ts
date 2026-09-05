@@ -14,6 +14,8 @@
 import os from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
+import { createQueryEmbedderWarmup } from '../../../search/query-embedder-warmup';
+import { fitsProseColumns } from '../../../search/prose-vector-dims';
 import {
   closeWindowId,
   focusWindowId,
@@ -80,6 +82,29 @@ import type {
 } from '../../../session-archive';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+
+/**
+ * Process-local query-embedder selection for the interactive transcript search.
+ *
+ * `runHybridSearch` resolves P-017 defaults before its legs start, so the
+ * engine must receive the exact stamped embedder function when warm. While
+ * cold, the selector hands it a throw-only embedder: lexical retrieval still
+ * returns immediately and the semantic leg is explicitly marked blocked while
+ * one shared warmup prepares the next request.
+ */
+const transcriptQueryEmbedderWarmup = createQueryEmbedderWarmup({
+  warmupText: 'transcript search embedder warmup',
+  retryTokenPrefix: 'transcript-search-embedder-warmup',
+  resolve: async () => {
+    const { buildQueryEmbedderResolved } = await import('../../../agent-tools/search/embedder');
+    return await buildQueryEmbedderResolved();
+  },
+  validate: (resolved) =>
+    fitsProseColumns(resolved.dims)
+      ? null
+      : `query embedder dims ${resolved.dims} do not fit the prose embedding columns`,
+  retryAfterMs: 1_000,
+});
 
 type RematerializeJobResult = RematerializeResult & {
   sourceKind: ArchiveSourceKind;
@@ -275,64 +300,6 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       ? { requested: 'full' as const, effective: 'trimmed' as const, deprecated: true as const }
       : null,
   } as const;
-}
-
-/**
- * Await `factory()` — the query-embedder ACQUISITION (buildQueryEmbedder → the
- * resolveEmbedder cascade → a local-ONNX sidecar spawn / pipeline cold-start) —
- * but give up after `budgetMs` → resolve `null` (BM25-only degrade), or when
- * `signal` aborts → reject (the route watchdog / a client that gave up → 408).
- *
- * This is the layer `runHybridSearch`'s own `embedTimeoutMs` cannot reach: that
- * bounds the embed CALL, but the interactive handler builds the embedder BEFORE
- * calling the engine, and on 2026-07-10 (OpenAI embed quota exhausted → the
- * cascade falls to the local ONNX leg) that construction alone ran 15–30s per
- * query and blocked the whole search to the 30s watchdog + 408 — never reaching
- * the engine where the embed budget lives (WI-3860). Bounding it here degrades a
- * cold acquisition to BM25 (~20ms, real keyword hits) instead.
- *
- * The losing construction is NOT cancelled (no cancel seam on the cascade) — it
- * runs on to warm the process-memoized pipeline so a LATER query can get
- * semantic once the model is hot — but its eventual settle is swallowed so a
- * build that finishes after we've degraded never surfaces as an unhandled
- * rejection. A construction that itself throws degrades to null too
- * (buildQueryEmbedder already catches internally; this is belt-and-suspenders).
- * Mirror of hybrid.ts's `embedWithBudget`, one layer out.
- */
-async function acquireEmbedderWithin<T>(
-  factory: () => Promise<T | null>,
-  budgetMs: number,
-  signal: AbortSignal | undefined,
-): Promise<T | null> {
-  const p = factory();
-  return await new Promise<T | null>((resolve, reject) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      if (signal) signal.removeEventListener('abort', onAbort);
-      fn();
-    };
-    function onAbort(): void {
-      // A route-abort must REJECT (→ the route stack's aborted path returns the
-      // 408), never degrade to a silent BM25 result.
-      finish(() => reject(signal!.reason ?? new Error('aborted')));
-    }
-    if (signal) {
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort);
-    }
-    if (budgetMs > 0) {
-      timer = setTimeout(() => finish(() => resolve(null)), budgetMs);
-    }
-    // Swallow the orphaned settle after we've resolved/rejected (no cancel seam).
-    p.then(
-      (v) => finish(() => resolve(v)),
-      () => finish(() => resolve(null)),
-    );
-  });
 }
 
 async function readOmpMemoryConfig(): Promise<Record<string, unknown>> {
@@ -945,11 +912,10 @@ const searchTranscripts = defineTool({
     const stageTimingsMs: Record<string, number> = {};
     const mark = (label: string) => { stageTimingsMs[label] = Date.now() - t0; };
 
-    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { rerankCandidateCount, rerankPageHead }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
+    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { rerankCandidateCount, rerankPageHead }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
       await Promise.all([
         import('@papercusp/search'),
         import('../../../agent-tools/search/sources'),
-        import('../../../agent-tools/search/embedder'),
         // Dynamic like its siblings — this route's whole search stack is loaded
         // per request, not at module scope.
         import('../../../agent-tools/search/rerank'),
@@ -995,45 +961,14 @@ const searchTranscripts = defineTool({
     const idRowsP = idToken
       ? advSessionsByIdToken(idToken).catch(() => [] as Awaited<ReturnType<typeof advSessionsByIdToken>>)
       : Promise.resolve([] as Awaited<ReturnType<typeof advSessionsByIdToken>>);
-    // Interactive-search embed budget — a HUMAN is typing in the desktop pill,
-    // so a slow/cold query-embedder must not block the result. The budget covers
-    // BOTH the embedder ACQUISITION (buildQueryEmbedder → the resolveEmbedder
-    // cascade → a local-ONNX sidecar spawn / pipeline cold-start — where a query
-    // hung 15–30s on 2026-07-10 with OpenAI embed quota exhausted, WI-3860) AND
-    // the embed CALL. Either exceeding it degrades to BM25-only (~20ms, real
-    // keyword hits) instead of blocking to the 30s watchdog + 408. The orphaned
-    // acquisition keeps warming the process-memoized pipeline so a LATER query
-    // can get semantic once hot; a route-abort (signal) still outranks the
-    // budget and rejects (→ 408). Env-tunable.
-    //
-    // WI-4734: the acquisition used to be AWAITED here, serially, before the
-    // engine was even called — putting up to the whole budget in front of the
-    // BM25 leg, which never needed the embedder at all. Now the embedder handed
-    // to the engine is LAZY (acquire-then-embed inside one function), so the
-    // entire acquire+embed pipeline runs inside the engine's concurrent embed
-    // window (bounded by embedTimeoutMs), overlapped with BM25. An acquisition
-    // that resolves null (no embedder available) rejects the lazy call — the
-    // engine's existing catch degrades to BM25-only, exactly as before.
-    const embedBudgetMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
-    // WI-3923: while OpenAI embed is in cooldown AND the local pipeline is cold
-    // (not yet warm), don't even attempt local acquisition — it just burns the
-    // whole budget above then degrades anyway, paid on EVERY interactive query.
-    // Skip straight to BM25 here while the acquisition still fires in the
-    // background to warm the pipeline for a later query (same orphaned-warm
-    // contract as a budget timeout, above).
-    const embedderReadyP = acquireEmbedderWithin(
-      () => buildQueryEmbedder({ skipAcquisitionWhenCold: true }),
-      embedBudgetMs,
-      signal,
-    );
-    embedderReadyP.catch(() => {}); // consumed lazily below; never unhandled
-    const embedder = async (text: string): Promise<number[]> => {
-      const e = await embedderReadyP;
-      if (!e) throw new Error('query embedder unavailable (acquire timed out or no provider)');
-      return e(text);
-    };
-    mark('embedAcquire'); // retained stage label; now ~0 by construction
-    const embedTimeoutMs = embedBudgetMs;
+    // A HUMAN is typing in the desktop pill, so a cold query-embedder must not
+    // block lexical retrieval. `select` starts one background warmup and hands
+    // the engine a rejecting embedder until the exact stamped instance is ready.
+    // The engine's budget now bounds only the actual embed call once warm.
+    const selectedEmbedder = transcriptQueryEmbedderWarmup.select();
+    const embedder = selectedEmbedder.embedder;
+    mark('embedAcquire'); // selection is synchronous; warmup continues in background
+    const embedTimeoutMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
     // The route watchdog's signal is threaded into the engine so a timed-out
     // search stops running instead of grinding all sources to completion
     // after the 408 already went out (2026-07-09 incident: 34–69s server
