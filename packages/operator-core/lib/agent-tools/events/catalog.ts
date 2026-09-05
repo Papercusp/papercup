@@ -36,7 +36,7 @@ import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './stat
 
 const MAX_CATALOG_LIMIT = 200;
 const CATALOG_SCOPE_NOTE =
-  'Scope comes from request context; installed families use the call\'s harness, and announced gates use the reader\'s fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.';
+  'Scope comes from request context; installed families use the call\'s harness, and announced gates use the reader\'s fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.';
 
 function escapeRegExp(value: string): string {
   let escaped = '';
@@ -72,7 +72,7 @@ function catalogRowMatches(row: CatalogRow, query: string): boolean {
 export default defineTool({
   name: 'events:catalog',
   description:
-    `List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and \`live_awaiters\` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text \`q\` (alias \`pattern\`) over family/key/description/emitter and a bounded \`limit\` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status. ${CATALOG_SCOPE_NOTE}`,
+    `List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and \`live_awaiters\` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text \`q\` (compatibility aliases \`pattern\`/\`query\`) over family/key/description/emitter and a bounded \`limit\` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status. ${CATALOG_SCOPE_NOTE}`,
   capability: 'events:read',
   guidance: {
     when: 'Before polling for a deploy, gate, peer work-item, or service recovery; to check whether an event exists or who is listening.',
@@ -98,6 +98,11 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Compatibility alias for `q`; prefer the canonical `q` key. If both are supplied, `q` wins.'),
+    query: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Compatibility alias for `q`; prefer the canonical `q` key. If multiple aliases are supplied, `q` wins.'),
     limit: z
       .number()
       .int()
@@ -161,7 +166,10 @@ export default defineTool({
     // EI-21374977511049906: events:watch calls its free-text selector `pattern`,
     // and callers naturally carried that spelling here. Keep `q` canonical while
     // accepting the explicit alias; an explicitly supplied `q` wins.
-    const query = (args.q ?? args.pattern)?.trim().toLowerCase();
+    // EI-22384286586185001: older callers used the generic `query` spelling.
+    // Keep `q` canonical while accepting both compatibility aliases; canonical
+    // input wins when more than one spelling is supplied.
+    const query = (args.q ?? args.pattern ?? args.query)?.trim().toLowerCase();
 
     let rows = renderCatalog(installedUnits);
 

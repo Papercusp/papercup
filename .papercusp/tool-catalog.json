@@ -10420,7 +10420,7 @@
           "POST"
         ]
       },
-      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
+      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (compatibility aliases `pattern`/`query`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.",
       "capabilities": [
         "events:read"
       ],
@@ -10438,7 +10438,7 @@
       ],
       "guidance": {
         "when": "Before polling for a deploy, gate, peer work-item, or service recovery; to check whether an event exists or who is listening.",
-        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
+        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`query`/`family`.",
         "chaining": "events:catalog → events:await { event: <key> } (or sugar) → end your turn."
       }
     },
@@ -16808,7 +16808,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters; the call is owner-scoped and ignores `harness`. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop."
       }

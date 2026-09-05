@@ -335,6 +335,13 @@ export default defineTool({
   rolesQuota: { operator: { perRun: 100 } },
   args: z.object({
     owner: z.string().max(120).optional().describe("Filter to one agent ownerId ('self' = the caller)."),
+    ownerId: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Compatibility alias for `owner`, for callers carrying the presence/roster field name; `owner` wins when both are supplied.',
+      ),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional(),
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
     since: z.string().max(40).optional().describe('Only sessions active after this timestamp. Accepts ISO-8601 OR a relative window measured back from now, like "45m", "12h", "7d".'),
@@ -380,10 +387,17 @@ export default defineTool({
     const tx = ctx.tx!;
     const workspaceId = ctx.workspaceId ?? '';
     const limit = args.limit ?? 30;
-    const owner = args.owner === 'self' ? (resolveAgentIdentity(ctx).ownerId ?? '') : (args.owner ?? null);
+    // EI-22378241430283590: presence/roster payloads name this selector
+    // `ownerId`, while the original sessions:list schema named it `owner`.
+    // Normalize both spellings before fingerprinting, resolving `self`, and
+    // querying so the compatibility alias is behaviorally identical to `owner`.
+    const requestedOwner = args.owner ?? args.ownerId;
+    const owner = requestedOwner === 'self'
+      ? (resolveAgentIdentity(ctx).ownerId ?? '')
+      : (requestedOwner ?? null);
     const historicalMode = args.mode === 'historical' || args.historical === true;
     const fingerprint = sessionCursorFingerprint({
-      owner: args.owner ?? null,
+      owner: requestedOwner ?? null,
       source_kind: args.source_kind ?? null,
       cwd_contains: args.cwd_contains ?? null,
       since: args.since ?? null,

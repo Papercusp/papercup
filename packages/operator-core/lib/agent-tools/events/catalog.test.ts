@@ -193,6 +193,13 @@ describe('events:catalog — live_awaiters', () => {
     expect(alias.families).toEqual(canonical.families);
   });
 
+  it('accepts query as a compatibility alias for q', async () => {
+    expect(catalog.args.safeParse({ query: 'deploy' }).success).toBe(true);
+    const canonical = await call({ q: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    const alias = await call({ query: 'deploy', announced: false, installed: false, liveAwaiters: false });
+    expect(alias.families).toEqual(canonical.families);
+  });
+
   it('matches a concrete key against its templated family row', async () => {
     const out = await call({
       q: 'release:deployed:549f75596e666c7ea60731b055e550d484924511',

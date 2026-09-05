@@ -823,6 +823,26 @@
 .plan-popup {
   display: flex;
   flex-direction: column;
+  background: var(--bg-1, #0b1220);
+  color: var(--fg, #e7e7ea);
+}
+.plan-popup__surface {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-1, #0b1220);
+  color: var(--fg, #e7e7ea);
+}
+.plan-popup__surface:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  background: var(--bg, #07101d);
 }
 .plan-popup__header {
   display: flex;
@@ -873,6 +893,7 @@
   border-color: color-mix(in srgb, #fb923c 55%, transparent);
   background: color-mix(in srgb, #fb923c 12%, transparent);
 }
+.plan-popup__fullscreen,
 .plan-popup__close {
   flex: 0 0 auto;
   width: 26px;
@@ -887,9 +908,19 @@
   background: transparent;
   border: 1px solid transparent;
 }
+.plan-popup__fullscreen:hover:not(:disabled),
 .plan-popup__close:hover {
   color: var(--fg, #e7e7ea);
   background: var(--bg-3, rgba(255, 255, 255, 0.06));
+}
+.plan-popup__fullscreen:focus-visible,
+.plan-popup__close:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #38bdf8) 70%, transparent);
+  outline-offset: 1px;
+}
+.plan-popup__fullscreen:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 /* PlanDetail relies on a scrolling parent (.pc-plans__main) — give it one so
    the read-mode preview + action strip never clip inside the modal box. */

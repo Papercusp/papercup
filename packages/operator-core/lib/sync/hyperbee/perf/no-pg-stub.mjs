@@ -181,6 +181,14 @@ export const withTenantContext = stub('withTenantContext');
 export const withWorkspace = stub('withWorkspace');
 export const withWorkspaceLegacy = stub('withWorkspaceLegacy');
 export const withWorkspaceQuery = stub('withWorkspaceQuery');
+// 2026-09-05: names operator-core newly binds from @papercusp/db-org (the
+// no-pg-stub-covers-db-org-imports guard names each with an example importer).
+export const GoalPotLink = stub('GoalPotLink');
+export const deriveTenantContext = stub('deriveTenantContext');
+export const readBuildStamp = stub('readBuildStamp');
+export const resetBuildStampResolver = stub('resetBuildStampResolver');
+export const setBuildStampResolver = stub('setBuildStampResolver');
+export const stampedTag = stub('stampedTag');
 
 export default new Proxy(
   {},

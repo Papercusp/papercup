@@ -92,6 +92,57 @@ async function run(args: Record<string, unknown>, results: unknown[][]) {
 describe('sessions:list EI-11403 active-session fallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('declares and applies ownerId as a compatibility alias for owner', async () => {
+    const parsedArgs = (tool as any).args.parse({ ownerId: 'self' });
+    expect(parsedArgs.ownerId).toBe('self');
+
+    resolveSelfSession.mockResolvedValue({ sourceKind: 'codex', sessionId: 'sess-alias', filePath: '/x' });
+    const { parsed, txCalls } = await run(
+      { ownerId: 'self' },
+      [
+        [], // owner-filtered query → no indexed rows
+        [{ turns: 0, prompt_count: 0, harness_slug: null, cwd: null, first_ts: null, last_ts: null }],
+      ],
+    );
+
+    expect(txCalls).toBe(2);
+    expect(parsed.sessions[0]).toMatchObject({
+      source_kind: 'codex',
+      session_id: 'sess-alias',
+      owner: 'su-self',
+      active: true,
+    });
+  });
+
+  it('prefers canonical owner when owner and ownerId are both supplied', async () => {
+    resolveSelfSession.mockResolvedValue(null);
+    const { parsed } = await run(
+      {
+        owner: 'su-canonical',
+        ownerId: 'su-alias',
+      },
+      [[
+        {
+          source_kind: 'codex',
+          session_id: 'sess-canonical',
+          turns: 1,
+          prompt_count: 1,
+          owner: 'su-canonical',
+          harness_slug: null,
+          cwd: null,
+          first_ts: null,
+          last_ts: null,
+          response_count: null,
+          tool_call_count: null,
+          total_matching: 1,
+        },
+      ], []],
+    );
+
+    expect(parsed.sessions[0].owner).toBe('su-canonical');
+    expect(resolveSelfSession).toHaveBeenCalledWith('su-canonical');
+  });
+
   it("surfaces the caller's LIVE session even when its turns are indexed under another owner", async () => {
     // The owner filter finds nothing (turns stamped with a different owner), but
     // the session_id aggregate — the lens search/timeline use — finds the turns.

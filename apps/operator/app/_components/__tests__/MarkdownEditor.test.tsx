@@ -256,7 +256,7 @@ describe('MarkdownPreview — readable frontmatter/code styling', () => {
       .join('\n');
     expect(styles).not.toContain('#19232A');
     expect(styles).toContain('var(--fg');
-    expect(styles).toContain('var(--bg-3');
+    expect(styles).toContain('var(--bg-popover');
   });
 
   it('renders a labeled, keyboard-reachable P/D outline that scrolls the inner plan', async () => {
