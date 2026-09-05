@@ -500,3 +500,25 @@ describe('sensitive harness configuration reads are loopback-gated (WI-2144500)'
     expect(def!.auth).toBe('loopback');
   });
 });
+
+/**
+ * P-002: PTY output and exported session artifacts are private terminal
+ * content, not public metadata. The control POSTs were already loopback-tier;
+ * keep the read/list surfaces on that same perimeter so an off-box caller
+ * cannot replay terminal output, enumerate transcripts, or learn the local
+ * extension path.
+ */
+describe('PTY/session artifact reads are loopback-gated (P-002)', () => {
+  const PRIVATE_PTY_READS: ReadonlyArray<[string, string]> = [
+    ['GET', '/harness/:slug/pty/:id/stream'],
+    ['GET', '/harness/:slug/pi-sessions/audit'],
+    ['GET', '/harness/:slug/pi-sessions/audit/:filename'],
+    ['GET', '/harness/:slug/pty/tools'],
+  ];
+
+  it.each(PRIVATE_PTY_READS)('%s %s is auth: loopback (never public)', (method, path) => {
+    const def = ALL_ROUTES.find((route) => route.method === method && route.path === path);
+    expect(def, `${method} ${path} not registered`).toBeDefined();
+    expect(def!.auth).toBe('loopback');
+  });
+});

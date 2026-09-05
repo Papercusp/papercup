@@ -15,8 +15,11 @@
  *   GET  /api/harness/:slug/pi-sessions/audit/:filename
  *   GET  /api/harness/:slug/pty/tools
  *
- * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
- * No WebSocket here: terminal output streams over SSE, input over POST.
+ * The control and read surfaces are loopback-tier routes. No WebSocket here:
+ * terminal output streams over SSE, input over POST. The route stack still
+ * admits a verified remote operator session through its central remote-auth
+ * policy, while unauthenticated/off-box callers cannot enumerate or replay
+ * terminal output and exported session transcripts.
  * The prewarm pool (previously a closure inside `registerPty`) is now
  * module-level state — same one-instance-per-process lifetime.
  */
@@ -537,7 +540,10 @@ const ticket = defineTool({
 const stream = defineTool({
   method: 'GET',
   path: '/harness/:slug/pty/:id/stream',
-  auth: 'public',
+  // PTY output is private terminal content. Keep it on the same perimeter as
+  // input/resize/kill; the central route stack admits an explicitly verified
+  // remote operator, while a network-exposed unauthenticated caller gets 403.
+  auth: 'loopback',
   // Pure SSE transport — don't flood route_invocations per connection.
   sampleRate: 0,
   handler(req, ctx) {
@@ -649,7 +655,9 @@ const kill = defineTool({
 const auditList = defineTool({
   method: 'GET',
   path: '/harness/:slug/pi-sessions/audit',
-  auth: 'public',
+  // Exported session HTML can contain prompts, tool arguments, and file
+  // contents. It is a local/operator surface, never a public listing.
+  auth: 'loopback',
   async handler(_req, ctx) {
     const slug = ctx.params.slug ?? '';
     const sd = await stateDirForSlug(slug);
@@ -689,7 +697,7 @@ const auditList = defineTool({
 const auditFile = defineTool({
   method: 'GET',
   path: '/harness/:slug/pi-sessions/audit/:filename',
-  auth: 'public',
+  auth: 'loopback',
   async handler(_req, ctx) {
     const slug = ctx.params.slug ?? '';
     const filename = ctx.params.filename;
@@ -718,7 +726,9 @@ const auditFile = defineTool({
 const tools = defineTool({
   method: 'GET',
   path: '/harness/:slug/pty/tools',
-  auth: 'public',
+  // The response includes the absolute extension path and private tool
+  // inventory; keep it inside the local/operator perimeter as well.
+  auth: 'loopback',
   handler() {
     const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
     if (!existsSync(piExtensionPath)) {

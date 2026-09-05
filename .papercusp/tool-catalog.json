@@ -22328,7 +22328,7 @@
           "POST"
         ]
       },
-      "description": "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (trim hard; long-form backlog/history/design detail belongs in the plan body via plans:set-content / set-content-chunk, not the Now block). Auto-bumps frontmatter updated:.",
+      "description": "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk). Auto-bumps frontmatter updated:.",
       "capabilities": [
         "plans:write"
       ],
@@ -22391,7 +22391,7 @@
       "guidance": {
         "when": "Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.",
         "notWhen": "Per-item flip — that's plans:set-status. Or a decision — that's plans:add-decision.",
-        "chaining": "plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — if either overflows, trim it and offload the detail to plans:set-content / set-content-chunk rather than retrying a too-long Now."
+        "chaining": "plans:set-status to flip current item → plans:set-now reflecting the new state. Keep State ≤2000 chars / Next ≤800 — an overflow auto-truncates (see `clamped`); offload long-form detail to plans:set-content / set-content-chunk."
       }
     },
     {
