@@ -47,6 +47,11 @@ import {
 // TYPE-ONLY, and it must stay that way: `couplings.ts` opens a PG handle at
 // module scope, and this module is imported by every message-shaped surface.
 import type { DerivedCouplingRelation } from '../../coord/couplings';
+// EI-22369606583733422: the length cap is enforced in send.ts but was only
+// discoverable from the REJECTION. Import the constant (a true leaf module —
+// that is why it was factored out) so the schema below states the real number
+// and cannot drift from the value the refusal enforces.
+import { DEFAULT_INBOX_BODY_CAP } from './tools/inbox-content-bounds';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // premises — what I or someone else ASSERTED (D-041's rename of `restsOn`)
@@ -1054,7 +1059,10 @@ export const messageBodyArg = z
       '`youMayNotKnow: [{ ref: "WI-1234", provenance: "authored" }]`, or ' +
       '`couldNotDetermine: [{ what: "the thing you tried to establish", note: "optional detail" }]`, ' +
       '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
-      'are refused on a section.',
+      'are refused on a section. LENGTH: unless `expects` is \'none\', a body over ' +
+      `${DEFAULT_INBOX_BODY_CAP} characters is REFUSED and NOTHING is sent — that is all a ` +
+      'default inbox read shows, so a load-bearing ask must fit it. Put the detail on the ' +
+      'work-item and send a pointer.',
   );
 
 export {
