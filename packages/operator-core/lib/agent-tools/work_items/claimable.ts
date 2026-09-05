@@ -43,6 +43,13 @@ import {
   resolveClaimSpecWorkspace,
 } from '../../scheduler/claim-spec-store';
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
+import {
+  COUNT_EVIDENCE_COMPARISON_RULE,
+  COUNT_EVIDENCE_SCHEMA_VERSION,
+  type CountContractDimension,
+  type CountEvidenceBundle,
+  type CountExactness,
+} from '../../count-evidence-contract';
 
 const ISSUE_KINDS = ['bug', 'change', 'task'] as const;
 
@@ -385,6 +392,98 @@ export default defineTool({
           (staleBlockedExcluded.length > 3 ? `, +${staleBlockedExcluded.length - 3} more` : '') +
           `. Each clears with one plans:set-status on the named plan item; do NOT read this as a drained lane (WI-7316).`;
 
+    // count-contract-clarity P-002: every quoted number carries the identity that
+    // makes it comparable (or not). `breakdown.claimable` is exact in SQL, but the
+    // post-SQL plan-prose guard can inspect only the returned page. If that page did
+    // not cover every SQL-admitted row, the corrected value is an honest UPPER bound
+    // rather than a fabricated exact count.
+    const planProseScanComplete = breakdown.claimable <= claimableRows.length;
+    const claimableExactness: CountExactness = planProseScanComplete
+      ? { status: 'exact' }
+      : {
+          status: 'bounded',
+          bound: 'upper',
+          limit,
+          reason: args.breakdownOnly
+            ? 'breakdownOnly skipped the row-bounded plan-prose guard'
+            : `the plan-prose guard inspected ${claimableRows.length} of ${breakdown.claimable} SQL-admitted rows`,
+        };
+    const measuredAt = new Date().toISOString();
+    const claimSpecSelector: Record<string, CountContractDimension> = {
+      specId: specProvenance.specId,
+      revision: specProvenance.revision,
+      source: specProvenance.source,
+    };
+    if (specProvenance.fleetSlug) claimSpecSelector.fleetSlug = specProvenance.fleetSlug;
+    if (specProvenance.matchedBy) claimSpecSelector.matchedBy = specProvenance.matchedBy;
+    const countEvidence = {
+      contract: {
+        schemaVersion: COUNT_EVIDENCE_SCHEMA_VERSION,
+        population: {
+          id: 'current-claim-spec-issue-work-items',
+          selector: {
+            claimSpec: claimSpecSelector,
+            filter: (filter ?? null) as CountContractDimension,
+            kinds: kinds ?? [...ISSUE_KINDS],
+            states: states ? [...states] : 'default-issue-family-claimable-states',
+          },
+          definition:
+            'current issue-family work-item rows in the resolved harness that match the named claim-spec/kind filter',
+        },
+        cutoff: { kind: 'none' },
+        writer: {
+          id: 'readIssueClaimability+planItemLaneBlockReason',
+          revision: 'repeatable-read-plus-bounded-plan-prose-guard-v1',
+        },
+        unit: {
+          id: 'canonical-work-item',
+          definition: 'distinct canonical issue-family work-item ids',
+        },
+        scope: {
+          requestedHarness: claimableHarnessScope.requested,
+          resolvedHarness: claimableHarnessScope.resolved,
+          harnessResolution: claimableHarnessScope.resolution,
+          caller: assignee,
+          callerRelative: true,
+          filingGraceSeconds,
+          rigAvailable: args.rigAvailable === true,
+          planProseScanComplete,
+        },
+        measuredAt,
+        comparisonRule: COUNT_EVIDENCE_COMPARISON_RULE,
+      },
+      metrics: {
+        claimable: {
+          value: correctedClaimableCount,
+          metric: {
+            id: 'claimable-count',
+            definition: 'rows surviving the spec filter, every scheduler hard floor, and the measured plan-prose guard',
+          },
+          status: {
+            id: 'claimable-for-caller',
+            definition: 'claimable now for the named caller under its cooldown, filing grace, rig, and reserved-lane context',
+          },
+          exactness: claimableExactness,
+          zeroMeaning:
+            'this live selector has no rows claimable for this caller at measuredAt; it does not mean a fixed batch completed or the harness backlog is empty',
+        },
+        matchedByFilter: {
+          value: breakdown.matchedByFilter,
+          metric: {
+            id: 'matched-by-filter-count',
+            definition: 'rows selected by the claim-spec/kind filter before scheduler hard floors',
+          },
+          status: {
+            id: 'filter-match-before-floors',
+            definition: 'in the selected population regardless of claimability floors',
+          },
+          exactness: { status: 'exact' },
+          zeroMeaning:
+            'the live filter matched no issue-family rows at measuredAt; it does not certify completion of any separately defined cohort',
+        },
+      },
+    } satisfies CountEvidenceBundle;
+
     const payload = {
       ok: true as const,
       harness,
@@ -410,6 +509,9 @@ export default defineTool({
       count: correctedClaimableCount,
       /** In-lane issue-family rows the spec's own filter matched, BEFORE floors. */
       matchedByFilter: breakdown.matchedByFilter,
+      /** Self-identifying count contracts. Materialize one metric through
+       * `materializeCountEvidence` before comparing it with another observation. */
+      countEvidence,
       /** EI-16028: coverage of the affinity rank term's item-side path metadata over the
        * full claimable survivor set (never the returned, LIMIT-capped page). */
       affinityCoverage: breakdown.affinityCoverage,

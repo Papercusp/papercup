@@ -73,6 +73,21 @@ export function declaredToolNames(source: string): Set<string> {
   const out = new Set<string>();
   const re = /\bname:\s*'([A-Za-z_][A-Za-z0-9_]*:[A-Za-z0-9_.-]+)'/g;
   for (const m of source.matchAll(re)) out.add(m[1]);
+  // Same-file const indirection — `const TOOL_NAME = 'harness:generate-from-repo'` …
+  // `name: TOOL_NAME` (the shape harness/generate_from_repo.ts took on 2026-09-05).
+  // Still a DECLARATION, not a mention: the identifier must sit at the `name:`
+  // property position AND resolve to a string-literal binding in the SAME source.
+  // An imported or runtime-built name is not something this scan can vouch for,
+  // so it is deliberately left uncounted.
+  const bindings = new Map<string, string>();
+  const bindRe =
+    /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*[^=\n]+)?=\s*'([A-Za-z_][A-Za-z0-9_]*:[A-Za-z0-9_.-]+)'\s*(?:as\s+const)?\s*;/g;
+  for (const m of source.matchAll(bindRe)) bindings.set(m[1], m[2]);
+  const identRe = /\bname:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[,}\n])/g;
+  for (const m of source.matchAll(identRe)) {
+    const bound = bindings.get(m[1]);
+    if (bound) out.add(bound);
+  }
   return out;
 }
 
@@ -150,6 +165,25 @@ describe('declaredToolNames — fixture controls (the detector must be able to F
 
   it('does not match a bare identifier with no colon', () => {
     expect(declaredToolNames(`name: 'handler',`).size).toBe(0);
+  });
+
+  it('resolves a same-file const indirection at the name: position', () => {
+    // The shape harness/generate_from_repo.ts took on 2026-09-05 (50674aba79).
+    const found = declaredToolNames(`
+      const TOOL_NAME = 'harness:generate-from-repo';
+      export default defineTool({
+        name: TOOL_NAME,
+        description: 'kind #1 harness creation',
+      });
+    `);
+    expect(found.has('harness:generate-from-repo')).toBe(true);
+  });
+
+  it('does NOT resolve an identifier with no same-file string binding, nor a const that is only mentioned', () => {
+    // Imported / runtime-built: the scan cannot vouch for what the name IS.
+    expect(declaredToolNames(`import { TOOL_NAME } from './names';\nname: TOOL_NAME,`).size).toBe(0);
+    // A bound const that never reaches a `name:` position is a mention, not a declaration.
+    expect(declaredToolNames(`const TOOL_NAME = 'goals:amend';\nchaining: 'then ' + TOOL_NAME,`).size).toBe(0);
   });
 });
 

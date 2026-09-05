@@ -4,6 +4,7 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readPlanBySlug } from './agent-tools/plans/source';
+import { resolveAggregatedVettingCritics } from './agent-tools/scorecards/grader-eligibility';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
@@ -592,6 +593,34 @@ type GraderDiscoveryResult = {
   freshReason?: 'no_eligible_non_excluded' | 'all_eligible_unselectable' | 'degraded';
 };
 
+/**
+ * Discovery must exclude the same current-revision vetting critics that the
+ * scorecard writer later refuses. The shared resolver covers both supported
+ * vetting channels (consult and work-item), so routing cannot select a critic
+ * merely because their critique was recorded on a work item instead of in a
+ * consult conversation.
+ */
+export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
+  rubric: {
+    rubricId: string;
+    revision?: number | null;
+    proposedBy?: string | null;
+    createdBy?: string | null;
+  },
+  shipperId: string | null,
+  readVettingCritics: typeof resolveAggregatedVettingCritics = resolveAggregatedVettingCritics,
+): Promise<string[]> {
+  const { critics } = await readVettingCritics(rubric.rubricId, rubric.revision ?? null);
+  return [
+    ...new Set(
+      [rubric.proposedBy, rubric.createdBy, shipperId, ...critics]
+        .filter((identity): identity is string => typeof identity === 'string')
+        .map((identity) => identity.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 /** Prod discovery wiring: the P-002 router + embedder + liveness oracle behind
  * selectAcceptanceGrader. Injected as `deps.discover` in tests — this default
  * reaches the org PG, which a unit test must never do. */
@@ -612,6 +641,7 @@ async function prodDiscoverGrader(
   const embed = await buildQueryEmbedder();
   const r = rubric as unknown as {
     rubricId: string;
+    revision?: number | null;
     title?: string;
     proposedBy?: string | null;
     createdBy?: string | null;
@@ -630,13 +660,14 @@ async function prodDiscoverGrader(
   } catch {
     /* unattributable shipper — the computed set still excludes implementers */
   }
+  const extraExclusions = await resolveAcceptanceGraderDiscoveryExtraExclusions(r, shipperId);
   const selection = await selectAcceptanceGrader(
     {
       workspaceId: plan.row.workspaceId,
       planSlug: plan.row.planSlug,
       planContent: plan.row.content,
       rubricText,
-      extraExclusions: [r.proposedBy, r.createdBy, shipperId],
+      extraExclusions,
     },
     {
       getSql: () => getOrgPg().sql,

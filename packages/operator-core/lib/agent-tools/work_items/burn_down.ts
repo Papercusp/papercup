@@ -7,6 +7,7 @@
  * work_items:list + coord:presence client-side on every wake.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
@@ -58,6 +59,16 @@ import {
   type FleetMetricScopeResolution,
   type ResolvedFleetMetricScope,
 } from '../fleet/fleet-metrics-scope';
+import {
+  COUNT_EVIDENCE_COMPARISON_RULE,
+  COUNT_EVIDENCE_SCHEMA_VERSION,
+  countEvidenceBundleSchema,
+  type CountContractDimension,
+  type CountCutoff,
+  type CountEvidenceBundle,
+  type CountEvidenceMetric,
+  type CountExactness,
+} from '../../count-evidence-contract';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -309,6 +320,9 @@ export interface BurnDownResult {
   /** P-003 (fleet-spec-scoped-metrics-2026-08-21) — canonical, spec-scoped
    * fleet-lifetime snapshot. Present only with window:'fleet-lifetime'. */
   fleetMetrics?: FleetMetricsResult;
+  /** Additive identity for every aggregate count in this response. The shared
+   * contract is carried once; materialize a metric before comparing it. */
+  countEvidence?: BurnDownCountEvidence;
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
@@ -336,6 +350,32 @@ export interface CohortAuditResult {
   rows: CohortAuditRow[];
   /** Added by the payload-tier shaper when a fixed cohort is too large to inline. */
   truncated?: boolean;
+}
+
+export interface BurnDownCohortCutoff {
+  field: 'createdAt';
+  operator: '<' | '<=';
+  value: string;
+}
+
+export type BurnDownPopulationState =
+  | {
+      kind: 'fixed-cohort';
+      fixedCohortComplete: boolean;
+      liveOpenPopulationEmpty: null;
+      missingIds: number;
+      note: string;
+    }
+  | {
+      kind: 'live-census';
+      fixedCohortComplete: null;
+      liveOpenPopulationEmpty: boolean;
+      missingIds: null;
+      note: string;
+    };
+
+export interface BurnDownCountEvidence extends CountEvidenceBundle {
+  populationState: BurnDownPopulationState;
 }
 
 export function buildCohortAudit(requestedIds: readonly string[], items: readonly WorkItem[]): CohortAuditResult {
@@ -410,6 +450,180 @@ export function buildCohortAudit(requestedIds: readonly string[], items: readonl
     missing: rows.filter((row) => row.bucket === 'missing').length,
     reopenRecommended: rows.filter((row) => row.reopenRecommended).length,
     rows,
+  };
+}
+
+function fixedCohortFingerprint(ids: readonly string[]): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify([...new Set(ids)].sort())).digest('hex')}`;
+}
+
+/** Build the compact count contract after the same result snapshot is complete. */
+export function buildBurnDownCountEvidence(
+  result: BurnDownResult,
+  args: {
+    requestedIds: readonly string[] | null;
+    kind?: string;
+    includeChildren?: boolean;
+    fence?: 'p2p-lane';
+    cohortCutoff?: BurnDownCohortCutoff;
+    fleet?: string;
+    window?: 'fleet-lifetime';
+  },
+): BurnDownCountEvidence {
+  const requestedIds = args.requestedIds;
+  const fixedFingerprint = requestedIds ? fixedCohortFingerprint(requestedIds) : null;
+  const populationSelector: Record<string, CountContractDimension> = requestedIds
+    ? {
+        mode: 'fixed-ids',
+        fingerprint: fixedFingerprint!,
+        requested: requestedIds.length,
+        fence: args.fence ?? null,
+      }
+    : {
+        mode: 'current-harness-census',
+        harness: result.harness,
+        kind: args.kind ?? 'all-work-item-kinds',
+        includeChildren: args.includeChildren === true,
+        fence: args.fence ?? null,
+        fleet: args.fleet ?? null,
+        window: args.window ?? null,
+      };
+  const cutoff: CountCutoff = args.cohortCutoff
+    ? {
+        kind: 'predicate',
+        field: args.cohortCutoff.field,
+        operator: args.cohortCutoff.operator,
+        value: args.cohortCutoff.value,
+      }
+    : { kind: 'none' };
+  const exactness: CountExactness = result.terminal.truncatedByLimit
+    ? {
+        status: 'bounded',
+        bound: 'lower',
+        limit: result.terminal.censusLimit,
+        reason: 'the source census hit its hard row cap before every matching work item was read',
+      }
+    : { status: 'exact' };
+  const nonTerminal = result.counts.inFlight + result.counts.parked + result.counts.unclaimed;
+  const fixedComplete = requestedIds
+    ? result.cohortAudit?.missing === 0 && nonTerminal === 0
+    : null;
+  const populationState: BurnDownPopulationState = requestedIds
+    ? {
+        kind: 'fixed-cohort',
+        fixedCohortComplete: fixedComplete === true,
+        liveOpenPopulationEmpty: null,
+        missingIds: result.cohortAudit?.missing ?? requestedIds.length - result.counts.total,
+        note:
+          'Completion describes only the exact fixed-ID cohort. It is never evidence that the current live queue is empty.',
+      }
+    : {
+        kind: 'live-census',
+        fixedCohortComplete: null,
+        liveOpenPopulationEmpty: nonTerminal === 0,
+        missingIds: null,
+        note:
+          'Emptiness describes the current live census only. It is never evidence that a separately defined historical cohort completed.',
+      };
+
+  const metric = (
+    value: number,
+    id: string,
+    definition: string,
+    statusId: string,
+    statusDefinition: string,
+    zeroMeaning: string,
+  ): CountEvidenceMetric => ({
+    value,
+    metric: { id, definition },
+    status: { id: statusId, definition: statusDefinition },
+    exactness,
+    zeroMeaning,
+  });
+
+  return {
+    contract: {
+      schemaVersion: COUNT_EVIDENCE_SCHEMA_VERSION,
+      population: {
+        id: requestedIds ? 'fixed-work-item-id-cohort' : 'current-harness-work-item-census',
+        selector: populationSelector,
+        definition: requestedIds
+          ? 'the exact deduplicated work-item ids supplied by the caller'
+          : 'the current unified work-item rows selected for this harness/kind/fence census',
+      },
+      cutoff,
+      writer: {
+        id: requestedIds ? 'work_items:get+buildBurnDownResult' : 'work_items:list+buildBurnDownResult',
+        revision: 'burn-down-count-contract-v1',
+      },
+      unit: { id: 'canonical-work-item', definition: 'distinct unified work-item ids' },
+      scope: {
+        harness: result.harness,
+        populationMode: requestedIds ? 'fixed-cohort' : 'live-census',
+        requestedIds: requestedIds?.length ?? null,
+        fixedCohortFingerprint: fixedFingerprint,
+        kind: args.kind ?? null,
+        includeChildren: args.includeChildren === true,
+        fence: args.fence ?? null,
+      },
+      measuredAt: result.generatedAt,
+      comparisonRule: COUNT_EVIDENCE_COMPARISON_RULE,
+    },
+    metrics: {
+      total: metric(
+        result.counts.total,
+        'census-total',
+        'all resolved rows in the selected population',
+        'resolved-row',
+        'a selected work-item id resolved to a current row',
+        requestedIds
+          ? 'none of the requested fixed-cohort ids resolved; this does not mean the live queue is empty'
+          : 'the current census resolved no rows; this does not certify a separate batch as complete',
+      ),
+      terminal: metric(
+        result.counts.terminal,
+        'terminal-count',
+        'selected rows in a lifecycle-terminal state',
+        'lifecycle-terminal',
+        'state belongs to the canonical cross-family terminal-state set',
+        'no selected rows are lifecycle-terminal',
+      ),
+      nonTerminal: metric(
+        nonTerminal,
+        'nonterminal-count',
+        'selected rows not in a lifecycle-terminal state',
+        'lifecycle-nonterminal',
+        'row is currently in flight, parked, or unclaimed',
+        requestedIds
+          ? 'all found fixed-cohort rows are terminal; fixed-cohort completion additionally requires missingIds=0'
+          : 'the current live census has no nonterminal rows; this does not describe a fixed historical cohort',
+      ),
+      inFlight: metric(
+        result.counts.inFlight,
+        'in-flight-count',
+        'selected nonterminal rows assigned to an owner and not classified as parked',
+        'in-flight',
+        'nonterminal assigned row outside the parked precedence bucket',
+        'no selected rows are currently in flight',
+      ),
+      parked: metric(
+        result.counts.parked,
+        'parked-count',
+        'selected nonterminal rows held by a park/blocked/needs-human mechanism',
+        'parked',
+        'nonterminal row matched the burn-down parked precedence bucket',
+        'no selected rows are parked',
+      ),
+      unclaimed: metric(
+        result.counts.unclaimed,
+        'unclaimed-count',
+        'selected nonterminal rows with no current assignee after higher-precedence buckets',
+        'unclaimed',
+        'nonterminal row has no assignee and was not classified as parked',
+        'no selected rows are unclaimed',
+      ),
+    },
+    populationState,
   };
 }
 
@@ -1208,6 +1422,17 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Exact fixed-cohort IDs. Narrows the census and adds cohortAudit with one row per requested ID, including missing IDs.'),
+    cohortCutoff: z
+      .object({
+        field: z.literal('createdAt'),
+        operator: z.enum(['<', '<=']),
+        value: z.string().datetime({ offset: true }),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'Optional historical creation-time boundary that DEFINED an exact `ids` cohort. It is provenance only—the IDs remain the measured set—and is emitted verbatim in countEvidence. Omit when no temporal cutoff defined the cohort; the contract then says cutoff.kind:none.',
+      ),
     fleet: z
       .string()
       .min(1)
@@ -1243,6 +1468,13 @@ export default defineTool({
         code: z.ZodIssueCode.custom,
         path: ['window'],
         message: "window:'fleet-lifetime' is required with flowMode",
+      });
+    }
+    if (args.cohortCutoff && !args.ids) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ids'],
+        message: 'ids is required with cohortCutoff because the cutoff documents a fixed cohort rather than filtering the live census',
       });
     }
   }),
@@ -1371,6 +1603,24 @@ export default defineTool({
       })
       .optional(),
     fleetMetrics: fleetMetricsResultSchema.optional(),
+    countEvidence: countEvidenceBundleSchema.extend({
+      populationState: z.discriminatedUnion('kind', [
+        z.object({
+          kind: z.literal('fixed-cohort'),
+          fixedCohortComplete: z.boolean(),
+          liveOpenPopulationEmpty: z.null(),
+          missingIds: z.number().int().nonnegative(),
+          note: z.string(),
+        }),
+        z.object({
+          kind: z.literal('live-census'),
+          fixedCohortComplete: z.null(),
+          liveOpenPopulationEmpty: z.boolean(),
+          missingIds: z.null(),
+          note: z.string(),
+        }),
+      ]),
+    }).optional(),
     cohortAudit: z
       .object({
         requested: z.number(),
@@ -1548,6 +1798,15 @@ export default defineTool({
     // happened to the exact IDs you named", and silently dropping a named ID because
     // a fence excluded it would report it as MISSING — a fabricated verdict.
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
+    result.countEvidence = buildBurnDownCountEvidence(result, {
+      requestedIds,
+      kind: args.kind,
+      includeChildren: args.includeChildren,
+      fence: args.fence,
+      cohortCutoff: args.cohortCutoff,
+      fleet: args.fleet,
+      window: args.window,
+    });
     if (fenced) result.fence = fenced.report;
     if (drainFlow) result.drainFlow = drainFlow;
     result.issueOccurrences = issueOccurrences;

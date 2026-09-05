@@ -1051,15 +1051,25 @@ impl OperatorClient {
     /// A pool that fails to parse yields an EMPTY menu rather than an error: the
     /// picker still renders Auto (and the disabled default row), which is the
     /// honest degradation — those two do not depend on the pool.
-    pub async fn accounts_status(&self) -> Result<Vec<crate::session_config::AccountRow>> {
+    pub async fn accounts_status(&self) -> Result<crate::session_config::AccountsStatus> {
         let env = self
             .run_tool("accounts:status", serde_json::json!({}))
             .await?;
         let inner = run_tool_inner_json(&env)?;
-        let Some(rows) = inner.get("accounts") else {
-            return Ok(Vec::new());
-        };
-        Ok(serde_json::from_value(rows.clone()).unwrap_or_default())
+        let accounts = inner
+            .get("accounts")
+            .cloned()
+            .and_then(|rows| serde_json::from_value(rows).ok())
+            .unwrap_or_default();
+        let pool_verdict = inner
+            .get("poolVerdict")
+            .cloned()
+            .and_then(|rows| serde_json::from_value(rows).ok())
+            .unwrap_or_default();
+        Ok(crate::session_config::AccountsStatus {
+            accounts,
+            pool_verdict,
+        })
     }
 
     /// Pin `agent` to a pool account. ⚠ `accounts:pin`/`accounts:unpin` are
@@ -1332,6 +1342,52 @@ impl OperatorClient {
         let v = self.get_json("/api/operator/rate-limit-config").await?;
         let status = v.get("status").cloned().unwrap_or(serde_json::Value::Null);
         serde_json::from_value(status).context("decode fleet rate status")
+    }
+
+    /// Read one registered cell through the generic operator tool bridge. A
+    /// transport/decode failure stays attached to this cell so the Overview can
+    /// render it as unknown without hiding sibling measurements.
+    async fn pipeline_cell(&self, cell: &'static str) -> models::PipelineCellRead {
+        let result: Result<models::StateCellRead> = async {
+            let envelope = self
+                .run_tool("state:read", serde_json::json!({ "cell": cell }))
+                .await?;
+            let inner = run_tool_inner_json(&envelope)?;
+            serde_json::from_value(inner)
+                .with_context(|| format!("decode state:read response for {cell}"))
+        }
+        .await;
+
+        match result {
+            Ok(read) => models::PipelineCellRead {
+                cell: cell.to_string(),
+                read: Some(read),
+                error: None,
+            },
+            Err(error) => models::PipelineCellRead {
+                cell: cell.to_string(),
+                read: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// P-008 Overview pipeline snapshot. All four cells share the canonical
+    /// `state:read` door and are fetched concurrently so one slow resolver does
+    /// not serialize four copies of the same pipeline probe.
+    pub async fn pipeline_status(&self) -> models::PipelineStatus {
+        let (gate_verdict, frozen_candidate, main_behind_staging, deployed_sha) = tokio::join!(
+            self.pipeline_cell("gate.greenCheckpoint.verdict"),
+            self.pipeline_cell("gate.greenCheckpoint.candidate"),
+            self.pipeline_cell("git.mainBehindStaging"),
+            self.pipeline_cell("deploy.3070.sha"),
+        );
+        models::PipelineStatus {
+            gate_verdict,
+            frozen_candidate,
+            main_behind_staging,
+            deployed_sha,
+        }
     }
 
     /// Edit the user-editable hard cap (`maxSimultaneousAgents`) — persists to

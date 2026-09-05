@@ -30,6 +30,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { normalizeRequirementSections, type RequirementIntent, type RequirementAcceptance, type RequirementVerification } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
   rubricTemplateDataAuthoringSchema,
@@ -132,6 +133,11 @@ export interface RubricCriterion {
   /** Stable kebab id; a structured observation's ratings Record is keyed by this. */
   key: string;
   title: string;
+  /** Original requirement metadata. Never reconstructed from the BAR on legacy reads. */
+  intent?: RequirementIntent;
+  /** Authoring aliases; normalized to existing canonical fields before persistence. */
+  acceptance?: RequirementAcceptance;
+  verification?: RequirementVerification;
   /** How this criterion is supposed to work (the MODEL). */
   model: string;
   /** Acceptance-kind only: clearer wire/UI alias of `model`. It is projected on
@@ -436,6 +442,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
       return {
         key: c.key,
         title: c.title,
+        ...(c.intent ? { intent: c.intent } : {}),
         model,
         // `bar` is deliberately a projection, not template_data. `model` remains
         // the one canonical stored text field (D-001/D-003).
@@ -1066,6 +1073,7 @@ export type ProposeRubricCriterion = Omit<RubricCriterion, 'model' | 'method' | 
 type AcceptanceBarHashInput = Pick<
   ProposeRubricCriterion,
   | 'key'
+  | 'intent'
   | 'model'
   | 'bar'
   | 'barKey'
@@ -1108,6 +1116,12 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
   const key = criterion.key.trim();
   const material = [
     ['criterionKey', key],
+    ...(criterion.intent ? [['intent', {
+      request: normalizedBarText(criterion.intent.request),
+      constraints: normalizedBarSet(criterion.intent.constraints),
+      rationale: normalizedBarText(criterion.intent.rationale),
+      sourceRefs: normalizedBarSet(criterion.intent.sourceRefs),
+    }]] : []),
     ['barKey', criterion.barKey?.trim() || key],
     ['bar', canonicalBar],
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
@@ -1151,7 +1165,9 @@ export function computeAcceptanceBarSetHash(
  * Caller-supplied barHash is discarded and recomputed from normalized meaning.
  */
 export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterion): ProposeRubricCriterion {
+  criterion = normalizeRequirementSections(criterion);
   const carriesBarContract =
+    criterion.intent !== undefined ||
     criterion.bar !== undefined ||
     criterion.barHash !== undefined ||
     criterion.barKey !== undefined ||
@@ -1515,7 +1531,7 @@ export function normalizeAcceptanceRubricProposal(
 
   const upgrades: RubricCompatibilityUpgrade[] = [];
   const normalizedCriteria = criteria.map((criterion, index) => {
-    const normalized = { ...criterion };
+    const normalized = normalizeRequirementSections(criterion);
     for (const field of ['model', 'method'] as const) {
       if (typeof normalized[field] === 'string' && normalized[field].trim() === '') {
         delete normalized[field];

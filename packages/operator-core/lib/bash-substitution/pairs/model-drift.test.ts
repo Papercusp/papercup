@@ -201,6 +201,11 @@ describe('postgres.ts model tracks the real dev:pg_query (D-015)', () => {
         // database; it is not a database/connection selector and therefore does
         // not widen this pair to the excluded $PGURL/scratch-database atoms.
         'allowUnscoped',
+        // Policy opt-in (2026-09-04, 37f4f48cfd) that lets an unbounded JSON-path
+        // search run against the same operator database instead of being refused;
+        // like allowUnscoped it selects no database or connection, so it does not
+        // make the excluded $ODDS_DB/$PGURL/scratch atoms claimable.
+        'allowUnboundedJsonSearch',
         'describe',
         'maxRows',
         // A SECOND SQL string run through the SAME connection and scope, to prove

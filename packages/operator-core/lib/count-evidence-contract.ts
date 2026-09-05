@@ -180,7 +180,14 @@ export type CountEvidenceMetric = z.infer<typeof countEvidenceMetricSchema>;
 export type CountEvidenceBundle = z.infer<typeof countEvidenceBundleSchema>;
 
 export function materializeCountEvidence(bundle: unknown, metricKey: string): CountEvidence | null {
-  const parsed = countEvidenceBundleSchema.safeParse(bundle);
+  // Producers may extend the bundle with interpretation metadata (for example,
+  // burn_down.populationState). Compare only the canonical contract + metrics
+  // instead of making every additive producer field part of this parser.
+  if (!isRecord(bundle)) return null;
+  const parsed = countEvidenceBundleSchema.safeParse({
+    contract: bundle.contract,
+    metrics: bundle.metrics,
+  });
   if (!parsed.success) return null;
   const metric = parsed.data.metrics[metricKey];
   if (!metric) return null;

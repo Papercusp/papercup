@@ -108,6 +108,38 @@ describe('resolveSessionStates is TOTAL — unknown is in band, never omitted', 
     expect(unknown.signalMissing).toBe(true);
   });
 
+  it('does not turn a bare owner id with only negative wakeability into ended', async () => {
+    const bare = { ownerId: 'su-never-heard-of' };
+    const control = {
+      ownerId: 'su-positive-control',
+      heartbeatAt: iso(5_000),
+      stale: false,
+    };
+    const out = await resolveSessionStates([bare, control], {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () =>
+        new Map([
+          [bare.ownerId, { wakeable: false, liveTurn: false }],
+          [control.ownerId, { wakeable: true, liveTurn: true }],
+        ]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => null,
+    });
+
+    expect(out.get(bare.ownerId)).toMatchObject({
+      sessionState: null,
+      signalMissing: true,
+      confirmLiveness: true,
+      heartbeatFresh: false,
+    });
+    expect(out.get(control.ownerId)).toMatchObject({
+      sessionState: 'live',
+      heartbeatFresh: true,
+    });
+    expect(out.get(control.ownerId)?.signalMissing).toBeUndefined();
+  });
+
   it('does not silently shrink the result when the fetch returns nothing at all', async () => {
     // The exact regression: a wholly-degraded injected fetch used to yield an
     // EMPTY map, which is indistinguishable from "no subjects were asked about".

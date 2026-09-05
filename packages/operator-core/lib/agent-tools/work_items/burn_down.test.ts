@@ -51,6 +51,7 @@ import {
   type ResolvedFleetMetricScope,
 } from '../fleet/fleet-metrics-scope';
 import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
+import { compareCountEvidence, materializeCountEvidence } from '../../count-evidence-contract';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockGetWorkItem = vi.mocked(getWorkItem);
@@ -1087,6 +1088,79 @@ describe('work_items:burn_down', () => {
       counts: { total: 1, terminal: 1 },
       cohortAudit: { requested: 2, found: 1, missing: 1, reopenRecommended: 0 },
     });
+  });
+
+  it('keeps fixed-cohort completion distinct from live-census emptiness and refuses their cutoff mismatch', async () => {
+    mockGetWorkItem.mockImplementation(async (id) =>
+      item({
+        id,
+        state: 'done',
+        terminalCompletionRef: `ref:${id}`,
+        terminalOwner: 'su-1',
+        terminalCompletionEvidence: { verifiedHow: 'unit', testsRun: 'vitest', testResult: 'green' },
+      }),
+    );
+    mockListPresence.mockResolvedValue([]);
+    const fixed = await callTool({
+      harness: 'papercusp',
+      ids: ['WI-a', 'WI-b'],
+      cohortCutoff: {
+        field: 'createdAt',
+        operator: '<',
+        value: '2026-08-30T00:00:00.000Z',
+      },
+    });
+
+    mockListWorkItems.mockResolvedValue([]);
+    const live = await callTool({ harness: 'papercusp' });
+    const fixedData = fixed.data as Record<string, any>;
+    const liveData = live.data as Record<string, any>;
+    const fixedNonTerminal = materializeCountEvidence(fixedData.countEvidence, 'nonTerminal');
+    const liveNonTerminal = materializeCountEvidence(liveData.countEvidence, 'nonTerminal');
+
+    expect(fixedData.countEvidence.populationState).toEqual(expect.objectContaining({
+      kind: 'fixed-cohort',
+      fixedCohortComplete: true,
+      liveOpenPopulationEmpty: null,
+      missingIds: 0,
+    }));
+    expect(liveData.countEvidence.populationState).toEqual(expect.objectContaining({
+      kind: 'live-census',
+      fixedCohortComplete: null,
+      liveOpenPopulationEmpty: true,
+      missingIds: null,
+    }));
+    expect(fixedNonTerminal).toMatchObject({
+      value: 0,
+      contract: {
+        population: { id: 'fixed-work-item-id-cohort' },
+        cutoff: { kind: 'predicate', field: 'createdAt', operator: '<' },
+      },
+    });
+    expect(liveNonTerminal).toMatchObject({
+      value: 0,
+      contract: {
+        population: { id: 'current-harness-work-item-census' },
+        cutoff: { kind: 'none' },
+      },
+    });
+    const comparison = compareCountEvidence(fixedNonTerminal, liveNonTerminal);
+    expect(comparison).toMatchObject({ comparable: false, delta: null });
+    expect(comparison.mismatches.map((mismatch) => mismatch.path)).toEqual(
+      expect.arrayContaining(['population.id', 'cutoff.kind', 'scope.populationMode']),
+    );
+    expect(shapeBurnDown(fixed.data, 'trimmed')).toMatchObject({
+      countEvidence: { populationState: { kind: 'fixed-cohort', fixedCohortComplete: true } },
+    });
+  });
+
+  it('rejects cohortCutoff without exact cohort ids instead of filtering a live census implicitly', () => {
+    const parsed = (tool as unknown as { args: { safeParse: (value: unknown) => { success: boolean } } })
+      .args.safeParse({
+        harness: 'papercusp',
+        cohortCutoff: { field: 'createdAt', operator: '<', value: '2026-08-30T00:00:00.000Z' },
+      });
+    expect(parsed.success).toBe(false);
   });
 
   // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER.

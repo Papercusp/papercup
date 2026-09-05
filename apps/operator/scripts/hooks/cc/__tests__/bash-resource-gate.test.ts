@@ -1768,6 +1768,19 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
+  it('advertises an absolute wrapper path usable from a harness cwd (EI-22392503014903966)', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('vitest run lib/x.test.ts', {
+          cwd: '/home/x/.papercusp/hives/sidestage',
+        }),
+        { ...AGENT, ...OVER, ...CANON_ENV },
+      ),
+    );
+    expect(reason).toContain(`\`${CANON}/scripts/pc-heavy.sh -- <your command>\``);
+    expect(reason).not.toContain('`scripts/pc-heavy.sh -- <your command>`');
+  });
+
   it.each([
     ['npm run test:affected', 'npm run test:affected'],
     ['path-invoked vitest', '../../node_modules/.bin/vitest run app/x.test.ts'],

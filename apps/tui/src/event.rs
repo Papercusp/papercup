@@ -10,9 +10,9 @@ use crate::models::{
     ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
     ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
     FleetLeaderBrief, FleetRateStatus, GoalSummary, HarnessFeature, HarnessIssue, HarnessRef,
-    LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain, TuiPaneContribution,
-    ViewState, WorkFrontier, WorkItem,
+    LexiconPackPayload, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary,
+    RosterEntry, SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain,
+    TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -92,6 +92,8 @@ pub enum Event {
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).
     FleetRate(FleetRateStatus),
+    /// Four registered release-pipeline cells for the Overview pipeline tile.
+    PipelineStatus(PipelineStatus),
     /// EI-358: a pending-launch CLAIM failed in transport (operator blip) — the
     /// reducer un-tracks the id so a later roster tick retries. A LOST claim
     /// (another pui instance won) never emits this; it stays tracked/skipped.
@@ -205,6 +207,8 @@ pub enum Event {
     OperatorConfig(OperatorConfig),
     /// Fresh inference-gateway pool rows for the Agent Chat account picker.
     AccountRows(Vec<crate::session_config::AccountRow>),
+    /// Canonical per-provider capacity rollups from the same accounts:status read.
+    AccountPoolVerdicts(Vec<crate::session_config::ProviderPoolVerdict>),
     /// Fleet-wide work items (work_items:list) for the Fleet tab (P0).
     /// Keep transport failures with this panel instead of routing them through
     /// the global status error, where a later poll can erase the diagnosis.

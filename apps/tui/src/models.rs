@@ -2975,6 +2975,63 @@ impl FleetRateStatus {
     }
 }
 
+/// One `state:read` result as returned by the operator's generic run-tool
+/// bridge. The three-way `status` value is intentionally kept as data rather
+/// than collapsed into an `Option`: `unknown` and `absent` prescribe different
+/// UI copy and neither may be rendered as a healthy value.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StateCellRead {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub cell: String,
+    #[serde(default)]
+    pub value: serde_json::Value,
+    #[serde(default)]
+    pub assessment: Option<StateCellAssessment>,
+    #[serde(default)]
+    pub unknown: Option<StateCellUnknown>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StateCellAssessment {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StateCellUnknown {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+/// A pipeline cell plus transport/decode state. A failed operator request is
+/// represented in-band here so one broken cell cannot erase the other three.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PipelineCellRead {
+    pub cell: String,
+    pub read: Option<StateCellRead>,
+    pub error: Option<String>,
+}
+
+/// P-008's Overview read model: four independently-readable registered cells.
+/// These are populated concurrently through `state:read`, never re-derived by
+/// the TUI from git, routine metadata, or a second bespoke state endpoint.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PipelineStatus {
+    pub gate_verdict: PipelineCellRead,
+    pub frozen_candidate: PipelineCellRead,
+    pub main_behind_staging: PipelineCellRead,
+    pub deployed_sha: PipelineCellRead,
+}
+
 // ─── Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ─────────────────
 
 /// One item on a bee's ordered work-list — a `queued`/`doing` entry from the
@@ -3270,6 +3327,32 @@ mod fleet_rate_tests {
         let empty: FleetRateStatus = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.paused_count(), 0);
         assert_eq!(empty.headline_usage_pct(), None);
+    }
+
+    #[test]
+    fn state_cell_read_preserves_value_unknown_and_absent() {
+        let value: StateCellRead = serde_json::from_str(
+            r#"{"status":"value","cell":"gate.greenCheckpoint.verdict","value":0,"assessment":{"status":"resolved","code":"passing-current"}}"#,
+        )
+        .unwrap();
+        assert_eq!(value.status, "value");
+        assert_eq!(value.value, serde_json::json!(0));
+        assert_eq!(
+            value.assessment.as_ref().and_then(|a| a.code.as_deref()),
+            Some("passing-current")
+        );
+
+        let unknown: StateCellRead = serde_json::from_str(
+            r#"{"status":"unknown","cell":"deploy.3070.sha","unknown":{"code":"resolver-failed","detail":"probe timed out"}}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.status, "unknown");
+        assert_eq!(unknown.unknown.unwrap().code, "resolver-failed");
+
+        let absent: StateCellRead =
+            serde_json::from_str(r#"{"status":"absent","cell":"git.mainBehindStaging"}"#).unwrap();
+        assert_eq!(absent.status, "absent");
+        assert!(absent.assessment.is_none());
     }
 }
 

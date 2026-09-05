@@ -9,7 +9,7 @@ use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConversationContextFrame,
     ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
-    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
+    HarnessRef, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary, RosterEntry,
     SessionTranscriptAvailability, SessionTranscriptTurn, TestingDomain, ToolOutcome,
     TuiPaneContribution, ViewState, WorkItem,
 };
@@ -1683,6 +1683,10 @@ pub struct App {
     /// rate-limit-layer-v2). None until the first fetch lands (or when the
     /// host predates the route) — the top-bar renders dashes then.
     pub fleet_rate: Option<FleetRateStatus>,
+    /// Registered release-pipeline cell snapshot for the Overview pipeline
+    /// tile. None until the first poll; each cell then carries its own
+    /// value/unknown/absent or transport outcome.
+    pub pipeline_status: Option<PipelineStatus>,
     /// Harnesses tab: the harness list + selection + the active harness's data.
     pub harnesses: Vec<HarnessRef>,
     pub harness_sel: usize,
@@ -1724,6 +1728,10 @@ pub struct App {
     pub su_launch_fleet: Option<String>,
     pub su_launch_seat: Option<String>,
     pub account_rows: Vec<crate::session_config::AccountRow>,
+    /// Per-provider `accounts:status.poolVerdict` rows for the Overview top
+    /// bar. Kept separate from picker rows so capacity is never re-derived
+    /// from the interleaved account list.
+    pub account_pool_verdicts: Vec<crate::session_config::ProviderPoolVerdict>,
     /// What the last picker action actually did — the SETTER's own report, never
     /// an echo of what was picked.
     pub session_note: Option<String>,
@@ -2235,6 +2243,7 @@ impl App {
             inbox_sel: 0,
             overview_sel: 0,
             fleet_rate: None,
+            pipeline_status: None,
             harnesses: Vec::new(),
             harness_sel: 0,
             harness: "papercup".to_string(),
@@ -2253,6 +2262,7 @@ impl App {
             su_launch_fleet: None,
             su_launch_seat: None,
             account_rows: Vec::new(),
+            account_pool_verdicts: Vec::new(),
             session_note: None,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
             active_plan: Arc::new(Mutex::new(None)),
@@ -6869,6 +6879,10 @@ impl App {
                 self.fleet_rate = Some(s);
                 Action::Render
             }
+            Event::PipelineStatus(s) => {
+                self.pipeline_status = Some(s);
+                Action::Render
+            }
             Event::LaunchClaimRetry(id) => {
                 // EI-358: transport-failed claim — un-track so the next roster
                 // tick retries (the row is still pending server-side).
@@ -7178,6 +7192,11 @@ impl App {
             }
             Event::AccountRows(rows) => {
                 self.set_account_rows(rows);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::AccountPoolVerdicts(rows) => {
+                self.account_pool_verdicts = rows;
                 self.last_error = None;
                 Action::Render
             }

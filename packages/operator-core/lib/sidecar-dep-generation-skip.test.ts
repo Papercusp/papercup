@@ -82,6 +82,19 @@ function firstCodeIndex(src: string, needle: RegExp): number {
     return hit ? hit.index : -1;
 }
 
+/**
+ * First code line matching `needle` AT OR AFTER line `start`. The ordering pin
+ * below asks about the mutex INSIDE publishDependencyGeneration, and a whole-file
+ * search answered about whichever `withFsMutexRead(` came first in the file —
+ * since 2026-09-04 that is the `withPackageCacheReadLease` helper defined ~50 lines
+ * ABOVE the function, which made the pin read "mutex before skip" on a consumer
+ * that still checks the skip first.
+ */
+function firstCodeIndexFrom(src: string, start: number, needle: RegExp): number {
+  const hit = codeOnlyLines(src).find(({ line, index }) => index >= start && needle.test(line));
+  return hit ? hit.index : -1;
+}
+
 let producer = '';
 let consumer = '';
 
@@ -141,12 +154,38 @@ describe('D-186 — a vm-release cut skips dependency generation', () => {
     });
 
     it('checks the skip BEFORE taking the install mutex, so it costs nothing', () => {
-      const skipAt = firstCodeIndex(consumer, new RegExp(`${SKIP_VAR}[^\\n]*return 0`));
-      const mutexAt = firstCodeIndex(consumer, /withFsMutexRead\(/);
+      // Scope both probes to publishDependencyGeneration's body: the consumer also
+      // defines withPackageCacheReadLease (a different, host-wide cache lease) ABOVE
+      // it, and a whole-file "first withFsMutexRead(" would pin THAT helper's line.
+      const fnAt = firstCodeIndex(consumer, /export async function publishDependencyGeneration\b/);
+      expect(fnAt, `publishDependencyGeneration not found in ${CONSUMER_PATH}`).toBeGreaterThan(-1);
+      const skipAt = firstCodeIndexFrom(consumer, fnAt, new RegExp(`${SKIP_VAR}[^\\n]*return 0`));
+      const mutexAt = firstCodeIndexFrom(consumer, fnAt, /withFsMutexRead\(/);
 
       expect(skipAt, `${SKIP_VAR} early-return not found in ${CONSUMER_PATH}`).toBeGreaterThan(-1);
       expect(mutexAt, 'withFsMutexRead call not found').toBeGreaterThan(-1);
       expect(skipAt).toBeLessThan(mutexAt);
+    });
+
+    it('CONTROL: the scoped probe still fails a consumer that takes the mutex first', () => {
+      // Guards the probe itself: with the mutex hoisted above the skip inside the
+      // function, the ordering assertion must trip — otherwise the pin is vacuous.
+      const mutant = [
+        'export function withPackageCacheReadLease(fn) {',
+        '  return withFsMutexRead("cache", fn);',
+        '}',
+        'export async function publishDependencyGeneration({ env } = {}) {',
+        '  const result = await withFsMutexRead(lockName, () => 0);',
+        `  if (env.${SKIP_VAR} === "1") return 0;`,
+        '  return result;',
+        '}',
+      ].join('\n');
+      const fnAt = firstCodeIndex(mutant, /export async function publishDependencyGeneration\b/);
+      const skipAt = firstCodeIndexFrom(mutant, fnAt, new RegExp(`${SKIP_VAR}[^\\n]*return 0`));
+      const mutexAt = firstCodeIndexFrom(mutant, fnAt, /withFsMutexRead\(/);
+      expect(fnAt).toBeGreaterThan(-1);
+      expect(mutexAt).toBeGreaterThan(fnAt); // the helper's line ABOVE the function is not counted
+      expect(skipAt).toBeGreaterThan(mutexAt); // and the mutant IS caught
     });
   });
 

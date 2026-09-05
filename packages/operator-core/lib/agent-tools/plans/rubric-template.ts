@@ -343,6 +343,32 @@ export const acceptanceBarProvenanceSchema = z
   .strict();
 export type AcceptanceBarProvenance = z.infer<typeof acceptanceBarProvenanceSchema>;
 
+/** Original request metadata belongs to the same criterion as its BAR. Older
+ * criteria omit this: absence must not be filled with invented provenance. */
+export const requirementIntentSchema = z.object({
+  request: z.string().trim().min(1),
+  rationale: z.string().trim().min(1).optional(),
+  constraints: z.array(z.string().trim().min(1)).max(200).optional(),
+  sourceRefs: z.array(z.string().trim().min(1)).max(100).optional(),
+}).strict();
+
+export const requirementAcceptanceSchema = z.object({
+  condition: z.string().trim().min(1),
+  falsifier: z.string().trim().min(1),
+  requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
+  evidencePlane: acceptanceEvidencePlaneSchema.optional(),
+  passRatings: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
+  mandatory: z.boolean().optional(),
+  role: acceptanceCriterionRoleSchema.optional(),
+  coversBarKeys: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
+}).strict();
+
+export const requirementVerificationSchema = z.object({
+  method: z.string().trim().min(1),
+  check: rubricCriterionCheckSchema.optional(),
+  replication: z.string().trim().min(1).optional(),
+}).strict();
+
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
  * (rubrics.ts) so the re-pointed store maps templateData → Rubric 1:1 with no drift
@@ -356,6 +382,7 @@ export const rubricCriterionSchema = z
       .min(1)
       .describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
     title: z.string().min(1).describe('short human label for the criterion'),
+    intent: requirementIntentSchema.optional().describe('acceptance-kind only: original request, rationale, constraints and source references'),
     model: z.string().min(1).describe('how this criterion is supposed to work (the MODEL)'),
     barKey: z
       .string()
@@ -688,6 +715,7 @@ export const rubricTemplateDataSchema = z
           }
         }
         for (const field of [
+          'intent',
           'barKey',
           'barHash',
           'role',

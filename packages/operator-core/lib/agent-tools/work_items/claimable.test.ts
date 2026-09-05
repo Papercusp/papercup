@@ -39,6 +39,7 @@ import { readIssueClaimability } from '../../scheduler/get-next';
 import { resolveFleetClaimSpec, listFleetClaimSpecCandidates } from '../../scheduler/claim-spec-store';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { mockResolvedTyped } from '../../testing/typed-mock';
+import { materializeCountEvidence } from '../../count-evidence-contract';
 
 const readM = vi.mocked(readIssueClaimability);
 const recM = vi.mocked(resolveFleetClaimSpec);
@@ -209,6 +210,51 @@ describe('work_items:claimable handler', () => {
     expect(out.spec).toEqual({ specId: 'default-fixed-ordering', revision: 0, source: 'default' });
     // NEVER claims — no spec record was resolved and no claim mock exists.
     expect(recM).not.toHaveBeenCalled();
+  });
+
+  it('emits self-identifying count evidence with an explicit no-cutoff contract', async () => {
+    const out = await run({ harness: 'papercup', kind: 'bug' });
+    const claimable = materializeCountEvidence(out.countEvidence, 'claimable');
+    const matched = materializeCountEvidence(out.countEvidence, 'matchedByFilter');
+
+    expect(claimable).toMatchObject({
+      value: 3,
+      contract: {
+        population: {
+          id: 'current-claim-spec-issue-work-items',
+          selector: { kinds: ['bug'] },
+        },
+        cutoff: { kind: 'none' },
+        status: { id: 'claimable-for-caller' },
+        writer: { id: 'readIssueClaimability+planItemLaneBlockReason' },
+        unit: { id: 'canonical-work-item' },
+        exactness: { status: 'exact' },
+        scope: { resolvedHarness: 'papercup', caller: 'probe', callerRelative: true },
+      },
+    });
+    expect(claimable?.contract.measuredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(claimable?.contract.zeroMeaning).toContain('does not mean a fixed batch completed');
+    expect(matched).toMatchObject({
+      value: 9,
+      contract: {
+        metric: { id: 'matched-by-filter-count' },
+        status: { id: 'filter-match-before-floors' },
+        exactness: { status: 'exact' },
+      },
+    });
+  });
+
+  it('marks claimability as an upper bound when breakdownOnly cannot run the row-bounded plan-prose guard', async () => {
+    const out = await run({ harness: 'papercup', breakdownOnly: true });
+    const claimable = materializeCountEvidence(out.countEvidence, 'claimable');
+    const matched = materializeCountEvidence(out.countEvidence, 'matchedByFilter');
+
+    expect(claimable?.contract.exactness).toMatchObject({
+      status: 'bounded',
+      bound: 'upper',
+      reason: expect.stringContaining('breakdownOnly'),
+    });
+    expect(matched?.contract.exactness).toEqual({ status: 'exact' });
   });
 
   it('EI-21834285144372521: a plan-linked row the post-claim guard would block is excluded from claimable/rows, the count is corrected, and it is surfaced in ownerGateExcluded — never checked for a plan-less row', async () => {

@@ -11,6 +11,7 @@
  */
 
 import { fleetMetricsResultSchema } from '../fleet/fleet-metrics-contract';
+import { countEvidenceBundleSchema } from '../../count-evidence-contract';
 
 type JsonObject = Record<string, unknown>;
 export type BurnDownPayloadTier = 'trimmed' | 'standard';
@@ -354,6 +355,52 @@ function projectIssueOccurrences(value: unknown): JsonObject | undefined {
   };
 }
 
+function projectCountEvidence(value: unknown): JsonObject | undefined {
+  const source = object(value);
+  if (!source) return undefined;
+  const parsed = countEvidenceBundleSchema.safeParse({
+    contract: source.contract,
+    metrics: source.metrics,
+  });
+  const populationState = object(source.populationState);
+  if (!parsed.success || !populationState) return undefined;
+  if (populationState.kind === 'fixed-cohort') {
+    if (
+      typeof populationState.fixedCohortComplete !== 'boolean' ||
+      populationState.liveOpenPopulationEmpty !== null ||
+      typeof populationState.missingIds !== 'number'
+    ) return undefined;
+    return {
+      ...parsed.data,
+      populationState: {
+        kind: 'fixed-cohort',
+        fixedCohortComplete: populationState.fixedCohortComplete,
+        liveOpenPopulationEmpty: null,
+        missingIds: populationState.missingIds,
+        note: requiredString(populationState.note),
+      },
+    };
+  }
+  if (populationState.kind === 'live-census') {
+    if (
+      populationState.fixedCohortComplete !== null ||
+      typeof populationState.liveOpenPopulationEmpty !== 'boolean' ||
+      populationState.missingIds !== null
+    ) return undefined;
+    return {
+      ...parsed.data,
+      populationState: {
+        kind: 'live-census',
+        fixedCohortComplete: null,
+        liveOpenPopulationEmpty: populationState.liveOpenPopulationEmpty,
+        missingIds: null,
+        note: requiredString(populationState.note),
+      },
+    };
+  }
+  return undefined;
+}
+
 export function shapeBurnDown(
   data: unknown,
   tier: BurnDownPayloadTier,
@@ -411,6 +458,8 @@ export function shapeBurnDown(
   if (issueOccurrences) out.issueOccurrences = issueOccurrences;
   const fleetMetrics = fleetMetricsResultSchema.safeParse(source.fleetMetrics);
   if (fleetMetrics.success) out.fleetMetrics = fleetMetrics.data;
+  const countEvidence = projectCountEvidence(source.countEvidence);
+  if (countEvidence) out.countEvidence = countEvidence;
   const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason);
   if (cohortAudit) out.cohortAudit = cohortAudit;
   return out;

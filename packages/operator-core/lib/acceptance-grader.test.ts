@@ -6,6 +6,7 @@ import {
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
+  resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
 } from './acceptance-grader';
 
@@ -60,6 +61,29 @@ const baseCtx = {
 };
 const ctx = baseCtx as never;
 const callerCtx = (ownerId: string) => ({ ...baseCtx, uiClientId: ownerId }) as never;
+
+describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
+  it('adds current-revision work-item vetting critics to the discovery exclusion set', async () => {
+    const readVettingCritics = vi.fn(async () => ({
+      critics: ['su-work-item-critic', 'su-second-critic', 'su-work-item-critic'],
+      cardsConsidered: 2,
+    }));
+
+    const result = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+      {
+        rubricId: 'acceptance-ship-the-thing',
+        revision: 2,
+        proposedBy: 'su-author',
+        createdBy: 'su-author',
+      },
+      'su-shipper',
+      readVettingCritics,
+    );
+
+    expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 2);
+    expect(result).toEqual(['su-author', 'su-shipper', 'su-work-item-critic', 'su-second-critic']);
+  });
+});
 
 function deps(launch: ReturnType<typeof vi.fn>) {
   return {

@@ -3259,8 +3259,9 @@ pub fn draw_operator_dock(f: &mut Frame, app: &App, area: Rect) {
 /// rate-limit-layer-v2 lands its read-model route, D-004) + four tiles
 /// (Plans · Needs-you · Agents · Activity; j/k cycle, Enter opens the full
 /// tab, D-007) + the always-on operator strip at the bottom (Brief 24's
-/// `draw_operator_dock`, D-008). Tiles read the SAME pot-scoped app state the
-/// full tabs render (D-002/D-005) — no Overview-private fetches.
+/// `draw_operator_dock`, D-008). Four navigation tiles read the SAME pot-scoped
+/// app state the full tabs render (D-002/D-005); P-008's fifth pipeline tile
+/// reads the canonical registered state cells through the operator tool bridge.
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     // The operator strip yields on short terminals — the tiles win, and the
     // operator stays reachable via the Operator tab / the `o` dock.
@@ -3276,42 +3277,119 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 
     draw_overview_topbar(f, app, rows[0]);
 
-    // 2×2 grid on wide bodies; a 1×4 stack on narrow ones.
-    let tiles: [Rect; 4] = if area.width >= 96 {
+    // 3+2 grid on wide bodies; a five-row stack on narrow ones. The four
+    // navigation tiles keep their historical cursor order; Pipeline is a
+    // read-only status tile and therefore does not steal a focus stop.
+    let tiles: [Rect; 5] = if area.width >= 96 {
         let halves = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[1]);
         let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+            ])
             .split(halves[0]);
         let bot = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(halves[1]);
-        [top[0], top[1], bot[0], bot[1]]
+        [top[0], top[1], bot[0], bot[1], top[2]]
     } else {
-        let quarters = Layout::default()
+        let fifths = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
             ])
             .split(rows[1]);
-        [quarters[0], quarters[1], quarters[2], quarters[3]]
+        [fifths[0], fifths[1], fifths[2], fifths[3], fifths[4]]
     };
 
     draw_overview_plans_tile(f, app, tiles[0], app.overview_sel == 0);
     draw_overview_needs_you_tile(f, app, tiles[1], app.overview_sel == 1);
     draw_overview_agents_tile(f, app, tiles[2], app.overview_sel == 2);
     draw_overview_activity_tile(f, app, tiles[3], app.overview_sel == 3);
+    draw_overview_pipeline_tile(f, app, tiles[4]);
 
     if strip_h > 0 {
         draw_operator_dock(f, app, rows[2]);
     }
+}
+
+/// Compact text for one registered state cell. The state plane's three-way
+/// result is preserved verbatim at the boundary: `unknown` and `absent` are
+/// visible words, never collapsed to false/zero/green. For value reads the
+/// registered assessment code leads when available; callers that need the raw
+/// identity (candidate/deploy sha) opt into `prefer_value`.
+fn pipeline_cell_text(cell: &crate::models::PipelineCellRead, prefer_value: bool) -> String {
+    let Some(read) = cell.read.as_ref() else {
+        return "unknown".to_string();
+    };
+    match read.status.as_str() {
+        "absent" => "absent".to_string(),
+        "unknown" => read
+            .unknown
+            .as_ref()
+            .map(|u| format!("unknown:{}", u.code))
+            .unwrap_or_else(|| "unknown".to_string()),
+        "value" => {
+            let raw = match &read.value {
+                serde_json::Value::String(s) if !s.is_empty() => {
+                    Some(s.chars().take(12).collect())
+                }
+                serde_json::Value::Bool(v) => Some(if *v { "yes" } else { "no" }.to_string()),
+                serde_json::Value::Number(v) => Some(v.to_string()),
+                _ => None,
+            };
+            let assessment = read
+                .assessment
+                .as_ref()
+                .and_then(|a| (a.status == "resolved").then(|| a.code.clone()).flatten());
+            if prefer_value {
+                raw.or(assessment).unwrap_or_else(|| "unknown".to_string())
+            } else {
+                assessment.or(raw).unwrap_or_else(|| "unknown".to_string())
+            }
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// P-008: gate verdict, frozen candidate, main/staging buffer, and deployed
+/// sha, all from their registered state cells. Two compact rows keep every
+/// datum visible even in the narrow five-row Overview layout.
+fn draw_overview_pipeline_tile(f: &mut Frame, app: &App, area: Rect) {
+    let rows = match app.pipeline_status.as_ref() {
+        None => vec![Line::from(Span::styled(
+            "Pipeline state loading…",
+            Theme::dim(),
+        ))],
+        Some(s) => vec![
+            Line::from(vec![
+                Span::styled("gate ", Theme::dim()),
+                Span::raw(pipeline_cell_text(&s.gate_verdict, false)),
+                Span::styled(" · candidate ", Theme::dim()),
+                Span::raw(pipeline_cell_text(&s.frozen_candidate, true)),
+            ]),
+            Line::from(vec![
+                Span::styled("main ", Theme::dim()),
+                Span::raw(pipeline_cell_text(&s.main_behind_staging, false)),
+                Span::styled(" · deployed ", Theme::dim()),
+                Span::raw(pipeline_cell_text(&s.deployed_sha, true)),
+            ]),
+        ],
+    };
+    f.render_widget(
+        Paragraph::new(rows).block(overview_tile_block(" Pipeline · live cells ".into(), false)),
+        area,
+    );
 }
 
 /// The Overview tile chrome: bordered block, title styled selected/dim so the
@@ -3327,49 +3405,96 @@ fn overview_tile_block(title: String, selected: bool) -> Block<'static> {
         .title(Line::from(Span::styled(title, style)))
 }
 
-/// Top bar: the fleet rate/usage/max read-model (rate-limit-layer-v2 P-013,
-/// GET /api/operator/rate-limit-config — live once the poller has fetched it;
-/// dashes before that / on a pre-route host) + a live alerts count off the
-/// inbox alert tier. `+`/`-` edit the hard cap (P-005).
+fn burn_horizon(ms: i64) -> String {
+    if ms <= 0 {
+        return "now".into();
+    }
+    let minutes = (ms + 59_999) / 60_000;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 48 * 60 {
+        format!("{}h", (minutes + 59) / 60)
+    } else {
+        format!("{}d", (minutes + 1_439) / 1_440)
+    }
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+/// Top bar: canonical per-provider account capacity + burn projection from
+/// `accounts:status`, fleet concurrency from the existing rate read-model, and
+/// the live alert count. `+`/`-` continue to edit the hard fleet cap (P-005).
 fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
     let alerts = app
         .visible_inbox()
         .iter()
         .filter(|i| i.tier_rank() == 2)
         .count();
-    let mut spans: Vec<Span> = vec![Span::styled(" usage ", Theme::dim())];
+    let mut spans: Vec<Span> = vec![Span::styled(" acct ", Theme::dim())];
+    if app.account_pool_verdicts.is_empty() {
+        spans.push(Span::styled("— (connecting…)", Theme::dim()));
+    } else {
+        let total: usize = app.account_pool_verdicts.iter().map(|v| v.total).sum();
+        let serviceable: usize = app
+            .account_pool_verdicts
+            .iter()
+            .map(|v| v.serviceable)
+            .sum();
+        let walled: usize = app
+            .account_pool_verdicts
+            .iter()
+            .map(|v| v.walled_fresh)
+            .sum();
+        let unknown: usize = app.account_pool_verdicts.iter().map(|v| v.unknown).sum();
+        let pacing: usize = app.account_pool_verdicts.iter().map(|v| v.pacing).sum();
+        spans.push(Span::raw(format!("{serviceable}/{total} svc")));
+        if walled > 0 {
+            spans.push(Span::styled(format!(" · {walled} walled"), Theme::warn()));
+        }
+        if unknown > 0 {
+            spans.push(Span::styled(format!(" · {unknown} unk"), Theme::warn()));
+        }
+        if pacing > 0 {
+            let now = now_epoch_ms();
+            let nearest = app
+                .account_rows
+                .iter()
+                .filter_map(|row| row.burn.as_ref())
+                .filter(|burn| burn.disposition == "pacing-projection" && burn.action != "none")
+                .filter_map(|burn| burn.projected_exhaustion_at)
+                .min()
+                .map(|at| burn_horizon(at.saturating_sub(now)));
+            spans.push(Span::styled(
+                format!(
+                    " · burn {pacing} pace{}",
+                    nearest.map(|v| format!("@{v}")).unwrap_or_default()
+                ),
+                Theme::warn(),
+            ));
+        }
+    }
     match &app.fleet_rate {
         Some(s) => {
-            // Usage%: the worst known bucket; a dash when no provider exposes
-            // a ceiling (never fabricated — rate-limit v2 D-002).
-            match s.headline_usage_pct() {
-                Some(p) => spans.push(Span::raw(format!("{p:.0}%"))),
-                None => spans.push(Span::styled("—%", Theme::dim())),
-            }
-            spans.push(Span::styled("  ·  spend ", Theme::dim()));
-            let spend = s.usage.spend_usd;
-            spans.push(Span::raw(if spend <= 0.0 {
-                "$0".to_string()
-            } else if spend < 0.01 {
-                format!("${spend:.4}")
-            } else {
-                format!("${spend:.2}")
-            }));
             let fleet = &s.fleet;
-            spans.push(Span::styled("  ·  agents ", Theme::dim()));
+            spans.push(Span::styled(" · ag ", Theme::dim()));
             spans.push(Span::raw(fleet.live_agents.to_string()));
-            spans.push(Span::styled("  ·  dispatches ", Theme::dim()));
+            spans.push(Span::styled(" · dsp ", Theme::dim()));
             // Rate-governed in-flight dispatches / AIMD-effective / editable
             // max (eff shown only when the adaptive layer sits under the cap).
             if fleet.effective < fleet.cap {
                 spans.push(Span::raw(format!(
-                    "{} / eff {} / {}",
+                    "{}/e{}/m{}",
                     fleet.in_flight, fleet.effective, fleet.cap
                 )));
             } else {
-                spans.push(Span::raw(format!("{} / {}", fleet.in_flight, fleet.cap)));
+                spans.push(Span::raw(format!("{}/m{}", fleet.in_flight, fleet.cap)));
             }
-            spans.push(Span::styled("  +/- max", Theme::dim()));
+            spans.push(Span::styled(" +/-", Theme::dim()));
             let paused = s.paused_count();
             if paused > 0 {
                 spans.push(Span::styled(
@@ -3379,12 +3504,8 @@ fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         None => {
-            spans.push(Span::styled("—%", Theme::dim()));
-            spans.push(Span::styled("  ·  spend ", Theme::dim()));
-            spans.push(Span::styled("$—", Theme::dim()));
-            spans.push(Span::styled("  ·  agents ", Theme::dim()));
+            spans.push(Span::styled(" · ag ", Theme::dim()));
             spans.push(Span::styled("—", Theme::dim()));
-            spans.push(Span::styled("  (connecting…)", Theme::dim()));
         }
     }
     spans.push(Span::styled("  ·  ", Theme::dim()));
@@ -5181,11 +5302,10 @@ mod tests {
         });
 
         let text = render(&app, 120, 32);
-        // Top bar: no fleet_rate seeded here → the connecting slots render
-        // (the LIVE branch is covered by overview_topbar_renders_live_fleet_rate)
-        // + the LIVE alert-tier count.
-        assert!(text.contains("usage"), "topbar usage slot missing");
-        assert!(text.contains("agents"), "topbar agents slot missing");
+        // Top bar: no account/fleet reads seeded here → explicit connecting +
+        // unknown agent slots, plus the LIVE alert-tier count.
+        assert!(text.contains("acct"), "topbar accounts slot missing");
+        assert!(text.contains("ag"), "topbar agent-count slot missing");
         assert!(
             text.contains("connecting"),
             "pre-fetch topbar state missing"
@@ -5214,6 +5334,10 @@ mod tests {
         assert!(text.contains("building the overview"));
         // Activity tile: server-enriched summary rows.
         assert!(text.contains("edited ui.rs"));
+        // Pipeline tile: loading is explicit until the first registered-cell
+        // read lands; absence is never painted as an all-clear.
+        assert!(text.contains("Pipeline · live cells"));
+        assert!(text.contains("Pipeline state loading"));
         // Operator strip at the bottom (Brief 24's render-only dock, D-008).
         assert!(
             text.contains("press i to talk to this agent"),
@@ -5240,15 +5364,16 @@ mod tests {
     }
 
     #[test]
-    fn overview_topbar_renders_live_fleet_rate() {
-        use crate::models::{FleetRateFleet, FleetRateStatus, FleetRateUsageBucket};
+    fn overview_topbar_renders_account_burn_and_live_fleet_rate() {
+        use crate::models::{FleetRateFleet, FleetRateStatus};
+        use crate::session_config::{AccountBurnVerdict, AccountRow, ProviderPoolVerdict};
         let mut app = App::new();
         app.tab = Tab::Overview;
         // Before the read-model lands: dashes + the connecting hint.
         let connecting = render(&app, 120, 30);
         assert!(connecting.contains("connecting"));
-        // Live: usage% (worst known bucket) + spend + live agent count +
-        // rate-governed dispatch in/eff/max + edit hint.
+        // Live: canonical provider rollup + pacing projection, then live agent
+        // count and rate-governed dispatch in/eff/max.
         let mut s = FleetRateStatus::default();
         s.config.max_simultaneous_agents = 6;
         s.fleet = FleetRateFleet {
@@ -5258,22 +5383,116 @@ mod tests {
             effective: 4,
             floor: 1,
         };
-        s.usage.spend_usd = 1.23;
-        s.usage.buckets.push(FleetRateUsageBucket {
-            key: "a".into(),
-            usage_pct: Some(42.0),
-        });
         app.fleet_rate = Some(s);
+        app.account_pool_verdicts = vec![ProviderPoolVerdict {
+            total: 4,
+            serviceable: 2,
+            walled_fresh: 1,
+            unknown: 1,
+            pacing: 1,
+            ..Default::default()
+        }];
+        app.account_rows = vec![AccountRow {
+            id: "acct-1".into(),
+            burn: Some(AccountBurnVerdict {
+                action: "throttle".into(),
+                disposition: "pacing-projection".into(),
+                projected_exhaustion_at: Some(now_epoch_ms() + 90 * 60_000),
+            }),
+            ..Default::default()
+        }];
         let text = render(&app, 120, 30);
-        assert!(text.contains("42%"), "headline usage missing");
-        assert!(text.contains("$1.23"), "spend missing");
-        assert!(text.contains("agents 165"), "live agent count missing");
+        assert!(text.contains("2/4 svc"), "serviceable rollup missing");
+        assert!(text.contains("1 walled"), "measured wall count missing");
+        assert!(text.contains("1 unk"), "unknown count missing");
+        assert!(text.contains("burn 1 pace@2h"), "burn disposition/horizon missing");
+        assert!(!text.contains("spend"), "retired spend stub still rendered");
+        assert!(text.contains("ag 165"), "live agent count missing");
         assert!(
-            text.contains("dispatches 3 / eff 4 / 6"),
+            text.contains("dsp 3/e4/m6"),
             "dispatch in/eff/max missing"
         );
-        assert!(text.contains("+/- max"), "edit hint missing");
+        assert!(text.contains("+/-"), "edit hint missing");
         assert!(!text.contains("connecting"));
+    }
+
+    #[test]
+    fn overview_pipeline_tile_preserves_value_unknown_and_absent() {
+        use crate::models::{
+            PipelineCellRead, PipelineStatus, StateCellAssessment, StateCellRead, StateCellUnknown,
+        };
+        let value = |cell: &str, value: serde_json::Value, code: Option<&str>| PipelineCellRead {
+            cell: cell.into(),
+            read: Some(StateCellRead {
+                status: "value".into(),
+                cell: cell.into(),
+                value,
+                assessment: code.map(|code| StateCellAssessment {
+                    status: "resolved".into(),
+                    code: Some(code.into()),
+                }),
+                unknown: None,
+            }),
+            error: None,
+        };
+        let mut app = App::new();
+        app.tab = Tab::Overview;
+        app.pipeline_status = Some(PipelineStatus {
+            gate_verdict: value(
+                "gate.greenCheckpoint.verdict",
+                serde_json::json!(0),
+                Some("passing-buffered"),
+            ),
+            frozen_candidate: value(
+                "gate.greenCheckpoint.candidate",
+                serde_json::json!("abcdef1234567890"),
+                Some("active-candidate"),
+            ),
+            main_behind_staging: PipelineCellRead {
+                cell: "git.mainBehindStaging".into(),
+                read: Some(StateCellRead {
+                    status: "unknown".into(),
+                    cell: "git.mainBehindStaging".into(),
+                    unknown: Some(StateCellUnknown {
+                        code: "resolver-failed".into(),
+                        detail: "probe timed out".into(),
+                    }),
+                    ..Default::default()
+                }),
+                error: None,
+            },
+            deployed_sha: PipelineCellRead {
+                cell: "deploy.3070.sha".into(),
+                read: Some(StateCellRead {
+                    status: "absent".into(),
+                    cell: "deploy.3070.sha".into(),
+                    ..Default::default()
+                }),
+                error: None,
+            },
+        });
+
+        let text = render(&app, 120, 32);
+        assert!(
+            text.contains("passing-buffered"),
+            "gate assessment missing: {text}"
+        );
+        assert!(
+            text.contains("abcdef123456"),
+            "candidate sha missing: {text}"
+        );
+        assert!(
+            text.contains("unknown:resolver-failed"),
+            "unknown code must remain visible: {text}"
+        );
+        assert!(
+            text.contains("absent"),
+            "absent must remain visible: {text}"
+        );
+        assert!(
+            !text.contains("gate green"),
+            "the TUI must not infer green from zero"
+        );
     }
 
     #[test]

@@ -2416,6 +2416,7 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
     }
+    let _ = tx.send(Event::PipelineStatus(client.pipeline_status().await));
 }
 
 // (mark_session_launched moved inline into the LaunchPanes arm — EI-358
@@ -5602,6 +5603,10 @@ async fn refetch_all(
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
     }
+    // P-008: registered state cells, read through the operator's generic tool
+    // bridge. Per-cell failures remain in-band in the model, so this never
+    // converts an unavailable measurement into an all-clear.
+    let _ = tx.send(Event::PipelineStatus(client.pipeline_status().await));
     // Deployed cloud frames (per-frame dock tabs, hive-agent-tabs P-013).
     // Quietly optional: nothing deployed / an older host → no tabs, no toasts.
     if let Ok(fr) = client.deploy_frames().await {
@@ -5741,8 +5746,9 @@ async fn refetch_all(
     // Agent Chat account-route picker. The generic run-tool bridge returns
     // live pool rows; an empty pool still leaves the Auto row available.
     match client.accounts_status().await {
-        Ok(rows) => {
-            let _ = tx.send(Event::AccountRows(rows));
+        Ok(status) => {
+            let _ = tx.send(Event::AccountRows(status.accounts));
+            let _ = tx.send(Event::AccountPoolVerdicts(status.pool_verdict));
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("accounts-status: {e}")));

@@ -1355,6 +1355,121 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(history.n).toBe(4);
   });
 
+  it('adds a declared BAR with structured checks through the existing atomic amendment path', async () => {
+    const seeded = await seedBarContract('criteria-set-addition-subject');
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    const [subject] = await db.adminSql<{ content: string; version: number }[]>`
+      SELECT content, version FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    const nextContent = subject!.content
+      .replace('\n\n## Design', '\n\n**R-3 — Third outcome.** The third outcome holds.\n\n## Design')
+      .replace('| R-2 | P-002 | tree |', '| R-2 | P-002 | tree |\n| R-3 | P-003 | tree |')
+      .replace(
+        '- **P-002** `done` second outcome',
+        '- **P-002** `done` second outcome\n- **P-003** `todo` third outcome',
+      );
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET content=${nextContent}, content_hash=md5(${nextContent}), version=version+1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    await db.adminSql`
+      INSERT INTO harness_shared.plan_items
+        (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
+      VALUES (${seeded.workspaceId},'papercusp',${seeded.subject},'P-003',3,'todo','third outcome')`;
+
+    const check = {
+      kind: 'tests' as const,
+      files: ['packages/operator-core/lib/acceptance-bar-amendment.test.ts'],
+    };
+    const criteria = [
+      ...before!.criteria.map((criterion) => ({
+        ...criterion,
+        method: `Run the focused test for ${criterion.barKey}.`,
+        check,
+      })),
+      rubrics.normalizeAcceptanceBarCriterion({
+        key: 'r-3',
+        title: 'Third outcome',
+        model: 'Third outcome. The third outcome holds.',
+        method: 'Run the focused test for R-3.',
+        driftMarkers: 'R-3 is falsified when the third outcome is absent.',
+        barKey: 'R-3',
+        role: 'outcome',
+        mandatory: true,
+        requiredScope: ['tree'],
+        evidencePlane: 'tree',
+        passRatings: ['healthy'],
+        barProvenance: {
+          lifecycle: 'legacy-backfilled',
+          declaredAt: '2026-09-05T12:00:00.000Z',
+          declaredBy: 'amendment-actor',
+        },
+        check,
+      }),
+    ];
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Add the newly declared R-3 and bind runnable checks across the complete set.',
+      expectedRubricRevision: before!.revision,
+      expectedSubjectPlanRevision: Number(subject!.version) + 1,
+      criteria,
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({
+      changedBars: ['R-3'],
+      approvalRequired: true,
+      projectionCount: 3,
+      revisionMovement: { rubric: { from: 1, to: 2 }, subject: { from: 2, to: 3 } },
+    });
+    expect(preview!.approval.bars).toEqual([expect.objectContaining({ barKey: 'R-3', priorBarHash: null })]);
+    expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-3', kinds: ['added'] }));
+
+    const approvalRef = await postApproval(amendment);
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef });
+    expect(after!.criteria).toHaveLength(3);
+    expect(after!.criteria.every((criterion) => criterion.method && criterion.check?.kind === 'tests')).toBe(true);
+    const projections = await db.adminSql<
+      Array<{
+        spec_id: string;
+        source_bar_key: string;
+        plan_item_id: string;
+        source_rubric_revision: number;
+      }>
+    >`
+      SELECT c.spec_id, r.source_bar_key, r.plan_item_id, r.source_rubric_revision
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+       WHERE c.workspace_id=${seeded.workspaceId} AND c.harness_slug='papercusp'
+         AND c.plan_slug=${seeded.subject} AND r.revision=c.current_revision
+       ORDER BY c.spec_id`;
+    expect(projections).toHaveLength(3);
+    expect(projections).toContainEqual(
+      expect.objectContaining({
+        spec_id: 'AUTO-BAR-R-3-P-003',
+        source_bar_key: 'R-3',
+        plan_item_id: 'P-003',
+        source_rubric_revision: 2,
+      }),
+    );
+    const [pinned] = await db.adminSql<
+      Array<{
+        version: number;
+        acceptance_bar_rubric_revision: number;
+        acceptance_bar_set_hash: string;
+      }>
+    >`
+      SELECT version, acceptance_bar_rubric_revision, acceptance_bar_set_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    expect(Number(pinned!.version)).toBe(3);
+    expect(Number(pinned!.acceptance_bar_rubric_revision)).toBe(2);
+    expect(pinned!.acceptance_bar_set_hash).toBe(after!.barSetHash);
+  });
+
   async function postApproval(input: Parameters<typeof rubrics.amendRubric>[0], author = 'outside-reviewer') {
     const preview = await rubrics.previewAcceptanceBarAmendment(input);
     expect(preview).not.toBeNull();

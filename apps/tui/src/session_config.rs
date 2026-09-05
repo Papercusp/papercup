@@ -291,6 +291,46 @@ pub struct AccountRow {
     pub reading_status: Option<String>,
     #[serde(default)]
     pub last_probe_failed_at: Option<i64>,
+    #[serde(default)]
+    pub burn: Option<AccountBurnVerdict>,
+}
+
+/// The burn-governor projection embedded in `accounts:status`. Its units come
+/// from the writer: utilization fraction/hour and an epoch-millisecond
+/// projected exhaustion instant. `pacing-projection` is policy, not a wall.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountBurnVerdict {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub disposition: String,
+    #[serde(default)]
+    pub projected_exhaustion_at: Option<i64>,
+}
+
+/// Canonical per-provider rollup returned by `accounts:status`. Counts are
+/// consumed as written; account rows from different providers are never
+/// re-grouped or reinterpreted in the TUI.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPoolVerdict {
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub serviceable: usize,
+    #[serde(default)]
+    pub walled_fresh: usize,
+    #[serde(default)]
+    pub pacing: usize,
+    #[serde(default)]
+    pub unknown: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AccountsStatus {
+    pub accounts: Vec<AccountRow>,
+    pub pool_verdict: Vec<ProviderPoolVerdict>,
 }
 
 impl AccountRow {
@@ -934,6 +974,40 @@ mod tests {
                 "{id} must not issue a call that cannot reach the session"
             );
         }
+    }
+
+    #[test]
+    fn account_status_wire_preserves_burn_and_provider_rollup_units() {
+        let row: AccountRow = serde_json::from_value(json!({
+            "id": "acct-1",
+            "burn": {
+                "action": "throttle",
+                "disposition": "pacing-projection",
+                "projectedExhaustionAt": 1_900_000_000_000_i64
+            }
+        }))
+        .unwrap();
+        let burn = row.burn.expect("burn projection");
+        assert_eq!(burn.disposition, "pacing-projection");
+        assert_eq!(burn.projected_exhaustion_at, Some(1_900_000_000_000));
+
+        let verdict: ProviderPoolVerdict = serde_json::from_value(json!({
+            "provider": "codex",
+            "total": 4,
+            "serviceable": 2,
+            "walledFresh": 1,
+            "paused": 1,
+            "pacing": 1,
+            "unknown": 1,
+            "atCapacity": false,
+            "binding": "none"
+        }))
+        .unwrap();
+        assert_eq!(verdict.total, 4);
+        assert_eq!(verdict.serviceable, 2);
+        assert_eq!(verdict.walled_fresh, 1);
+        assert_eq!(verdict.pacing, 1);
+        assert_eq!(verdict.unknown, 1);
     }
 
     // ---- outcome reporting ----

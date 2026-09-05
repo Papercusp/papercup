@@ -320,16 +320,71 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(await goalMetadata()).toBeNull();
   });
 
-  it('a goal with no attributable spend snapshots an unmeasured zero, not a fabricated figure', async () => {
+  it('a goal with no pot samples snapshots null instead of fabricating a measured zero', async () => {
     await seedGoal();
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res.written).toBe(1);
     const md = await goalMetadata();
-    expect(md?.spentCents).toBe(0);
+    expect(md?.spentCents).toBeNull();
     expect(md?.spentCentsBreakdown).toMatchObject({
+      potCents: 0,
       potSamples: 0,
       measured: false,
       diagnosticSamples: 0,
+    });
+  });
+
+  it('an attached but unused pot is still unmeasurable', async () => {
+    await seedGoal();
+    await pot('hive-a');
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res.written).toBe(1);
+    expect(await goalMetadata()).toMatchObject({
+      spentCents: null,
+      spentCentsBreakdown: {
+        potCents: 0,
+        potSamples: 0,
+        measured: false,
+      },
+    });
+  });
+
+  it('diagnostic-only spend cannot promote an empty pot leg into authoritative spend', async () => {
+    await seedGoal();
+    await subjectOwner('su-subject');
+    await ownedSession('su-subject', 'S-diagnostic');
+    await sample({ session: 'S-diagnostic', usd: 0.75 });
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res.written).toBe(1);
+    expect(await goalMetadata()).toMatchObject({
+      spentCents: null,
+      spentCentsBreakdown: {
+        potCents: 0,
+        potSamples: 0,
+        sessionCents: 75,
+        sessionSamples: 1,
+        diagnosticTotalCents: 75,
+      },
+    });
+  });
+
+  it('an observed zero-cost pot sample remains an authoritative numeric zero', async () => {
+    await seedGoal();
+    await pot('hive-a');
+    await sample({ harness: 'hive-a', usd: 0 });
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res.written).toBe(1);
+    expect(await goalMetadata()).toMatchObject({
+      spentCents: 0,
+      spentCentsBreakdown: {
+        potCents: 0,
+        potSamples: 1,
+        potUnpricedSamples: 0,
+        measured: true,
+      },
     });
   });
 
@@ -426,9 +481,17 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res.tripwiresAdvanced).toBe(0);
 
-    // The snapshot still records the floor — but the tripwire stays blank rather
-    // than reporting a lower bound as though it were the measured figure.
-    expect((await goalMetadata())?.spentCentsBreakdown).toMatchObject({ measured: false });
+    // The authoritative snapshot preserves the known priced floor even though
+    // the complete figure is unmeasured; only the tripwire stays blank.
+    expect(await goalMetadata()).toMatchObject({
+      spentCents: 100,
+      spentCentsBreakdown: {
+        potCents: 100,
+        potSamples: 2,
+        potUnpricedSamples: 1,
+        measured: false,
+      },
+    });
     expect(await goalTripwires()).toEqual([{ metric: 'spend_usd', label: 'spend', threshold: 50, unit: 'usd' }]);
   });
 

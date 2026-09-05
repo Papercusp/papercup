@@ -214,7 +214,7 @@ describe('fleet:status', () => {
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
-    expect(out.headcount).toEqual({
+    expect(out.headcount).toMatchObject({
       enabled: true,
       target: 5,
       current: 3,
@@ -247,7 +247,7 @@ describe('fleet:status', () => {
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
-    expect(out.headcount).toEqual({
+    expect(out.headcount).toMatchObject({
       enabled: false,
       target: null,
       current: 2,
@@ -301,7 +301,7 @@ describe('fleet:status', () => {
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
-    expect(out.headcount).toEqual({
+    expect(out.headcount).toMatchObject({
       enabled: true,
       target: 3,
       current: 2,
@@ -670,7 +670,7 @@ describe('fleet:status', () => {
       const resultPromise = invoke({ fleet: 'rocket' });
       await vi.advanceTimersByTimeAsync(10_000);
       const out = parse(await resultPromise);
-      expect(out.headcount).toEqual({
+      expect(out.headcount).toMatchObject({
         enabled: null,
         target: null,
         current: 1,

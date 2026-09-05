@@ -273,6 +273,8 @@ export function deriveVerdict(
   const stale =
     subject.stale ??
     (hbMs != null && Number.isFinite(hbMs) ? nowMs - hbMs > PRESENCE_STALE_MS : false);
+  const heartbeatSignalPresent =
+    subject.stale != null || (hbMs != null && Number.isFinite(hbMs));
   // Session-log authority: a not-wakeable owner whose recorded session is live
   // and has no turn in flight is `recorded` — classified BEFORE the
   // heartbeat/pid path so it is never force-ended (presence-derive-from-
@@ -382,7 +384,7 @@ export function deriveVerdict(
         ? nowMs - w.lastActivityMs >= WARM_IDLE_ACTIVITY_MS
         : false,
     confirmLiveness: needsLivenessConfirmation(sessionState),
-    heartbeatFresh: !stale,
+    heartbeatFresh: heartbeatSignalPresent ? !stale : false,
     // Spread-when-present, never a `?? false` default: an absent self-wake leg
     // must stay ABSENT so a reader cannot mistake "not fetched" for "nothing
     // will wake this agent" (presence-selfwake.ts § Why `unknown` is not `none`).
@@ -408,6 +410,8 @@ export function unknownVerdict(subject: LivenessSubject, nowMs: number): Livenes
   const stale =
     subject.stale ??
     (hbMs != null && Number.isFinite(hbMs) ? nowMs - hbMs > PRESENCE_STALE_MS : false);
+  const heartbeatSignalPresent =
+    subject.stale != null || (hbMs != null && Number.isFinite(hbMs));
   return {
     ownerId: subject.ownerId,
     sessionState: null,
@@ -417,8 +421,29 @@ export function unknownVerdict(subject: LivenessSubject, nowMs: number): Livenes
     wakeAttemptMiss: false,
     // Never assume a subject we could not measure is safe to act on.
     confirmLiveness: true,
-    heartbeatFresh: !stale,
+    heartbeatFresh: heartbeatSignalPresent ? !stale : false,
   };
+}
+
+/** A bare owner id has no presence-derived liveness evidence to feed the
+ *  state machine. In particular, `fetchWakeability` deliberately emits a
+ *  `wakeable:false/liveTurn:false` row for every requested id, so that
+ *  negative pair is not evidence that the owner ended. */
+function hasPresenceSignal(subject: LivenessSubject): boolean {
+  return (
+    subject.heartbeatAt != null ||
+    subject.stale != null ||
+    subject.host != null ||
+    subject.pid != null ||
+    subject.source != null
+  );
+}
+
+/** Positive wakeability evidence is sufficient to classify a subject even when
+ *  the caller supplied only an owner id. Negative/default wakeability values
+ *  are not: they are also what the batch fetch returns for an unknown id. */
+function hasPositiveWakeabilitySignal(w: WakeabilitySignals): boolean {
+  return w.wakeable || w.liveTurn || w.wakeAttemptMiss === true || w.lastActivityMs != null;
 }
 
 /**
@@ -515,6 +540,19 @@ export async function resolveSessionStates(
       // DI seam's path. That is precisely why the unknown must be
       // REPRESENTABLE: an injected partial map used to shrink the result
       // silently, and the shrink was indistinguishable from "not asked".
+      out.set(s.ownerId, unknownVerdict(s, nowMs));
+      continue;
+    }
+    const hasRecordedEvidence = recordedLive.has(s.ownerId) || recordedEnded.has(s.ownerId);
+    const psuHostLive =
+      psuHost.positive === true &&
+      s.agentRole != null &&
+      s.agentRole !== 'cup' &&
+      findHostFn(s.ownerId) != null;
+    if (!hasPresenceSignal(s) && !hasPositiveWakeabilitySignal(w) && !hasRecordedEvidence && !psuHostLive) {
+      // A wakeability row with only negative/default values is not a measured
+      // death verdict for a bare id: the batch query manufactures that row for
+      // ids it has never seen. Preserve the existing in-band UNKNOWN shape.
       out.set(s.ownerId, unknownVerdict(s, nowMs));
       continue;
     }

@@ -16,65 +16,136 @@ import { trackDetached } from '../../detached-imports';
 import { rubricCriterionSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 
-export const rubricsAmendArgs = z.object({
-  rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
-  dryRun: z.boolean().optional().describe('preview a BAR meaning amendment without writing; returns exact approval JSON for an outside-lineage reviewer to post through work_items:comment or another authenticated Threadable verb'),
-  criteria: z.array(rubricCriterionSchema).min(1).max(200).optional().describe(
-    'acceptance-kind only: replace the COMPLETE criterion set through the atomic BAR amendment transaction. Use this when adding a BAR or binding structured checks across the set; read rubrics:get first and resubmit every stored criterion',
-  ),
-  criterionEvidencePlane: z.object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
-    .optional().describe('change one acceptance criterion structural evidence plane through the canonical BAR amendment transaction'),
-  criterion: z
-    .object({
-      key: z.string().min(1).describe('the criterion key (must exist — keys are identity, not amendable)'),
-      field: z.enum(AMENDABLE_CRITERION_FIELDS).describe('which prose field to patch'),
-      mode: z
-        .enum(['append', 'replace'])
-        .describe("'append' adds text as a new paragraph (never guarded); 'replace' swaps the whole field (shrink-guarded)"),
-      text: z.string().min(1).max(20000).describe('the text to append / the full replacement text'),
-    })
-    .optional()
-    .describe('patch one criterion field'),
-  criterionClass: z
-    .object({
-      key: z.string().min(1).describe('the criterion key (must exist)'),
-      class: z.enum(['settle-once', 'violatable']),
-    })
-    .optional()
-    .describe(
-      "set one criterion's grading class (P-008). UPGRADE-ONLY here: tagging 'violatable' tightens grading, so it keeps status + ratifier; downgrading a stored 'violatable' is refused — use rubrics:propose with classDowngradeReason",
-    ),
-  methodRef: z.string().max(200).optional().describe('set/replace the agent-insights runbook slug for the rubric-level method'),
-  composes: z
-    .array(z.string().trim().min(1))
-    .min(1)
-    .max(16)
-    .optional()
-    .describe(
-      'replace the unpinned composition refs with existing standard-kind rubric ids; omit to preserve the current list (revision pins are intentionally not supported)',
-    ),
-  allowMethodShrink: z
-    .boolean()
-    .optional()
-    .describe("loss-guard ack for mode:'replace' that shrinks a procedure >40% or drops its REPLICATION DRILL marker; requires shrinkReason"),
-  shrinkReason: z.string().min(1).max(2000).optional().describe('why the shrink is intentional (required with allowMethodShrink)'),
-  reason: z.string().min(1).max(4000).optional().describe('reason for a started-BAR meaning amendment; recorded on the subject-plan Decision'),
-  expectedRubricRevision: z.number().int().positive().optional().describe('optimistic CAS for the acceptance-rubric plan revision'),
-  expectedSubjectPlanRevision: z.number().int().positive().optional().describe('optimistic CAS for the subject-plan revision'),
-  idempotencyKey: z.string().min(1).max(200).optional().describe('stable replay token for a started-BAR amendment'),
-  approvalRef: z.string().min(1).max(240).optional().describe('thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer'),
-  approvedBy: z.string().min(1).max(200).optional().describe('optional assertion of the reviewer identity; must match the approval post author'),
-  approvedAt: z.string().datetime({ offset: true }).optional().describe('legacy hint; authoritative approval time is always read from the post'),
-  faultInjection: z.enum(['after-decision', 'after-rubric', 'after-projection', 'after-rebind']).optional().describe('test-only rollback probe'),
-}).superRefine((args, ctx) => {
-  if (args.criteria && (args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['criteria'],
-      message: 'criteria is the complete replacement set and cannot be combined with criterion, criterionClass, or criterionEvidencePlane patches',
-    });
-  }
+const amendmentCriterionSchema = rubricCriterionSchema.extend({
+  // rubrics:get exposes the canonical model again as the read-friendly `bar`
+  // alias. Accept that exact round-trip shape here; buildRubricTemplateData
+  // already verifies model/bar equivalence and persists only model.
+  bar: z.string().min(1).optional(),
 });
+
+export const rubricsAmendArgs = z
+  .object({
+    rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe(
+        'preview a BAR meaning amendment without writing; returns exact approval JSON for an outside-lineage reviewer to post through work_items:comment or another authenticated Threadable verb',
+      ),
+    criteria: z
+      .array(amendmentCriterionSchema)
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'acceptance-kind only: replace the COMPLETE criterion set through the atomic BAR amendment transaction. Use this when adding a BAR or binding structured checks across the set; read rubrics:get first and resubmit every stored criterion',
+      ),
+    criterionEvidencePlane: z
+      .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
+      .optional()
+      .describe(
+        'change one acceptance criterion structural evidence plane through the canonical BAR amendment transaction',
+      ),
+    criterion: z
+      .object({
+        key: z.string().min(1).describe('the criterion key (must exist — keys are identity, not amendable)'),
+        field: z.enum(AMENDABLE_CRITERION_FIELDS).describe('which prose field to patch'),
+        mode: z
+          .enum(['append', 'replace'])
+          .describe(
+            "'append' adds text as a new paragraph (never guarded); 'replace' swaps the whole field (shrink-guarded)",
+          ),
+        text: z.string().min(1).max(20000).describe('the text to append / the full replacement text'),
+      })
+      .optional()
+      .describe('patch one criterion field'),
+    criterionClass: z
+      .object({
+        key: z.string().min(1).describe('the criterion key (must exist)'),
+        class: z.enum(['settle-once', 'violatable']),
+      })
+      .optional()
+      .describe(
+        "set one criterion's grading class (P-008). UPGRADE-ONLY here: tagging 'violatable' tightens grading, so it keeps status + ratifier; downgrading a stored 'violatable' is refused — use rubrics:propose with classDowngradeReason",
+      ),
+    methodRef: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('set/replace the agent-insights runbook slug for the rubric-level method'),
+    composes: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(16)
+      .optional()
+      .describe(
+        'replace the unpinned composition refs with existing standard-kind rubric ids; omit to preserve the current list (revision pins are intentionally not supported)',
+      ),
+    allowMethodShrink: z
+      .boolean()
+      .optional()
+      .describe(
+        "loss-guard ack for mode:'replace' that shrinks a procedure >40% or drops its REPLICATION DRILL marker; requires shrinkReason",
+      ),
+    shrinkReason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('why the shrink is intentional (required with allowMethodShrink)'),
+    reason: z
+      .string()
+      .min(1)
+      .max(4000)
+      .optional()
+      .describe('reason for a started-BAR meaning amendment; recorded on the subject-plan Decision'),
+    expectedRubricRevision: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('optimistic CAS for the acceptance-rubric plan revision'),
+    expectedSubjectPlanRevision: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('optimistic CAS for the subject-plan revision'),
+    idempotencyKey: z.string().min(1).max(200).optional().describe('stable replay token for a started-BAR amendment'),
+    approvalRef: z
+      .string()
+      .min(1)
+      .max(240)
+      .optional()
+      .describe(
+        'thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer',
+      ),
+    approvedBy: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('optional assertion of the reviewer identity; must match the approval post author'),
+    approvedAt: z
+      .string()
+      .datetime({ offset: true })
+      .optional()
+      .describe('legacy hint; authoritative approval time is always read from the post'),
+    faultInjection: z
+      .enum(['after-decision', 'after-rubric', 'after-projection', 'after-rebind'])
+      .optional()
+      .describe('test-only rollback probe'),
+  })
+  .superRefine((args, ctx) => {
+    if (args.criteria && (args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['criteria'],
+        message:
+          'criteria is the complete replacement set and cannot be combined with criterion, criterionClass, or criterionEvidencePlane patches',
+      });
+    }
+  });
 
 export default defineTool({
   name: 'rubrics:amend',
