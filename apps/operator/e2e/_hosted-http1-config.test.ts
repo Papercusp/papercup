@@ -31,9 +31,11 @@ describe('hosted HTTP/1.1 acceptance configuration', () => {
     const config = readHostedHttp1AcceptanceConfig({
       PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE: state,
       PAPERCUSP_HOSTED_ACCEPTANCE_ORIGIN: 'https://app.papercusp.com',
+      PAPERCUSP_HOSTED_ACCEPTANCE_PROXY: 'socks5://127.0.0.1:18029',
     });
     expect(config.origin).toBe('https://app.papercusp.com');
     expect(config.storageStatePath).toBe(state);
+    expect(config.proxyServer).toBe('socks5://127.0.0.1:18029');
 
     expect(() =>
       readHostedHttp1AcceptanceConfig({
@@ -46,6 +48,12 @@ describe('hosted HTTP/1.1 acceptance configuration', () => {
         PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE: storageState(0o644),
       }),
     ).toThrow(/chmod 600/);
+    expect(() =>
+      readHostedHttp1AcceptanceConfig({
+        PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE: state,
+        PAPERCUSP_HOSTED_ACCEPTANCE_PROXY: 'socks5://storewolf:18029',
+      }),
+    ).toThrow(/loopback SOCKS5/);
   });
 
   it('rejects absent auth instead of silently running anonymous acceptance', () => {

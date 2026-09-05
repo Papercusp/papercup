@@ -8,6 +8,7 @@ export interface HostedHttp1AcceptanceConfig {
   origin: string;
   storageStatePath: string;
   evidenceDir: string;
+  proxyServer?: string;
   slo: {
     coldHydrationMs: number;
     finiteInteractionMs: number;
@@ -16,6 +17,32 @@ export interface HostedHttp1AcceptanceConfig {
     lcpMs: number;
     syncQueueWaitMs: number;
   };
+}
+
+function exactLoopbackSocksProxy(raw: string | undefined): string | undefined {
+  if (!raw?.trim()) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('PAPERCUSP_HOSTED_ACCEPTANCE_PROXY must be an exact loopback SOCKS5 URL');
+  }
+  const port = Number(url.port);
+  if (
+    url.protocol !== 'socks5:' ||
+    !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    url.username ||
+    url.password ||
+    (url.pathname !== '/' && url.pathname !== '') ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('PAPERCUSP_HOSTED_ACCEPTANCE_PROXY must be an exact loopback SOCKS5 URL');
+  }
+  return `${url.protocol}//${url.hostname}:${url.port}`;
 }
 
 function exactHttpsOrigin(raw: string): string {
@@ -83,10 +110,12 @@ export function readHostedHttp1AcceptanceConfig(
     env.PAPERCUSP_HOSTED_ACCEPTANCE_EVIDENCE_DIR?.trim() ||
       resolve(tmpdir(), 'papercusp-hosted-http1-acceptance'),
   );
+  const proxyServer = exactLoopbackSocksProxy(env.PAPERCUSP_HOSTED_ACCEPTANCE_PROXY);
   return {
     origin,
     storageStatePath,
     evidenceDir,
+    proxyServer,
     slo: {
       coldHydrationMs: positiveMs(env, 'PAPERCUSP_HOSTED_SLO_COLD_HYDRATION_MS', 15_000),
       finiteInteractionMs: positiveMs(env, 'PAPERCUSP_HOSTED_SLO_INTERACTION_MS', 5_000),

@@ -25,6 +25,7 @@ export default defineConfig({
   use: {
     baseURL: acceptance.origin,
     storageState: acceptance.storageStatePath,
+    proxy: acceptance.proxyServer ? { server: acceptance.proxyServer } : undefined,
     actionTimeout: 10_000,
     navigationTimeout: 30_000,
     trace: 'off',
