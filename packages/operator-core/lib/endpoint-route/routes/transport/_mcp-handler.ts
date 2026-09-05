@@ -629,6 +629,44 @@ export function crossHiveLaunchHint(toolName: string, scopeHive: string): string
 }
 
 /**
+ * EI-22387683489943406: tools whose cross-hive refusal costs LATENCY rather than
+ * work, because the target install already runs the same action for itself on a
+ * schedule.
+ *
+ * The clamp is correct and must not widen — only PLATFORM_POT_SLUG gets the narrow
+ * exemption below. But the bare refusal reads as "your work is stranded": the caller
+ * asked for a commit, was told no, and was given nothing saying a commit is coming
+ * anyway. Measured 2026-09-05: a session confined to `sb-devboard-hive` hit this
+ * against `portal`, filed it as a MAJOR bug asserting "so WI-2142851 files remain
+ * uncommitted" — and that consequence was false. `portal`'s own durable git-sync
+ * routine committed that checkout 11 times in the following 100 minutes. Every
+ * install carries its own git-sync routine (73/73 at the time of measurement), so
+ * the refusal costs one cadence tick, not the commit.
+ *
+ * Six of those 73 were stale, so this hint must ROUTE TO A PROBE rather than promise
+ * a sweep: the honest answer is "verify, and escalate only if that install's routine
+ * is inactive". Same lesson as CROSS_HIVE_LAUNCH_TOOLS above — a boundary that is
+ * right to refuse is still wrong to refuse without naming what happens next.
+ */
+const CROSS_HIVE_SELF_SWEEPING_TOOLS: ReadonlySet<string> = new Set(['git-sync:run']);
+
+/**
+ * The "this is latency, not lost work" hint for a self-sweeping tool, or '' for any
+ * other tool.
+ */
+export function crossHiveSelfSweepHint(toolName: string, slug: string, scopeHive: string): string {
+  if (!CROSS_HIVE_SELF_SWEEPING_TOOLS.has(toolName)) return '';
+  return (
+    ` This refusal costs LATENCY, not work: "${slug}" runs its own git-sync routine, which commits that ` +
+    `checkout on its own cadence regardless of who fires it, so a session confined to "${scopeHive}" does ` +
+    'not need to fire it. Before reporting the work uncommitted, wait one tick and verify against the ' +
+    "checkout itself — TZ=UTC git -C <that checkout> log -3 --date=iso-strict-local --format='%cd %h %s'. " +
+    "Escalate only when that verification shows the sweep is NOT happening (the install's git-sync routine " +
+    'is inactive or failing); a refused manual fire is not by itself evidence of stranded work.'
+  );
+}
+
+/**
  * EI-22344259264889593 / EI-22344366831358072: a session may execute in a
  * repo-less Hive while its canonical editable checkout remains the workspace's
  * platform/self Pot. The generic Hive clamp rejected both halves of the one
@@ -995,7 +1033,7 @@ async function applyScopedSuperuserTransportClamp(
               content: [
                 {
                   type: 'text' as const,
-                  text: `harness_forbidden: harness "${requestedHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,
+                  text: `harness_forbidden: harness "${requestedHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}${crossHiveSelfSweepHint(toolName, requestedHarness, scopeHive)}`,
                 },
               ],
             },
@@ -1089,7 +1127,7 @@ async function applyScopedSuperuserTransportClamp(
               content: [
                 {
                   type: 'text' as const,
-                  text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.`,
+                  text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.${crossHiveSelfSweepHint(toolName, slug, scopeHive)}`,
                 },
               ],
             },
@@ -3004,7 +3042,7 @@ const handler = createMcpHandler(
                     content: [
                       {
                         type: 'text' as const,
-                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}`,
+                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".${crossHiveClaimHint}${crossHiveWorkItemReadHint}${crossHiveLaunchHint(toolName, scopeHive)}${crossHiveSelfSweepHint(toolName, argHarness, scopeHive)}`,
                       },
                     ],
                   };
@@ -3162,7 +3200,7 @@ const handler = createMcpHandler(
                     content: [
                       {
                         type: 'text' as const,
-                        text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.`,
+                        text: `harness_forbidden: ${arg} "${slug}" names a harness outside this session's hive "${scopeHive}". A cross-hive call made this way could not later be claimed, commented on, or closed by this session.${crossHiveSelfSweepHint(toolName, slug, scopeHive)}`,
                       },
                     ],
                   };
