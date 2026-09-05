@@ -46,6 +46,8 @@ export interface RouteExecution {
   readonly hono: Context;
   /** Web-standard Request, lifted off the Hono context. */
   readonly req: Request;
+  /** Socket peer captured by the host adapter; never derived from request headers. */
+  readonly peerAddress?: string | null;
   readonly startedAt: number;
 
   // ── written by 'auth' ──
@@ -182,7 +184,8 @@ function enforceBrowserMutationPolicy(exec: RouteExecution): Response | null {
 
 function remotePeerAddress(hono: Context): string | null {
   try {
-    return getConnInfo(hono).remote.address ?? null;
+    const address = getConnInfo(hono).remote.address;
+    return typeof address === 'string' && address.trim() ? address.trim() : null;
   } catch {
     // Hono's in-process app.request() has no Node socket bindings. The remote
     // policy falls back to the request authority in that unit context.
@@ -206,7 +209,7 @@ function isRemoteAuthBootstrap(def: RouteDefinition<ZodTypeAny | undefined>): bo
  * verified cookie with the dedicated remote-operator capability.
  */
 async function enforceRemoteAuth(exec: RouteExecution): Promise<{ remote: boolean; denial: Response | null }> {
-  const peer = remotePeerAddress(exec.hono);
+  const peer = exec.peerAddress ?? remotePeerAddress(exec.hono);
   if (!isDirectRemoteRequest(exec.req, peer)) return { remote: false, denial: null };
 
   const policy = currentRemoteAuthPolicy();
@@ -376,6 +379,7 @@ const invokeStep: RouteStep = {
         principal: exec.principal,
         input: exec.input,
         params: exec.hono.req.param() as Record<string, string>,
+        peerAddress: exec.peerAddress ?? null,
         log: (level, msg, meta) => {
           // R1: console. R2 routes this through the telemetry logger.
           const line = `[route ${exec.def.method} ${exec.def.path}] ${msg}`;
@@ -437,6 +441,7 @@ export async function runRouteStack(
     def,
     hono,
     req: hono.req.raw,
+    peerAddress: remotePeerAddress(hono),
     startedAt: Date.now(),
     principal: null,
     input: undefined,

@@ -8,6 +8,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { request as httpRequest } from 'node:http';
+import { serve } from '@hono/node-server';
 import { z } from 'zod';
 
 vi.mock('../../auth/require-principal', async () => {
@@ -594,6 +596,63 @@ describe('input step', () => {
 });
 
 describe('invoke step', () => {
+  it('passes the accepted socket peer to handlers while ignoring forwarded-header changes', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/peer', auth: 'public',
+      handler: (req, ctx) => Response.json({
+        peerAddress: ctx.peerAddress,
+        forwardedFor: req.headers.get('x-forwarded-for'),
+      }),
+    }));
+
+    const server = serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: async (req, bindings) => {
+        Object.defineProperty(bindings.incoming.socket, 'remoteAddress', {
+          configurable: true,
+          value: '203.0.113.10',
+        });
+        return app.fetch(req, bindings);
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', () => resolve());
+      server.once('error', reject);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind TCP');
+      const port = address.port;
+      const request = (forwardedFor: string) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+        const req = httpRequest({
+          hostname: '127.0.0.1', port, path: '/peer',
+          headers: { host: 'localhost', 'x-forwarded-for': forwardedFor },
+        }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => resolve({
+            status: res.statusCode ?? 0,
+            body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+          }));
+        });
+        req.on('error', reject);
+        req.end();
+      });
+      const first = await request('198.51.100.1');
+      const second = await request('198.51.100.2');
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(first.body.peerAddress).toBe('203.0.113.10');
+      expect(second.body.peerAddress).toBe('203.0.113.10');
+      expect(first.body.forwardedFor).toBe('198.51.100.1');
+      expect(second.body.forwardedFor).toBe('198.51.100.2');
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('a thrown handler error becomes a 500 envelope', async () => {
     const app = freshApp();
     registerRoute(app, defineTool({
