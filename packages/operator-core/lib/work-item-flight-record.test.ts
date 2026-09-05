@@ -125,6 +125,29 @@ describe('work-item flight record', () => {
     expect(hasPriorAuthoredProse(mergeWorkItemFlightRecord('Authored line.', record(2)))).toBe(true);
   });
 
+  it('proves the clone guard discriminates: without per-item fields the output IS byte-identical', () => {
+    // POSITIVE CONTROL for work-item-flight-record-capture.test.ts, which asserts that
+    // two items no longer receive identical text. That assertion only means something if
+    // the PRE-FIX shape — compose once, no per-item fields — really did produce identical
+    // output. Kept here permanently rather than as a throwaway probe, so a successor can
+    // re-run the proof instead of trusting a claim that the guard is falsifiable.
+    const base = {
+      ownerId: 'su-8973ac94',
+      cause: 'lease-release' as const,
+      capturedAt: '2026-08-24T18:20:00.505Z',
+      intent: 'this item is one of the two initial claimed lanes; no source edits yet',
+      currentFiles: [],
+      tools: [],
+    };
+    expect(formatWorkItemFlightRecord(base)).toEqual(formatWorkItemFlightRecord(base));
+
+    // ...and WITH them it does not. Both halves are needed: the first shows the old
+    // behaviour was detectable, the second that the fix actually changes what is detected.
+    expect(formatWorkItemFlightRecord({ ...base, alsoStampedOnItemIds: ['WI-41351'] })).not.toEqual(
+      formatWorkItemFlightRecord({ ...base, alsoStampedOnItemIds: ['WI-41347'] }),
+    );
+  });
+
   it('marks a record cloned across several items as session-lane scoped, not a per-item reading', () => {
     const shared = {
       ownerId: 'su-target',
