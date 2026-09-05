@@ -2260,5 +2260,20 @@ describe('affected-tests: lockfile census / SBOM gate (WI-2144851)', () => {
     };
     expect(corePkg.scripts?.[CENSUS_SCRIPT]).not.toContain('--sbom');
     expect(rootPkg.scripts?.['lint:lockfile-census:sbom']).toContain('--sbom');
+
+    // `toContain('--sbom')` above is TRUE of a script that emits nothing, and that is not
+    // hypothetical: this entrypoint read `--strict --sbom` — flag last, no operand — from
+    // the day it was written until 2026-09-05. `--sbom` takes a PATH, so the emit block
+    // never ran; the script printed the plain census and exited 0. The assertion one line
+    // up passed the whole time, because the flag WAS present. It was measuring the wrong
+    // property of the right string.
+    //
+    // So assert the operand, not the flag. The full parse contract (bare flag and
+    // flag-shaped operand both refuse) is pinned in lockfile-census-guard.test.ts against
+    // the script's own parser; this keeps the registry-side assertion from going vacuous.
+    const sbomArgv = String(rootPkg.scripts?.['lint:lockfile-census:sbom']).split(/\s+/);
+    const operand = sbomArgv[sbomArgv.indexOf('--sbom') + 1];
+    expect(operand, '--sbom is the last token: the SBOM would be silently skipped').toBeTypeOf('string');
+    expect(operand?.startsWith('-'), `--sbom operand is the flag \`${operand}\`, not a path`).toBe(false);
   });
 });

@@ -131,7 +131,21 @@ if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
   BACKUP_NO_FILE=1
 fi
 
-BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-/mnt/data/Backup/db-dumps}"
+# WI-2145397: follow the SAME env seam papercusp-db-backup.sh:60 WRITES through, so this
+# probe measures the tree the backup actually writes. This is the identical fix WI-2145150
+# leg (c) made to kopia-healthcheck.sh:52; this script was the second consumer and was missed.
+#
+# Hardcoding the default here meant the dump relocation left the probe tailing
+# /mnt/data/Backup/db-dumps/db-backup.log — a file nothing appends to any more, frozen on
+# "backup FAILED". That is TWO failures, and the second is the dangerous one:
+#   1. a PERMANENT false alarm — no "backup OK" line can ever arrive to reset the
+#      consecutive-failure count, so the alarm re-fires forever (it filed WI-2145343);
+#   2. a BLIND detector — a genuine failure in the live tree raises nothing at all,
+#      which is precisely the 30-day-unnoticed failure mode EI-10733 exists to prevent.
+#
+# An explicitly-set BACKUP_DUMP_DIR still wins, which the self-test cases below rely on
+# (they pass BACKUP_DUMP_DIR="$t/dump" to judge a temp tree instead of live state).
+BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}}"
 BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
 # Unquoted on purpose at the loop below so the glob expands per workspace; an
 # unmatched glob stays literal, which then reads as "absent" and is silent.
@@ -160,10 +174,19 @@ BACKUP_CONSUMERS_TIMEOUT_S="${BACKUP_CONSUMERS_TIMEOUT_S:-10}"
 # bloat) while session_archive_files — genuine stored content — was 0.23 MiB/row.
 BACKUP_BLOAT_MIN_TOAST_GIB="${BACKUP_BLOAT_MIN_TOAST_GIB:-5}"
 BACKUP_BLOAT_MIB_PER_ROW="${BACKUP_BLOAT_MIB_PER_ROW:-8}"
-# The logical dumps and Kopia repository share /mnt/data on this host. This is
-# a separate capacity domain from PGDATA/root and therefore needs its own level
-# and derivative. Alert with 8% free so there is a 6%-of-volume intervention
-# window before the 2% admission floor used by backup/checkpoint operations.
+# This tracks the volume the DUMPS land on — a separate capacity domain from PGDATA/root,
+# so it needs its own level and derivative. Alert with 8% free so there is a 6%-of-volume
+# intervention window before the 2% admission floor used by backup/checkpoint operations.
+#
+# ⚠ WI-2145397: dumps and the Kopia repository NO LONGER SHARE A VOLUME on this host.
+# They both sat on /mnt/data when this check was written; WI-2145150 leg (a) moved the
+# dumps to /mnt/backup (/dev/sda1) while the repo stayed at /mnt/data/Backup/kopia-repo
+# (/dev/nvme1n1). Because this derives from BACKUP_DUMP_DIR it correctly follows the
+# dumps — the right subject, since the alarm exists to answer "will the next dump fit",
+# which is exactly what the "papercusp SKIPPED — needs ~154 GiB" failure was.
+# KNOWN GAP, deliberately not widened here: the Kopia repo's volume is therefore no
+# longer covered by this check. Point BACKUP_VOLUME_PATH at it explicitly, or add a
+# second derivative, if repo-volume headroom needs its own alarm.
 BACKUP_VOLUME_PATH="${BACKUP_VOLUME_PATH:-$BACKUP_DUMP_DIR}"
 BACKUP_VOLUME_WARN_PCT="${BACKUP_VOLUME_WARN_PCT:-92}"
 BACKUP_VOLUME_FLOOR_PCT="${BACKUP_VOLUME_FLOOR_PCT:-2}"

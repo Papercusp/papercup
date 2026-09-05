@@ -225,6 +225,58 @@ function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Optionally displace the caller's `.mcp.json` and atomically install the
+ * launch envelope's MCP configuration in the session cwd.
+ *
+ * The visible and headless agent launch paths share this writer so a
+ * no-window agent gets the same MCP auto-discovery contract as a terminal
+ * agent. Callers that run arbitrary commands keep the default opt-out.
+ */
+function writeMcpJsonFile(envelope: ConsoleEnvelope, enabled: boolean): string | null {
+  if (!enabled || !envelope.mcpJsonContents) return null;
+
+  try {
+    const mcpPath = join(envelope.cwd, '.mcp.json');
+    if (existsSync(mcpPath)) {
+      const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
+      if (!existsSync(bak)) renameSync(mcpPath, bak);
+    }
+    // Atomic write via temp-file + rename instead of a direct writeFileSync.
+    // WHY (owner-hit 2026-07-11: resume/fork consoles failed with HTTP 500
+    // "write .mcp.json: EACCES"): the one-shot backup above is guarded by
+    // `!existsSync(bak)`, so once a `.mcp.json.papercusp.bak` exists the stale
+    // `.mcp.json` is NOT moved aside — and if that stale file is read-only
+    // (a 0444 .mcp.json had been sitting at the repo root), the in-place
+    // `writeFileSync(mcpPath, …)` opens it O_WRONLY and throws EACCES, so
+    // EVERY console launch (resume, fork, and the "+" button) 500'd. A rename
+    // only needs write permission on the DIRECTORY (which we have) — it
+    // replaces the directory entry regardless of the target file's mode — so
+    // this succeeds over a read-only .mcp.json, is atomic against concurrent
+    // launches, and lands the fresh file at the default 0644 (self-healing the
+    // read-only state). tmp lives in the same dir so the rename stays on one fs.
+    const tmp = join(
+      envelope.cwd,
+      `.mcp.json.tmp-${process.pid}-${Date.now()}-${randomBytes(6).toString('hex')}`,
+    );
+    writeFileSync(tmp, envelope.mcpJsonContents);
+    try {
+      renameSync(tmp, mcpPath);
+    } catch (e) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* best-effort temp cleanup */
+      }
+      throw e;
+    }
+  } catch (e: any) {
+    return `write .mcp.json: ${e?.message}`;
+  }
+
+  return null;
+}
+
 // ─── Terminal appearance (OSC color/title) ───────────────────────────
 
 export interface AppearanceOpts {
@@ -1435,37 +1487,9 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   const { envelope } = opts;
 
   // 1. Optional .mcp.json displacement (backup the user's, write ours).
-  if ((opts.writeMcpJson ?? false) && envelope.mcpJsonContents) {
-    try {
-      const mcpPath = join(envelope.cwd, '.mcp.json');
-      if (existsSync(mcpPath)) {
-        const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
-        if (!existsSync(bak)) renameSync(mcpPath, bak);
-      }
-      // Atomic write via temp-file + rename instead of a direct writeFileSync.
-      // WHY (owner-hit 2026-07-11: resume/fork consoles failed with HTTP 500
-      // "write .mcp.json: EACCES"): the one-shot backup above is guarded by
-      // `!existsSync(bak)`, so once a `.mcp.json.papercusp.bak` exists the stale
-      // `.mcp.json` is NOT moved aside — and if that stale file is read-only
-      // (a 0444 .mcp.json had been sitting at the repo root), the in-place
-      // `writeFileSync(mcpPath, …)` opens it O_WRONLY and throws EACCES, so
-      // EVERY console launch (resume, fork, and the "+" button) 500'd. A rename
-      // only needs write permission on the DIRECTORY (which we have) — it
-      // replaces the directory entry regardless of the target file's mode — so
-      // this succeeds over a read-only .mcp.json, is atomic against concurrent
-      // launches, and lands the fresh file at the default 0644 (self-healing the
-      // read-only state). tmp lives in the same dir so the rename stays on one fs.
-      const tmp = join(envelope.cwd, `.mcp.json.tmp-${process.pid}-${Date.now()}`);
-      writeFileSync(tmp, envelope.mcpJsonContents);
-      try {
-        renameSync(tmp, mcpPath);
-      } catch (e) {
-        try { unlinkSync(tmp); } catch { /* best-effort temp cleanup */ }
-        throw e;
-      }
-    } catch (e: any) {
-      return { status: 'error', error: `write .mcp.json: ${e?.message}`, code: 500 };
-    }
+  const mcpJsonError = writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
+  if (mcpJsonError) {
+    return { status: 'error', error: mcpJsonError, code: 500 };
   }
 
   // 1.5. EI-19330040718883562: mint a boot-receipt path when the caller opted
@@ -2113,6 +2137,12 @@ export interface SpawnHeadlessOpts {
   /** Envelope from `buildConsoleEnvelope` (cwd, env, greetingCmd) — greetingCmd MUST
    *  be a `psu --headless …` command for the session to stay injectable. */
   envelope: ConsoleEnvelope;
+  /**
+   * Displace (back up + write) the envelope's superuser `.mcp.json` into the
+   * cwd before spawning. Agent launches opt in so headless sessions retain MCP
+   * auto-discovery; arbitrary headless callers keep the default false.
+   */
+  writeMcpJson?: boolean;
   /** Display label for the log filename + the result's `terminal` field. */
   label?: string | null;
   /** Directory for the per-session log file (created if absent). Defaults to tmpdir. */
@@ -2419,6 +2449,10 @@ export function buildConsoleScopedSpawnCommand(
  */
 export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
+  const mcpJsonError = writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
+  if (mcpJsonError) {
+    return { status: 'error', error: mcpJsonError, code: 500 };
+  }
   const label = opts.label ?? 'headless-member';
   const coordOwnerId = opts.coordOwnerId?.trim() || null;
   let kickoffProofRequest: KickoffProofRequest | null = null;

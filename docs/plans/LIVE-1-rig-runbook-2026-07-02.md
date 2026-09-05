@@ -78,6 +78,50 @@ msg_id/event key used, and both machines' timestamps; do NOT flip D6.
 Leader: su-3700bc41 (this session). Any free member may execute D1–D3/D5 and
 report; D4 and D6 stay with the leader.
 
+DIAGNOSTIC READS ON THE RIG (credential-safe — added 2026-09-05 for
+EI-20188812388696429, after the WI-5333 recovery hit exactly this wall):
+
+DO NOT reach for the bundled `sidecar/bin/psql`. That wrapper is a bare
+passthrough: it fixes LD_LIBRARY_PATH and then `exec`s `.pg-real/psql "$@"`,
+supplying NO connection parameters. libpq therefore falls back to user=$USER —
+on this VM, `aviweiss` — prompts for a password, and fails outright under
+BatchMode/`-w`. Hunting the embedded-PG credential to feed it is the WRONG
+repair: it puts a secret on a command line and into shell history.
+
+CANONICAL no-secret path — ask the OPERATOR, which already holds the
+authenticated pool handle:
+
+    ssh aviweiss@172.31.44.2 'cd "/Applications/Papercusp Server.app/Contents/Resources/sidecar" &&
+      printf %s "{\"sql\":\"select count(*) from harness_shared.work_items\",\"maxRows\":50}" > /tmp/q.json &&
+      ./bin/node scripts/ptool.mjs dev:pg_query --workspace=default --harness=papercusp --json-file /tmp/q.json'
+
+WHY this needs no secret: ptool reaches the operator over the loopback MCP
+surface `/api/mcp?superuser=1`, authenticating with a local bearer FILE —
+`--token-file`, else $PAPERCUSP_MCP_TOKEN_FILE, else
+$PAPERCUSP_HOME/superuser-token, else ~/.papercusp/superuser-token — a file the
+machine already owns, never a value you type, paste, or store. It resolves the
+operator's per-boot dynamic port itself (`discoverOperatorUrl`; override with
+PAPERCUSP_OPERATOR_URL), so you do NOT need the host pid/port recorded in the
+drill log below. The database credential never leaves the operator process.
+
+BOUNDS YOU GET FOR FREE: `dev:pg_query` runs ONE read-only SELECT / WITH…SELECT
+(or an EXPLAIN of one) inside a read-only transaction with a statement_timeout —
+`maxRows` default 200, `timeoutMs` default 5000 (max 30000). For schema
+questions pass {"describe":"harness_shared.<relation>"} rather than guessing
+columns.
+
+GOTCHAS (each already cost someone time on this rig):
+- Use the sidecar's OWN `./bin/node`: a non-login ssh shell has no useful PATH —
+  the same class of failure as the `claude`-not-on-PATH note in the 14:22Z entry
+  below. The packaged `scripts/ptool.mjs` is a self-contained bundle (no relative
+  imports; only node: builtins), so any working node runs it.
+- This VM has ONLY workspace `default` — pin `--workspace=default`.
+- Pin `--harness=papercusp`, or hive-scoped calls can come back
+  federation_error:ambiguous_hive_scope (the D3 gotcha below).
+- Prefer `--json-file` (or `--json -`) over `--json '<inline>'`: an apostrophe in
+  an inline payload closes the shell quoting early and the tool never sees valid
+  JSON (EI-14958).
+
 DRILL LOG (2026-07-02):
 - D1 PASS (10:30Z): 4 readings 10:06→10:30Z, iMac row held the ACTIVE bucket
   throughout (staleness classifier would demote a non-refreshing row) —

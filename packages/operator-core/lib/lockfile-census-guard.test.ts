@@ -43,6 +43,7 @@ import {
   cargoDepCounts,
   countCataloguedDependencies,
   assertSbomCoverage,
+  parseSbomOut,
   COVERED_LOCKFILES,
   NOT_SHIPPED_LOCKFILES,
   UNCOVERED_BASELINE,
@@ -134,7 +135,7 @@ describe('classifyCensus', () => {
       'mystery/Cargo.lock',
     ]);
     expect(r.rows).toHaveLength(5);
-    expect(Object.values(r.byBucket).reduce((a, b) => a + (b as number), 0)).toBe(5);
+    expect(Object.values(r.byBucket).reduce<number>((a, b) => a + (b as number), 0)).toBe(5);
   });
 });
 
@@ -225,6 +226,84 @@ describe('SBOM emission', () => {
     expect(() => emitSbom(['package-lock.json'], '/tmp/never-written.json', { syft: '/nonexistent/syft' })).toThrow(
       /syft not found/,
     );
+  });
+});
+
+/**
+ * THE INVOCATION, not the function — the gap the block above could not see.
+ *
+ * MEASURED 2026-09-05: `lint:lockfile-census:sbom` in the root package.json read
+ * `check-lockfile-census.mjs --strict --sbom`, with nothing after the flag. `--sbom` takes
+ * a path OPERAND, so `argv[sbomIdx + 1]` was `undefined`, the emit block never ran, and the
+ * script printed the plain census and exited 0 — no syft, no `assertSbomCoverage`, no file,
+ * and no line saying any of it was skipped. The script whose whole name is `:sbom` was a
+ * silent duplicate of the one without the suffix.
+ *
+ * Every control above stayed green through that, and correctly so: they test `emitSbom`
+ * and `assertSbomCoverage` as FUNCTIONS, and both functions were fine. Nothing asserted
+ * that the command CI actually runs reaches them. So this block tests the argv — the one
+ * artifact that carried the defect.
+ */
+describe('the --sbom operand (the CLI contract, not the function)', () => {
+  it('REFUSES a bare --sbom instead of resolving to undefined and skipping the emit', () => {
+    expect(() => parseSbomOut(['--strict', '--sbom'])).toThrow(/requires an output PATH operand/);
+  });
+
+  it('REFUSES a flag-shaped operand rather than writing an SBOM to a file named --strict', () => {
+    expect(() => parseSbomOut(['--sbom', '--strict'])).toThrow(/requires an output PATH operand/);
+  });
+
+  it('returns null when --sbom was never asked for, so the census-only run stays valid', () => {
+    expect(parseSbomOut(['--strict'])).toBeNull();
+  });
+
+  it('POSITIVE CONTROL — a real operand parses to that path', () => {
+    expect(parseSbomOut(['--strict', '--sbom', '.papercusp/tmp/x.json'])).toBe('.papercusp/tmp/x.json');
+  });
+
+  it('REAL-TREE: the npm script named :sbom actually reaches the emit path', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    const script: string | undefined = pkg.scripts?.['lint:lockfile-census:sbom'];
+    expect(script, 'lint:lockfile-census:sbom must exist').toBeTypeOf('string');
+
+    // Parse the script's OWN argv the way the CLI does. A script that fails this is the
+    // exact shape of the measured defect: green, silent, and cataloguing nothing.
+    const argv = String(script).split(/\s+/).slice(2);
+    expect(() => parseSbomOut(argv), `\`${script}\` never reaches the SBOM emit`).not.toThrow();
+    expect(parseSbomOut(argv), 'the :sbom script must name an output path').toBeTruthy();
+  });
+
+  it('CONTROL — the exact pre-fix script string still fails this predicate', () => {
+    // The real-tree case above can only be trusted if the predicate DISCRIMINATES. This
+    // keeps the measured-broken value in the file permanently and runs it through the
+    // identical split + parse, so a future edit that makes the predicate vacuous fails
+    // here rather than passing everywhere. (Fixture tier from CLAUDE.md's falsifiability
+    // table: a deliberately-wrong input kept as a control, no shared-tree mutation.)
+    const preFix = 'node scripts/check-lockfile-census.mjs --strict --sbom';
+    expect(() => parseSbomOut(preFix.split(/\s+/).slice(2))).toThrow(/requires an output PATH operand/);
+  });
+
+  it('REAL-TREE: writes that SBOM somewhere git ignores, so a run cannot dirty the shared tree', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    const out = parseSbomOut(String(pkg.scripts['lint:lockfile-census:sbom']).split(/\s+/).slice(2));
+    const ignored = readFileSync(join(ROOT, '.gitignore'), 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#'));
+    expect(
+      ignored.some((rule) => rule.endsWith('/') && String(out).startsWith(rule)),
+      `${out} is not under any .gitignore directory rule — an 8MB SBOM would be swept into a commit`,
+    ).toBe(true);
+  });
+
+  it('CONTROL — a repo-root output path would FAIL the ignored-path check', () => {
+    // Same discrimination proof for the sibling assertion: git-sync sweeps the whole tree,
+    // so an un-ignored SBOM path is a real hazard (measured: the emitted document is 8.3MB).
+    const ignored = readFileSync(join(ROOT, '.gitignore'), 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#'));
+    expect(ignored.some((rule) => rule.endsWith('/') && 'lockfile-census.sbom.json'.startsWith(rule))).toBe(false);
   });
 });
 

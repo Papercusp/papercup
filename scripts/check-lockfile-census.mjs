@@ -304,6 +304,9 @@ export function walkLockfiles(root, { pruned = PRUNED_DIRS, names = LOCKFILE_ECO
  * produce an EMPTY offender list, which is indistinguishable from a fully-classified one.
  * The repo's own root package-lock.json is the positive control: it is the one lockfile
  * whose presence is structurally guaranteed.
+ *
+ * @param {string} root
+ * @param {{ pruned?: Set<string>, names?: Map<string,string> }} [options] forwarded to walkLockfiles
  */
 export function censusOrThrow(root, options) {
   const rows = walkLockfiles(root, options);
@@ -360,6 +363,10 @@ export function rootWorkspaceDirs(rootLockJson) {
  * @param {object} input
  * @param {string[]} input.lockfiles          repo-relative census rows
  * @param {Set<string>} input.workspaceDirs   directories hoisted into the root lockfile
+ * @param {Map<string,{shipped:number,devOnly:number,total:number,rootName?:string|null}|null>} [input.measurements]
+ *   per-path output of measureLockfiles. A null VALUE means UNMEASURABLE, never zero — the
+ *   distinction the build-only classifier turns on. `rootName` is npm-only; cargoDepCounts
+ *   has no root package node to name.
  * @param {Map<string,string>} [input.covered]
  * @param {Map<string,string>} [input.notShipped]
  * @param {Map<string,{deps:number,reason:string}>} [input.uncovered]
@@ -489,6 +496,10 @@ export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SY
     assertSbomCoverage(subject, catalogued, measured);
     documents.push({ subject, components: parsed.components?.length ?? 0, catalogued, bom: parsed });
   }
+  // mkdir the parent rather than requiring the caller to have made it. The output path is
+  // a gitignored artifact directory that does not exist on a fresh checkout, and an ENOENT
+  // here would fail the SBOM leg for a reason that has nothing to do with the inventory.
+  mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, `${JSON.stringify({ generatedFrom: subjects, documents }, null, 2)}\n`);
   return documents.map(({ subject, components, catalogued }) => ({ subject, components, catalogued }));
 }
@@ -504,6 +515,13 @@ export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SY
  * the guard passed and reported an inventory containing none of the file's packages.
  * A threshold placed below the value that "catalogued nothing" actually produces is not
  * a weak guard; it is an unfalsifiable one.
+ *
+ * @param {any} bom
+ * @param {string} subject
+ * @param {string} [root]
+ * @param {string|null} [rootPackageName] the subject lockfile's own root package name, from
+ *   `measureLockfiles`. Typed explicitly because the `= null` default alone generates the
+ *   parameter as `null`, which makes every real call site a type error.
  */
 export function countCataloguedDependencies(bom, subject, root = ROOT, rootPackageName = null) {
   const components = bom?.components ?? [];
@@ -553,10 +571,44 @@ export function assertSbomCoverage(subject, catalogued, measured) {
   }
 }
 
+/**
+ * `--sbom` takes a PATH OPERAND, and a missing one must REFUSE rather than resolve to
+ * `undefined` and skip the emit block.
+ *
+ * MEASURED 2026-09-05, and the reason this function exists as its own export: the npm
+ * script `lint:lockfile-census:sbom` was `check-lockfile-census.mjs --strict --sbom` with
+ * nothing after the flag. `argv[sbomIdx + 1]` was `undefined`, the `if (sbomOut)` block
+ * never ran, and the script printed the plain census and EXITED 0 — no syft invocation,
+ * no assertSbomCoverage positive control, no file, and no line saying any of that was
+ * skipped. A script whose entire name is `:sbom` was a silent duplicate of the one
+ * without the suffix.
+ *
+ * That is this guard's own thesis in its cheapest possible form. Every instrument aimed
+ * at the SCRIPT reported green because the script WAS green: `emitSbom` works,
+ * `assertSbomCoverage` is a real positive control, the unit tests pass. The defect was one
+ * absent word in a package.json string, and nothing that tested a FUNCTION could see it.
+ * Hence both halves of the repair: refuse here, and pin the INVOCATION in the guard test.
+ *
+ * A flag-shaped operand (`--sbom --strict`) is refused for the same reason — silently
+ * writing an SBOM to a file named `--strict` is not a better outcome than refusing.
+ */
+export function parseSbomOut(argv) {
+  const sbomIdx = argv.indexOf('--sbom');
+  if (sbomIdx < 0) return null;
+  const operand = argv[sbomIdx + 1];
+  if (operand === undefined || operand.startsWith('-')) {
+    throw new Error(
+      '--sbom requires an output PATH operand (e.g. `--sbom .papercusp/tmp/lockfile-census.sbom.json`), ' +
+        `but got ${operand === undefined ? 'nothing' : `the flag \`${operand}\``}. Refusing rather than ` +
+        'skipping the inventory and exiting 0 — a silently absent SBOM reads exactly like a clean one.',
+    );
+  }
+  return operand;
+}
+
 function main(argv) {
   const strict = argv.includes('--strict');
-  const sbomIdx = argv.indexOf('--sbom');
-  const sbomOut = sbomIdx >= 0 ? argv[sbomIdx + 1] : null;
+  const sbomOut = parseSbomOut(argv);
 
   const lockfiles = censusOrThrow(ROOT);
   const rootLock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'));

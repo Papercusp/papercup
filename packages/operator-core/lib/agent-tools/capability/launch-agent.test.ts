@@ -420,7 +420,10 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
 
     expect(isError(res)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
-    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ captureTerminalPid: true });
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({
+      captureTerminalPid: true,
+      writeMcpJson: true,
+    });
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     // Scripted launch: no picker, account pinned (P-012), launcher provenance.
     expect(spawnedCommand()).toContain('psu --launched-by=su-caller --no-picker --account=default');
@@ -788,6 +791,7 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnedCommand(spawnHeadlessMock)).toContain('--headless');
     expect(spawnHeadlessMock.mock.calls[0][0]).toMatchObject({
+      writeMcpJson: true,
       logDir: '/tmp/papercusp-ws/fleet-logs',
       launchedBy: 'su-caller',
       fleetSlug: null,

@@ -201,7 +201,11 @@ export default defineTool({
     chaining:
       'scheduler:get_claim_spec (current) → scheduler:preview_spec_delta (what the revision costs) → scheduler:set_claim_spec (write it).',
     seeAlso: [
-      'scheduler:set_claim_spec (write/re-steer — same spec grammar, documented on its `spec` arg)',
+      // EI-20185841251188914 — see the same note on scheduler:get_claim_spec. In seeAlso
+      // rather than when/notWhen/chaining because seeAlso is outside the prompt-weight
+      // budget; pinned by scope-args-contract.test.ts.
+      'scheduler:set_claim_spec (write/re-steer — same spec grammar, documented on its `spec` arg; SCOPE ARGS DIFFER: it has NO workspace, and scheduler:get_claim_spec has NO harness — this tool is the superset that accepts both, so a scope key valid here is not automatically valid there)',
+      'scheduler:get_claim_spec (read the stored spec — takes workspace, rejects harness)',
       'work_items:claimable (single-spec claimable count + per-floor exclusion breakdown)',
     ],
   },

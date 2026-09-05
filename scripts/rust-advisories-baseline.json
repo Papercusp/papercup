@@ -12,22 +12,29 @@
     "not appended — appending is how a gate becomes a parking lot. Re-seed only from",
     "`node scripts/check-rust-advisories.mjs --list`, never from a hand grep.",
     "",
-    "WHY THESE THREE ARE SEEDED RATHER THAN PATCHED: they are pre-existing debt that",
+    "WHY THIS ONE IS SEEDED RATHER THAN PATCHED: it is pre-existing debt that",
     "accrued while NOTHING scanned the Rust graph at all — the very gap this gate closes.",
     "Seeding a measured-green baseline first is the same precedent the npm sibling set, and",
     "it is what lets the guard be wired without red-pinning the fleet on debt it slept",
     "through. Each reason below names the concrete next action, not a shrug.",
     "",
+    "SHRUNK 2026-09-05 (WI-2144851): RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (quick-xml, CVSS",
+    "7.5 each) were REMOVED because they are FIXED in this tree, not reclassified. Both instances",
+    "are gone: quick-xml 0.39.4 -> 0.41.0 via `cargo update -p plist` (plist 1.9.0 -> 1.10.0), and",
+    "quick-xml 0.37.5 dropped entirely by `cargo update -p tauri-plugin-notification` (2.3.3 ->",
+    "2.4.0, tauri-winrt-notification 0.7.2 -> 0.7.3, which no longer depends on quick-xml). Both",
+    "stayed inside the existing `tauri-plugin-notification = \"2\"` range, so neither was a forced or",
+    "feature-removing upgrade. Build-verified after each: `cargo check --all-targets` exit 0, zero",
+    "errors. The gate then reported both ids as STALE, which is what authorized removing them.",
+    "",
     "Only advisories WITHOUT `database_specific.informational` appear here. The 17",
-    "unmaintained + 1 unsound notices over the same 615 crates are reported by the gate and",
+    "unmaintained + 1 unsound notices over the same 611 crates are reported by the gate and",
     "never gate, so they are deliberately absent from this file."
   ],
   "seededAt": "2026-09-05",
   "seededFrom": "node scripts/check-rust-advisories.mjs --list against papercusp-desktop/src-tauri/Cargo.lock (615 crates, OSV.dev crates.io ecosystem) — 21 advisory clusters, 3 gating vulnerabilities, 18 informational",
   "accepted": [
-    "RUSTSEC-2024-0429",
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195"
+    "RUSTSEC-2024-0429"
   ],
   "entries": {
     "RUSTSEC-2024-0429": {
@@ -36,20 +43,6 @@
       "disposition": "pinned-for-abi",
       "fixedIn": "0.20.0",
       "reason": "Unsoundness in glib::VariantStrIter's Iterator/DoubleEndedIterator impls. Fixed in glib 0.20.0, but papercusp-desktop/src-tauri/Cargo.toml pins `glib = \"0.18\"` DELIBERATELY, with the stated reason that it must stay on the same 0.18 line tauri/wry already use so there is exactly one GTK in the process (D-009, the embedded native terminal view). Bumping to 0.20 splits the GTK/glib ABI in-process — precisely the forced feature-removing upgrade WI-2144851 excludes. Deferred until tauri/wry themselves move to the glib 0.20 line, at which point the pin is bumped WITH them, not ahead of them. NOTE: this cluster is OSV alias pair GHSA-wrw7-89jp-8q8g (classified a vulnerability, GHSA severity MODERATE) + RUSTSEC-2024-0429 (classified informational 'unsound'); the gate resolves the disagreement fail-closed to vulnerability, which is why it appears here at all."
-    },
-    "RUSTSEC-2026-0194": {
-      "crate": "quick-xml@0.37.5, quick-xml@0.39.4",
-      "severity": "high",
-      "disposition": "patch-available-unverified",
-      "fixedIn": "0.41.0",
-      "reason": "Quadratic run time when checking a start tag for duplicate attribute names (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H = 7.5). TWO instances, neither a direct dependency. (1) quick-xml 0.39.4 via plist 1.9.0 <- tauri: PATCHABLE NOW and semver-compatible — `cargo update -p plist` was DRY-RUN VERIFIED 2026-09-05 to resolve plist 1.9.0 -> 1.10.0 and quick-xml 0.39.4 -> 0.41.0, exactly the fixed version, touching 2 packages. Not applied in this change because papercusp-desktop is a submodule whose src-tauri target/ is COLD (0 rlibs), so a lockfile edit to a SHIPPED artifact could not be build-verified here without a full ~615-crate Tauri build on a box running 74 agents; an unverified lockfile bump to the shipped desktop is the worse risk. (2) quick-xml 0.37.5 via tauri-winrt-notification 0.7.2 <- notify-rust <- tauri-plugin-notification, which requires ^0.37 and therefore CANNOT take 0.41 without a tauri-winrt-notification bump (0.8.1 exists upstream) — so patching plist alone does not clear this row, which is why both instances are recorded together. Next action: apply the plist bump behind a real `cargo check`, then re-run this gate; the entry becomes STALE only when BOTH instances are off the vulnerable range."
-    },
-    "RUSTSEC-2026-0195": {
-      "crate": "quick-xml@0.37.5, quick-xml@0.39.4",
-      "severity": "high",
-      "disposition": "patch-available-unverified",
-      "fixedIn": "0.41.0",
-      "reason": "Unbounded namespace-declaration allocation in NsReader enables memory-exhaustion denial of service (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H = 7.5). Same two quick-xml instances and the same fixed version (0.41.0) as RUSTSEC-2026-0194, and it clears with that one or not at all. Stated independently rather than by reference, because an entry that delegates its justification reads as justified without being so: (1) quick-xml 0.39.4 via plist 1.9.0 <- tauri is patchable by `cargo update -p plist` (dry-run verified 2026-09-05: plist 1.10.0 pulls quick-xml 0.41.0); NOT applied here because papercusp-desktop is a submodule whose src-tauri target/ is COLD, so this lockfile edit to a SHIPPED artifact could not be build-verified without a full ~615-crate Tauri build, and an unverified bump to the shipped desktop is the worse risk. (2) quick-xml 0.37.5 via tauri-winrt-notification 0.7.2 requires ^0.37 and cannot take 0.41 without a tauri-winrt-notification bump. Next action: apply the plist bump behind a real `cargo check`, then re-run this gate."
     }
   }
 }

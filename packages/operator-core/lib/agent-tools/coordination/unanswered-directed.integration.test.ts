@@ -389,6 +389,65 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(unanswered.get(MEMBER.ownerId)?.count).toBe(1);
   });
+
+  // ── EI-20085805220385722: the live/stale split ────────────────────────────
+  // The pure fold (unanswered-directed.test.ts) proves the PARTITION; only these
+  // prove the `per_sender` / `sender_rollup` CTEs actually populate it. Without
+  // them the SQL columns are attested only by "the rest of the suite did not
+  // break", which a rollup returning empty arrays would also satisfy.
+  it('EI-20085805220385722: the SQL per-sender rollup comes back populated (busiest first), and nothing is demoted by default', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'claim P-012', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'and P-013', expectsReply: true });
+    await sendMessage(OTHER, { to: [MEMBER.ownerId], summary: 'review my diff', expectsReply: true });
+
+    const summary = (await fetchUnansweredDirected([MEMBER.ownerId])).get(MEMBER.ownerId);
+
+    expect(summary?.count).toBe(3);
+    expect(summary?.senders.map((s) => [s.from, s.count])).toEqual([
+      [LEADER.ownerId, 2],
+      [OTHER.ownerId, 1],
+    ]);
+    for (const s of summary?.senders ?? []) expect(s.oldestAgeMs).toBeGreaterThanOrEqual(0);
+    expect(summary?.sendersTruncated).toBeUndefined();
+    // Default seam = endedRecordedOwnerIds. Neither fixture sender has a recorded
+    // ENDED session, so both are ABSENT from the set — the fail-open direction.
+    expect(summary?.staleCount).toBe(0);
+    expect(summary?.staleCountBounded).toBeUndefined();
+  });
+
+  it('EI-20085805220385722: a positively-ended sender moves to staleCount while an unknown sender still counts', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'claim P-012', expectsReply: true });
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'and P-013', expectsReply: true });
+    await sendMessage(OTHER, { to: [MEMBER.ownerId], summary: 'review my diff', expectsReply: true });
+
+    const summary = (
+      await fetchUnansweredDirected([MEMBER.ownerId], {
+        endedSendersFn: async (ids) => new Set(ids.filter((id) => id === LEADER.ownerId)),
+      })
+    ).get(MEMBER.ownerId);
+
+    // OTHER is not PROVEN dead, so its ask still outranks the recipient's own work.
+    expect(summary?.count).toBe(1);
+    expect(summary?.staleCount).toBe(2);
+    expect(summary?.staleOldestAgeMs).toBeGreaterThanOrEqual(0);
+    expect(summary?.newest.find((e) => e.from === LEADER.ownerId)?.senderState).toBe('ended');
+    expect(summary?.newest.find((e) => e.from === OTHER.ownerId)?.senderState).toBe('unknown');
+  });
+
+  it('EI-20085805220385722: a THROWING death-evidence read demotes nothing (fail open through the real path)', async () => {
+    await sendMessage(LEADER, { to: [MEMBER.ownerId], summary: 'claim P-012', expectsReply: true });
+
+    const summary = (
+      await fetchUnansweredDirected([MEMBER.ownerId], {
+        endedSendersFn: async () => {
+          throw new Error('adv_sessions unreachable');
+        },
+      })
+    ).get(MEMBER.ownerId);
+
+    expect(summary?.count).toBe(1);
+    expect(summary?.staleCount).toBe(0);
+  });
 });
 
 describe('fetchOpenAsks (sender-side mirror; WI-4537(c) mirrored exclusion, EI-22192594388203470)', () => {

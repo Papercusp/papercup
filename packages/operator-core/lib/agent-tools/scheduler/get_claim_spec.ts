@@ -31,7 +31,14 @@ export default defineTool({
       'Setting/replacing a spec — scheduler:set_claim_spec. What is executing right now under which spec (the live-execution view across many bees) — scheduler:running. Full fleet roster / orphaned-claim detection — fleet:assignments.',
     chaining: 'scheduler:get_claim_spec (confirm current) → scheduler:set_claim_spec (re-steer) → scheduler:get_claim_spec (confirm the bump landed).',
     seeAlso: [
-      'scheduler:set_claim_spec (write/re-steer a spec)',
+      // EI-20185841251188914: the scope-arg matrix across the spec-addressing trio, stated
+      // on each member so a caller reading any ONE of them learns the distinction. Derived
+      // truth, pinned by scope-args-contract.test.ts — edit that test WITH any arg change.
+      // Lives in seeAlso (and not in when/notWhen/chaining) because seeAlso is outside the
+      // per-tool prompt-weight budget: this tool sits at ~1408 of 1500 chars, and the same
+      // sentence in `when` reds the fleet gate.
+      'scheduler:set_claim_spec (write/re-steer a spec — MIRROR SCOPE ARGS: it takes harness and NO workspace, this read takes workspace and NO harness, so do not copy a scope key across the get→set→get chain)',
+      'scheduler:preview_spec_delta (dry-run a revision — the scope superset: cupId|fleet plus BOTH harness and workspace)',
       'scheduler:running (live-execution view across many bees)',
       'fleet:assignments (full fleet roster)',
     ],

@@ -60,8 +60,14 @@ export function walkLockfiles(root: any, { pruned, names }?: {
  * produce an EMPTY offender list, which is indistinguishable from a fully-classified one.
  * The repo's own root package-lock.json is the positive control: it is the one lockfile
  * whose presence is structurally guaranteed.
+ *
+ * @param {string} root
+ * @param {{ pruned?: Set<string>, names?: Map<string,string> }} [options] forwarded to walkLockfiles
  */
-export function censusOrThrow(root: any, options: any): string[];
+export function censusOrThrow(root: string, options?: {
+    pruned?: Set<string>;
+    names?: Map<string, string>;
+}): string[];
 /**
  * Directories whose npm dependencies are hoisted into the root lockfile.
  *
@@ -77,6 +83,10 @@ export function rootWorkspaceDirs(rootLockJson: any): Set<any>;
  * @param {object} input
  * @param {string[]} input.lockfiles          repo-relative census rows
  * @param {Set<string>} input.workspaceDirs   directories hoisted into the root lockfile
+ * @param {Map<string,{shipped:number,devOnly:number,total:number,rootName?:string|null}|null>} [input.measurements]
+ *   per-path output of measureLockfiles. A null VALUE means UNMEASURABLE, never zero — the
+ *   distinction the build-only classifier turns on. `rootName` is npm-only; cargoDepCounts
+ *   has no root package node to name.
  * @param {Map<string,string>} [input.covered]
  * @param {Map<string,string>} [input.notShipped]
  * @param {Map<string,{deps:number,reason:string}>} [input.uncovered]
@@ -84,6 +94,12 @@ export function rootWorkspaceDirs(rootLockJson: any): Set<any>;
 export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered, notShipped, uncovered, }: {
     lockfiles: string[];
     workspaceDirs: Set<string>;
+    measurements?: Map<string, {
+        shipped: number;
+        devOnly: number;
+        total: number;
+        rootName?: string | null;
+    } | null> | undefined;
     covered?: Map<string, string> | undefined;
     notShipped?: Map<string, string> | undefined;
     uncovered?: Map<string, {
@@ -95,7 +111,12 @@ export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered
         path: string;
         ecosystem: string;
         bucket: string;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note: string | undefined;
         deps?: undefined;
     } | {
@@ -103,13 +124,23 @@ export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered
         ecosystem: string;
         bucket: string;
         deps: number;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note: string;
     } | {
         path: string;
         ecosystem: string;
         bucket: string;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note?: undefined;
         deps?: undefined;
     })[];
@@ -117,7 +148,12 @@ export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered
         path: string;
         ecosystem: string;
         bucket: string;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note: string | undefined;
         deps?: undefined;
     } | {
@@ -125,13 +161,23 @@ export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered
         ecosystem: string;
         bucket: string;
         deps: number;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note: string;
     } | {
         path: string;
         ecosystem: string;
         bucket: string;
-        measured: any;
+        measured: {
+            shipped: number;
+            devOnly: number;
+            total: number;
+            rootName?: string | null;
+        } | null;
         note?: undefined;
         deps?: undefined;
     })[];
@@ -175,8 +221,15 @@ export function emitSbom(subjects: any, outPath: any, { root, syft, measurements
  * the guard passed and reported an inventory containing none of the file's packages.
  * A threshold placed below the value that "catalogued nothing" actually produces is not
  * a weak guard; it is an unfalsifiable one.
+ *
+ * @param {any} bom
+ * @param {string} subject
+ * @param {string} [root]
+ * @param {string|null} [rootPackageName] the subject lockfile's own root package name, from
+ *   `measureLockfiles`. Typed explicitly because the `= null` default alone generates the
+ *   parameter as `null`, which makes every real call site a type error.
  */
-export function countCataloguedDependencies(bom: any, subject: any, root?: string, rootPackageName?: null): any;
+export function countCataloguedDependencies(bom: any, subject: string, root?: string, rootPackageName?: string | null): any;
 /**
  * The POSITIVE control on the inventory: two independent readings of the same lockfile
  * must agree. `measured.shipped` is this file's own parse of the lockfile; `catalogued`
@@ -194,6 +247,28 @@ export function countCataloguedDependencies(bom: any, subject: any, root?: strin
  * them declined to read something.
  */
 export function assertSbomCoverage(subject: any, catalogued: any, measured: any): void;
+/**
+ * `--sbom` takes a PATH OPERAND, and a missing one must REFUSE rather than resolve to
+ * `undefined` and skip the emit block.
+ *
+ * MEASURED 2026-09-05, and the reason this function exists as its own export: the npm
+ * script `lint:lockfile-census:sbom` was `check-lockfile-census.mjs --strict --sbom` with
+ * nothing after the flag. `argv[sbomIdx + 1]` was `undefined`, the `if (sbomOut)` block
+ * never ran, and the script printed the plain census and EXITED 0 — no syft invocation,
+ * no assertSbomCoverage positive control, no file, and no line saying any of that was
+ * skipped. A script whose entire name is `:sbom` was a silent duplicate of the one
+ * without the suffix.
+ *
+ * That is this guard's own thesis in its cheapest possible form. Every instrument aimed
+ * at the SCRIPT reported green because the script WAS green: `emitSbom` works,
+ * `assertSbomCoverage` is a real positive control, the unit tests pass. The defect was one
+ * absent word in a package.json string, and nothing that tested a FUNCTION could see it.
+ * Hence both halves of the repair: refuse here, and pin the INVOCATION in the guard test.
+ *
+ * A flag-shaped operand (`--sbom --strict`) is refused for the same reason — silently
+ * writing an SBOM to a file named `--strict` is not a better outcome than refusing.
+ */
+export function parseSbomOut(argv: any): any;
 export const ROOT: string;
 /** Lockfile basenames that pin a resolved dependency graph, by ecosystem. */
 export const LOCKFILE_ECOSYSTEMS: Map<string, string>;

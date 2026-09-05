@@ -500,6 +500,28 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
 
+  it('writes the envelope MCP config into the headless cwd when opted in', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-mcp-'));
+    const mcpJsonContents = '{"mcpServers":{"papercusp":{"url":"http://127.0.0.1"}}}';
+    spawnMock.mockImplementation(() => fakeChild(7776));
+
+    try {
+      const r = await spawnHeadless({
+        envelope: { ...envelope, cwd, mcpJsonContents },
+        label: 'hl',
+        logDir: null,
+        writeMcpJson: true,
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        ...noSystemdRun,
+      });
+
+      expect(r.status).toBe('ok');
+      expect(readFileSync(join(cwd, '.mcp.json'), 'utf8')).toBe(mcpJsonContents);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it('falls back to bash -lc (no terminal emulator, no systemd-run) detached with a log fd, and reports ok+pid when the session outlives the probe', async () => {
     spawnMock.mockImplementation(() => fakeChild(7777)); // never exits = a live agent
     const r = await spawnHeadless({ envelope, label: 'hl', logDir: null, ...noSystemdRun });

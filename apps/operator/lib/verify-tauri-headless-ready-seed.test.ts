@@ -1,0 +1,120 @@
+/**
+ * verify-tauri-headless-ready-seed.test.ts — the guard for EI-20191599988350937.
+ *
+ * The gap: VERIFY_TAURI_ISOLATED_DB=1 correctly boots a fresh migrated database,
+ * which makes the run a genuine FIRST-RUN install. The root route sends a
+ * first-run install to the onboarding tutorial, so every post-onboarding route
+ * assertion under isolation measured the tutorial instead of the route under
+ * test. Proving such a route then required either a second read-only run
+ * against the SHARED live DB (giving up isolation, and write-unsafe) or
+ * hand-driving the whole onboarding flow.
+ *
+ * The fix: an OPT-IN ready-app seed. VERIFY_TAURI_ISOLATED_SEED=ready marks
+ * onboarding complete and nothing else; `fresh` stays the default so the
+ * existing fresh-install mode is unchanged.
+ *
+ * Two properties carry the safety of this feature and are asserted below:
+ *
+ *   1. `ready` is REFUSED without VERIFY_TAURI_ISOLATED_DB=1. The seed is a
+ *      WRITE, and in the default (shared) mode its target is the owner's real
+ *      live database — the exact incident class VERIFY_TAURI_ISOLATED_DB was
+ *      introduced to prevent (EI-10387). It must not be reachable through this
+ *      knob.
+ *   2. The seed asserts its READ-BACK, not the PATCH status. A 200 that did not
+ *      persist still leaves an unseeded app, and the caller would then get a
+ *      healthy-looking shell that silently redirects to onboarding — the
+ *      false-green shape the origin-health gate (EI-13218) already exists to
+ *      prevent one layer up.
+ *
+ * A readFileSync text guard is the right shape here for the same reason its
+ * sibling verify-tauri-headless-isolated-db.test.ts gives: the script boots a
+ * real Tauri/Xvfb/Postgres stack, so its wiring can only be asserted at the
+ * wiring site. The behavioural half of this feature (that the seeded run lands
+ * on /adv while a fresh run lands on first-run) was verified live, as a
+ * control/treatment pair, on the work-item.
+ */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+// PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a MUTATED COPY
+// outside the tree (same convention as verify-tauri-headless-bind-retry.test.ts),
+// so this guard's falsifiability can be proven without ever mutating the shared
+// checkout — where a git-sync sweep could commit the mutant mid-probe.
+const SCRIPT =
+  process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
+const src = readFileSync(SCRIPT, 'utf8');
+
+describe('EI-20191599988350937 — opt-in ready-app seed for isolated verification', () => {
+  it('is the right script (guards a vacuous suite)', () => {
+    expect(src).toContain('verify-tauri-headless');
+    expect(src).toContain('EI-20191599988350937');
+  });
+
+  it('is opt-in and defaults to fresh, leaving the existing mode unchanged', () => {
+    expect(src).toMatch(/ISOLATED_SEED="\$\{VERIFY_TAURI_ISOLATED_SEED:-fresh\}"/);
+  });
+
+  it('accepts only fresh|ready and refuses anything else', () => {
+    expect(src).toMatch(/case "\$ISOLATED_SEED" in\s*\n\s*fresh\|ready\)/);
+    expect(src).toMatch(/VERIFY_TAURI_ISOLATED_SEED must be 'fresh' or 'ready'/);
+  });
+
+  /**
+   * The safety rail. Without this the knob is a documented route to writing
+   * onboarding state into the owner's live database.
+   */
+  it('REFUSES ready without VERIFY_TAURI_ISOLATED_DB=1 (never writes the shared live DB)', () => {
+    expect(src).toMatch(
+      /if \[ "\$ISOLATED_SEED" = "ready" \] && \[ "\$\{VERIFY_TAURI_ISOLATED_DB:-0\}" != "1" \]; then/,
+    );
+    expect(src).toMatch(/VERIFY_TAURI_ISOLATED_SEED=ready requires VERIFY_TAURI_ISOLATED_DB=1/);
+    // The refusal must explain the stake, not just the rule.
+    expect(src).toMatch(/lands on the SHARED live database/);
+  });
+
+  it('validates the seed BEFORE the expensive boot, so misuse costs no build', () => {
+    const seedParse = src.indexOf('ISOLATED_SEED="${VERIFY_TAURI_ISOLATED_SEED:-fresh}"');
+    const xvfbBoot = src.indexOf('boot Xvfb (isolated, headless');
+    const pgBoot = src.indexOf('boot a genuinely isolated, throwaway embedded Postgres');
+    expect(seedParse).toBeGreaterThan(-1);
+    expect(xvfbBoot).toBeGreaterThan(-1);
+    expect(pgBoot).toBeGreaterThan(-1);
+    expect(seedParse).toBeLessThan(xvfbBoot);
+    expect(seedParse).toBeLessThan(pgBoot);
+  });
+
+  it('seeds through the app’s own idempotent endpoint, not hand-written SQL', () => {
+    expect(src).toMatch(/PATCH[\s\S]{0,400}\/api\/desktop\/setup-wizard-state/);
+    expect(src).toContain('finished_at');
+    // A raw INSERT/UPDATE against the state table would drift from the storage
+    // shape the endpoint owns; the seed must never reach for one.
+    expect(src).not.toMatch(/INSERT INTO[\s\S]{0,200}setup_wizard_state/i);
+    expect(src).not.toMatch(/UPDATE[\s\S]{0,200}setup_wizard_state[\s\S]{0,200}SET/i);
+  });
+
+  it('asserts the READ-BACK, so a non-persisted 200 cannot pass as seeded', () => {
+    // The gate the root route consults is a non-empty finished_at STRING.
+    expect(src).toMatch(/"finishedAt"\[\[:space:\]\]\*:\[\[:space:\]\]\*"\[\^"\]\+"/);
+    expect(src).toMatch(/could not mark onboarding complete/);
+  });
+
+  it('fails the run rather than handing back a shell that still redirects', () => {
+    const seedBlock = src.slice(src.indexOf('if [ "$ISOLATED_SEED" = "ready" ]; then'));
+    expect(seedBlock).toMatch(/Refusing to hand back a shell/);
+    expect(seedBlock.slice(0, seedBlock.indexOf('log "ready-app seed VERIFIED'))).toMatch(
+      /exit 1/,
+    );
+  });
+
+  it('tells the assertion command and a --boot-only caller which seed ran', () => {
+    expect(src).toMatch(/export VERIFY_TAURI_SEED="\$ISOLATED_SEED"/);
+    expect(src).toMatch(/printf 'VERIFY_TAURI_SEED=%q\\n' "\$ISOLATED_SEED"/);
+  });
+
+  it('documents the knob, its default, and why it is gated', () => {
+    expect(src).toMatch(/VERIFY_TAURI_ISOLATED_SEED\s+which app STATE the isolated run starts from/);
+    expect(src).toMatch(/Default `fresh`/);
+    expect(src).toMatch(/REQUIRES VERIFY_TAURI_ISOLATED_DB=1 and is/);
+  });
+});

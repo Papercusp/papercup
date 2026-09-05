@@ -179,6 +179,41 @@
 #                                full migration replay is ~10-30s; a pre-built
 #                                seed extract is ~1s). Only used with
 #                                VERIFY_TAURI_ISOLATED_DB=1.
+#   VERIFY_TAURI_ISOLATED_SEED  which app STATE the isolated run starts from
+#                                (EI-20191599988350937). Default `fresh` — a
+#                                genuinely first-run install, unchanged.
+#                                `ready` additionally marks onboarding COMPLETE
+#                                so post-onboarding routes render.
+#
+#                                WHY: an isolated boot is correctly a FRESH
+#                                install, and the root route sends a fresh
+#                                install to first-run — `finished_at` unset on
+#                                `setup_wizard_state` redirects `/` to
+#                                /onboarding (or /setup when
+#                                ONBOARDING_AGENT_FIRST is off). So every
+#                                post-onboarding route assertion under
+#                                VERIFY_TAURI_ISOLATED_DB=1 landed on the
+#                                tutorial instead of the route under test, and
+#                                proving such a route needed either a
+#                                second read-only run against the SHARED live DB
+#                                (giving up isolation, and write-unsafe) or
+#                                hand-driving the whole onboarding flow.
+#
+#                                `ready` seeds ONLY the onboarding gate, through
+#                                the app's own idempotent
+#                                PATCH /api/desktop/setup-wizard-state (the same
+#                                merge-write the wizard and the tutor use), then
+#                                re-reads it and REFUSES to hand back the shell
+#                                if the gate did not actually flip. No harness,
+#                                plan, work-item, credential or any other
+#                                production-shaped data is created; the account
+#                                and workspace are the throwaway ones this run
+#                                already booted.
+#
+#                                REQUIRES VERIFY_TAURI_ISOLATED_DB=1 and is
+#                                refused without it: the seed is a WRITE, and
+#                                in the default (shared) mode it would land on
+#                                the owner's real live database.
 #   VERIFY_TAURI_NATIVE_TERMINAL
 #                               1 = preserve the caller's native-terminal
 #                                strategy/command overrides and boot the dock for
@@ -727,6 +762,34 @@ fi
 # purpose and torn down after the run, so give it the background-primary limit
 # (its real footprint) — a genuine runaway still recycles, a normal boot never does.
 MEMORY_LIMIT_MB="${VERIFY_TAURI_MEMORY_LIMIT_MB:-12288}"
+
+# EI-20191599988350937: which app STATE this run starts from. Validated HERE,
+# before Xvfb/cargo/Postgres, so a misuse costs a syntax error rather than a
+# multi-minute boot the caller then has to throw away.
+#
+# The `ready` + shared-DB combination is REFUSED rather than silently honored:
+# the seed is a WRITE, and in the default mode the target is the owner's real
+# live database. That is the exact class of incident VERIFY_TAURI_ISOLATED_DB
+# exists to prevent (EI-10387), so it must not be reachable through this knob.
+ISOLATED_SEED="${VERIFY_TAURI_ISOLATED_SEED:-fresh}"
+case "$ISOLATED_SEED" in
+  fresh|ready) ;;
+  *)
+    echo "FATAL: VERIFY_TAURI_ISOLATED_SEED must be 'fresh' or 'ready' (got: '$ISOLATED_SEED')." >&2
+    exit 2
+    ;;
+esac
+if [ "$ISOLATED_SEED" = "ready" ] && [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ]; then
+  echo "FATAL: VERIFY_TAURI_ISOLATED_SEED=ready requires VERIFY_TAURI_ISOLATED_DB=1." >&2
+  echo "       The ready seed WRITES the onboarding-complete marker. Without DB isolation that" >&2
+  echo "       write lands on the SHARED live database — the owner's real state (EI-10387)." >&2
+  # Deliberately the canonical repo path, NOT "$0": this script re-execs itself
+  # from a /tmp source snapshot, so "$0" here is a temp path that is useless to
+  # copy-paste and reads as if the caller invoked something they did not.
+  echo "       Re-run with: VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready scripts/verify-tauri-headless.sh ..." >&2
+  exit 2
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # Set before the first EXIT trap so the generated stop script can safely expand
@@ -1497,6 +1560,9 @@ write_boot_only_env_script() {
       printf 'VERIFY_TAURI_HEARTBEAT=%q\n' "$HEARTBEAT_FILE"
       printf 'VERIFY_TAURI_ENV_FILE=%q\n' "$BOOT_ONLY_ENV"
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"
+      # EI-20191599988350937: which app state this rig was seeded to, so a
+      # --boot-only caller can branch on it instead of re-deriving it.
+      printf 'VERIFY_TAURI_SEED=%q\n' "$ISOLATED_SEED"
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN_DIR=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR"
       printf 'VERIFY_TAURI_CARGO_BIN=%q\n' "$VERIFY_TAURI_CARGO_BIN"
       printf 'VERIFY_TAURI_CARGO_BIN_DIR=%q\n' "$VERIFY_TAURI_CARGO_BIN_DIR"
@@ -2871,6 +2937,61 @@ if [ "$ISOLATED_DB" = "1" ]; then
   fi
   log "isolated WebView profile VERIFIED: sentinel round-tripped and cleared under $ISOLATED_WEBVIEW_ROOT"
 fi
+
+# ── EI-20191599988350937: opt-in ready-app seed ─────────────────────────────
+# A fresh isolated DB is correctly a FIRST-RUN install, so the root route sends
+# it to the onboarding tutorial and every post-onboarding route assertion
+# measured the tutorial instead of the route under test.
+#
+# The gate is exactly one field: `finished_at` on `setup_wizard_state`. The
+# root route treats a non-empty STRING there as "finished" and anything else as
+# first-run (apps/operator-vite/src/routes/index.tsx classifyGatewayResponse),
+# so flipping that one field is the whole seed — there is no second condition to
+# satisfy, and no reason to invent production-shaped rows to satisfy it.
+#
+# Written through the app's OWN endpoint rather than SQL, deliberately:
+# PATCH /api/desktop/setup-wizard-state is an idempotent merge-update (the same
+# write the wizard's finish step and the onboarding tutor already perform), so
+# this seed cannot drift from the storage shape the way a hand-written INSERT
+# against harness_shared.setup_wizard_state would. Driving it from INSIDE the
+# webview reuses the origin the health gate just proved, so there is no second
+# port to resolve and no auth posture to reproduce.
+#
+# It then RE-READS the state and refuses to hand back the shell unless the gate
+# actually flipped. Without that read-back a failed seed is invisible: the
+# caller gets a healthy-looking shell that still redirects to onboarding, and
+# the assertion fails somewhere far from the cause — the same silent-false-green
+# shape the origin-health gate above exists to prevent.
+if [ "$ISOLATED_SEED" = "ready" ]; then
+  SEED_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
+    (async function () {
+      var stamp = new Date().toISOString();
+      var patchStatus = await fetch('/api/desktop/setup-wizard-state', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ finished_at: stamp })
+      }).then(function (r) { return r.status; }).catch(function (e) { return 'ERR:' + e.message; });
+      var after = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .catch(function () { return null; });
+      return JSON.stringify({
+        patchStatus: patchStatus,
+        finishedAt: (after && typeof after.finished_at === 'string') ? after.finished_at : null
+      });
+    })()
+  " 2>&1)" || SEED_JSON=""
+  # Assert the READ-BACK, not the PATCH status: a 200 that did not persist is
+  # still an unseeded app, and the read-back is what the root route consults.
+  if ! grep -Eq '"finishedAt"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$SEED_JSON"; then
+    echo "FATAL: VERIFY_TAURI_ISOLATED_SEED=ready could not mark onboarding complete." >&2
+    echo "       PATCH+re-read of /api/desktop/setup-wizard-state did not yield a finished_at string." >&2
+    echo "       Refusing to hand back a shell that would still redirect post-onboarding routes to" >&2
+    echo "       first-run and fail the caller's assertion far from this cause. Result: $SEED_JSON" >&2
+    exit 1
+  fi
+  log "ready-app seed VERIFIED: onboarding marked complete (setup_wizard_state.finished_at set) — $SEED_JSON"
+fi
+export VERIFY_TAURI_SEED="$ISOLATED_SEED"
 
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
