@@ -127,9 +127,13 @@ async function resolveSessionToken(headers?: Headers): Promise<string | undefine
  * only from legacy Next `route.ts` handlers (ambient-cookie fallback).
  */
 export async function getSessionUser(headers?: Headers): Promise<SessionUser | null> {
-  const { sql } = getOrgPg();
   const token = await resolveSessionToken(headers);
   if (!token) return null;
+  // Do not acquire the database pool until the request actually presents a
+  // session cookie. Unauthenticated requests are expected to resolve to null
+  // without touching Postgres; besides preserving the cheap no-session path,
+  // this keeps auth denials safe during partial/early host initialization.
+  const { sql } = getOrgPg();
 
   const rows = await sql<{
     user_id: string;
