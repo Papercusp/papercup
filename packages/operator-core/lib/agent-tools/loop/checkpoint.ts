@@ -1040,6 +1040,12 @@ export default defineTool({
       const freshness = note
         ? await getLoopCarryNoteFreshness({ harness, ownerId, workspaceId }, workspaceId).catch(() => undefined)
         : undefined;
+      // EI-22415684247504410: the published read contract promises the carried
+      // walls/checks, not just note metadata. Parse rows from the exact stored note
+      // before returning so callers can enumerate the full set before choosing a
+      // destructive rowsMode:'replace' write.
+      const { walls } = splitCarryNoteWalls(note);
+      const { checks } = splitCarryNoteChecks(note);
       return {
         content: [
           {
@@ -1082,6 +1088,8 @@ export default defineTool({
               contentHash: note === null ? null : shortCarryHash(note),
               updatedAtMs: current.updatedAtMs,
               length: note?.length ?? 0,
+              walls,
+              checks,
               // Present only when the note DECLARED dependencies. Absent ⇒ undeclared
               // ⇒ `updatedAtMs` is all you have, so judge the note by its age and know
               // that a peer's edit is invisible to that judgement.
