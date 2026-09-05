@@ -20726,7 +20726,7 @@
           "POST"
         ]
       },
-      "description": "Plan-item query across one or all plans. `item:\"P-NNN\"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (todo, not live-held). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
+      "description": "Plan-item query across one or all plans. `item:\"P-NNN\"` (one) or `itemIds:[…]` (many, homogeneous — `ids`/`itemId`/`items`/`item_ids` all alias `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (todo, not live-held). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
       "capabilities": [
         "plans:read"
       ],
