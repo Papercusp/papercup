@@ -15,8 +15,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — plain .mjs guard script, intentionally untyped
+// Enrolled in tsconfig.declarations.json, so this import is TYPED (generated sibling
+// scripts/check-reachable-advisories.d.mts). That is deliberate: it pins `analyze()`'s
+// arity at the call site, so a call that silently dropped the 4th argument — quietly
+// restoring the optimistic single-lens fix reading this file exists to prevent — fails
+// to compile instead of passing.
 import { analyze, attributeAdvisories, isNonShipping } from '../../../scripts/check-reachable-advisories.mjs';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -44,6 +47,19 @@ const AUDIT_FIXTURE = {
     'noisy-moderate': { severity: 'moderate', fixAvailable: true },
   },
 };
+
+/**
+ * Locate a finding by name, throwing when the analyzer did not produce it.
+ *
+ * Not sugar: `.find()` returns `T | undefined`, and reading `.gating` off an absent
+ * finding would make the assertion pass vacuously on `undefined` — a control that cannot
+ * fail, in the one file whose entire purpose is proving this gate discriminates.
+ */
+function findingFor(result: ReturnType<typeof analyze>, name: string) {
+  const f = result.findings.find((x) => x.name === name);
+  if (!f) throw new Error(`analyzer produced no finding for "${name}"`);
+  return f;
+}
 
 describe('reachable-advisory gate: discrimination', () => {
   it('GATES a high advisory reachable from a shipping workspace', () => {

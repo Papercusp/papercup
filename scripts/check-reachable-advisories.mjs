@@ -132,8 +132,17 @@ const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 
  * resolves to the PESSIMISTIC reading — the same fail-closed doctrine as unattributed
  * advisories above. A guard that under-reports a major upgrade as "patch-compatible" sends
  * you to attempt a fix that cannot work.
+ *
+ * @param {any} auditJson  parsed `npm audit --omit=dev --json` (reachability + severity)
+ * @param {any} lsJson     parsed `npm ls --omit=dev --all --json` (workspace attribution)
+ * @param {any} baseline   the shrink-only accepted-advisory baseline
+ * @param {any} [fullAuditJson]  parsed `npm audit --json` over the tree as installed.
+ *   Optional: omitted/null degrades to the single-lens reading, which still gates on the
+ *   same population but is optimistic about fix feasibility. Typed explicitly because a
+ *   bare `= null` default makes tsc infer the parameter type AS `null`, which then rejects
+ *   every real audit object at the call site.
  */
-export function analyze(auditJson, lsJson, baseline, fullAuditJson) {
+export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
   const vulns = auditJson?.vulnerabilities || {};
   const names = Object.keys(vulns);
   const reach = attributeAdvisories(lsJson || {}, names);
