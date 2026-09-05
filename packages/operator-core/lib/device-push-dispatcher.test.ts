@@ -10,6 +10,7 @@ import {
   pushEnabled,
   dispatchPush,
   isFcmTokenPermanentlyInvalid,
+  isApnsTokenPermanentlyInvalid,
   tokensToReap,
   __resetPushCredsForTest,
 } from './device-push-dispatcher';
@@ -287,5 +288,67 @@ describe('stale FCM token reaping (WI-37477)', () => {
     expect(deleted).toEqual(['dead-token']);
     vi.doUnmock('./device-store');
     vi.resetModules();
+  });
+});
+
+/**
+ * The APNs half (EI-19976889768364098). `tokensToReap` was already provider-agnostic — it
+ * filters on `unregistered === true` regardless of platform — so FCM tokens were reaped and
+ * APNs tokens never were, purely because `sendApns` never set the flag. The asymmetry was
+ * latent only because APNs is dormant until Apple Developer enrollment; it would have gone
+ * live silently, at enrollment, when nobody was looking at this file.
+ *
+ * The controls carry the real weight here. `BadDeviceToken` / `DeviceTokenNotForTopic` are
+ * CONFIGURATION errors (wrong `APNS_HOST`, wrong `APNS_BUNDLE_ID`) that every live token
+ * reports at once, so treating them as terminal would delete the entire iOS fleet's tokens on
+ * a single bad env var. They must never reap.
+ */
+describe('stale APNs token reaping (EI-19976889768364098)', () => {
+  const UNREGISTERED_BODY = JSON.stringify({ reason: 'Unregistered', timestamp: 1712000000000 });
+
+  it('recognises the documented 410 Unregistered response as permanently invalid', () => {
+    expect(isApnsTokenPermanentlyInvalid(410, UNREGISTERED_BODY)).toBe(true);
+  });
+
+  // ── Controls: none of these may authorise a delete ──────────────────────────
+  it('does NOT reap a CONFIGURATION error, however terminal it looks', () => {
+    // Wrong APNS_HOST (prod token → sandbox, or the reverse). Every live token reports this.
+    expect(isApnsTokenPermanentlyInvalid(400, '{"reason":"BadDeviceToken"}')).toBe(false);
+    // Wrong APNS_BUNDLE_ID. Also fleet-wide, also recoverable by fixing the env var.
+    expect(isApnsTokenPermanentlyInvalid(400, '{"reason":"DeviceTokenNotForTopic"}')).toBe(false);
+  });
+
+  it('does NOT reap a transient failure, however it presents', () => {
+    // Status and reason must AGREE — a body mentioning the word is not enough.
+    expect(isApnsTokenPermanentlyInvalid(503, UNREGISTERED_BODY)).toBe(false);
+    expect(isApnsTokenPermanentlyInvalid(500, 'internal server error')).toBe(false);
+    expect(isApnsTokenPermanentlyInvalid(403, '{"reason":"ExpiredProviderToken"}')).toBe(false);
+    // A 410 that is NOT the documented contract, and an empty body.
+    expect(isApnsTokenPermanentlyInvalid(410, '{"reason":"PayloadTooLarge"}')).toBe(false);
+    expect(isApnsTokenPermanentlyInvalid(410, '')).toBe(false);
+    // An unconfigured provider is the ONLY ok:false APNs sees today (dormant until enrollment).
+    expect(isApnsTokenPermanentlyInvalid('skipped', UNREGISTERED_BODY)).toBe(false);
+    expect(isApnsTokenPermanentlyInvalid('error', UNREGISTERED_BODY)).toBe(false);
+  });
+
+  it('does NOT share the FCM terminal status — 404 means a malformed :path on APNs', () => {
+    // The two classifiers must not be collapsed: 404 is terminal for FCM, benign for APNs.
+    expect(isApnsTokenPermanentlyInvalid(404, '{"reason":"BadPath"}')).toBe(false);
+    expect(isFcmTokenPermanentlyInvalid(410, UNREGISTERED_BODY)).toBe(false);
+  });
+
+  it('reaps a dead APNs token through the same provider-agnostic path as FCM', () => {
+    const targets = [
+      { platform: 'apns' as const, token: 'ios-live' },
+      { platform: 'apns' as const, token: 'ios-dead' },
+      { platform: 'fcm' as const, token: 'android-live' },
+    ];
+    const results = [
+      { platform: 'apns' as const, ok: false, status: 400, detail: '{"reason":"BadDeviceToken"}' },
+      { platform: 'apns' as const, ok: false, status: 410, unregistered: true },
+      { platform: 'fcm' as const, ok: true, status: 200 },
+    ];
+    // The misconfigured-but-live iOS token survives; only the genuinely dead one is reaped.
+    expect(tokensToReap(targets, results).map((t) => t.token)).toEqual(['ios-dead']);
   });
 });

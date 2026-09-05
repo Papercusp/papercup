@@ -29,6 +29,12 @@ import {
   ASSUMPTIONS_REQUIRED_MESSAGE,
   TERMINAL_CLOSE_RECOVERY_HINT,
 } from './_assumptions';
+import {
+  completionRefAliasFields,
+  rejectCompletionRefAliasConflict,
+  rejectNonTerminalCompletionAlias,
+  resolveCompletionRefAlias,
+} from './_completion-ref-alias';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import {
   TERMINAL_INPUT_STATES,
@@ -106,6 +112,10 @@ const itemBase = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
   decision: decisionSpec.optional(),
+  // EI-19961538712475843: declared on BOTH union arms, not just the terminal one — the
+  // schema is strict, so an undeclared key is rejected at parse time and would preempt
+  // the targeted non-terminal message with a generic "Unrecognized key".
+  ...completionRefAliasFields,
   force: z
     .boolean()
     .optional()
@@ -116,10 +126,15 @@ const itemBase = z.object({
 
 const terminalItem = itemBase.extend({
   state: z.preprocess(foldStateCase, z.enum(asEnumValues(TERMINAL_INPUT_STATES))),
+  // EI-19961538712475843: `.optional()` ONLY because `reason`/`note` are accepted as
+  // aliases for the same field (see ./_completion-ref-alias). The requirement itself is
+  // unchanged and is re-closed by the superRefine below, which reads whichever spelling
+  // the caller used — so this branch still cannot go terminal without evidence.
   completionRef: z
     .string()
     .min(1)
     .max(2000)
+    .optional()
     .describe(
       'REQUIRED for this terminal state — completion evidence (summary / commit / coord or plan-item ref). Prefer work_items:complete for a structured completion record.',
     ),
@@ -128,11 +143,25 @@ const terminalItem = itemBase.extend({
   // schema shape the model sees — evidence for the claim, and the assumptions the
   // claim rests on. Non-terminal writes carry neither field at all.
   assumptions: assumptionsArg,
+}).superRefine((it, ctx) => {
+  rejectCompletionRefAliasConflict(it, ctx);
+  if (resolveCompletionRefAlias(it) === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['completionRef'],
+      message:
+        'a terminal state requires completion evidence — pass `completionRef` (or its `reason` / `note` alias), or (preferred) use work_items:complete for a structured completion record',
+    });
+  }
 });
 
-const nonTerminalItem = itemBase.extend({
-  state: z.preprocess(foldStateCase, z.enum(asEnumValues(NON_TERMINAL_INPUT_STATES))),
-});
+const nonTerminalItem = itemBase
+  .extend({
+    state: z.preprocess(foldStateCase, z.enum(asEnumValues(NON_TERMINAL_INPUT_STATES))),
+  })
+  .superRefine((it, ctx) => {
+    rejectNonTerminalCompletionAlias(it, it.state, ctx);
+  });
 
 const itemSpec = z.union([terminalItem, nonTerminalItem]);
 
@@ -173,6 +202,9 @@ export default defineTool({
         .max(2000)
         .optional()
         .describe('completion evidence applied to the inline id / every id in `ids` (see itemSpec.completionRef)'),
+      // EI-19961538712475843 — see ./_completion-ref-alias for why `reason`/`note` are
+      // accepted here and refused on a non-terminal write.
+      ...completionRefAliasFields,
       // P-017 (b) gate #2: `.optional()` ONLY because an items[]-only call carries its
       // own per-item value. The requirement for the inline / ids[] shorthand is closed
       // by the refine below — without it the gate would MOVE to the shorthand, which is
@@ -192,10 +224,13 @@ export default defineTool({
     // inline / ids[] shape. itemSpec's union cannot cover these — `state` and
     // `completionRef` live at the top level there — so without this the evidence
     // requirement would simply MOVE to the shorthand rather than being closed.
-    .refine((a) => !(a.state && isTerminalStateInput(a.state) && !a.completionRef), {
+    // EI-19961538712475843: reads whichever spelling the caller used, so the evidence
+    // requirement is unchanged — `reason`/`note` satisfy it exactly as `completionRef`
+    // does, and none of the three satisfies it when all are absent.
+    .refine((a) => !(a.state && isTerminalStateInput(a.state) && !resolveCompletionRefAlias(a)), {
       path: ['completionRef'],
       message:
-        'a terminal state requires completion evidence — pass `completionRef`, or (preferred) use work_items:complete for a structured completion record',
+        'a terminal state requires completion evidence — pass `completionRef` (or its `reason` / `note` alias), or (preferred) use work_items:complete for a structured completion record',
     })
     // P-017 (b) gate #2 / D-050 — the SAME structural rule terminalItem enforces for
     // items[], applied to the inline / ids[] shape, exactly as the completionRef refine
@@ -204,6 +239,15 @@ export default defineTool({
     .refine((a) => !(a.state && isTerminalStateInput(a.state) && !hasAssumptionDeclaration(a.assumptions)), {
       path: ['assumptions'],
       message: ASSUMPTIONS_REQUIRED_MESSAGE,
+    })
+    // EI-19961538712475843: the SAME alias rules the items[] union arms enforce, applied
+    // to the inline / ids[] shape — without this the alias would be silently accepted and
+    // dropped on a non-terminal shorthand write, which is the bug, not the fix.
+    .superRefine((a, ctx) => {
+      rejectCompletionRefAliasConflict(a, ctx);
+      if (a.state && !isTerminalStateInput(a.state)) {
+        rejectNonTerminalCompletionAlias(a, a.state, ctx);
+      }
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -212,15 +256,26 @@ export default defineTool({
     // — every downstream reader keeps its single `it.completionRef` access.
     const list = args.items?.length
       ? args.items.map((it) => ({
-          ...it,
-          completionRef: 'completionRef' in it ? it.completionRef : undefined,
+          id: it.id,
+          state: it.state as string,
+          harness: it.harness,
+          decision: it.decision,
+          force: it.force,
+          // EI-19961538712475843: resolve the alias HERE, at the one place the three
+          // spellings collapse into the single value every downstream reader consumes —
+          // so `it.completionRef` keeps meaning exactly what it meant before. The fields
+          // are now listed explicitly rather than spread: `...it` would carry `reason`
+          // and `note` PAST this point, leaving two live spellings of a field that has
+          // already been resolved, and it made this branch's shape diverge from the
+          // ids[] / inline ones below.
+          completionRef: resolveCompletionRefAlias(it),
           // P-008 (d): flattened exactly like `completionRef` above — the union's
           // terminal arm carries it, the non-terminal arm has no such field.
           assumptions: 'assumptions' in it ? it.assumptions : undefined,
         }))
         : args.ids?.length
-        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, assumptions: args.assumptions, force: args.force }))
-        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: args.completionRef, assumptions: args.assumptions, force: args.force }];
+        ? args.ids.map((id) => ({ id, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: resolveCompletionRefAlias(args), assumptions: args.assumptions, force: args.force }))
+        : [{ id: args.id as string, state: args.state as string, harness: args.harness, decision: args.decision, completionRef: resolveCompletionRefAlias(args), assumptions: args.assumptions, force: args.force }];
     const env = await runBulk(
       list,
       async (it) => {

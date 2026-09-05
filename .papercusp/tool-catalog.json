@@ -8387,7 +8387,7 @@
       ],
       "guidance": {
         "when": "Check whether migration NNN applied, list the most recent migrations, or read what applied in a time window — instead of hand-writing SELECT over harness_shared.schema_migrations.",
-        "notWhen": "To find files on disk that have NOT applied (drift, content-drift, extras) use db:check_drift — that is the pending side and this tool does not recompute it. To APPLY a migration use db:migrate (or restart the operator; boot auto-applies). To allocate a NEW migration number use db:next-migration.",
+        "notWhen": "To find files on disk that have NOT applied (drift, content-drift, extras) use db:check_drift — that is the pending side and this tool does not recompute it. To APPLY a migration use db:migrate (or restart the operator; boot auto-applies). To allocate a NEW migration number use db:next-migration. The ledger is CLUSTER-global — there is no harness/workspace scope, so `harness` is rejected, not ignored.",
         "chaining": "A `pending` verdict → db:check_drift for the full drift picture, then db:migrate or an operator restart. A `no-such-migration` verdict → db:next-migration if you meant to create one."
       }
     },

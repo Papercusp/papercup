@@ -788,6 +788,171 @@ export async function audit(
     .run();
 }
 
+// ── Authenticated creator drafts (P-007) ────────────────────────
+
+export type CreatorDraftState =
+  | 'draft'
+  | 'submitted'
+  | 'approved'
+  | 'rejected'
+  | 'published'
+  | 'yanked'
+  | 'revoked';
+
+export interface CreatorDraftRow {
+  id: string;
+  owner_github_user_id: number;
+  owner_github_login: string;
+  listing_kind: ListingKind;
+  listing_ref: string | null;
+  title: string;
+  description: string | null;
+  manifest_json: string;
+  provenance_json: string;
+  state: CreatorDraftState;
+  artifact_key: string | null;
+  artifact_content_hash: string | null;
+  artifact_size_bytes: number | null;
+  artifact_content_type: string | null;
+  upload_token_hash: string | null;
+  upload_expires_at: number | null;
+  reviewed_at: number | null;
+  reviewed_by_github_user_id: number | null;
+  review_reason: string | null;
+  published_listing_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface NewCreatorDraftInput {
+  id: string;
+  owner_github_user_id: number;
+  owner_github_login: string;
+  listing_kind: ListingKind;
+  listing_ref: string | null;
+  title: string;
+  description: string | null;
+  manifest_json: string;
+  provenance_json: string;
+  upload_token_hash: string;
+  upload_expires_at: number;
+  created_at: number;
+}
+
+export async function insertCreatorDraft(db: D1Database, draft: NewCreatorDraftInput): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO creator_drafts
+       (id, owner_github_user_id, owner_github_login, listing_kind, listing_ref,
+        title, description, manifest_json, provenance_json, state,
+        upload_token_hash, upload_expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+    )
+    .bind(
+      draft.id,
+      draft.owner_github_user_id,
+      draft.owner_github_login,
+      draft.listing_kind,
+      draft.listing_ref,
+      draft.title,
+      draft.description,
+      draft.manifest_json,
+      draft.provenance_json,
+      draft.upload_token_hash,
+      draft.upload_expires_at,
+      draft.created_at,
+      draft.created_at,
+    )
+    .run();
+}
+
+export async function getCreatorDraft(db: D1Database, id: string): Promise<CreatorDraftRow | null> {
+  const row = await db.prepare('SELECT * FROM creator_drafts WHERE id = ?').bind(id).first<CreatorDraftRow>();
+  return row ?? null;
+}
+
+export async function listCreatorDrafts(
+  db: D1Database,
+  opts: { ownerId?: number; state?: CreatorDraftState; limit?: number } = {},
+): Promise<CreatorDraftRow[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200);
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  if (opts.ownerId != null) {
+    where.push('owner_github_user_id = ?');
+    binds.push(opts.ownerId);
+  }
+  if (opts.state) {
+    where.push('state = ?');
+    binds.push(opts.state);
+  }
+  const sql = `SELECT * FROM creator_drafts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC LIMIT ?`;
+  binds.push(limit);
+  const stmt = db.prepare(sql);
+  const bound = (stmt as unknown as { bind: (...values: unknown[]) => D1PreparedStatement }).bind(...binds);
+  const result = await bound.all<CreatorDraftRow>();
+  return result.results ?? [];
+}
+
+export async function setCreatorDraftArtifact(
+  db: D1Database,
+  id: string,
+  artifact: {
+    key: string;
+    contentHash: string;
+    sizeBytes: number;
+    contentType: string;
+    now: number;
+  },
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE creator_drafts
+          SET artifact_key = ?, artifact_content_hash = ?, artifact_size_bytes = ?,
+              artifact_content_type = ?, upload_token_hash = NULL, upload_expires_at = NULL,
+              updated_at = ?
+        WHERE id = ? AND state = 'draft'`,
+    )
+    .bind(artifact.key, artifact.contentHash, artifact.sizeBytes, artifact.contentType, artifact.now, id)
+    .run();
+  return (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
+}
+
+export async function setCreatorDraftState(
+  db: D1Database,
+  id: string,
+  from: CreatorDraftState,
+  to: CreatorDraftState,
+  now: number,
+  extra: {
+    reviewedBy?: number | null;
+    reviewReason?: string | null;
+    publishedListingId?: string | null;
+  } = {},
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE creator_drafts
+          SET state = ?, reviewed_at = COALESCE(?, reviewed_at),
+              reviewed_by_github_user_id = COALESCE(?, reviewed_by_github_user_id),
+              review_reason = COALESCE(?, review_reason),
+              published_listing_id = COALESCE(?, published_listing_id), updated_at = ?
+        WHERE id = ? AND state = ?`,
+    )
+    .bind(
+      to,
+      extra.reviewedBy == null ? null : now,
+      extra.reviewedBy ?? null,
+      extra.reviewReason ?? null,
+      extra.publishedListingId ?? null,
+      now,
+      id,
+      from,
+    )
+    .run();
+  return (result as { meta?: { changes?: number } }).meta?.changes ?? 0;
+}
+
 // ── Channel-2 publisher ban-list (item 1) ───────────────────────
 
 export type BannedPubkeyRow = BannedPublisherPubkeysRow;

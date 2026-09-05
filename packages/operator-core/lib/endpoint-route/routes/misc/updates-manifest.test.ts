@@ -317,6 +317,86 @@ describe('GET /api/updates/manifest — manifest contract with tauri-plugin-upda
     expect(body.platforms['linux-x86_64'].url).toContain('/api/updates/download?asset_id=3');
   });
 
+  // WI-2144851 / security-boundary-remediation-and-usability-2026-09-04 P-007,
+  // Workstream C — "verify signed updates ... failure cases".
+  //
+  // WI-4364 already established the rule for the URL half of the manifest:
+  // never offer an update that cannot be DOWNLOADED (it refuses a placeholder
+  // url with cannot_check/manifest_unconfigured). The signature half had no
+  // such rule: an absent or unfetchable .sig produced `signature: ''`, a
+  // console.warn reading "install will fail verification", and a 200 serving
+  // that manifest anyway. The updates/rollback sibling route — which shares this
+  // route's asset/signature resolution — already fails closed here, refusing
+  // with 409 no_signature ("surfaced, never served", updates-rollback.ts:44),
+  // and the latest.json fallback further down THIS file also fails closed
+  // (`entry?.signature && entry.url`). The GitHub-asset path was the one
+  // fail-open corner of the three.
+  //
+  // The user-visible cost of serving it was a multi-GB download that Tauri then
+  // rejects at verification — a failure the server had all the information to
+  // predict before offering the update at all.
+  describe('never offers an update that cannot be VERIFIED', () => {
+    const noSigRelease = {
+      ...guiRelease,
+      assets: toAssets([
+        'Papercusp.GUI_0.0.4_x64-setup.exe',
+        // .sig deliberately absent — an unsigned cut, or a partial asset upload.
+        'Papercusp_GUI_0.0.4_amd64.AppImage',
+        'papercusp-latest-desktop-v0.0.4-alpha.json',
+      ]),
+    };
+
+    const expectRefusal = async (res: Response) => {
+      expect(res.status).toBe(204);
+      expect(res.headers.get('X-Update-Check')).toBe('cannot_check');
+      expect(res.headers.get('X-Update-Reason')).toBe('no_signature');
+    };
+
+    it('refuses when the release carries no .sig asset at all', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFetch.mockResolvedValue(new Response(JSON.stringify([noSigRelease]), { status: 200 }));
+
+      await expectRefusal(
+        await manifestResponse('?target=windows&arch=x86_64&current_version=0.0.3&channel=alpha'),
+      );
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('refuses when the .sig asset exists but its content cannot be fetched', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(fetchAssetText).mockResolvedValue(null); // 404 / token expired mid-flight
+
+      await expectRefusal(
+        await manifestResponse('?target=windows&arch=x86_64&current_version=0.0.3&channel=alpha'),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('refuses a whitespace-only signature — a truncated .sig is not a signature', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(fetchAssetText).mockResolvedValue('   \n');
+
+      await expectRefusal(
+        await manifestResponse('?target=windows&arch=x86_64&current_version=0.0.3&channel=alpha'),
+      );
+      warnSpy.mockRestore();
+    });
+
+    it('CONTROL: a real signature is still served, so the refusal is not blanket', async () => {
+      // Without this, a route that refused EVERY update would pass all three
+      // cases above and look correct.
+      const res = await manifestResponse(
+        '?target=windows&arch=x86_64&current_version=0.0.3&channel=alpha',
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        platforms: Record<string, { signature: string }>;
+      };
+      expect(body.platforms['windows-x86_64'].signature).toBe('SIG_CONTENT');
+    });
+  });
+
   it('204s when current_version already matches the candidate (normalized)', async () => {
     const res = await manifestResponse(
       '?target=windows&arch=x86_64&current_version=0.0.4-alpha&channel=alpha',

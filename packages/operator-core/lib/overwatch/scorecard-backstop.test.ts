@@ -168,6 +168,74 @@ describe('synthesizeCoordinationScorecard', () => {
     expect(r['end-to-end-flow'].evidence).toContain('NOT OBSERVED');
   });
 
+  // ── EI-19961781283827318: bee-execution no longer collapses on the retired tier ────
+  //
+  // THE REGRESSION GUARD. `bees.running` is structurally 0 forever (nursery tier retired), so
+  // the old zero-branch fired on every wake and returned a permanent 'unknown'. If this ever
+  // regresses to gating on `bees`, this test fails: a fully healthy live fleet would once again
+  // be reported as "not assessable".
+  it('a retired-tier zero does NOT collapse the criterion when the fleet is live (EI-19961781283827318)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({
+        bees: { ...BASE.bees, running: 0 }, // retired tier: structurally 0, must not gate the verdict
+        suFleet: { total: 4, live: 4, stale: 0, byRole: {} },
+      }),
+    );
+    assertWellFormed(r);
+    expect(r['bee-execution'].rating).toBe('healthy');
+    expect(r['bee-execution'].rating).not.toBe('unknown');
+    expect(r['bee-execution'].evidence).toContain('su-fleet');
+    // the transient wording is the reported harm — a permanent condition must not read as
+    // one that might differ next tick
+    expect(r['bee-execution'].evidence).not.toContain('this wake — not assessable');
+  });
+
+  it('stale su-fleet executors → bee-execution degraded (EI-19961781283827318)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({
+        bees: { ...BASE.bees, running: 0 },
+        suFleet: { total: 4, live: 3, stale: 2, byRole: {} },
+      }),
+    );
+    expect(r['bee-execution'].rating).toBe('degraded');
+  });
+
+  // Zero live executors is genuinely not assessable (nothing ran) — but the evidence must name
+  // the PERMANENT structural reason and report the observed numbers, not imply a transient wake
+  // condition. Deliberately NOT rated a failure: whether an idle fleet is a problem depends on
+  // whether work is waiting, and end-to-end-flow already owns that judgment.
+  it('zero live executors is unknown, but names the permanent reason (EI-19961781283827318)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({
+        bees: { ...BASE.bees, running: 0 },
+        suFleet: { total: 3, live: 0, stale: 3, byRole: {} },
+      }),
+    );
+    expect(r['bee-execution'].rating).toBe('unknown');
+    expect(r['bee-execution'].evidence).toContain('nursery tier retired');
+    expect(r['bee-execution'].evidence).toContain('0 of 3');
+    expect(r['bee-execution'].evidence).not.toContain('this wake — not assessable');
+  });
+
+  // unreadable ≠ observed-zero, the same rule end-to-end-flow follows: with neither panel
+  // observed the floor must not fabricate executor counts it never read.
+  it('neither panel observed → unknown without fabricated counts (EI-19961781283827318)', () => {
+    const r = synthesizeCoordinationScorecard(mkHealth({ bees: null, suFleet: null }));
+    assertWellFormed(r);
+    expect(r['bee-execution'].rating).toBe('unknown');
+    expect(r['bee-execution'].evidence).not.toContain('su-fleet executors');
+  });
+
+  // The legacy path stays intact: if a live nursery ever reports again, it is rated from `bees`
+  // — including orphanedClaims, which has no su-fleet equivalent.
+  it('a live nursery is still rated from bees, orphaned claims included (EI-19961781283827318)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({ bees: { ...BASE.bees, running: 2, stale: 0, orphanedClaims: 1 } }),
+    );
+    expect(r['bee-execution'].rating).toBe('degraded');
+    expect(r['bee-execution'].evidence).toContain('orphaned claims');
+  });
+
   it('Scout transport-death → ideation-quality broken; draft-force-start → queen-plan-selection degraded', () => {
     const r = synthesizeCoordinationScorecard(
       mkHealth({

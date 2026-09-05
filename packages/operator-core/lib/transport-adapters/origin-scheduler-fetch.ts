@@ -191,6 +191,30 @@ function applyClassHint(
   return classRank(hint) > classRank(derived) ? hint : derived;
 }
 
+/**
+ * Mark a request as work the visible view is NOT waiting on.
+ *
+ * This is the adoption surface for the hint, and it exists because the global
+ * `fetch` is typed with the standard `RequestInit`: passing an object literal
+ * carrying `papercuspRequestClass` straight to `fetch` trips TypeScript's
+ * excess-property check at every call site. Returning a plain `RequestInit`
+ * keeps the caller's code ordinary:
+ *
+ *   fetch('/api/profile', backgroundRequest());
+ *   fetch('/api/bootstrap', backgroundRequest({ headers }));
+ *
+ * Use it for reads issued by hidden or global chrome — bootstrap, auth, and
+ * profile warmups — so they stop competing with the visible view for the two
+ * slots a connection-capped path actually has.
+ */
+export function backgroundRequest(init?: RequestInit): RequestInit {
+  const hinted: OriginSchedulerFetchInit = {
+    ...init,
+    papercuspRequestClass: 'background-sync',
+  };
+  return hinted;
+}
+
 interface InstallHandle {
   uninstall: () => void;
 }
@@ -411,7 +435,21 @@ function coalescableReadKey(
   } catch {
     return null;
   }
-  return JSON.stringify([method, href, requestVariantOf(input, init)]);
+  // The scheduling class joins the identity even though it cannot change the
+  // RESPONSE, because coalescing hands the joiner the class of whichever read
+  // started FIRST. Without this, a visible read could join an already-in-flight
+  // background read and inherit its lane — a priority inversion, and precisely
+  // the "visible work waits behind hidden work" failure the hint exists to fix.
+  // Merging only within a class keeps the win where the duplicates actually
+  // were (the same hidden caller issuing the same read repeatedly) and costs
+  // nothing until a caller opts in: with no hints every read is still
+  // `foreground-read`, so this key is unchanged for every existing caller.
+  return JSON.stringify([
+    method,
+    href,
+    decision.requestClass ?? '',
+    requestVariantOf(input, init),
+  ]);
 }
 
 function abortErrorOf(signal: AbortSignal | undefined): unknown {

@@ -13,7 +13,7 @@
  * and rendering RichGrid here would couple this to the whole account-row projection.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 
 // vi.mock is hoisted above every top-level const, so the spies have to be hoisted with it.
@@ -35,16 +35,25 @@ vi.mock('@/app/harness/useConfirmDialog', () => ({
 
 import DeployAccountsPage from './page';
 
-// `rate` is not optional in practice — isActiveAccount reads rate.pausedUntil during render,
-// so a row without it takes the whole page down rather than degrading.
+// The fixture is NOT optional-tolerant, and the failure is disproportionate: AccountCard renders
+// once per account OUTSIDE the stubbed grid, and reads `boundTo.length` (page.tsx:974) and
+// `rate.pausedUntil` (accountStatusText) straight off the row. A row missing either throws during
+// render, React unmounts the WHOLE tree with no error boundary, and every case then fails with a
+// perfectly plausible "banner never rendered" — the assertion text names the banner while the real
+// cause is the fixture. The runner tells the truth on a separate line: read `⚠⚠ UNHANDLED ERROR …
+// message=` before believing any assertion in this file.
 const ACCOUNTS = [
   {
     id: 'aviynw6',
     provider: 'claude',
     credentialRef: 'token:/a',
+    boundTo: [],
     rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 },
   },
 ];
+
+/** The banner is `role="status"`; scope id assertions to it — the card list renders the id too. */
+const banner = () => within(screen.getByRole('status'));
 
 /** Serve the page's three GETs; `defaultOverride` drives the axis under test. */
 function stubFetch(opts: { defaultOverride?: unknown; overrideFails?: boolean; post?: unknown } = {}) {
@@ -79,7 +88,7 @@ describe('Deploy accounts — default-account banner (P-006)', () => {
     stubFetch({ defaultOverride: { defaultAccountId: 'aviynw6' } });
     render(<DeployAccountsPage />);
     await waitFor(() => expect(screen.getByText(/Default account:/)).toBeTruthy());
-    expect(screen.getByText('aviynw6')).toBeTruthy();
+    expect(banner().getByText('aviynw6')).toBeTruthy();
     expect(screen.getByText(/fail over to the rest of the pool/)).toBeTruthy();
   });
 
@@ -97,6 +106,10 @@ describe('Deploy accounts — default-account banner (P-006)', () => {
     // The distinction that matters: unknown ≠ none. Coercing a failed read to null would make
     // the page assert the machine is on its own ~/.claude login when it may well be on a pool
     // account — a confident, wrong answer to the one question this banner exists to answer.
+    // Falsifiability checked 2026-09-05: feeding this case a SUCCESSFUL read of null (the coercion
+    // the page deliberately avoids) makes it fail on the "~/.claude" span — so the null-assertions
+    // below discriminate unknown-from-none rather than passing vacuously. The getByTestId('grid')
+    // line is what stops them passing when the page renders nothing at all.
     stubFetch({ overrideFails: true });
     render(<DeployAccountsPage />);
     await waitFor(() => expect(screen.getByTestId('grid')).toBeTruthy()); // page finished loading
@@ -127,7 +140,7 @@ describe('Deploy accounts — default-account banner (P-006)', () => {
     await waitFor(() => expect(screen.getByText(/Default account:/)).toBeTruthy());
     screen.getByRole('button', { name: 'Clear' }).click();
     await waitFor(() => expect(post).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByText('aviynw2')).toBeTruthy());
+    await waitFor(() => expect(banner().getByText('aviynw2')).toBeTruthy());
   });
 
   it('surfaces the server’s own rejection reason, and leaves the banner alone', async () => {
@@ -139,6 +152,6 @@ describe('Deploy accounts — default-account banner (P-006)', () => {
     await waitFor(() => expect(screen.getByText(/Default account:/)).toBeTruthy());
     screen.getByRole('button', { name: 'Clear' }).click();
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("account 'codex-main' is a Codex account."));
-    expect(screen.getByText('aviynw6')).toBeTruthy(); // unchanged by the failed write
+    expect(banner().getByText('aviynw6')).toBeTruthy(); // unchanged by the failed write
   });
 });

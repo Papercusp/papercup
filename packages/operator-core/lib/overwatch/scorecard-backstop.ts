@@ -289,14 +289,42 @@ export function synthesizeCoordinationScorecard(
     };
   } else r['watchdog-determinism'] = unknown();
 
-  // bee-execution — only assessable when bees exist
-  if (bees) {
+  // bee-execution — are the executors executing?
+  //
+  // EI-19961781283827318: this criterion was bee-COUPLED, and the Mug/Kettle/cup nursery tier
+  // is retired permanently, so `bees.running` is structurally 0 forever. The old zero-branch
+  // therefore fired on EVERY wake and reported a PERMANENT condition in transient language
+  // ("0 bees running THIS WAKE — not assessable"), which is exactly the harm that item names:
+  // an executor signal collapsed to a value indistinguishable from "nothing to assess", worded
+  // so an operator reads it as a condition that might differ next tick. It never differs.
+  //
+  // Executors now live in the su FLEET, so capacity falls through to it — the same re-basing
+  // already applied to end-to-end-flow above, for the same reason and with the same rule: an
+  // ABSENT suFleet panel means NOT OBSERVED, which is deliberately not the same as observing
+  // zero. `orphanedClaims` has no su-fleet equivalent (SuFleetHealth is
+  // { total, live, stale, byRole }), so it is rated only on the legacy path, where a live
+  // nursery could still report one.
+  //
+  // Note what is NOT claimed here: zero live executors is not rated a failure. Whether an idle
+  // fleet is a problem depends on whether work is waiting, and that judgment already belongs to
+  // end-to-end-flow (`quiescent-awaiting-capacity`). Rating it here too would double-count one
+  // condition as two independent degradations.
+  const fleetExec = p.suFleet?.data ?? null;
+  if (bees && bees.running > 0) {
+    r['bee-execution'] = {
+      rating: bees.stale > 0 || bees.orphanedClaims > 0 ? 'degraded' : 'healthy',
+      evidence: `auto-synth: ${bees.running} running, ${bees.stale} stale, ${bees.orphanedClaims} orphaned claims`,
+    };
+  } else if (fleetExec) {
     r['bee-execution'] =
-      bees.running === 0
-        ? { rating: 'unknown', evidence: 'auto-synth: 0 bees running this wake — not assessable' }
+      fleetExec.live === 0
+        ? {
+            rating: 'unknown',
+            evidence: `auto-synth: nursery tier retired (structurally 0 bees); 0 of ${fleetExec.total} tracked su-fleet executors live, ${fleetExec.stale} stale — nothing executed this wake, so execution QUALITY is not assessable`,
+          }
         : {
-            rating: bees.stale > 0 || bees.orphanedClaims > 0 ? 'degraded' : 'healthy',
-            evidence: `auto-synth: ${bees.running} running, ${bees.stale} stale, ${bees.orphanedClaims} orphaned claims`,
+            rating: fleetExec.stale > 0 ? 'degraded' : 'healthy',
+            evidence: `auto-synth: nursery tier retired (structurally 0 bees); ${fleetExec.live} of ${fleetExec.total} tracked su-fleet executors live, ${fleetExec.stale} stale`,
           };
   } else r['bee-execution'] = unknown();
 

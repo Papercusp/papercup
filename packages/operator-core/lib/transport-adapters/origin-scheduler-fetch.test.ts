@@ -7,6 +7,7 @@ import {
 } from '@papercusp/sync';
 import {
   _resetOriginSchedulerFetchDedupeForTests,
+  backgroundRequest,
   classifyOriginSchedulerFetch,
   installOriginSchedulerFetch,
   isIdempotentReadMethod,
@@ -94,6 +95,77 @@ describe('classifyOriginSchedulerFetch', () => {
       requestClass: 'interactive-control',
       method: 'POST',
     });
+  });
+
+  it('honours a caller criticality hint that DEMOTES a read out of the visible lane', () => {
+    stubWindow(vi.fn(async () => response()) as unknown as typeof fetch);
+    // The whole point of the signal: a hidden global-chrome read stops sharing
+    // the `foreground-read` lane with the read the visible view waits on.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', backgroundRequest()),
+    ).toMatchObject({
+      schedule: true,
+      requestClass: 'background-sync',
+      requestClassHint: 'background-sync',
+      method: 'GET',
+    });
+    // The standard Fetch Priority hint means the same thing, so a caller that
+    // already marks a read low-priority does not need a papercusp-specific field.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', {
+        priority: 'low',
+      } as RequestInit),
+    ).toMatchObject({ requestClass: 'background-sync', requestClassHint: 'background-sync' });
+    // A write may also be demoted — fire-and-forget telemetry is a real case.
+    expect(
+      classifyOriginSchedulerFetch('/api/telemetry', {
+        ...backgroundRequest(),
+        method: 'POST',
+      }),
+    ).toMatchObject({ requestClass: 'background-sync', method: 'POST' });
+  });
+
+  it('never lets a caller hint ESCALATE into the reserved interactive lane', () => {
+    stubWindow(vi.fn(async () => response()) as unknown as typeof fetch);
+    // `interactive-control` is reserved so a read wave cannot starve a user's
+    // write. The wrapper sees every operator API call in the app, so if a hint
+    // could raise priority the reservation would protect nothing. A hint may
+    // only ever lower it.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', {
+        papercuspRequestClass: 'interactive-control',
+      } as RequestInit),
+    ).toMatchObject({
+      requestClass: 'foreground-read',
+      requestClassHint: 'interactive-control',
+      method: 'GET',
+    });
+    // Same rule one rung down: background may not promote itself to foreground.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', {
+        papercuspRequestClass: 'foreground-read',
+        priority: 'low',
+      } as RequestInit),
+    ).toMatchObject({ requestClass: 'foreground-read' });
+    // `priority: 'high'` is read but earns no promotion.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', { priority: 'high' } as RequestInit),
+    ).toMatchObject({ requestClass: 'foreground-read' });
+    // A write keeps its own lane; the hint is not a way to give one away by accident.
+    expect(
+      classifyOriginSchedulerFetch('/api/profile', { method: 'POST' }),
+    ).toMatchObject({ requestClass: 'interactive-control' });
+  });
+
+  it('ignores an unrecognised class hint rather than trusting it', () => {
+    stubWindow(vi.fn(async () => response()) as unknown as typeof fetch);
+    const decision = classifyOriginSchedulerFetch('/api/profile', {
+      papercuspRequestClass: 'totally-made-up',
+    } as unknown as RequestInit);
+    expect(decision).toMatchObject({ requestClass: 'foreground-read' });
+    // No hint was understood, so none is reported — a caller reading this back
+    // must not see a class the wrapper never actually applied.
+    expect(decision.requestClassHint).toBeUndefined();
   });
 
   it('leaves sync-owned, streaming, bulk, and foreign requests untouched', () => {
@@ -304,6 +376,54 @@ describe('installOriginSchedulerFetch single-flight read coalescing', () => {
     hold.resolve();
     await expect(Promise.all([first, second, third])).resolves.toHaveLength(3);
     expect(inner).toHaveBeenCalledTimes(1);
+    handle?.uninstall();
+  });
+
+  it('does NOT merge a visible read into an in-flight background read', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async () => {
+      await hold.promise;
+      return response({ 'content-length': '10' });
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    // Hidden chrome starts a demoted read; the visible view then wants the same
+    // URL. Coalescing hands a joiner the class of whichever read started FIRST,
+    // so merging these would silently park the visible read in the background
+    // lane — the exact inversion the criticality hint exists to prevent.
+    const hidden = window.fetch('/api/bootstrap', backgroundRequest());
+    const visible = window.fetch('/api/bootstrap');
+    await tick();
+
+    expect(inner).toHaveBeenCalledTimes(2);
+
+    hold.resolve();
+    await expect(Promise.all([hidden, visible])).resolves.toHaveLength(2);
+    handle?.uninstall();
+  });
+
+  it('still collapses duplicates that share a demoted class', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async () => {
+      await hold.promise;
+      return response({ 'content-length': '10' });
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 1_000 });
+    const handle = installOriginSchedulerFetch();
+
+    // The observed duplicates were one hidden caller issuing the same read
+    // repeatedly, so splitting by class must not cost the dedup win there.
+    const a = window.fetch('/api/bootstrap', backgroundRequest());
+    const b = window.fetch('/api/bootstrap', backgroundRequest());
+    await tick();
+
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    hold.resolve();
+    await expect(Promise.all([a, b])).resolves.toHaveLength(2);
     handle?.uninstall();
   });
 

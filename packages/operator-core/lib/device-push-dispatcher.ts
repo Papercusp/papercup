@@ -69,11 +69,12 @@ export interface PushSendResult {
   /** 'skipped' when the provider is not configured (no creds). */
   status: number | 'skipped' | 'error';
   detail?: string;
-  /** The provider says this TOKEN is permanently invalid (FCM `UNREGISTERED`) — the app was
-   *  uninstalled, the data cleared, or the token rotated. Distinct from `ok: false`, which is
-   *  usually transient (5xx, network, an unconfigured provider). Only this flag licenses
-   *  deleting the row; see `isFcmTokenPermanentlyInvalid`. Optional so no existing fixture
-   *  that builds a PushSendResult is stranded. */
+  /** The provider says this TOKEN is permanently invalid (FCM `UNREGISTERED`, APNs `410
+   *  Unregistered`) — the app was uninstalled, the data cleared, or the token rotated.
+   *  Distinct from `ok: false`, which is usually transient (5xx, network, an unconfigured
+   *  provider). Only this flag licenses deleting the row; see `isFcmTokenPermanentlyInvalid`
+   *  and `isApnsTokenPermanentlyInvalid`. Optional so no existing fixture that builds a
+   *  PushSendResult is stranded. */
   unregistered?: boolean;
 }
 
@@ -105,6 +106,35 @@ export interface PushSendResult {
 export function isFcmTokenPermanentlyInvalid(status: number | 'skipped' | 'error', body: string): boolean {
   if (status !== 404) return false;
   return /"errorCode"\s*:\s*"UNREGISTERED"/.test(body) || /"message"\s*:\s*"NotRegistered"/.test(body);
+}
+
+/**
+ * PURE: the APNs half of the same contract — and deliberately NARROWER than the error list a
+ * reader would expect, for a reason worth stating.
+ *
+ * Apple documents exactly one response meaning "this token is dead, stop sending": HTTP **410**
+ * carrying `reason: "Unregistered"`. That is the only case accepted here, mirroring the
+ * fail-CLOSED stance above, because the two codes that LOOK equally terminal are not:
+ *
+ *   - `400 BadDeviceToken` is returned when a PRODUCTION token is sent to the sandbox host or
+ *     the reverse — i.e. when `APNS_HOST` is wrong. Configuration, not a dead device.
+ *   - `400 DeviceTokenNotForTopic` is returned when `APNS_BUNDLE_ID` does not match the token's
+ *     app. Also configuration, not a dead device.
+ *
+ * Both are FLEET-WIDE conditions: one wrong env var makes EVERY live iOS token report them on
+ * the very next send. Reaping on either would turn a one-line config typo into the irreversible
+ * deletion of every paired iPhone's only address — the "deletes itself" failure the comment
+ * above warns about, at maximum blast radius and with no way back. So they are excluded by
+ * construction: a misconfigured host keeps a rail that is dead-but-VISIBLE, which is the
+ * recoverable direction.
+ *
+ * NOTE the asymmetry with FCM: there the terminal status is 404, here it is 410. A 404 from
+ * APNs means the `:path` was malformed, NOT that the token is dead — so the statuses must not
+ * be shared between the two classifiers.
+ */
+export function isApnsTokenPermanentlyInvalid(status: number | 'skipped' | 'error', body: string): boolean {
+  if (status !== 410) return false;
+  return /"reason"\s*:\s*"Unregistered"/.test(body);
 }
 
 /**
@@ -365,9 +395,17 @@ async function sendApns(deviceToken: string, payload: PushPayload): Promise<Push
     });
     req.setEncoding('utf8');
     req.on('data', (c) => (detail += c));
-    req.on('end', () =>
-      done({ platform: 'apns', ok: status > 0 && status < 300, status: status || 'error', detail: detail || undefined }),
-    );
+    req.on('end', () => {
+      const unregistered = isApnsTokenPermanentlyInvalid(status || 'error', detail);
+      if (!(status > 0 && status < 300)) console.warn(`[push] apns ${status || 'error'}: ${detail}`);
+      done({
+        platform: 'apns',
+        ok: status > 0 && status < 300,
+        status: status || 'error',
+        detail: detail || undefined,
+        ...(unregistered ? { unregistered } : {}),
+      });
+    });
     req.on('error', (e) => done({ platform: 'apns', ok: false, status: 'error', detail: String(e) }));
     req.write(body);
     req.end();

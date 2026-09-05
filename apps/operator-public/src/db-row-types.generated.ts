@@ -2,15 +2,16 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 084a825184e0e1ecdf3cf269e34c619f17506f1ef7c699eda6ef56e85fc143b1
+ * Migration digest: 449c7b0f2773f96eb803509f8091c0fa9163415179c80056a422c2cf44a1b68f
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "084a825184e0e1ecdf3cf269e34c619f17506f1ef7c699eda6ef56e85fc143b1";
+  "449c7b0f2773f96eb803509f8091c0fa9163415179c80056a422c2cf44a1b68f";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
+  "creator_drafts",
   "harnesses",
   "indexer_runs",
   "publish_rate_limit",
@@ -29,6 +30,31 @@ export interface BannedPublisherPubkeysRow {
   reason: string;
   added_at: number;
   added_by_operator_user_id: number | null;
+  updated_at: number;
+}
+
+export interface CreatorDraftsRow {
+  id: string;
+  owner_github_user_id: number;
+  owner_github_login: string;
+  listing_kind: string;
+  listing_ref: string | null;
+  title: string;
+  description: string | null;
+  manifest_json: string;
+  provenance_json: string;
+  state: string;
+  artifact_key: string | null;
+  artifact_content_hash: string | null;
+  artifact_size_bytes: number | null;
+  artifact_content_type: string | null;
+  upload_token_hash: string | null;
+  upload_expires_at: number | null;
+  reviewed_at: number | null;
+  reviewed_by_github_user_id: number | null;
+  review_reason: string | null;
+  published_listing_id: string | null;
+  created_at: number;
   updated_at: number;
 }
 

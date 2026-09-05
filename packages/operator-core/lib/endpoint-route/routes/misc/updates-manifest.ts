@@ -340,7 +340,11 @@ type UpdateCannotCheckReason =
   // release-local.sh placeholder (PAPERCUSP_UPDATE_BASE_URL was never set at
   // cut time). Refusing is the honest answer — the manifest names a download
   // location that does not exist.
-  | 'manifest_unconfigured';
+  | 'manifest_unconfigured'
+  // WI-2144851: the artifact exists but carries no verifiable minisign
+  // signature. Same principle as manifest_unconfigured one line up — an update
+  // we cannot VERIFY is no more offerable than one we cannot DOWNLOAD.
+  | 'no_signature';
 
 function upToDateResponse(): Response {
   return new Response(null, { status: 204, headers: { 'X-Update-Check': 'up_to_date' } });
@@ -541,9 +545,20 @@ export default defineTool({
       const sigAsset = findSigAsset(candidate, asset.name);
       const signature = sigAsset ? ((await fetchAssetText(sigAsset.id, token)) ?? '').trim() : '';
       if (!signature) {
+        // WI-2144851. This used to warn and serve the manifest with an empty
+        // signature — the warning below literally said "install will fail
+        // verification", and it was right: the updater rejects it, but only
+        // AFTER pulling down a multi-GB artifact. Every fact needed to refuse
+        // is already in hand here, so refuse.
+        //
+        // Deliberately a return, not a fall-through to the latest.json branch
+        // below: that branch resolves a possibly DIFFERENT artifact, and
+        // quietly substituting one for the one pickAsset chose is a bigger
+        // behaviour change than this fix is entitled to make.
         console.warn(
-          `[updates/manifest] no signature for ${asset.name} in ${candidate.tag_name} — install will fail verification`,
+          `[updates/manifest] no signature for ${asset.name} in ${candidate.tag_name} — refusing to offer an unverifiable update`,
         );
+        return cannotCheckResponse('no_signature');
       }
       const manifest: TauriManifest = {
         version: candidateVersion,

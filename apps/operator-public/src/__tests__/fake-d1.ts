@@ -91,6 +91,7 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
 export class FakeStore {
   tables: Record<string, Row[]> = {
     harnesses: [],
+    creator_drafts: [],
     reports: [],
     publish_rate_limit: [],
     indexer_runs: [],
@@ -100,6 +101,49 @@ export class FakeStore {
 
   execute(sql: string, binds: unknown[]): number {
     const upper = sql.trim().toUpperCase();
+    if (upper.startsWith('INSERT INTO CREATOR_DRAFTS')) {
+      const [
+        id, owner_github_user_id, owner_github_login, listing_kind, listing_ref,
+        title, description, manifest_json, provenance_json, upload_token_hash,
+        upload_expires_at, created_at, updated_at,
+      ] = binds;
+      this.tables.creator_drafts.push({
+        id, owner_github_user_id, owner_github_login, listing_kind, listing_ref,
+        title, description, manifest_json, provenance_json, state: 'draft',
+        artifact_key: null, artifact_content_hash: null, artifact_size_bytes: null,
+        artifact_content_type: null, upload_token_hash, upload_expires_at,
+        reviewed_at: null, reviewed_by_github_user_id: null, review_reason: null,
+        published_listing_id: null, created_at, updated_at,
+      });
+      return 1;
+    }
+    if (upper.startsWith('UPDATE CREATOR_DRAFTS') && upper.includes('SET ARTIFACT_KEY')) {
+      const [artifact_key, artifact_hash, artifact_size, artifact_type, updated_at, id] = binds;
+      const row = this.tables.creator_drafts.find((r) => r.id === id && r.state === 'draft');
+      if (!row) return 0;
+      Object.assign(row, {
+        artifact_key,
+        artifact_content_hash: artifact_hash,
+        artifact_size_bytes: artifact_size,
+        artifact_content_type: artifact_type,
+        upload_token_hash: null,
+        upload_expires_at: null,
+        updated_at,
+      });
+      return 1;
+    }
+    if (upper.startsWith('UPDATE CREATOR_DRAFTS') && upper.includes('SET STATE')) {
+      const [state, reviewed_at, reviewed_by, review_reason, published_listing_id, updated_at, id, from] = binds;
+      const row = this.tables.creator_drafts.find((r) => r.id === id && r.state === from);
+      if (!row) return 0;
+      row.state = state;
+      if (reviewed_at != null) row.reviewed_at = reviewed_at;
+      if (reviewed_by != null) row.reviewed_by_github_user_id = reviewed_by;
+      if (review_reason != null) row.review_reason = review_reason;
+      if (published_listing_id != null) row.published_listing_id = published_listing_id;
+      row.updated_at = updated_at;
+      return 1;
+    }
     if (upper.startsWith('INSERT INTO HARNESSES')) {
       // ⚠ POSITIONAL: this destructure must track insertHarness()'s bind order in
       // db.ts EXACTLY (migrations 004/006/007/008/012/013/014/015). Insert a column
@@ -278,6 +322,22 @@ export class FakeStore {
 
   query(sql: string, binds: unknown[]): Row[] {
     const upper = sql.trim().toUpperCase();
+    if (upper.startsWith('SELECT * FROM CREATOR_DRAFTS WHERE ID =')) {
+      const [id] = binds;
+      const row = this.tables.creator_drafts.find((r) => r.id === id);
+      return row ? [row] : [];
+    }
+    if (upper.startsWith('SELECT * FROM CREATOR_DRAFTS')) {
+      let i = 0;
+      const owner = upper.includes('OWNER_GITHUB_USER_ID = ?') ? binds[i++] : undefined;
+      const state = upper.includes('STATE = ?') ? binds[i++] : undefined;
+      const limit = binds[binds.length - 1] as number;
+      return this.tables.creator_drafts
+        .filter((r) => owner == null || r.owner_github_user_id === owner)
+        .filter((r) => state == null || r.state === state)
+        .sort((a, b) => (b.updated_at as number) - (a.updated_at as number))
+        .slice(0, limit);
+    }
     if (upper.startsWith('SELECT * FROM HARNESSES WHERE ID =')) {
       const [id] = binds;
       const row = this.tables.harnesses.find((r) => r.id === id);

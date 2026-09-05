@@ -583,3 +583,112 @@ describe('terminal writes structurally require an assumption declaration (P-017 
     ).toBe(false);
   });
 });
+
+/**
+ * EI-19961538712475843 — `reason` / `note` are accepted as aliases for `completionRef`
+ * on a TERMINAL write, and REFUSED on a non-terminal one.
+ *
+ * Measured 2026-09-05 over harness_shared.tool_invocations (7d): 84 rejections from 52
+ * distinct agents, 59 of them a bare `Unrecognized key` — 53 naming `reason`, 6 naming
+ * `note`. `reason` is this verb's own family convention (work_items:park, :release,
+ * :hold_open, :rehome, :request_release, :claim … all declare it), so set_state was the
+ * outlier, not the callers.
+ *
+ * The asymmetry is the point and is asserted in both directions: a terminal write can
+ * store the value (`terminal_completion_ref`), a non-terminal one cannot — so accepting
+ * the alias there would report success and discard the value, which is the silent-drop
+ * bug `_body-alias.ts` exists to prevent rather than a fix for it.
+ */
+describe('work_items:set_state — reason/note alias for completionRef (EI-19961538712475843)', () => {
+  type Parsed = {
+    success: boolean;
+    error?: { issues: ReadonlyArray<{ message: string }> };
+  };
+  const parse = (args: unknown): Parsed =>
+    (tool.args as { safeParse: (v: unknown) => Parsed }).safeParse(args);
+  const messages = (args: unknown): string =>
+    (parse(args).error?.issues ?? []).map((i) => i.message).join(' | ');
+  const EVIDENCE = 'superseded by WI-2 — shipped in abc123';
+
+  // ── the fix: the spelling the rest of the family taught now works ──────────────
+  it('ACCEPTS `reason` in place of completionRef on a terminal write', () => {
+    expect(parse({ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' }).success).toBe(true);
+  });
+
+  it('ACCEPTS `note` in place of completionRef on a terminal write', () => {
+    expect(parse({ id: 'WI-1', state: 'dropped', note: EVIDENCE, assumptions: 'none' }).success).toBe(true);
+  });
+
+  it('ACCEPTS the alias inside an items[] terminal arm', () => {
+    expect(
+      parse({ items: [{ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' }] }).success,
+    ).toBe(true);
+  });
+
+  // ── CALIBRATION: the guard the alias relaxes must still bite, or these tests
+  //    would pass just as well against a schema that accepts anything ────────────
+  it('still REFUSES a terminal write carrying no evidence under ANY spelling', () => {
+    expect(parse({ id: 'WI-1', state: 'done', assumptions: 'none' }).success).toBe(false);
+    expect(parse({ items: [{ id: 'WI-1', state: 'done', assumptions: 'none' }] }).success).toBe(false);
+  });
+
+  it('still REFUSES a terminal write missing the assumption declaration', () => {
+    expect(parse({ id: 'WI-1', state: 'done', reason: EVIDENCE }).success).toBe(false);
+  });
+
+  it('still REFUSES a genuinely unknown key', () => {
+    expect(parse({ id: 'WI-1', state: 'done', reson: EVIDENCE, assumptions: 'none' }).success).toBe(false);
+  });
+
+  // ── the silent-drop guard: refused exactly where the value cannot be stored ────
+  it('REFUSES the alias on a non-terminal write rather than accepting and dropping it', () => {
+    expect(parse({ id: 'WI-1', state: 'wip', reason: EVIDENCE }).success).toBe(false);
+    expect(messages({ id: 'WI-1', state: 'wip', reason: EVIDENCE })).toContain('work_items:comment');
+  });
+
+  it('names work_items:set_blocker when the refused non-terminal write is `blocked`', () => {
+    expect(messages({ id: 'WI-1', state: 'blocked', reason: EVIDENCE })).toContain('work_items:set_blocker');
+  });
+
+  it('REFUSES the alias on a non-terminal items[] arm', () => {
+    expect(parse({ items: [{ id: 'WI-1', state: 'wip', reason: EVIDENCE }] }).success).toBe(false);
+  });
+
+  // ── ambiguity is reported, never silently resolved (the _body-alias rule) ──────
+  it('REFUSES completionRef + reason carrying DIFFERENT values', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: 'something else', assumptions: 'none' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('ACCEPTS completionRef + reason carrying the SAME value', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' }).success,
+    ).toBe(true);
+  });
+
+  it('REFUSES reason + note carrying DIFFERENT values', () => {
+    expect(
+      parse({ id: 'WI-1', state: 'done', reason: EVIDENCE, note: 'something else', assumptions: 'none' }).success,
+    ).toBe(false);
+  });
+
+  // ── load-bearing: the aliased value REACHES the write. Without this the schema
+  //    could accept `reason` and the handler still persist undefined — an accepted
+  //    argument that vanishes, i.e. the exact bug, dressed as the fix ─────────────
+  it('passes the aliased value through to the write as completionRef', async () => {
+    await body({ id: 'WI-1', state: 'done', reason: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+
+  it('passes the aliased value through for every id in ids[]', async () => {
+    await body({ ids: ['WI-1', 'WI-2'], state: 'done', note: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-2', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+
+  it('prefers an explicit completionRef over the alias when both agree', async () => {
+    await body({ id: 'WI-1', state: 'done', completionRef: EVIDENCE, reason: EVIDENCE, assumptions: 'none' });
+    expect(setM).toHaveBeenCalledWith('WI-1', 'done', expect.objectContaining({ completionRef: EVIDENCE }));
+  });
+});
