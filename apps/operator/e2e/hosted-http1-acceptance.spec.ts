@@ -17,6 +17,12 @@ import {
 } from './_hosted-http1-config';
 
 const acceptance = readHostedHttp1AcceptanceConfig();
+
+// This profile is intentionally a browser client of the exact hosted origin it
+// measures. Keep the allowance local and exact: every CDN/analytics/vendor
+// origin must remain a foreign-egress failure.
+test.use({ egressAllowedOrigins: [acceptance.origin] });
+
 const CONTROL_QUERY = 'workspaceHosts.control';
 const CONTROL_SSE_PATH = '/api/hosted/browser/sse';
 const REST_QUERY_PATH = '/api/hosted/browser/rest-query';
