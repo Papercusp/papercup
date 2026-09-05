@@ -283,3 +283,185 @@ export async function readUngradedBreakdown(
          GROUP BY origin`;
   return summarizeUngraded(rows, policy);
 }
+
+// ── the ROW-selection counterpart of the census (P-001) ──────────────────────
+
+/**
+ * One actionable ungraded filing, reduced to the fields a nudge needs.
+ *
+ * `origin` is carried on the ROW, not fixed by the caller. That is the whole point:
+ * a consumer that already knows which origin it asked for cannot report which origin
+ * it is nudging about, and cannot pick up a producer nobody has heard of yet.
+ */
+export interface UngradedFilingRow {
+  ideaId: string;
+  origin: string;
+  title: string | null;
+  /** Change-feed ref of the routed artifact — the blender:grade-idea handle. */
+  routedRef: string;
+  routedAtMs: number;
+}
+
+/**
+ * Read the ACTIONABLE ungraded filings for one scope, every origin at once.
+ *
+ * WHY THIS LIVES HERE AND NOT IN THE CONSUMER (P-001). `readUngradedBreakdown` above
+ * made every surface AGREE on how many ungraded filings exist. It did not make them
+ * agree on WHICH ROWS those are — so `ungraded-filings-watchdog.ts`, the one rail that
+ * MAKES grading happen, kept its own `origin = 'su-ideate'` SELECT and acted on a
+ * fourth, narrower population than the census it was meant to drain. Measured
+ * 2026-09-02 (EI-22180311569503146): that rail covered 22 of 1,675 actionable rows,
+ * and `agent-review` — 1,397 actionable, 27 arrivals in 24h, the largest and most
+ * active producer — had no consumer at all.
+ *
+ * So the selection is defined HERE, beside the classification it must mirror, and the
+ * rail borrows it. The three axes are resolved exactly as `classifyUngraded` resolves
+ * them (per-origin floor via the policy jsonb, terminality, `shadow-variant` excluded),
+ * and no origin is named anywhere in this query. A producer that starts filing
+ * tomorrow is swept tomorrow, inheriting `fallbackMs` — which is what the policy's
+ * "a new origin is INCLUDED by default" has always promised, now true of the RAIL and
+ * not only of the count.
+ *
+ * `limitPerOrigin` bounds the read PER PRODUCER rather than overall: a single origin's
+ * backlog (agent-review's 1,397) must not be able to starve every other origin out of
+ * the result the way one global `ORDER BY routed_at LIMIT n` would.
+ */
+export async function readActionableUngradedFilings(
+  sql: Sql,
+  args: {
+    workspaceId: string;
+    harnessSlug: string;
+    policy: UngradedEpochPolicy;
+    limitPerOrigin?: number;
+  },
+): Promise<UngradedFilingRow[]> {
+  const { workspaceId, harnessSlug, policy } = args;
+  const limitPerOrigin = Math.max(1, Math.floor(args.limitPerOrigin ?? 50));
+  const floors = JSON.stringify(policy.byOrigin);
+  const fallback = policy.fallbackMs;
+  const rows = await sql<
+    { idea_id: string; origin: string; title: string | null; routed_ref: string; routed_at: string | number | null }[]
+  >`
+    WITH scoped AS (
+      SELECT idea_id, origin, title, routed_ref, routed_at,
+             coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND origin <> ${SHADOW_VARIANT_ORIGIN}
+         AND human_grade IS NULL
+         AND (outcome IS NULL OR outcome = 'pending')
+    ), ranked AS (
+      SELECT idea_id, origin, title, routed_ref, routed_at,
+             row_number() OVER (PARTITION BY origin ORDER BY routed_at ASC) AS rn
+        FROM scoped
+       WHERE routed_at >= epoch_ms
+    )
+    SELECT idea_id, origin, title, routed_ref, routed_at
+      FROM ranked
+     WHERE rn <= ${limitPerOrigin}
+     ORDER BY origin ASC, routed_at ASC`;
+  return rows.map((r) => ({
+    ideaId: r.idea_id,
+    origin: r.origin,
+    title: r.title,
+    routedRef: r.routed_ref,
+    routedAtMs: Number(r.routed_at ?? 0),
+  }));
+}
+
+/**
+ * Count actionable ungraded filings across a WORKSPACE that are already older than
+ * `staleBeforeMs` — the nudge rail's coverage probe for "eligible backlog exists, but
+ * no registered scope was evaluated". Workspace-wide on purpose: it exists precisely
+ * for the case where the harness-scoped read found nothing to look at.
+ */
+export async function countActionableUngradedOlderThan(
+  sql: Sql,
+  args: { workspaceId: string; policy: UngradedEpochPolicy; staleBeforeMs: number },
+): Promise<number> {
+  const { workspaceId, policy, staleBeforeMs } = args;
+  const floors = JSON.stringify(policy.byOrigin);
+  const fallback = policy.fallbackMs;
+  const rows = await sql<{ c: number | string | null }[]>`
+    WITH scoped AS (
+      SELECT origin, routed_at,
+             coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${workspaceId}
+         AND origin <> ${SHADOW_VARIANT_ORIGIN}
+         AND human_grade IS NULL
+         AND (outcome IS NULL OR outcome = 'pending')
+    )
+    SELECT count(*)::int AS c
+      FROM scoped
+     WHERE routed_at >= epoch_ms AND routed_at <= ${staleBeforeMs}`;
+  return Math.max(0, Number(rows[0]?.c ?? 0));
+}
+
+/** What `watchdog:status` reports about the nudge rail's pending/eligible backlog. */
+export interface UngradedEligibility {
+  /** Actionable ungraded rows in this scope, any age. */
+  pendingCount: number;
+  /** Of those, the ones already past the rail's staleness deadline. */
+  eligibleCount: number;
+  /** Oldest actionable row's routed_at, or null when the scope is empty. */
+  oldestRoutedAtMs: number | null;
+}
+
+/**
+ * Read the rail's eligibility for ONE scope, every origin at once.
+ *
+ * Split out of `watchdog/status.ts` (P-001) for the same reason as the row selection
+ * above: a status surface that scoped itself to `origin = 'su-ideate'` reported 22
+ * pending while the rail it describes now nudges every producer — a readout that
+ * disagrees with the thing it is reading out is the drift this module exists to end.
+ */
+export async function readUngradedEligibility(
+  sql: Sql,
+  args: {
+    workspaceId: string;
+    harnessSlug: string;
+    policy: UngradedEpochPolicy;
+    eligibleBeforeMs: number;
+  },
+): Promise<UngradedEligibility> {
+  const { workspaceId, harnessSlug, policy, eligibleBeforeMs } = args;
+  const floors = JSON.stringify(policy.byOrigin);
+  const fallback = policy.fallbackMs;
+  const rows = await sql<
+    { pending_count: number | string | null; eligible_count: number | string | null; oldest_routed_at: string | number | null }[]
+  >`
+    WITH scoped AS (
+      SELECT origin, routed_at,
+             coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND origin <> ${SHADOW_VARIANT_ORIGIN}
+         AND human_grade IS NULL
+         AND (outcome IS NULL OR outcome = 'pending')
+    ), actionable AS (
+      SELECT routed_at FROM scoped WHERE routed_at >= epoch_ms
+    )
+    SELECT count(*)::int AS pending_count,
+           count(*) FILTER (WHERE routed_at <= ${eligibleBeforeMs})::int AS eligible_count,
+           min(routed_at) AS oldest_routed_at
+      FROM actionable`;
+  const row = rows[0];
+  const oldest = Number(row?.oldest_routed_at ?? Number.NaN);
+  return {
+    pendingCount: Math.max(0, Number(row?.pending_count ?? 0)),
+    eligibleCount: Math.max(0, Number(row?.eligible_count ?? 0)),
+    oldestRoutedAtMs: Number.isFinite(oldest) ? oldest : null,
+  };
+}
+
+/** PURE: split a mixed-origin filing list into one bucket per origin, insertion-ordered. */
+export function groupFilingsByOrigin<T extends { origin: string }>(rows: readonly T[]): Map<string, T[]> {
+  const byOrigin = new Map<string, T[]>();
+  for (const row of rows) {
+    const bucket = byOrigin.get(row.origin);
+    if (bucket) bucket.push(row);
+    else byOrigin.set(row.origin, [row]);
+  }
+  return byOrigin;
+}

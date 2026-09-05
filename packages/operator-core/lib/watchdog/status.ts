@@ -8,7 +8,12 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { suIdeateUngradedConfig, type SuIdeateUngradedConfig } from '../scout/ungraded-filings-watchdog';
+import { ungradedFilingsConfig, type UngradedFilingsConfig } from '../scout/ungraded-filings-watchdog';
+import {
+  DEFAULT_UNGRADED_EPOCH_POLICY,
+  readUngradedEligibility,
+  type UngradedEpochPolicy,
+} from '../scout/ungraded-scope';
 
 export const SCHEDULED_WATCHDOG_IDS = ['su-ideate-ungraded'] as const;
 export type ScheduledWatchdogId = (typeof SCHEDULED_WATCHDOG_IDS)[number];
@@ -55,7 +60,7 @@ export interface ScheduledWatchdogStatus {
   ok: boolean;
   id: ScheduledWatchdogId;
   scope: { workspaceId: string; harnessSlug: string };
-  config: SuIdeateUngradedConfig;
+  config: UngradedFilingsConfig;
   scheduler: WatchdogSchedulerStatus;
   eligibility: WatchdogEligibilityStatus;
   fire: WatchdogFireStatus;
@@ -178,25 +183,19 @@ interface SchedulerRow {
   workflow_error: string | null;
 }
 
-interface EligibilityRow {
-  pending_count: number | string;
-  eligible_count: number | string;
-  oldest_routed_at: number | string | null;
-}
-
 interface FireRow {
   fire_count: number | string;
   last_fire_at: Date | string | null;
   last_reason: string | null;
 }
 
-function parsePersistedConfig(value: unknown): SuIdeateUngradedConfig | undefined {
+function parsePersistedConfig(value: unknown): UngradedFilingsConfig | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const candidate = value as Partial<SuIdeateUngradedConfig>;
+  const candidate = value as Partial<UngradedFilingsConfig>;
   const threshold = Number(candidate.effectiveThresholdSec);
-  const epochMs = Number(candidate.epochMs);
+  const policy = parsePersistedPolicy(candidate.policy);
   const batchCap = Number(candidate.batchCap);
-  const validOverrideSources: SuIdeateUngradedConfig['overrideSource'][] = [
+  const validOverrideSources: UngradedFilingsConfig['overrideSource'][] = [
     'default',
     'environment',
     'invalid-environment-fallback',
@@ -205,10 +204,10 @@ function parsePersistedConfig(value: unknown): SuIdeateUngradedConfig | undefine
     typeof candidate.enabled !== 'boolean' ||
     !Number.isFinite(threshold) ||
     candidate.enabled !== threshold > 0 ||
-    !validOverrideSources.includes(candidate.overrideSource as SuIdeateUngradedConfig['overrideSource']) ||
+    !validOverrideSources.includes(candidate.overrideSource as UngradedFilingsConfig['overrideSource']) ||
     candidate.overrideEnv !== 'PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC' ||
     (candidate.rawOverride !== null && typeof candidate.rawOverride !== 'string') ||
-    !Number.isFinite(epochMs) ||
+    policy === undefined ||
     !Number.isFinite(batchCap)
   ) {
     return undefined;
@@ -216,12 +215,36 @@ function parsePersistedConfig(value: unknown): SuIdeateUngradedConfig | undefine
   return {
     enabled: candidate.enabled,
     effectiveThresholdSec: threshold,
-    overrideSource: candidate.overrideSource as SuIdeateUngradedConfig['overrideSource'],
+    overrideSource: candidate.overrideSource as UngradedFilingsConfig['overrideSource'],
     overrideEnv: candidate.overrideEnv,
     rawOverride: candidate.rawOverride,
-    epochMs,
+    policy,
     batchCap,
   };
+}
+
+/**
+ * P-001: the persisted config carries the whole PER-ORIGIN floor policy, not one
+ * origin's `epochMs`. A readback that accepted a bare number would silently describe
+ * the rail with a line drawn for a single producer — the exact failure `ungraded-scope.ts`
+ * exists to prevent, arriving through the diagnostic surface instead of the census.
+ * An unparseable policy returns undefined so the caller falls back to the live config,
+ * rather than inventing a floor.
+ */
+function parsePersistedPolicy(value: unknown): UngradedEpochPolicy | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<UngradedEpochPolicy>;
+  const fallbackMs = Number(candidate.fallbackMs);
+  if (!Number.isFinite(fallbackMs)) return undefined;
+  const rawByOrigin = candidate.byOrigin;
+  if (!rawByOrigin || typeof rawByOrigin !== 'object' || Array.isArray(rawByOrigin)) return undefined;
+  const byOrigin: Record<string, number> = {};
+  for (const [origin, floor] of Object.entries(rawByOrigin as Record<string, unknown>)) {
+    const ms = Number(floor);
+    if (!Number.isFinite(ms)) return undefined;
+    byOrigin[origin] = ms;
+  }
+  return { byOrigin, fallbackMs };
 }
 
 function parseRunSummary(output: string | null): {
@@ -229,7 +252,7 @@ function parseRunSummary(output: string | null): {
   errorCount?: number;
   resultCount?: number;
   nudgedCount?: number;
-  config?: SuIdeateUngradedConfig;
+  config?: UngradedFilingsConfig;
 } {
   if (!output) return {};
   try {
@@ -310,18 +333,17 @@ export async function readScheduledWatchdogStatus(args: {
   const config = runSummary.config ?? suIdeateUngradedConfig();
   const eligibleBeforeMs = nowMs - Math.max(0, config.effectiveThresholdSec) * 1_000;
 
-  const [eligibilityRows, fireRows] = await Promise.all([
-    sql<EligibilityRow[]>`
-      SELECT count(*)::int AS pending_count,
-             count(*) FILTER (WHERE routed_at <= ${eligibleBeforeMs})::int AS eligible_count,
-             min(routed_at) AS oldest_routed_at
-        FROM harness_shared.scout_routed_ideas
-       WHERE workspace_id = ${args.workspaceId}
-         AND harness_slug = ${args.harnessSlug}
-         AND origin = 'su-ideate'
-         AND human_grade IS NULL
-         AND (outcome IS NULL OR outcome = 'pending')
-         AND routed_at >= ${config.epochMs}`,
+  const [eligibility, fireRows] = await Promise.all([
+    // P-001: read the SAME population the rail sweeps, through the same contract.
+    // This query used to say `origin = 'su-ideate'` while the sweep beside it had
+    // widened to every producer — a readout that disagrees with the thing it reads
+    // out. It reported 22 pending against a 1,675-row actionable backlog.
+    readUngradedEligibility(sql, {
+      workspaceId: args.workspaceId,
+      harnessSlug: args.harnessSlug,
+      policy: config.policy ?? DEFAULT_UNGRADED_EPOCH_POLICY,
+      eligibleBeforeMs,
+    }),
     sql<FireRow[]>`
       SELECT count(*)::int AS fire_count,
              max(fired_at) AS last_fire_at,
@@ -338,7 +360,7 @@ export async function readScheduledWatchdogStatus(args: {
     : Number.isFinite(completedMs)
       ? completedMs
       : null;
-  const oldestMs = Number(eligibilityRows[0]?.oldest_routed_at ?? Number.NaN);
+  const oldestMs = eligibility.oldestRoutedAtMs ?? Number.NaN;
   const firstEligibleMs = Number.isFinite(oldestMs)
     ? oldestMs + Math.max(0, config.effectiveThresholdSec) * 1_000
     : null;
@@ -359,8 +381,8 @@ export async function readScheduledWatchdogStatus(args: {
       lastNudgedCount: runSummary.nudgedCount ?? null,
     },
     eligibility: {
-      pendingCount: Number(eligibilityRows[0]?.pending_count ?? 0),
-      eligibleCount: config.enabled ? Number(eligibilityRows[0]?.eligible_count ?? 0) : 0,
+      pendingCount: eligibility.pendingCount,
+      eligibleCount: config.enabled ? eligibility.eligibleCount : 0,
       oldestRoutedAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
       firstEligibleAt: firstEligibleMs == null ? null : new Date(firstEligibleMs).toISOString(),
     },

@@ -812,12 +812,12 @@ async function routinesTickImpl(): Promise<void> {
   // PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC<=0. Debounced + fail-soft inside the module.
   await DBOS.runStep(
     async () => {
-      const { suIdeateUngradedConfig, suIdeateUngradedSweep } = await import('../scout/ungraded-filings-watchdog');
-      const config = suIdeateUngradedConfig();
-      const results = await suIdeateUngradedSweep();
+      const { ungradedFilingsConfig, ungradedFilingsSweep } = await import('../scout/ungraded-filings-watchdog');
+      const config = ungradedFilingsConfig();
+      const results = await ungradedFilingsSweep();
       for (const res of results) {
         if (res.outcome === 'nudged' || res.outcome === 'error') {
-          console.warn(`[su-ideate-ungraded] ${res.outcome}: ${res.installSlug} — ${res.reason}`);
+          console.warn(`[ungraded-filings] ${res.outcome}: ${res.installSlug}/${res.origin} — ${res.reason}`);
         }
       }
       // DBOS persists runStep return values in operation_outputs. Returning a
