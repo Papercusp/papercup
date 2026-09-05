@@ -291,6 +291,42 @@ describe('Kopia global backup guard', () => {
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
   });
 
+  it('hands the lock to a wait-mode producer instead of starving behind a hot sweep', () => {
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; while :; do sleep 0.05; done' _ "$HOT_READY" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode wait --label db-dump -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1 &
+        db=$!
+        wait "$db"
+        wait "$hot"
+        [ -e "$DB_RAN" ] &&
+          grep -q 'result=stopping-during-run reason=priority-waiter' "$HOT_LOG"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_LOG: join(dir, 'hot.log'),
+          DB_RAN: join(dir, 'db-ran'),
+          DB_LOG: join(dir, 'db.log'),
+        },
+        timeout: 10_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
   it('waits for the current holder and releases the lock after failure', () => {
     const { dir, env } = fixture();
     const scenario = spawnSync(

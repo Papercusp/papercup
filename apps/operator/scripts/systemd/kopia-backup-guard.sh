@@ -172,6 +172,45 @@ mkdir -p "$(dirname "$lock_path")" || exit 73
 exec 9>>"$lock_path" || exit 73
 umask "$lock_umask"
 
+priority_request_path=
+cleanup_priority_request() {
+  [ -z "$priority_request_path" ] || rm -f "$priority_request_path" 2>/dev/null || true
+}
+
+# A blocking waiter must be able to hand the shared lock back from a long hot
+# sweep. POSIX flock does not promise that a waiter will outrank a holder's
+# next work, and a single multi-hour `kopia snapshot create` otherwise leaves
+# the hourly DB backup parked indefinitely. The marker is adjacent to the
+# shared lock so user and root guards use the same request namespace.
+register_priority_request() {
+  priority_request_path="${lock_path}.${state_key}.$$.wait"
+  if ! printf '%s\n' "$$" >"$priority_request_path" 2>/dev/null; then
+    priority_request_path=
+    return 0
+  fi
+  trap cleanup_priority_request EXIT
+}
+
+# Validate the marker's owner before honoring it. A SIGKILL can bypass the EXIT
+# trap, and a stale PID must never make every scheduled snapshot self-cancel.
+has_live_priority_waiter() {
+  local request pid cmd
+  for request in "${lock_path}".*.wait; do
+    [ -f "$request" ] || continue
+    pid=$(cat "$request" 2>/dev/null || true)
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ ! -r "/proc/$pid/cmdline" ]; then
+      rm -f "$request" 2>/dev/null || true
+      continue
+    fi
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ]]; then
+      return 0
+    fi
+    rm -f "$request" 2>/dev/null || true
+  done
+  return 1
+}
+
 guard_log() {
   printf 'KOPIA_BACKUP_GUARD timestamp=%s label=%s %s\n' "$(date -Iseconds)" "$label" "$*"
 }
@@ -215,6 +254,15 @@ run_scheduled_command() {
   while kill -0 "$child_pid" 2>/dev/null; do
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
+
+    # A wait-mode producer (the hourly DB dump, daily home snapshot, or a
+    # protected/manual snapshot) has priority over a hot sweep. Terminate only
+    # this scheduled child and release the flock; content-addressed Kopia
+    # snapshots are restart-safe, while leaving the waiter blocked is not.
+    if has_live_priority_waiter; then
+      runtime_abort_reason="priority-waiter shared-guard handoff"
+      break
+    fi
 
     # This cycle is past the staleness deadline, so it is allowed to finish.
     # This branch -- not the admission one -- is the one that matters: 46 of the
@@ -309,8 +357,10 @@ if [ "$mode" = scheduled ]; then
     fi
   fi
 else
+  register_priority_request
   guard_log "result=waiting reason=lock"
   flock 9 || exit 75
+  cleanup_priority_request
 fi
 
 export KOPIA_BACKUP_GUARD_ACTIVE=1
