@@ -132,7 +132,7 @@ export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
  * to select the docs tools and synthesize the answer itself.
  */
 export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
-  override(name) {
+  override(name, args) {
     const canon = canonical(name);
     if (canon === 'docs:search' || canon === 'docs:outline') {
       return {
@@ -158,19 +158,243 @@ export const TAURI_APP_VERIFICATION_CONTEXT: ToolDispatchOverride = {
       };
     }
     if (canon === 'docs:get') {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const requested = Array.isArray(a.slugs)
+        ? a.slugs.filter((slug): slug is string => typeof slug === 'string')
+        : typeof a.slug === 'string'
+          ? [a.slug]
+          : [];
+      const pages = [
+        {
+          slug: 'testing/agent-e2e',
+          title: 'Agent E2E playbook — driving the operator like a user',
+          body:
+            'The standalone web app is retired. Start the supported Tauri development shell with ' +
+            '`cd papercusp-desktop && npm run dev`, or attach to an already-running debug shell. ' +
+            'Drive the real webview with `tauri-agent-tools`; when multiple debug bridges exist, ' +
+            'pin each command to the selected process with `--pid <pid>`. Bridge metadata is stored ' +
+            'in `/tmp/tauri-dev-bridge-<pid>.token`. The dev shell uses its own working-tree host on ' +
+            '`:3270`; `:3070` is the separate systemd-owned green release operator. Use an exit-coded ' +
+            '`check` assertion for DOM-verifiable acceptance; a screenshot alone is observational.',
+        },
+        {
+          slug: 'agent-insights/verify-ui-via-staging-3170-dedicated-webview',
+          title: 'Verifying UI changes end-to-end via :3170 + a dedicated webview instance',
+          body:
+            'For staging edits, reload the staging operator with `dev:restart` and rebuild ' +
+            '`apps/operator-vite` because `:3170` serves a built SPA dist. Launch the already-built ' +
+            'debug desktop on a free X display with `PAPERCUSP_DEV_API_TARGET=3170`, then drive it ' +
+            'with `tauri-agent-tools <cmd> --pid <child-pid> ...`. The bridge token appears at ' +
+            '`/tmp/tauri-dev-bridge-<child-pid>.token`. Use exact PIDs for both targeting and teardown; ' +
+            'an unpinned command can attach to another live desktop instance.',
+        },
+      ];
+      const selected = requested.length === 0
+        ? pages
+        : pages.filter((page) => requested.some((slug) =>
+            slug === page.slug || slug.endsWith(`/${page.slug}`),
+          ));
       return {
         content: [{
           text: JSON.stringify({
             ok: true,
-            pages: [{
-              slug: 'testing/agent-e2e',
-              title: 'Agent E2E playbook — driving the operator like a user',
-              body:
-                'Start the Tauri shell with `cd papercusp-desktop && npm run dev`, or attach to an already-running debug shell. Drive the webview with `tauri-agent-tools` and pin commands to the selected process id. Use an exit-coded `check` assertion for DOM-verifiable acceptance; a screenshot alone is observational.',
-            }],
+            pages: selected,
           }),
         }],
       };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/** Source-backed reads for SU-S03's repo-specific push-transport question. */
+export const PUSH_UI_GROUNDING_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'docs:search' || canon === 'docs:outline') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        hits: [
+          {
+            slug: 'build-system/architecture',
+            title: 'Papercusp build and transport architecture',
+            excerpt: 'The desktop webview routes fetch and EventSource over endpoint-IPC; @papercusp/sync remains the application data plane.',
+          },
+          {
+            slug: 'agent-insights/push-not-poll-sync-surface',
+            title: 'Use the shared sync plane for live operator state',
+            excerpt: '@papercusp/sync uses SSE invalidation as the primary path and polling only as a degraded fallback.',
+          },
+        ],
+      }) }] };
+    }
+    if (canon === 'docs:get') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        pages: [{
+          slug: 'agent-insights/push-not-poll-sync-surface',
+          title: 'Use the shared sync plane for live operator state',
+          body:
+            '`@papercusp/sync` is the schema-agnostic client data plane. Its `SyncProvider` uses SSE ' +
+            'as the primary push transport; Postgres LISTEN/NOTIFY invalidations trigger query refetches, ' +
+            'while polling is a degraded fallback only. The operator mounts this in ' +
+            '`apps/operator/providers/HarnessSyncProvider.tsx` and consumers use `useSyncQuery` with a ' +
+            'registered queryName. Do not add a component-owned timer. For a streaming tool operation, ' +
+            '`libs/generic/tooldef-http/src/http-projection.ts` maps each handler `ctx.emit(name, data)` ' +
+            'to an SSE event and emits a terminal done event.',
+        }],
+      }) }] };
+    }
+    if (canon === 'search:fulltext') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        query: a.query ?? '',
+        hits: [
+          { path: 'libs/generic/sync/README.md', excerpt: 'SSE transport is the primary push path; polling is the degraded fallback.' },
+          { path: 'apps/operator/providers/HarnessSyncProvider.tsx', excerpt: 'Local installs use /api/zero-harness/sse through SyncProvider.' },
+          { path: 'libs/generic/tooldef-http/src/http-projection.ts', excerpt: 'Each ctx.emit call becomes one SSE event.' },
+        ],
+      }) }] };
+    }
+    if (canon === 'repomix:pack') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        requestedPath: a.path ?? null,
+        files: [
+          { path: 'libs/generic/sync/README.md', summary: 'SSE-primary SyncProvider with LISTEN/NOTIFY invalidation and polling fallback.' },
+          { path: 'apps/operator/providers/HarnessSyncProvider.tsx', summary: 'Operator SyncProvider integration at /api/zero-harness/sse.' },
+        ],
+      }) }] };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/** Existing design primitives and token vocabulary for SU-S04. */
+export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'design-phase:search_registry') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        query: a.query ?? '',
+        matches: [{
+          name: 'StatusPill',
+          path: 'apps/operator-vite/src/components/ui/StatusPill.tsx',
+          export: "import { StatusPill } from '../ui'",
+          props: { tone: ['good', 'warn', 'bad', 'neutral'], label: 'string', className: 'optional string' },
+          guidance: 'Reuse this primitive; map live→good, idle→neutral, stale→warn.',
+        }],
+      }) }] };
+    }
+    if (canon === 'design-phase:list_tokens') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        tokens: ['--good', '--warn', '--bad', '--fg-dim', '--bg-3'],
+        source: 'apps/operator/app/_semantic.css',
+        componentClasses: ['pclsb-pill', 'pclsb-pill--good', 'pclsb-pill--warn', 'pclsb-pill--bad', 'pclsb-pill--neutral'],
+      }) }] };
+    }
+    if (canon === 'docs:search' || canon === 'docs:outline' || canon === 'docs:get') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        pages: [{
+          slug: 'design-system/status-primitives',
+          title: 'Status primitives',
+          body: 'Reuse StatusPill and the semantic good/warn/bad/neutral tones; do not mint a parallel badge component or raw color palette.',
+        }],
+      }) }] };
+    }
+    if (canon === 'search:fulltext') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        hits: [
+          { path: 'apps/operator-vite/src/components/ui/StatusPill.tsx', excerpt: "PillTone = 'good' | 'warn' | 'bad' | 'neutral'" },
+          { path: 'apps/operator-vite/src/components/left-sidebar/left-sidebar.styles.ts', excerpt: '.pclsb-pill and semantic tone modifiers' },
+          { path: 'apps/operator/app/_semantic.css', excerpt: '--good, --warn, and --bad semantic tokens' },
+        ],
+      }) }] };
+    }
+    if (canon === 'repomix:pack') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        requestedPath: a.path ?? null,
+        files: [{
+          path: 'apps/operator-vite/src/components/ui/StatusPill.tsx',
+          content: "export type PillTone = 'good' | 'warn' | 'bad' | 'neutral'; export const StatusPill = ({ tone, label }) => <span className={`pclsb-pill pclsb-pill--${tone}`}>{label}</span>;",
+        }],
+        note: 'The requested shorthand paths are not canonical in this checkout; use the registry path above.',
+      }) }] };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/** Current shared-tree persistence guidance for SU-S06. */
+export const SHARED_TREE_GIT_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'docs:search' || canon === 'docs:outline' || canon === 'docs:get') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        pages: [{
+          slug: 'agent-insights/deploy-pipeline-is-async-self-healing',
+          title: 'Your change reaches :3070 through an async, self-healing pipeline',
+          body:
+            'A background git-sync routine commits the whole canonical staging tree and pushes it. ' +
+            'Agents do not run git add, commit, or push and never stash or switch branches. Read-only ' +
+            '`git status` and `git diff` are safe for checking on-disk edits. Use ' +
+            '`dev:pipeline_position { path }` to see whether a file is uncommitted, on staging, promoted ' +
+            'to main, or deployed. `git-sync:run` is the supported expedite for the commit hop; do not ' +
+            'restart a guessed service. The green checkpoint promotes staging to main, then release deploys it.',
+        }],
+      }) }] };
+    }
+    if (canon === 'dev:pipeline_position') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        path: a.path ?? 'working tree',
+        workingTree: 'modified',
+        committed: false,
+        staging: false,
+        main: false,
+        deployed: false,
+        next: 'Leave the edit in the canonical staging tree for git-sync, or call git-sync:run only when the commit hop is needed now.',
+      }) }] };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/** State-consistent lifecycle results for SU-S07. */
+export const KEYED_WRITE_CONTEXT: ToolDispatchOverride = {
+  override(name, args) {
+    const canon = canonical(name);
+    const a = (args ?? {}) as Record<string, unknown>;
+    if (canon === 'work_items:set_state') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        id: a.id ?? 'WI-42',
+        previousState: 'wip',
+        state: a.state ?? 'blocked',
+        updated: true,
+      }) }] };
+    }
+    if (canon === 'work_items:get') {
+      const id = String(a.id ?? 'WI-42');
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        results: [{ ok: true, id, workItem: { id, title: 'Waiting on upstream fix', state: 'blocked' } }],
+      }) }] };
+    }
+    if (canon === 'work_items:list') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        items: [{ id: 'WI-42', title: 'Waiting on upstream fix', state: 'blocked' }],
+      }) }] };
     }
     return PASS_THROUGH;
   },
@@ -309,25 +533,44 @@ export const ZOMBIE_LOCK_INSIGHT_CONTEXT: ToolDispatchOverride = {
       return { content: [{ text: JSON.stringify({ hits: [] }) }] };
     }
     if (canon === 'docs:author') {
-      const slug = typeof a.slug === 'string' ? a.slug : 'zombie-plan-lock-transport-drop';
       const section = typeof a.section === 'string' ? a.section : 'agent-insights';
+      const rawSlug = typeof a.slug === 'string' ? a.slug : 'zombie-plan-lock-transport-drop';
+      const slug = rawSlug.startsWith(`${section}/`) ? rawSlug.slice(section.length + 1) : rawSlug;
+      const ref = `${section}/${slug}`;
       return {
         content: [
           {
             text: JSON.stringify({
               ok: true,
-              ref: `${section}/${slug}`,
+              ref,
               slug,
               section,
               harness: a.harness ?? 'engineering',
               status: a.status ?? 'active',
               path: `apps/operator-docs/src/content/docs/${section}/${slug}.mdx`,
               anchored: true,
-              read: { slugs: [`${section}/${slug}`], harness: a.harness ?? 'engineering' },
+              read: { slugs: [ref], harness: a.harness ?? 'engineering' },
             }),
           },
         ],
       };
+    }
+    if (canon === 'docs:get') {
+      const slugs = Array.isArray(a.slugs) ? a.slugs.map(String) : [];
+      const requested = slugs[0] ?? 'agent-insights/plan-writes-hang-idle-in-transaction-advisory-lock-runbook';
+      const ref = requested.startsWith('agent-insights/') ? requested : `agent-insights/${requested}`;
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        pages: [{
+          slug: ref,
+          title: 'Plan writes hang: idle-in-transaction advisory lock runbook',
+          body:
+            'A dropped MCP transport can leave an idle-in-transaction Postgres backend holding the ' +
+            'plan advisory lock. Plan reads still work while writes block. The durable fix reaps the ' +
+            'orphan on transport drop; diagnose recurrence from the backend and lock evidence before ' +
+            'calling it a plans-tool outage.',
+        }],
+      }) }] };
     }
     if (canon === 'locks:acquire') {
       return {
@@ -669,7 +912,8 @@ export const HARNESS_STATUS_RESULT: ToolDispatchOverride = {
 export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
   override(name, args) {
     const a = (args ?? {}) as Record<string, unknown>;
-    if (canonical(name) === 'coord:orient') {
+    const canon = canonical(name);
+    if (canon === 'coord:orient') {
       return {
         content: [
           {
@@ -685,6 +929,26 @@ export const ORIENT_BOOTSTRAP_CONTEXT: ToolDispatchOverride = {
           },
         ],
       };
+    }
+    if (canon === 'work_items:get') {
+      const id = String(a.id ?? 'WI-512');
+      const workItem = id === 'WI-512'
+        ? { id, title: 'Gateway pool retry', state: 'wip', assignee: 'su-test', plan: 'gateway-pool', planItem: 'P-003' }
+        : { id, title: 'Claimable follow-up', state: 'open', assignee: null };
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        results: [{ ok: true, id, workItem }],
+      }) }] };
+    }
+    if (canon === 'work_items:list') {
+      return { content: [{ text: JSON.stringify({
+        ok: true,
+        items: [
+          { id: 'WI-512', title: 'Gateway pool retry', state: 'wip', assignee: 'su-test' },
+          { id: 'WI-540', title: 'Audit log NUL bytes', state: 'open', assignee: null },
+          { id: 'WI-541', title: 'Palette poll → push', state: 'open', assignee: null },
+        ],
+      }) }] };
     }
     return PASS_THROUGH;
   },
