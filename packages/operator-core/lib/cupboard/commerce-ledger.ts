@@ -40,11 +40,28 @@ export interface Product {
   readonly active: boolean;
 }
 
+/**
+ * Terms that make a `per-use` offer executable on the P2P microcharge rail.
+ *
+ * The unit price is a safe integer at the JSON/D1 boundary and is converted to
+ * bigint by the microcharge path before arithmetic. The remaining fields are
+ * signed into every cumulative voucher, so changing any of them is a new price
+ * version rather than a mutable display-only edit.
+ */
+export interface PerUseOfferTerms {
+  readonly unitPriceMicros: number;
+  readonly meterUnit: string;
+  readonly priceVersion: string;
+  readonly splitManifestHash: string;
+}
+
 export interface Offer {
   readonly offerId: string;
   readonly productId: string;
   readonly pricingModel: PricingModel;
   readonly price: Money;
+  /** Present only for `pricingModel: 'per-use'`. */
+  readonly perUse?: PerUseOfferTerms | null;
   readonly active: boolean;
 }
 
@@ -173,6 +190,7 @@ export interface LedgerState {
 }
 
 const CURRENCY_RE = /^[A-Z]{3}$/;
+const SPLIT_MANIFEST_HASH_RE = /^sha256:[0-9a-f]{64}$/i;
 
 export function isMoney(value: unknown): value is Money {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -182,6 +200,26 @@ export function isMoney(value: unknown): value is Money {
 
 export function moneyEquals(a: Money, b: Money): boolean {
   return a.amountMinor === b.amountMinor && a.currency === b.currency;
+}
+
+function perUseTerms(value: unknown): PerUseOfferTerms | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const terms = value as Partial<PerUseOfferTerms>;
+  if (!Number.isSafeInteger(terms.unitPriceMicros) || (terms.unitPriceMicros as number) <= 0) return null;
+  if (typeof terms.meterUnit !== 'string' || !terms.meterUnit.trim()) return null;
+  if (typeof terms.priceVersion !== 'string' || !terms.priceVersion.trim()) return null;
+  if (
+    typeof terms.splitManifestHash !== 'string' ||
+    !SPLIT_MANIFEST_HASH_RE.test(terms.splitManifestHash)
+  ) {
+    return null;
+  }
+  return {
+    unitPriceMicros: terms.unitPriceMicros,
+    meterUnit: terms.meterUnit,
+    priceVersion: terms.priceVersion,
+    splitManifestHash: terms.splitManifestHash.toLowerCase(),
+  };
 }
 
 /** The entitlement an order grants is addressed by the order, so a replayed `order.paid` can never mint a second one. */
@@ -257,7 +295,25 @@ function applyEvent(state: LedgerState, event: LedgerEvent): ApplyResult {
       if (!isMoney(p.price)) return { ok: false, code: 'invalid-money', detail: 'offer.defined price must be integer minor units + ISO-4217 currency' };
       if (!state.products.has(productId)) return { ok: false, code: 'unknown-product', detail: `product ${productId} is not defined` };
       if (pricingModel === 'free' && p.price.amountMinor !== 0) return { ok: false, code: 'amount-mismatch', detail: 'a free offer must price at 0' };
-      state.offers.set(offerId, { offerId, productId, pricingModel, price: p.price, active: p.active !== false });
+      const terms = pricingModel === 'per-use' ? perUseTerms(p.perUse) : null;
+      if (pricingModel === 'per-use' && !terms) {
+        return {
+          ok: false,
+          code: 'invalid-event',
+          detail: 'a per-use offer needs positive unitPriceMicros, meterUnit, priceVersion, and a sha256 splitManifestHash',
+        };
+      }
+      if (pricingModel !== 'per-use' && p.perUse != null) {
+        return { ok: false, code: 'invalid-event', detail: 'perUse terms are only valid for a per-use offer' };
+      }
+      state.offers.set(offerId, {
+        offerId,
+        productId,
+        pricingModel,
+        price: p.price,
+        perUse: terms,
+        active: p.active !== false,
+      });
       return { ok: true };
     }
     case 'order.created': {

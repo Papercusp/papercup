@@ -197,6 +197,72 @@ describe('reduceLedger — entitlement lifecycle', () => {
 });
 
 describe('reduceLedger — money and transition rejections', () => {
+  it('keeps complete per-use terms on the offer for microcharge execution', () => {
+    const splitManifestHash = `sha256:${'a'.repeat(64)}`;
+    const state = reduceLedger([
+      ev('product.defined', { productId: 'prod-use', skuRef: 'sku-use', creatorId: 'creator-1', title: 'Metered Thing' }, { at: 1_000 }),
+      ev('offer.defined', {
+        offerId: 'offer-use',
+        productId: 'prod-use',
+        pricingModel: 'per-use',
+        price: USD(0),
+        perUse: {
+          unitPriceMicros: 25,
+          meterUnit: 'tool-call',
+          priceVersion: 'price-v1',
+          splitManifestHash,
+        },
+      }, { at: 2_000 }),
+    ]);
+
+    expect(state.rejected).toEqual([]);
+    expect(state.offers.get('offer-use')).toMatchObject({
+      pricingModel: 'per-use',
+      perUse: {
+        unitPriceMicros: 25,
+        meterUnit: 'tool-call',
+        priceVersion: 'price-v1',
+        splitManifestHash,
+      },
+    });
+  });
+
+  it('rejects incomplete or malformed per-use terms instead of publishing an unusable offer', () => {
+    const product = ev(
+      'product.defined',
+      { productId: 'prod-use', skuRef: 'sku-use', creatorId: 'creator-1', title: 'Metered Thing' },
+      { at: 1_000 },
+    );
+    const incomplete = reduceLedger([
+      product,
+      ev('offer.defined', {
+        offerId: 'offer-use',
+        productId: 'prod-use',
+        pricingModel: 'per-use',
+        price: USD(0),
+        perUse: { unitPriceMicros: 25, meterUnit: 'tool-call', priceVersion: 'price-v1' },
+      }, { at: 2_000 }),
+    ]);
+    const attachedToFixedPrice = reduceLedger([
+      product,
+      ev('offer.defined', {
+        offerId: 'offer-fixed',
+        productId: 'prod-use',
+        pricingModel: 'one-time',
+        price: USD(100),
+        perUse: {
+          unitPriceMicros: 25,
+          meterUnit: 'tool-call',
+          priceVersion: 'price-v1',
+          splitManifestHash: `sha256:${'b'.repeat(64)}`,
+        },
+      }, { at: 2_000 }),
+    ]);
+
+    expect(codesOf(incomplete)).toEqual(['invalid-event']);
+    expect(codesOf(attachedToFixedPrice)).toEqual(['invalid-event']);
+  });
+
   it('rejects a refund that exceeds the order', () => {
     const state = reduceLedger([
       ...paidOrderEvents(5000),
