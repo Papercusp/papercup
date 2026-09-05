@@ -45,6 +45,7 @@ const launchTransaction = vi.hoisted(() => ({
 const goalLaunchReadMock = vi.hoisted(() => vi.fn());
 const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
 const goalModeSubjectMock = vi.hoisted(() => vi.fn());
+const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
@@ -94,6 +95,7 @@ vi.mock('../../../systemd-scope', async (importOriginal) => ({
 vi.mock('../../../goal-launch-settings', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../goal-launch-settings')>()),
   readGoalLaunchSettingsForLauncher: (...args: unknown[]) => goalLaunchReadMock(...args),
+  resolveGoalLaunch: (...args: unknown[]) => goalLaunchResolveMock(...args),
   resolveGoalPotPlacementAuthority: (...args: unknown[]) => goalPotPlacementAuthorityMock(...args),
 }));
 
@@ -175,9 +177,23 @@ const readPlanBySlugMock = vi.fn(
   }),
 );
 
-vi.mock('../../plans/source', () => ({
+vi.mock('../../plans/source', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plans/source')>()),
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug, workspaceId: 'ws-1' })),
   readPlanBySlug: (...args: unknown[]) => readPlanBySlugMock(...args),
+  // The start gate now reloads the same row. Preserve each fixture's real
+  // input validation while isolating that reload from the live database.
+  getPlanRow: async () => (await readPlanBySlugMock.mock.results.at(-1)?.value)?.row ?? null,
+}));
+
+vi.mock('../../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../acceptance-bar-lifecycle-evaluator')>()),
+  readAndEvaluateAcceptanceBarLifecycle: vi.fn(async () => ({ satisfied: true })),
+}));
+
+vi.mock('../../plans/plan-admission-gate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plans/plan-admission-gate')>()),
+  checkPlanAdmission: vi.fn(async () => ({ admitted: true })),
 }));
 
 vi.mock('../../plans/plan-admission-preflight', async (importOriginal) => ({
@@ -557,6 +573,12 @@ beforeEach(() => {
   goalLaunchReadMock.mockReset();
   goalModeSubjectMock.mockReset();
   goalModeSubjectMock.mockResolvedValue(null);
+  goalLaunchResolveMock.mockReset();
+  goalLaunchResolveMock.mockResolvedValue({
+    goalId: null, effective: {}, refusal: null, settings: null,
+    budget: null, goalBrief: null, ceilings: { maxAgents: null, maxPerFleet: null },
+    headcount: { total: 0, fleet: 0 }, degraded: false, degradedReasons: [],
+  });
   goalLaunchReadMock.mockResolvedValue({
     goalId: null,
     settings: null,
