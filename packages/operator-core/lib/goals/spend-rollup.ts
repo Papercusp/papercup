@@ -376,7 +376,25 @@ export async function writeGoalSpendSnapshot(
   const patch = {
     // Hard authority boundary: this must remain byte-for-byte equivalent to
     // goals:pots, even when the diagnostic session leg is larger or unpriced.
-    spentCents: rollup.potCents,
+    //
+    // ...but it must never assert a number the pot leg did not MEASURE. goalSpend()
+    // is an INNER JOIN on goal_pots, so a goal with ZERO attached pots yields
+    // samples === 0 and potCents === 0: "unmeasurable" and "measured zero" are
+    // indistinguishable in the value alone. That distinction is load-bearing here,
+    // because the budget launch gate reads THIS field: its `spentCents == null`
+    // branch (goal-launch-settings.ts) records a degraded reason naming the goal and
+    // fails OPEN, whereas a bare 0 is accepted as an authoritative measurement and
+    // silently admits every launch under budget. Writing null therefore turns a
+    // SILENT fail-open into a LOUD one — it cannot freeze launches — and restores
+    // the symmetry with refreshGoalTripwires below, which already guards this way.
+    //
+    // The discriminator is `samples`, NOT `measured`. `measured` is
+    // `samples > 0 && unpricedSamples === 0` (goal-pots.ts), so keying on it would
+    // ALSO null out a partially-priced pot — and judgeGoalSpend deliberately uses
+    // that pot's potCents as a spend FLOOR (the spend-floor-goal-breach branch
+    // below). Copying the tripwire sibling verbatim would regress a live budget
+    // control, not merely a diagnostic.
+    spentCents: rollup.pot.samples > 0 ? rollup.potCents : null,
     spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE,
     spentCentsAt: nowIso,
     spentCentsBreakdown: {

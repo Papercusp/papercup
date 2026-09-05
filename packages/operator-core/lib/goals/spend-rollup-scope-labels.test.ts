@@ -59,10 +59,41 @@ describe('goal spend breakdown — scope labels are self-describing and pinned',
   it('the authoritative snapshot is still the POT leg — the labels must not outlive the rule they describe', () => {
     // `sessionScope: diagnostic-only` is a claim about enforcement, so pin
     // enforcement too: spentCents is assigned from the pot leg, never the total.
+    // The pot leg is now written through the unmeasurable guard below, so the
+    // assignment is the guarded form — still the pot leg, never the other two.
     const normalized = SOURCE.replace(/\s+/g, ' ');
-    expect(normalized).toContain('spentCents: rollup.potCents');
+    expect(normalized).toContain('spentCents: rollup.pot.samples > 0 ? rollup.potCents : null');
     expect(normalized).not.toContain('spentCents: rollup.totalCents');
     expect(normalized).not.toContain('spentCents: rollup.sessionCents');
+  });
+
+  /*
+   * WI-2146705. goalSpend() is an INNER JOIN on goal_pots, so a goal with ZERO
+   * attached pots returns samples 0 / potCents 0. Writing that 0 into
+   * goals.metadata.spentCents made "unmeasurable" indistinguishable from
+   * "measured zero", and the budget launch gate reads a 0 as an authoritative
+   * measurement — so every launch under budget was silently admitted on a
+   * number nothing measured. null is the honest value: the gate's null branch
+   * records a degraded reason and fails OPEN loudly.
+   */
+  it('never writes a spend figure the pot leg did not measure', () => {
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    // The guard must exist, and must be on the WRITE of spentCents itself —
+    // not merely reported inside spentCentsBreakdown, which no gate reads.
+    expect(normalized).toContain('spentCents: rollup.pot.samples > 0 ? rollup.potCents : null');
+    expect(normalized).not.toContain('spentCents: rollup.potCents,');
+  });
+
+  it('keys the guard on samples, NOT measured — `measured` would regress the spend floor', () => {
+    // `measured` is `samples > 0 && unpricedSamples === 0`, so keying on it also
+    // nulls a PARTIALLY-PRICED pot — whose potCents judgeGoalSpend deliberately
+    // enforces as a spend FLOOR (the spend-floor-goal-breach branch). Copying
+    // refreshGoalTripwires' `measured ? potCents : null` verbatim here would
+    // disable a live budget control, so that specific form is pinned out.
+    const normalized = SOURCE.replace(/\s+/g, ' ');
+    expect(normalized).not.toContain('spentCents: rollup.pot.measured ? rollup.potCents : null');
+    // The spend floor this protects must still be enforced on unmeasured spend.
+    expect(normalized).toContain('spend-floor-goal-breach');
   });
 });
 
