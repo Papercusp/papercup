@@ -340,7 +340,12 @@ describe('locks:list — the FILE plane is measured, not just pointed at (EI-201
     coordination_domain: '/some/tree',
     ...over,
   });
-  const waiterRow = (over: Partial<WaiterRow> = {}): WaiterRow => ({
+  /** No `Partial` override seam here, deliberately: WaiterRow carries OPTIONAL
+   * fields, and spreading a Partial over them republishes each as
+   * `T | undefined`, which is not assignable back to the optional property.
+   * Nothing in this block needs to vary a waiter, so the seam would buy a type
+   * error and no coverage. */
+  const waiterRow = (): WaiterRow => ({
     ticket_id: 'T-1',
     owner: 'peer-2',
     owner_label: 'Peer Two',
@@ -350,7 +355,7 @@ describe('locks:list — the FILE plane is measured, not just pointed at (EI-201
     queued_ts: new Date('2026-01-01T00:01:00Z'),
     wait_until: new Date('2026-01-01T00:21:00Z'),
     status: 'waiting',
-    ...over,
+    coordination_domain: '/some/tree',
   });
   const fileQueue = (active: ActiveLockRow[], waiting: WaiterRow[] = []) =>
     mockResolvedTyped(fileQueueM, { active_locks: active, waiting });

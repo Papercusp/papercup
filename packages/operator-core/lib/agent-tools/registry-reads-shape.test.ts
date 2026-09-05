@@ -74,8 +74,17 @@ describe("shapeLocksList (P-023)", () => {
   // holders }` and so carried `fileLocks` through untouched. That is not a
   // defect in them — they exist to catch the NEXT allowlist added upstream,
   // which is the exact regression this file has already suffered twice — but
-  // do not read them as evidence for the fix itself. Probe:
-  // .papercusp/scratch/eip-filelocks/discriminate.mts
+  // do not read them as evidence for the fix itself.
+  //
+  // To re-measure that split: check the pre-fix module out of git into a
+  // gitignored scratch file (`git show <sha>:<this dir>/locks/list-shape.ts >
+  // .papercusp/scratch/x.prefix.mts` — .mts, because neither /tmp nor scratch
+  // sits under a "type":"module" package.json and a bare .ts is compiled CJS),
+  // import both shapers into one probe, and run each assertion against both.
+  // Hold LOCKS_LIST_TIER_CAPS fixed across the two — feeding each shaper its
+  // own caps makes the cap assertion fail merely because `fileLockHolders` did
+  // not exist yet (undefined ⇒ NaN ⇒ an empty fixture), which is a failure
+  // about a missing CONSTANT and not about missing SHAPING.
   describe("fileLocks survives shaping (EI-20192110087737961)", () => {
     const withFileLocks = (holderCount: number) => ({
       ...data,
