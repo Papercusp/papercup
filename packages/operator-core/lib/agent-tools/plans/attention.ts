@@ -134,6 +134,31 @@ const argsSchema = z.object({
     .max(MAX_ATTENTION_OFFSET)
     .optional()
     .describe(`Zero-based item offset (maximum ${MAX_ATTENTION_OFFSET}).`),
+  /**
+   * WI-2144754: restrict the feed to items OWED BY one agent — `ownerAgentId`
+   * on the item, i.e. the agent that filed the ask.
+   *
+   * This exists because a client-side filter over a bounded page is not a
+   * filter, it is a coincidence. The session popup's Decisions shelf wants
+   * "what does THIS session's agent need the human for", and used to get it by
+   * filtering page one (100 items) of the fleet-wide feed in the browser. At
+   * the time of writing there were 145 open agent decision-escalations against
+   * that 100-item page from a SINGLE source, so at least 45 owner-owed asks
+   * could not render in their own popup — and an empty shelf is
+   * indistinguishable from "nothing needs you here".
+   *
+   * Applied in the SAME presentation layer as `limit`/`offset` (after the
+   * cached ~10-source aggregation, before the window), so the expensive build
+   * and its cache key are untouched and one cached entry still serves every
+   * caller. `tierCounts` is recomputed over the filtered set — a scoped read
+   * that reported fleet-wide counts would be the bounded-measurement-as-total
+   * error this argument exists to fix.
+   */
+  ownerAgentId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Only items owed by this agent (AttentionItem.ownerAgentId). Omit for the whole feed.'),
   harness: harnessArg,
 });
 
@@ -176,13 +201,22 @@ export default defineTool({
     itemKeyField: 'id',
     rowType: (row) => (row as AttentionItem).kind,
     orderKey: 'importance',
-    scope: (_args, ctx) => {
+    scope: (args, ctx) => {
       const c = ctx as {
         workspaceId?: string;
         harnessSlug?: string | null;
         role?: string | null;
       };
-      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}`;
+      // WI-2144754: `ownerAgentId` narrows WHICH rows this subscription can
+      // ever legitimately see, so it is a cursor dimension, not a rendering
+      // preference. Without it a scoped subscriber shares a cursor namespace
+      // with the unfiltered feed and an incremental merge can hand it rows its
+      // own filter excluded. Absent for every existing caller, which keeps the
+      // shape they had plus one empty segment (a one-time cursor reset,
+      // already routine at the 5-minute maxDeltaAge below).
+      const owner = (args as { ownerAgentId?: unknown } | null | undefined)?.ownerAgentId;
+      const ownerKey = typeof owner === 'string' && owner.length > 0 ? owner : '';
+      return `${c.workspaceId ?? ''}:${c.harnessSlug ?? '*'}:${c.role ?? ''}:${ownerKey}`;
     },
     schemaVersion: 'attn-v1',
     // Periodic forced-full reconciliation: a cursor older than 5 min reconciles to a
@@ -945,11 +979,31 @@ export default defineTool({
       },
     );
 
+    // WI-2144754: the owner filter runs in the presentation layer too, BEFORE
+    // the window — that ordering is the whole point. Filtering after the page
+    // would just re-create the bug in a different file: page one of the
+    // fleet-wide feed, then thinned to whatever of this owner's items happened
+    // to survive it. Regroup rather than splice, so `maxImportance` and the
+    // dropped-empty-group set stay derived rather than patched.
+    const ownerFilter = args.ownerAgentId ?? null;
+    const scopedGroups = ownerFilter
+      ? buildAttentionGroups(
+          groups.flatMap((g) => g.items.filter((it) => it.ownerAgentId === ownerFilter)),
+        )
+      : groups;
+    // Counts must describe the set they were computed over. `tierCounts` is
+    // documented below as "the complete-feed count, not the page count" — with
+    // a scope argument in play, the complete feed IS the scoped one, and
+    // handing back fleet-wide numbers would make a scoped read's badge lie.
+    const scopedTierCounts = ownerFilter
+      ? groupByTier(scopedGroups.flatMap((g) => g.items)).counts
+      : tierCounts;
+
     // Apply the presentation window only after the complete source aggregation
     // has been built and cached. Counts/detail consumers can therefore request
     // `limit:null` (or call the cached read directly) without losing rows, while
     // the normal UI path sends a small deterministic page.
-    const windowed = paginateAttentionGroups(groups, {
+    const windowed = paginateAttentionGroups(scopedGroups, {
       limit: args.limit,
       offset: args.offset,
     });
@@ -959,21 +1013,23 @@ export default defineTool({
     const groupsWithMeta = attachListMeta(windowed.groups, {
       ...windowed.meta,
       // This is the complete-feed count, not the page count. It keeps badges
-      // honest when a bounded page is being rendered.
-      tierCounts,
+      // honest when a bounded page is being rendered. Under `ownerAgentId` the
+      // complete feed IS the scoped one (WI-2144754).
+      tierCounts: scopedTierCounts,
     });
 
     ctxAny.metadata?.({
       itemCount: windowed.meta.returned,
       totalItemCount: windowed.meta.total,
       groupCount: groupsWithMeta.length,
-      decisions: tierCounts.decision,
+      decisions: scopedTierCounts.decision,
       scope: harnessFilter ?? 'all',
+      ...(ownerFilter ? { ownerAgentId: ownerFilter } : {}),
       ...(windowed.meta.hasMore ? { hasMore: true, nextOffset: windowed.meta.nextOffset } : {}),
     });
 
     // {data} envelope so the payload-tier shapers apply; HTTP/sync consumers
     // still read identical `{"groups":[...],"tierCounts":{...}}` JSON text.
-    return { data: { groups: groupsWithMeta, tierCounts } };
+    return { data: { groups: groupsWithMeta, tierCounts: scopedTierCounts } };
   },
 });
