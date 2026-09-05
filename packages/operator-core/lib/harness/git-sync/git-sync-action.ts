@@ -174,7 +174,7 @@ import { Duplex } from 'node:stream';
 // returns an EMPTY roster. The *ForLocalPot wrapper resolves the federated scope first
 // (a no-op on an owner).
 import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
-import type { HiveGitActor } from './hive-git-actor';
+import { pickHiveGitActor, type HiveGitActor } from './hive-git-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { resolveAuthorCommsTier } from '../../sync/hyperbee/comms-tier-gate';
@@ -3765,7 +3765,7 @@ interface ServingHiveGitActor extends HiveGitActor {
   assertServing(): Promise<void>;
 }
 
-async function resolveHiveGitActor(
+export async function resolveHiveGitActor(
   workspaceId: string,
   installSlug: string,
   potHomeSlug: string,
@@ -3776,11 +3776,15 @@ async function resolveHiveGitActor(
       scope: await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey) };
     const resolve = async (): Promise<GitServingState> => {
       const { getBootedHarness, bootSingleHarness } = await import('../../sync/hyperbee/boot-all');
-      const handle = getBootedHarness(workspaceId, installSlug) ??
-        (installSlug === potHomeSlug ? null : getBootedHarness(workspaceId, potHomeSlug));
-      if (handle) {
-        return validateGitServingState(await handle.getGitServingCapability?.(request), request);
+      let localAnswer: GitServingState | null = null;
+      for (const servingSlug of new Set([installSlug, potHomeSlug])) {
+        const handle = getBootedHarness(workspaceId, servingSlug);
+        if (!handle) continue;
+        const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
+        if (answer.status === 'ready') return answer;
+        localAnswer ??= answer;
       }
+      if (localAnswer) return localAnswer;
       const { getPgGitServingCapability } = await import('../../sync/hyperbee/substrate-booted-handles-pg');
       const state = await getPgGitServingCapability(request);
       if (state.status !== 'ready') {
@@ -3796,9 +3800,10 @@ async function resolveHiveGitActor(
       return null;
     }
     const capability = state.capability;
-    const { devicePubkeyBase64, githubUserId, keychainId } = capability.identity;
-    return { devicePubkey: devicePubkeyBase64, githubUserId, keychainId, source: 'booted-swarm',
-      capability,
+    const actor = pickHiveGitActor(state, request);
+    if (!actor) return null;
+    const { keychainId } = actor;
+    return { ...actor,
       assertServing: () => assertGitServingCapability(capability, request, resolve),
       sign: guardGitServingSigner(capability, request, resolve, bytes => signWithDeviceKey(keychainId, bytes)),
     };
@@ -4755,6 +4760,7 @@ async function runRefAnnounceLeg(
         userId: null,
         workspaceId,
       };
+      await actor.assertServing();
       await sendMessage(identity, {
         to: [],
         summary: `[fed-event] ${REF_ANNOUNCE_EVENT_KEY}`,
@@ -5489,6 +5495,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
         userId: null,
         workspaceId,
       };
+      await actor.assertServing();
       await sendMessage(identity, {
         to: [],
         summary: `[fed-event] ${STAGING_ADVANCE_EVENT_KEY}`,
