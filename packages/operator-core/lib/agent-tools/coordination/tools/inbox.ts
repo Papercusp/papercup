@@ -1371,14 +1371,54 @@ export default defineTool({
         );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
+        // EI-20218251557859818: the armed loop's carry-note obligation is read here too,
+        // so this PRE-boundary line covers the SAME population the boundary gate refuses
+        // on. Without it an agent whose item checkpoints were all fresh saw nothing at
+        // 75/80/85% and first learned the loop:checkpoint prerequisite from a REFUSED
+        // session:request-compaction — spending the boundary call on discovering the rule.
+        // The condition is NOT re-derived here: armedLoopNeedsCarryNote is the same
+        // predicate detectFlushTripwires uses, so warning and refusal cannot drift apart.
+        // Its OWN try/catch on purpose — a loop-read failure must not suppress the claims
+        // half (and vice-versa below). Fails OPEN: readFailed is never read as "no note".
+        let loopNeedingCarryNote: string | null = null;
+        try {
+          const [{ getLoopStatus }, { getLoopCarryNoteWithMeta }, { armedLoopNeedsCarryNote }] =
+            await Promise.all([
+              import("../../../harness/routines/loop"),
+              import("../../../carry-note"),
+              import("../../../enforcement-gate"),
+            ]);
+          const loop = await getLoopStatus(identity.ownerId);
+          if (loop?.active) {
+            const meta = await getLoopCarryNoteWithMeta({
+              harness: loop.harnessSlug,
+              ownerId: identity.ownerId,
+            });
+            if (
+              !meta.readFailed &&
+              armedLoopNeedsCarryNote({
+                active: Boolean(loop.active),
+                carry: loop.carry,
+                carryNote: meta.note,
+              })
+            ) {
+              loopNeedingCarryNote = loop.harnessSlug;
+            }
+          }
+        } catch {
+          loopNeedingCarryNote = null;
+        }
         try {
           const ws =
             (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ??
             activeWorkspaceId();
           const fresh = await listActiveClaimFreshnessForOwner(ws, identity.ownerId);
-          flushLine = renderFlushGateLine(pct, classifyStaleClaims(fresh, Date.now()));
+          flushLine = renderFlushGateLine(pct, classifyStaleClaims(fresh, Date.now()), {
+            loopNeedingCarryNote,
+          });
         } catch {
-          flushLine = null;
+          // The claims read failed; still surface the loop half if we resolved it.
+          flushLine = renderFlushGateLine(pct, [], { loopNeedingCarryNote });
         }
       }
       // EI-19326331501849713 (owner-directed 2026-08-09): a carry-respawn that was

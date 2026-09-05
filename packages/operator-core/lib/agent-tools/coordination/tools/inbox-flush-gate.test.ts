@@ -158,6 +158,78 @@ describe('renderFlushGateLine (P-002 named-action injection)', () => {
   });
 });
 
+/**
+ * EI-20218251557859818 — the pre-boundary line and the BOUNDARY gate must classify the
+ * same population. They did not: this line saw work-item claims only, so an agent whose
+ * item checkpoints were all fresh was told nothing at 75/80/85% and first learned the
+ * loop:checkpoint prerequisite from a REFUSED session:request-compaction.
+ */
+describe('renderFlushGateLine — armed-loop carry-note half', () => {
+  const LOOP = 'papercusp';
+
+  it('THE REGRESSION CASE: engages with ZERO stale claims when the loop owes a carry-note', () => {
+    // Pre-fix this returned null — the exact silence the reporter hit.
+    const line = renderFlushGateLine(80, [], { loopNeedingCarryNote: LOOP });
+    expect(line).not.toBeNull();
+    expect(line).toContain('loop:checkpoint');
+    expect(line).toContain(LOOP);
+    expect(line).toContain('at 80% context');
+  });
+
+  it('names the boundary consequence, so the warning explains the refusal it prevents', () => {
+    const line = renderFlushGateLine(80, [], { loopNeedingCarryNote: LOOP });
+    expect(line).toContain('session:request-compaction');
+  });
+
+  it('stays null when neither claims nor the loop owe anything', () => {
+    expect(renderFlushGateLine(99, [], { loopNeedingCarryNote: null })).toBeNull();
+    expect(renderFlushGateLine(99, [], {})).toBeNull();
+  });
+
+  it('still respects the pct gate for the loop half', () => {
+    expect(
+      renderFlushGateLine(FLUSH_GATE_PCT - 1, [], { loopNeedingCarryNote: LOOP }),
+    ).toBeNull();
+    expect(renderFlushGateLine(null, [], { loopNeedingCarryNote: LOOP })).toBeNull();
+  });
+
+  it('renders BOTH halves when claims and the loop are each unflushed', () => {
+    const line = renderFlushGateLine(
+      80,
+      [{ workItemId: 'WI-2378', reason: 'never', staleMs: 11 * 60_000 }],
+      { loopNeedingCarryNote: LOOP },
+    );
+    expect(line).toContain('WI-2378');
+    expect(line).toContain('work_items:checkpoint');
+    expect(line).toContain('loop:checkpoint');
+    expect(line).toContain(LOOP);
+  });
+
+  it('treats a blank/whitespace harness as "nothing owed" (no empty @ in the line)', () => {
+    expect(renderFlushGateLine(80, [], { loopNeedingCarryNote: '   ' })).toBeNull();
+  });
+
+  describe('falsifiability control', () => {
+    /** The PRE-FIX renderer, kept permanently: claims-only, loop condition ignored.
+     *  If the cases above pass against THIS, they are not testing the fix. */
+    const claimsOnlyLikeItWasBefore = (
+      pct: number,
+      stale: readonly { workItemId: string; reason: 'never' | 'drift'; staleMs: number }[],
+    ): string | null => (stale.length === 0 ? null : `flush-gate: at ${pct}% context ...`);
+
+    it('CONTROL: the pre-fix renderer is silent on the regression case (proving the case discriminates)', () => {
+      expect(claimsOnlyLikeItWasBefore(80, [])).toBeNull();
+      expect(renderFlushGateLine(80, [], { loopNeedingCarryNote: LOOP })).not.toBeNull();
+    });
+
+    it('CALIBRATION: both renderers agree where the fix changed nothing (stale claim present)', () => {
+      const stale = [{ workItemId: 'WI-1', reason: 'never' as const, staleMs: 11 * 60_000 }];
+      expect(claimsOnlyLikeItWasBefore(80, stale)).not.toBeNull();
+      expect(renderFlushGateLine(80, stale)).not.toBeNull();
+    });
+  });
+});
+
 describe('contextUsagePct (P-002 single pct source)', () => {
   it('rounds the same way the usage line and the flush gate both read', () => {
     expect(contextUsagePct(845, 1000)).toBe(85);

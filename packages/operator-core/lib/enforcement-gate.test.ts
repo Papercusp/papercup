@@ -6,6 +6,7 @@ import {
   detectFlushTripwires,
   decideFlushGate,
   renderFlushRefusal,
+  armedLoopNeedsCarryNote,
 } from './enforcement-gate';
 
 const NOW = 1_800_000_000_000;
@@ -233,5 +234,78 @@ describe('renderFlushRefusal', () => {
     expect(renderFlushRefusal('handoff', [{ kind: 'missing-checkpoint', subject: 'WI-1', detail: 'x' }])).toContain(
       'This handoff is HELD',
     );
+  });
+});
+
+/**
+ * EI-20218251557859818 — `armedLoopNeedsCarryNote` was extracted so the BOUNDARY gate
+ * (this file) and the PRE-boundary flush-gate line (inbox-flush-gate.ts) ask the same
+ * question. They previously did not: the pre-boundary line classified work-item claims
+ * only, so the loop prerequisite was first discovered from a REFUSED boundary call.
+ */
+describe('armedLoopNeedsCarryNote (the shared carry-note predicate)', () => {
+  const loop = (over: Partial<NonNullable<CarryBrief['loop']>> = {}): NonNullable<CarryBrief['loop']> => ({
+    harness: 'papercusp',
+    active: true,
+    intervalSec: 60,
+    carry: 'cold',
+    goal: null,
+    carryNote: null,
+    carryNoteUpdatedAtMs: null,
+    ...over,
+  });
+
+  it('is TRUE only for an active COLD loop with no note', () => {
+    expect(armedLoopNeedsCarryNote(loop())).toBe(true);
+    expect(armedLoopNeedsCarryNote(loop({ carryNote: '   ' }))).toBe(true); // whitespace is no note
+  });
+
+  it('is FALSE for warm, inactive, already-noted, absent-mode, and absent loops', () => {
+    expect(armedLoopNeedsCarryNote(loop({ carry: 'warm' }))).toBe(false); // warm carries its transcript
+    expect(armedLoopNeedsCarryNote(loop({ active: false }))).toBe(false);
+    expect(armedLoopNeedsCarryNote(loop({ carryNote: '## Did\nreal note' }))).toBe(false);
+    expect(armedLoopNeedsCarryNote(loop({ carry: undefined }))).toBe(false); // fails OPEN
+    expect(armedLoopNeedsCarryNote(null)).toBe(false);
+    expect(armedLoopNeedsCarryNote(undefined)).toBe(false);
+  });
+
+  /**
+   * THE ANTI-DRIFT GUARD. The predicate and the boundary tripwire must agree on every
+   * shape — that agreement is the whole reason the predicate was extracted. If someone
+   * changes one without the other (re-inlining the condition, or widening only the
+   * tripwire), this fails rather than letting the warning and the refusal diverge again.
+   */
+  it('AGREES with the armed-loop tripwire on every loop shape', () => {
+    const shapes: Array<NonNullable<CarryBrief['loop']>> = [
+      loop(),
+      loop({ carryNote: '   ' }),
+      loop({ carry: 'warm' }),
+      loop({ active: false }),
+      loop({ carryNote: '## Did\nreal note' }),
+      loop({ carry: undefined }),
+      loop({ carry: 'warm', carryNote: '## Did\nreal note' }),
+      loop({ active: false, carry: 'warm' }),
+    ];
+    for (const l of shapes) {
+      const tripwireFired = detectFlushTripwires(brief({ loop: l }), NOW).some(
+        (t) => t.kind === 'armed-loop-no-carry-note',
+      );
+      expect(
+        armedLoopNeedsCarryNote(l),
+        `predicate and boundary tripwire disagree for ${JSON.stringify(l)}`,
+      ).toBe(tripwireFired);
+    }
+  });
+
+  it('CONTROL: a deliberately-wrong predicate breaks that agreement (the check discriminates)', () => {
+    // Ignores `carry`, i.e. would flag WARM loops too — the most likely wrong widening.
+    const wrong = (l: NonNullable<CarryBrief['loop']>) => Boolean(l.active && !(l.carryNote ?? '').trim());
+    const warmNoNote = loop({ carry: 'warm' });
+    const tripwireFired = detectFlushTripwires(brief({ loop: warmNoNote }), NOW).some(
+      (t) => t.kind === 'armed-loop-no-carry-note',
+    );
+    expect(wrong(warmNoNote)).toBe(true);
+    expect(tripwireFired).toBe(false);
+    expect(armedLoopNeedsCarryNote(warmNoNote)).toBe(tripwireFired); // the real one still agrees
   });
 });

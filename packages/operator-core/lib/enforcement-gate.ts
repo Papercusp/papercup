@@ -107,10 +107,52 @@ export interface FlushTripwire {
 }
 
 /**
+ * The minimal loop shape the carry-note question is asked of. Structurally
+ * compatible with `CarryBrief['loop']` AND with a raw LoopStatus + carry-note
+ * pair, so a caller that has only those two narrow reads need not build a whole
+ * brief to ask it.
+ */
+export interface ArmedLoopFlushState {
+  active: boolean;
+  /** Persisted loop lifecycle; an ABSENT mode fails open (see below). */
+  carry?: 'warm' | 'cold' | null;
+  carryNote?: string | null;
+}
+
+/**
+ * Does this armed loop still owe a `loop:checkpoint` carry-note?
+ *
+ * THE single definition of that condition. A cold wake reconstructs its entire
+ * context from the carry-note, so a cold loop with no note is a guaranteed-blind
+ * successor; an active WARM loop intentionally carries its transcript and is not
+ * flagged (the warm-loop contract). An absent `carry` mode — an injected or
+ * legacy brief — fails OPEN rather than inventing a requirement.
+ *
+ * Exported because TWO surfaces must agree on it, and until EI-20218251557859818
+ * they did not. The BOUNDARY gate ({@link detectFlushTripwires}, which refuses
+ * `session:request-compaction` with `flush-required`) tested this condition; the
+ * PRE-boundary flush-gate line rendered into the coord injection at
+ * FLUSH_GATE_PCT classified work-item claims ONLY. So an agent whose item
+ * checkpoints were all fresh was told NOTHING at 75/80/85% and first learned the
+ * loop prerequisite existed from a refused boundary call — the two surfaces
+ * disagreeing about what "flushed" means. Deriving both from this one predicate
+ * is what keeps the warning and the refusal denominated in the same condition:
+ * a change here moves both, and neither can drift onto its own copy.
+ */
+export function armedLoopNeedsCarryNote(
+  loop: ArmedLoopFlushState | null | undefined,
+): boolean {
+  return Boolean(
+    loop && loop.active && loop.carry === 'cold' && !(loop.carryNote ?? '').trim(),
+  );
+}
+
+/**
  * The flush tripwires present at a boundary: missing/stale held-item checkpoints
  * (via {@link staleCheckpointWarnings}) plus an armed COLD loop carrying no
- * loop:checkpoint note. Warm loops carry their transcript and are not flagged.
- * Pure; empty when the brief is clean or unavailable.
+ * loop:checkpoint note ({@link armedLoopNeedsCarryNote}). Warm loops carry their
+ * transcript and are not flagged. Pure; empty when the brief is clean or
+ * unavailable.
  */
 export function detectFlushTripwires(
   brief: CarryBrief | null,
@@ -144,12 +186,12 @@ export function detectFlushTripwires(
       });
     }
   }
-  // Armed COLD loop with no carry-note: a cold wake reconstructs from the loop
-  // carry-note; an active WARM loop intentionally carries its transcript and
-  // does not require loop:checkpoint (the warm-loop contract). The mode comes
-  // from the persisted LoopStatus carried into CarryBrief; an absent mode in
-  // an injected/legacy brief fails open rather than inventing a requirement.
-  if (brief.loop && brief.loop.active && brief.loop.carry === 'cold' && !(brief.loop.carryNote ?? '').trim()) {
+  // Armed COLD loop with no carry-note — the condition itself now lives in
+  // armedLoopNeedsCarryNote above, because the PRE-boundary flush-gate line has
+  // to ask the identical question (EI-20218251557859818). The `brief.loop &&`
+  // is kept for TS narrowing of `brief.loop.harness` below, not as a second copy
+  // of the predicate.
+  if (brief.loop && armedLoopNeedsCarryNote(brief.loop)) {
     out.push({
       kind: 'armed-loop-no-carry-note',
       subject: brief.loop.harness,

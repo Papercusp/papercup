@@ -89,25 +89,62 @@ function fmtMins(ms: number): string {
 }
 
 /**
- * Render the flush-gate line, or null when the gate does not engage. Engages only when
- * `pct >= FLUSH_GATE_PCT` AND at least one claim is stale. The line names the exact
- * work-items and the action (`work_items:checkpoint`), so the agent flushes rather than
- * narrating a stop. `pct` is the already-computed context percent (from contextUsagePct);
- * passing it in keeps this a single-source consumer, not a re-deriver.
+ * Render the flush-gate line, or null when the gate does not engage. Engages when
+ * `pct >= FLUSH_GATE_PCT` AND there is something unflushed: at least one stale claim,
+ * or an armed COLD loop still owing a carry-note. The line names the exact subjects and
+ * the exact action (`work_items:checkpoint` / `loop:checkpoint`), so the agent flushes
+ * rather than narrating a stop. `pct` is the already-computed context percent (from
+ * contextUsagePct); passing it in keeps this a single-source consumer, not a re-deriver.
+ *
+ * EI-20218251557859818 — why the loop half exists. This line and the BOUNDARY gate
+ * (`detectFlushTripwires`, which refuses `session:request-compaction` with
+ * `flush-required`) are the warning and the refusal for the same invariant, but they
+ * classified different populations: this one saw work-item claims only. An agent whose
+ * item checkpoints were all fresh therefore saw NOTHING here at 75/80/85% and first
+ * discovered the loop-checkpoint prerequisite from a REFUSED boundary call — spending
+ * the boundary attempt itself on learning the rule. The condition is deliberately NOT
+ * re-implemented here: `opts.loopNeedingCarryNote` is supplied by the caller from
+ * {@link armedLoopNeedsCarryNote}, the single predicate the boundary also uses, so the
+ * warning cannot drift away from the refusal it is warning about.
  */
 export function renderFlushGateLine(
   pct: number | null | undefined,
   staleClaims: readonly StaleClaim[],
-  opts: { gatePct?: number } = {},
+  opts: {
+    gatePct?: number;
+    /**
+     * The armed loop's HARNESS when that loop still owes a `loop:checkpoint`
+     * carry-note (i.e. `armedLoopNeedsCarryNote` said true), else null/undefined.
+     * A harness string is what the boundary tripwire uses as its subject, so the
+     * warning names the same thing the refusal will.
+     */
+    loopNeedingCarryNote?: string | null;
+  } = {},
 ): string | null {
   const gatePct = opts.gatePct ?? FLUSH_GATE_PCT;
-  if (pct == null || pct < gatePct || staleClaims.length === 0) return null;
-  const parts = staleClaims
-    .map((s) => `${s.workItemId} (${s.reason === 'never' ? `no checkpoint, held ${fmtMins(s.staleMs)}` : `checkpoint ${fmtMins(s.staleMs)} stale`})`)
-    .join(', ');
-  const n = staleClaims.length;
+  const loopHarness = (opts.loopNeedingCarryNote ?? '').trim() || null;
+  if (pct == null || pct < gatePct) return null;
+  if (staleClaims.length === 0 && !loopHarness) return null;
+  const sentences: string[] = [];
+  if (staleClaims.length > 0) {
+    const parts = staleClaims
+      .map((s) => `${s.workItemId} (${s.reason === 'never' ? `no checkpoint, held ${fmtMins(s.staleMs)}` : `checkpoint ${fmtMins(s.staleMs)} stale`})`)
+      .join(', ');
+    const n = staleClaims.length;
+    sentences.push(
+      `you hold ${n} work-item claim${n === 1 ? '' : 's'} with unflushed state — ${parts}. ` +
+      `CALL work_items:checkpoint on each NOW, before new work or a compaction/reclaim loses it.`,
+    );
+  }
+  if (loopHarness) {
+    sentences.push(
+      `your armed COLD loop @${loopHarness} has NO loop:checkpoint carry-note — a cold wake rebuilds ` +
+      `solely from that note, and session:request-compaction REFUSES the boundary until it exists. ` +
+      `CALL loop:checkpoint { did, left, insight, next } NOW.`,
+    );
+  }
   return (
-    `flush-gate: at ${pct}% context you hold ${n} work-item claim${n === 1 ? '' : 's'} with unflushed state — ${parts}. ` +
-    `CALL work_items:checkpoint on each NOW, before new work or a compaction/reclaim loses it (flush-to-proceed: never hold unexternalized state across a unit boundary).`
+    `flush-gate: at ${pct}% context ${sentences.join(' ')} ` +
+    `(flush-to-proceed: never hold unexternalized state across a unit boundary).`
   );
 }
