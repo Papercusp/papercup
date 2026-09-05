@@ -280,6 +280,62 @@ export function markUnverifiedOwnerAttribution(text: string | null | undefined):
 }
 
 /**
+ * EI-19425644478222007: the ref the lint demands is a value the agent is never given.
+ * `provenanceLint` requires `[turn:<session>@<iso-ts>]`, but nothing in the wake
+ * payload, `coord:orient`, or any tool result states "the ISO timestamp of the turn
+ * you are currently in" — so the ref gets GUESSED, and every adjacent-looking
+ * timestamp is subtly wrong. Measured twice in one session, 2026-08-03:
+ * `coord:orient`'s `provenance.observedAt` (09:46:29Z vs the real turn's
+ * 09:46:06.524Z) and the loop-fire wake's own apparent time (09:58:36.030Z vs
+ * 09:57:34.823Z). Both plausible, both adjacent, both `found:false`.
+ *
+ * The failure is quiet in the direction that matters: the write SUCCEEDS
+ * (`ok:true`), the lint still flags, and the stored note now carries a ref that
+ * resolves to nothing — an anchor that LOOKS like evidence and is not. That is
+ * precisely the class the lint exists to prevent (EI-18226077402946717: a specific
+ * artifact id is not proof), reproduced by the lint's own remedy.
+ *
+ * So stop requiring the agent to know the value. `[turn:self]` (or `[turn:current]`)
+ * is the one provenance claim an agent can always make honestly — "this happened in
+ * the turn I am writing from" — and the platform already resolves that exact value
+ * on this same write path (`writtenDuring.ref`, from `resolveCurrentTurnStamp`).
+ *
+ * Expanding at WRITE time is deliberately preferred over merely surfacing the ref for
+ * the agent to copy (the originally-suggested fix): a copied ref is correct only for
+ * the turn it was read in, so it silently goes stale on the next wake of a loop, and
+ * a response-size shaper may evict the field that carried it — reintroducing the guess
+ * exactly when the payload is busiest. A sentinel cannot be stale, mistyped, or evicted.
+ *
+ * FAIL-SOFT IN THE SAFE DIRECTION: with no resolvable current turn (transcript
+ * unreachable, no ownerId, or the stamp's IO budget degraded) the sentinel is left
+ * VERBATIM. It deliberately does not match `TURN_REF_LINE_RE`, so the lint still flags
+ * the line as unanchored — an honest miss, never a fabricated anchor.
+ */
+export const CURRENT_TURN_SENTINEL_RE = /\[turn:(?:self|current)\]/gi;
+
+/**
+ * PURE. Replace every `[turn:self]` / `[turn:current]` with this write's real anchor.
+ * Returns `text` unchanged when the current turn could not be resolved.
+ */
+export function expandCurrentTurnSentinel(
+  text: string | null | undefined,
+  writtenDuring: CurrentTurnStamp | null,
+): string | null | undefined {
+  if (text == null || !writtenDuring?.ref) return text;
+  return text.replace(CURRENT_TURN_SENTINEL_RE, writtenDuring.ref);
+}
+
+/**
+ * Cheap pre-check so a write carrying no sentinel never pays for a transcript read.
+ *
+ * Uses its own NON-global literal on purpose: `.test()` on a `/g` regex advances
+ * `lastIndex` and would make consecutive calls alternate true/false.
+ */
+export function hasCurrentTurnSentinel(text: string | null | undefined): boolean {
+  return typeof text === 'string' && /\[turn:(?:self|current)\]/i.test(text);
+}
+
+/**
  * P-005 (cold-carry-system-hardening-2026-07-19), PURE: a hand-written [owner:…] tag
  * is unproven in general (P-014) — but when THIS write happens during an owner-typed
  * interactive turn, the platform has just witnessed the owner speaking: auto-verify

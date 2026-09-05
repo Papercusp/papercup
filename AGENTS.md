@@ -408,6 +408,18 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > a CONTENT question, never a date one → `git rev-parse <sha>:<path>` vs
 > `git rev-parse staging:<path>` (equal blobs ⇒ it carries it), or `git show --stat <sha>`.
 >
+> ⚠ **`HEAD` is a MOVING baseline here — never read it, `HEAD~1`, or `@{1}` as "before my
+> change".** git-sync commits the WHOLE tree every few minutes, so the distance from your edit
+> to `HEAD` is WALL-CLOCK, not commit-count: `git show HEAD:<path>` a few minutes after an edit
+> hands back YOUR OWN edit, so the "pre-fix" content you test against IS your fix. Measured
+> 2026-08-03: a guard checked that way returned 0 offenders and read exactly like "this guard is
+> vacuous" — and a SOUND guard produces that identical reading, so the error is not
+> self-announcing in either direction. Same sweep, other face as the `git status` trap above.
+> Need pre-edit content? PIN the sha BEFORE you edit (`B=$(git rev-parse HEAD)`), or select the
+> last commit that does NOT contain your change by CONTENT (`git log --oneline -n 10 -- <path>`,
+> then `git show <sha>:<path>`) — never by position. `scripts/mutation-probe.sh
+> --against-last-without <literal>` automates exactly that selection.
+>
 > ⚠ **Ancestry containment is NOT content containment.**
 > `git merge-base --is-ancestor <fix-sha> <candidate>` proves only that the commit is
 > reachable from the candidate; it stays true forever even when a later git-sync sweep

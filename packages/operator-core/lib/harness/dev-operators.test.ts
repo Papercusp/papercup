@@ -5,6 +5,9 @@ import {
   readStagingBuildIdentity,
   DEV_OPERATORS,
 } from './dev-operators';
+// Imported from the LAUNCHER on purpose: the readback's whole claim is that the two
+// surfaces share one vocabulary, so the test branches with the launcher's own predicate.
+import { isTransientSkip } from './env-operator-launcher';
 
 function versionResponse(sha: string): Response {
   return new Response(JSON.stringify({ sidecarSha: sha }), {
@@ -161,6 +164,112 @@ describe('source-tree-only env omission (WI-3284 / env-switcher-packaged-all-pla
       if (saved === undefined) delete process.env.PAPERCUSP_DEV_SOURCE_ROOT;
       else process.env.PAPERCUSP_DEV_SOURCE_ROOT = saved;
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('EI-19421499550693822: the source-tree axis is a READBACK, not an inference from absence', () => {
+  const savedArchive = process.env.PAPERCUSP_SOURCE_ARCHIVE;
+  afterEach(() => {
+    if (savedArchive === undefined) delete process.env.PAPERCUSP_SOURCE_ARCHIVE;
+    else process.env.PAPERCUSP_SOURCE_ARCHIVE = savedArchive;
+  });
+
+  it('NO TREE, NONE COMING: names dev+local as omitted with the TERMINAL reason', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('11111111'));
+    const { operators, sourceTree, omitted } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      hasSourceTree: false,
+      sourceArchivePending: false,
+    });
+    // The omission itself is unchanged — this item added the readback, not a render.
+    expect(operators.map((o) => o.id)).not.toContain('dev');
+    expect(sourceTree).toEqual({ status: 'measured', present: false });
+    expect(omitted).toEqual([
+      { id: 'dev', reason: 'no-source-tree' },
+      { id: 'local', reason: 'no-source-tree' },
+    ]);
+  });
+
+  it('TREE STILL EXTRACTING: the same absence reports the TRANSIENT reason, and isTransientSkip separates them', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('22222222'));
+    const { sourceTree, omitted } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      hasSourceTree: false,
+      sourceArchivePending: true,
+    });
+    expect(sourceTree).toEqual({ status: 'measured', present: false });
+    expect(omitted).toEqual([
+      { id: 'dev', reason: 'source-tree-pending' },
+      { id: 'local', reason: 'source-tree-pending' },
+    ]);
+    // The WHOLE point of the split (EI-19442842364710969): a machine reader branches on
+    // the launcher's own predicate, and the two reasons must genuinely disagree there.
+    expect(isTransientSkip(omitted[0].reason)).toBe(true);
+    expect(isTransientSkip('no-source-tree')).toBe(false);
+  });
+
+  it('TREE PRESENT: nothing is omitted, and the empty list is an assertion rather than a silence', async () => {
+    const fetchMock = vi.fn(async () => versionResponse('33333333'));
+    const { operators, sourceTree, omitted } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: null,
+      hasSourceTree: true,
+    });
+    expect(sourceTree).toEqual({ status: 'measured', present: true });
+    expect(omitted).toEqual([]);
+    expect(operators.map((o) => o.id)).toContain('dev');
+  });
+
+  it('VM-RELEASE: the axis is NOT_MEASURED (nothing probed the filesystem), and the dropped envs are still named', async () => {
+    const fetchMock = vi.fn();
+    const { sourceTree, omitted } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: 45821,
+      env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release' },
+    });
+    // D-052: a boolean here would report a measurement this path never took.
+    expect(sourceTree).toEqual({ status: 'not_measured', reason: 'vm-release-distribution' });
+    expect(omitted.map((o) => o.id)).toEqual(DEV_OPERATORS.map((d) => d.id));
+    for (const o of omitted) expect(o.reason).toBe('vm-release-distribution');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('DEFAULT pending detection is the launcher’s own (PAPERCUSP_SOURCE_ARCHIVE), and a missing archive still reads terminal', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const dir = mkdtempSync(join(tmpdir(), 'pc-devops-archive-'));
+    try {
+      const archive = join(dir, 'source.tar.zst');
+      writeFileSync(archive, 'not-really-an-archive');
+      const fetchMock = vi.fn(async () => versionResponse('44444444'));
+
+      process.env.PAPERCUSP_SOURCE_ARCHIVE = archive;
+      const pending = await resolveDevOperators({
+        fetch: fetchMock as unknown as typeof fetch,
+        selfPort: null,
+        hasSourceTree: false,
+        // No sourceArchivePending passed — exercises the default (launcher-shared) check.
+      });
+      expect(pending.omitted.map((o) => o.reason)).toEqual([
+        'source-tree-pending',
+        'source-tree-pending',
+      ]);
+
+      // Control: the SAME code path with no archive on disk reports the terminal reason,
+      // so the assertion above is measuring the archive and not a constant.
+      process.env.PAPERCUSP_SOURCE_ARCHIVE = join(dir, 'does-not-exist.tar.zst');
+      const terminal = await resolveDevOperators({
+        fetch: fetchMock as unknown as typeof fetch,
+        selfPort: null,
+        hasSourceTree: false,
+      });
+      expect(terminal.omitted.map((o) => o.reason)).toEqual(['no-source-tree', 'no-source-tree']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
