@@ -151,9 +151,20 @@ export async function projectLedger(db: D1Database): Promise<void> {
     stmts.push(
       db
         .prepare(
-          'INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, active) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, active = excluded.active',
+          'INSERT INTO commerce_offers (offer_id, product_id, pricing_model, amount_minor, currency, unit_price_micros, meter_unit, price_version, split_manifest_hash, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (offer_id) DO UPDATE SET product_id = excluded.product_id, pricing_model = excluded.pricing_model, amount_minor = excluded.amount_minor, currency = excluded.currency, unit_price_micros = excluded.unit_price_micros, meter_unit = excluded.meter_unit, price_version = excluded.price_version, split_manifest_hash = excluded.split_manifest_hash, active = excluded.active',
         )
-        .bind(o.offerId, o.productId, o.pricingModel, o.price.amountMinor, o.price.currency, o.active ? 1 : 0),
+        .bind(
+          o.offerId,
+          o.productId,
+          o.pricingModel,
+          o.price.amountMinor,
+          o.price.currency,
+          o.perUse?.unitPriceMicros ?? null,
+          o.perUse?.meterUnit ?? null,
+          o.perUse?.priceVersion ?? null,
+          o.perUse?.splitManifestHash ?? null,
+          o.active ? 1 : 0,
+        ),
     );
   }
   for (const o of s.orders) {
@@ -207,6 +218,82 @@ export interface EntitlementView {
   granted_at_ms: number;
   revoked_at_ms: number | null;
   revoke_reason: string | null;
+}
+
+export interface CommerceOfferView {
+  readonly offerId: string;
+  readonly productId: string;
+  readonly skuRef: string;
+  readonly creatorId: string;
+  readonly title: string;
+  readonly pricingModel: string;
+  readonly price: { readonly amountMinor: number; readonly currency: string };
+  readonly perUse: {
+    readonly unitPriceMicros: number;
+    readonly meterUnit: string;
+    readonly priceVersion: string;
+    readonly splitManifestHash: string;
+  } | null;
+  readonly active: boolean;
+  readonly productActive: boolean;
+}
+
+function offerView(row: Record<string, unknown>): CommerceOfferView {
+  const pricingModel = String(row.pricing_model);
+  const hasPerUse =
+    pricingModel === 'per-use' &&
+    Number.isSafeInteger(row.unit_price_micros) &&
+    typeof row.meter_unit === 'string' &&
+    typeof row.price_version === 'string' &&
+    typeof row.split_manifest_hash === 'string';
+  return {
+    offerId: String(row.offer_id),
+    productId: String(row.product_id),
+    skuRef: String(row.sku_ref),
+    creatorId: String(row.creator_id),
+    title: String(row.title),
+    pricingModel,
+    price: {
+      amountMinor: Number(row.amount_minor),
+      currency: String(row.currency),
+    },
+    perUse: hasPerUse
+      ? {
+          unitPriceMicros: Number(row.unit_price_micros),
+          meterUnit: String(row.meter_unit),
+          priceVersion: String(row.price_version),
+          splitManifestHash: String(row.split_manifest_hash),
+        }
+      : null,
+    active: Number(row.active) === 1,
+    productActive: Number(row.product_active) === 1,
+  };
+}
+
+const OFFER_VIEW_SQL =
+  'SELECT o.offer_id, o.product_id, o.pricing_model, o.amount_minor, o.currency, o.unit_price_micros, o.meter_unit, o.price_version, o.split_manifest_hash, o.active, p.sku_ref, p.creator_id, p.title, p.active AS product_active FROM commerce_offers o JOIN commerce_products p ON p.product_id = o.product_id';
+
+/** The hosted commerce catalog reads the D1 projection, not an in-memory fold. */
+export async function listCommerceOffers(
+  db: D1Database,
+  pricingModel?: string,
+): Promise<CommerceOfferView[]> {
+  const statement = pricingModel
+    ? db.prepare(`${OFFER_VIEW_SQL} WHERE o.pricing_model = ? ORDER BY o.offer_id ASC`).bind(pricingModel)
+    : db.prepare(`${OFFER_VIEW_SQL} ORDER BY o.offer_id ASC`);
+  const { results } = await statement.all<Record<string, unknown>>();
+  return (results ?? []).map(offerView);
+}
+
+export async function getCommerceOffer(
+  db: D1Database,
+  offerId: string,
+): Promise<CommerceOfferView | null> {
+  const row = await db
+    .prepare(`${OFFER_VIEW_SQL} WHERE o.offer_id = ?`)
+    .bind(offerId)
+    .first<Record<string, unknown>>();
+  return row ? offerView(row) : null;
 }
 
 /**
