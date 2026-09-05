@@ -70,6 +70,40 @@ export interface ClaimFreshnessVerdict {
   instruction: string;
 }
 
+/**
+ * The kinds that carry a claim-time freshness envelope AND get a claim-time
+ * verdict — ONE definition, because this policy has two enforcement points that
+ * must agree: the STAMP (`issues-engineer.createIssue`, which writes the
+ * envelope at filing time) and the READ (`scheduler:get_next`, which scores it
+ * at claim time). Until EI-20264587083609474 those were two hand-maintained
+ * `kind === 'bug'` literals in different files, so the policy could only ever be
+ * half-changed; a shared predicate makes that class of drift unrepresentable.
+ *
+ * `change` is included because it is this repo's DEFAULT kind for a code edit
+ * (`task` is documented as non-code work), so it is exactly as susceptible to
+ * "someone already built this" as a bug. Measured on EI-20264587083609474: of
+ * the two already-built items its filer cited, EI-19932168784507536 was a bug
+ * and EI-19313376980892266 was a `change` — so the bug-only gate skipped half
+ * of the very evidence that motivated the freshness lane.
+ *
+ * `task` is deliberately EXCLUDED rather than forgotten: the scorer's only
+ * item-specific axis is source-generation movement over the item's own paths,
+ * and non-code work has no such paths. Including it would emit a verdict driven
+ * entirely by the null/unmeasured defaults — a signal that fires identically on
+ * every row, which trains readers to ignore the lane it is supposed to sharpen.
+ */
+export const FRESHNESS_TRACKED_KINDS: ReadonlySet<string> = new Set(['bug', 'change']);
+
+/** Whether a work-item of this kind participates in claim-time freshness. */
+export function isFreshnessTrackedKind(kind: string | null | undefined): boolean {
+  return typeof kind === 'string' && FRESHNESS_TRACKED_KINDS.has(kind);
+}
+
+/**
+ * Historical name: this stamps the envelope for every {@link FRESHNESS_TRACKED_KINDS}
+ * kind, not bugs alone. Kept as-is because the name is load-bearing at five call
+ * sites and the gate — not the label — is what was wrong.
+ */
 export function createBugFreshnessEnvelope(args: {
   now?: string;
   sourceSha?: string | null;

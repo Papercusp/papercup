@@ -30,7 +30,11 @@ import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
 import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
-import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
+import {
+  assessClaimFreshness,
+  isFreshnessTrackedKind,
+  type ClaimFreshnessVerdict,
+} from '../../work-item-claim-freshness';
 import {
   defaultHarnessScopeInheritanceReaders,
   readBriefHarnessBinding,
@@ -1812,7 +1816,14 @@ export default defineTool({
           ? (wi.payload as Record<string, unknown>).routingHint
           : undefined;
       routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
-      if (wi.kind === 'bug') {
+      // EI-20264587083609474: this was `wi.kind === 'bug'`, one of two independent
+      // copies of the freshness policy (the other stamps the envelope in
+      // `issues-engineer.createIssue`). Both now consult the SAME predicate, so the
+      // gate cannot be half-changed again. `change` is the repo's default kind for a
+      // code edit, so it is exactly as susceptible to "already built" as a bug —
+      // measured on that item, half the already-built evidence its filer cited was a
+      // `change`, and this gate is why a `change` claimant was told nothing.
+      if (isFreshnessTrackedKind(wi.kind)) {
         const build = getBuildInfo();
         // EI-22283949842250645: `headSha` was ALSO fed `build.sha` here, which is the
         // RUNTIME identity — so the freshness scorer's two axes received one value and

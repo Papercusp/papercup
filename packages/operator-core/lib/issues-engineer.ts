@@ -46,7 +46,7 @@ import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
 import { getBuildInfo } from './build-info';
-import { createBugFreshnessEnvelope } from './work-item-claim-freshness';
+import { createBugFreshnessEnvelope, isFreshnessTrackedKind } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
@@ -1042,7 +1042,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   const created = nowIso();
   const inputPayload: Record<string, unknown> = input.payload ? { ...input.payload } : {};
   const storageKind = input.kind ?? 'bug';
-  if (storageKind === 'bug' && inputPayload.freshnessEnvelope == null) {
+  if (isFreshnessTrackedKind(storageKind) && inputPayload.freshnessEnvelope == null) {
     const build = getBuildInfo();
     const probation = inputPayload.toolFailureProbation as
       | { directEvidence?: boolean; report?: { schemaRevision?: string } }
