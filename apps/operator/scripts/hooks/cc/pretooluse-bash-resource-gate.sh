@@ -140,7 +140,7 @@ else:
 '
 
 python3 -c "$GATE_BOOTSTRAP" "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import hashlib, json, os, re, sys, tempfile, time
+import hashlib, json, os, re, shlex, sys, tempfile, time
 
 # ── urllib is imported LAZILY: it is ~34ms of a ~140ms invocation, on a path most
 # calls never reach (WI-38077).
@@ -5837,12 +5837,17 @@ def _heavy_admission():
     except Exception:
         return  # can't read load/cores → fail-open
     if load1 > max_load1:
+        _pc_heavy_root = _canonical_tree_root() or os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(os.path.expanduser('~/papercupai-workspace'), 'papercusp')
+        )
+        _pc_heavy = shlex.quote(os.path.join(_pc_heavy_root, 'scripts', 'pc-heavy.sh'))
         deny(
             f'heavy-command admission (WI-3821): host load1={load1:.0f} is over the '
             f'{max_load1:.0f} threshold (~1x cores) — starting another bare vitest/tsc/'
             f'test build now piles onto a box whose operator liveness degrades past '
             f'~1.3x (this class melted the host to load 3000+ and triggered MCP-dark '
-            f'cascades). Run it under `scripts/pc-heavy.sh -- <your command>` (waits '
+            f'cascades). Run it under `{_pc_heavy} -- <your command>` (waits '
             f'for a free build slot, runs niced), or use the self-throttling root '
             f'entrypoints (`npm run test:affected` / `test:file` / `lint:tsc`), which '
             f'pass this gate and queue politely. Kill-switch (prepend inline): '
