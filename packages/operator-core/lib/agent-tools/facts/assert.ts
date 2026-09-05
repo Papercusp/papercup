@@ -691,70 +691,105 @@ export default defineTool({
       "P-002: what evidence WOULD settle this question. REQUIRED for kind:'undecidable', and REFUSED on any other kind (on a settled claim it has no referent). Name a concrete probe — a query, a tool, a measurement — not \"more investigation\". The rule mirrors the required insteadRead on refuseAnswer(): an UNKNOWN with no stated exit does not stop re-derivation, it INVITES it, because the next reader cannot distinguish \"nobody COULD determine this\" from \"nobody has tried lately\" and the cheapest way to tell them apart is to try again — which is the exact cost this modality exists to eliminate.";
     const shareableDescription =
       'OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. A shareable fact MUST have a resolvable federation harness: pass a concrete `harness` for workspace, role, owner, or work_item scopes, or pass `scope:"harness"` with its canonical `scopeRef`. Omit or set false to keep the fact pot-private.';
-    const modalityBranches = <T extends z.ZodRawShape>(fields: T) => {
-      const fieldsWithRecheck = { ...fields, recheck: FACT_RECHECK_SCHEMA };
-      const undecidableArgs = z.object({
-        ...fieldsWithRecheck,
-        kind: z.literal('undecidable').describe(kindDescription),
-        settledBy: z.string().min(1).max(500).describe(settledByDescription),
-      });
-      const declaredArgs = z.object({
-        ...fieldsWithRecheck,
-        kind: z
-          .enum(['conclusion', 'assumption', 'convention'])
-          .optional()
-          .describe(kindDescription),
-        settledBy: z
-          .never()
-          .optional()
-          .describe('Only valid when kind is "undecidable"; omit it for conclusions, assumptions, and conventions.'),
-      });
-      return [undecidableArgs, declaredArgs] as const;
-    };
-
-    // Keep both runtime-valid federation routes visible to clients. Most calls
-    // should name the federation harness explicitly. A harness-scoped fact may
-    // instead use its canonical scopeRef (the handler already accepts this
-    // route, including from an operator context with no harness on ctx).
-    const explicitFederationHarness = {
+    /**
+     * EI-22064465906366039 — ONE flat object, with the two couplings enforced by
+     * targeted refinements instead of a 3x2 `z.union`.
+     *
+     * The previous shape crossed the federation route (explicit harness |
+     * scope:'harness' | private) with the modality (undecidable | declared) into
+     * SIX union branches. Zod reports an `invalid_union` by concatenating EVERY
+     * branch's issues, so a call with ONE mistake was answered with six, and they
+     * contradicted each other. Measured on this item, before this change:
+     *
+     *   { kind:'undecidable' } with no settledBy  ->  6 complaints, including
+     *     `kind :: Invalid option: expected one of "conclusion"|"assumption"|
+     *     "convention"` — telling the caller its CORRECT kind was wrong —
+     *     alongside `harness required`, `shareable: expected true`, and
+     *     `scope: expected "harness"`, none of which the call needed.
+     *   { kind:'conclusion', settledBy } ->  `kind: expected "undecidable"` AND
+     *     `settledBy: expected never` in the SAME message: two instructions that
+     *     cannot both be satisfied.
+     *
+     * That is the reported mechanism — an agent obeys the dump, adds harness +
+     * shareable:true + settledBy + kind:'undecidable', and lands in the next
+     * rejection. facts:assert carried 26.4% invalid_input, worst of any
+     * high-volume verb.
+     *
+     * The union's stated rationale (the comment above `base`) was to keep the
+     * kind<->settledBy coupling visible in the published JSON Schema. It never
+     * delivered that: the projection FLATTENS the branches and emits
+     * `kind: { const: 'undecidable' }` — advertising the one modality as the only
+     * legal one, which is its own reported bug (EI-21968656043579751). The
+     * coupling is now carried accurately by the conditional discovery hints
+     * shipped for EI-21578427141957934, so the union's only justification is
+     * already served by a mechanism that actually works.
+     *
+     * ACCEPTANCE IS UNCHANGED. These refinements reproduce the union's accept set
+     * exactly — including that shareable:true is satisfied by an explicit
+     * `harness` or by scope:'harness' + `scopeRef`, but NOT by the `ref` /
+     * `scope_ref` aliases (the old `explicitHarnessScope` branch keyed on
+     * `scopeRef` alone). That alias gap is pre-existing and deliberately left
+     * alone here rather than silently widened: this change is about the message.
+     */
+    const flatArgs = z.object({
       ...base,
-      harness: z
-        .string()
-        .min(1)
-        .max(120)
-        .describe('Concrete federation harness required when shareable:true is used outside an explicit harness scope.'),
-      shareable: z.literal(true).describe(shareableDescription),
-    };
-    const explicitHarnessScope = {
-      ...base,
-      scope: z.literal('harness').describe('Harness-scoped fact; its scopeRef is also the federation context.'),
-      scopeRef: z
-        .string()
-        .min(1)
-        .max(120)
-        .describe('Canonical harness slug used both as the fact scopeRef and federation context.'),
-      shareable: z.literal(true).describe(shareableDescription),
-    };
-    const privateFact = {
-      ...base,
-      shareable: z
-        .literal(false)
+      recheck: FACT_RECHECK_SCHEMA,
+      kind: z
+        .enum(['conclusion', 'assumption', 'convention', 'undecidable'])
         .optional()
-        .describe('Private by default. Omit or set false unless a resolvable federation harness is supplied.'),
-    };
-    const [shareableUndecidable, shareableDeclared] = modalityBranches(explicitFederationHarness);
-    const [harnessScopeUndecidable, harnessScopeDeclared] = modalityBranches(explicitHarnessScope);
-    const [privateUndecidable, privateDeclared] = modalityBranches(privateFact);
+        .describe(kindDescription),
+      settledBy: z.string().min(1).max(500).optional().describe(settledByDescription),
+      shareable: z.boolean().optional().describe(shareableDescription),
+    });
 
-    return z
-      .union([
-        shareableUndecidable,
-        shareableDeclared,
-        harnessScopeUndecidable,
-        harnessScopeDeclared,
-        privateUndecidable,
-        privateDeclared,
-      ])
+    return flatArgs
+      .superRefine((value, ctx) => {
+        if (!value || typeof value !== 'object') return;
+        const v = value as {
+          kind?: unknown;
+          settledBy?: unknown;
+          shareable?: unknown;
+          scope?: unknown;
+          scopeRef?: unknown;
+          harness?: unknown;
+        };
+        const nonEmpty = (x: unknown): boolean => typeof x === 'string' && x.trim() !== '';
+
+        // Modality coupling. Each violation names the ONE field to change and the
+        // repair, and never contradicts a field the caller already got right.
+        if (v.kind === 'undecidable' && !nonEmpty(v.settledBy)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['settledBy'],
+            message:
+              "facts:assert — kind:'undecidable' requires settledBy: name the concrete probe/query/measurement that WOULD settle this question. " +
+              'An UNKNOWN with no stated exit invites the next reader to re-derive it, which is the cost this modality exists to remove. ' +
+              "Supply settledBy, or drop kind:'undecidable' if the claim is actually settled.",
+          });
+        }
+        if (v.kind !== 'undecidable' && v.settledBy !== undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['settledBy'],
+            message:
+              `facts:assert — settledBy is only valid with kind:'undecidable'; on a settled claim it has no referent` +
+              `${v.kind === undefined ? ' (you declared no kind, which is treated as settled)' : ` (you declared kind:'${String(v.kind)}')`}. ` +
+              "Either remove settledBy, or set kind:'undecidable' if this really is not determinable from the available evidence.",
+          });
+        }
+
+        // Federation coupling — only ever raised when the caller actually opted in.
+        if (v.shareable === true && !nonEmpty(v.harness) && !(v.scope === 'harness' && nonEmpty(v.scopeRef))) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['harness'],
+            message:
+              'facts:assert — shareable:true needs a resolvable federation harness. Pass a concrete `harness` (any scope), ' +
+              "or use scope:'harness' with its canonical `scopeRef`. Omit `shareable` to keep the fact pot-private — " +
+              'that is the default and is almost always what you want.',
+          });
+        }
+      })
       /**
        * EI-21949855462339968 — PUBLISH THE CONTRACT, do not let callers discover it by rejection.
        *
