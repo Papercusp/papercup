@@ -89,9 +89,29 @@ describe('collectZeroPromotionSignals (P-009): recurrence guard over real PG', (
       key: 'plan-broken',
       scope: 'harness:demo',
       findingClass: 'promotion:zero-conversion',
-      severity: 'major',
+      // EI-20119196410091151: attribution gap, not a starved placement loop.
+      severity: 'minor',
     });
     expect(signals[0].body).toContain('2 open plan-item(s) but 0 work-items');
+    // 1 of the 2 open items is wip, so this is NOT the all-wip case.
+    expect(signals[0].body).toMatch(/genuinely unstarted/i);
+    expect(signals[0].body).not.toMatch(/do NOT mint/i);
+  });
+
+  // Proves the wip_items count actually flows SQL → detector. Without the query half
+  // wired, wipItemCount would be undefined here and the all-wip branch could never fire,
+  // leaving the guidance dead code that still typechecks (EI-20119196410091151).
+  it('tells a triager not to mint work-items when every open item is already wip', async () => {
+    await seedPlan('plan-all-wip', 'started', [
+      { id: 'P-001', status: 'wip' },
+      { id: 'P-002', status: 'wip' },
+    ]);
+    const { signals } = await collectZeroPromotionSignals(WS);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe('plan-all-wip');
+    expect(signals[0].body).toMatch(/all 2 open item\(s\) are already wip/i);
+    expect(signals[0].body).toMatch(/do NOT mint/i);
+    expect(signals[0].body).not.toMatch(/genuinely unstarted/i);
   });
 
   it('is healthy (no signal) when the plan’s items promoted to work-items', async () => {

@@ -268,6 +268,7 @@
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs",
+    "apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs",
     // Registered for this list's FIRST reason: it is imported directly by
     // artifact-url-delivery-guard.test.ts, which pulls six named exports off it
     // (harvestLedgerIds, isArtifactTool, isDurableWriteTool, lastAssistantText,

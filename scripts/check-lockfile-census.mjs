@@ -75,7 +75,7 @@
  *   node scripts/check-lockfile-census.mjs --sbom out.json   # emit the syft inventory
  */
 
-import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -484,8 +484,9 @@ export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SY
       { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     );
     const parsed = JSON.parse(out);
-    const catalogued = countCataloguedDependencies(parsed, subject, root);
-    assertSbomCoverage(subject, catalogued, measurements.get(subject) ?? null);
+    const measured = measurements.get(subject) ?? null;
+    const catalogued = countCataloguedDependencies(parsed, subject, root, measured?.rootName ?? null);
+    assertSbomCoverage(subject, catalogued, measured);
     documents.push({ subject, components: parsed.components?.length ?? 0, catalogued, bom: parsed });
   }
   writeFileSync(outPath, `${JSON.stringify({ generatedFrom: subjects, documents }, null, 2)}\n`);
@@ -504,12 +505,13 @@ export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SY
  * A threshold placed below the value that "catalogued nothing" actually produces is not
  * a weak guard; it is an unfalsifiable one.
  */
-export function countCataloguedDependencies(bom, subject, root = ROOT) {
+export function countCataloguedDependencies(bom, subject, root = ROOT, rootPackageName = null) {
   const components = bom?.components ?? [];
   const subjectAbs = join(root, subject);
   return components.filter((c) => {
     if (c?.type === 'file') return false;
     if (c?.name === subjectAbs || c?.name === subject) return false;
+    if (rootPackageName !== null && c?.name === rootPackageName) return false;
     return true;
   }).length;
 }
@@ -522,10 +524,13 @@ export function countCataloguedDependencies(bom, subject, root = ROOT) {
  * to tell "this artifact genuinely has few dependencies" from "nothing read it".
  *
  * syft excludes npm `dev` dependencies, which is why the comparison is against
- * `measured.shipped` and not the entry total — calibrated 2026-09-05 across all four
- * shipped subjects: docs-viewer 509 shipped / 510 catalogued, root 2469 / 2482,
- * desktop-npm 0 / 1, Cargo 615 / 615. Catalogued runs at or just above shipped (the
- * excess is root and workspace package nodes), never below, so a shortfall is signal.
+ * `measured.shipped` and not the entry total. Calibrated 2026-09-05 across every shipped
+ * subject: docs-viewer 509 shipped / 509 catalogued, Cargo 615 / 615, root 2469 / 2481
+ * (the +12 are workspace package nodes, which the root lockfile does not count as
+ * dependencies). Catalogued runs at or just above shipped, never below, so a SHORTFALL —
+ * and only a shortfall — is signal. The comparison is deliberately one-sided: an excess
+ * is a naming difference between two catalogers, while a deficit can only mean one of
+ * them declined to read something.
  */
 export function assertSbomCoverage(subject, catalogued, measured) {
   if (measured === null) {

@@ -176,7 +176,7 @@ export function emitSbom(subjects: any, outPath: any, { root, syft, measurements
  * A threshold placed below the value that "catalogued nothing" actually produces is not
  * a weak guard; it is an unfalsifiable one.
  */
-export function countCataloguedDependencies(bom: any, subject: any, root?: string): any;
+export function countCataloguedDependencies(bom: any, subject: any, root?: string, rootPackageName?: null): any;
 /**
  * The POSITIVE control on the inventory: two independent readings of the same lockfile
  * must agree. `measured.shipped` is this file's own parse of the lockfile; `catalogued`
@@ -185,10 +185,13 @@ export function countCataloguedDependencies(bom: any, subject: any, root?: strin
  * to tell "this artifact genuinely has few dependencies" from "nothing read it".
  *
  * syft excludes npm `dev` dependencies, which is why the comparison is against
- * `measured.shipped` and not the entry total — calibrated 2026-09-05 across all four
- * shipped subjects: docs-viewer 509 shipped / 510 catalogued, root 2469 / 2482,
- * desktop-npm 0 / 1, Cargo 615 / 615. Catalogued runs at or just above shipped (the
- * excess is root and workspace package nodes), never below, so a shortfall is signal.
+ * `measured.shipped` and not the entry total. Calibrated 2026-09-05 across every shipped
+ * subject: docs-viewer 509 shipped / 509 catalogued, Cargo 615 / 615, root 2469 / 2481
+ * (the +12 are workspace package nodes, which the root lockfile does not count as
+ * dependencies). Catalogued runs at or just above shipped, never below, so a SHORTFALL —
+ * and only a shortfall — is signal. The comparison is deliberately one-sided: an excess
+ * is a naming difference between two catalogers, while a deficit can only mean one of
+ * them declined to read something.
  */
 export function assertSbomCoverage(subject: any, catalogued: any, measured: any): void;
 export const ROOT: string;
