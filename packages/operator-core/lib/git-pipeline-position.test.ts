@@ -4379,7 +4379,7 @@ describe('changeInCandidate (P-004)', () => {
       expect(r.detail).toMatch(/git-sync:run/);
     });
 
-    it('a confirmed-contained candidate says the verdict IS about your change', () => {
+    it('a confirmed-contained candidate says the verdict IS about your change TO THAT PATH', () => {
       const r = evaluateChangeInCandidate({
         relPath: 'a.ts',
         candidates: {
@@ -4391,7 +4391,45 @@ describe('changeInCandidate (P-004)', () => {
         next: null,
       });
       expect(r.judgingContainsPath).toBe(true);
-      expect(r.detail).toMatch(/real verdict on your change/);
+      // The signal itself is preserved: for a path the caller DID edit, blob identity with
+      // the working tree does mean the change is in. EI-20429780229915918 scoped the claim,
+      // it did not downgrade it.
+      expect(r.detail).toMatch(/real verdict on your change to it/);
+      expect(r.detail).toMatch(/DOES carry the current content of a\.ts/);
+    });
+
+    /**
+     * EI-20429780229915918 — the `true` is the direction that fails SILENTLY, because a
+     * `true` about the wrong subject is indistinguishable from a `true` about the right
+     * one. The detail used to end "so its verdict is a real verdict on your change" with
+     * no mention of WHICH path it compared, so an agent polling a fixed probe path across
+     * wakes read it as "my fix is in the candidate" — a near-miss that would have claimed
+     * an incident two other agents were working and retracted a correct workspace fact.
+     *
+     * Guard the two properties that stop the misread: the subject is NAMED, and the
+     * caller is routed to the instrument that actually answers "is MY change in".
+     */
+    it('names the compared path and routes to `marker`, so a probe-path true cannot read as "my fix is in"', () => {
+      const probePath = 'packages/operator-core/lib/system-health/types.ts';
+      const r = evaluateChangeInCandidate({
+        relPath: probePath,
+        candidates: {
+          judgingSha: '75c1ee3ea189',
+          judgingShaSource: 'in-flight-candidate',
+          nextCandidateSha: null,
+        },
+        judging: { path: probePath, inCandidate: true, reason: null, unknownReason: null },
+        next: null,
+      });
+      expect(r.judgingContainsPath).toBe(true);
+      // The subject is named, so a path unrelated to the fix is visible AS the subject.
+      expect(r.detail).toContain(probePath);
+      // The unqualified claim that produced the misread is gone.
+      expect(r.detail).not.toMatch(/so its verdict is a real verdict on your change\./);
+      // The probe-path case is called out, and the real instrument is named.
+      expect(r.detail).toMatch(/probe path/i);
+      expect(r.detail).toMatch(/says NOTHING about whether your fix is in the candidate/);
+      expect(r.detail).toMatch(/`marker`/);
     });
 
     it('refuses inferred judged containment and preserves the next-candidate fields', () => {
@@ -5138,7 +5176,7 @@ describe('changeInCandidate (P-004)', () => {
           judgingPin: 'e0ebb3c6e0ebb3c6',
           nextPin: 'e0ebb3c6e0ebb3c6',
         });
-        expect(res.changeInCandidate.detail).toMatch(/DOES carry this file's current content/);
+        expect(res.changeInCandidate.detail).toMatch(/DOES carry the current content of/);
         expect(res.changeInCandidate.detail).toMatch(/resolved through submodule 'libs\/papercusp'/);
         expect(res.assessments.gateCandidate).toBe('judging-current-path');
         // Neither the old blanket not-applicable hoist nor a containment hoist fires.

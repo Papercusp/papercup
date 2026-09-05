@@ -1246,6 +1246,29 @@ export interface PipelinePosition {
       systemd?: NonNullable<GitPipelineSnapshot['activeRun']>['systemd'];
       /** Checkpoint CLI result-marker presence from the most recent finished manual run. */
       terminalMarker?: boolean;
+      /**
+       * EI-20427717764878875: has the run that is active RIGHT NOW already published its verdict?
+       * A number is the instant it did; `null` means it is genuinely still deciding.
+       *
+       * ⚠ READ THIS AGAINST `terminalMarker` DIRECTLY ABOVE — they are easy to conflate and answer
+       * different questions. `terminalMarker` is about the most recent FINISHED MANUAL run; this is
+       * about the CURRENTLY ACTIVE one, on any origin. Neither substitutes for the other, and that
+       * exact conflation is why this field had to exist.
+       *
+       * WHY IT MATTERS MORE THAN IT LOOKS. A green-checkpoint run does not exit when it decides: it
+       * continues into re-triage and the longest-clean-prefix salvage with its marker still live.
+       * So `elapsedSec` measures the PROCESS, not the DECISION, and without this field "68 minutes
+       * and still no verdict" is indistinguishable from "decided at 52 minutes, salvaging since".
+       * Two agents burned ~1h on that distinction on 2026-08-14, and the natural response to an
+       * apparently-overdue run is to fire a manual `release:checkpoint-run` — which discards an
+       * in-flight rescue and costs a full suite. With this, elapsed-vs-verdict is computable.
+       *
+       * ABSENT means UNKNOWN, never "still deciding": the field is emitted only on the branch where
+       * the run's own `inFlightCandidate` marker answered. A run reported from the retriage marker
+       * or the probe simply did not publish this, exactly as an absent marker is unknown elsewhere
+       * on this interface.
+       */
+      verdictWrittenAtMs?: number | null;
       /** EI-210996: systemd-owned abnormal-terminal evidence for that finished run. */
       terminalEvidence?: {
         source: 'systemd-exec-stop-post';
@@ -2544,6 +2567,13 @@ export interface ChangeInCandidate {
    * Does that candidate carry this path's WORKING-TREE content? null = not comparable.
    * Omitted when `judgingShaSource === 'run-probe'`: the checkout-head inference can change
    * between reads and cannot support a containment verdict about the run.
+   *
+   * EI-20429780229915918 — this is a verdict about THE PATH THE CALLER PASSED, never about
+   * "the caller's change". The two coincide only when that path is one they edited. Against
+   * a fixed probe path (the natural choice for a monitoring loop that wants comparable
+   * readings across wakes) it is `true` on nearly every read while carrying no information
+   * about the fix at all. For "is MY change in the candidate", the instrument is
+   * `markerJudging` — see its doc-comment below.
    */
   judgingContainsPath?: boolean | null;
   /** The commit a checkpoint fired right now would judge (post quiet-cut). */
@@ -2982,9 +3012,38 @@ export function evaluateChangeInCandidate(args: {
     };
   }
   if (base.judgingContainsPath === true) {
+    /**
+     * EI-20429780229915918: this used to end "so its verdict is a real verdict on your
+     * change" — a claim about the CALLER'S change that a path comparison cannot support.
+     * It holds only when `relPath` is a file the caller actually edited, and nothing here
+     * knows whether it is.
+     *
+     * The failure is not exotic. An agent monitoring a red gate across wakes picks ONE
+     * stable path as a probe so successive readings are comparable; every read then
+     * returns `judgingContainsPath: true`, about a file unrelated to the fix, and this
+     * sentence told it the fix was in the candidate. Measured near-miss: the 4th red on
+     * candidate 75c1ee3ea189 failed on routing-table.test.ts whose fix landed LATER in
+     * 075291b75eaf — the candidate did NOT carry the fix while this line said the verdict
+     * was about it. What stopped the wrong branch firing was a facts:list read, not any
+     * signal from here.
+     *
+     * Note the asymmetry this repairs: every `false` arm above is carefully hedged (the
+     * newer-commit arm refuses to exonerate and routes to `marker`), while the `true` —
+     * the direction that fails SILENTLY, because a `true` about the wrong subject is
+     * indistinguishable from a `true` about the right one — carried no caution at all.
+     *
+     * Deliberately NOT a blanket downgrade of the signal: for a path the caller did edit,
+     * blob identity with the working tree does mean the change is in, and that reading
+     * stays. Name the subject, then route to the instrument that answers the question the
+     * caller is actually asking.
+     */
     return {
       ...base,
-      detail: `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content${viaSubmodule(submodule?.judgingPin ?? null)}, so its verdict is a real verdict on your change.`,
+      detail:
+        `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) DOES carry the current content of ${relPath}${viaSubmodule(submodule?.judgingPin ?? null)}. ` +
+        `If ${relPath} is a file YOU changed, that is a real verdict on your change to it. ` +
+        `But this compares THE PATH YOU PASSED, not your change: if ${relPath} is a fixed probe path you reuse across wakes — or any file you did not edit — a true here is the expected reading and says NOTHING about whether your fix is in the candidate. ` +
+        `To settle "is MY change in", re-call with \`marker\` set to a distinctive string your change introduced.`,
     };
   }
   if (base.nextContainsPath === false) {
@@ -4329,7 +4388,15 @@ export function mapCheckpointRunInFlight(
    * Optional and nullable on purpose: the write is best-effort and swallows its own errors, so
    * a genuinely live run can publish nothing. Omitted/null simply falls through to the probe.
    */
-  candidateMarker?: { candidate: string; refireDepth: number; quietCutApplied: boolean; pid: number } | null,
+  candidateMarker?: {
+    candidate: string;
+    refireDepth: number;
+    quietCutApplied: boolean;
+    pid: number;
+    /** EI-20427717764878875. OPTIONAL so no existing caller or fixture constructing this narrowed
+     *  shape is stranded; the real caller passes the fully-parsed marker, which always carries it. */
+    verdictWrittenAtMs?: number | null;
+  } | null,
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
   const cachedRun = cached?.activeRun ?? null;
   // UNKNOWN only when BOTH reads are absent. Previously a missing cache alone forced this,
@@ -4448,6 +4515,11 @@ export function mapCheckpointRunInFlight(
             // EI-19931692050586322: an OBSERVATION the run published about itself, so it
             // outranks the probe below exactly as the retriage marker does.
             candidateSource: 'in-flight-candidate' as const,
+            // EI-20427717764878875: emitted UNCONDITIONALLY on this branch, null included. Omitting
+            // it when null would collapse "this run is genuinely still deciding" into "no field
+            // here", which is the one distinction the field exists to make — and the reader's next
+            // move differs completely between them.
+            verdictWrittenAtMs: candMarker.verdictWrittenAtMs ?? null,
             // `refireDepth > 0` IS a re-candidation the run reported. On the cron path the
             // log-derived `refireObserved` can never fire (only manual runs write that log),
             // so without this an in-process rescue stayed invisible whenever the refire marker
