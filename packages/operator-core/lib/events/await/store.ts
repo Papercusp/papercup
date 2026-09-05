@@ -2553,6 +2553,27 @@ export async function stampAnnouncementsFired(
          AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
       RETURNING id
     `;
+    // EI-20721448404004954: a gate that FIRES must settle the typed event blockers
+    // waiting on it, exactly as retirement and supersession already do. Without this
+    // the third settlement path was missing, and the asymmetry ran the wrong way: an
+    // item unblocked when its gate was CANCELLED or RE-DECLARED but not when the gate
+    // actually opened — so the SUCCESS case was the one that stranded finished work.
+    // (The filing: a deployed a11y fix read as an open major bug for 3 days because
+    // the gate fired after its holder's session had ended, and nothing else could
+    // clear a blocker bound to that session's await.)
+    //
+    // Same transaction and advisory lock as the other two settlement paths, per
+    // reconcileEventExternalBlockers' own contract — otherwise the announcement can
+    // latch fired while the work item stays parked outside scheduler self-select.
+    //
+    // Gated on a real transition, like the supersede path. The reconciler probes
+    // work_items by payload containment, which is a parallel seq scan here (~350ms,
+    // measured 2026-09-05: 180k rows, no GIN on payload); announcements fire ~7×/day,
+    // so it stays off the ordinary emit path, where stampAnnouncementsFired is called
+    // for every key and this UPDATE matches nothing.
+    if (rows.length > 0) {
+      await reconcileEventExternalBlockers(tx, eventKey, meta.firedBy ?? undefined);
+    }
     return rows.length;
   }) as Promise<number>;
 }
