@@ -4732,12 +4732,138 @@ async function publishRepairManifestToGateWorkItem(
   }
 }
 
+/**
+ * P-027 (D-014): the row-version guard on `writeFrozenCandidateRepairQueue`.
+ *
+ * `expectedUpdatedAtMs` is the `updatedAtMs` the caller's copy of the row carried when it was
+ * READ (a number), or `null` to assert that the routine row carries NO queue yet (the create
+ * path). When present, the UPDATE matches only a row still at that version; a miss throws
+ * `FrozenRepairQueueWriteConflictError` carrying the fresh read so the caller can re-apply its
+ * pure reducer to the row that actually exists. Absent ⇒ the legacy unconditional write, kept
+ * for callers that hold the only writer (a fresh create) — never for a run-end write-back.
+ */
+export interface WriteFrozenCandidateRepairQueueOptions {
+  expectedUpdatedAtMs?: number | null;
+}
+
+export class FrozenRepairQueueWriteConflictError extends Error {
+  readonly code = 'frozen-repair-queue-write-conflict' as const;
+  constructor(
+    readonly expectedUpdatedAtMs: number | null,
+    readonly fresh: FrozenCandidateRepairQueueRead,
+  ) {
+    super(
+      `frozen repair queue write conflict: expected row version ${
+        expectedUpdatedAtMs === null ? 'ABSENT' : `updatedAtMs=${expectedUpdatedAtMs}`
+      }, found ${
+        fresh.status === 'value'
+          ? `updatedAtMs=${fresh.queue.updatedAtMs} at repairHead ${fresh.queue.repairHead.slice(0, 12)} (${fresh.queue.phase})`
+          : fresh.status
+      } — re-read the row and re-apply the transition to it`,
+    );
+    this.name = 'FrozenRepairQueueWriteConflictError';
+  }
+}
+
+export function isFrozenRepairQueueWriteConflict(e: unknown): e is FrozenRepairQueueWriteConflictError {
+  return (
+    e instanceof FrozenRepairQueueWriteConflictError ||
+    (!!e && typeof e === 'object' && (e as { code?: unknown }).code === 'frozen-repair-queue-write-conflict')
+  );
+}
+
+export type FrozenRepairQueueTransition = (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue;
+
+export interface FrozenRepairQueueTransitionOutcome {
+  /**
+   * `written` — the reducer's result was CAS-written on top of the fresh row.
+   * `unchanged` — the reducer returned the fresh row itself (identity): nothing to persist. This
+   *   is the SUPERSEDED verdict case: the run measured a head the row has already moved past.
+   * `absent` — no queue is on the row (retired between the caller's read and now); nothing was
+   *   written, because resurrecting a retired queue from a stale copy is the lost-update in the
+   *   other direction.
+   */
+  status: 'written' | 'unchanged' | 'absent';
+  /** The row as it stands after the call — the fresh-derived object, never the caller's copy. */
+  queue: FrozenCandidateRepairQueue | null;
+  /** Fresh row the reducer was applied to (null when absent). */
+  fresh: FrozenCandidateRepairQueue | null;
+  /** CAS misses absorbed before the write landed. */
+  retries: number;
+}
+
+/**
+ * P-027 (D-014): re-read → reduce → CAS-write, the one safe way to move a queue row whose
+ * in-memory copy may be older than the row (a green-checkpoint run reads the queue once and
+ * then runs a suite for up to an hour; `release:repair-queue { op:'admit' }` advances the row
+ * meanwhile). The reducer is applied to the FRESH row, so an admission that landed in between
+ * is carried, not overwritten; a CAS miss (another writer moved the row after our re-read) is
+ * absorbed by re-reading and re-applying, up to `maxAttempts`.
+ *
+ * The row version is `updatedAtMs`. A reducer that does not advance it (same-ms transition,
+ * or one that only re-arranges fields) is bumped by one ms so two writers can never both pass
+ * the same predicate — the version must move on every persisted write or the CAS is decorative.
+ * A reducer that returns the fresh row ITSELF (identity) writes nothing (`unchanged`).
+ */
+export async function applyFrozenCandidateRepairQueueTransition(
+  target: GateVerdictTarget,
+  transition: FrozenRepairQueueTransition,
+  opts: { maxAttempts?: number } = {},
+): Promise<FrozenRepairQueueTransitionOutcome> {
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 3);
+  let lastConflict: FrozenRepairQueueWriteConflictError | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const read = await readFrozenCandidateRepairQueueState(target);
+    if (read.status === 'unreadable') {
+      throw new Error(
+        `${describeUnreadableFrozenCandidateRepairQueue(read)} — refusing to transition a row this build cannot parse`,
+      );
+    }
+    if (read.status === 'absent') return { status: 'absent', queue: null, fresh: null, retries: attempt };
+    const fresh = read.queue;
+    let next = transition(fresh);
+    if (next === fresh) return { status: 'unchanged', queue: fresh, fresh, retries: attempt };
+    if (!(next.updatedAtMs > fresh.updatedAtMs)) next = { ...next, updatedAtMs: fresh.updatedAtMs + 1 };
+    try {
+      await writeFrozenCandidateRepairQueue(target, next, { expectedUpdatedAtMs: fresh.updatedAtMs });
+      return { status: 'written', queue: next, fresh, retries: attempt };
+    } catch (e) {
+      if (!isFrozenRepairQueueWriteConflict(e)) throw e;
+      lastConflict = e;
+    }
+  }
+  throw lastConflict ?? new Error('frozen repair queue transition exhausted its attempts');
+}
+
 export async function writeFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
   queue: FrozenCandidateRepairQueue | null,
+  opts: WriteFrozenCandidateRepairQueueOptions = {},
 ): Promise<void> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // P-027 (D-014): the optional CAS predicate. `updatedAtMs` is compared as TEXT (integer-ms
+  // digits are exact on both sides; the reserve/renew CAS further down does the same), and an
+  // expected ABSENCE matches only a row that carries no queue at all. `$N` is the next
+  // positional parameter after the statement's own — each branch below passes its base count.
+  const expected = opts.expectedUpdatedAtMs;
+  const casClause = (nextParam: number): string =>
+    expected === undefined
+      ? ''
+      : expected === null
+        ? `\n          AND metadata->'repair_queue' IS NULL`
+        : `\n          AND metadata->'repair_queue'->>'updatedAtMs' = $${nextParam}::text`;
+  const casParams: string[] = typeof expected === 'number' ? [String(expected)] : [];
+  const assertWritten = async (rows: unknown): Promise<void> => {
+    if (expected === undefined) return;
+    const written = Array.isArray(rows)
+      ? rows.length
+      : typeof (rows as { count?: unknown } | null)?.count === 'number'
+        ? ((rows as { count: number }).count)
+        : 0;
+    if (written > 0) return;
+    throw new FrozenRepairQueueWriteConflictError(expected, await readFrozenCandidateRepairQueueState(target));
+  };
   // P-021 (D-007 #1): the repair manifest is DERIVED HERE, in the one production write path, so
   // it cannot describe a different row than the one persisted beside it. `withRepairManifest`
   // carries leg claims from the row's previous manifest and reports whether the leg set moved.
@@ -4763,7 +4889,7 @@ export async function writeFrozenCandidateRepairQueue(
     // a replace here would silently clobber whichever of them a concurrent reader depends on.
     // `jsonb_set(..., true)` creates `gate_health` when the row has none.
     const convergence = buildFrozenRepairConvergenceGateHealth(queue, Date.now());
-    await sql.unsafe(
+    const written = await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = jsonb_set(
                 COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
@@ -4774,20 +4900,23 @@ export async function writeFrozenCandidateRepairQueue(
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
-          AND target_role = 'system:green-checkpoint'`,
+          AND target_role = 'system:green-checkpoint'${casClause(5)}
+        RETURNING true AS written`,
       [
         target.workspaceId,
         target.installSlug,
         JSON.stringify({ repair_queue: queue }),
         JSON.stringify({ convergence }),
+        ...casParams,
       ],
     );
+    await assertWritten(written);
   } else {
     // Retiring the cycle CLEARS the projection (`#- '{gate_health,convergence}'`, a no-op when
     // absent). Leaving it behind would strand shrink figures for a candidate that no longer
     // exists next to a gate that has moved on — and because every field of the projection is
     // plausible on its own, a reader has no way to tell it is describing a dead cycle.
-    await sql.unsafe(
+    const written = await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = (CASE
                 WHEN metadata #>> '{gate_health,inconclusive,status}'
@@ -4799,9 +4928,11 @@ export async function writeFrozenCandidateRepairQueue(
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
-          AND target_role = 'system:green-checkpoint'`,
-      [target.workspaceId, target.installSlug],
+          AND target_role = 'system:green-checkpoint'${casClause(3)}
+        RETURNING true AS written`,
+      [target.workspaceId, target.installSlug, ...casParams],
     );
+    await assertWritten(written);
   }
   // P-004: project the edit-time marker from this same call, for the reason the convergence
   // projection above gives — this is the one production write path for `repair_queue`, so a
