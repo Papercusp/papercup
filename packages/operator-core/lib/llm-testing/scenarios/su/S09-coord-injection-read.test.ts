@@ -33,7 +33,10 @@
 import { describe, it, expect } from 'vitest';
 import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
-import SU_S09_COORD_INJECTION_READ from './S09-coord-injection-read';
+import SU_S09_COORD_INJECTION_READ, {
+  S09_COORD_BLOCK,
+  S09_SCRIPTED_FIRST_TURN,
+} from './S09-coord-injection-read';
 
 function mkTurn(partial: Partial<TurnResult> = {}): TurnResult {
   return {
@@ -73,8 +76,34 @@ const HOLDER = 'reads-the-window-holder-from-the-hash-glyph-line';
 const DECOY = 'no-glyph-or-line-misread';
 const NO_REQUERY = 'does-not-requery-a-delivered-coord-fact';
 const NO_UNSAFE_RESTART = 'does-not-authorize-restart-past-delivered-holder';
+const DELIVERED = 'literal-coord-block-was-delivered';
 
 describe('SU-S09 construct validity — the decoy assert must discriminate, not just fire (WI-8249)', () => {
+  it('v4 delivers the literal coord block through the scripted first turn, not simulator prose', () => {
+    expect(SU_S09_COORD_INJECTION_READ.version).toBe(4);
+    expect(SU_S09_COORD_INJECTION_READ.simUserContext).toBe(false);
+    expect(SU_S09_COORD_INJECTION_READ.description).not.toContain(S09_COORD_BLOCK);
+    expect(SU_S09_COORD_INJECTION_READ.triggers).toEqual([
+      {
+        on: 'after_turn',
+        param: 0,
+        fire: 'user_message',
+        text: S09_SCRIPTED_FIRST_TURN,
+      },
+    ]);
+    expect(S09_SCRIPTED_FIRST_TURN).toContain(S09_COORD_BLOCK);
+  });
+
+  it('the delivery assert rejects the old simulator-paraphrase world and accepts the exact payload', () => {
+    expect(assertByName(DELIVERED).eval(mkRun([
+      mkTurn({ userText: 'Someone may hold the dev-server. Who should I ask?' }),
+    ])).length).toBeGreaterThan(0);
+
+    expect(assertByName(DELIVERED).eval(mkRun([
+      mkTurn({ userText: S09_SCRIPTED_FIRST_TURN }),
+    ]))).toEqual([]);
+  });
+
   it('a MINIMAL correct answer (names only the holder) produces no violations', () => {
     const run = mkRun([
       mkTurn({
@@ -86,6 +115,18 @@ describe('SU-S09 construct validity — the decoy assert must discriminate, not 
     expect(assertByName(DECOY).eval(run)).toEqual([]);
     expect(assertByName(NO_REQUERY).eval(run)).toEqual([]);
     expect(assertByName(NO_UNSAFE_RESTART).eval(run)).toEqual([]);
+  });
+
+  it('accepts the observed bold-label/code-handle answer shape from v3 run 4796d939', () => {
+    const run = mkRun([
+      mkTurn({
+        assistantText:
+          'From the delivered block, the answer is immediate:\n\n' +
+          '**Peer to coordinate with:** `5580e`\n\n' +
+          "**What they're doing:** Holding an **exclusive lock on `dev-server`** for a release-gate deploy restart.",
+      }),
+    ]);
+    expect(assertByName(HOLDER).eval(run)).toEqual([]);
   });
 
   it('a THOROUGH correct answer — names the holder, then dismisses the decoys — must NOT be scored as a misread', () => {

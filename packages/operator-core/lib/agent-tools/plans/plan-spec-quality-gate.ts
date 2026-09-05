@@ -4,6 +4,7 @@ import {
   scorecardEvidenceFingerprint,
   type ScorecardRow,
 } from '../../scorecards';
+import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF, type PlanSpecQualityResult } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
@@ -13,6 +14,9 @@ export type PlanSpecQualityGateCode =
   | 'spec_quality_scorecard_missing'
   | 'spec_quality_scorecard_grading_audit_pending'
   | 'spec_quality_scorecard_grading_audit_failed'
+  | 'spec_quality_class_missing'
+  | 'spec_quality_class_ambiguous'
+  | 'spec_quality_class_invalid'
   | 'spec_quality_unavailable';
 
 export interface PlanSpecQualityGateVerdict {
@@ -37,7 +41,70 @@ export interface PlanSpecQualityGateVerdict {
 type GateDeps = {
   listClauses?: typeof listSpecClauses;
   listCards?: typeof listScorecards;
+  listAcceptanceRubrics?: (planSlug: string) => Promise<ReadonlyArray<{ classRef?: string | null }>>;
 };
+
+type ClassResolution =
+  | { ok: true; classRef: PlanClassRubricRef }
+  | {
+      ok: false;
+      code: Extract<
+        PlanSpecQualityGateCode,
+        'spec_quality_class_missing' | 'spec_quality_class_ambiguous' | 'spec_quality_class_invalid'
+      >;
+      wouldBlock: string[];
+      message: string;
+    };
+
+function isPlanClassRubricRef(value: unknown): value is PlanClassRubricRef {
+  return typeof value === 'string' && (PLAN_CLASS_RUBRIC_REFS as readonly string[]).includes(value);
+}
+
+function resolvePersistedClassRef(planSlug: string, rubrics: readonly { classRef?: string | null }[]): ClassResolution {
+  if (rubrics.length === 0) {
+    return {
+      ok: false,
+      code: 'spec_quality_class_missing',
+      wouldBlock: ['acceptance-rubric-class-missing'],
+      message:
+        `Plan '${planSlug}' adopted first-class clauses but has no active acceptance rubric from which to resolve ` +
+        'the authoritative plan class. Persist an acceptance rubric template_data.classRef before evaluating spec quality.',
+    };
+  }
+  if (rubrics.length > 1) {
+    return {
+      ok: false,
+      code: 'spec_quality_class_ambiguous',
+      wouldBlock: ['acceptance-rubric-class-ambiguous'],
+      message:
+        `Plan '${planSlug}' has ${rubrics.length} active acceptance rubrics, so its authoritative plan class is ` +
+        'ambiguous. Retire the competing rubric(s) and leave exactly one active acceptance rubric.',
+    };
+  }
+
+  const classRef = rubrics[0]?.classRef;
+  if (typeof classRef !== 'string' || classRef.length === 0) {
+    return {
+      ok: false,
+      code: 'spec_quality_class_missing',
+      wouldBlock: ['acceptance-rubric-class-missing'],
+      message:
+        `Plan '${planSlug}' has an active acceptance rubric, but its persisted template_data.classRef is missing. ` +
+        `Set classRef to exactly one of ${PLAN_CLASS_RUBRIC_REFS.join(', ')}; caller-supplied subject refs are not authoritative.`,
+    };
+  }
+  if (!isPlanClassRubricRef(classRef)) {
+    return {
+      ok: false,
+      code: 'spec_quality_class_invalid',
+      wouldBlock: ['acceptance-rubric-class-invalid'],
+      message:
+        `Plan '${planSlug}' has an invalid persisted acceptance-rubric classRef '${classRef}'. ` +
+        `Use exactly one of ${PLAN_CLASS_RUBRIC_REFS.join(', ')}; arbitrary rubric or subject refs cannot select the class.`,
+    };
+  }
+  return { ok: true, classRef };
+}
 
 function acceptedRating(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -94,6 +161,7 @@ export async function evaluatePlanSpecQualityGate(
 ): Promise<PlanSpecQualityGateVerdict> {
   const listClauses = deps.listClauses ?? listSpecClauses;
   const listCards = deps.listCards ?? listScorecards;
+  const listAcceptanceRubrics = deps.listAcceptanceRubrics ?? getAcceptanceRubricsForPlan;
   let clauses;
   try {
     clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
@@ -124,127 +192,141 @@ export async function evaluatePlanSpecQualityGate(
     };
   }
 
-  const evaluations = PLAN_CLASS_RUBRIC_REFS.map((classRef) =>
-    evaluatePlanSpecQuality({
-      planSlug: input.planSlug,
-      harnessSlug: input.harnessSlug,
-      planItemIds: input.planItemIds,
-      clauses,
-      classRef,
-    }),
-  );
-  const candidates = evaluations.map((evaluation) => ({
-    classRef: evaluation.classRef,
-    verdict: evaluation.verdict,
-    wouldBlock: [...evaluation.wouldBlock],
-    subjectRef: evaluation.scorecardDraft.subject.ref,
-  }));
-  const best = evaluations
-    .slice()
-    .sort((a, b) => a.wouldBlock.length - b.wouldBlock.length || a.classRef.localeCompare(b.classRef))[0];
-  const passing = evaluations.filter((evaluation) => evaluation.verdict === 'pass');
-  if (passing.length === 0) {
+  let acceptanceRubrics;
+  try {
+    acceptanceRubrics = await listAcceptanceRubrics(input.planSlug);
+  } catch (error) {
     return {
       satisfied: false,
       applicable: true,
       mode: 'enforced',
       planSlug: input.planSlug,
-      specSetHash: best.specSetHash,
-      classRef: best.classRef,
+      specSetHash: null,
+      code: 'spec_quality_unavailable',
+      wouldBlock: ['acceptance-rubric-class-read-unavailable'],
+      message:
+        `Plan '${input.planSlug}' adopted first-class clauses, but its authoritative acceptance-rubric class ` +
+        `could not be read (${error instanceof Error ? error.message : String(error)}). Refusing promotion fail-closed; retry after the rubric store is healthy.`,
+    };
+  }
+
+  const classResolution = resolvePersistedClassRef(input.planSlug, acceptanceRubrics);
+  if (!classResolution.ok) {
+    return {
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: input.planSlug,
+      specSetHash: null,
+      code: classResolution.code,
+      wouldBlock: classResolution.wouldBlock,
+      message: classResolution.message,
+    };
+  }
+
+  const evaluation = evaluatePlanSpecQuality({
+    planSlug: input.planSlug,
+    harnessSlug: input.harnessSlug,
+    planItemIds: input.planItemIds,
+    clauses,
+    classRef: classResolution.classRef,
+  });
+  const candidates = [
+    {
+      classRef: evaluation.classRef,
+      verdict: evaluation.verdict,
+      wouldBlock: [...evaluation.wouldBlock],
+      subjectRef: evaluation.scorecardDraft.subject.ref,
+    },
+  ];
+  if (evaluation.verdict !== 'pass') {
+    return {
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: input.planSlug,
+      specSetHash: evaluation.specSetHash,
+      classRef: evaluation.classRef,
       code: 'spec_quality_failed',
-      wouldBlock: [...best.wouldBlock],
+      wouldBlock: [...evaluation.wouldBlock],
       candidates,
       message:
-        `Plan '${input.planSlug}' adopted first-class clauses but fails spec quality for every plan class. ` +
-        `Closest class ${best.classRef} would block on: ${best.wouldBlock.join(', ')}. ` +
-        `Run plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${best.classRef}' } for exact per-criterion reasons, repair the clauses/exemptions, then emit the returned scorecard.`,
+        `Plan '${input.planSlug}' fails spec quality for its persisted plan class ${evaluation.classRef}. ` +
+        `It would block on: ${evaluation.wouldBlock.join(', ')}. ` +
+        `Run plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${evaluation.classRef}' } for exact per-criterion reasons, repair the clauses/exemptions, then emit the returned scorecard.`,
     };
   }
 
   try {
-    let pendingAudit: { card: ScorecardRow; evaluation: PlanSpecQualityResult } | undefined;
-    let failedAudit: { card: ScorecardRow; evaluation: PlanSpecQualityResult } | undefined;
-    for (const evaluation of passing) {
-      const cards = await listCards({
-        rubricRef: SPEC_QUALITY_RUBRIC_REF,
-        subjectRef: evaluation.scorecardDraft.subject.ref,
-        limit: 20,
-      });
-      const matching = cards.find((card) => scorecardMatches(card, evaluation));
-      if (matching) {
-        return {
-          satisfied: true,
-          applicable: true,
-          mode: 'enforced',
-          planSlug: input.planSlug,
-          specSetHash: evaluation.specSetHash,
-          classRef: evaluation.classRef,
-          scorecardId: matching.issueId,
-          wouldBlock: [],
-          candidates,
-        };
-      }
-      // Not accepted — but distinguish "exact card exists, still audit-pending/failed"
-      // from "no exact card was ever emitted" so the refusal can name the real next
-      // step instead of pointing back at scorecards:emit, which the caller already ran.
-      if (!pendingAudit) {
-        const pending = cards.find(
-          (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'pending',
-        );
-        if (pending) pendingAudit = { card: pending, evaluation };
-      }
-      if (!failedAudit) {
-        const failed = cards.find(
-          (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'failed',
-        );
-        if (failed) failedAudit = { card: failed, evaluation };
-      }
+    const cards = await listCards({
+      rubricRef: SPEC_QUALITY_RUBRIC_REF,
+      subjectRef: evaluation.scorecardDraft.subject.ref,
+      limit: 20,
+    });
+    const matching = cards.find((card) => scorecardMatches(card, evaluation));
+    if (matching) {
+      return {
+        satisfied: true,
+        applicable: true,
+        mode: 'enforced',
+        planSlug: input.planSlug,
+        specSetHash: evaluation.specSetHash,
+        classRef: evaluation.classRef,
+        scorecardId: matching.issueId,
+        wouldBlock: [],
+        candidates,
+      };
     }
-    // Prefer reporting the pending case: a card can only be 'failed' after having been
-    // 'pending' first, and a fresh re-emit (the failed-audit remedy) always resets to
-    // pending, so a caller who has both is already mid-repair — the pending stamp is
-    // the one to act on next.
+    // Not accepted — but distinguish "exact card exists, still audit-pending/failed"
+    // from "no exact card was ever emitted" so the refusal can name the real next
+    // step instead of pointing back at scorecards:emit, which the caller already ran.
+    const pendingAudit = cards.find(
+      (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'pending',
+    );
     if (pendingAudit) {
       return {
         satisfied: false,
         applicable: true,
         mode: 'enforced',
         planSlug: input.planSlug,
-        specSetHash: pendingAudit.evaluation.specSetHash,
-        classRef: pendingAudit.evaluation.classRef,
-        scorecardId: pendingAudit.card.issueId,
+        specSetHash: evaluation.specSetHash,
+        classRef: evaluation.classRef,
+        scorecardId: pendingAudit.issueId,
         code: 'spec_quality_scorecard_grading_audit_pending',
         wouldBlock: ['exact-specSetHash-scorecard-grading-audit-pending'],
         candidates,
         message:
           `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
-          `(${pendingAudit.card.issueId}) for exact specSetHash ${pendingAudit.evaluation.specSetHash}, but it ` +
+          `(${pendingAudit.issueId}) for exact specSetHash ${evaluation.specSetHash}, but it ` +
           "does not yet satisfy this gate: P-013 grade-the-grader stamps every terminal standard-rubric card " +
           "'gradingAudit.state: pending' until a NON-AUTHOR independently audits it, and this gate only accepts " +
           'an audited (or audit-exempt) card. Have a DIFFERENT agent settle it — ' +
           `scorecards:emit { rubricRef:'grading-integrity', terminal:true, subject:{ kind:'scorecard', ` +
-          `ref:'${pendingAudit.card.issueId}' }, ratings:{...} } — then retry plans:start. Re-running ` +
+          `ref:'${pendingAudit.issueId}' }, ratings:{...} } — then retry plans:start. Re-running ` +
           'plans:evaluate-spec-quality / scorecards:emit yourself files a duplicate pending card and does not ' +
           'settle this one (self-audits are refused).',
       };
     }
+    const failedAudit = cards.find(
+      (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'failed',
+    );
     if (failedAudit) {
       return {
         satisfied: false,
         applicable: true,
         mode: 'enforced',
         planSlug: input.planSlug,
-        specSetHash: failedAudit.evaluation.specSetHash,
-        classRef: failedAudit.evaluation.classRef,
-        scorecardId: failedAudit.card.issueId,
+        specSetHash: evaluation.specSetHash,
+        classRef: evaluation.classRef,
+        scorecardId: failedAudit.issueId,
         code: 'spec_quality_scorecard_grading_audit_failed',
         wouldBlock: ['exact-specSetHash-scorecard-grading-audit-failed'],
         candidates,
         message:
           `Plan '${input.planSlug}' has an exact terminal ${SPEC_QUALITY_RUBRIC_REF} scorecard ` +
-          `(${failedAudit.card.issueId}) for exact specSetHash ${failedAudit.evaluation.specSetHash}, but its ` +
+          `(${failedAudit.issueId}) for exact specSetHash ${evaluation.specSetHash}, but its ` +
           'independent P-013 grading-integrity audit FAILED it, so it cannot satisfy this gate. Re-run ' +
-          `plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${failedAudit.evaluation.classRef}' }, ` +
+          `plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${evaluation.classRef}' }, ` +
           'repair whatever the audit flagged, then emit a fresh scorecard through scorecards:emit for a new ' +
           'grading-integrity audit.',
       };
@@ -255,7 +337,7 @@ export async function evaluatePlanSpecQualityGate(
       applicable: true,
       mode: 'enforced',
       planSlug: input.planSlug,
-      specSetHash: passing[0].specSetHash,
+      specSetHash: evaluation.specSetHash,
       code: 'spec_quality_unavailable',
       wouldBlock: ['scorecard-read-unavailable'],
       candidates,
@@ -270,14 +352,16 @@ export async function evaluatePlanSpecQualityGate(
     applicable: true,
     mode: 'enforced',
     planSlug: input.planSlug,
-    specSetHash: passing[0].specSetHash,
+    specSetHash: evaluation.specSetHash,
+    classRef: evaluation.classRef,
     code: 'spec_quality_scorecard_missing',
     wouldBlock: ['exact-specSetHash-scorecard-missing'],
     candidates,
     message:
       `Plan '${input.planSlug}' has structurally passing clauses but no current complete terminal ` +
-      `${SPEC_QUALITY_RUBRIC_REF} scorecard for exact specSetHash ${passing[0].specSetHash}. ` +
-      `Run plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${passing[0].classRef}' }, ` +
+      `${SPEC_QUALITY_RUBRIC_REF} scorecard for exact specSetHash ${evaluation.specSetHash} under persisted ` +
+      `class ${evaluation.classRef}. ` +
+      `Run plans:evaluate-spec-quality { slug:'${input.planSlug}', classRef:'${evaluation.classRef}' }, ` +
       'emit its scorecardDraft through scorecards:emit, then retry. Any clause revision changes the hash and invalidates older cards.',
   };
 }

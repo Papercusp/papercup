@@ -59,19 +59,20 @@ export type GoalFleetLeadershipResolution =
 /**
  * GOAL holders are portfolio stewards, never plan-fleet leaders.
  *
- * The generic door keeps its historical caller-led default. Goal context
+ * The generic door keeps its historical caller-led default. Active GOAL mode
  * narrows that default structurally: omission means `spawn`, while an explicit
  * caller-led request is refused rather than silently violating the mode
  * contract. An already-self-led fleet is also refused before a top-up can make
  * the bad state look healthy; leadership must be delegated first.
  */
 export function resolveGoalFleetLeadership(args: {
-  goalId: string | null;
+  /** The caller's own GOAL-mode subject; inherited goal provenance does not count. */
+  goalHolderSubject: string | null;
   requested?: 'caller' | 'spawn';
   callerOwnerId: string;
   existingLeaderOwnerId?: string | null;
 }): GoalFleetLeadershipResolution {
-  if (!args.goalId) {
+  if (!args.goalHolderSubject) {
     return { ok: true, leader: args.requested ?? 'caller', defaultedToSpawn: false };
   }
   if (args.existingLeaderOwnerId === args.callerOwnerId) {

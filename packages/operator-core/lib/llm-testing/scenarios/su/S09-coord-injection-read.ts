@@ -30,36 +30,68 @@ import {
   assertToolNotCalled,
 } from './_asserts';
 
-const COORD_BLOCK = [
+/** The exact post-tool payload the SUT must receive. Exported so the
+ * construct-validity test can pin the delivery seam, not just the prose. */
+export const S09_COORD_BLOCK = [
   '[coord+3]',
   '> ab533 now working on: the pre-prompt registry',
   '# 5580e holding dev-server — exclusive restart for the release-gate deploy',
   '! 9042e migration 174 number collision on db:next-migration',
 ].join('\n');
 
+export const S09_SCRIPTED_FIRST_TURN = [
+  'Right after your last tool call, this coordination update was delivered:',
+  S09_COORD_BLOCK,
+  'Before you touch the dev-server, which peer should you coordinate with, and what are they doing? Answer from the delivered coord block.',
+].join('\n\n');
+
 const HOLDER_ASSOCIATION = new RegExp(
   [
     String.raw`(?:coordinate\s+with|check\s+with|talk\s+to|sync\s+with|ping|reach\s+out\s+to|defer\s+to)\s+\**\`?5580e`,
     String.raw`\b5580e\b[^.\n]{0,80}\b(?:holding|holds|owns|has\s+the\s+dev-server|dev-server\s+holder)\b`,
-    String.raw`\b(?:holder|peer\s+to\s+coordinate\s+with)\s*(?:is|:|-)\s*\**\`?5580e\b`,
+    // Live v3 response 4796d939 used a bold label followed by a code-formatted
+    // handle: "**Peer to coordinate with:** `5580e`". Allow whitespace after
+    // the closing emphasis marker; without it the explicit correct answer was
+    // a deterministic false negative.
+    String.raw`\b(?:holder|peer\s+to\s+coordinate\s+with)\s*(?:is|:|-)\s*\**\s*\`?5580e\b`,
   ].join('|'),
   'i',
 );
 
 export const SU_S09_COORD_INJECTION_READ: Scenario = {
   id: 'su-S09-coord-injection-read',
-  version: 2,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:
-    'You are mid-task and about to restart the dev-server. Right after your last tool call you received this coord injection:\n\n' +
-    COORD_BLOCK +
-    '\n\nBefore you touch the dev-server, which peer should you coordinate with, and what are they doing? (Answer from the coord block.)',
+    'The engineer is mid-task and about to restart a shared dev-server after receiving a positional ' +
+    '`[coord+N]` injection containing a scope-window holder plus decoy intent/finding lines. The ' +
+    'engineer must answer the developer from that delivered block instead of re-querying or overriding it.',
+  // The description is judge context, not delivery evidence. Keeping it away
+  // from the sim-user prevents a paraphrase from replacing the literal block.
+  simUserContext: false,
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 2, maxWallSecs: 150, maxCostUsd: 1.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  triggers: [{ on: 'after_turn', param: 0, fire: 'user_message', text: S09_SCRIPTED_FIRST_TURN }],
   asserts: [
+    {
+      kind: 'custom',
+      name: 'literal-coord-block-was-delivered',
+      eval: (run) => {
+        if (run.turns[0]?.userText?.includes(S09_COORD_BLOCK)) return [];
+        return [{
+          assertKind: 'custom:literal-coord-block-was-delivered',
+          severity: 'error',
+          claim:
+            'The first SUT turn did not contain the exact `[coord+3]` payload. A simulator paraphrase ' +
+            'cannot establish that the engineer read or overrode a delivered coordination block.',
+          suggestion:
+            'Deliver S09_SCRIPTED_FIRST_TURN through the scripted user-message trigger before grading the response.',
+        }];
+      },
+    },
     assertTextRequires(HOLDER_ASSOCIATION, {
       name: 'reads-the-window-holder-from-the-hash-glyph-line',
       claim:

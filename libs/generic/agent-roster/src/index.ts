@@ -37,6 +37,7 @@ export {
   groupByFleet,
   hasThinking,
   isRunningAgent,
+  isSessionGone,
   isTranscriptFresh,
   machineKey,
   machineTabs,

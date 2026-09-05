@@ -36,16 +36,16 @@ const DRAIN = 'drain-fleet-alpha';
 describe('resolveGoalFleetLeadership — GOAL holders delegate by construction', () => {
   it("defaults a GOAL launch to leader:'spawn' while preserving the generic caller default", () => {
     expect(
-      resolveGoalFleetLeadership({ goalId: 'g-1', callerOwnerId: 'su-goal' }),
+      resolveGoalFleetLeadership({ goalHolderSubject: 'g-1', callerOwnerId: 'su-goal' }),
     ).toEqual({ ok: true, leader: 'spawn', defaultedToSpawn: true });
     expect(
-      resolveGoalFleetLeadership({ goalId: null, callerOwnerId: 'su-generic' }),
+      resolveGoalFleetLeadership({ goalHolderSubject: null, callerOwnerId: 'su-generic' }),
     ).toEqual({ ok: true, leader: 'caller', defaultedToSpawn: false });
   });
 
   it('refuses an explicit caller-led GOAL launch', () => {
     const r = resolveGoalFleetLeadership({
-      goalId: 'g-1',
+      goalHolderSubject: 'g-1',
       requested: 'caller',
       callerOwnerId: 'su-goal',
     });
@@ -56,7 +56,7 @@ describe('resolveGoalFleetLeadership — GOAL holders delegate by construction',
 
   it('refuses to top up a fleet the GOAL holder already leads', () => {
     const r = resolveGoalFleetLeadership({
-      goalId: 'g-1',
+      goalHolderSubject: 'g-1',
       requested: 'spawn',
       callerOwnerId: 'su-goal',
       existingLeaderOwnerId: 'su-goal',

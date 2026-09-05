@@ -11,6 +11,7 @@ import {
   groupByFleet,
   hasThinking,
   isRunningAgent,
+  isSessionGone,
   isTranscriptFresh,
   machineKey,
   machineTabs,
@@ -318,5 +319,45 @@ describe('filterRoster', () => {
     const renamed = filterRoster(roster, 'brain', (raw) => (raw === 'Ada' ? 'brain' : raw));
     expect(renamed.map((a) => a.ownerId)).toEqual(['su-aaaa1111']);
     expect(filterRoster(roster, 'grace', upper).map((a) => a.ownerId)).toEqual(['su-bbbb2222']);
+  });
+});
+
+describe('sessionState is the authoritative verdict (WI-2142889)', () => {
+  // The just-died case: a real turn seconds ago, keepalive still arriving, but the
+  // shared oracle has ruled the session gone. Activity timing alone paints this
+  // green for a minute and amber for ten; the oracle's verdict wins immediately.
+  const justDied = { lastActiveAt: agoIso(1_000), sessionState: 'ended', loopArmed: true } as const;
+
+  it('reads sessionState at runtime — a gone session is stale however fresh its last turn', () => {
+    expect(activityLiveness(justDied, NOW)).toBe('stale');
+    expect(activityLiveness({ lastActiveAt: agoIso(1_000), sessionState: 'suspect' }, NOW)).toBe('stale');
+  });
+
+  it('says WHY in the tooltip, including an orphaned armed loop', () => {
+    expect(activityLivenessTitle(justDied, NOW)).toBe(
+      'stale — session ended (loop armed but the session is gone)',
+    );
+    expect(activityLivenessTitle({ lastActiveAt: agoIso(1_000), sessionState: 'suspect' }, NOW)).toBe(
+      'stale — process gone (suspect)',
+    );
+  });
+
+  it('drops a gone session from the broader running roster even when loop-armed', () => {
+    expect(isRunningAgent({ liveness: 'live', loopArmed: true, sessionState: 'ended' })).toBe(false);
+    expect(isRunningAgent({ liveness: 'stale', loopArmed: true, sessionState: 'suspect' })).toBe(false);
+  });
+
+  it('only ever DEMOTES — live/parked/draining/recorded and an absent verdict fall through to activity timing', () => {
+    // `recorded` is authoritatively ALIVE per the session log (a console agent that is
+    // not coord-wakeable); treating it as gone would grey out every console agent.
+    for (const sessionState of ['live', 'parked', 'draining', 'recorded', null, undefined] as const) {
+      expect(isSessionGone({ sessionState })).toBe(false);
+      expect(activityLiveness({ lastActiveAt: agoIso(1_000), sessionState }, NOW)).toBe('live');
+      expect(activityLiveness({ lastActiveAt: agoIso(LIVE_TURN_MS + 1), sessionState }, NOW)).toBe('stale');
+    }
+    // An unknown future state is not a "gone" ruling either.
+    expect(isSessionGone({ sessionState: 'hibernating' })).toBe(false);
+    // And a stale-by-activity row is still stale with a live verdict: the oracle never PROMOTES.
+    expect(activityLiveness({ lastActiveAt: null, sessionState: 'live' }, NOW)).toBe('stale');
   });
 });

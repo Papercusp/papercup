@@ -158,6 +158,26 @@ export function fmtCompactAge(iso: string | null | undefined, nowMs: number): st
 }
 
 /**
+ * Session-lifecycle states in which the shared server oracle has ruled the
+ * process GONE. `RosterAgent.sessionState` is the authoritative verdict where a
+ * host supplies it (the repo's liveness-semantics rule: heartbeat freshness is
+ * process keepalive, never "taking turns"), so a row in one of these states is
+ * not running whatever its `lastActiveAt` or `loopArmed` say.
+ *
+ * Deliberately NOT in the set: `parked` / `draining` (wakeable, possibly
+ * mid-cadence — activity timing decides), and `recorded`, which is
+ * authoritatively ALIVE per the session log — a console/autonomous agent that
+ * is simply not coord-wakeable. Treating `recorded` as dead would grey out
+ * every console agent. Unknown / absent values fall through to activity timing.
+ */
+const GONE_SESSION_STATES: ReadonlySet<string> = new Set(['ended', 'suspect']);
+
+/** Whether the oracle's `sessionState` says this session is gone. Pure. */
+export function isSessionGone(a: Pick<RosterAgent, 'sessionState'>): boolean {
+  return typeof a.sessionState === 'string' && GONE_SESSION_STATES.has(a.sessionState);
+}
+
+/**
  * The liveness to DISPLAY for a running agent — derived from GENUINE activity
  * (`lastActiveAt`, a real turn / tool dispatch), never the 60s keepalive
  * heartbeat and never a merely-armed loop:
@@ -176,12 +196,20 @@ export function fmtCompactAge(iso: string | null | undefined, nowMs: number): st
  *
  * A missing/blank/unparseable `lastActiveAt` (older/pending rows that never
  * stamped it) is `stale`, never a keepalive-derived "live" (the owner's standing
- * rule — the keepalive heartbeat is not evidence of taking turns). Pure.
+ * rule — the keepalive heartbeat is not evidence of taking turns).
+ *
+ * `sessionState`, where the host supplies it, is the shared oracle's
+ * AUTHORITATIVE lifecycle verdict and is consulted FIRST (see `isSessionGone`):
+ * a session the oracle has ruled gone renders stale however recent its last
+ * turn — the just-died case, where the last real turn was seconds ago and the
+ * keepalive is still arriving, which activity timing alone paints green for a
+ * minute and amber for ten. Pure.
  */
 export function activityLiveness(
-  a: Pick<RosterAgent, 'lastActiveAt'>,
+  a: Pick<RosterAgent, 'lastActiveAt' | 'sessionState'>,
   nowMs: number,
 ): Liveness {
+  if (isSessionGone(a)) return 'stale';
   const iso = a.lastActiveAt ?? null;
   if (!iso) return 'stale';
   const t = Date.parse(iso);
@@ -196,9 +224,13 @@ export function activityLiveness(
  *  when a loop is armed, whether it is still firing (fresh) or has stalled
  *  (stale). Pure — exported for tests. */
 export function activityLivenessTitle(
-  a: Pick<RosterAgent, 'lastActiveAt' | 'loopArmed'>,
+  a: Pick<RosterAgent, 'lastActiveAt' | 'loopArmed' | 'sessionState'>,
   nowMs: number,
 ): string {
+  if (isSessionGone(a)) {
+    const why = a.sessionState === 'ended' ? 'session ended' : 'process gone (suspect)';
+    return `stale — ${why}${a.loopArmed ? ' (loop armed but the session is gone)' : ''}`;
+  }
   const state = activityLiveness(a, nowMs);
   if (state === 'live') return `live — took a turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
   if (state === 'idle') return `idle — no turn in the last minute${a.loopArmed ? ' · loop armed' : ''}`;
@@ -282,8 +314,15 @@ export function displayName(
  * its wording promises agents running right now, so it filters on the server's
  * authoritative `sessionState === 'live'` verdict instead. Pure — exported for
  * the roster surfaces that intentionally include parked/wakeable agents.
+ *
+ * The oracle's verdict still bounds it from above: a session it has ruled gone
+ * (`isSessionGone`) is not wakeable, so neither a still-fresh `liveness` nor an
+ * armed-but-orphaned loop can keep it on the roster.
  */
-export function isRunningAgent(a: Pick<RosterAgent, 'liveness' | 'loopArmed'>): boolean {
+export function isRunningAgent(
+  a: Pick<RosterAgent, 'liveness' | 'loopArmed' | 'sessionState'>,
+): boolean {
+  if (isSessionGone(a)) return false;
   return a.liveness !== 'stale' || Boolean(a.loopArmed);
 }
 

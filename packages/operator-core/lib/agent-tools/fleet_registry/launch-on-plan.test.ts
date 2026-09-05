@@ -109,7 +109,7 @@ describe('applyGoalLaunchProfileToDefaults (WI-2146552)', () => {
       },
     } as GoalLaunchSettings;
     const leadership = resolveGoalFleetLeadership({
-      goalId: 'g-1',
+      goalHolderSubject: 'g-1',
       callerOwnerId: 'su-goal',
     });
     expect(leadership).toMatchObject({ ok: true, leader: 'spawn' });
