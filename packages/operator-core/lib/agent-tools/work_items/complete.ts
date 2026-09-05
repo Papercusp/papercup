@@ -2610,6 +2610,7 @@ async function completeOne(
       });
       if (!gate.ok) {
         const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
+        const failedGradingAuditTargetIds = gate.failedGradingAuditTargetIds;
         const gradingAuditDispatch = pendingGradingAuditTargetIds?.length
           ? await dispatchPendingGradingAudits({
               targetIds: pendingGradingAuditTargetIds,
@@ -2624,15 +2625,29 @@ async function completeOne(
               })),
             }))
           : undefined;
+        const gradingAuditRetryGuidance =
+          pendingGradingAuditTargetIds?.length && failedGradingAuditTargetIds?.length
+            ? 'Retry after binding current proof, emitting terminal scorecards, settling any pending grading audits, and repairing the failed grading-integrity findings before emitting fresh terminal scorecards.'
+            : pendingGradingAuditTargetIds?.length
+              ? 'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits.'
+              : failedGradingAuditTargetIds?.length
+                ? `Retry after repairing the failed grading-integrity findings for scorecard(s) ${failedGradingAuditTargetIds.join(', ')}, then emit fresh terminal scorecards through scorecards:emit.`
+                : 'Retry after binding current proof and emitting terminal scorecards when required.';
         refuseGate(
           `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
-            'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. No completion record or state transition was written.',
+            `${gradingAuditRetryGuidance} No completion record or state transition was written.`,
           {
             specAdequacy: {
               applicable: true,
               retryable: true,
               checked: gate.checked,
               ...(gate.impactReport ? { impactReport: gate.impactReport } : {}),
+              ...(pendingGradingAuditTargetIds?.length
+                ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] }
+                : {}),
+              ...(failedGradingAuditTargetIds?.length
+                ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] }
+                : {}),
               ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
             },
           },
