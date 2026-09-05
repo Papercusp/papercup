@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
-import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
 
@@ -40,7 +40,7 @@ export async function synchronizeAcceptanceBarRevision(
   // acquiring their second lock: refusal rolls back instead of deadlocking a
   // concurrent amendment which acquired the pair in the opposite order.
   const [lock] = await sql<Array<{ ok: boolean }>>`
-    SELECT pg_try_advisory_xact_lock(hashtext('harness_plan_write'),
+    SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
       hashtext(${planAdvisoryLockKey(args.workspaceId, args.harnessSlug, subjectPlan)})) AS ok`;
   if (!lock?.ok) throw new Error('acceptance_bar_revision_subject_busy');
   const subjects = await sql<Array<{ plan_slug: string }>>`
@@ -70,7 +70,8 @@ export async function synchronizeAcceptanceBarRevision(
      ORDER BY c.spec_id LIMIT 1001`;
   if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
-  if (data.criteria.some((criterion) => !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)))) {
+  if (data.criteria.some((criterion) => criterion.role !== 'disclosure' &&
+    !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)))) {
     throw new Error('acceptance_bar_revision_mapping_missing');
   }
   const revisions = new Map<string, number>();
