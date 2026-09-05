@@ -41,6 +41,7 @@ import {
   walkProcessTree,
   resolveOwningTree,
   sameTreePath,
+  filterByOwningTree,
 } from '../../../scripts/proc-guard.mjs';
 
 let fixtureRoot: string | null = null;
@@ -836,5 +837,53 @@ describe('proc-guard: which TREE does this process belong to (EI-212959267649968
     expect(sameTreePath('/a/b', '/a/b/')).toBe(true);
     expect(sameTreePath('/a/b', '/a/b/../b')).toBe(true);
     expect(sameTreePath('/a/b', '/a/c')).toBe(false);
+  });
+
+  describe('--integration-root filtering', () => {
+    const ARGV = ['node', 'apps/operator/lib/release/green-checkpoint.ts'];
+    const MINE = '/home/x/papercupai-workspace/papercusp';
+    const THEIRS = '/home/x/.papercusp-workspaces/clones/oddsmith';
+
+    function population() {
+      fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+      fixtureProc(fixtureRoot, 600, 1, ARGV);
+      fixtureIdentity(fixtureRoot, 600, { environment: [`PAPERCUSP_INTEGRATION_ROOT=${MINE}`] });
+      fixtureProc(fixtureRoot, 601, 1, ARGV);
+      fixtureIdentity(fixtureRoot, 601, { environment: [`PAPERCUSP_INTEGRATION_ROOT=${THEIRS}`] });
+      // 602 is UNATTRIBUTABLE: no declared root, no readable cwd.
+      fixtureProc(fixtureRoot, 602, 1, ARGV);
+      return listProcesses(fixtureRoot, { readIdentity: true });
+    }
+
+    it('drops a row only on positive evidence it belongs to another tree', () => {
+      const rows = population();
+      const out = filterByOwningTree(fixtureRoot as string, rows, MINE);
+      expect(out.selected.map((r: { pid: number }) => r.pid).sort()).toEqual([600, 602]);
+      expect(out.excludedOtherTree).toBe(1);
+    });
+
+    /**
+     * The safety property, stated as its own test because it is the one that
+     * would regress silently: if an unattributable row were dropped, this
+     * filter could report "nothing is running for your tree" while a live gate
+     * it merely failed to read keeps running. A liveness check that can emit a
+     * confident false negative is worse than no check at all.
+     */
+    it('RETAINS an unattributable row rather than silently excluding it', () => {
+      const rows = population();
+      // Ask for a tree that matches NOTHING attributable. The unattributable
+      // row must still come back, and must be counted as retained.
+      const out = filterByOwningTree(fixtureRoot as string, rows, '/home/x/some/other/tree');
+      expect(out.selected.map((r: { pid: number }) => r.pid)).toEqual([602]);
+      expect(out.unattributedRetained).toBe(1);
+      expect(out.excludedOtherTree).toBe(2);
+    });
+
+    it('accounts for every input row across selected + excluded', () => {
+      const rows = population();
+      const out = filterByOwningTree(fixtureRoot as string, rows, MINE);
+      // Nothing is silently dropped: the two buckets reconstruct the input.
+      expect(out.selected.length + out.excludedOtherTree).toBe(rows.length);
+    });
   });
 });
