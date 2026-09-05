@@ -122,6 +122,65 @@ cat /tmp/o.json
 workaround failed. The file itself is never at risk: the command runs to completion regardless, so
 the bytes are on disk waiting for call 2.
 
+## `apply_patch`: ONE operation per file, or the WHOLE patch is rejected
+
+An `apply_patch` envelope may carry **at most one operation per target path**. Two
+`*** Update File:` blocks for the same file fail the entire patch before anything is
+written:
+
+```
+apply_patch verification failed: invalid patch: multiple operations target <path>
+```
+
+This is deterministic validation, not a flake — re-sending the same patch reproduces it
+exactly. Nothing was written, so there is never cleanup to do; just re-send the merged
+form.
+
+**The shape that causes it is a reasonable one**, which is why it recurs: you keep an
+unrelated edit visually separate by giving it its own block, often with a *different*
+file's block in between — so the collision is not adjacent in the source and does not
+look wrong on review.
+
+✅ **FIX — one block per FILE, one `@@` hunk per REGION.** The hunks stay exactly as
+separate and as readable as the blocks were, so nothing about your change is
+restructured:
+
+```
+*** Begin Patch
+*** Update File: packages/operator-core/lib/queue.ts
+@@ class RepairQueue
+-  const a = 1;
++  const a = 2;
+@@ function retire
+-  return null;
++  return queue;
+*** End Patch
+```
+
+Editing several **different** files in one patch is correct and unaffected. A managed
+Codex home also runs a PreToolUse guard that catches this before dispatch and names the
+colliding paths — if it denies your patch, merge the blocks; do not route around it.
+
+## Heredocs: quote the delimiter, and never interpolate a payload into the shell
+
+`ptool` payloads reach the shell through a heredoc, and two quoting rules keep them
+intact:
+
+- **Always quote the opening delimiter — `<<'JSON'`, not `<<JSON`.** Unquoted, the shell
+  expands `$`, backticks and `\` *inside the body*, so a JSON payload containing `$`,
+  a shell-looking token, or a Windows path is silently corrupted before `ptool` parses
+  it. Quoted, the body is passed through byte-for-byte.
+- **The closing delimiter must be at column 0, alone on its line.** Leading whitespace
+  (an editor auto-indent, or a heredoc nested inside an indented `if`/`for`) means the
+  shell never sees the terminator and swallows the rest of your script as payload.
+
+Do **not** put arbitrary JSON in shell single quotes: one apostrophe in prose,
+completion evidence, or a work-item body ends the quote and breaks the command before
+`ptool` runs. Use the quoted heredoc, or `--json-file` for anything large or
+awkward. Both of those rules compose with the JavaScript boundary above: a heredoc
+assembled inside a `functions.exec` template literal is subject to **both** V8
+interpolation *and* shell expansion, so prefer an ordinary JavaScript string there.
+
 <!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->
 Codex file-lock policy is resolved from runtime evidence, never from a static
 assumption. The generated **Codex Lock Enforcement Status** section at the end
