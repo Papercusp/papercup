@@ -68,6 +68,8 @@ import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
   synchronizeAcceptanceBarRevision,
+  resolveAcceptanceBarApproval,
+  type AcceptanceBarApproval,
   type AcceptanceBarAmendmentSql,
 } from './acceptance-bar-amendment';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
@@ -2341,6 +2343,8 @@ export interface AmendRubricInput {
     key: string;
     class: CriterionClass;
   };
+  /** Change the structural evidence plane through the same BAR amendment seam. */
+  criterionEvidencePlane?: { key: string; evidencePlane: 'tree' | 'deployed' | 'live' };
   /** Set/replace the rubric-level runbook slug (agent-insights). */
   methodRef?: string;
   /**
@@ -2376,8 +2380,8 @@ export interface AmendRubricInput {
  * throws teaching errors on an unknown criterion key / an empty amendment.
  */
 export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
-  if (!input.criterion && !input.criterionClass && input.methodRef === undefined && input.composes === undefined) {
-    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, methodRef, and/or composes');
+  if (!input.criterion && !input.criterionClass && !input.criterionEvidencePlane && input.methodRef === undefined && input.composes === undefined) {
+    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes');
   }
 
   let criteria = stored.criteria;
@@ -2415,6 +2419,15 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
       );
     }
     criteria = criteria.map((c) => (c.key === key ? { ...c, criterionClass: cls } : c));
+  }
+
+  if (input.criterionEvidencePlane) {
+    const { key, evidencePlane } = input.criterionEvidencePlane;
+    if (stored.kind !== 'acceptance' || !criteria.some((criterion) => criterion.key === key) ||
+        !['tree', 'deployed', 'live'].includes(evidencePlane)) {
+      throw new Error('invalid_args: criterionEvidencePlane requires an existing acceptance criterion and a structural tree/deployed/live token');
+    }
+    criteria = criteria.map((criterion) => criterion.key === key ? { ...criterion, evidencePlane } : criterion);
   }
 
   return {
@@ -2510,6 +2523,17 @@ interface AcceptanceAmendmentResult {
   rubricBody?: string;
   subjectBody?: string;
   templateData?: unknown;
+  preview?: AcceptanceBarAmendmentPreview;
+}
+
+export interface AcceptanceBarAmendmentPreview {
+  rubricRevision: number;
+  subjectPlanRevision: number;
+  priorBarSetHash: string;
+  nextBarSetHash: string;
+  changedBars: string[];
+  projectionCount: number;
+  approval: AcceptanceBarApproval;
 }
 
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
@@ -2523,7 +2547,17 @@ function injectAmendmentFault(input: AmendRubricInput, stage: NonNullable<AmendR
 }
 
 function decisionHasAmendmentKey(body: string, key: string): boolean {
-  return parsePlan(body).decisions.some((decision) => decision.body.includes(`Amendment-Id: ${key}`));
+  return parsePlan(body).decisions.some((decision) => decision.body.split('\n').includes(`Amendment-Id: ${key}`));
+}
+
+function amendmentRequestHash(input: AmendRubricInput): string {
+  return hashPlanContent(JSON.stringify([
+    input.rubricId, input.actorId ?? input.by ?? null, input.reason ?? null,
+    input.criterion ? [input.criterion.key, input.criterion.field, input.criterion.mode, input.criterion.text] : null,
+    input.criterionClass ? [input.criterionClass.key, input.criterionClass.class] : null,
+    input.criterionEvidencePlane ? [input.criterionEvidencePlane.key, input.criterionEvidencePlane.evidencePlane] : null,
+    input.methodRef ?? null, input.composes ?? null, input.approvalRef ?? null,
+  ]));
 }
 
 function amendmentDate(): string {
@@ -2555,6 +2589,7 @@ async function resolveAcceptanceSubjectScope(
 async function amendAcceptanceBarRubric(
   input: AmendRubricInput,
   rubricScope: { workspaceId: string; harnessSlug: string },
+  preview = false,
 ): Promise<AcceptanceAmendmentResult | null> {
   const subjectPlanHint = (await getRubric(input.rubricId))?.subjectPlan;
   if (!subjectPlanHint) return null;
@@ -2593,6 +2628,20 @@ async function amendAcceptanceBarRubric(
       const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
       if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint) return null;
 
+      // An explicit replay token identifies the original request, including its
+      // approval receipt. Handle retries before CAS and re-applying append text.
+      const replay = input.idempotencyKey && parsePlan(subjectRow.content).decisions.find((decision) =>
+        decision.body.split('\n').includes(`Amendment-Id: ${input.idempotencyKey!.trim()}`));
+      if (replay && !preview) {
+        if (!replay.body.split('\n').includes(`Request-Hash: ${amendmentRequestHash(input)}`)) {
+          throw new Error('acceptance_bar_amendment_replay_conflict');
+        }
+        return { rubric: stored, decisionId: replay.id, rubricRevision: Number(rubricRow.version),
+          subjectPlanRevision: Number(subjectRow.version), barSetHash: stored.barSetHash!,
+          changedBars: [], reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey: input.idempotencyKey!.trim(), replayed: true };
+      }
+
       const amended = applyRubricAmendment(stored, input);
       const built = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
@@ -2627,9 +2676,6 @@ async function amendAcceptanceBarRubric(
         amendment: {
           actorId,
           reason,
-          ...(input.approvalRef ? { approvalRef: input.approvalRef.trim() } : {}),
-          ...(input.approvedBy ? { approvedBy: input.approvedBy.trim() } : {}),
-          ...(input.approvedAt ? { approvedAt: input.approvedAt } : {}),
         },
       });
       const changedBars = guard.changes
@@ -2639,28 +2685,29 @@ async function amendAcceptanceBarRubric(
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
-      if (!input.approvalRef?.trim() || !input.approvedBy?.trim()) {
-        throw new Error(
-          `invalid_args: acceptance BAR amendment requires approvalRef and approvedBy from an outside-lineage approver`,
-        );
-      }
-      if (input.approvedBy.trim() === actorId) {
-        throw new Error(`invalid_args: acceptance BAR amendment approver must differ from the amendment actor`);
-      }
-      const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
-        sql: tx as never,
-        workspaceId: subjectScope.workspaceId,
+      const approvalRequest: AcceptanceBarApproval = {
+        schemaVersion: 1, kind: 'acceptance-bar-amendment-approval',
+        rubricRef: input.rubricId, subjectPlan: subjectPlanHint,
+        bars: changedBars.map((barKey) => ({ barKey,
+          priorBarHash: stored.criteria.find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? '',
+          nextBarHash: String((guard.data.criteria as Array<Record<string, unknown>>)
+            .find((criterion) => (criterion.barKey ?? criterion.key) === barKey)?.barHash ?? ''),
+        })),
+      };
+      const approval = preview ? null : await resolveAcceptanceBarApproval(tx as never, {
+        workspaceId: subjectScope.workspaceId, approvalRef: input.approvalRef,
+        approvedBy: input.approvedBy, expected: approvalRequest,
       });
-      for (const implementer of implementers) {
-        if (
-          await areAcceptanceLineageRelated(input.approvedBy, implementer, {
-            sql: tx as never,
-            workspaceId: subjectScope.workspaceId,
-          })
-        ) {
-          throw new Error(
-            `invalid_args: acceptance BAR amendment approver '${input.approvedBy}' is in implementer lineage '${implementer}'`,
-          );
+      if (approval) {
+        const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
+          sql: tx as never, workspaceId: subjectScope.workspaceId,
+        });
+        for (const implementer of new Set([actorId, stored.createdBy, subjectRow.owner, ...implementers])) {
+          if (implementer && await areAcceptanceLineageRelated(approval.approvedBy, implementer, {
+            sql: tx as never, workspaceId: subjectScope.workspaceId,
+          })) {
+            throw new Error(`acceptance_bar_approval_in_implementer_lineage: '${approval.approvedBy}' is related to '${implementer}'`);
+          }
         }
       }
 
@@ -2727,15 +2774,23 @@ async function amendAcceptanceBarRubric(
         }
       }
 
+      if (preview) return {
+        rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+        subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!, changedBars,
+        reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey,
+        preview: { rubricRevision: oldRubricRevision, subjectPlanRevision: oldSubjectRevision,
+          priorBarSetHash: stored.barSetHash!, nextBarSetHash: String(guard.data.barSetHash),
+          changedBars, projectionCount: clauses.length, approval: approvalRequest },
+      };
       const decisionId = allocateNextDecisionId(subjectRow.content);
-      const approvedAt = input.approvedAt?.trim() || new Date().toISOString();
       const decisionBody = [
         `Amendment-Id: ${idempotencyKey}`,
+        `Request-Hash: ${amendmentRequestHash(input)}`,
         `Actor: ${actorId}`,
         `Reason: ${reason}`,
-        `Approved-By: ${input.approvedBy.trim()}`,
-        `Approval-Ref: ${input.approvalRef.trim()}`,
-        `Approved-At: ${approvedAt}`,
+        `Approved-By: ${approval!.approvedBy}`,
+        `Approval-Ref: ${approval!.approvalRef}`,
+        `Approved-At: ${approval!.approvedAt}`,
         `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
@@ -2901,7 +2956,7 @@ async function amendAcceptanceBarRubric(
     },
   );
   if (!txResult) return null;
-  if (txResult.replayed) return txResult;
+  if (txResult.replayed || txResult.preview) return txResult;
   // Revision rows are audit history.  The data transaction above remains the
   // atomic source of truth; these best-effort records make both plans visible
   // through the existing plan-revisions reader.
@@ -2946,6 +3001,11 @@ async function amendAcceptanceBarRubric(
  * — every WI-4287 loss-guard still applies to a `replace` (an `append` can only grow).
  * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
  */
+export async function previewAcceptanceBarAmendment(input: AmendRubricInput): Promise<AcceptanceBarAmendmentPreview | null> {
+  const scope = await resolveRubricWriteScope(input.rubricId);
+  return (await amendAcceptanceBarRubric(input, scope, true))?.preview ?? null;
+}
+
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
   // A started acceptance BAR is a cross-plan contract: changing its MODEL or
@@ -2956,8 +3016,8 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   if (
     currentForRouting?.kind === 'acceptance' &&
     currentForRouting.barContract &&
-    input.criterion &&
-    (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')
+    (input.criterionEvidencePlane || (input.criterion &&
+    (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')))
   ) {
     const amended = await amendAcceptanceBarRubric(input, scope);
     // Do not fall back to the single-plan path when the locked reread no longer
