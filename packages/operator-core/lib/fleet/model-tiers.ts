@@ -191,7 +191,9 @@ export function resolveTierSpec(opts: {
         spec: roleFloorSpec,
         tier: OFF_MENU_TIER,
         requestedTier: requested,
-        compactionLimit: defaultCompactionLimitForTier({ name: OFF_MENU_TIER, spec: roleFloorSpec }),
+        // Derived from the role's OWN default spec — there is no menu row to
+        // take a contextWindow from, which is the point of the frozen result.
+        compactionLimit: defaultCompactionLimitForTier({ spec: roleFloorSpec }),
         clamped: 'floor',
         note: `role "${opts.role}" default "${roleFloorSpec}" is not on the configured tier menu (${tiers.map((t) => t.name).join(', ')}), and tier "${requested}" (${tiers[idx].spec}) is a WEAKER model class — the role stays on its own default (a role never silently downgrades, EI-7/EI-286). Steer an off-menu role via AGENT_MODELS.`,
       };
