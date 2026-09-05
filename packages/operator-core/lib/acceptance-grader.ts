@@ -22,6 +22,18 @@ import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
+/**
+ * Stable in-process principal that owns automatic acceptance-grader recruitment.
+ *
+ * A rubric author may ask the plan gate to recruit a judge, but a fresh agent
+ * launched *by that author* remains in the author's lineage and therefore cannot
+ * supply an independent grade.  The gate and the periodic recovery sweep both
+ * recruit through this system principal so the spawned judge is outside the
+ * author's launch lineage; direct author calls to launchAcceptanceGrader remain
+ * fail-closed below.
+ */
+export const ACCEPTANCE_GRADING_SWEEP_ACTOR = 'system:acceptance-grading-sweep';
+
 /** One entry of the assigned grader MENU, with its selection provenance. */
 export type AssignedGrader = {
   ownerId: string;
@@ -236,9 +248,18 @@ function normalizeAcceptanceGraderLog(rawLog: string): string {
  */
 export function classifyAcceptanceGraderTerminalFailure(rawLog: string): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
-  const quota = normalized.match(
+  const legacyQuota = normalized.match(
     /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
   );
+  // EI-22453936824523023: Claude's newer session-limit screen no longer uses
+  // the legacy "reached ... limit / switch models" copy. Keep both the exact
+  // terminal headline AND one of its recovery prompts in the match: the
+  // headline alone can appear in frozen incident evidence, while the paired
+  // screen copy is the observable that this running judge cannot grade.
+  const sessionQuota = normalized.match(
+    /You've hit your session limit\s*·\s*resets [^\n]{1,120}[\s\S]{0,480}?(?:\/usage-credits to finish what you(?:'|’)re working on\.|\/limit-reset to reset your session limit now)/i,
+  );
+  const quota = legacyQuota ?? sessionQuota;
   if (!quota) return null;
   return {
     code: 'model_quota_exhausted',

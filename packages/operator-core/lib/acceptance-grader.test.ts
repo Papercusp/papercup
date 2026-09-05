@@ -345,6 +345,50 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
+  it('recovers a deduped judge from the current Claude session-limit screen', async () => {
+    const sessionLimitLog =
+      "\u001b[38;5;211mYou've hit your session limit · resets 5pm (America/New_York)\r\n" +
+      '\u001b[38;5;246m/usage-credits to finish what you’re working on.\r\n' +
+      '\u001b[38;5;231m⚠ /limit-reset to reset your session limit now · uses weekly limit · 1/week\u001b[0m';
+    const launch = vi.fn(async (args: Record<string, unknown>) =>
+      args.agent === 'codex'
+        ? {
+            content: [{ type: 'text', text: 'launched fallback' }],
+            data: { deduped: false, launch: { tasks: [{ taskId: 'task-fallback' }] } },
+          }
+        : {
+            content: [{ type: 'text', text: 'deduped failed primary' }],
+            data: {
+              deduped: true,
+              launch: { tasks: [{ taskId: 'task-session-limit', logPath: '/tmp/session-limit.log' }] },
+            },
+          },
+    );
+    const kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      readLogTail: (path) => (path === '/tmp/session-limit.log' ? sessionLimitLog : ''),
+    });
+
+    expect(kill).toHaveBeenCalledWith('task-session-limit', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({
+      account: 'default',
+      agent: 'codex',
+      members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
+      idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
+    });
+    expect(result).toMatchObject({
+      state: 'launched',
+      launch: { tasks: [{ taskId: 'task-fallback' }] },
+      terminalRecovery: {
+        retiredTaskIds: ['task-session-limit'],
+        codes: ['model_quota_exhausted'],
+      },
+    });
+  });
+
   it('retires a Claude judge stuck on the connection screen and performs one deterministic Codex fallback', async () => {
     const connectingLog =
       'psu: cwd /tmp/papercusp — role-scoped MCP (judge); resume from here\n' +
@@ -441,11 +485,25 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches the current Claude session-limit screen through terminal control bytes', () => {
+    const raw =
+      "\u001b[38;5;211mYou've hit your session limit · resets 5pm (America/New_York)\r\n" +
+      '\u001b[38;5;246m/usage-credits to finish what you’re working on.\r\n' +
+      '\u001b[38;5;231m⚠ /limit-reset to reset your session limit now · uses weekly limit · 1/week\u001b[0m';
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toEqual({
+      code: 'model_quota_exhausted',
+      evidence:
+        "You've hit your session limit · resets 5pm (America/New_York) /usage-credits to finish what you’re working on.",
+    });
+  });
+
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(
       classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
     ).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure("You've reached your test limit.")).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure("You've hit your session limit · resets 5pm")).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure('/limit-reset to reset your session limit now')).toBeNull();
   });
 });
 
