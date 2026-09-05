@@ -23,7 +23,7 @@
  * here in-process so it can drain HTTP gracefully before exiting.
  */
 
-import { setFlagsFromString } from 'node:v8';
+import { getHeapStatistics, setFlagsFromString } from 'node:v8';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { runInNewContext } from 'node:vm';
 import { backgroundWorkersEnabled } from './background-workers';
@@ -192,6 +192,49 @@ export interface MemoryWatchdogHandle {
 const bytesToMb = (b: number) => Math.round(b / (1024 * 1024));
 
 /**
+ * V8 heap decomposition for the structured watchdog lines.
+ *
+ * WHY: RSS alone says HOW MUCH a worker holds and never WHAT. That single gap is
+ * what left the :3070 ~2 GB/worker growth un-diagnosable across weeks of
+ * investigation (WI-38221) — the only instrument on the hot path reported one
+ * scalar, so every question about composition needed a bespoke probe or a heap
+ * snapshot of a multi-GB production process. The watchdog already writes ~1300
+ * structured records per 14h on every worker; emitting the split *beside* the RSS
+ * gauge turns that existing stream into a decomposition over time, retroactively
+ * answerable with a log query instead of new instrumentation.
+ *
+ * `detachedContexts` is the highest-signal field: a detached context count that
+ * climbs and never returns to baseline is a textbook retainer (a context whose
+ * global is unreachable but still referenced from somewhere live).
+ *
+ * Cost is bounded deliberately: this is computed ONLY at the two log sites, never
+ * on every sample, so a healthy process below the warn line pays nothing.
+ * Instrumentation must never break the thing it instruments — on any failure this
+ * returns `{}` and the line is written exactly as it was before.
+ */
+function heapBreakdown(): Record<string, number> {
+  try {
+    const mu = process.memoryUsage();
+    // number_of_detached_contexts / number_of_native_contexts are present in V8's
+    // HeapInfo but not in every @types/node revision — read them defensively.
+    const hs = getHeapStatistics() as ReturnType<typeof getHeapStatistics> & {
+      number_of_detached_contexts?: number;
+      number_of_native_contexts?: number;
+    };
+    return {
+      heapUsedMb: bytesToMb(mu.heapUsed),
+      heapTotalMb: bytesToMb(mu.heapTotal),
+      externalMb: bytesToMb(mu.external),
+      arrayBuffersMb: bytesToMb(mu.arrayBuffers ?? 0),
+      detachedContexts: hs.number_of_detached_contexts ?? -1,
+      nativeContexts: hs.number_of_native_contexts ?? -1,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Resolve a forced full-GC hook for the proactive-GC freeze fix, WITHOUT requiring
  * `--expose-gc` in NODE_OPTIONS. Order: an already-exposed `global.gc`, else
  * runtime-enable it via `v8.setFlagsFromString('--expose-gc')` and grab the `gc`
@@ -276,6 +319,7 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
         warnMb,
         rssLimitMb,
         overCount,
+        ...heapBreakdown(),
       });
     }
     // PROACTIVE GC (root freeze fix) — runs in the SAFE band (≥ proactiveGcMb, <
@@ -306,6 +350,12 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
         reclaimedMb: Math.max(0, before - after),
         proactiveGcMb,
         rssLimitMb,
+        // POST-GC decomposition. Sampled AFTER the forced full GC, so these are
+        // SURVIVORS — objects a full mark-compact could not collect. That makes
+        // this the single most diagnostic line the process emits: growth here is
+        // growth in the genuinely-live set, which is precisely the distinction
+        // between a retention bug and a GC-tuning problem (WI-38221).
+        ...heapBreakdown(),
       });
     }
     if (rss >= rssLimitMb) {

@@ -243,6 +243,81 @@ describe('startMemoryWatchdog', () => {
     );
     h.stop();
   });
+
+  // WI-38221: RSS alone says HOW MUCH a worker holds and never WHAT, which is the
+  // gap that left the :3070 ~2GB/worker growth un-diagnosable for weeks.
+  function withMemory(rssMb: number, heapUsedMb: number) {
+    return vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: rssMb * 1024 * 1024,
+      heapTotal: heapUsedMb * 1024 * 1024,
+      heapUsed: heapUsedMb * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+    } as NodeJS.MemoryUsage);
+  }
+
+  it('the soft-threshold gauge carries the V8 heap decomposition, not just the RSS scalar', () => {
+    withMemory(2500, 1800);
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      rssLimitMb: 12288,
+      warnMb: 2400,
+      proactiveGcMb: 0,
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+    expect(log).toHaveBeenCalledWith(
+      '[memory-watchdog] RSS above soft threshold',
+      expect.objectContaining({
+        rssMb: 2500,
+        heapUsedMb: 1800,
+        externalMb: expect.any(Number),
+        arrayBuffersMb: expect.any(Number),
+        // Sourced from real V8 in-process; assert shape, not a fixed value.
+        detachedContexts: expect.any(Number),
+        nativeContexts: expect.any(Number),
+      }),
+    );
+    h.stop();
+  });
+
+  it('the proactive-GC line decomposes POST-GC SURVIVORS, not the pre-GC heap (the retention-vs-garbage distinction)', () => {
+    // Pre-GC the process holds 2000 MB of heap; the forced GC collects most of it,
+    // leaving 400 MB of genuinely-live survivors. The logged decomposition must
+    // describe the SURVIVORS — that is the whole diagnostic value of the line, and
+    // sampling it before forceGc() would silently report collectable garbage as
+    // retained memory.
+    const spy = withMemory(2500, 2000);
+    const log = vi.fn();
+    const forceGc = vi.fn(() => {
+      spy.mockReturnValue({
+        rss: 2100 * 1024 * 1024,
+        heapTotal: 400 * 1024 * 1024,
+        heapUsed: 400 * 1024 * 1024,
+        external: 0,
+        arrayBuffers: 0,
+      } as NodeJS.MemoryUsage);
+    });
+
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      rssLimitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc,
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+    const call = log.mock.calls.find((c) => String(c[0]).includes('proactive GC'));
+    expect(call).toBeDefined();
+    expect(call?.[1]).toMatchObject({ rssMbBefore: 2500, rssMbAfter: 2100, reclaimedMb: 400 });
+    // The load-bearing assertion: 400 (survivors), never 2000 (pre-GC heap).
+    expect((call?.[1] as { heapUsedMb: number }).heapUsedMb).toBe(400);
+    h.stop();
+  });
 });
 
 describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', () => {
