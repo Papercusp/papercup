@@ -230,14 +230,7 @@ defineTestDomain({
     {
       id: 'wdio',
       label: 'WebdriverIO',
-      globs: [
-        'tools/perf-test/wdio/specs/**/*.spec.ts',
-        // The package's own node:test unit suite (perf-report.node-test.ts), run by
-        // the same `npm --prefix tools/perf-test/wdio test` chain as the specs.
-        // `*.node-test.ts`, never `*.test.ts`: the latter is globbed by vitest,
-        // which reports "No test suite found" and reds the gate (EI-10878).
-        'tools/perf-test/wdio/*.node-test.ts',
-      ],
+      globs: ['tools/perf-test/wdio/specs/**/*.spec.ts'],
       runners: [
         { kind: 'admin-suite', suiteId: 'packaged-readiness' },
         {
