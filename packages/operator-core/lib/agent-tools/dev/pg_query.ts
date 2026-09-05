@@ -45,6 +45,30 @@ import {
   PgReadQueryTimeoutError,
 } from '../../pg-read-query';
 
+/**
+ * The ENVELOPE DISCRIMINATOR (P-011, fleet-friction-remediation-2026-08-21).
+ *
+ * `dev:pg_query` returns three structurally disjoint payloads — a SQL result, a
+ * single-relation description, and a glob relation LIST — and until this existed
+ * they shared no common field. A caller could only tell them apart by probing for
+ * the presence of `rows` vs `columns` vs `relations`, which is exactly the
+ * "schema-guessing loop" the describe path was added to end. Worse, the two
+ * describe shapes reach the transport through `dataResult` while the SQL shape is
+ * hand-serialised, so they are not even siblings structurally.
+ *
+ * Every payload now carries `mode`, so callers SWITCH instead of probing. Exported
+ * because the published `returns` contract and its recurrence test both read these
+ * literals from here: one source, so the documented union cannot drift from the
+ * emitted one (CLAUDE.md, derived-truth ladder — DERIVE, not hand-maintained prose).
+ */
+export const PG_QUERY_MODE = {
+  query: 'query',
+  describe: 'describe',
+  describeList: 'describe-list',
+} as const;
+
+export type PgQueryMode = (typeof PG_QUERY_MODE)[keyof typeof PG_QUERY_MODE];
+
 /** A successful JSON payload in the MCP content shape. */
 function jsonResult(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
@@ -286,7 +310,12 @@ export default defineTool({
         // A glob (or bare `*`) means "list what matches" rather than "describe one".
         if (/[*?]/.test(args.describe)) {
           const relations = await listRelations(args.describe);
-          return dataResult({ pattern: args.describe, relationCount: relations.length, relations });
+          return dataResult({
+            mode: PG_QUERY_MODE.describeList,
+            pattern: args.describe,
+            relationCount: relations.length,
+            relations,
+          });
         }
         const description = await describeRelation(args.describe);
         if (!description) {
@@ -298,7 +327,7 @@ export default defineTool({
               (canonicalRelationRedirect(args.describe) ?? ''),
           );
         }
-        return dataResult(description);
+        return dataResult({ mode: PG_QUERY_MODE.describe, ...description });
       } catch (err) {
         return jsonError('describe_failed', extractPgErrorInfo(err).message ?? String(err));
       }
@@ -527,6 +556,7 @@ export default defineTool({
             type: 'text',
             text: JSON.stringify({
               ...(advisory ? { advisory } : {}),
+              mode: PG_QUERY_MODE.query,
               rowCount: result.rowCount,
               truncated: result.truncated,
               fields: result.fields,

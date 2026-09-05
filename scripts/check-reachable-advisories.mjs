@@ -219,21 +219,71 @@ function loadBaseline() {
   }
 }
 
+/** Synchronous sleep — this whole gate is sync, so a promise-based delay is unusable here. */
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * UNDETERMINED, NOT CLEAN, AND NOT RED — the third verdict this gate has to be able to say.
+ *
+ * `npm audit` is the one input here that needs the network. A registry timeout produces no
+ * parseable payload, and there are exactly two wrong ways to handle that:
+ *
+ *   - treat it as "no advisories" — an empty result from a bounded instrument read as a
+ *     negative finding, the failure this repo names everywhere; or
+ *   - treat it as an ordinary red — which, once this gate is wired into the fleet
+ *     green-checkpoint, red-pins `main` for ~100 agents over a network blip, and reads to
+ *     the triager exactly like "a new shipping high/critical advisory landed". Those two
+ *     need OPPOSITE responses (re-run vs. patch a dependency), so they must not look alike.
+ *
+ * So: retry the transient case a bounded number of times, and if it still cannot be
+ * measured, fail CLOSED but say so in a way nobody can misread — the thrown message leads
+ * with ADVISORY_GATE_UNDETERMINED and names the re-run as the fix.
+ *
+ * @param {string} label                     human name of the measurement, for the message
+ * @param {() => string | undefined} attempt  performs one measurement, returning raw stdout
+ * @param {{ attempts?: number, delaysMs?: number[], sleep?: (ms: number) => void }} [opts]
+ * @returns {any} the parsed payload
+ */
+export function measureJson(label, attempt, opts = {}) {
+  const attempts = opts.attempts ?? 3;
+  const delaysMs = opts.delaysMs ?? [1000, 3000];
+  const sleep = opts.sleep ?? sleepSync;
+  let last = 'no attempt was made';
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) sleep(delaysMs[Math.min(i - 1, delaysMs.length - 1)]);
+    let out;
+    try {
+      out = attempt();
+    } catch (err) {
+      // npm exits non-zero when advisories/extraneous deps exist; that is expected, so we
+      // read stdout regardless and judge only on whether the payload parses.
+      out = err && err.stdout;
+    }
+    if (!out || !String(out).trim()) {
+      last = 'produced no output';
+      continue;
+    }
+    try {
+      return JSON.parse(String(out));
+    } catch (err) {
+      last = `output was not JSON (${err.message})`;
+    }
+  }
+  throw new Error(
+    `ADVISORY_GATE_UNDETERMINED: ${label} could not be measured after ${attempts} attempt(s) — ${last}. ` +
+      'This is a MEASUREMENT failure, not an advisory finding: nothing about the dependency tree ' +
+      'changed and no new advisory was detected. Re-run the gate; if it keeps failing, npm cannot ' +
+      'reach the registry from this host.',
+  );
+}
+
 function runJson(args, label) {
-  // npm exits non-zero when advisories/extraneous deps exist; that is expected, so we
-  // read stdout regardless and fail only when the payload is unparseable.
-  let out;
-  try {
-    out = execFileSync('npm', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  } catch (err) {
-    out = err.stdout;
-  }
-  if (!out || !out.trim()) throw new Error(`${label} produced no output — cannot measure`);
-  try {
-    return JSON.parse(out);
-  } catch (err) {
-    throw new Error(`${label} output was not JSON (${err.message})`);
-  }
+  return measureJson(label, () =>
+    execFileSync('npm', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }),
+  );
 }
 
 // ── self-test: prove the analyzer discriminates, on inline fixtures ──────────────

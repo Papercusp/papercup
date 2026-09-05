@@ -85,3 +85,30 @@ export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJso
     unattributed: string[];
     nonShippingOnly: number;
 };
+/**
+ * UNDETERMINED, NOT CLEAN, AND NOT RED — the third verdict this gate has to be able to say.
+ *
+ * `npm audit` is the one input here that needs the network. A registry timeout produces no
+ * parseable payload, and there are exactly two wrong ways to handle that:
+ *
+ *   - treat it as "no advisories" — an empty result from a bounded instrument read as a
+ *     negative finding, the failure this repo names everywhere; or
+ *   - treat it as an ordinary red — which, once this gate is wired into the fleet
+ *     green-checkpoint, red-pins `main` for ~100 agents over a network blip, and reads to
+ *     the triager exactly like "a new shipping high/critical advisory landed". Those two
+ *     need OPPOSITE responses (re-run vs. patch a dependency), so they must not look alike.
+ *
+ * So: retry the transient case a bounded number of times, and if it still cannot be
+ * measured, fail CLOSED but say so in a way nobody can misread — the thrown message leads
+ * with ADVISORY_GATE_UNDETERMINED and names the re-run as the fix.
+ *
+ * @param {string} label                     human name of the measurement, for the message
+ * @param {() => string | undefined} attempt  performs one measurement, returning raw stdout
+ * @param {{ attempts?: number, delaysMs?: number[], sleep?: (ms: number) => void }} [opts]
+ * @returns {any} the parsed payload
+ */
+export function measureJson(label: string, attempt: () => string | undefined, opts?: {
+    attempts?: number;
+    delaysMs?: number[];
+    sleep?: (ms: number) => void;
+}): any;
