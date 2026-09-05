@@ -36,6 +36,7 @@ import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
 import { SECTION_ONLY_FIELDS } from '../message-fields';
+import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
 describe('EI-20223353810864057 — primary coord:send guidance names required summary', () => {
   it('describes summary as the required inbox headline on both guidance surfaces', () => {
@@ -615,5 +616,81 @@ describe('EI-21656724796029687 — forYouBecause is signposted on `expects`, not
       });
       expect(parsed.success, `expects:'${expects}' is exempt and must parse`).toBe(true);
     }
+  });
+});
+
+describe("EI-22369606583733422 — the expects!=='none' body cap is discoverable BEFORE the send", () => {
+  // Measured 2026-09-05: five rejections across two messages in one session.
+  // The cap was enforced in two places and documented only in `returns` — which
+  // a composer reads AFTER the refusal. The body schema described shape at
+  // length and never mentioned a length limit at all, so the only way to learn
+  // it was to lose a load-bearing message to it.
+  //
+  // The assertions below are pinned to the DERIVED constant, not to the literal
+  // 600. That is the point: if the cap ever moves, an interpolated description
+  // follows it automatically and these stay green, while a description that
+  // hardcoded a stale number goes red instead of quietly lying to callers.
+  const bodyDescriptions = (): Record<string, string> => {
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: {
+        body?: { description?: string };
+        items?: { items?: { properties?: { body?: { description?: string } } } };
+      };
+    };
+    return {
+      'top-level body': schema.properties?.body?.description ?? '',
+      'items[].body': schema.properties?.items?.items?.properties?.body?.description ?? '',
+    };
+  };
+
+  it('states the real cap on every body schema surface a caller composes against', () => {
+    for (const [surface, description] of Object.entries(bodyDescriptions())) {
+      expect(description, `${surface} must not be empty`).not.toBe('');
+      // The NUMBER a caller needs, carried from the constant the refusal enforces.
+      expect(description, `${surface} must state the cap`).toContain(
+        String(DEFAULT_INBOX_BODY_CAP),
+      );
+      // The CONDITION — a cap stated without it reads as unconditional and
+      // pushes callers into needlessly truncating an exempt FYI.
+      expect(description, `${surface} must scope the cap to expects`).toMatch(/expects/i);
+      expect(description, `${surface} must name the 'none' exemption`).toMatch(/none/i);
+      // The CONSEQUENCE. "Capped" reads as truncation; nothing is sent at all.
+      expect(description, `${surface} must say the send is refused`).toMatch(
+        /refus|reject|nothing is sent/i,
+      );
+    }
+  });
+
+  it('the documented cap is the one actually enforced — schema text and refusal agree', () => {
+    // Falsifiable end-to-end: a body one character over the documented number
+    // must really be refused, and one at the number must really parse. If the
+    // description and the enforcement ever disagree, one of these two goes red.
+    const overBy1 = 'x'.repeat(DEFAULT_INBOX_BODY_CAP + 1);
+    const refused = sendTool.args.safeParse({
+      to: ['peer'],
+      summary: 'hi',
+      expects: 'action',
+      body: [{ text: overBy1, forYouBecause: { relation: 'same-fleet' } }],
+    });
+    expect(refused.success, 'one char over the documented cap must be refused').toBe(false);
+
+    const atCap = 'x'.repeat(DEFAULT_INBOX_BODY_CAP);
+    const accepted = sendTool.args.safeParse({
+      to: ['peer'],
+      summary: 'hi',
+      expects: 'action',
+      body: [{ text: atCap, forYouBecause: { relation: 'same-fleet' } }],
+    });
+    expect(accepted.success, 'exactly the documented cap must still parse').toBe(true);
+  });
+
+  it("does not impose the cap on an expects:'none' FYI, which the text calls exempt", () => {
+    const parsed = sendTool.args.safeParse({
+      to: ['peer'],
+      summary: 'hi',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 3) }],
+    });
+    expect(parsed.success, "expects:'none' is documented as exempt and must parse").toBe(true);
   });
 });
