@@ -236,7 +236,8 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     // matches name==='claude' only) can't collide two adapters onto the same
     // directory and double-ingest a tick.
     const { claudeProjectsRoots, defaultClaudeProjectsRoot } = await import('../claude-sessions');
-    const { codexSessionRoots, parseCodexChunk, codexSessionIdForFile } = await import('./ingest-adapters');
+    const { codexSessionRoots, parseCodexChunk, codexSessionIdForFile, advSessionIdFromCodexHome } =
+      await import('./ingest-adapters');
     const globalRoot = defaultClaudeProjectsRoot();
     const isoRoots = (await claudeProjectsRoots(globalRoot, opts.isolationBase)).filter((r) => r !== globalRoot);
     // WI-2140701 (a): psu-launched codex sessions run under a per-session
@@ -259,11 +260,21 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
         parse: parseTranscriptChunk,
         ownerId: path.basename(path.dirname(root)),
       })),
+      // WI-2144763 (migration 1120): a per-session CODEX_HOME is
+      // `<base>/session-<advId>/sessions`, so the parent directory name carries
+      // `adv_sessions.id` — the PRIMARY KEY — and the INSERT can stamp
+      // harness_slug from it with no join, exactly as the claude isolation roots
+      // do with their owner id. Without this every psu-launched codex session
+      // fell through to the session route, which cannot find them: their sample
+      // `session_id` is the rollout uuid, and only 10 of 63 measured unstamped
+      // sessions were present in adv_sessions under it. codex-iso was ~92% of
+      // the whole post-1119 attribution gap.
       ...codexIsoRoots.map((root, i) => ({
         name: `codex-iso-${i}`,
         root,
         parse: parseCodexChunk,
         sessionIdForFile: codexSessionIdForFile,
+        advSessionId: advSessionIdFromCodexHome(root),
       })),
     ];
   }
@@ -329,7 +340,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 ${d.inputTokens}, ${d.outputTokens}, ${d.cacheReadTokens}, ${d.cacheCreationTokens},
                 ${est.priced ? est.usd : null}, ${model}, ${est.priced ? 'estimated' : null},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
-                   ${ws}, ${adapter.ownerId ?? null}, ${sessionId})),
+                   ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
                 ${sessionId}, ${'interactive'}, ${sessionId},
                 (SELECT harness_shared.goal_id_for_usage_session(${ws}, ${sessionId}))
               )

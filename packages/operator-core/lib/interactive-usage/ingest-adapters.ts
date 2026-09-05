@@ -191,6 +191,26 @@ export interface TranscriptAdapter {
    * real on-disk isolation owners, against 0.0% written by this writer today.
    */
   ownerId?: string;
+  /**
+   * `adv_sessions.id` (the bigint PRIMARY KEY) this adapter's transcripts belong
+   * to, when the root itself identifies one. A psu-launched codex session runs
+   * under a per-session CODEX_HOME shaped
+   * `~/.papercusp/su-codex-homes/session-<advId>/`, so the PK is already in the
+   * path the ingester walks and needs no join — the codex analogue of `ownerId`
+   * above. Passed to `harness_slug_for_usage_attribution` as its ranked-second
+   * route (WI-2144763, migration 1120).
+   *
+   * This exists because the rollout uuid stored in `session_id` does NOT match
+   * `adv_sessions.session_id` for these sessions: measured 2026-09-05, only 10 of
+   * 63 unstamped sessions were findable by that route, so the session fallback
+   * had nothing to join to and every psu codex session went unattributed.
+   * Measured coverage of THIS route on the same population: 58/58 resolve an
+   * adv_sessions row and a coord owner, 44/58 (75.9%) reach a harness_slug.
+   *
+   * Left undefined for the GLOBAL (non-isolation) roots, whose paths carry no
+   * adv id; those still fall back to the function's session route.
+   */
+  advSessionId?: number;
 }
 
 /** `rollout-2026-09-02T01-10-49-<uuid>.jsonl` → `<uuid>` — the same shape the
@@ -240,6 +260,25 @@ export async function codexSessionRoots(isolationBase: string = defaultCodexHome
     }
   }
   return roots;
+}
+
+/**
+ * `<base>/session-<advId>/sessions` → `<advId>` as a number, or undefined when the
+ * root is not a per-session CODEX_HOME of that shape (WI-2144763, migration 1120).
+ *
+ * `<advId>` is `adv_sessions.id`, the bigint PRIMARY KEY, so this is the codex
+ * analogue of lifting the coord owner id out of a claude isolation path: the key
+ * is already in the directory the ingester walks, and no join is needed to find
+ * it. Returns undefined rather than NaN on any unexpected shape, so a stray
+ * directory degrades to the existing session-route fallback instead of poisoning
+ * the INSERT with a NaN bind.
+ */
+export function advSessionIdFromCodexHome(sessionsRoot: string): number | undefined {
+  const home = path.basename(path.dirname(sessionsRoot));
+  const m = /^session-(\d+)$/.exec(home);
+  if (!m) return undefined;
+  const id = Number(m[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 
 /** The default adapter set: Claude Code + codex + OMP rollouts at their GLOBAL
