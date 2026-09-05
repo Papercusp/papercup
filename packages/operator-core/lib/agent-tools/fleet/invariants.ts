@@ -201,7 +201,34 @@ export async function listFleetInvariants(
   }));
 }
 
-/** Register (or replace, by name) one invariant for a fleet. */
+/**
+ * Register (or replace, by name) one invariant for a fleet.
+ *
+ * REGISTRATION PROVES THE CHECK RUNS — it does not merely store SQL. The
+ * original implementation asserted only that `querySql` was a single read
+ * STATEMENT, which is a claim about its shape, not about whether it can
+ * execute. A statement that is well-formed but references a column, cast or
+ * placeholder that does not resolve therefore registered cleanly and then
+ * reported `status:'error'` on every future brief — precisely what the
+ * write-time rejection above it says it exists to prevent. So registration now
+ * EXECUTES the prepared statement once, through the same `pgReadQuery` path
+ * evaluation uses, and refuses a check that cannot run.
+ *
+ * `falsifierSql` closes the harder half. This registry's contract is ROWS ==
+ * VIOLATED, so ZERO ROWS IS THE SAFE READING — which means a check that can
+ * never match is indistinguishable from a fleet that is healthy, and reports
+ * "satisfied" forever while protecting nothing. That is the same hazard
+ * `dev:pg_query` already names with `positiveControlSql` ("use when zero rows
+ * will support an absence claim"), so this is that primitive ported to the
+ * surface with the same contract, rather than a second mechanism. The
+ * falsifier is a deliberately-wrong-input companion — typically the invariant
+ * with its pin negated — that MUST return at least one row. Zero rows from it
+ * means the instrument cannot fire, and registration is refused.
+ *
+ * The falsifier is proof-at-registration and is deliberately NOT persisted:
+ * proving fire-ability at the moment of the claim needs no new column, and the
+ * staleness/re-verification loop that WOULD need one is not implemented here.
+ */
 export async function registerFleetInvariant(
   args: {
     workspaceId: string;
@@ -210,24 +237,82 @@ export async function registerFleetInvariant(
     name: string;
     description?: string | null;
     querySql: string;
+    falsifierSql?: string | null;
     severity?: InvariantSeverity;
     active?: boolean;
     createdBy?: string | null;
   },
   sqlOverride?: OrgSql,
-): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  deps: { runQuery?: typeof pgReadQuery } = {},
+): Promise<{ ok: true; id: string; falsifierRows?: number } | { ok: false; error: string }> {
   const sql = sqlOverride ?? getOrgPg().sql;
+  const runQuery = deps.runQuery ?? pgReadQuery;
 
   // Reject at WRITE time what would otherwise fail on every future brief. A
   // registry whose entries error on each read is worse than an empty one.
+  const prepared = substituteInvariantPlaceholders(args.querySql, {
+    fleet: args.fleetSlug,
+    workspace: args.workspaceId,
+  });
   try {
     const { assertSingleReadStatement } = await import('../../pg-read-query');
-    assertSingleReadStatement(substituteInvariantPlaceholders(args.querySql, {
-      fleet: args.fleetSlug,
-      workspace: args.workspaceId,
-    }));
+    assertSingleReadStatement(prepared);
   } catch (e) {
     return { ok: false, error: `querySql is not a single read statement: ${e instanceof Error ? e.message : String(e)}` };
+  }
+
+  // Shape was necessary but never sufficient: execute it once, the same way a
+  // brief will, so an unrunnable check is refused here instead of erroring on
+  // every future read.
+  try {
+    await runQuery(prepared, { maxRows: INVARIANT_MAX_ROWS, timeoutMs: INVARIANT_TIMEOUT_MS });
+  } catch (e) {
+    return {
+      ok: false,
+      error:
+        `querySql is a valid single read statement but did not RUN: ${e instanceof Error ? e.message : String(e)} — ` +
+        'registration executes the check once so it cannot register clean and then error on every brief',
+    };
+  }
+
+  // Prove it can FIRE. Without this, zero rows means "satisfied" whether the
+  // fleet is healthy or the check is dead, and the two are not distinguishable
+  // by reading the brief.
+  let falsifierRows: number | undefined;
+  if (args.falsifierSql != null && args.falsifierSql.trim() !== '') {
+    const preparedFalsifier = substituteInvariantPlaceholders(args.falsifierSql, {
+      fleet: args.fleetSlug,
+      workspace: args.workspaceId,
+    });
+    try {
+      const { assertSingleReadStatement } = await import('../../pg-read-query');
+      assertSingleReadStatement(preparedFalsifier);
+    } catch (e) {
+      return { ok: false, error: `falsifierSql is not a single read statement: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    let rows: unknown[];
+    try {
+      const result = await runQuery(preparedFalsifier, {
+        maxRows: INVARIANT_MAX_ROWS,
+        timeoutMs: INVARIANT_TIMEOUT_MS,
+      });
+      rows = result.rows ?? [];
+    } catch (e) {
+      return {
+        ok: false,
+        error: `falsifierSql did not RUN: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    if (rows.length === 0) {
+      return {
+        ok: false,
+        error:
+          'falsifierSql returned ZERO rows, so this check is not proven able to fire — a guard that ' +
+          'cannot return rows reports "satisfied" forever and protects nothing. The falsifier must be ' +
+          'a deliberately-wrong input (usually the invariant with its pin negated) that DOES match.',
+      };
+    }
+    falsifierRows = rows.length;
   }
 
   const existing = await listFleetInvariants(
@@ -262,7 +347,11 @@ export async function registerFleetInvariant(
            updated_at  = now()
     RETURNING id
   `) as unknown as { id: string }[];
-  return { ok: true, id: rows[0]?.id ?? id };
+  return {
+    ok: true,
+    id: rows[0]?.id ?? id,
+    ...(falsifierRows === undefined ? {} : { falsifierRows }),
+  };
 }
 
 /** Remove one invariant by name. Returns whether a row was actually deleted. */
