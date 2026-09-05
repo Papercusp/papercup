@@ -185,7 +185,12 @@ describe('plans:set-status wip — execution-record disclosure (EI-2242774101424
   it('reports nothing when the auto-convert threw (best-effort leg must stay non-fatal)', async () => {
     mockRejectedTyped(convertM, new Error('convert exploded'));
     lockReturnsMutatorValue(new Set(['P-006']));
+    // The best-effort leg logs the failure rather than throwing; assert that it
+    // did (fail-on-console would otherwise fail this test) instead of silencing it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const b = await body({ slug: 'plan-a', item: 'P-006', status: 'wip' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auto-convert plan-a#P-006 failed'), 'convert exploded');
+    warn.mockRestore();
     expect(b.results[0].ok).toBe(true); // a convert failure never breaks the status flip
     expect(b.results[0].executionRecord).toBeUndefined();
   });
