@@ -75,6 +75,24 @@ vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
 vi.mock('../presence-fleet', () => ({
   fetchPresenceFleet: (ids: string[]) => fetchPresenceFleet(ids),
 }));
+// WI-1383525 GAP 3 fault seam: the renderer is mocked as a PASSTHROUGH so one test
+// can make it throw once and prove the glance FAILS OPEN (display:null +
+// displayError) instead of failing the whole human-surface call.
+const renderFault = vi.hoisted(() => ({ throwNext: null as Error | null }));
+vi.mock('../status-display', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../status-display')>();
+  return {
+    ...actual,
+    renderStatusDisplay: (...args: Parameters<typeof actual.renderStatusDisplay>) => {
+      if (renderFault.throwNext) {
+        const err = renderFault.throwNext;
+        renderFault.throwNext = null;
+        throw err;
+      }
+      return actual.renderStatusDisplay(...args);
+    },
+  };
+});
 
 import glance from './glance';
 
@@ -120,6 +138,19 @@ describe('coord:glance', () => {
     expect(discoverability).toContain('fleet:assignments');
     expect(discoverability).toContain('fleet:leader-brief');
     expect(discoverability).toContain('Takes ONLY audience/state');
+  });
+
+  it('a renderStatusDisplay FAULT fails open — display:null + displayError, the glance still answers (WI-1383525 GAP 3)', async () => {
+    renderFault.throwNext = new Error('injected render fault');
+    const g = out(await glance.handler(parse({ audience: 'user' }), ctx));
+    expect(g.ok).toBe(true);
+    expect(g.display).toBeNull();
+    expect(g.displayError).toContain('injected render fault');
+    expect(g.wake).toEqual({ default: 'auto', stagedTotal: 0, stagedOwners: 0 });
+    // One-shot: the next glance renders the display block normally again.
+    const g2 = out(await glance.handler(parse({ audience: 'user' }), ctx));
+    expect(typeof g2.display?.title).toBe('string');
+    expect(g2.displayError).toBeUndefined();
   });
 
   it('quiet fleet → auto mode, zero counts, no tips', async () => {

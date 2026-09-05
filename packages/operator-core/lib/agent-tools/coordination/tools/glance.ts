@@ -461,10 +461,20 @@ export default defineTool({
     // status-surface audience; agent callers ('su'/'queen'/'bee') keep the lean
     // structured payload.
     if (audience === 'user') {
-      payload.display = renderStatusDisplay(payload, {
-        ownerId: selfOwnerId,
-        account: await fetchRoutedAccount(selfOwnerId),
-      });
+      // FAIL-OPEN (WI-1383525 GAP 3): a fault inside the render must degrade to
+      // "no display block" — every client hook then takes its shared legacy
+      // fallback, which objective-title-parity.test.ts pins byte-identical
+      // across the three pipes — never fail the whole glance for the human
+      // surface. `displayError` keeps the fault observable instead of silent.
+      try {
+        payload.display = renderStatusDisplay(payload, {
+          ownerId: selfOwnerId,
+          account: await fetchRoutedAccount(selfOwnerId),
+        });
+      } catch (err) {
+        payload.display = null;
+        payload.displayError = err instanceof Error ? err.message : String(err);
+      }
     }
 
     if (args.display_only) payload.activity = [];

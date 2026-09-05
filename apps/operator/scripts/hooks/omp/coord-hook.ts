@@ -2987,33 +2987,138 @@ function trimmedLastLine(text: string): string {
 // terminal title. Mirrors the Codex hook: an OSC-0 escape written to /dev/tty
 // (the CLIENT owns the tty; the hook only nudges its title), fail-open.
 
-const OBJECTIVE_TITLE_MAX = 60; // a window/tab title is short — clip a verbose objective.
+// ── Legacy fallback title — ONE shape across all three pipes (WI-1383525 GAP 3) ──
+//
+// When the operator ships no `display` block (a pre-display operator, or the
+// server render failed), each hook falls back to LOCAL assembly. The two
+// Claude/Codex scripts (statusline-fleet.sh, posttooluse-objective-title.sh)
+// keep their `term_title` BYTE-IDENTICAL to each other; this is the TypeScript
+// port of that same function, so OMP's fallback agrees with them too. Before
+// this port the OMP leg rendered `id · 🔭 objective` (clip 60, no fleet/loop
+// chips) while the other two rendered `fleets · ⟳loop · id · objective`
+// (clip 40, no 🔭) — a three-way divergence exactly in the failure mode where
+// nobody is looking. objective-title-parity.test.ts drives all three pipes on
+// the same display-less glance and asserts byte-identity, so a drift in any
+// one copy fails there.
+//
+// Deliberately a LOCAL port, not an import from status-display.ts: this hook
+// runs inside the OMP client process with no operator-core dependency, and the
+// fallback's contract is parity with the PYTHON copies, not with the server
+// render (which carries more chips). Model tag intentionally absent (WI-2124).
+
+const LEGACY_OBJECTIVE_MAX = 40; // python: `o[:40] + ('…' if len(o) > 40 else '')`
+
+/** Strip every control char that could break out of an OSC string. */
+function stripTitleControl(s: string): string {
+  return [...s].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
+}
+
+/** `ESC ] 0 ; <title> BEL`, or '' for an empty title (skip the write). */
+function wrapTitleOsc(title: string): string {
+  const clean = stripTitleControl(title);
+  return clean.length === 0 ? '' : `\x1b]0;${clean}\x07`;
+}
+
+/** Port of the scripts' `self_short`: `su-9859ea5e-…` → `su-9859e`; '' for unset / 'fixture'. */
+export function legacySelfShort(owner: string | null | undefined): string {
+  const o = typeof owner === 'string' ? owner.trim() : '';
+  if (!o || o === 'fixture') return '';
+  const bits = o.split('-');
+  if (bits.length >= 2 && bits[1]) return `${bits[0]}-${[...bits[1]].slice(0, 5).join('')}`;
+  return [...o].slice(0, 8).join('');
+}
+
+/** Port of the scripts' `fmt_interval`: 120→'2m', 30→'30s', 3600→'1h', 5400→'1h30m', junk→'?'. */
+export function legacyFmtInterval(sec: unknown): string {
+  const n =
+    typeof sec === 'number' ? sec : typeof sec === 'string' && sec.trim() !== '' ? Number(sec) : Number.NaN;
+  if (!Number.isFinite(n)) return '?';
+  const s = Math.trunc(n);
+  if (s < 60) return `${s}s`;
+  const m = Math.trunc(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.trunc(m / 60);
+  const rm = m % 60;
+  return rm === 0 ? `${h}h` : `${h}h${rm}m`;
+}
+
+/** Port of the scripts' `fleets_part`: 👑/👤 + name (clip 16) + colour square, ≤4 chips, `+N`. */
+export function legacyFleetsPart(glance: unknown): string {
+  const self = (glance as { self?: unknown } | null)?.self;
+  const fleets = (self as { fleets?: unknown } | null)?.fleets;
+  if (!Array.isArray(fleets) || fleets.length === 0) return '';
+  const chips: string[] = [];
+  for (const f of fleets.slice(0, 4)) {
+    if (!f || typeof f !== 'object') continue;
+    const row = f as { label?: unknown; slug?: unknown; role?: unknown; square?: unknown };
+    let label = String(row.label ?? row.slug ?? '').trim();
+    if (!label) continue;
+    if ([...label].length > 16) label = `${[...label].slice(0, 15).join('')}…`;
+    const glyph = row.role === 'leader' ? '👑' : '👤';
+    const square = String(row.square ?? '').trim();
+    chips.push(`${glyph} ${label}${square ? ` ${square}` : ''}`);
+  }
+  if (chips.length === 0) return '';
+  let seg = chips.join(' · ');
+  const more = fleets.length - chips.length;
+  if (more > 0) seg += ` +${more}`;
+  return seg;
+}
+
+/**
+ * Pure: the shared legacy title — `fleets · ⟳<interval>[!] · <id> · <objective[:40]>` —
+ * byte-identical to the two python `term_title` copies. '' when nothing renders.
+ */
+export function buildLegacyStatusTitle(glance: unknown, agentId: string | null | undefined): string {
+  const self = ((glance as { self?: unknown } | null)?.self ?? null) as
+    | { objective?: unknown; loop?: unknown }
+    | null;
+  const bits: string[] = [];
+  const fl = legacyFleetsPart(glance);
+  if (fl) bits.push(fl);
+  const lp = (self?.loop ?? null) as { active?: unknown; intervalSec?: unknown; reachable?: unknown } | null;
+  if (lp && typeof lp === 'object' && lp.active) {
+    // WI-655: trailing '!' when the loop is armed but not wake-reachable.
+    let tag = `⟳${legacyFmtInterval(lp.intervalSec)}`;
+    if (lp.reachable === false) tag += '!';
+    bits.push(tag);
+  }
+  const me = legacySelfShort(agentId);
+  if (me) bits.push(me);
+  const obj = typeof self?.objective === 'string' ? self.objective.trim() : '';
+  if (obj) {
+    const cps = [...obj];
+    bits.push(cps.length > LEGACY_OBJECTIVE_MAX ? `${cps.slice(0, LEGACY_OBJECTIVE_MAX).join('')}…` : obj);
+  }
+  return stripTitleControl(bits.join(' · '));
+}
+
+/**
+ * Pure: the title THIS pipe prints for a glance — the server-rendered
+ * `display.title` VERBATIM when present, else the shared legacy fallback. The
+ * production leg (`applyStatusDisplay`) and the cross-pipe parity test call the
+ * SAME function, so the test cannot drift from what the hook does.
+ */
+export function selectStatusTitle(
+  glance: { self?: { objective?: string | null } | null; display?: { title?: string | null } | null } | null,
+  agentId: string | null | undefined,
+): string {
+  const served = typeof glance?.display?.title === 'string' ? stripTitleControl(glance.display.title.trim()) : '';
+  return served || buildLegacyStatusTitle(glance, agentId);
+}
 
 /**
  * Pure: build the OSC-0 set-title escape for an objective, or '' when there's
- * nothing to show. Clips long objectives and strips control chars that could
- * break out of the OSC string (the objective is operator-controlled, but a title
- * escape must stay well-formed). Unit-tested.
+ * nothing to show. Legacy one-arg/two-arg entry kept for title-only callers;
+ * since WI-1383525 GAP 3 it renders the SHARED legacy shape (`id · objective`,
+ * clip 40, no 🔭) so it can never disagree with the other two pipes' fallback.
  */
 export function buildObjectiveTitleOsc(
   objective: string | null | undefined,
   agentId?: string | null,
 ): string {
-  // The papercusp id of THIS agent ALWAYS leads the title (owner ask 2026-06-23) so a
-  // human can tell which session owns the terminal even before/without an objective.
-  // Short form mirrors the fleet statusline (su- + 5 hex, e.g. su-fcdb9). A legacy
-  // one-arg call (no id) falls back to the objective-only title.
-  const id = typeof agentId === 'string' ? agentId.trim() : '';
-  const idShort = id.startsWith('su-') ? `su-${id.slice(3).split('-')[0].slice(0, 5)}` : id.slice(0, 12);
-  let obj = typeof objective === 'string' ? objective.trim() : '';
-  if (obj.length > OBJECTIVE_TITLE_MAX) obj = `${obj.slice(0, OBJECTIVE_TITLE_MAX - 1).trimEnd()}…`;
-  obj = [...obj].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
-  let title = idShort;
-  if (obj.length > 0) title = idShort ? `${idShort} · 🔭 ${obj}` : `🔭 ${obj}`;
-  title = [...title].filter((c) => c.codePointAt(0)! >= 32 && c !== '\x07' && c !== '\x1b').join('');
-  if (title.length === 0) return '';
-  // OSC 0 sets BOTH icon name and window title: ESC ] 0 ; <text> BEL.
-  return `\x1b]0;${title}\x07`;
+  const obj = typeof objective === 'string' ? objective : null;
+  return wrapTitleOsc(buildLegacyStatusTitle({ self: { objective: obj } }, agentId ?? null));
 }
 
 // ── Single-source display pipe (tui-status-parity-single-source-2026-07-05) ──
@@ -3156,9 +3261,10 @@ export async function applyStatusDisplay(
   _pi?: { sendMessage: HookApi['sendMessage'] },
   ctx?: unknown,
 ): Promise<void> {
-  const osc =
-    buildDisplayTitleOsc(glance?.display?.title) ||
-    buildObjectiveTitleOsc(glance?.self?.objective ?? null, process.env.PAPERCUSP_SID ?? null);
+  // display.title VERBATIM, else the shared legacy fallback (same shape as the
+  // Claude/Codex scripts' term_title — WI-1383525 GAP 3). One selector for the
+  // production leg and the parity test.
+  const osc = wrapTitleOsc(selectStatusTitle(glance, process.env.PAPERCUSP_SID ?? null));
   await writeOscTitle(osc);
   const key = statusNoticeKey(glance?.display?.notice);
   if (key.length > 0 && key !== _lastStatusNoticeKey) {

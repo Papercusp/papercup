@@ -21,6 +21,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+// The THIRD pipe (WI-1383525 GAP 1): OMP owns no statusline, only a tty title. Its
+// production leg (`applyStatusDisplay`) selects the title through this exact pure
+// function, so driving it here IS driving the pipe — no re-implementation to drift.
+import { selectStatusTitle } from "../scripts/hooks/omp/coord-hook";
 
 const STATUSLINE = resolve(
   __dirname,
@@ -35,16 +39,20 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const SID = "su-9859ea5e-926d-4c65-b8fb-4d7c25a21353";
 
-/** The title the CLAUDE statusline writes (raw, via its TITLE_OUT test seam), given a glance
- *  fixture + a piped live-model stdin JSON. */
-function claudeTitle(glance: unknown, stdin: string): string {
+/** Run the CLAUDE statusline script against a glance fixture + a piped live-model stdin JSON:
+ *  returns the TITLE it wrote (raw, via its TITLE_OUT test seam) and the statusline LINES it
+ *  printed on stdout (the bottom pane). COLUMNS=200 so width-fitting never clips a chip. */
+function claudeRun(
+  glance: unknown,
+  stdin: string,
+): { title: string; lines: string[] } {
   const fixture = join(dir, `${Math.random().toString(36).slice(2)}.cc.json`);
   const titleFile = join(
     dir,
     `${Math.random().toString(36).slice(2)}.cc.title`,
   );
   writeFileSync(fixture, JSON.stringify(glance));
-  execFileSync("bash", [STATUSLINE], {
+  const stdout = execFileSync("bash", [STATUSLINE], {
     encoding: "utf8",
     input: stdin,
     env: {
@@ -55,11 +63,24 @@ function claudeTitle(glance: unknown, stdin: string): string {
       COLUMNS: "200",
     },
   });
+  let title = "";
   try {
-    return readFileSync(titleFile, "utf8");
+    title = readFileSync(titleFile, "utf8");
   } catch {
-    return "";
+    title = "";
   }
+  return { title, lines: stdout.split("\n").filter((l) => l.length > 0) };
+}
+
+/** The title the CLAUDE statusline writes, given a glance fixture + a piped live-model stdin. */
+function claudeTitle(glance: unknown, stdin: string): string {
+  return claudeRun(glance, stdin).title;
+}
+
+/** The title the OMP coord-hook pipe writes (OSC-unwrapped) for a glance — the same selector
+ *  its production leg uses, under the same SID env the other two pipes run with. */
+function ompTitle(glance: unknown): string {
+  return selectStatusTitle(glance as Parameters<typeof selectStatusTitle>[0], SID);
 }
 
 /** Run the CODEX hook against a glance fixture: returns the TITLE it wrote (OSC-0 escape to its
@@ -424,5 +445,179 @@ describe("Codex/OMP objective-title hook — model REMOVED (WI-2124)", () => {
 
   it("no model + no glance detail still anchors the title with the id", () => {
     expect(codexTitle({ ...base, self: {} }, "")).toBe("su-9859e");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WI-1383525 — the three parity gaps DISCLOSED under pui-tui-ship-drive-2026-08-30#D-030,
+// carried to CLOSED by pui-tui-next-wave-2026-09-05 P-007.
+//
+//   GAP 1  full three-surface parity was INFERRED: the omp coord-hook pipe was never
+//          cross-compared with the cc statusline pipe. Below, every title assertion
+//          runs all THREE pipes (cc statusline script, codex hook script, omp selector)
+//          and compares chip SET, ORDER and TEXT — i.e. byte-identity of the ` · `-joined
+//          chip row — plus a width-normalised title↔statusline check (the OS title clips
+//          the objective tighter than the statusline BY DESIGN: 40 vs 48; that is the only
+//          admissible difference).
+//   GAP 3  the legacy fallback was never graded WHEN IT FIRES. Both fault models of the
+//          server render — it THROWS (glance ships no `display`) and it returns EMPTY
+//          (`display.title` blank, `statusline` []) — must leave the three pipes in
+//          agreement, and the no-context caller's output is pinned exactly.
+//   GAP 2  lives in status-assembler-allowlist.test.ts (consumer allowlist).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Chip rows are ` · `-joined; compare set/order/text as the list, not the string. */
+function chips(title: string): string[] {
+  return title.split(" · ").map((c) => c.trim()).filter((c) => c.length > 0);
+}
+
+/** Width normalisation: drop a trailing clip ellipsis and the ◇ self-chip prefix. */
+function normChip(c: string): string {
+  return c.replace(/^◇\s*/u, "").replace(/…$/u, "");
+}
+
+const RICH_GLANCE = {
+  ...base,
+  wake: { default: "manual", stagedTotal: 4, stagedOwners: 2 },
+  bees: { running: 2 },
+  self: {
+    objective:
+      "Resume Linux release readiness across the whole desktop shipping matrix today",
+    loop: { active: true, intervalSec: 120, parked: false, reachable: true },
+    fleets: [
+      { slug: "roman-fleet", label: "roman", role: "leader", square: "🟪" },
+      { slug: "greek-fleet", label: "greek", role: "member", square: "🟩" },
+    ],
+  },
+};
+
+/** The three pipes' titles for one glance, in a fixed order: [cc, codex, omp]. */
+function threeTitles(glance: unknown): [string, string, string] {
+  return [claudeTitle(glance, CC_STDIN), codexTitle(glance, CODEX_SPEC), ompTitle(glance)];
+}
+
+describe("WI-1383525 GAP 1 — THREE-pipe title parity (cc statusline · codex hook · omp coord-hook)", () => {
+  it("served display.title: all three pipes print the same chip set, order and text", () => {
+    const display = {
+      title:
+        "👑 roman 🟪 · 👤 greek 🟩 · ⟳2m · ⏸ ✉4 · ☕2 · su-9859e · 🔭 Resume Linux release readiness across…",
+      statusline: [
+        "🔭 Resume Linux release readiness across the whole desk… · ◇ su-9859e · ⟳ 2m · ⏸ manual ✉4 · ☕2 · solo",
+      ],
+      notice: null,
+    };
+    const glance = { ...RICH_GLANCE, display };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(chips(cc)).toEqual(chips(display.title));
+    expect(chips(cx)).toEqual(chips(cc));
+    expect(chips(omp)).toEqual(chips(cc));
+    // and byte-identity, so a whitespace/glyph drift in one pipe cannot hide behind chips()
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+  });
+
+  it("title ↔ statusline: shared chips agree after width normalisation; the objective clip is the ONLY admissible difference", () => {
+    const display = {
+      title:
+        "👑 roman 🟪 · ⟳2m · ⏸ ✉4 · ☕2 · su-9859e · 🔭 Resume Linux release readiness across…",
+      statusline: [
+        "🔭 Resume Linux release readiness across the whole desk… · ◇ su-9859e · ⟳ 2m · ⏸ manual ✉4 · ☕2 · solo",
+      ],
+      notice: null,
+    };
+    const { title, lines } = claudeRun({ ...RICH_GLANCE, display }, CC_STDIN);
+    expect(lines[0]).toBe(display.statusline[0]); // the pane prints the served row verbatim
+    const titleChips = chips(title).map(normChip);
+    const lineChips = chips(lines[0]).map(normChip);
+    // self id: identical modulo the ◇ prefix
+    expect(lineChips).toContain("su-9859e");
+    expect(titleChips).toContain("su-9859e");
+    // ☕ bees: identical text on both surfaces
+    expect(lineChips).toContain("☕2");
+    expect(titleChips).toContain("☕2");
+    // objective: the title's 40-clip is a PREFIX of the statusline's 48-clip (width-normalised)
+    const titleObj = titleChips.find((c) => c.startsWith("🔭 "))!;
+    const lineObj = lineChips.find((c) => c.startsWith("🔭 "))!;
+    expect(lineObj.startsWith(titleObj)).toBe(true);
+    expect([...lineObj].length).toBeGreaterThan([...titleObj].length);
+  });
+
+  it("the parity holds for the FALLBACK render too — display-less glance, all three pipes byte-identical (was: omp diverged)", () => {
+    const [cc, cx, omp] = threeTitles(RICH_GLANCE);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    // sanity: the shared legacy shape actually rendered, chips in the term_title order
+    expect(chips(cc)).toEqual([
+      "👑 roman 🟪",
+      "👤 greek 🟩",
+      "⟳2m",
+      "su-9859e",
+      "Resume Linux release readiness across th…",
+    ]);
+  });
+
+  it("a wake-unreachable loop renders the '!' suffix identically on all three fallbacks (WI-655)", () => {
+    const glance = {
+      ...RICH_GLANCE,
+      self: { ...RICH_GLANCE.self, loop: { active: true, intervalSec: 5400, reachable: false } },
+    };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    expect(chips(cc)).toContain("⟳1h30m!");
+  });
+
+  it("more than four fleets: the +N overflow and the 16-char name clip agree across the three fallbacks", () => {
+    const fleets = ["alpha", "bravo", "charlie", "delta-a-very-long-fleet-name", "echo"].map(
+      (label, i) => ({ slug: `${label}-fleet`, label, role: i === 0 ? "leader" : "member", square: "🟦" }),
+    );
+    const glance = { ...base, self: { objective: null, fleets } };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    expect(cc).toContain("👑 alpha 🟦");
+    expect(cc).toContain("delta-a-very-lo… 🟦 +1");
+    expect(cc).not.toContain("echo");
+  });
+});
+
+describe("WI-1383525 GAP 3 — the fallback graded WHEN IT FIRES (render throws / render returns empty)", () => {
+  it("render THROWS → glance ships no display block → the three pipes still agree", () => {
+    // glance.ts (GAP 3 server half) turns a render throw into display:null + displayError.
+    const glance = { ...RICH_GLANCE, display: null, displayError: "injected render fault" };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    expect(cc).not.toBe("");
+    expect(cc).toContain("👑 roman 🟪");
+    expect(cc).toContain("su-9859e");
+  });
+
+  it("render returns EMPTY (title '', statusline []) → every pipe treats it as absent → three-way agreement", () => {
+    const glance = { ...RICH_GLANCE, display: { title: "", statusline: [], notice: null } };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    expect(cc).toContain("⟳2m");
+    // the cc statusline body falls back to its legacy two-line render, never a blank pane
+    const { lines } = claudeRun(glance, CC_STDIN);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain("◇ su-9859e");
+  });
+
+  it("the NO-CONTEXT caller (no fleet / loop / objective / display) is pinned: exactly the short id, on all three pipes", () => {
+    const glance = { ...base, self: {} };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cc).toBe("su-9859e");
+    expect(cx).toBe("su-9859e");
+    expect(omp).toBe("su-9859e");
+  });
+
+  it("control chars in a FALLBACK objective are stripped identically on all three pipes (OSC safety)", () => {
+    const glance = { ...base, self: { objective: "safe\x1b]0;pwn\x07 title" } };
+    const [cc, cx, omp] = threeTitles(glance);
+    expect(cx).toBe(cc);
+    expect(omp).toBe(cc);
+    expect(cc).toBe("su-9859e · safe]0;pwn title");
   });
 });

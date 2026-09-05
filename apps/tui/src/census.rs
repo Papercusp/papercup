@@ -273,7 +273,11 @@ fn populate(app: &mut App, tab: Tab) -> &'static str {
             "1/1 online"
         }
         Tab::Sessions => {
+            // The WHEN facet defaults to 7d and hides a row with no timestamp;
+            // pick "all" (SESSION_BROWSER_WHEN[2]) so the fixture stays
+            // clock-independent instead of forging a heartbeat.
             app.session_browser.rows = vec![roster("su-census", "census-session")];
+            app.session_browser.when_idx = 2;
             "census-session"
         }
         Tab::Harnesses => {

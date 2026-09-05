@@ -5178,13 +5178,16 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
   const ESC = '\x1b]0;';
   const BEL = '\x07';
 
-  it('wraps a real objective in an OSC-0 set-title escape with the 🔭 marker', () => {
-    expect(buildObjectiveTitleOsc('wire objective display')).toBe(`${ESC}🔭 wire objective display${BEL}`);
+  it('wraps a real objective in an OSC-0 set-title escape — the SHARED legacy shape, no 🔭 (WI-1383525 GAP 3)', () => {
+    // The Claude/Codex scripts' term_title dropped the 🔭 marker (WI-1963 #3:
+    // "objective-only renders identically (id + objective, no 🔭 in the title)");
+    // the OMP fallback now renders the same shape so the three pipes agree.
+    expect(buildObjectiveTitleOsc('wire objective display')).toBe(`${ESC}wire objective display${BEL}`);
   });
 
   it('leads with the agent papercusp id (short su- + 5 hex) when an id is passed, objective after', () => {
     expect(buildObjectiveTitleOsc('wire the title id', 'su-fcdb9bd8-dcf5-4a20-b5a6-ba78d1f2eb93')).toBe(
-      `${ESC}su-fcdb9 · 🔭 wire the title id${BEL}`,
+      `${ESC}su-fcdb9 · wire the title id${BEL}`,
     );
   });
 
@@ -5209,18 +5212,20 @@ describe('buildObjectiveTitleOsc (OMP objective → terminal title, P-004)', () 
   it('clips a long objective with an ellipsis so it cannot overflow the title bar', () => {
     const long = 'implement the cross-CLI session objective display across every fleet client right now';
     const osc = buildObjectiveTitleOsc(long);
-    expect(osc.startsWith(`${ESC}🔭 `)).toBe(true);
+    expect(osc.startsWith(ESC)).toBe(true);
     expect(osc.endsWith(BEL)).toBe(true);
     expect(osc).toContain('…');
-    // The title text (between the 🔭 marker and BEL) stays bounded.
-    const inner = osc.slice(`${ESC}🔭 `.length, -1);
-    expect([...inner].length).toBeLessThanOrEqual(60);
+    // The title text (between the introducer and BEL) stays bounded — the python
+    // term_title clip is 40 code points + '…', and the port must match it exactly.
+    const inner = osc.slice(ESC.length, -1);
+    expect(inner).toBe(`${[...long].slice(0, 40).join('')}…`);
+    expect([...inner].length).toBe(41);
   });
 
   it('strips embedded control chars that could break out of the OSC string', () => {
     // A BEL or ESC inside the objective must not terminate / re-open the escape.
     const osc = buildObjectiveTitleOsc('evil\x07title\x1bhere');
-    expect(osc).toBe(`${ESC}🔭 eviltitlehere${BEL}`);
+    expect(osc).toBe(`${ESC}eviltitlehere${BEL}`);
     // Exactly one BEL (the terminator) and one ESC (the introducer).
     expect([...osc].filter((c) => c === BEL)).toHaveLength(1);
     expect([...osc].filter((c) => c === '\x1b')).toHaveLength(1);
