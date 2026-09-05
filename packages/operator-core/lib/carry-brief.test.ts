@@ -1580,6 +1580,22 @@ describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace can
     }
   });
 
+  it('does not fall back to the default workspace after resolving a concrete workspace', async () => {
+    const { sql, calls } = capturingSql([
+      { issue_id: 'WI-1', title: 't', body: 'b', scope: 'harness:h1' },
+    ]);
+
+    await readHeldWorkItems('su-abc', 'resolved-concrete-ws', {
+      sql,
+      getWorkItemCheckpointFn: async () => null,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).toContain('workspace_id =');
+    expect(calls[0]!.text).not.toContain("OR workspace_id = 'default'");
+    expect(calls[0]!.params).toContain('resolved-concrete-ws');
+  });
+
   it('excludes resource-governor receipts even when their outer claim projection looks held', async () => {
     const receipt = {
       issue_id: 'WI-986693',

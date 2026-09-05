@@ -397,7 +397,11 @@ export async function readHeldWorkItems(
            ) AS source_plan_item_ids
       FROM harness_shared.work_items
      WHERE taken_by = ${ownerId}
-       AND (workspace_id = ${ws} OR workspace_id = 'default')
+       -- Carry state is workspace-owned. Do not fall back to the legacy/default
+       -- partition after resolving a concrete workspace: a duplicated WI-/EI-
+       -- id in that partition can belong to a different live holder, and the
+       -- successor would receive that peer's checkpoint as if it were its own.
+       AND workspace_id = ${ws}
        -- Resource-governor receipts are local queue telemetry, not agent work.
        -- Exclude by the reserved payload marker rather than trusting the outer
        -- status/assignee projection: legacy or partially-reconciled terminal
