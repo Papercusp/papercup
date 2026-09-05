@@ -1826,6 +1826,9 @@ export const TEST_FILE_RUN_TIMEOUT_MS = testFileRunTimeoutMs();
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
 const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
+const SYSTEMD_RUN_PATH = process.platform === 'linux'
+  ? ['/usr/bin/systemd-run', '/bin/systemd-run'].find((candidate) => existsSync(candidate)) ?? null
+  : null;
 const SETSID_PATH = process.platform === 'linux'
   ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
   : null;
@@ -1884,11 +1887,11 @@ function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
 /**
  * Run one captured test child without blocking this router's event loop.
  *
- * On Linux, `setsid --wait` gives the short-lived child tree its own process group without using
- * Node's `detached:true` (which is reserved for task-manager-enrolled lifetimes). The watchdog can
- * therefore reap npx -> Vitest -> fork workers by the owned group id, never by a name/pattern. Other
- * platforms retain ordinary inherited-cgroup spawning and fall back to signaling the owned direct
- * child only.
+ * On Linux, prefer `systemd-run --user --scope --collect` so the short-lived child tree moves into
+ * a sibling user scope instead of remaining in the caller's cgroup. The process-group watchdog
+ * still targets the scope's owned group id, never a name/pattern. Hosts without systemd-run retain
+ * the `setsid --wait` process-group boundary; other platforms fall back to signaling the owned
+ * direct child only.
  *
  * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
  */
@@ -1902,6 +1905,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
     killGraceMs = TEST_FILE_KILL_GRACE_MS,
     maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
+    systemdRunPath = SYSTEMD_RUN_PATH,
     setsidPath = SETSID_PATH,
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
@@ -1911,9 +1915,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // the canonical bridge in place.
     governedProcessImpl = runGovernedTestProcess,
   } = options;
-  const ownsProcessGroup = Boolean(setsidPath);
-  const spawnCommand = setsidPath ?? command;
-  const spawnArgs = setsidPath ? ['--wait', command, ...args] : args;
+  const ownsProcessGroup = Boolean(systemdRunPath || setsidPath);
+  const spawnCommand = systemdRunPath ?? setsidPath ?? command;
+  const spawnArgs = systemdRunPath
+    ? ['--user', '--scope', '--collect', command, ...args]
+    : setsidPath
+      ? ['--wait', command, ...args]
+      : args;
   const plannedDemand = buildGovernedProcessDemand({
     fileCount: files.length,
     diskBytes: maxBuffer,
@@ -2001,12 +2009,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
       for (const [signal, handler] of signalForwarders) process.removeListener(signal, handler);
       signalForwarders.clear();
     };
-    // `setsid` deliberately makes the Vitest tree a nested process group so this watchdog can
-    // target it without touching a caller's shell/agent group. Preserve pc-heavy/testing:run's
-    // no-escape contract too: if THEY terminate this router, synchronously reap the nested group
-    // before restoring the signal's default disposition on the router itself. SIGKILL is used for
-    // this cleanup-only path because the parent is already terminating and cannot stay alive for a
-    // grace timer; the normal watchdog path above still performs TERM -> bounded grace -> KILL.
+    // The Linux launcher deliberately makes the Vitest tree a nested process group so this
+    // watchdog can target it without touching a caller's shell/agent group. Preserve
+    // pc-heavy/testing:run's no-escape contract too: if THEY terminate this router, synchronously
+    // reap the nested group before restoring the signal's default disposition on the router itself.
+    // SIGKILL is used for this cleanup-only path because the parent is already terminating and
+    // cannot stay alive for a grace timer; the normal watchdog path above still performs TERM ->
+    // bounded grace -> KILL.
     if (ownsProcessGroup) {
       for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
         const handler = () => {

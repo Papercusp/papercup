@@ -404,7 +404,7 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
-  it('keeps the parent timer live, attributes completed/pending files, and reaps only its owned group', async () => {
+  it('prefers a detached systemd user scope while keeping the owned process-group watchdog', async () => {
     vi.useFakeTimers();
     try {
       const child = new EventEmitter() as EventEmitter & {
@@ -432,6 +432,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           progressIntervalMs: 10,
           killGraceMs: 20,
           maxBuffer: 1024,
+          systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
           spawnImpl,
           killProcessImpl,
@@ -442,8 +443,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       );
 
       expect(spawnImpl).toHaveBeenCalledWith(
-        '/usr/bin/setsid',
-        ['--wait', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
+        '/usr/bin/systemd-run',
+        ['--user', '--scope', '--collect', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
       const spawnOptions = spawnImpl.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
@@ -475,6 +476,48 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('falls back to setsid --wait when systemd-run is unavailable', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4343;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const spawnImpl = vi.fn((..._args: unknown[]) => child);
+    const onProgress = vi.fn();
+
+    const resultPromise = runCapturedTestProcess(
+      'npx',
+      ['vitest', 'run', 'a.test.ts'],
+      {
+        cwd: '/repo',
+        files: ['a.test.ts'],
+        systemdRunPath: null,
+        setsidPath: '/usr/bin/setsid',
+        spawnImpl,
+        onProgress,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      },
+    );
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      '/usr/bin/setsid',
+      ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+    );
+    child.emit('close', 0, null);
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 0,
+      signal: null,
+      timedOut: false,
+    });
   });
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
