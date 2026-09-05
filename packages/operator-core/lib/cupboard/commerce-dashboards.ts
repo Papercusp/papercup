@@ -221,9 +221,7 @@ export function checkoutDashboard(input: CheckoutDashboardInput): CheckoutDashbo
       refundedMinor: order.refundedMinor,
       entitlementId: ent?.entitlementId ?? null,
       entitlementState: ent?.state ?? null,
-      seats: ent
-        ? seatUsage(ent.entitlementId, seatsForOffer(order.offerId, seatPolicies), installations)
-        : null,
+      seats: ent ? seatUsage(ent.entitlementId, seatsForOffer(order.offerId, seatPolicies), installations) : null,
       createdAtMs: order.createdAtMs,
     });
   }
