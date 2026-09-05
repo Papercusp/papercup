@@ -18,6 +18,7 @@
  * dist/ when a build fails. If we are bundle-less AND that record exists, say so
  * — name the failure, point at the log — instead of prescribing a build.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -115,3 +116,40 @@ export function describeMissingBundle(distRoot: string): string {
 export function distIndexPath(distRoot: string): string {
   return join(distRoot, 'index.html');
 }
+
+/**
+ * Identity of the bundle currently ON DISK (EI-15848).
+ *
+ * WHY index.html IS THE RIGHT SUBJECT, and not a heuristic: Vite emits
+ * CONTENT-HASHED asset filenames (`assets/index-<hash>.js`) and index.html is
+ * the manifest that references them. So a bundle whose code changed produces a
+ * different index.html, and one whose code did not produce the same bytes.
+ * Hashing the entry document is therefore an exact identity for "which build is
+ * being served", not a proxy for it — no mtime (which a no-op rebuild bumps and
+ * a restored file does not), no directory walk.
+ *
+ * Deliberately NOT the injected shell: `serveIndexHtml` splices per-REQUEST
+ * state (flags, workspace id) into the HTML before sending it, so hashing what
+ * we send would change whenever a FLAG flipped and report a phantom new build.
+ * We hash the file, then inject the result.
+ *
+ * Returns null when the bundle is missing — the caller already has
+ * `describeMissingBundle` for that case, and a null here means "no opinion",
+ * never "unchanged". A reader must not treat it as a mismatch: an absent
+ * bundle during a rebuild would otherwise nag the user to reload into a 503.
+ */
+export function readBundleIdentity(distRoot: string): string | null {
+  const indexPath = distIndexPath(distRoot);
+  if (!existsSync(indexPath)) return null;
+  try {
+    return createHash('sha256').update(readFileSync(indexPath)).digest('hex').slice(0, 16);
+  } catch {
+    // Unreadable mid-rebuild (vite stages then swaps). Same contract as missing:
+    // no opinion. Reporting a mismatch here would fire the notice on every build.
+    return null;
+  }
+}
+
+// The COMPARISON deliberately lives in `./spa-build-identity` (no node
+// builtins) so the browser-side notice can import it without dragging this
+// module's `node:fs`/`node:crypto` into the client bundle.

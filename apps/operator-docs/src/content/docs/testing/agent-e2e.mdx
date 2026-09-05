@@ -938,6 +938,86 @@ opened.** A capture taken after a mis-settled wait looks exactly like a
 legitimate artifact until a human (or the completion gate) actually looks
 at it.
 
+### 1.7 The bridge `eval` round-trip dies at 5 s — on BOTH sides, and no CLI flag can raise it (EI-15751)
+
+**The trap.** You `await` something real inside one `tauri-agent-tools eval` — an
+agent-chats SSE reply, a fetch that hits an LLM, any operation with network-plus-
+inference latency — and it dies at ~5 s with
+
+```
+TypeError: The operation was aborted due to timeout
+```
+
+or, depending on which side loses the race, `Bridge error (504): Eval timeout`.
+Your own in-script deadline is irrelevant — a 55 s `Promise.race` never gets to
+fire. Both messages read like the *app* timed out, so the natural next move is to
+raise a timeout you control, and there isn't one.
+
+**Two caps, both 5 s, neither reachable from the CLI:**
+
+| side | where | what it does |
+|---|---|---|
+| bridge (ours) | `papercusp-desktop/src-tauri/src/dev_bridge.rs` — the `/eval` handler waits on a Condvar with `Duration::from_secs(5)` | responds **HTTP 504 `Eval timeout`** and drops the pending result |
+| CLI (third-party) | `tauri-agent-tools` 0.7.0, `dist/bridge/client.js` — `async eval(js, timeout = 5000)` then `signal: AbortSignal.timeout(timeout)` | aborts the POST |
+
+`eval` registers only `--file` plus the shared `--port/--token/--pid/--window-label`
+options (`dist/commands/eval.js` + `shared.js`) and calls `bridge.eval(js)` with no
+timeout argument, so the 5000 ms default always applies.
+
+⚠ **Adding a `--timeout` flag upstream would NOT fix this** — the obvious first
+hypothesis, and the one this was originally filed as. The Rust side still 504s at
+5 s, so the reachable budget stays 5 s whatever the client sends. In practice keep
+a single eval under **~2.5 s**: a live SSE stream on the webview's main thread
+starves the eval and eats the rest of the budget.
+
+`wait --timeout` is not an escape either. `wait` POLLS (`--interval`, default 500 ms;
+`--timeout` default 10000) and **each poll is its own `bridge.eval`**, capped at the
+same 5 s. Its timeout bounds the LOOP, never the operation.
+
+**The recipe: fire-and-forget into a page global, then poll a cheap predicate.**
+The bridge runs your JS as `await eval(<your js>)`, so a bare `async` IIFE is *not*
+awaited — the call returns immediately and the work keeps running in the page.
+
+```bash
+# 1. start it — returns at once, far inside the 5 s cap
+tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" '
+  window.__probe = { done: false };
+  (async () => {
+    try {
+      const res = await fetch("/api/...", { method: "POST", body: "..." });
+      const text = await res.text();
+      window.__probe = { done: true, ok: res.ok, status: res.status, body: text.slice(0, 4000) };
+    } catch (e) {
+      window.__probe = { done: true, ok: false, error: String(e) };
+    }
+  })();
+  "started"'
+
+# 2. poll a CHEAP, NON-THROWING predicate — the ?. and the === true are load-bearing
+tauri-agent-tools wait --pid "$VERIFY_TAURI_PID" \
+  --eval 'window.__probe?.done === true' --timeout 60000 --interval 1000
+
+# 3. read the payload back in its own eval
+tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" 'JSON.stringify(window.__probe)'
+```
+
+⚠⚠ **Dropping the `?.` in step 2 produces a FALSE GREEN, not an error.** An in-page
+exception is caught by the bridge and returned as a **200** whose result is the
+STRING `"ERROR: <message>"` (`build_eval_callback_js` in `dev_bridge.rs`). The CLI's
+truthiness helper (`isBridgeResultTruthy`) tries `JSON.parse` on a string result and,
+when that throws, falls back to `result.length > 0` — so **`"ERROR: ..."` is TRUTHY**.
+An unguarded `window.__probe.done` therefore throws `Cannot read properties of
+undefined` on the very first poll, `wait` prints `matched: true` and exits **0**, and
+the drive script proceeds as though the operation had completed — before it even
+started. Bare `eval` has the same shape: a throwing expression prints `ERROR: ...`
+and still exits 0, so never read exit status alone as success. Compare to a literal
+(`=== true`) and re-assert the payload in step 3.
+
+`window.__probe` lives on the page, so a full reload (`location.href=`,
+`location.replace`) wipes it — start the probe only after the navigation has
+settled (§1.6).
+
+
 ## 2. Reporting format
 
 ```
