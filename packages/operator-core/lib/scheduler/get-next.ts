@@ -2763,6 +2763,12 @@ export async function getNextWorkItem(
   // by every member); neither present ⇒ claimFloorsWhereSql's own `['todo']` default.
   const effectiveStates = opts.states ?? spec.states;
   const claimSpecReferencesFleet = claimSpecReferencesField(spec, 'fleet');
+  // EI-21398324268952860: the same authorization read for the GOAL field. A per-goal standing
+  // drain fleet scopes its spec by `{ field:'goal', op:'=', value:<goalId> }` (claim-spec.ts
+  // ITEM_FIELDS `goal`), and its own steward mints plan-stamped work FOR it — which the
+  // plan-lane floor then reserved away from the only fleet entitled to it
+  // (`matchedByFilter=7, claimable=0, planLaneReserved=7`, drain stalled fleet-wide).
+  const claimSpecReferencesGoal = claimSpecReferencesField(spec, 'goal');
 
   const floorOpts = {
     harness: opts.harness,
@@ -2781,6 +2787,7 @@ export async function getNextWorkItem(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.fleetSlug,
     claimSpecReferencesFleet,
+    claimSpecReferencesGoal,
   };
 
   // EI-18805386252364731: the claim query runs on the `harness_admin` pool, which carries a
