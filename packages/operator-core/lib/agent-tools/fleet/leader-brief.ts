@@ -3593,6 +3593,14 @@ export async function buildLeaderBrief(
     fleetRecordResult.value === undefined ? undefined : (fleetRecordResult.value?.lastLaunchTransaction ?? null),
     headcountCurrentResult.value,
     headcountExecutingRead.value,
+    {
+      measuredAt: new Date().toISOString(),
+      scope: {
+        workspace: workspaceId,
+        fleet,
+        ...(args.harness ? { harness: args.harness } : {}),
+      },
+    },
   );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
     ...entry,

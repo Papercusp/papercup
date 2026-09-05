@@ -417,7 +417,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
 
   const headcount = pick(
     source.headcount,
-    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict', 'basis'],
+    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict', 'basis', 'countEvidence'],
     120,
   );
   if (headcount && 'basis' in headcount) headcount.basis = compactHeadcountBasis(headcount.basis);

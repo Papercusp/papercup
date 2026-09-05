@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import leaderBriefTool from './leader-brief';
 import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { projectFleetHeadcountState } from '../../agent-fleets-store';
 
 function largeBrief() {
   const members = Array.from({ length: 53 }, (_, index) => ({
@@ -379,6 +380,27 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     // The verdict half has to survive too: the row's whole job is to stop the leader
     // relaunching alive members, and only `message` carries that instruction.
     expect(String((out.summary.policyParked as { message: string }).message)).toContain('Do NOT relaunch');
+  });
+
+  it('keeps distinct productive, live-roster, and transaction-ready count contracts in a trimmed brief', () => {
+    const headcount = projectFleetHeadcountState(
+      { enabled: true, target: 5 } as never,
+      { transactionId: 'tx-1', workerReadyMemberIds: ['su-a'] } as never,
+      ['su-a', 'su-b', 'su-c'],
+      new Set(['su-a', 'su-b']),
+      { measuredAt: '2026-09-05T20:00:00.000Z', scope: { fleet: 'fleet-a' } },
+    );
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'fleet-a', members: 3, headcount } },
+      'trimmed',
+    ) as { summary: { headcount: typeof headcount } };
+
+    expect(out.summary.headcount.countEvidence.productive?.contract.population.id)
+      .toBe('live-roster-recent-execution-intersection');
+    expect(out.summary.headcount.countEvidence.liveRoster?.contract.population.id)
+      .toBe('fleet-live-launch-roster');
+    expect(out.summary.headcount.countEvidence.transactionWorkerReady?.contract.population.id)
+      .toBe('current-launch-transaction-worker-ready');
   });
 
   it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {
