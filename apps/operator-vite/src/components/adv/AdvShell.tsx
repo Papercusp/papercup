@@ -66,7 +66,9 @@ import './adv-header-pills.css';
 // Brainstorm was moved exclusively to Quick Panel on 2026-07-13, then restored
 // here on 2026-08-30 as a secondary per-pot tab. Both entry points intentionally
 // mount the same BrainstormFull surface.
-const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
+// Exported for the portal's surface registry test (packages/operator-ui/src/surfaces —
+// portal-parity-adv-tabs-2026-09-05 P-001): every id here must have a portal kind.
+export const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -80,23 +82,27 @@ export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 export const PORTAL_EMBED_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([]);
 
 /**
- * Content-only destinations that the outer portal rail owns. Each is framed
- * by the portal as `/adv?tab=<id>&portalEmbed=1` and renders ONLY its body —
- * no strip, no steering rail, no chat dock (those are the portal's own
- * sidebars). Canonical IDs stay in ADV_TAB_IDS so ordinary operator URLs keep
+ * Content-only destinations that the outer portal rail owns. Each is a portal
+ * rail entry of its own (mounted natively through
+ * packages/operator-ui/src/surfaces, or framed as `/adv?tab=<id>&portalEmbed=1`
+ * by an older host) and renders ONLY its body — no strip, no steering rail, no
+ * chat dock (those are the portal's own sidebars). Since
+ * portal-parity-adv-tabs-2026-09-05 (D-004) this is EVERY tab: a deep link to
+ * any ADV tab inside a portal embed renders that tab, never a collapsed
+ * Overview. Canonical IDs stay in ADV_TAB_IDS so ordinary operator URLs keep
  * rendering their existing content.
  */
 export const PORTAL_EMBED_ADV_CONTENT_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   ...PORTAL_EMBED_ADV_TAB_IDS,
-  'overview',
-  'hud',
-  'harnesses',
-  'learning',
-  'workflows',
-  'brainstorm',
+  ...ADV_TAB_IDS,
 ]);
 
-/** Resolve a stale extracted-tab deep link to the retained cloud landing tab. */
+/**
+ * Resolve an embedded deep link to the tab the portal can show. With every tab
+ * retained this is the identity for any valid id; it stays as the single switch
+ * so a tab the portal ever stops carrying is one id removed above, not a second
+ * code path.
+ */
 export function portalEmbedAdvTab(tab: AdvTabId, embedded: boolean): AdvTabId {
   return embedded && !PORTAL_EMBED_ADV_CONTENT_IDS.has(tab) ? 'overview' : tab;
 }

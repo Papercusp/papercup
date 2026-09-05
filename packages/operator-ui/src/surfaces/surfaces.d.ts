@@ -53,12 +53,39 @@ export type OperatorSurfaceKind =
   | 'learning'
   | 'workflows'
   | 'brainstorm'
+  // The remaining /adv tab bodies (portal-parity-adv-tabs-2026-09-05 D-004;
+  // renamed where the portal already owns the name — D-005 / D-006).
+  | 'health'
+  | 'prs'
+  | 'insights'
+  | 'conversations'
+  | 'adv-settings'
+  | 'docs'
+  | 'history'
+  | 'git'
+  | 'stats'
+  | 'testing'
+  | 'create'
+  | 'scheduled'
+  | 'frames'
+  | 'evals'
   // The operator top-nav's utility destinations (portal-parity D-007 / D-009).
   | 'cloud'
   | 'cupboard'
   | 'dev'
   | 'support'
   | 'settings';
+
+/**
+ * Every operator /adv tab id → the surface kind that mounts its body. Complete
+ * over the operator's `ADV_TAB_IDS` by construction (typed over that union in
+ * the implementation); declared with a string key here because the tab-id
+ * union lives in the operator tree this declaration deliberately does not import.
+ */
+export declare const ADV_TAB_SURFACE_KINDS: Readonly<Record<string, OperatorSurfaceKind>>;
+
+/** The /adv tab a surface kind mounts the body of, or `undefined` for a kind that is not an ADV tab body. */
+export declare function advTabForSurface(kind: string): string | undefined;
 
 /**
  * Every surface is a zero-prop lazy mount. Surfaces that need arguments
