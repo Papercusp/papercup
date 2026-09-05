@@ -176,7 +176,7 @@ export default defineTool({
     notWhen:
       "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
     chaining:
-      'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
+      'Pass `taskId` to inspect one exact ledger row, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
       '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids, confined, scopeUnit, confinement, deadlineAt, logPath }], live? } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
@@ -196,6 +196,7 @@ export default defineTool({
       .describe(
         'only tasks BELONGING to this coord owner id — pass your own to find your own row. Not `launchedBy`, which is whoever SPAWNED it (for a fleet member those differ, so launchedBy cannot answer "which row is me"). Recorded only when the spawn supplied it: ~70% of agent-session rows and none of bash-job/sidecar/test-run (measured 2026-09-02). So an empty result means "no row RECORDED this owner id", NOT "this agent has no task" — do not read it as absence.',
       ),
+    taskId: z.string().max(64).optional().describe('one exact task-ledger row (also accepted by processes:kill)'),
     workItemId: z.string().max(120).optional().describe('only tasks attributed to this work-item'),
     rootTaskId: z.string().max(64).optional().describe('one task tree'),
     includeEnded: z.boolean().optional().describe('include finished tasks (the "what ran overnight" read)'),
@@ -247,6 +248,7 @@ export default defineTool({
       (args.classes?.length ?? 0) > 0 ||
       args.launchedBy !== undefined ||
       args.coordOwnerId !== undefined ||
+      args.taskId !== undefined ||
       args.workItemId !== undefined ||
       args.rootTaskId !== undefined;
 
@@ -301,6 +303,7 @@ export default defineTool({
       classes: args.classes,
       launchedBy: args.launchedBy,
       coordOwnerId: args.coordOwnerId,
+      taskId: args.taskId,
       workItemId: args.workItemId,
       rootTaskId: args.rootTaskId,
       includeEnded: args.includeEnded,

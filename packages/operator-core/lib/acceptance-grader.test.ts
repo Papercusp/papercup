@@ -116,6 +116,8 @@ describe('launchAcceptanceGrader', () => {
     expect(brief).toContain('capability:read');
     expect(brief).toContain('git rev-parse <superproject-ref>:<nested-path>');
     expect(brief).toContain('not evidence of a fabricated citation');
+    expect(brief).toContain('follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED');
+    expect(brief).toContain('frozenIdentity.planVersion/planContentHash');
     expect(brief.length).toBeLessThan(8_000);
   });
 
@@ -179,7 +181,7 @@ describe('launchAcceptanceGrader', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('EI-21923986145923904: passes through launch-agent\'s agentStarted verdict on a fresh launch, including the honest null case', async () => {
+  it("EI-21923986145923904: passes through launch-agent's agentStarted verdict on a fresh launch, including the honest null case", async () => {
     const launch = vi.fn(async () => ({
       content: [{ type: 'text', text: 'launched' }],
       data: {

@@ -5,10 +5,7 @@ import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readPlanBySlug } from './agent-tools/plans/source';
 import { areAcceptanceLineageRelated } from './acceptance-author-identity';
-import {
-  readAcceptanceGradingSettlement,
-  type AcceptanceGradingSettlement,
-} from './acceptance-grading-authority';
+import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems } from './work-items';
@@ -397,8 +394,8 @@ export const ACCEPTANCE_SNAPSHOT_CAP_CHARS = 5_800;
 const DEGRADED_SNAPSHOT_NOTICE =
   'TRUNCATED EVIDENCE PACKAGE. Every field named in droppedFields is ABSENT FROM THIS SNAPSHOT. ' +
   'That absence is a limit of this package, NOT evidence that the underlying record is empty. ' +
-  'Do NOT rate a criterion satisfied or unsatisfied on the strength of a field named here: mark that ' +
-  'criterion NOT GRADED, say which field you lacked, and grade the criteria you can still evidence.';
+  'Do NOT rate a criterion from that absence. Follow recovery before returning NOT GRADED; if a ' +
+  'canonical read fails or its identity differs from frozenIdentity, name that exact gap and grade the rest.';
 
 /**
  * Fit the frozen evidence package under the size cap.
@@ -423,6 +420,37 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
   const dropped: string[] = [];
   const plan = () => working.plan as Record<string, unknown>;
   const audit = () => working.audit as Record<string, unknown>;
+  const recovery = {
+    frozenIdentity: {
+      planVersion: snapshot.plan.version,
+      planContentHash: snapshot.plan.contentHash,
+      auditSeq: snapshot.audit.auditSeq,
+    },
+    rule:
+      'Before NOT GRADED, recover only with these read-only Papercusp tools. Use recovered evidence only ' +
+      'when plans:get still reports frozenIdentity and the completion audit sequence matches.',
+    reads: {
+      plan: {
+        tool: 'plans:get',
+        args: {
+          slug: snapshot.plan.slug,
+          harness: snapshot.plan.harnessSlug,
+          mode: 'full',
+          shipReadiness: true,
+        },
+      },
+      specEvidence: {
+        tool: 'plans:get-spec-evidence',
+        args: { slug: snapshot.plan.slug, harness: snapshot.plan.harnessSlug, limit: 500 },
+      },
+      terminalWork: {
+        tool: 'work_items:get',
+        args: { harness: snapshot.plan.harnessSlug, detail: true, threadLimit: 10 },
+        idsFrom: 'terminalWork[].id',
+        payloadTier: "pass 'full' through tools:invoke",
+      },
+    },
+  };
   const render = (): string =>
     JSON.stringify({
       ...working,
@@ -432,6 +460,7 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
         capChars: cap,
         droppedFields: [...dropped],
         notice: DEGRADED_SNAPSHOT_NOTICE,
+        recovery,
       },
     });
 
@@ -500,6 +529,12 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
       label: 'plan.items[].text',
       apply: () => {
         working.plan = { ...plan(), items: snapshot.plan.items.map((i) => ({ id: i.id, status: i.status })) };
+      },
+    },
+    {
+      label: 'terminalWork[].terminalOwner/completionRef',
+      apply: () => {
+        working.terminalWork = snapshot.terminalWork.map((w) => ({ id: w.id, state: w.state }));
       },
     },
     {
@@ -621,8 +656,7 @@ async function prodDiscoverGrader(
       // D-008: one agent can hold several coordination identities, so the menu
       // has to be distinct by PARTY, not by ownerId. Same ledger the acceptance
       // gate already resolves scorecard authors through.
-      getPartyKeys: (workspaceId, ownerIds) =>
-        lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
+      getPartyKeys: (workspaceId, ownerIds) => lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
       route: (params) =>
         routeConsult(params, {
           getSql: () => getOrgPg().sql,
@@ -658,10 +692,7 @@ async function prodDiscoverGrader(
 // copy, so the first grader and the ones the cascade wakes cannot drift into
 // being told different things. Re-exported here because this module is where
 // every existing importer looks for them.
-export {
-  buildAssignedAcceptanceGraderBrief,
-  buildMinimumFillAcceptanceGraderBrief,
-} from './consult/grading-cascade';
+export { buildAssignedAcceptanceGraderBrief, buildMinimumFillAcceptanceGraderBrief } from './consult/grading-cascade';
 
 /** What opening the grading cascade has to be told, and what it reports back. */
 export interface OpenGradingCascadeParams {
@@ -867,16 +898,13 @@ export async function advanceGradingCascadeOnCard(input: {
       },
       sql,
       async (opts) => {
-        const res = await notifyAgents(
-          { ownerId: row.requester_id } as never,
-          {
-            addressees: [opts.responder],
-            objectRef: { kind: 'conversation', ref: opts.conversationId },
-            summary: opts.summary,
-            body: opts.body,
-            wake: true,
-          },
-        );
+        const res = await notifyAgents({ ownerId: row.requester_id } as never, {
+          addressees: [opts.responder],
+          objectRef: { kind: 'conversation', ref: opts.conversationId },
+          summary: opts.summary,
+          body: opts.body,
+          wake: true,
+        });
         return { woke: res.woke };
       },
     );
@@ -1055,11 +1083,9 @@ export async function launchAcceptanceGrader(
   if (rubricAuthor) {
     try {
       const callerOwnerId = resolveAgentIdentity(ctx).ownerId;
-      const related = await (deps.lineageRelated ?? areAcceptanceLineageRelated)(
-        rubricAuthor,
-        callerOwnerId,
-        { workspaceId: plan.row.workspaceId },
-      );
+      const related = await (deps.lineageRelated ?? areAcceptanceLineageRelated)(rubricAuthor, callerOwnerId, {
+        workspaceId: plan.row.workspaceId,
+      });
       if (related) {
         return {
           state: 'failed',
@@ -1102,6 +1128,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
+    'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
     `Recorded rerun command (for provenance; your judge policy forbids executing Bash): ${rerun}`,
     `FROZEN_ACCEPTANCE_CONTEXT=${snapshot}`,
@@ -1260,9 +1287,7 @@ export async function launchAcceptanceGrader(
           idempotencyKey: currentIdempotencyKey,
           label,
           launch: result.data?.launch,
-          ...(launchData && 'agentStarted' in launchData
-            ? { agentStarted: launchData.agentStarted }
-            : {}),
+          ...(launchData && 'agentStarted' in launchData ? { agentStarted: launchData.agentStarted } : {}),
           ...recoveryFields(attempt + 1),
         };
       }

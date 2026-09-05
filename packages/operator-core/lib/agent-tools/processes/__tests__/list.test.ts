@@ -68,6 +68,35 @@ describe('processes:list structured output', () => {
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ states: ['running'] }));
   });
 
+  it('accepts the exact taskId selector used by processes:kill', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    vi.mocked(listTasks).mockClear();
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { taskId: 'task-to-kill' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-task-id-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-to-kill' }));
+  });
+
   it('overlays dry-run terminal reconciliation verdicts without mutating ledger rows', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');

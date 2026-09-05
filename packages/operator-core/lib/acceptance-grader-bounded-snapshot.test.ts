@@ -81,7 +81,9 @@ describe('boundedSnapshotJson', () => {
   });
 
   it('never truncates silently: it stamps contextIntegrity naming what it dropped', () => {
-    const parsed = parse(makeSnapshot({ items: 40, textChars: 400, citationsPerItem: 4 }));
+    const snapshot = makeSnapshot({ items: 40, textChars: 400, citationsPerItem: 4 });
+    const rendered = boundedSnapshotJson(snapshot);
+    const parsed = JSON.parse(rendered);
 
     expect(parsed.contextIntegrity?.degraded).toBe(true);
     expect(parsed.contextIntegrity.fullChars).toBeGreaterThan(ACCEPTANCE_SNAPSHOT_CAP_CHARS);
@@ -89,6 +91,26 @@ describe('boundedSnapshotJson', () => {
     expect(parsed.contextIntegrity.droppedFields.length).toBeGreaterThan(0);
     // The judge must be told what to DO about the gap, not merely that one exists.
     expect(parsed.contextIntegrity.notice).toMatch(/NOT GRADED/);
+    expect(parsed.contextIntegrity.recovery).toMatchObject({
+      frozenIdentity: { planVersion: 20, planContentHash: 'abc123', auditSeq: 1 },
+      reads: {
+        plan: {
+          tool: 'plans:get',
+          args: { slug: 'plan-under-test', harness: 'h', mode: 'full', shipReadiness: true },
+        },
+        specEvidence: {
+          tool: 'plans:get-spec-evidence',
+          args: { slug: 'plan-under-test', harness: 'h', limit: 500 },
+        },
+        terminalWork: {
+          tool: 'work_items:get',
+          args: { harness: 'h', detail: true, threadLimit: 10 },
+          idsFrom: 'terminalWork[].id',
+        },
+      },
+    });
+    expect(parsed.contextIntegrity.recovery.rule).toMatch(/Before NOT GRADED/);
+    expect(rendered.length).toBeLessThanOrEqual(ACCEPTANCE_SNAPSHOT_CAP_CHARS);
   });
 
   it('keeps audit citations when the overflow can be absorbed elsewhere (the actual defect)', () => {
@@ -118,9 +140,7 @@ describe('boundedSnapshotJson', () => {
     const small = parse(makeSnapshot({ items: 3, textChars: 2000, citationsPerItem: 2 }));
     const large = parse(makeSnapshot({ items: 300, textChars: 400, citationsPerItem: 6 }));
 
-    expect(small.contextIntegrity.droppedFields.length).toBeLessThan(
-      large.contextIntegrity.droppedFields.length,
-    );
+    expect(small.contextIntegrity.droppedFields.length).toBeLessThan(large.contextIntegrity.droppedFields.length);
   });
 });
 
