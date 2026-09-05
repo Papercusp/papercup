@@ -13,6 +13,11 @@
  */
 import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@papercusp/sse';
 import { subscribe, backfillSince, type SyncEvent } from '../../../sync-sse';
+import {
+  INTEREST_PARAM,
+  MAX_DECLARED_QUERY_NAMES,
+  parseInterestParam,
+} from '@papercusp/sync/server';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function payloadFor(ev: SyncEvent): {
@@ -31,18 +36,14 @@ function payloadFor(ev: SyncEvent): {
 }
 
 /**
- * Query param carrying the client's declared interest set: the query names it
- * is currently observing, comma-separated (`?queries=plans.items,work.items`).
+ * The interest-declaration wire contract lives in `@papercusp/sync` because
+ * BOTH halves of this feature depend on it agreeing exactly: the client builds
+ * the param with `withInterestParam`, this route reads it back. A second copy
+ * of the name here would fail SILENTLY when it drifted — the server would
+ * simply see no declaration and fan out everything, which looks like the
+ * feature is off rather than broken.
  */
-export const INTEREST_PARAM = 'queries';
-
-/**
- * Refuse to build a filter from an implausibly large declaration rather than
- * truncating one. Truncating would silently starve whichever names fell off
- * the end — the exact failure D-002 exists to prevent — so an over-cap
- * declaration falls back to no filter, which is merely today's behaviour.
- */
-export const MAX_DECLARED_QUERY_NAMES = 500;
+export { INTEREST_PARAM, MAX_DECLARED_QUERY_NAMES };
 
 /**
  * Parse a client interest declaration into a name-membership predicate.
@@ -71,16 +72,8 @@ export function interestFilterFor(url: string): ((e: SyncEvent) => boolean) | un
   } catch {
     return undefined; // unparseable URL -> unfiltered, never starved
   }
-  if (raw === null) return undefined;
-
-  const names = new Set(
-    raw
-      .split(',')
-      .map((n) => n.trim())
-      .filter((n) => n.length > 0),
-  );
-  if (names.size === 0 || names.size > MAX_DECLARED_QUERY_NAMES) return undefined;
-
+  const names = parseInterestParam(raw);
+  if (names === undefined) return undefined;
   return (ev: SyncEvent) => names.has(ev.name);
 }
 
