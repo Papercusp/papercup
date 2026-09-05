@@ -42,6 +42,7 @@ import {
 } from './decision-provenance';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { planDecisionRef } from '../../agent-goal-ref';
+import { allocateNextDecisionId, appendDecisionToBody, normalizeAffects } from './decision-body';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))

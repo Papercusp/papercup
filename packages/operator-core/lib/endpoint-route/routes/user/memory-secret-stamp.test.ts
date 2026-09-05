@@ -23,9 +23,14 @@ vi.mock('../../../memory/backend', () => ({
   registeredMemoryBackends: vi.fn(() => ['mem0']),
   MemoryUnavailableError: class MemoryUnavailableError extends Error {},
 }));
-vi.mock('../../../memory/backend-selection', () => ({
+// Spread the real module: memory/configure.ts calls `initMemoryBackendSelection()`
+// at module scope, so a bare factory strands this file at collection. The init is
+// overridden with a no-op so no PG I/O runs under the unit test.
+vi.mock('../../../memory/backend-selection', async (orig) => ({
+  ...(await orig<typeof import('../../../memory/backend-selection')>()),
   currentMemoryBackendChoice: vi.fn(() => 'mem0'),
   writeMemoryBackendChoice: vi.fn(async () => {}),
+  initMemoryBackendSelection: vi.fn(async () => {}),
 }));
 vi.mock('../../../memory/write-journal', () => ({
   journalPendingWrite: vi.fn(async () => 'journal-1'),
