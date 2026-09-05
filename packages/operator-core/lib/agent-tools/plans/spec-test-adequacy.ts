@@ -384,6 +384,7 @@ function rerunRecipeFor(
   clause: SpecClauseRevision,
   evidence: SpecEvidenceForAdequacy[],
   current: EvidenceCurrentInput[] | undefined,
+  classRef: PlanClassRubricRef,
 ): SpecTestAdequacyRerunRecipe {
   const selectedEvidence = [...new Map(
     evidence.map((row) => [`${row.evidenceKind}\0${row.evidenceRef}`, {
@@ -411,6 +412,18 @@ function rerunRecipeFor(
   return {
     schemaVersion: 1,
     evaluator: 'plans:evaluate-spec-test-adequacy',
+    classRef,
+    // Submittable as-is. `selection` below spells planSlug/specId/specRevision/
+    // specFingerprint, none of which the evaluator accepts — it takes slug/specIds and
+    // REQUIRES classRef. Emitting only `selection` made every card's rerun recipe fail
+    // its own evaluator with `invalid_args`, leaving a re-runner to guess classRef and
+    // silently move plan-class-risk-floor.
+    args: {
+      slug: clause.planSlug,
+      classRef,
+      specIds: [clause.specId],
+      includeDraft: true,
+    },
     selection: {
       planSlug: clause.planSlug,
       specId: clause.specId,
@@ -682,7 +695,7 @@ export function evaluateSpecTestAdequacy(input: {
       ? 'unknown'
       : 'pass';
   const evidenceRefs = [...new Set(evidence.map((row) => row.evidenceRef))].sort();
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current);
+  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, classRef);
   const subjectRef = specTestAdequacySubjectRef(
     rerunRecipe.selection.planSlug,
     rerunRecipe.selection.specId,

@@ -151,6 +151,30 @@ export interface SpecTestAdequacyCurrentFingerprint {
 export interface SpecTestAdequacyRerunRecipe {
   schemaVersion: 1;
   evaluator: 'plans:evaluate-spec-test-adequacy';
+  /**
+   * The plan class the recorded verdicts were produced under.
+   *
+   * REQUIRED by `evaluator`, which rejects a call that omits it, and it materially
+   * moves `plan-class-risk-floor`. A recipe that did not record it forced a
+   * re-runner to GUESS one of four values, and a wrong guess silently changes the
+   * verdict it is supposed to reproduce.
+   */
+  classRef: string;
+  /**
+   * The exact argument object to submit to `evaluator` to reproduce these verdicts.
+   *
+   * `selection` below is the human-readable identity of what was graded; it is NOT
+   * submittable — it spells `planSlug`/`specId`/`specRevision`/`specFingerprint`,
+   * while the evaluator accepts `slug`/`specIds` and refuses the rest as
+   * unrecognized keys. Submit THIS. A rerun recipe its own evaluator rejects is not
+   * a rerun recipe, so this field is what makes the card independently checkable.
+   */
+  args: {
+    slug: string;
+    classRef: string;
+    specIds: string[];
+    includeDraft: true;
+  };
   selection: {
     planSlug: string;
     specId: string;
