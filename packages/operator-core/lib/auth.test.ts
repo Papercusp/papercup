@@ -300,4 +300,31 @@ describe('auth.ts integration', () => {
     expect(Math.abs(r[0].expires_at.getTime() - expected)).toBeLessThan(60_000);
     await authMod!.logout(session.token);
   });
+
+  itPg('preserves a normal explicit remember-device TTL', async () => {
+    const name = uname();
+    await authMod!.signup(name, 'T', 'x');
+    const ttl = 7 * 24 * 60 * 60 * 1000;
+    const session = await authMod!.login(name, 'x', { ttl_ms: ttl });
+    const rows = await db!.adminSql<{ expires_at: Date }[]>`
+      SELECT expires_at FROM harness_shared.user_sessions WHERE token=${session.token}`;
+    expect(Math.abs(rows[0].expires_at.getTime() - (Date.now() + ttl))).toBeLessThan(60_000);
+    await authMod!.logout(session.token);
+  });
+
+  itPg('rejects malformed or excessive session TTLs before minting a session', async () => {
+    const name = uname();
+    const user = await authMod!.signup(name, 'T', 'x');
+    const invalidTtls = [-1, 0, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+
+    for (const ttl_ms of [...invalidTtls, authMod!.MAX_SESSION_TTL_MS + 1]) {
+      await expect(authMod!.login(name, 'x', { ttl_ms })).rejects.toMatchObject({
+        code: 'invalid_session_ttl',
+      });
+    }
+
+    const sessions = await db!.adminSql<{ token: string }[]>`
+      SELECT token FROM harness_shared.user_sessions WHERE user_id=${user.id}`;
+    expect(sessions).toEqual([]);
+  });
 });

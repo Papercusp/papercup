@@ -24,6 +24,8 @@ import { REMOTE_OPERATOR_CAPABILITY } from './remote-auth-policy';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+/** Server-owned upper bound; remember-device callers may request any shorter TTL. */
+export const MAX_SESSION_TTL_MS = DEFAULT_SESSION_TTL_MS;
 
 /**
  * Per-token debounce for the best-effort `last_seen_at` write. last_seen_at only
@@ -65,6 +67,14 @@ export interface Session {
 
 function newToken(): string {
   return randomBytes(32).toString('hex');
+}
+
+function resolveSessionTtl(ttlMs: number | undefined): number {
+  if (ttlMs === undefined) return DEFAULT_SESSION_TTL_MS;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > MAX_SESSION_TTL_MS) {
+    throw Object.assign(new Error('invalid session ttl'), { code: 'invalid_session_ttl' });
+  }
+  return ttlMs;
 }
 
 /** Parse a `Cookie` request header into a name→value map. */
@@ -240,6 +250,10 @@ export async function login(
     if (!check[0]?.ok) throw Object.assign(new Error('bad password'), { code: 'bad_password' });
   }
 
+  // Session lifetime is a server-owned policy. Keep explicit shorter values
+  // for remember-device choices, but never accept malformed or overlong TTLs.
+  const ttl = resolveSessionTtl(meta?.ttl_ms);
+
   // Opportunistic sweep (EI-338): drop sessions that will never be presented
   // again — expired rows, plus never-reused rows past a generous grace (the
   // cookie-less desktop webview minted thousands of single-use rows before
@@ -254,7 +268,6 @@ export async function login(
   `.catch((err) => console.error('[auth] session sweep failed (non-fatal):', err));
 
   const token = newToken();
-  const ttl = meta?.ttl_ms ?? DEFAULT_SESSION_TTL_MS;
   const expires = new Date(Date.now() + ttl);
   // Local callers may bind at mint time from their request-scoped active
   // workspace. Remote callers pass an explicit request claim from login.ts.
