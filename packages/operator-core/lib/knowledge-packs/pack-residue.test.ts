@@ -79,6 +79,32 @@ describe('findPackResidue', () => {
     expect(formatPackResidue(hits)).toContain('dangling references');
   });
 
+  it('catches a remote-access target as access-topology (WI-8482 / P-008)', () => {
+    // Calibration for the leak this rule was added for: the organic corpus
+    // carried rows of exactly this shape and the gate ADMITTED them, because
+    // the class-3 identity leg hunts THIS box's literals and a target for a
+    // DIFFERENT machine is not one. Addresses are RFC-5737 documentation
+    // ranges — this fixture must never spell a real box identity.
+    const sshTarget = findPackResidue('Reach the build rig with `ssh deploy@203.0.113.7` first.');
+    expect(sshTarget.map((h) => h.rule)).toContain('access-topology');
+
+    const withFlags = findPackResidue('The VM (ssh -p 2222 builder@198.51.100.4) has no GPU.');
+    expect(withFlags.map((h) => h.rule)).toContain('access-topology');
+
+    // A bare user@ip needs no ssh verb — the pair alone is access topology.
+    const bare = findPackResidue('The sidecar runs as agent@192.0.2.15 and holds the lock.');
+    expect(bare.map((h) => h.rule)).toContain('access-topology');
+  });
+
+  it('access-topology does not fire on npm scopes, version specs, or a bare hostname', () => {
+    // Over-broad here would reject legitimate transferable prose, which is how
+    // a gate gets switched off rather than fixed.
+    const benign =
+      'Import from `@papercusp/sync`, pin tooling with `vitest@4.0.1`, and read ' +
+      'the docs at example.com before changing the ssh transport abstraction.';
+    expect(findPackResidue(benign).filter((h) => h.rule === 'access-topology')).toEqual([]);
+  });
+
   it('does not fire on ordinary prose that merely looks technical', () => {
     // Guards the rules against being over-broad: short hex, a version, a bare
     // word "harness", and a hyphenated capital that is not a ledger id.

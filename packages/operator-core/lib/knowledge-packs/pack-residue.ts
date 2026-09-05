@@ -79,6 +79,21 @@ export const PACK_RESIDUE_RULES: readonly PackResidueRule[] = [
       'D-008 lists agent-session ids as tier-3 THIS-BOX, and it is unresolvable off-box',
   },
   {
+    // WI-8482 / P-008. The class-3 identity leg hunts THIS box's literals
+    // (hostname, git identity), so a remote-access target for a DIFFERENT
+    // machine — the mac rig, a qemu VM — was never in its sights and shipped
+    // clean. Measured over the organic corpus: the gate admitted rows carrying
+    // `ssh <owner>@<ip>` verbatim, which is the first class D-005 names and
+    // which D-008 restates as tier-3 ("credentials/access topology").
+    id: 'access-topology',
+    pattern:
+      /(?:\b(?:ssh|scp|rsync|sftp)\s+[^\n]{0,40}?[A-Za-z0-9._-]+@[A-Za-z0-9._-]+)|(?:\b[A-Za-z0-9._-]+@(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?)/g,
+    why:
+      'a remote-access target (ssh/scp/rsync host, user@ip) is credentials-and-' +
+      'access topology — D-005 keeps it never-distributable and D-008 lists it ' +
+      'as tier-3 THIS-BOX; shipping it publishes how to reach our machines',
+  },
+  {
     id: 'signature-hash',
     pattern: /\b[0-9a-f]{12,}\b/g,
     why:
