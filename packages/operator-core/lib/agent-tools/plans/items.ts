@@ -147,6 +147,39 @@ const argsSchema = z.object({
     .max(200)
     .optional()
     .describe("Compatibility alias for itemIds (plural naming); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+  // tool-contract-repair-2026-09-05 P-006: three further spellings of the SAME
+  // exact-item selector were each filed as invalid_args after the `item`/`ids`
+  // aliases already landed — `itemId` (3 filings, e.g. EI-21669556283807249),
+  // `items` (2, e.g. EI-21382868747036184 / EI-21921093498350970) and
+  // `item_ids` (1, EI-21856673460402354). Each is an unambiguous synonym for
+  // this tool's one exact-item filter — there is no second meaning `itemId`
+  // could carry here — so they alias rather than reject (plan D: ALIAS when the
+  // caller's name is a genuine synonym; BETTER-ERROR only when accepting it
+  // would fuse two meanings). Precedence is fixed and documented:
+  // itemIds > item > ids > itemId > items > item_ids.
+  itemId: z
+    .string()
+    .regex(/^P-\d{3,}$/, "P-NNN form required")
+    .optional()
+    .describe("Compatibility alias for itemIds (a single P-NNN id, camelCase singular); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+  items: z
+    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Compatibility alias for itemIds (this tool's result key reused as the filter name); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+  item_ids: z
+    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Compatibility alias for itemIds (snake_case); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
+  // EI-21670809954424164 — the snake_case SINGULAR, filed alongside the others.
+  item_id: z
+    .string()
+    .regex(/^P-\d{3,}$/, "P-NNN form required")
+    .optional()
+    .describe("Compatibility alias for itemIds (a single P-NNN id, snake_case); itemIds wins when both are supplied. Requires `slug`, like itemIds."),
   status: z
     .enum([...ITEM_STATUSES] as [string, ...string[]])
     .optional()
@@ -176,7 +209,17 @@ const argsSchema = z.object({
     ),
   harness: harnessArg,
 }).refine(
-  (args) => !(args.itemIds || args.item || args.ids) || Boolean(args.slug),
+  (args) =>
+    !(
+      args.itemIds ||
+      args.item ||
+      args.ids ||
+      args.itemId ||
+      args.items ||
+      args.item_ids ||
+      args.item_id
+    ) ||
+    Boolean(args.slug),
   "itemIds requires an exact plan slug; cross-plan item selection is not supported",
 );
 
@@ -218,7 +261,7 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids:[…]` is an accepted alias for `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (todo, not live-held). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
+    'Plan-item query across one or all plans. `item:"P-NNN"` (one) or `itemIds:[…]` (many, homogeneous — `ids`/`itemId`/`items`/`item_ids` all alias `itemIds`) restrict results to exact ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (todo, not live-held). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
     when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `item:"P-NNN"` (one, matching plans:get-item\'s convention) or `itemIds:[…]` (many) with `slug` for exact item selection. An UNSCOPED session\'s exact-slug reads can auto-resolve their harness; a session already scoped to a concrete harness stays scoped to it (a miss names the actual owner). Cross-plan reads must name one.',
     notWhen:
@@ -272,9 +315,19 @@ export default defineTool({
     }
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
-    // Resolve the singular `item` and plural `ids` compatibility aliases into
-    // the canonical `itemIds` array; an explicit `itemIds` always wins.
-    const itemIds = args.itemIds ?? (args.item ? [args.item] : undefined) ?? args.ids;
+    // Resolve every exact-item alias spelling into the canonical `itemIds`
+    // array. Precedence is fixed and documented on each argument:
+    // itemIds > item > ids > itemId > items > item_ids. An explicit `itemIds`
+    // always wins, so a caller who names the canonical field can never have it
+    // silently overridden by a stray alias.
+    const itemIds =
+      args.itemIds ??
+      (args.item ? [args.item] : undefined) ??
+      args.ids ??
+      (args.itemId ? [args.itemId] : undefined) ??
+      args.items ??
+      args.item_ids ??
+      (args.item_id ? [args.item_id] : undefined);
 
     // okf-frontmatter-adoption H(b). Read OUTSIDE the cached closure so the flag
     // is part of the cache KEY — flipping the kill-switch must change the answer

@@ -69,24 +69,42 @@ const CANDIDATE_LIMIT = 200;
 /** Ranker/source label reported in the engine's `legs` and per-hit `rankers`. */
 const SOURCE_KEY = 'plans';
 
+/** Result ceiling. Arbitrary and read-only, so an over-large `limit` clamps. */
+const MAX_LIMIT = 50;
+
 const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
 
 /**
- * Normalize the legacy `q` spelling before the strict args schema runs.
+ * Normalize the legacy `q` spelling and a single-string `scope` before the
+ * strict args schema runs.
  *
  * Search callers commonly use the shorter `q` spelling, while this tool's
  * canonical input is `query`. Keep the published schema canonical and discard
  * the alias after normalization; when both spellings are present, explicit
  * `query` wins.
+ *
+ * `scope` is declared as an array of scope names, but a caller narrowing to ONE
+ * scope naturally writes `scope: 'items'` and hit invalid_args before any search
+ * ran (tool-contract-repair-2026-09-05 P-006 / EI-21166014275674822: "scope
+ * expected array, received string; high-level discovery summary did not expose
+ * that shape"). A bare string has exactly one possible reading here — the
+ * one-element list — so it is widened rather than rejected. An unknown scope
+ * name still fails the enum loudly; this only fixes the CONTAINER shape.
  */
 export function normalizePlansSearchArgs(raw: unknown): unknown {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
   const args = raw as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(args, 'q')) return raw;
 
-  const { q, ...rest } = args;
-  return rest.query !== undefined ? rest : { ...rest, query: q };
+  let out = args;
+  if (Object.prototype.hasOwnProperty.call(args, 'q')) {
+    const { q, ...rest } = out;
+    out = rest.query !== undefined ? rest : { ...rest, query: q };
+  }
+  if (typeof out.scope === 'string') {
+    out = { ...out, scope: [out.scope] };
+  }
+  return out === args ? raw : out;
 }
 
 const argsSchema = z.preprocess(
@@ -105,8 +123,21 @@ const argsSchema = z.preprocess(
     scope: z
       .array(z.enum(SCOPES as unknown as [Scope, ...Scope[]]))
       .optional()
-      .describe('Scopes to search. Default: all.'),
-    limit: z.number().int().min(1).max(50).optional().describe('Max results. Default 20.'),
+      .describe('Scopes to search. Default: all. A bare string is accepted as the one-element list.'),
+    // EI-21253383007098268: "limit: Too big: expected number to be <=50" — an
+    // oversized limit on a READ-ONLY search where the cap is arbitrary and
+    // nothing destructive follows. The plan's CLAMP-vs-REJECT rule puts that
+    // squarely on the clamp side (reject only where the value changes WHAT is
+    // measured), and the cap is now stated in the argument's own description —
+    // the real complaint was never that a cap exists, but that it was invisible
+    // until it fired. `clamped:true` is echoed on the response so a caller is
+    // never silently given fewer results than they asked for.
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(`Max results. Default 20, capped at ${MAX_LIMIT} — a larger value is CLAMPED to ${MAX_LIMIT} (response reports limitClamped), not refused.`),
     includeArchived: z.boolean().optional().describe('Search archived plans too. Default true (the dispersal problem was *unfindable*).'),
     includeLegacy: z.boolean().optional().describe('Search legacy plans (prose only). Default true.'),
     harness: harnessArg,
@@ -229,7 +260,11 @@ export default defineTool({
     const scopes: Scope[] =
       (args.scope as Scope[] | undefined) ??
       (args.slug && !args.query ? ['slug'] : [...SCOPES]);
-    const limit = args.limit ?? 20;
+    // Clamp rather than refuse (EI-21253383007098268); report it so a caller
+    // never silently receives fewer results than they asked for.
+    const requestedLimit = args.limit ?? 20;
+    const limit = Math.min(requestedLimit, MAX_LIMIT);
+    const limitClamped = requestedLimit > MAX_LIMIT;
     const includeArchived = args.includeArchived !== false;
     const includeLegacy = args.includeLegacy !== false;
     const queryTokens = tokenize(query);
@@ -503,6 +538,11 @@ export default defineTool({
           // covered the first CANDIDATE_LIMIT matching plans only. Narrow the
           // query (or scope by harness) for exhaustive coverage.
           ...(truncated ? { truncatedCandidates: true } : {}),
+          // No silent caps, the CALLER's half: an over-large `limit` was
+          // clamped rather than refused (EI-21253383007098268), so say the cap
+          // out loud instead of letting a short page read as "that is all
+          // there was".
+          ...(limitClamped ? { limitClamped: { requested: requestedLimit, applied: limit } } : {}),
           ...(crossHarnessHit ? { crossHarnessHit: 'Zero hits in scoped harness; result is from cross-harness search.' } : {}),
         }),
       }],

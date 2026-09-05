@@ -160,6 +160,16 @@ const argsSchema = z
       .describe(
         'Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.',
       ),
+    // EI-22056792132086608: plans:items' selector is `itemIds`, so a caller
+    // moving between the two tools writes `itemIds` here and hits invalid_args
+    // ("Unrecognized key: itemIds; live schema accepts items"). Same one
+    // meaning, different spelling; `items` wins when both are supplied.
+    itemIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Compatibility alias for `items` (plans:items' spelling of the same selector); `items` wins when both are supplied."),
     decisionId: z
       .string()
       .min(1)
@@ -175,6 +185,19 @@ const argsSchema = z
       .describe(
         'Return only these decision ids with complete bodies from the plans named by slug/slugs (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.',
       ),
+    // tool-contract-repair-2026-09-05 P-006: the plural `decisionIds` is the
+    // name callers reach for by symmetry with `itemIds` elsewhere in the plans
+    // family, and the singular `decisionId` already exists here — so the array
+    // form reads as `decisionIds` and got filed as invalid_args (12 filings on
+    // this shape, e.g. EI-21158047068641416 "Caller used decisionId:[D-039..D-042];
+    // live schema requires decisions:[...]"). It is an unambiguous synonym for
+    // `decisions`; `decisions` wins when both are supplied.
+    decisionIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Compatibility alias for `decisions` (plural naming, matching `itemIds`); `decisions` wins when both are supplied.'),
     mode: z
       .enum(['meta', 'sections', 'full'])
       .optional()
@@ -653,11 +676,17 @@ export default defineTool({
     // ambient case: a named harness is usually the right one, so a hit must not
     // pay an extra slug-index round-trip. Only the miss is explained.
     const explicitCallerHarness = args.harness && scope.kind === 'harness' ? scope.slug : null;
-    const requestedItemIds = args.items ? [...new Set(args.items)] : null;
+    // `itemIds` is a compatibility alias for `items`; an explicit `items` wins
+    // (tool-contract-repair-2026-09-05 P-006).
+    const itemSelectors = args.items ?? args.itemIds;
+    const requestedItemIds = itemSelectors ? [...new Set(itemSelectors)] : null;
     const requestedItemIdSet = requestedItemIds ? new Set(requestedItemIds) : null;
+    // `decisionIds` is a compatibility alias for `decisions`; an explicit
+    // `decisions` wins (tool-contract-repair-2026-09-05 P-006).
+    const decisionSelectors = args.decisions ?? args.decisionIds;
     const requestedDecisionIds =
-      args.decisionId || args.decisions?.length
-        ? [...new Set([...(args.decisionId ? [args.decisionId] : []), ...(args.decisions ?? [])])]
+      args.decisionId || decisionSelectors?.length
+        ? [...new Set([...(args.decisionId ? [args.decisionId] : []), ...(decisionSelectors ?? [])])]
         : null;
     const env = await runBulk(
       slugs,

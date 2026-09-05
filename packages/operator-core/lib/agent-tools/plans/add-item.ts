@@ -85,10 +85,53 @@ const BLOCKED_BY = z
   .array(z.string().regex(/^P-\d{3,}$/))
   .describe('Item IDs that must complete before this one can effectively start.');
 
+/**
+ * tool-contract-repair-2026-09-05 P-006. `title` and `body` are the names a
+ * caller reaches for when adding an item — the plan's own author hit this while
+ * FILING that plan ("plans:add-item rejects `title`/`body`, wants `text`").
+ *
+ * Each name ALONE has exactly one reading here: this tool stores a single item
+ * string, so a lone `title` or a lone `body` can only mean that string. Both
+ * TOGETHER do not: joining them would invent a separator and a field order the
+ * caller never asked for, which is precisely the "fuse two meanings" case the
+ * plan's ALIAS-vs-BETTER-ERROR rule reserves for a rejection. So one aliases,
+ * two are refused with a message that names the fix. `text` always wins.
+ */
+const TEXT_ALIAS = z
+  .string()
+  .optional()
+  .describe('Compatibility alias for `text`; `text` wins when both are supplied. Passing BOTH `title` and `body` without `text` is refused — combine them into `text` yourself rather than have this tool guess a separator.');
+
+export function resolveItemText(spec: {
+  text?: unknown;
+  title?: unknown;
+  body?: unknown;
+}): { ok: true; text?: string } | { ok: false; reason: 'title-and-body' } {
+  if (typeof spec.text === 'string' && spec.text.length > 0) return { ok: true, text: spec.text };
+  const hasTitle = typeof spec.title === 'string' && spec.title.length > 0;
+  const hasBody = typeof spec.body === 'string' && spec.body.length > 0;
+  if (hasTitle && hasBody) return { ok: false, reason: 'title-and-body' };
+  if (hasTitle) return { ok: true, text: spec.title as string };
+  if (hasBody) return { ok: true, text: spec.body as string };
+  return { ok: true };
+}
+
+/** The resolved item string, or undefined when absent OR ambiguously specified. */
+export function itemTextOrUndefined(spec: {
+  text?: unknown;
+  title?: unknown;
+  body?: unknown;
+}): string | undefined {
+  const resolved = resolveItemText(spec);
+  return resolved.ok ? resolved.text : undefined;
+}
+
 const itemSpec = z.object({
   slug: z.string().min(1).optional().describe('per-item plan slug (else the batch `slug`)'),
   phase: PHASE.optional().describe('per-item phase (else the batch `phase`)'),
-  text: hardText(4000),
+  text: hardText(4000).optional(),
+  title: TEXT_ALIAS,
+  body: TEXT_ALIAS,
   blockedBy: BLOCKED_BY.optional(),
   importance: IMPORTANCE.optional().describe('per-item importance (else the batch `importance`)'),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
@@ -103,6 +146,8 @@ export const argsSchema = z
     harness: harnessArg,
     phase: PHASE.optional(),
     text: hardText(4000).optional(),
+    title: TEXT_ALIAS,
+    body: TEXT_ALIAS,
     blockedBy: BLOCKED_BY.optional(),
     importance: IMPORTANCE.optional(),
     items: z
@@ -118,23 +163,38 @@ export const argsSchema = z
         'Optional — a short why for adding this item, if non-obvious. Stored on the plan revision (D-009); routine additions can omit it.',
       ),
   })
+  // `title`/`body` alias `text`, but only ONE of them at a time — refuse the
+  // ambiguous pair before anything is written (tool-contract-repair P-006).
+  .refine(
+    (a) =>
+      ((a.items?.length ?? 0) > 0 ? a.items! : [a]).every((it) => resolveItemText(it).ok),
+    {
+      message:
+        'pass the item string as `text`. `title` and `body` are each accepted as an alias for it, but not BOTH at once — this tool stores ONE item string, so combine them into `text` yourself rather than have this tool guess a separator and an order you did not specify.',
+    },
+  )
   .refine(
     (a) =>
       (a.items?.length ?? 0) > 0
-        ? // Bulk form: every item must RESOLVE a slug, phase and importance (its own or
-          // the batch fallback). The handler dereferences the resolved phase (`as string`
-          // casts), so an unresolvable field used to escape validation and crash inside
-          // the plan lock with "Cannot read properties of undefined (reading 'slice')".
+        ? // Bulk form: every item must RESOLVE a slug, phase, text and importance (its
+          // own or the batch fallback). The handler dereferences the resolved phase
+          // (`as string` casts), so an unresolvable field used to escape validation and
+          // crash inside the plan lock with "Cannot read properties of undefined
+          // (reading 'slice')".
           a.items!.every(
             (it) =>
               Boolean(it.slug ?? a.slug) &&
               Boolean(it.phase ?? a.phase) &&
+              Boolean(itemTextOrUndefined(it)) &&
               Boolean(it.importance ?? a.importance),
           )
-        : Boolean(a.slug) && Boolean(a.phase) && Boolean(a.text) && Boolean(a.importance),
+        : Boolean(a.slug) &&
+          Boolean(a.phase) &&
+          Boolean(itemTextOrUndefined(a)) &&
+          Boolean(a.importance),
     {
       message:
-        'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many — every item must resolve a slug, a phase AND an importance (per-item or batch-level)',
+        'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many — every item must resolve a slug, a phase, a text (or its `title`/`body` alias) AND an importance (per-item or batch-level)',
     },
   );
 
@@ -423,7 +483,7 @@ export default defineTool({
       ? args.items.map((it) => ({
           slug: (it.slug ?? args.slug) as string,
           phase: (it.phase ?? args.phase) as string,
-          text: it.text,
+          text: itemTextOrUndefined(it) as string,
           importance: (it.importance ?? args.importance) as Importance,
           blockedBy: it.blockedBy ?? args.blockedBy,
           harness: it.harness ?? args.harness,
@@ -433,7 +493,7 @@ export default defineTool({
           {
             slug: args.slug as string,
             phase: args.phase as string,
-            text: args.text as string,
+            text: itemTextOrUndefined(args) as string,
             importance: args.importance as Importance,
             blockedBy: args.blockedBy,
             harness: args.harness,

@@ -90,8 +90,19 @@ export const argsSchema = z
       .string()
       .optional()
       .describe(
-        "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009).",
+        "Optional — why this plan exists / what prompted its creation. Stored as the rationale of the plan's first revision (D-009). Alias: `goal`.",
       ),
+    // tool-contract-repair-2026-09-05 P-006: `goal` is the name callers reach
+    // for when stating why a plan exists — hit live by this plan's own author
+    // while filing it ("plans:new rejects `goal`, wants `rationale`"). It is a
+    // synonym for the same one-line purpose statement this field stores, not a
+    // second field: the plan BODY has its own argument (`content`), so `goal`
+    // cannot be read as "the plan's contents". `rationale` wins when both are
+    // supplied.
+    goal: z
+      .string()
+      .optional()
+      .describe('Compatibility alias for `rationale` (the one-line why). The plan BODY is `content`, not this. `rationale` wins when both are supplied.'),
     content: z
       .string()
       .max(200_000)
@@ -523,7 +534,9 @@ export default defineTool({
     const rev = planRevisionCapture(
       ctx as PlanRevisionCtx,
       slug,
-      args.rationale,
+      // `goal` is a compatibility alias for `rationale`; an explicit
+      // `rationale` wins (tool-contract-repair-2026-09-05 P-006).
+      args.rationale ?? args.goal,
       harnessSlug ? { harnessSlug } : {},
     );
     const result = await withPlanLock<NewPlanValue>(

@@ -18,7 +18,24 @@ const argsSchema = z.object({
     .array(z.string().regex(/^P-\d{3,}$/))
     .min(1)
     .max(200)
-    .optional(),
+    .optional()
+    .describe('Restrict to clauses owned by these P-NNN plan items. Aliases: `itemId`/`planItemId` (one id).'),
+  // tool-contract-repair-2026-09-05 P-006 / EI-21722550422531809: a caller
+  // filtering to one plan item reached for the singular `itemId` — the spelling
+  // plans:items and plans:get-item use — and hit invalid_args before any read
+  // ran. `itemId` has no second meaning on this tool (the only item-shaped
+  // filter is planItemIds), so it aliases; `planItemIds` wins when both are
+  // supplied.
+  itemId: z
+    .string()
+    .regex(/^P-\d{3,}$/)
+    .optional()
+    .describe('Compatibility alias for planItemIds (a single P-NNN id); planItemIds wins when both are supplied.'),
+  planItemId: z
+    .string()
+    .regex(/^P-\d{3,}$/)
+    .optional()
+    .describe('Compatibility alias for planItemIds (a single P-NNN id); planItemIds wins when both are supplied.'),
   revision: z.number().int().positive().optional().describe('Read this exact revision number.'),
   includeHistory: z.boolean().optional().describe('Return every immutable revision; current only by default.'),
 });
@@ -47,7 +64,12 @@ export default defineTool({
       planSlug: args.slug,
       specIds: args.specIds,
       sourceValIds: args.sourceValIds,
-      planItemIds: args.planItemIds,
+      // `itemId`/`planItemId` are singular compatibility aliases; an explicit
+      // `planItemIds` wins (tool-contract-repair-2026-09-05 P-006).
+      planItemIds:
+        args.planItemIds ??
+        (args.planItemId ? [args.planItemId] : undefined) ??
+        (args.itemId ? [args.itemId] : undefined),
       revision: args.revision,
       includeHistory: args.includeHistory,
     });
