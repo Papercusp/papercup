@@ -25,6 +25,7 @@ const getWorkItemCheckpoint = vi.fn();
 const attestWorkItemCheckpointUnchanged = vi.fn();
 const getWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
+const resolveCurrentTokens = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
@@ -36,6 +37,10 @@ vi.mock('../../carry-surface-action-proof', async () => {
     '../../carry-surface-action-proof',
   );
   return { ...actual, readSuccessfulActionInvocations };
+});
+vi.mock('../../freshness/resolvers', async () => {
+  const actual = await vi.importActual<typeof import('../../freshness/resolvers')>('../../freshness/resolvers');
+  return { ...actual, resolveCurrentTokens };
 });
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
@@ -125,7 +130,9 @@ beforeEach(() => {
   getWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
   readSuccessfulActionInvocations.mockReset();
+  resolveCurrentTokens.mockReset();
   readSuccessfulActionInvocations.mockResolvedValue([]);
+  resolveCurrentTokens.mockResolvedValue(new Map());
   // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
   // non-clear) through setWorkItemCheckpointWithPrior instead of setWorkItemCheckpoint
   // now, to get the prior length for free. Default it to delegate straight through to
@@ -3565,6 +3572,65 @@ describe('work_items:checkpoint — absence-premise continuity lint (WI-7238)', 
 
     expect(result.ok).toBe(true);
     expect(result).not.toHaveProperty('absenceLint');
+  });
+});
+
+describe('work_items:checkpoint — prose path continuity lint (EI-22386514939689944)', () => {
+  it('reports unresolved repo-relative paths from narrative prose without blocking the write', async () => {
+    const missing = 'packages/operator-core/lib/agent-tools/fleet/respawn-member.ts';
+    const present = 'packages/operator-core/lib/agent-tools/work_items/checkpoint.ts';
+    const body = `Landed the surface in ${missing}; the verification lives in ${present}.`;
+    resolveCurrentTokens.mockResolvedValue(
+      new Map([
+        [`file:${missing}`, null],
+        [`file:${present}`, 'sha256:present'],
+      ]),
+    );
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-PATH', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-PATH', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toMatchObject({
+      flagged: true,
+      paths: [missing],
+      note: expect.stringContaining('advisory only'),
+    });
+    expect(resolveCurrentTokens).toHaveBeenCalledWith(
+      [`file:${missing}`, `file:${present}`],
+      { workspaceId: 'default', harness: 'papercup' },
+    );
+  });
+
+  it('checks only narrative prose, not paths quoted by a structured recheck row', async () => {
+    const recheckPath = 'packages/operator-core/lib/agent-tools/fleet/respawn-member.ts';
+    const stored = withCarryNoteChecks('The implementation is ready.', [
+      { claim: 'the surface is present', recheck: `read ${recheckPath}` },
+    ]);
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-CHECK', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-PROSE-CHECK', checkpoint: stored });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
+    expect(resolveCurrentTokens).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the shared resolver cannot judge the prose paths', async () => {
+    const body = 'The landed surface is packages/operator-core/lib/agent-tools/fleet/respawn-member.ts.';
+    resolveCurrentTokens.mockRejectedValue(new Error('resolver unavailable'));
+    getWorkItem.mockResolvedValue({ id: 'WI-PROSE-RESOLVER-FAIL', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-PROSE-RESOLVER-FAIL', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.prosePathLint).toBeUndefined();
   });
 });
 

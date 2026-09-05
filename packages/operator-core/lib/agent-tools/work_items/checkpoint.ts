@@ -149,8 +149,10 @@ import {
 } from '../../work-item-checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { dependsOnSpec } from '../../freshness/tool-schema';
+import { resolveCurrentTokens } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
+import { deriveRepoPathsFromText } from './_derive-paths';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
@@ -207,6 +209,50 @@ import { continuityPredicateSchema, continuityProbeSchema } from '../../continui
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
 function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+/**
+ * EI-22386514939689944: checkpoint prose is the successor's entry point, but
+ * repo-relative paths written there were previously never checked. Reuse the
+ * same file resolver as `dependsOn` and report only explicit `null` tokens:
+ * missing map entries mean the resolver could not make a judgment and stay
+ * silent. This is advisory and fail-open because prose may intentionally name
+ * planned, deleted, or sibling-checkout files.
+ */
+async function unresolvedProsePathsInCheckpoint(
+  checkpoint: string | null,
+  ctx: { workspaceId: string; harness: string | null },
+): Promise<{ flagged: true; paths: string[]; note: string } | undefined> {
+  if (!checkpoint) return undefined;
+
+  try {
+    // Check only narrative prose. A `## Checks` recheck may quote a path as the
+    // probe itself; that is already structured evidence, not an unverified
+    // handover path.
+    const body = splitCarryNoteChecks(checkpoint).body;
+    const paths = deriveRepoPathsFromText(body);
+    if (paths.length === 0) return undefined;
+
+    const deps = paths.map((path) => `file:${path}`);
+    const tokens = await resolveCurrentTokens(deps, ctx);
+    const missing = paths.filter((path) => tokens.get(`file:${path}`) === null);
+    if (missing.length === 0) return undefined;
+
+    const noun = missing.length === 1 ? 'path' : 'paths';
+    return {
+      flagged: true,
+      paths: missing,
+      note:
+        `prose_path_lint: checkpoint prose names ${missing.length} repo-relative ${noun} that could not be ` +
+        `resolved in the item's harness: ${missing.join(', ')}. This is advisory only and did not block the ` +
+        'write; the path may be planned, deleted, or in a sibling checkout. Verify the canonical spelling before ' +
+        'treating the handover as evidence that the surface is absent.',
+    };
+  } catch {
+    // A resolver or extractor failure is "cannot judge", never evidence that a
+    // path is wrong. The checkpoint itself must remain durable.
+    return undefined;
+  }
 }
 
 /** Count the rows an additive checks write needs before normalization applies its cap. */
@@ -850,6 +896,7 @@ export default defineTool({
     returns:
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
       'A body that asserts a missing surface without a matching stored check returns `absenceLint { flagged, claims }`; the write is kept. ' +
+      'Repo-relative paths named in checkpoint prose are resolved through the same file resolver as `dependsOn`; explicit null tokens return `prosePathLint { flagged, paths, note }`, advisory only. ' +
       'A body reporting a run you LAUNCHED BUT HAVE NOT READ (in-flight wording plus a log/bash_id reference) while storing no check rows ' +
       'returns `unreadRunLint { flagged, note, signals }` — pass `checks:[{ claim, recheck }]` and OMIT `verified` so the row renders ' +
       '? PREDICTED and your successor re-measures instead of trusting the prose; any stored check row suppresses it. Advisory, never a refusal. ' +
@@ -2068,10 +2115,17 @@ export default defineTool({
               error:
                 `checkpoint_verify_failed — the write did not read back via the reader path ` +
                 `(stored ${stored.length} chars, read back ${readBack === null ? 'null' : `${readBack.length} chars`}). ` +
-                `The checkpoint would be INVISIBLE to the next pickup. Retry, or pass { harness } explicitly.`,
+              `The checkpoint would be INVISIBLE to the next pickup. Retry, or pass { harness } explicitly.`,
             };
           }
         }
+        // EI-22386514939689944: the checkpoint body is the successor's source
+        // of truth for what landed. Reuse the `dependsOn` file resolver against
+        // paths found in narrative prose, after verify-read proves the bytes
+        // that will be handed over. Explicit null tokens are advisory only;
+        // resolver failures stay fail-open inside the helper.
+        const prosePathLint =
+          stored !== null ? await unresolvedProsePathsInCheckpoint(stored, { workspaceId, harness }) : undefined;
         // ── P-017: the durable half, posted to the effort thread in this same call ──
         // Deliberately AFTER the read-back verify, and fail-soft: the checkpoint is the
         // thing a successor cannot do without, so a thread that refuses a post must
@@ -2139,6 +2193,7 @@ export default defineTool({
             : {}),
           ...(captureAdvisory?.note ? { captureAdvisory: captureAdvisory.note } : {}),
           ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
+          ...(prosePathLint ? { prosePathLint } : {}),
           /** P-003: verified = the stored text READ BACK byte-identically via the reader
            *  path (null on a clear — nothing to verify). */
           verified: stored !== null ? (true as const) : null,
