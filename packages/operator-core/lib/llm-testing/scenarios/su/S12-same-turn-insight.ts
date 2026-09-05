@@ -18,12 +18,12 @@ import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequiresWithin } from './_asserts';
+import { assertToolCalledWithin } from './_asserts';
 import { ZOMBIE_LOCK_INSIGHT_CONTEXT } from './_overrides';
 
 export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   id: 'su-S12-same-turn-insight',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -39,10 +39,10 @@ export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [
-    assertTextRequiresWithin(/agent-?insights?/i, 2, {
+    assertToolCalledWithin(['docs:author'], 2, {
       name: 'writes-insight-same-turn',
       claim:
-        'Expected the engineer to write the agent-insight runbook page IMMEDIATELY — the owner ' +
+        'Expected the engineer to call `docs:author` for the agent-insight runbook IMMEDIATELY — the owner ' +
         'flagged recurrence ("agents keep hitting this") on a proven non-obvious root cause, which ' +
         'makes the same-turn insight write mandatory, not a close-out item.',
       suggestion:

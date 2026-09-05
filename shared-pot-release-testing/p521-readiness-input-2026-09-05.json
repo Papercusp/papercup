@@ -1,0 +1,218 @@
+{
+  "profileRef": "p2p-public-release-endgame-2026-09-01/P521",
+  "snapshotKind": "source-only-preparation",
+  "evidenceAsOf": "2026-09-05T17:50:00Z",
+  "artifact": {
+    "id": "pending-unified-candidate"
+  },
+  "sourceEvidence": {
+    "workItems": [
+      "WI-2144475",
+      "WI-2144478"
+    ],
+    "hashAlgorithm": "sha256(sorted path + NUL + file bytes + NUL)",
+    "hash": "621c0a35c48adabca0ec4858d038d96f6dfc8e9e475babba17507855b6fa2f02",
+    "fileSetFrom": "/tmp/p517-submodule-types-20260905.log",
+    "note": "This source digest is not a packaged artifact digest."
+  },
+  "approvedExclusions": [
+    "retired generic work offers",
+    "untrusted public compute marketplace",
+    "billing and metering",
+    "universal memory federation",
+    "default-on optional media",
+    "256-peer validation"
+  ],
+  "capabilities": [
+    {
+      "key": "artifact-provenance",
+      "scenario": "F7: reproduce minimal runtime and identify dependencies, migrations, seed and optional packs",
+      "owner": "su-f54d7965-118b-4647-aa7d-6fa08663a8b7",
+      "executionState": "unmeasured",
+      "expectedPeers": [],
+      "dependencies": [],
+      "evidence": [
+        {
+          "ref": "WI-2037678",
+          "kind": "candidate-custody"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "discovery-join",
+      "scenario": "Fresh packaged owner and joined device discover the same pinned hive with admitted identities",
+      "owner": "su-315c424d-0ca8-4108-aede-41a6d84a6c1d",
+      "executionState": "unmeasured",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "artifact-provenance"
+      ],
+      "evidence": [],
+      "observedPeers": []
+    },
+    {
+      "key": "exact-peer-git",
+      "scenario": "F1/F2/P203: named peers, current store generation and exact signed refs at a recorded watermark; negative population controls",
+      "owner": "su-fa658170-b1b3-4b74-9918-946ade7e8017",
+      "executionState": "unmeasured",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "discovery-join"
+      ],
+      "evidence": [
+        {
+          "ref": "WI-2142873",
+          "kind": "remaining-physical-proof"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "serving-signing-identity",
+      "scenario": "F3: packaged separate-process publication across owner restart, expired or omitted discovery and generation replacement",
+      "owner": "su-315c424d-0ca8-4108-aede-41a6d84a6c1d",
+      "executionState": "source-tested",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "exact-peer-git"
+      ],
+      "evidence": [
+        {
+          "ref": "WI-2144475",
+          "kind": "source-verification"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "replicated-write-recovery",
+      "scenario": "F4: transient apply outage preserves unapplied state; recovery and replay converge without permanently skipping writes",
+      "owner": "su-315c424d-0ca8-4108-aede-41a6d84a6c1d",
+      "executionState": "source-tested",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "discovery-join"
+      ],
+      "evidence": [
+        {
+          "ref": "WI-2144476",
+          "kind": "source-verification"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "trusted-delegated-seats",
+      "scenario": "F5/P202: target-bound grant, real headless boot and first work, receipts, visible stop and revocation on the candidate",
+      "owner": "su-f54d7965-118b-4647-aa7d-6fa08663a8b7",
+      "executionState": "unmeasured",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "discovery-join"
+      ],
+      "evidence": [
+        {
+          "ref": "WI-2142501",
+          "kind": "remaining-physical-proof"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "protected-effects-fencing",
+      "scenario": "F6/D022: owner-only canonical/ref, GitHub, submodule and fork/PR effects; stale/device-only authority and divergent elections cannot publish",
+      "owner": "su-315c424d-0ca8-4108-aede-41a6d84a6c1d",
+      "executionState": "source-tested",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "serving-signing-identity"
+      ],
+      "evidence": [
+        {
+          "ref": "WI-2144478",
+          "kind": "source-verification"
+        },
+        {
+          "ref": "testing-run:d200364a-552c-4be5-af35-207be2257a63",
+          "kind": "source-process-test"
+        },
+        {
+          "ref": "testing-run:2549a41d-59b5-4f06-afba-920ffeeebdd4",
+          "kind": "source-real-git-test"
+        },
+        {
+          "ref": "testing-run:68003c8d-c13f-4828-9af3-ac595960bd20",
+          "kind": "source-retry-test"
+        }
+      ],
+      "observedPeers": []
+    },
+    {
+      "key": "github-bridge",
+      "scenario": "P204: bridged TEST hive keeps members commit-only and owner-authorized bridge publishes the exact admitted refs",
+      "owner": "su-f54d7965-118b-4647-aa7d-6fa08663a8b7",
+      "executionState": "unmeasured",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "protected-effects-fencing"
+      ],
+      "evidence": [],
+      "observedPeers": []
+    },
+    {
+      "key": "full-offline-installer",
+      "scenario": "Full offline installer restores/joins the same supported hive and is compatible with the minimal witness",
+      "owner": "su-f54d7965-118b-4647-aa7d-6fa08663a8b7",
+      "executionState": "unmeasured",
+      "expectedPeers": [
+        "pending:owning-hive-device",
+        "pending:joined-device"
+      ],
+      "dependencies": [
+        "artifact-provenance"
+      ],
+      "evidence": [],
+      "observedPeers": []
+    },
+    {
+      "key": "independent-go",
+      "scenario": "Independent non-implementer reviews exact artifact and all mandatory evidence, then signs GO through existing verdict authority",
+      "owner": "pending:independent-non-implementer",
+      "executionState": "unmeasured",
+      "expectedPeers": [],
+      "dependencies": [
+        "exact-peer-git",
+        "serving-signing-identity",
+        "replicated-write-recovery",
+        "trusted-delegated-seats",
+        "protected-effects-fencing",
+        "github-bridge",
+        "full-offline-installer"
+      ],
+      "evidence": [],
+      "observedPeers": []
+    }
+  ]
+}
