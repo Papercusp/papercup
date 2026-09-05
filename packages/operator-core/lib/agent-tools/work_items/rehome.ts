@@ -31,7 +31,10 @@ export const REHOME_DEPENDENT_TABLES = [
   'harness_feature_notes',
   'harness_feature_debug_notes',
   'harness_pending_issues',
-  'triage_routed_items',
+  // NOT `triage_routed_items`: it is a VIEW over work_items (894-triage-corpus-views.sql),
+  // so it follows the base-table move on its own and an UPDATE against it fails the whole
+  // transaction ("cannot update view") — measured live 2026-09-05 on the P-009 backfill.
+  // rehome.test.ts pins every entry here to a real base table in the schema dump.
 ] as const;
 
 function json(obj: unknown) {
