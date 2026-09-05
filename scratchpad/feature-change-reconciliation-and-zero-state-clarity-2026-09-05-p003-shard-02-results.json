@@ -1536,7 +1536,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21100293164081665 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21100293164081665 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21100293164081665 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1561,7 +1561,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21101708114327649 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21101708114327649 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21101708114327649 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1645,7 +1645,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21112863677994892 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21112863677994892 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21112863677994892 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1781,7 +1781,7 @@
         "bounded-exception-review: clusterCanonical=EI-21552938316984596; clusterMemberIds=EI-21125514075368781,EI-21282321535683380,EI-21306640946301749,EI-21396350167450849,EI-21552938316984596,EI-21559120216750619"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21125514075368781 and EI-21552938316984596, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21125514075368781 and EI-21552938316984596, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21125514075368781 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1915,7 +1915,7 @@
         "bounded-exception-review: clusterCanonical=EI-21133468897010309; clusterMemberIds=EI-21133468897010309,EI-21146091063234033,EI-21154752529765244"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21146091063234033 and EI-21133468897010309, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21146091063234033 and EI-21133468897010309, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21146091063234033 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1940,7 +1940,7 @@
         "bounded-exception-review: clusterCanonical=EI-21841726350886002; clusterMemberIds=EI-21146521834566856,EI-21841726350886002"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21146521834566856 and EI-21841726350886002, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21146521834566856 and EI-21841726350886002, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21146521834566856 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -1981,7 +1981,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21147632587354728 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21147632587354728 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21147632587354728 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2045,7 +2045,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21153948904785274 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21153948904785274 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21153948904785274 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2087,7 +2087,7 @@
         "bounded-exception-review: clusterCanonical=EI-21133468897010309; clusterMemberIds=EI-21133468897010309,EI-21146091063234033,EI-21154752529765244"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21154752529765244 and EI-21133468897010309, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21154752529765244 and EI-21133468897010309, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21154752529765244 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2151,7 +2151,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21163275794349974 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21163275794349974 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21163275794349974 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2194,7 +2194,7 @@
         "bounded-exception-review: clusterCanonical=EI-21102856384784046; clusterMemberIds=EI-21100293164081665,EI-21101708114327649,EI-21102856384784046,EI-21112863677994892,EI-21147632587354728,EI-21153948904785274,EI-21163275794349974,EI-21168075558015506"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21168075558015506 and EI-21102856384784046, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21168075558015506 and EI-21102856384784046, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21168075558015506 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2390,7 +2390,7 @@
         "bounded-exception-review: clusterCanonical=EI-21211890996010787; clusterMemberIds=EI-21202180416082834,EI-21211890996010787"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21202180416082834 and EI-21211890996010787, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21202180416082834 and EI-21211890996010787, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21202180416082834 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2415,7 +2415,7 @@
         "bounded-exception-review: clusterCanonical=EI-21123720088223163; clusterMemberIds=EI-21123720088223163,EI-21204576023231083"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21204576023231083 and EI-21123720088223163, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21204576023231083 and EI-21123720088223163, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21204576023231083 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2599,7 +2599,7 @@
         "bounded-exception-review: clusterCanonical=EI-21179998116459988; clusterMemberIds=EI-21179998116459988,EI-21245329838497282"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21245329838497282 and EI-21179998116459988, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21245329838497282 and EI-21179998116459988, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21245329838497282 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2663,7 +2663,7 @@
         "bounded-exception-review: clusterCanonical=EI-21107025229487888; clusterMemberIds=EI-21107025229487888,EI-21275903434503631"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21275903434503631 and EI-21107025229487888, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21275903434503631 and EI-21107025229487888, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21275903434503631 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2706,7 +2706,7 @@
         "bounded-exception-review: clusterCanonical=EI-21552938316984596; clusterMemberIds=EI-21125514075368781,EI-21282321535683380,EI-21306640946301749,EI-21396350167450849,EI-21552938316984596,EI-21559120216750619"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21282321535683380 and EI-21552938316984596, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21282321535683380 and EI-21552938316984596, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21282321535683380 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2751,7 +2751,7 @@
         "bounded-exception-review: clusterCanonical=EI-21552938316984596; clusterMemberIds=EI-21125514075368781,EI-21282321535683380,EI-21306640946301749,EI-21396350167450849,EI-21552938316984596,EI-21559120216750619"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21306640946301749 and EI-21552938316984596, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21306640946301749 and EI-21552938316984596, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21306640946301749 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2850,7 +2850,7 @@
         "bounded-exception-review: clusterCanonical=EI-21561474701768385; clusterMemberIds=EI-21370740891758611,EI-21387873854604221,EI-21561474701768385"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21370740891758611 and EI-21561474701768385, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21370740891758611 and EI-21561474701768385, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21370740891758611 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2898,7 +2898,7 @@
         "bounded-exception-review: clusterCanonical=EI-21372569443205410; clusterMemberIds=EI-21372569443205410,EI-21377173984099146,EI-21385595416758817,EI-21394860043677075,EI-21558026523957005"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21377173984099146 and EI-21372569443205410, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21377173984099146 and EI-21372569443205410, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21377173984099146 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2923,7 +2923,7 @@
         "bounded-exception-review: clusterCanonical=EI-21372569443205410; clusterMemberIds=EI-21372569443205410,EI-21377173984099146,EI-21385595416758817,EI-21394860043677075,EI-21558026523957005"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21385595416758817 and EI-21372569443205410, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21385595416758817 and EI-21372569443205410, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21385595416758817 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -2965,7 +2965,7 @@
         "bounded-exception-review: clusterCanonical=EI-21561474701768385; clusterMemberIds=EI-21370740891758611,EI-21387873854604221,EI-21561474701768385"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21387873854604221 and EI-21561474701768385, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21387873854604221 and EI-21561474701768385, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21387873854604221 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -3010,7 +3010,7 @@
         "bounded-exception-review: clusterCanonical=EI-21372569443205410; clusterMemberIds=EI-21372569443205410,EI-21377173984099146,EI-21385595416758817,EI-21394860043677075,EI-21558026523957005"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21394860043677075 and EI-21372569443205410, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21394860043677075 and EI-21372569443205410, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21394860043677075 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -3036,7 +3036,7 @@
         "bounded-exception-review: clusterCanonical=EI-21552938316984596; clusterMemberIds=EI-21125514075368781,EI-21282321535683380,EI-21306640946301749,EI-21396350167450849,EI-21552938316984596,EI-21559120216750619"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21396350167450849 and EI-21552938316984596, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21396350167450849 and EI-21552938316984596, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21396350167450849 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -3301,7 +3301,7 @@
         "bounded-exception-review: clusterCanonical=EI-21372569443205410; clusterMemberIds=EI-21372569443205410,EI-21377173984099146,EI-21385595416758817,EI-21394860043677075,EI-21558026523957005"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21558026523957005 and EI-21372569443205410, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21558026523957005 and EI-21372569443205410, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21558026523957005 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -3329,7 +3329,7 @@
         "bounded-exception-review: clusterCanonical=EI-21552938316984596; clusterMemberIds=EI-21125514075368781,EI-21282321535683380,EI-21306640946301749,EI-21396350167450849,EI-21552938316984596,EI-21559120216750619"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-21559120216750619 and EI-21552938316984596, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-21559120216750619 and EI-21552938316984596, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-21559120216750619 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -4105,7 +4105,7 @@
         "bounded-exception-review: clusterCanonical=EI-22372781172487389; clusterMemberIds=EI-22356207041955051,EI-22372781172487389,EI-22384939404278805"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-22356207041955051 and EI-22372781172487389, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-22356207041955051 and EI-22372781172487389, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-22356207041955051 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
@@ -4233,7 +4233,7 @@
         "bounded-exception-review: clusterCanonical=EI-22372781172487389; clusterMemberIds=EI-22356207041955051,EI-22372781172487389,EI-22384939404278805"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read current full rows EI-22384939404278805 and EI-22372781172487389, including origin, state, assignee, holds, completion/plan lineage, and both incoming and outgoing references.",
+        "P-004 must inspect the current full row/body for EI-22384939404278805 and EI-22372781172487389, current code for the claimed shared-root and corrective-status evidence, plan/completion lineage, origin/state/assignee/holds/claims, and both incoming and outgoing reference directions before any recoverable transition.",
         "P-004 must preserve or canonically redirect every watchdogKey, admissionIdentity signal/title key, occurrence history, unique evidence, and both reference directions from EI-22384939404278805 before any recoverable transition.",
         "P-004 must confirm the two current rows still express the same root defect; if any unique subcase, policy boundary, active claim, hold, or uncertain survivor remains, preserve both."
       ],
