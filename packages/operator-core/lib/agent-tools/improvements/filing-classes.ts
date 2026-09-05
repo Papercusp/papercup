@@ -91,7 +91,11 @@ export default defineTool({
     force: z.boolean().optional().describe('mode:"file" — file even when an open class item already exists for this surface'),
   }),
   async handler(args, ctx) {
-    const id = resolveAgentIdentity(ctx);
+    // Identity is resolved in the `file` branch ONLY. It is attribution for a WRITE
+    // (`createdBy` on the class item, `by` on each citation edge); the census is a
+    // read of an aggregate that belongs to no one. Resolving it up front made the
+    // read-only door throw for any caller without a principal — an attribution
+    // requirement on a surface that attributes nothing.
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const { sql } = getOrgPg();
     const census = await readFilingClasses(sql, {
@@ -179,6 +183,7 @@ export default defineTool({
       };
     }
 
+    const id = resolveAgentIdentity(ctx);
     const draft = buildFilingClassItemDraft(cls, { nowMs: Date.now(), minMembers: census.minMembers });
     const harness = args.harnessSlug ?? ctx.harnessSlug ?? 'papercusp';
     const item = await createWorkItem({

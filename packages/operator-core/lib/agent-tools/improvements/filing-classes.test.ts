@@ -95,6 +95,20 @@ describe('improvements:filing-classes — read mode', () => {
     expect(h.linkWorkItem).not.toHaveBeenCalled();
   });
 
+  it('reads the census without resolving a caller identity', async () => {
+    // resolveAgentIdentity THROWS for a context with no principal. Identity is
+    // attribution for a WRITE; the census attributes nothing, so requiring it here
+    // made the read-only door unusable from any unattributed caller.
+    h.identity.mockImplementation(() => {
+      throw new Error('resolveAgentIdentity: context carries no identity');
+    });
+
+    const out = body(await call({}, {}));
+
+    expect(out.ok).toBe(true);
+    expect(h.identity).not.toHaveBeenCalled();
+  });
+
   it('passes the caller limit to the census read but drops it for mode:"file"', async () => {
     await call({ limit: 5 });
     expect(h.readClasses.mock.calls[0]![1]).toMatchObject({ limit: 5 });
