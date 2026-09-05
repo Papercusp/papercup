@@ -17,6 +17,8 @@ vi.mock('./publisher-attestation', () => ({
 import { publishListingToCupboard } from './publish-listing';
 import * as ghToken from '../identity/gh-token';
 import * as cupboardPublish from './publisher-attestation';
+import { DEFAULT_PINNING_POLICY } from '../p2p/artifact-distribution';
+import { buildArtifactPackage, sha256Prefixed } from '../p2p/artifact-package';
 
 const baseInput = {
   listing_kind: 'plugin' as const,
@@ -105,5 +107,119 @@ describe('publishListingToCupboard', () => {
     expect(r.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1]![0]).toBe('https://cupboard.test/harnesses');
+  });
+});
+
+/**
+ * P-008 catalog axes + the D-045 §3b release gate.
+ *
+ * Every assertion here is about a field the WORKER already validated and stored
+ * and that nothing could send — the same shape as the `provides_events` bug this
+ * module's own comments describe. So the load-bearing checks are that the field
+ * now ARRIVES, and that the publisher-only half deliberately does not.
+ */
+describe('publishListingToCupboard — catalog visibility', () => {
+  it('sends visibility and tenant_id so a private listing is publishable at all', async () => {
+    const r = await publishListingToCupboard({ ...baseInput, visibility: 'private', tenant_id: 'pot-42' });
+    expect(r.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.visibility).toBe('private');
+    expect(body.tenant_id).toBe('pot-42');
+  });
+
+  it('omits visibility when unset, leaving the worker default rather than forcing public', async () => {
+    await publishListingToCupboard(baseInput);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect('visibility' in body).toBe(false);
+  });
+
+  it('refuses a private listing with no tenant, before any network call', async () => {
+    const r = await publishListingToCupboard({ ...baseInput, visibility: 'private' });
+    expect(r).toMatchObject({ ok: false, status: 400, error: 'tenant_required_for_private_visibility' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('publishListingToCupboard — release gate', () => {
+  const CHUNK = 8;
+  const BYTES = Buffer.from('the-quick-brown-fox-jumps-over-a-lazy-dog!', 'utf8');
+
+  const validRelease = () => {
+    const pkg = buildArtifactPackage(BYTES, { chunkSizeBytes: CHUNK });
+    const release = {
+      schemaVersion: 1 as const,
+      listingKind: 'plugin' as const,
+      listingRef: 'demo',
+      releaseVersion: '2.0.0',
+      contentHash: pkg.rootHash,
+      signature: 'release-sig',
+      dependencies: [],
+      compatibility: { runtime: 'papercusp>=1' },
+      permissions: [],
+      capabilities: [],
+      license: 'MIT',
+      publisher: { githubUserId: 42, login: 'avi' },
+      reviewStatus: 'approved' as const,
+    };
+    return {
+      release,
+      manifest: {
+        schemaVersion: 1 as const,
+        release,
+        rootHash: pkg.rootHash,
+        totalSizeBytes: pkg.totalSizeBytes,
+        chunks: pkg.chunks,
+        visibility: 'public' as const,
+        encryption: null,
+        pinning: DEFAULT_PINNING_POLICY,
+        signature: 'manifest-sig',
+      },
+    };
+  };
+
+  it('pins the validated release identity onto the row', async () => {
+    const { release, manifest } = validRelease();
+    const r = await publishListingToCupboard({
+      ...baseInput,
+      release: { visibility: 'public', manifest, bytes: BYTES },
+    });
+    expect(r.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.release_version).toBe('2.0.0');
+    expect(body.release_content_hash).toBe(release.contentHash);
+    expect(body.release_signature).toBe('release-sig');
+    expect(typeof body.release_manifest_digest).toBe('string');
+  });
+
+  it('NEVER forwards the release block itself — it carries publisher-only material', async () => {
+    const { manifest } = validRelease();
+    await publishListingToCupboard({ ...baseInput, release: { visibility: 'public', manifest, bytes: BYTES } });
+    const raw = fetchMock.mock.calls[0]![1].body as string;
+    expect('release' in JSON.parse(raw)).toBe(false);
+    // The whole point: no chunk list, no bytes, nothing but the pinned identity.
+    expect(raw).not.toContain('pinning');
+    expect(raw).not.toContain('chunks');
+  });
+
+  it('refuses an unpublishable release with 422 and never POSTs it', async () => {
+    const { manifest } = validRelease();
+    const flat = sha256Prefixed(BYTES);
+    const r = await publishListingToCupboard({
+      ...baseInput,
+      release: {
+        visibility: 'public',
+        manifest: { ...manifest, rootHash: flat, release: { ...manifest.release, contentHash: flat } },
+        bytes: BYTES,
+      },
+    });
+    expect(r).toMatchObject({ ok: false, status: 422, error: 'release_release_not_publishable' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('publishes normally when no release block is supplied (the metadata-only listing)', async () => {
+    const r = await publishListingToCupboard(baseInput);
+    expect(r.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect('release_version' in body).toBe(false);
   });
 });

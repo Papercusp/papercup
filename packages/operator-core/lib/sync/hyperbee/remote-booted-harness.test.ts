@@ -25,6 +25,7 @@ import {
 } from './remote-booted-harness';
 import type { LocalWriteOp } from './boot';
 import type { PeerLogOp } from './peer-log';
+import { GIT_SERVING_LEASE_MS, guardGitServingSigner, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 
 const KEY = 'a'.repeat(64);
 
@@ -61,6 +62,34 @@ function makeHandle(client: SubstrateRpcCaller, ownLogLength = 0): RemoteBootedH
 const op: LocalWriteOp = { type: 'put', table: 'feature_queue', hbKey: 'k', value: { x: 1 }, ts: 1, schema_version: 1 };
 
 describe('RemoteBootedHarnessHandle (P-001)', () => {
+  it('P514 re-reads live serving authority across owner restart; never uses the boot identity cache', async () => {
+    const request: GitServingRequest = { workspaceId: 'ws', installSlug: 'h-1', potHomeSlug: 'home', scope: { hive_id: 'hive', repo_key: 'repo' } };
+    const issuedAtMs = Date.now();
+    const first = { status: 'ready' as const, capability: { ...request, v: 1 as const, runtimeId: 'owner-1',
+      identity: { devicePubkeyBase64: 'serving-device', githubUserId: 42, keychainId: 'serving-key' },
+      context: { ...request.scope, store_generation: `sg2-1-${'a'.repeat(40)}` },
+      issuedAtMs, expiresAtMs: issuedAtMs + GIT_SERVING_LEASE_MS } };
+    let current: GitServingState = first;
+    const { client, calls } = makeClient(() => ({ gitServing: current }));
+    const handle = makeHandle(client);
+    expect(handle.announceIdentity).toBeNull();
+    expect(await handle.getGitServingCapability(request)).toEqual(first);
+    const signer = vi.fn(async () => Buffer.from('signed'));
+    const sign = guardGitServingSigner(first.capability, request, () => handle.getGitServingCapability(request), signer);
+    expect(await sign(Buffer.from('message'))).toEqual(Buffer.from('signed'));
+    current = { status: 'ready', capability: { ...first.capability, runtimeId: 'owner-2' } };
+    await expect(sign(Buffer.from('stale message'))).rejects.toMatchObject({ retryable: true });
+    expect(signer).toHaveBeenCalledTimes(1);
+    expect(calls.every(c => c.method === 'substrate:getStoreStatus')).toBe(true);
+    await handle.close();
+    expect(await handle.getGitServingCapability(request)).toMatchObject({ status: 'stopped' });
+  });
+
+  it('P514 treats old or unreachable RPC owners as unknown', async () => {
+    const request: GitServingRequest = { workspaceId: 'ws', installSlug: 'h-1', potHomeSlug: 'home', scope: { hive_id: 'hive', repo_key: 'repo' } };
+    expect(await makeHandle(makeClient(() => ({})).client).getGitServingCapability(request)).toMatchObject({ status: 'unknown', retryable: true });
+    expect(await makeHandle(makeClient(() => { throw new Error('owner down'); }).client).getGitServingCapability(request)).toMatchObject({ status: 'unknown', retryable: true });
+  });
   it('carries workspaceId/harnessSlug + the own-log key without IPC', () => {
     const { client, calls } = makeClient();
     const h = makeHandle(client);

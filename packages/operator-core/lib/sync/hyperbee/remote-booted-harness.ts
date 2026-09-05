@@ -42,6 +42,7 @@ import type { ScopeId } from '../pot-git/scope-repo';
 import type { ScopeFederation } from './scope-federation';
 import type { HiveGitDuplexRequest } from '../pot-git/peer-dial-registry';
 import { SubstrateIpcClient } from './substrate-ipc-client';
+import { gitServingUnavailable, validateGitServingState, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 
 /** The subset of the IPC client this proxy needs (injectable for tests). */
 export interface SubstrateRpcCaller {
@@ -336,6 +337,18 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
     // handle exists", and `pickHiveGitActor` refuses rather than falling back
     // when the owner reports a booted handle whose identity it cannot read.
     return this._announceIdentity;
+  }
+
+  async getGitServingCapability(request: GitServingRequest): Promise<GitServingState> {
+    if (this.closed) return gitServingUnavailable('stopped', 'sidecar handle is closed');
+    try {
+      const status = await this.client.call<{ gitServing?: unknown }>('substrate:getStoreStatus', {
+        storeId: this.storeId, gitServingRequest: request,
+      });
+      return validateGitServingState(status?.gitServing, request);
+    } catch (error) {
+      return gitServingUnavailable('unknown', `serving owner RPC unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

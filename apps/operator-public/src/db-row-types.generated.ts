@@ -2,15 +2,23 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: dcac248016b810a07f887879fa8e78e9f5da8f7e12ec27a0fdc54fadc9e8cd60
+ * Migration digest: f9eaffc468834e8b2b81ae82cde170bd2f2fbde7f36f7e5f37e7bc5f36eaca1f
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "dcac248016b810a07f887879fa8e78e9f5da8f7e12ec27a0fdc54fadc9e8cd60";
+  "f9eaffc468834e8b2b81ae82cde170bd2f2fbde7f36f7e5f37e7bc5f36eaca1f";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
+  "commerce_entitlements",
+  "commerce_ledger_events",
+  "commerce_offers",
+  "commerce_orders",
+  "commerce_payouts",
+  "commerce_products",
+  "commerce_refunds",
+  "commerce_webhook_inbox",
   "creator_drafts",
   "harnesses",
   "indexer_runs",
@@ -31,6 +39,93 @@ export interface BannedPublisherPubkeysRow {
   added_at: number;
   added_by_operator_user_id: number | null;
   updated_at: number;
+}
+
+export interface CommerceEntitlementsRow {
+  entitlement_id: string;
+  order_id: string;
+  product_id: string;
+  buyer_id: string;
+  state: string;
+  granted_at_ms: number;
+  revoked_at_ms: number | null;
+  revoke_reason: string | null;
+}
+
+export interface CommerceLedgerEventsRow {
+  ledger_event_id: string;
+  kind: string;
+  occurred_at_ms: number;
+  provider: string;
+  provider_event_id: string | null;
+  payload_json: string;
+}
+
+export interface CommerceOffersRow {
+  offer_id: string;
+  product_id: string;
+  pricing_model: string;
+  amount_minor: number;
+  currency: string;
+  active: number;
+}
+
+export interface CommerceOrdersRow {
+  order_id: string;
+  offer_id: string;
+  product_id: string;
+  buyer_id: string;
+  amount_minor: number;
+  currency: string;
+  state: string;
+  provider: string | null;
+  provider_ref: string | null;
+  refunded_minor: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface CommercePayoutsRow {
+  payout_id: string;
+  creator_id: string;
+  amount_minor: number;
+  currency: string;
+  state: string;
+  provider: string | null;
+  provider_ref: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface CommerceProductsRow {
+  product_id: string;
+  sku_ref: string;
+  creator_id: string;
+  title: string;
+  active: number;
+}
+
+export interface CommerceRefundsRow {
+  refund_id: string;
+  order_id: string;
+  amount_minor: number;
+  currency: string;
+  state: string;
+  provider: string | null;
+  provider_ref: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface CommerceWebhookInboxRow {
+  provider: string;
+  provider_event_id: string;
+  provider_event_type: string | null;
+  body_digest: string;
+  received_at_ms: number;
+  outcome: string;
+  rejection_code: string | null;
+  ledger_event_ids_json: string;
 }
 
 export interface CreatorDraftsRow {

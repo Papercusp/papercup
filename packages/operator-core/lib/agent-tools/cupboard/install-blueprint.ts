@@ -46,10 +46,21 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
+    const subject = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
 
     if (!args.listingId && !args.githubUrl) {
       return text({ ok: false, error: 'listingId or githubUrl required' });
+    }
+
+    // D-045 §3a — the release chain decides BEFORE any bytes move.
+    const { gateInstallDoor } = await import('../../cupboard/install-door-gate-io');
+    const gate = await gateInstallDoor({
+      idOrRef: args.listingId ?? args.listingRef,
+      kind: 'blueprint',
+      subject,
+    });
+    if (!gate.ok) {
+      return text({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
     }
 
     const { installBlueprintFromCupboard } = await import('../../cupboard/install-blueprint-io');

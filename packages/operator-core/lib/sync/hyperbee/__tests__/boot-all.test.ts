@@ -20,6 +20,7 @@ import {
   ensureSendSideWired,
   getBootedHarness,
   listBootedHandles,
+  listGitServingCapabilities,
   rebootHarness,
   reconcileRemoteHandlesAfterSidecarRestart,
   setSubstrateBootDefaults,
@@ -81,6 +82,34 @@ afterEach(async () => {
 });
 
 describe('boot-all — substrate orchestrator', () => {
+  it('P514 advertises exact repository authority from the home when a private child cannot serve', async () => {
+    const hiveStore = await import('../../../hive-store');
+    const hive = vi.spyOn(hiveStore, 'getHiveBySlug').mockResolvedValue({ pubkeyBase64: 'stable-hive' } as Awaited<ReturnType<typeof hiveStore.getHiveBySlug>>);
+    loadHarnessRegistryMock.mockResolvedValue({ projects: [
+      { slug: 'child', hive_slug: 'home', path: '/child' },
+      { slug: 'missing', hive_slug: 'absent-home', path: '/missing' },
+    ] });
+    const parent = fakeHandle('ws', 'home');
+    parent.getGitServingCapability = async request => {
+      const now = Date.now();
+      return { status: 'ready', capability: { ...request, v: 1, runtimeId: 'home-owner',
+        identity: { devicePubkeyBase64: 'home-device', githubUserId: 42, keychainId: 'home-key' },
+        context: { ...request.scope, store_generation: 'sg2-1-' + 'a'.repeat(40) }, issuedAtMs: now, expiresAtMs: now + 30_000 } };
+    };
+    const child = fakeHandle('ws', 'child');
+    child.getGitServingCapability = async () => ({ status: 'stopped', retryable: true, reason: 'private child' });
+    _setHandleForTests('ws', 'home', parent);
+    _setHandleForTests('ws', 'child', child);
+    try {
+      expect(await listGitServingCapabilities()).toMatchObject([{
+        request: { workspaceId: 'ws', installSlug: 'child', potHomeSlug: 'home', scope: { hive_id: 'stable-hive' } },
+        state: { status: 'ready', capability: { runtimeId: 'home-owner', identity: { devicePubkeyBase64: 'home-device' } } },
+      }]);
+    } finally {
+      hive.mockRestore();
+      loadHarnessRegistryMock.mockResolvedValue({ projects: [] });
+    }
+  });
   it('getBootedHarness returns null when not booted', () => {
     expect(getBootedHarness('ws-1', 'papercup')).toBeNull();
   });

@@ -43,6 +43,7 @@ import {
   type BootHarnessOpts,
 } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
+import { gitServingUnavailable, validateGitServingState, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 import type { MergeCursorStore } from './read-merge';
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
@@ -1865,6 +1866,49 @@ export function listBootedHandles(): BootedHandleSummary[] {
       harnessSlug: handle.harnessSlug,
       announceIdentity: handle.announceIdentity ?? null,
     });
+  }
+  return out;
+}
+
+export interface GitServingAdvertisement {
+  request: GitServingRequest;
+  state: GitServingState;
+}
+
+/** One bounded pass per existing owner heartbeat, sharing each workspace's
+ * registry/hive reads. Remote handles ask the actual sidecar on its existing
+ * status RPC; their cached boot-time announce identity is never authoritative. */
+export async function listGitServingCapabilities(): Promise<GitServingAdvertisement[]> {
+  const [{ loadHarnessRegistry }, { getHiveBySlug }, { canonicalRepoKey }] = await Promise.all([
+    import('../../harness-registry'), import('../../hive-store'), import('../pot-git/repo-identity'),
+  ]);
+  const out: GitServingAdvertisement[] = [];
+  for (const workspaceId of new Set([...handles.values()].map(h => h.workspaceId))) {
+    const entries = (await loadHarnessRegistry(workspaceId)).projects;
+    const hives = new Map<string, string | null>();
+    for (const entry of entries) {
+      const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+      if (!potHomeSlug) continue;
+      const candidates = [...new Set([entry.slug, potHomeSlug])]
+        .map(slug => handles.get(key(workspaceId, slug))).filter((h): h is BootedHarnessHandle => Boolean(h));
+      if (candidates.length === 0) continue;
+      if (!hives.has(potHomeSlug)) hives.set(potHomeSlug, (await getHiveBySlug(workspaceId, potHomeSlug))?.pubkeyBase64 ?? null);
+      const hiveId = hives.get(potHomeSlug);
+      if (!hiveId) continue;
+      const request: GitServingRequest = { workspaceId, installSlug: entry.slug, potHomeSlug,
+        scope: { hive_id: hiveId, repo_key: canonicalRepoKey(entry) } };
+      let state: GitServingState = gitServingUnavailable('unknown', 'owner supplies no serving capability');
+      for (const handle of candidates) {
+        try {
+          const answer = validateGitServingState(await handle.getGitServingCapability?.(request), request);
+          if (answer.status === 'ready') { state = answer; break; }
+          if (state.status === 'unknown') state = answer;
+        } catch (error) {
+          if (state.status === 'unknown') state = gitServingUnavailable('unknown', error instanceof Error ? error.message : String(error));
+        }
+      }
+      out.push({ request, state });
+    }
   }
   return out;
 }

@@ -414,9 +414,16 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
     return { ok: true };
   }
 
-  function handleGetStoreStatus(params: unknown): unknown {
+  async function handleGetStoreStatus(params: unknown): Promise<unknown> {
     const rec = requireRecord((params as { storeId: string }).storeId);
     const handle = rec.booted;
+    const request = (params as { gitServingRequest?: import('../pot-git/serving-capability').GitServingRequest }).gitServingRequest;
+    const gitServing = request
+      ? request.workspaceId !== rec.workspaceId
+        ? { status: 'absent', retryable: true, reason: 'workspace does not belong to this serving handle' }
+        : await handle?.getGitServingCapability?.(request) ??
+          { status: 'unknown', retryable: true, reason: 'owner supplies no serving capability' }
+      : undefined;
     return {
       isOpen: !!(handle ?? rec.store),
       ownLogLength: handle?.ownLog.length ?? rec.ownLog?.length ?? 0,
@@ -424,6 +431,7 @@ export function createSubstrateSidecarHost(deps: SubstrateSidecarHostDeps = {}):
       admittedPeerCount: handle?.admitted.size ?? rec.connections.size,
       lastMergeAt: null,
       swarmJoined: !!handle?.swarm,
+      ...(request ? { gitServing } : {}),
     };
   }
 

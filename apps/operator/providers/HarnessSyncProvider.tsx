@@ -60,6 +60,7 @@ const DEFAULT_REST_ENDPOINT = '/api/zero-harness';
 // degraded POLLING fallback keeps the lib's fast pollIntervalMs default —
 // there the tick IS the freshness source.
 const DEFAULT_SSE_DRIFT_REPAIR_MS = 180_000;
+const HOSTED_QUERY_NAME_ALLOWLIST = ['workspaceHosts.control'] as const;
 
 // One QueryClient for the app lifetime. Module-scope (not useMemo) so it
 // survives the provider unmount/remount that happens on some route swaps.
@@ -69,11 +70,14 @@ const queryClient = new QueryClient();
 export function resolveHarnessSyncTransport(): {
   restEndpoint: string;
   endpointOverride?: string;
+  queryNameAllowlist?: readonly string[];
 } {
   const browserTransport = resolveBrowserApiTransport();
   return {
     restEndpoint: browserTransport.restEndpoint || DEFAULT_REST_ENDPOINT,
     endpointOverride: browserTransport.sseEndpoint,
+    queryNameAllowlist:
+      browserTransport.mode === 'hosted' ? HOSTED_QUERY_NAME_ALLOWLIST : undefined,
   };
 }
 
@@ -284,6 +288,7 @@ export function HarnessSyncProvider({
         ssePollIntervalMs={ssePollIntervalMs}
         maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
+        queryNameAllowlist={browserTransport.queryNameAllowlist}
       >
         {children}
       </SyncProvider>

@@ -76,7 +76,10 @@ export async function issueGitServingCapability(request: GitServingRequest, deps
     }
     const issuedAtMs = (deps.now ?? Date.now)();
     return validateGitServingState({ status: 'ready', capability: {
-      ...request, v: 1, runtimeId: owner.runtimeId, identity: { ...owner.identity }, context,
+      ...request, v: 1, runtimeId: owner.runtimeId, identity: {
+        devicePubkeyBase64: owner.identity.devicePubkeyBase64,
+        githubUserId: owner.identity.githubUserId, keychainId: owner.identity.keychainId,
+      }, context,
       issuedAtMs, expiresAtMs: issuedAtMs + GIT_SERVING_LEASE_MS,
     } }, request, issuedAtMs);
   } catch (error) {
@@ -115,7 +118,9 @@ export function validateGitServingState(value: unknown, request: GitServingReque
 export async function assertGitServingCapability(capability: GitServingCapability, request: GitServingRequest,
   resolve: () => Promise<GitServingState>,
 ): Promise<void> {
-    const initial = validateGitServingState({ status: 'ready', capability }, request);
+    // A long Git operation may outlive the original lease. Fresh reissuance
+    // below can renew it, but only for this exact runtime and store context.
+    const initial = validateGitServingState({ status: 'ready', capability }, request, capability.issuedAtMs);
     if (initial.status !== 'ready') throw new GitServingUnavailableError(initial);
     const state = validateGitServingState(await resolve(), request);
     if (state.status !== 'ready') throw new GitServingUnavailableError(state);

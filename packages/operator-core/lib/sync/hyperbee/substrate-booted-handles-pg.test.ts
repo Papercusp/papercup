@@ -46,6 +46,7 @@ const H = vi.hoisted(() => {
 vi.mock('./boot-all', () => ({
   listBootedHandles: H.listBootedHandles,
   listRelocatedBootedHandles: H.listRelocatedBootedHandles,
+  listGitServingCapabilities: async () => [],
   // EI-20575137548097507: the publisher now collects the health-input bundle,
   // which walks the handles to build log stats.
   getBootedHarness: () => null,
@@ -62,7 +63,9 @@ import {
   getPgBootedHarnessAnnounceIdentity,
   getPgLastKnownHarnessAnnounceDevice,
   getPgRelocatedHarnessEndpoint,
+  getPgGitServingCapability,
 } from './substrate-booted-handles-pg';
+import { GIT_SERVING_LEASE_MS, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 import { getManaged } from '@papercusp/scheduled-registry';
 
 beforeEach(() => {
@@ -87,6 +90,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
       expect(H.state.row).toEqual({
         handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }],
         sentAt: 1_000,
+        publicationId: expect.any(String),
         lastKnownAnnounceDevices: [],
         // EI-20575137548097507: published alongside the handles so a non-owner
         // reader can ASSESS them. Present-but-empty here (nothing registered in
@@ -104,11 +108,11 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         { workspaceId: 'ws1', harnessSlug: 'b' },
       ];
       await vi.advanceTimersByTimeAsync(10_000);
-      expect(H.updateOperatorState).toHaveBeenCalledTimes(2);
+      expect(H.updateOperatorState).toHaveBeenCalledTimes(4);
       expect((H.state.row as { handles: unknown[] }).handles).toHaveLength(2);
       h.stop();
       await vi.advanceTimersByTimeAsync(50_000);
-      expect(H.updateOperatorState).toHaveBeenCalledTimes(2); // stopped — no further writes
+      expect(H.updateOperatorState).toHaveBeenCalledTimes(4); // stopped — no further writes
     } finally {
       vi.useRealTimers();
     }
@@ -191,6 +195,7 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     expect(H.state.row).toEqual({
       handles: H.state.booted,
       sentAt: 5_000,
+      publicationId: expect.any(String),
       lastKnownAnnounceDevices: [],
       healthInputs: {
         replicationLiveness: [],
@@ -451,5 +456,56 @@ describe('getPgBootedHarnessAnnounceIdentity (WI-2142873 cross-process identity)
       identity: null,
       advertisedAt: 1_000,
     });
+  });
+});
+
+describe('P514 owner capability discovery', () => {
+  const request: GitServingRequest = { workspaceId: 'ws1', installSlug: 'a', potHomeSlug: 'home',
+    scope: { hive_id: 'stable-hive', repo_key: 'gh:123' } };
+  const state: GitServingState = { status: 'ready', capability: { ...request, v: 1, runtimeId: 'runtime-1',
+    identity: { devicePubkeyBase64: 'device', githubUserId: 42, keychainId: 'key' },
+    context: { ...request.scope, store_generation: `sg2-1-${'a'.repeat(40)}` },
+    issuedAtMs: 1_000, expiresAtMs: 1_000 + GIT_SERVING_LEASE_MS } };
+  const row = () => ({ handles: [{ workspaceId: 'ws1', harnessSlug: 'a' }], sentAt: 1_000,
+    gitServing: [{ request, state }] });
+
+  it('passes an exact fresh owner-issued repository capability between services', async () => {
+    H.state.row = row();
+    expect(await getPgGitServingCapability(request, { now: () => 2_000 })).toEqual(state);
+  });
+
+  it.each(['missing-row', 'old-owner', 'stale-row', 'expired-capability', 'future-row'] as const)('keeps %s UNKNOWN', async failure => {
+    const value = row();
+    if (failure === 'missing-row') H.state.row = null;
+    else if (failure === 'old-owner') H.state.row = { handles: value.handles, sentAt: value.sentAt };
+    else H.state.row = { ...value, sentAt: failure === 'future-row' ? 99_000 : failure === 'expired-capability' ? 32_000 : value.sentAt };
+    const now = failure === 'stale-row' || failure === 'expired-capability' ? 32_000 : 2_000;
+    expect(await getPgGitServingCapability(request, { now: () => now })).toMatchObject({ status: 'unknown', retryable: true });
+  });
+
+  it.each(['handle', 'repository', 'scope'] as const)('keeps omitted %s distinct from never-created', async missing => {
+    H.state.row = missing === 'handle' ? { ...row(), handles: [] } :
+      missing === 'repository' ? { ...row(), gitServing: [] } : row();
+    const asked = missing === 'scope' ? { ...request, scope: { ...request.scope, hive_id: 'other' } } : request;
+    expect(await getPgGitServingCapability(asked, { now: () => 2_000 })).toMatchObject({ status: 'absent', retryable: true });
+  });
+
+  it.each(['stopped', 'never-created'] as const)('preserves explicit owner %s evidence', async status => {
+    H.state.row = { ...row(), gitServing: [{ request, state: { status, retryable: true, reason: 'owner checked' } }] };
+    expect(await getPgGitServingCapability(request, { now: () => 2_000 })).toMatchObject({ status, retryable: true });
+  });
+
+  it('a delayed old publisher cannot overwrite a replacement owner, even at the same timestamp', async () => {
+    let release!: (value: Array<{ request: GitServingRequest; state: GitServingState }>) => void;
+    const pending = new Promise<Array<{ request: GitServingRequest; state: GitServingState }>>(resolve => { release = resolve; });
+    const old = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 1_000, collectGitServing: () => pending });
+    await Promise.resolve();
+    const next = startBootedHandlesPgPublisher({ ownsSubstrate: true, now: () => 1_000, collectGitServing: async () => [] });
+    await vi.waitFor(() => expect(H.state.row).toHaveProperty('gitServing', []));
+    release([{ request, state }]);
+    await vi.waitFor(() => expect(H.updateOperatorState).toHaveBeenCalledTimes(4));
+    expect(H.state.row).toHaveProperty('gitServing', []);
+    old.stop();
+    next.stop();
   });
 });

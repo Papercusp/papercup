@@ -54,6 +54,17 @@ export default defineTool({
       return text({ ok: false, error: 'listingId or githubUrl required' });
     }
 
+    // D-045 §3a — the release chain decides BEFORE any bytes move.
+    const { gateInstallDoor } = await import('../../cupboard/install-door-gate-io');
+    const gate = await gateInstallDoor({
+      idOrRef: args.listingId ?? args.listingRef,
+      kind: 'app',
+      subject: workspaceId,
+    });
+    if (!gate.ok) {
+      return text({ ok: false, error: gate.code, detail: gate.detail, refusedBy: 'install-door-gate' });
+    }
+
     const { installBundleAppFromCupboard } = await import('../../cupboard/bundle-app-install-io');
     const outcome = await installBundleAppFromCupboard(
       {

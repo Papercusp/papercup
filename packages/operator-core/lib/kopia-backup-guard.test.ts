@@ -48,6 +48,12 @@ function fixture(memory = 0, io = 0) {
       ...process.env,
       GUARD: guard,
       KOPIA_BACKUP_LOCK_PATH: join(dir, 'global.lock'),
+      // Per-fixture, and NOT optional. The guard's staleness floor keeps its
+      // bookkeeping under $XDG_STATE_HOME/$HOME by default, so without this every
+      // test would read and write the REAL host's backup state: tests would
+      // pollute production bookkeeping, and — worse — become order-dependent on
+      // it, since a stale baseline left by the host makes a deferral test admit.
+      KOPIA_BACKUP_STATE_DIR: join(dir, 'state'),
       KOPIA_BACKUP_MEM_PSI_PATH: memoryPath,
       KOPIA_BACKUP_IO_PSI_PATH: ioPath,
       KOPIA_BACKUP_MEM_FULL_AVG10_MAX: '5',

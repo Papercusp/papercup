@@ -90,6 +90,18 @@ function localOp(over: Partial<LocalWriteOp> = {}): LocalWriteOp {
 }
 
 describe('substrate sidecar host — store relocation (P-001)', () => {
+  it('P514 status asks the live handle and distinguishes a non-serving store from missing identity', async () => {
+    const host = makeHost();
+    const { workspaceRoot } = tempWorkspace('reloc-serving-status-');
+    const { storeId } = await host.methods['substrate:bootHarness']({ workspaceId: WS, harnessSlug: SLUG, workspaceRoot }) as { storeId: string };
+    const request = { workspaceId: WS, installSlug: SLUG, potHomeSlug: 'hive', scope: { hive_id: 'hive-key', repo_key: 'repo' } };
+    expect(await host.methods['substrate:getStoreStatus']({ storeId, gitServingRequest: request })).toMatchObject({
+      swarmJoined: false, gitServing: { status: 'stopped', retryable: true },
+    });
+    expect(await host.methods['substrate:getStoreStatus']({ storeId, gitServingRequest: { ...request, workspaceId: 'other' } })).toMatchObject({
+      gitServing: { status: 'absent', retryable: true },
+    });
+  });
   it('bootHarness opens the store + own-log and returns a 64-hex own-log key', async () => {
     const host = makeHost();
     const { workspaceRoot } = tempWorkspace('reloc-boot-');

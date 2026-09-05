@@ -53,6 +53,94 @@ is_number "$io_limit" || { echo "invalid KOPIA_BACKUP_IO_FULL_AVG10_MAX=$io_limi
 is_number "$monitor_interval" || { echo "invalid KOPIA_BACKUP_MONITOR_INTERVAL_SEC=$monitor_interval" >&2; exit 64; }
 is_number "$stop_grace" || { echo "invalid KOPIA_BACKUP_STOP_GRACE_SEC=$stop_grace" >&2; exit 64; }
 
+# A pressure gate with no floor does not delay a backup, it CANCELS it, and says
+# nothing while doing so.  On a host whose memory PSI sits permanently above the
+# budget, every scheduled cycle defers, the next cycle defers for the same
+# reason, and coverage stops with the service still reporting healthy.  Measured
+# on this box 2026-09-05: /proc/pressure/memory full avg10=23.84 against the
+# default limit of 5 -- 4.8x over, sustained -- no Kopia snapshot for 6h43m, and
+# the newest recoverable dump 19h old (WI-2146225 defect B).
+#
+# Raising the limit is NOT the repair: a larger constant has the same unbounded
+# shape and fails the same way on the next busy day.  The invariant that was
+# missing is that pressure may DELAY a cycle but may not CANCEL it.  Past
+# max_defer seconds since the last recorded success, the cycle is admitted
+# regardless of pressure -- bounded, because the unit that runs this pins
+# MemoryMax/MemorySwapMax and Kopia to --parallel=1, so an admitted run is
+# capped by its cgroup rather than free to consume the host.
+max_defer="${KOPIA_BACKUP_MAX_DEFER_SEC:-21600}"
+# ...and once escalated, do not escalate again on the very next timer tick.  A
+# backup that fails for a non-pressure reason would otherwise ignore pressure on
+# every 5-minute tick forever.  This is the retry floor between escalations.
+escalation_retry="${KOPIA_BACKUP_ESCALATION_RETRY_SEC:-3600}"
+is_number "$max_defer" || { echo "invalid KOPIA_BACKUP_MAX_DEFER_SEC=$max_defer" >&2; exit 64; }
+is_number "$escalation_retry" || { echo "invalid KOPIA_BACKUP_ESCALATION_RETRY_SEC=$escalation_retry" >&2; exit 64; }
+
+state_dir="${KOPIA_BACKUP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/papercusp/kopia-backup-guard}"
+# The label reaches this from the command line and becomes a path segment.
+state_key=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '_')
+# NOT named "last-success": this timestamp is also seeded on the first-ever
+# evaluation, when no success has happened.  It is the instant staleness is
+# measured FROM, and naming it for the thing it is not is how a later reader
+# concludes a backup succeeded when none did.
+deadline_base_path="$state_dir/$state_key.deadline-base"
+escalation_path="$state_dir/$state_key.last-escalation"
+
+# Every state read fails CLOSED to "unknown", and every state write is
+# best-effort: a guard that cannot write its own bookkeeping must still run the
+# backup.  Never let this bookkeeping fail a cycle.
+read_stamp() {
+  local recorded
+  [ -r "$1" ] || return 1
+  recorded=$(cat "$1" 2>/dev/null) || return 1
+  is_number "$recorded" || return 1
+  printf '%s' "$recorded"
+}
+
+write_stamp() {
+  local path="$1" tmp
+  mkdir -p "$state_dir" 2>/dev/null || return 0
+  tmp="$path.tmp.$$"
+  if printf '%s\n' "$(date +%s)" >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$path" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+  return 0
+}
+
+age_of() {
+  local recorded
+  recorded=$(read_stamp "$1") || return 1
+  awk -v now="$(date +%s)" -v then="$recorded" 'BEGIN { printf "%d", now - then }'
+}
+
+# Returns 0 to DEFER (caller exits), 1 to ADMIT despite pressure.
+pressure_escalated=0
+defer_or_escalate() {
+  local reason="$1" age escalated_age
+  if ! age=$(age_of "$deadline_base_path"); then
+    # No baseline yet.  Seed the clock from now and defer normally rather than
+    # admitting immediately: enabling this must not make every label on the host
+    # ignore pressure at once on its first tick.
+    write_stamp "$deadline_base_path"
+    guard_log "result=deferred reason=$reason staleness_sec=unknown-seeded max_defer_sec=$max_defer"
+    return 0
+  fi
+  if [ "$age" -lt "$max_defer" ]; then
+    guard_log "result=deferred reason=$reason staleness_sec=$age max_defer_sec=$max_defer"
+    return 0
+  fi
+  if escalated_age=$(age_of "$escalation_path") && [ "$escalated_age" -lt "$escalation_retry" ]; then
+    guard_log "result=deferred reason=$reason staleness_sec=$age max_defer_sec=$max_defer escalation_retry_in_sec=$((escalation_retry - escalated_age))"
+    return 0
+  fi
+  write_stamp "$escalation_path"
+  pressure_escalated=1
+  guard_log "result=admitted-despite-pressure reason=$reason staleness_sec=$age max_defer_sec=$max_defer"
+  return 1
+}
+
 # /run/lock is the host-global lock namespace shared by the user systemd units
 # and root-launched maintenance (for example, sudo systemd-run). Keep the lock
 # in a dedicated non-sticky subdirectory: fs.protected_regular rejects root
@@ -113,6 +201,16 @@ run_scheduled_command() {
     sleep "$monitor_interval"
     kill -0 "$child_pid" 2>/dev/null || break
 
+    # This cycle was admitted BECAUSE it is past the staleness deadline.  Leaving
+    # the runtime abort armed would retire it within one monitor interval on the
+    # same pressure that admission just overrode, which makes the whole floor
+    # inert -- the failure mode is a log line saying the backup was admitted
+    # followed immediately by one saying it was deferred, and still no snapshot.
+    # The cgroup limits on the unit remain the brake for an escalated run.
+    if [ "$pressure_escalated" = 1 ]; then
+      continue
+    fi
+
     memory_psi=$(read_full_avg10 "$memory_path") || {
       runtime_abort_reason="pressure-unavailable signal=memory path=$memory_path"
       break
@@ -168,21 +266,24 @@ if [ "$mode" = scheduled ]; then
 
   memory_path="${KOPIA_BACKUP_MEM_PSI_PATH:-/proc/pressure/memory}"
   io_path="${KOPIA_BACKUP_IO_PSI_PATH:-/proc/pressure/io}"
-  memory_psi=$(read_full_avg10 "$memory_path") || {
-    guard_log "result=deferred reason=pressure-unavailable signal=memory path=$memory_path"
-    exit 0
-  }
-  io_psi=$(read_full_avg10 "$io_path") || {
-    guard_log "result=deferred reason=pressure-unavailable signal=io path=$io_path"
-    exit 0
-  }
-
-  if at_or_above "$memory_psi" "$memory_limit"; then
-    guard_log "result=deferred reason=memory-pressure full_avg10=$memory_psi limit=$memory_limit"
-    exit 0
+  # Evaluate every admission signal first, then take ONE deferral decision, so
+  # the staleness floor applies to all of them.  An unreadable PSI file defers
+  # exactly like real pressure and so must escalate exactly like it: otherwise a
+  # host that stops publishing pressure never backs up again either.
+  admission_block_reason=
+  memory_psi=$(read_full_avg10 "$memory_path") || memory_psi=
+  io_psi=$(read_full_avg10 "$io_path") || io_psi=
+  if [ -z "$memory_psi" ]; then
+    admission_block_reason="pressure-unavailable signal=memory path=$memory_path"
+  elif [ -z "$io_psi" ]; then
+    admission_block_reason="pressure-unavailable signal=io path=$io_path"
+  elif at_or_above "$memory_psi" "$memory_limit"; then
+    admission_block_reason="memory-pressure full_avg10=$memory_psi limit=$memory_limit"
+  elif at_or_above "$io_psi" "$io_limit"; then
+    admission_block_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
   fi
-  if at_or_above "$io_psi" "$io_limit"; then
-    guard_log "result=deferred reason=io-pressure full_avg10=$io_psi limit=$io_limit"
+
+  if [ -n "$admission_block_reason" ] && defer_or_escalate "$admission_block_reason"; then
     exit 0
   fi
 else
@@ -207,6 +308,12 @@ else
   rc=$?
 fi
 guard_log "result=finished mode=$mode rc=$rc"
+# Only a run that actually completed resets the staleness clock.  A deferral
+# never reaches here, and the scheduled runtime-abort path returns above, so
+# neither can be mistaken for coverage.
+if [ "$rc" -eq 0 ]; then
+  write_stamp "$deadline_base_path"
+fi
 return "$rc"
 }
 

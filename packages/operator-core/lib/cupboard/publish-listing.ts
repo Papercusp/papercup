@@ -12,8 +12,10 @@
  */
 import { getGhAuthToken } from '../identity/gh-token';
 import { resolveCupboardBaseUrl } from './base-url';
+import { listingManifestDigest, unsignedListingManifest } from './listing-manifest';
+import { prepareReleaseForPublish, type ReleaseGateInput } from './publish-release-gate';
 import { resolvePublisherAttestation } from './publisher-attestation';
-import type { ListingKind, RubricRequirement } from './types';
+import type { ListingKind, ListingVisibility, RubricRequirement } from './types';
 import type { ProvidedEventFamily, RequiredEventFamily } from '@papercusp/blueprint-distribution';
 
 /** A validated listing-publish payload (mirrors the Cupboard `/listings` body). */
@@ -116,6 +118,42 @@ export interface CupboardListingInput {
    *  ["darwin-aarch64","linux-x86_64"]) so the card shows availability without
    *  fetching the manifest. Derived from the validated manifest by the tool. */
   platforms?: string[];
+
+  // ── Catalog axes (worker migration 018 / shared-pot-dao-cupboard-v1 P-008,
+  // D-045 §3b). Kind-agnostic, unlike the app-only block above.
+  //
+  // ⚠ These were the `provides_events` bug again, one axis over. The worker
+  // validates and stores them (`routes/listings.ts` → `insertListing`), the row
+  // type carries them, and the read paths are fail-closed around them — but
+  // NOTHING could send them, because this input type could not express them. So
+  // every listing published through the one server-side path landed on the
+  // worker's `visibility` default of 'public', and a private listing was
+  // unpublishable however the caller asked for it.
+  //
+  // The commerce axes the same migration added (`sku_ref`, `pricing_model`,
+  // `price_*`) are deliberately NOT here: they belong to the P-011 commerce
+  // doors, not to this decision's publish chain. ──
+
+  /** public (default) | unlisted | private. Omitted ⇒ the worker's 'public'. */
+  visibility?: ListingVisibility;
+  /**
+   * Owning shared pot. REQUIRED by the worker when `visibility: 'private'` — a
+   * private row is visible only to callers scoped to this tenant, so a private
+   * listing with no tenant would be visible to nobody, including its publisher.
+   */
+  tenant_id?: string;
+
+  /**
+   * The release this listing distributes, when it ships bytes. Runs the D-041
+   * publish-time content-address check (and, for a private listing, the
+   * encrypt/package/wrap pass) BEFORE anything is POSTed, then pins the
+   * resulting release identity onto the row.
+   *
+   * ⚠ NEVER forwarded to the Cupboard. It carries publisher-only material —
+   * plaintext bytes and the content key on the private path — so
+   * `publishListingToCupboard` strips it from the request body by construction.
+   */
+  release?: ReleaseGateInput;
 }
 
 export type CupboardPublishResult =
@@ -132,15 +170,55 @@ export type CupboardPublishResult =
 export async function publishListingToCupboard(
   input: CupboardListingInput,
 ): Promise<CupboardPublishResult> {
+  // Strip the publisher-only release block up front, so no later edit can leak
+  // plaintext or the content key into the request body by adding a spread.
+  const { release, ...listing } = input;
+
+  // Refuse locally what the worker would refuse anyway, but with the reason.
+  // A private row is scoped to its tenant, so a private listing with no tenant
+  // is visible to nobody at all — including whoever just published it.
+  if (listing.visibility === 'private' && !listing.tenant_id) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'tenant_required_for_private_visibility',
+      detail: "visibility 'private' scopes the listing to tenant_id; without one the row would be visible to nobody",
+    };
+  }
+
   const tokenRes = await getGhAuthToken();
   if (tokenRes.kind !== 'ok') {
     return { ok: false, status: 401, error: 'gh_auth_required', detail: tokenRes.error.kind };
   }
 
+  // The publish-time release gate (D-045 §3b). Runs after auth — there is no
+  // point encrypting a large artifact for a publish that cannot proceed — and
+  // before the POST, so an unpublishable release never reaches the catalog.
+  let releasePins: Record<string, string> = {};
+  if (release) {
+    const prepared = await prepareReleaseForPublish(release);
+    if (!prepared.ok) {
+      return { ok: false, status: 422, error: `release_${prepared.code.replace(/-/g, '_')}`, detail: prepared.detail };
+    }
+    // Pin the IDENTITY of the validated release. Content identity only, never a
+    // retrieval URL, so a later storage migration changes nothing here.
+    const releaseManifest = prepared.manifest.release;
+    releasePins = {
+      release_version: releaseManifest.releaseVersion,
+      release_content_hash: releaseManifest.contentHash,
+      release_manifest_digest: listingManifestDigest(unsignedListingManifest(releaseManifest)),
+      release_signature: releaseManifest.signature,
+    };
+  }
+
   // Best-effort channel-2 attestation (idempotent device-binding gist). null on
   // any failure → publish proceeds unattributed.
   const attestation = await resolvePublisherAttestation();
-  const publishBody = attestation ? { ...input, ...attestation } : input;
+  const publishBody = {
+    ...listing,
+    ...releasePins,
+    ...(attestation ?? {}),
+  };
 
   const base = resolveCupboardBaseUrl();
   const headers = {

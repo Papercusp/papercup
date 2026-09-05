@@ -36,8 +36,10 @@
  */
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { randomUUID } from 'node:crypto';
 import { isSubstrateOwnerProcess } from '../../background-workers';
-import { listBootedHandles, listRelocatedBootedHandles, type BootedHandleSummary } from './boot-all';
+import { listBootedHandles, listRelocatedBootedHandles, listGitServingCapabilities, type BootedHandleSummary, type GitServingAdvertisement } from './boot-all';
+import { gitServingUnavailable, validateGitServingState, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 import type { BootedAnnounceIdentity } from './boot';
 import { readOperatorState, updateOperatorState } from '../../operator-state-pg';
 import {
@@ -66,6 +68,9 @@ interface PgLastKnownHarnessAnnounceDeviceRecord {
 interface PgBootedHandlesPayload {
   handles: BootedHandleSummary[];
   sentAt: number;
+  publicationId?: string;
+  /** Owner-issued per-repository leases. Omission is an old/unknown owner. */
+  gitServing?: GitServingAdvertisement[];
   /**
    * WI-2142873 / D-013: last serving identity observed for each pot, retained
    * across a fresh snapshot that temporarily omits the pot during owner boot.
@@ -254,17 +259,21 @@ export function startBootedHandlesPgPublisher(opts: {
   now?: () => number;
   /** Test seam / explicit override for "does this process own the substrate?". */
   ownsSubstrate?: boolean;
+  collectGitServing?: () => Promise<GitServingAdvertisement[]>;
 }): BootedHandlesPgPublisherHandle {
   const intervalMs = opts.intervalMs ?? 10_000;
   const now = opts.now ?? (() => Date.now());
+  let publishing: Promise<void> | null = null;
+  let stopped = false;
   const beat = (): void | Promise<void> => {
-    if (!(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
+    if (stopped || !(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
     const handles = listBootedHandles();
     const relocated = listRelocatedBootedHandles();
     const sentAt = now();
     const payload: PgBootedHandlesPayload = {
       handles,
       sentAt,
+      publicationId: randomUUID(),
       // EI-20575137548097507: publish what a reader needs to ASSESS these
       // handles, not just enumerate them.
       healthInputs: collectSubstrateHealthInputs(),
@@ -286,10 +295,22 @@ export function startBootedHandlesPgPublisher(opts: {
     // timer look healthy (`lastError:null`) while every PG write failed — the
     // observability gap that prolonged EI-20952729544817284. The managed timer
     // records/logs a rejection and still retries next interval.
-    return updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => ({
+    if (publishing) return publishing;
+    // Publish liveness/omission immediately, invalidating the preceding owner
+    // before any slow Git/PG work. Never renew old capabilities while collecting.
+    publishing = updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => ({
       ...payload,
       lastKnownAnnounceDevices: mergeLastKnownAnnounceDevices(current, handles, sentAt),
-    })).then(() => undefined);
+    })).then(async () => {
+      const gitServing = await (opts.collectGitServing ?? listGitServingCapabilities)();
+      if (stopped || !(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
+      await updateOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload, (current) => {
+        // A newer owner/beat won during issuance: never overwrite its verdict.
+        if (current.publicationId !== payload.publicationId) return current;
+        return { ...current, gitServing };
+      });
+    }).finally(() => { publishing = null; });
+    return publishing;
   };
   // Preserve the publisher's existing synchronous first-attempt semantics:
   // updateOperatorState is invoked before this function returns. This attempt
@@ -316,6 +337,7 @@ export function startBootedHandlesPgPublisher(opts: {
   });
   return {
     stop() {
+      stopped = true;
       timer.stop();
     },
   };
@@ -341,9 +363,27 @@ async function readFreshPgBootedHandlesPayload(opts?: {
   } catch {
     return null;
   }
-  if (!row || !Array.isArray(row.handles) || typeof row.sentAt !== 'number') return null;
-  if (now() - row.sentAt > maxAgeMs) return null;
+  if (!row || !Array.isArray(row.handles) || !Number.isFinite(row.sentAt)) return null;
+  if (now() - row.sentAt > maxAgeMs || row.sentAt > now()) return null;
   return row;
+}
+
+/** Missing/omitted/expired discovery remains retryable and never authorizes a
+ * substitute signer. Each capability has its own lease in addition to row age. */
+export async function getPgGitServingCapability(request: GitServingRequest,
+  opts?: { maxAgeMs?: number; now?: () => number },
+): Promise<GitServingState> {
+  const row = await readFreshPgBootedHandlesPayload(opts);
+  if (!row || !Array.isArray(row.gitServing)) return gitServingUnavailable('unknown', 'no current serving discovery');
+  if (!row.handles.some(h => h.workspaceId === request.workspaceId &&
+      (h.harnessSlug === request.installSlug || h.harnessSlug === request.potHomeSlug))) {
+    return gitServingUnavailable('absent', 'serving handle omitted from owner snapshot');
+  }
+  const match = row.gitServing.find(a => a.request?.workspaceId === request.workspaceId &&
+    a.request.installSlug === request.installSlug && a.request.potHomeSlug === request.potHomeSlug &&
+    a.request.scope?.repo_key === request.scope.repo_key && a.request.scope.hive_id === request.scope.hive_id);
+  if (!match) return gitServingUnavailable('absent', 'repository omitted from owner serving snapshot');
+  return validateGitServingState(match.state, request, (opts?.now ?? Date.now)());
 }
 
 /**

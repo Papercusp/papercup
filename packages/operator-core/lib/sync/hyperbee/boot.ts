@@ -41,6 +41,8 @@ import {
   type HarnessStoreOpts,
 } from './corestore';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { randomUUID } from 'node:crypto';
+import { issueGitServingCapability, type GitServingRequest, type GitServingState } from '../pot-git/serving-capability';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp, type RemoteLog } from './peer-log';
 // P-004 (WI-1840, WI-183 class): the replication-liveness registry — read-time
 // per-log verdicts (live/no_replicator/frozen/…) for the status surfaces + the
@@ -855,6 +857,9 @@ export interface BootedHarnessHandle {
    *  it, or when this boot never joined a swarm. Live getter, reassigned by
    *  `rekey()`. P-203 Leg A. */
   readonly announceIdentity: BootedAnnounceIdentity | null;
+  /** Fresh authority from the process actually serving Git. Optional only for
+   * older handles; callers must treat omission as unknown, never fall back. */
+  getGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
   /** Re-key onto a NEW swarm topic IN PLACE: leave the old topic, join the topic
    *  derived from `binding`, keeping the store + own log + admitted set + merge
    *  loop alive. The "go shared" primitive — used when a harness joins/publishes
@@ -4942,6 +4947,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // actor) split the two on the tower — gh=papercupai, announce=aviynw — so every
   // ref-announce named a device no peer had a socket for. Reassigned by rekey().
   let announceIdentity: LocalAnnounceIdentity | null = null;
+  let gitServingHome: string | null = null;
+  let gitServingRuntimeId = randomUUID();
   let writerProgressAnnounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
@@ -5295,6 +5302,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // best-effort diagnostic only — never let this probe affect the join
         }
       }
+      gitServingHome = null;
+      gitServingRuntimeId = randomUUID();
       swarmHandle = await joinHarnessSwarm({
         store,
         topic,
@@ -5518,6 +5527,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         },
       });
 
+      gitServingHome = hiveGitHomeSlug ?? null;
       console.info(
         `[swarm] joined topic ${topic.toString('hex').slice(0, 16)}… ` +
           `harness=${opts.harnessSlug} (announcing as github_user_id=${identity.githubUserId})`,
@@ -5559,6 +5569,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // writes still work. ALSO log to stderr: a silently-local-only harness is
       // a real federation regression that was previously invisible (only landed
       // in in-memory boot-history), which masked packaged two-instance debugging.
+      gitServingHome = null;
       const msg = e instanceof Error ? e.message : String(e);
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'swarm_join_failed', msg);
 
@@ -5686,6 +5697,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const { devicePubkeyBase64, githubUserId, githubLogin, keychainId } = announceIdentity;
       return { devicePubkeyBase64, githubUserId, githubLogin, keychainId };
     },
+    async getGitServingCapability(request): Promise<GitServingState> {
+      const { resolveServingStoreContext } = await import('../pot-git/signed-context-store');
+      return issueGitServingCapability(request, {
+        current: () => !stopped && swarmHandle && announceIdentity && gitServingHome ? {
+          runtimeId: gitServingRuntimeId, workspaceId: opts.workspaceId, potHomeSlug: gitServingHome,
+          topicHex: swarmHandle.topicHex, identity: announceIdentity,
+        } : null,
+        resolveContext: resolveServingStoreContext,
+      });
+    },
     async rekey(binding: SwarmBinding): Promise<void> {
       // EI-681: re-key onto a NEW swarm topic IN PLACE — leave the old topic and
       // join the new one while keeping the store + own log + admitted set + merge
@@ -5698,6 +5719,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // (owner resolve, bootstrap window, the swarm-join retry) sees the
       // rekey target throughout the close→rejoin window below.
       currentBinding = binding;
+      gitServingHome = null;
+      gitServingRuntimeId = randomUUID();
       const previous = swarmHandle;
       swarmHandle = null;
       if (previous) {

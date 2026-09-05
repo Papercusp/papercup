@@ -41,7 +41,7 @@ const {
   ensurePotGitRepoMock,
   bootstrapFromPeerMock,
   hasPendingQuarantineMock,
-  resolveUsageActorMock,
+  resolveServingIdentityMock,
   saveHarnessRegistryMock,
   unsafeMock,
   sqlTagMock,
@@ -124,7 +124,7 @@ const {
       stderr: '',
     };
   }),
-  resolveUsageActorMock: vi.fn(
+  resolveServingIdentityMock: vi.fn(
     async (): Promise<{ githubUserId: number; devicePubkey: string } | null> => ({
       githubUserId: 1,
       devicePubkey: 'c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=',
@@ -225,13 +225,28 @@ vi.mock('../../sync/pot-git/bootstrap', () => ({
   bootstrapFromPeer: bootstrapFromPeerMock,
   hasPendingQuarantine: hasPendingQuarantineMock,
 }));
-vi.mock('../usage-actor', () => ({ resolveUsageActor: resolveUsageActorMock }));
+async function servingFixture(request: import('../../sync/pot-git/serving-capability').GitServingRequest) {
+  const actor = await resolveServingIdentityMock();
+  if (!actor) return { status: 'unknown', retryable: true, reason: 'serving identity unavailable in fixture' };
+  const now = Date.now();
+  return { status: 'ready', capability: { ...request, v: 1, runtimeId: 'fixture-owner',
+    identity: { devicePubkeyBase64: actor.devicePubkey, githubUserId: actor.githubUserId, keychainId: 'fixture-key' },
+    context: { ...request.scope, store_generation: 'sg2-1-' + 'a'.repeat(40) }, issuedAtMs: now, expiresAtMs: now + 30_000 } };
+}
+vi.mock('../../hive-store', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getHiveBySlug: async () => ({ pubkeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }),
+}));
 vi.mock('../../sync/hyperbee/boot-all', () => ({
-  getBootedHarness: getBootedHarnessMock,
+  getBootedHarness: (...args: Parameters<typeof getBootedHarnessMock>) => {
+    const handle = getBootedHarnessMock(...args);
+    return handle ? { ...handle, getGitServingCapability: servingFixture } : null;
+  },
   bootSingleHarness: bootSingleHarnessMock,
 }));
 vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', () => ({
   getPgRelocatedHarnessEndpoint: getPgRelocatedHarnessEndpointMock,
+  getPgGitServingCapability: servingFixture,
 }));
 vi.mock('../../sync/hyperbee/remote-booted-harness', () => ({
   openHiveGitDuplexViaExistingSidecar: openHiveGitDuplexViaExistingSidecarMock,
@@ -303,7 +318,7 @@ beforeEach(() => {
   bootstrapFromPeerMock.mockClear();
   hasPendingQuarantineMock.mockClear();
   hasPendingQuarantineMock.mockResolvedValue(false);
-  resolveUsageActorMock.mockClear();
+  resolveServingIdentityMock.mockClear();
   unsafeMock.mockClear();
   sqlTagMock.mockClear();
   sqlTagMock.mockResolvedValue([]); // default: no prior routine row
@@ -318,7 +333,7 @@ beforeEach(() => {
   openHiveGitDuplexToDeviceMock.mockClear();
   loadCachedLocalAnnounceIdentityMock.mockClear();
   loadCachedLocalAnnounceIdentityMock.mockResolvedValue(null); // default: cache empty (actor path is used)
-  resolveUsageActorMock.mockResolvedValue({ githubUserId: 1, devicePubkey: SELF_DEVICE });
+  resolveServingIdentityMock.mockResolvedValue({ githubUserId: 1, devicePubkey: SELF_DEVICE });
   loadHarnessRegistryMock.mockResolvedValue({
     projects: [{ slug: SLUG, hive_slug: SLUG, self_repo: true }],
   });
@@ -1139,9 +1154,10 @@ describe('runBootstrapLeg', () => {
     }
   });
 
-  it('gh-free self-fallback: resolveUsageActor null → self identity from the announce-identity cache; self is excluded from candidates', async () => {
+  it('unavailable serving authority uses cached identity only to exclude self from bootstrap candidates', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
-    resolveUsageActorMock.mockResolvedValue(null); // gh unauthenticated / rate-limited
+    resolveServingIdentityMock.mockResolvedValue(null); // owner has no current serving authority
     loadCachedLocalAnnounceIdentityMock.mockResolvedValue({ devicePubkeyBase64: SELF_DEVICE });
     listHiveMembersMock.mockResolvedValue([
       { deviceAttestations: [{ device_pubkey: SELF_DEVICE }, { device_pubkey: PEER_DEVICE }] },
@@ -1154,17 +1170,22 @@ describe('runBootstrapLeg', () => {
     expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
     expect(openHiveGitDuplexToDeviceMock.mock.calls[0][1]).toBe(PEER_DEVICE);
     expect((bootstrapFromPeerMock.mock.calls[0][2] as Record<string, unknown>).selfDevicePubkey).toBe(SELF_DEVICE);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    warn.mockRestore();
   });
 
-  it('gh-free self-fallback: actor null AND cache miss → selfDevicePubkey undefined, still bootstraps (no crash)', async () => {
+  it('unavailable serving authority and cache miss still allow read-only bootstrap', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getBootedHarnessMock.mockReturnValue({ swarm: { topicHex: 'deadbeef' } });
-    resolveUsageActorMock.mockResolvedValue(null);
+    resolveServingIdentityMock.mockResolvedValue(null);
     loadCachedLocalAnnounceIdentityMock.mockResolvedValue(null); // nothing cached either
     listHiveMembersMock.mockResolvedValue([{ deviceAttestations: [{ device_pubkey: PEER_DEVICE }] }]);
     openHiveGitDuplexToDeviceMock.mockImplementation(async () => dialDuplex(false));
     await expect(runBootstrapLeg(SLUG, WS)).resolves.toBeUndefined();
     expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
     expect((bootstrapFromPeerMock.mock.calls[0][2] as Record<string, unknown>).selfDevicePubkey).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    warn.mockRestore();
   });
 
   // ── EI-15333: no-such-repo dial backoff ──

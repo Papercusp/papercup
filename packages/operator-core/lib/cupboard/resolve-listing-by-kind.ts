@@ -37,11 +37,32 @@ export interface ResolvedListingCoords {
   /** The listing's declared rubric dependencies, still JSON-encoded (migration 015).
    *  Parse with `parseRequiredRubrics`. Undefined ⇒ the row declared none. */
   requiresRubrics?: string;
+  /** `free` | `one-time` | `subscription` | `per-use`; undefined ⇒ the row is unpriced.
+   *  Carried so the install-door gate can decide whether a MISSING release chain is
+   *  fatal (a paid listing) or ordinary (a free one) — see `install-door-gate`. */
+  priceModel?: string;
+  /** Undefined ⇒ no price set. Paired with `priceModel`: a model with no amount is an
+   *  unfinished storefront row, not a paid unit. */
+  priceAmountMicros?: number;
+  /** The version the storefront currently serves, when the row names one. */
+  releaseVersion?: string;
 }
 
 export type ResolveListingResult = ResolvedListingCoords | { error: string; status: number };
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+
+/** A finite number, from either a JSON number or a numeric string. Storefront rows
+ *  serve `price_amount_micros` both ways depending on the backend, and reading only
+ *  one of them would silently price a paid listing at zero. */
+const num = (v: unknown): number | null => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const parsed = Number(v);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
 
 /** Pull the installer-relevant coordinates out of a raw listing row. Null when the
  *  row carries no usable repo URL — a listing we cannot clone is not resolvable,
@@ -60,6 +81,17 @@ function coordsFromRow(row: Record<string, unknown>): ResolvedListingCoords | nu
     ref,
     ...(str(row.id) ? { listingId: str(row.id) as string } : {}),
     ...(str(row.requires_rubrics) ? { requiresRubrics: str(row.requires_rubrics) as string } : {}),
+    ...(str(row.price_model) ? { priceModel: str(row.price_model) as string } : {}),
+    ...(num(row.price_amount_micros) !== null
+      ? { priceAmountMicros: num(row.price_amount_micros) as number }
+      : {}),
+    ...(str(row.release_version) ?? str(row.latest_version) ?? str(row.version)
+      ? {
+          releaseVersion: (str(row.release_version) ??
+            str(row.latest_version) ??
+            str(row.version)) as string,
+        }
+      : {}),
   };
 }
 

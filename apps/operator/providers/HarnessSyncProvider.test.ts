@@ -54,6 +54,7 @@ describe("resolveHarnessSyncTransport (hosted browser marker)", () => {
     expect(resolveHarnessSyncTransport()).toEqual({
       restEndpoint: "/api/zero-harness",
       endpointOverride: undefined,
+      queryNameAllowlist: undefined,
     });
   });
 
@@ -74,6 +75,7 @@ describe("resolveHarnessSyncTransport (hosted browser marker)", () => {
     expect(resolveHarnessSyncTransport()).toEqual({
       restEndpoint: "/api/hosted/browser",
       endpointOverride: "/api/hosted/browser/sse",
+      queryNameAllowlist: ["workspaceHosts.control"],
     });
   });
 });
