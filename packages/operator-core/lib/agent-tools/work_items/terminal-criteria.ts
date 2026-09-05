@@ -281,29 +281,58 @@ function durableChangeRating(input: TerminalCriteriaInput, applies: boolean): Ad
  * verification and the criterion stands down. Measured on that population: catches 835,
  * false positives 0.
  *
- * Note what is deliberately NOT here, and WHY — the two reasons are different, and an
- * earlier version of this comment got the first one wrong:
+ * Note what is deliberately NOT here, and WHY — the two reasons are different, and the
+ * first one has now been corrected TWICE, in opposite directions:
  *
- * - Corroboration via `addedTests` is NOT BUILT — a scope decision, NOT an impossibility.
- *   ⚠ This comment previously claimed the field was "measured empty on all 851", i.e. that
- *   the criterion would be dead code. That is RETRACTED and false. Measured 2026-09-05 over
- *   closes carrying `payload->'_completionEvidence'` (harness papercusp, non-observation
- *   lane, terminal-success, 14d, positive control passed): `addedTests` is `true` on 3,611
- *   and `false` on 3,435 of 10,844 — populated on ~65%. The original probe read
- *   `_completionEvidence->'verification'->'addedTests'`, which is NULL on 100% of rows
- *   because the field lands TOP-LEVEL; an empty result there is an artifact of the path,
- *   indistinguishable from a real absence. Whether to build the cross-check is therefore a
- *   REOPENED design question, not a settled one. Full retraction + numbers:
- *   plan `machine-enforced-terminal-criteria-2026-09-05` D-021.
+ * - Corroboration via `addedTests` is NOT BUILT. Both prior explanations were wrong; the
+ *   second is the instructive one, so both are kept.
+ *
+ *   (1) This comment once claimed the field was "measured empty on all 851" — i.e. the
+ *   cross-check would be dead code. FALSE, retracted: the probe behind it read
+ *   `_completionEvidence->'verification'->'addedTests'`, NULL on 100% of rows because the
+ *   field lands TOP-LEVEL. An empty result there is an artifact of the path, indistinguishable
+ *   from a real absence.
+ *
+ *   (2) That retraction then OVER-corrected, citing "populated on ~65%" and calling the
+ *   design question REOPENED. The number is real but answers a different question twice
+ *   over: it describes ALL closes, not this criterion's subjects, and it counts KEY-PRESENCE,
+ *   not `true`. Corroboration needs `true`, in the population the criterion actually rates —
+ *   folded `verifiedHow` = `already-passing`. Measured 2026-09-05, harness papercusp,
+ *   non-observation lane, status IN (done,resolved), rows carrying
+ *   `payload->'_completionEvidence'`, positive control on `addedTests='true'` PASSED:
+ *
+ *     population                    closes   key present    `true`
+ *     already-passing, all-time      2,112   1,817 (86%)     52 (2.5%)
+ *     already-passing, 14d             465     421 (90%)     23 (4.9%)
+ *     all closes, all-time          22,417  16,274 (73%)  7,934 (35%)
+ *     all closes, 14d               10,841   7,043 (65%)  3,610 (33%)
+ *
+ *   So the field IS present here — the criterion would not be dead code, and (1) stays
+ *   retracted — but it is `true` on 1 in 20 to 1 in 40 of exactly the closes it would
+ *   corroborate. Read one way that rescues 2.5%; read the other it indicts 97.5%. Neither is
+ *   a usable signal, so the question is NOT reopened. It is settled, for a reason (1) never
+ *   gave: not "the field is unpopulated" but "the field is populated and nearly always
+ *   `false` where it matters". History: plan `machine-enforced-terminal-criteria-2026-09-05`
+ *   D-021 (the retraction) and D-022 (this population correction).
+ *
+ *   Scope of that measurement, stated rather than implied: it reads
+ *   `payload->'_completionEvidence'` only, so `dropped` closes (which write
+ *   `terminal_completion_ref`) are excluded by construction — right for a done/resolved
+ *   population, but not a whole-system total. The SQL fold reproduces {@link dispositionKey}
+ *   (lowercase, strip non-alphanumerics) and is applied WITHOUT the `applies` remediation
+ *   gate, so the subset above is a superset of the criterion's real subjects.
  * - A filler-token stoplist for `already passing tests` is not here because no such value
  *   exists: the distribution is bare-token or genuinely qualified, with nothing between.
  *   This second finding is independent of the `addedTests` error above and was not
- *   re-measured during that retraction — treat it as unverified rather than confirmed.
+ *   re-measured during either correction — treat it as unverified rather than confirmed.
  *
- * The general lesson, since this file is where it was learned: an empty result is a claim
- * about the INSTRUMENT before it is a claim about the world. Run a positive control before
- * recording an absence — especially when the absence is what lets you skip building
- * something, which is exactly when it is most welcome and least examined.
+ * The general lesson, since this file is where it was learned twice: an empty result is a
+ * claim about the INSTRUMENT before it is a claim about the world — run a positive control
+ * before recording an absence, especially when the absence is what lets you skip building
+ * something. And a NON-empty result is a claim about a POPULATION before it is a claim about
+ * yours: a correct number measured over the wrong rows reads exactly like the right answer,
+ * and the correction of an error is where that is likeliest, because the relief of having
+ * found the bug is what stops you asking which rows you just counted.
  */
 function forbiddenEvidenceModeRating(
   input: TerminalCriteriaInput,
