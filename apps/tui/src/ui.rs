@@ -3341,9 +3341,7 @@ fn pipeline_cell_text(cell: &crate::models::PipelineCellRead, prefer_value: bool
             .unwrap_or_else(|| "unknown".to_string()),
         "value" => {
             let raw = match &read.value {
-                serde_json::Value::String(s) if !s.is_empty() => {
-                    Some(s.chars().take(12).collect())
-                }
+                serde_json::Value::String(s) if !s.is_empty() => Some(s.chars().take(12).collect()),
                 serde_json::Value::Bool(v) => Some(if *v { "yes" } else { "no" }.to_string()),
                 serde_json::Value::Number(v) => Some(v.to_string()),
                 _ => None,
@@ -5405,13 +5403,13 @@ mod tests {
         assert!(text.contains("2/4 svc"), "serviceable rollup missing");
         assert!(text.contains("1 walled"), "measured wall count missing");
         assert!(text.contains("1 unk"), "unknown count missing");
-        assert!(text.contains("burn 1 pace@2h"), "burn disposition/horizon missing");
+        assert!(
+            text.contains("burn 1 pace@2h"),
+            "burn disposition/horizon missing"
+        );
         assert!(!text.contains("spend"), "retired spend stub still rendered");
         assert!(text.contains("ag 165"), "live agent count missing");
-        assert!(
-            text.contains("dsp 3/e4/m6"),
-            "dispatch in/eff/max missing"
-        );
+        assert!(text.contains("dsp 3/e4/m6"), "dispatch in/eff/max missing");
         assert!(text.contains("+/-"), "edit hint missing");
         assert!(!text.contains("connecting"));
     }
