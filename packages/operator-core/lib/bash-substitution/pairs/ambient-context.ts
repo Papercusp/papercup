@@ -144,7 +144,10 @@ export const clockRead: BashSubstitutionPair = {
     'The current time ALREADY ARRIVED — `host.now` on your last coord:orient is an ISO-8601 UTC instant, and every `date` format is a rendering of it. Read it there; do not call anything (calling orient to read a clock costs more than `date` did). ⚠ It is a SNAPSHOT of when that orient ran, not a live clock: if orient was an EARLIER turn, or you are differencing it for an age/duration, run `date -u` — a carried value yields a plausible wrong number, not an error. ⚠ AND it is UTC while this box renders LOCAL (-04:00): if you are reaching for `date` to compare against an `ls -l`/`stat`/`journalctl` stamp, swapping in `host.now` CAUSES a phantom 4h gap that reads as STALE. Put the other side in UTC first (`TZ=UTC stat -c \'%y %n\'`) rather than differencing a UTC instant against a local rendering.',
   routing: {
     want: 'the current date/time',
-    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing. ⚠ SNAPSHOT of when orient ran — on a LATER turn, or to compute an age/duration, `date -u` is correct. ⚠ It is UTC while this box RENDERS LOCAL (-04:00), so differencing it against an `ls -l`/`stat`/bare-`date` stamp invents a phantom 4h gap that reads as STALE — put the other side in UTC first (`TZ=UTC stat -c \'%y %n\'`)',
+    // WI-2145714: kept under the 300-char table-cell bound. Both ⚠ clauses are
+    // load-bearing and survive the trim — what was dropped is only the worked
+    // example of the stamp forms, which the `insteadOf` column already carries.
+    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing. ⚠ SNAPSHOT of when orient ran: on a LATER turn, or for any age/duration, use `date -u`. ⚠ UTC while this box renders LOCAL (-04:00) — put the other side in UTC (`TZ=UTC stat`) or you invent a phantom 4h gap.',
     insteadOf:
       '`date` / `date -u` / `date +%s`. ⚠ a `$(date …)` substitution INSIDE another command is string interpolation — keep using bash; so is `date -d @<epoch>` (a different instant)',
   },
