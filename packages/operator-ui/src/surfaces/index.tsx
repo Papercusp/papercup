@@ -41,7 +41,7 @@
  * pay for the eight surfaces it is not showing. This preserves the same chunk
  * boundary the operator's own route-level code-splitting gives them.
  */
-import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
+import { lazy, type ComponentProps, type ComponentType, type LazyExoticComponent } from 'react';
 import '../../../../apps/operator/app/harness/harness.css';
 // The DEV console's stylesheet. The operator loads it from `dev/layout.tsx`, a
 // route-level layout a host never renders; it is namespaced (`.pc-dev-*`), so
@@ -65,6 +65,7 @@ import '../../../../apps/operator/app/support/support.css';
 import '../grid-theme-bridge';
 import { POT_BAR_TAB_IDS, potBarModeForTab } from '../../../../apps/operator-vite/src/components/adv/adv-pot-bar-tabs';
 import type { AdvTabId } from '../../../../apps/operator-vite/src/components/adv/AdvShell';
+import type { default as AdvHarnessPanelPage } from '../../../../apps/operator-vite/src/components/adv/AdvHarnessPanelPage';
 
 /** The portal rail kinds that resolve to an operator surface. */
 export type OperatorSurfaceKind =
@@ -79,6 +80,30 @@ export type OperatorSurfaceKind =
   | 'learning'
   | 'workflows'
   | 'brainstorm'
+  // The remaining /adv tabs (portal-parity-adv-tabs-2026-09-05 D-004): EVERY
+  // desktop ADV tab is a portal rail surface, on the owner's 2026-09-01 pattern
+  // ("pull out the HUD, WORK and Learning tab like we did for the other tabs").
+  // A kind reuses its ADV tab id except where the portal already owns that
+  // name for a different surface (D-005 / D-006): the ADV `calendar` tab is the
+  // scheduled-plans calendar → `scheduled` (the portal's `calendar` is the
+  // Google-backed module); the ADV `plans` tab is the Create dock → `create`
+  // (the portal's `plans` is the /plans pane); the ADV `settings` tab is the
+  // per-pot harness settings panel → `adv-settings` (the portal's `settings` is
+  // the operator's /settings surface below).
+  | 'health'
+  | 'prs'
+  | 'insights'
+  | 'conversations'
+  | 'adv-settings'
+  | 'docs'
+  | 'history'
+  | 'git'
+  | 'stats'
+  | 'testing'
+  | 'create'
+  | 'scheduled'
+  | 'frames'
+  | 'evals'
   // The operator top-nav's utility destinations (portal-parity D-007 / D-009:
   // "the cloud cupboard and dev and support tabs should all be in the web
   // portal", and Settings is the operator's own settings surface).
@@ -87,6 +112,21 @@ export type OperatorSurfaceKind =
   | 'dev'
   | 'support'
   | 'settings';
+
+/**
+ * The single-pot panels of `AdvHarnessPanelPage`. In the operator's /adv switch
+ * `brainstorm | prs | insights | settings | docs | git | testing` all fall
+ * through to that ONE page with `panel={tab}`; each portal kind binds its panel
+ * here so the host still sees a zero-prop mount.
+ */
+type AdvHarnessPanel = ComponentProps<typeof AdvHarnessPanelPage>['panel'];
+function harnessPanelSurface(panel: AdvHarnessPanel): LazyExoticComponent<ComponentType<Record<string, never>>> {
+  return lazy(async () => {
+    const mod = await import('../../../../apps/operator-vite/src/components/adv/AdvHarnessPanelPage');
+    const Panel = mod.default;
+    return { default: () => <Panel panel={panel} /> };
+  });
+}
 
 /**
  * `Desktops` is the one surface with a SUBJECT (which workspace host to open).
@@ -129,20 +169,40 @@ export const OPERATOR_SURFACES: Record<
     const Pane = mod.default;
     return { default: () => <Pane layout="split" /> };
   }),
-  // /adv?tab=<id> — these five are the tab bodies from the adv route's switch.
+  // /adv?tab=<id> — the tab bodies from the adv route's switch
+  // (apps/operator-vite/src/routes/adv/index.tsx `renderAdvTab`). Every one of
+  // the 20 ADV tabs is here; `ADV_TAB_SURFACE_KINDS` below is the complete
+  // tab → kind map and is typed over the full AdvTabId union, so a NEW desktop
+  // tab fails to compile until it is registered for the portal too.
   overview: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvOverviewTab')),
   hud: lazy(() => import('../../../../apps/operator/app/adv/hud/HudView')),
   work: lazy(() => import('../../../../apps/operator/app/adv/harnesses/HarnessesWorkspace')),
   learning: lazy(() => import('../../../../apps/operator-vite/src/components/adv/LearningTab')),
   workflows: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvWorkflowsTab')),
-  // brainstorm is one of AdvHarnessPanelPage's panels, not a component of its
-  // own — the operator's switch falls through `brainstorm | prs | insights |
-  // settings | docs | git | testing` to this single page.
-  brainstorm: lazy(async () => {
-    const mod = await import('../../../../apps/operator-vite/src/components/adv/AdvHarnessPanelPage');
-    const Panel = mod.default;
-    return { default: () => <Panel panel="brainstorm" /> };
-  }),
+  // The single-pot panels — see harnessPanelSurface above.
+  brainstorm: harnessPanelSurface('brainstorm'),
+  prs: harnessPanelSurface('prs'),
+  insights: harnessPanelSurface('insights'),
+  'adv-settings': harnessPanelSurface('settings'),
+  docs: harnessPanelSurface('docs'),
+  git: harnessPanelSurface('git'),
+  testing: harnessPanelSurface('testing'),
+  // Workspace-wide dashboards (no pot bar — see POT_BAR_TAB_IDS' "deliberately
+  // absent" list): the read-only system Health dashboard, the swarm live view of
+  // deployed frames, the impartial-benchmark Evaluation surface, the
+  // Conversations aggregate, and the scheduled-plans Calendar (D-005).
+  health: lazy(() => import('../../../../apps/operator-vite/src/components/adv/HealthTab')),
+  frames: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvFramesTab')),
+  evals: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvEvalsTab')),
+  conversations: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvConversationsTab')),
+  scheduled: lazy(() => import('../../../../apps/operator-vite/src/components/adv/ScheduledCalendarTab')),
+  // Pot-scoped tabs with their own component: Stats (inherits the pot from
+  // useAdvScope — its props are a test seam, so the zero-prop mount is the
+  // operator's own default), the session History list, and the Create dock
+  // (the ADV `plans` tab — D-006).
+  stats: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvStatsTab')),
+  history: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvHistoryTab')),
+  create: lazy(() => import('../../../../apps/operator/app/adv/create/AdvCreateDock')),
   // The operator top-nav's utility set (portal-parity D-007 / D-009).
   // /cloud-workspaces — the SAME page as `desktops` above, landing on its
   // default step: the operator's own "Cloud" nav target is this route.
@@ -187,22 +247,49 @@ export const OPERATOR_POT_SCOPE = {
 } as const;
 
 /**
- * Which portal surface kinds are /adv tab bodies, and which /adv tab each one
- * is — the operator's own `POT_BAR_TAB_IDS` then decides whether the pot bar
- * shows, so this table cannot disagree with the operator about scope.
+ * Every /adv tab → the portal surface kind that mounts its body
+ * (portal-parity-adv-tabs-2026-09-05 P-001). Typed over the FULL `AdvTabId`
+ * union on purpose: adding a tab to the desktop's `ADV_TAB_IDS` without a
+ * portal kind is a compile error here, not a silent parity gap. The operator's
+ * own `POT_BAR_TAB_IDS` then decides whether a kind's body gets the pot bar, so
+ * this table cannot disagree with the operator about scope.
  */
-const SURFACE_KIND_TO_ADV_TAB: Partial<Record<OperatorSurfaceKind, AdvTabId>> = {
+export const ADV_TAB_SURFACE_KINDS: Readonly<Record<AdvTabId, OperatorSurfaceKind>> = {
   overview: 'overview',
   hud: 'hud',
-  work: 'harnesses',
-  learning: 'learning',
-  workflows: 'workflows',
   brainstorm: 'brainstorm',
+  harnesses: 'work',
+  health: 'health',
+  prs: 'prs',
+  insights: 'insights',
+  conversations: 'conversations',
+  learning: 'learning',
+  settings: 'adv-settings',
+  docs: 'docs',
+  history: 'history',
+  git: 'git',
+  stats: 'stats',
+  testing: 'testing',
+  plans: 'create',
+  workflows: 'workflows',
+  calendar: 'scheduled',
+  frames: 'frames',
+  evals: 'evals',
 };
+
+/** The inverse of ADV_TAB_SURFACE_KINDS — derived, so the two cannot drift. */
+const SURFACE_KIND_TO_ADV_TAB: ReadonlyMap<OperatorSurfaceKind, AdvTabId> = new Map(
+  (Object.entries(ADV_TAB_SURFACE_KINDS) as [AdvTabId, OperatorSurfaceKind][]).map(([tab, kind]) => [kind, tab]),
+);
+
+/** The /adv tab a surface kind mounts the body of, or `undefined` for a kind that is not an ADV tab body. */
+export function advTabForSurface(kind: string): AdvTabId | undefined {
+  return SURFACE_KIND_TO_ADV_TAB.get(kind as OperatorSurfaceKind);
+}
 
 /** The pot bar mode for a surface kind — `{ show:false }` for every kind that is not a pot-scoped /adv tab. */
 export function potScopeForSurface(kind: string): { show: boolean; withStatus: boolean } {
-  const tab = SURFACE_KIND_TO_ADV_TAB[kind as OperatorSurfaceKind];
+  const tab = advTabForSurface(kind);
   if (!tab || !POT_BAR_TAB_IDS.has(tab)) return { show: false, withStatus: false };
   return potBarModeForTab(tab);
 }
