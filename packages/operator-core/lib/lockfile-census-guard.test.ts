@@ -38,6 +38,11 @@ import {
   rootWorkspaceDirs,
   sbomSubjects,
   emitSbom,
+  measureLockfiles,
+  npmDepCounts,
+  cargoDepCounts,
+  countCataloguedDependencies,
+  assertSbomCoverage,
   COVERED_LOCKFILES,
   NOT_SHIPPED_LOCKFILES,
   UNCOVERED_BASELINE,
@@ -223,10 +228,186 @@ describe('SBOM emission', () => {
   });
 });
 
+/**
+ * SHIPPED-DEPENDENCY MEASUREMENT — the unit that was wrong.
+ *
+ * The first version of this guard counted `packages` ENTRIES and called the total "deps".
+ * Every count it printed was accurate; none of them measured shipped dependencies. That
+ * is the failure this block exists to keep fixed, and it is harder to see than a wrong
+ * number, because a plausible count carries no signal that it is counting the wrong thing.
+ */
+describe('npmDepCounts / cargoDepCounts', () => {
+  const devOnlyLock = {
+    packages: {
+      '': { name: 'thing', version: '1.0.0' },
+      'node_modules/@tauri-apps/cli': { version: '2.11.0', dev: true },
+      'node_modules/@tauri-apps/cli-linux-x64-gnu': { version: '2.11.0', dev: true, optional: true },
+    },
+  };
+
+  it('counts a wholly-dev lockfile as shipping ZERO, not as N deps', () => {
+    expect(npmDepCounts(devOnlyLock)).toEqual({ shipped: 0, devOnly: 2, total: 2 });
+  });
+
+  it('counts a runtime dependency as shipped', () => {
+    const counts = npmDepCounts({
+      packages: {
+        '': { name: 'thing', version: '1.0.0' },
+        'node_modules/left-pad': { version: '1.3.0' },
+        'node_modules/vitest': { version: '4.0.0', dev: true },
+      },
+    });
+    expect(counts).toEqual({ shipped: 1, devOnly: 1, total: 2 });
+  });
+
+  // A package resolved at two paths — dev in one tree, runtime in another — ships. This
+  // is the case that made a naive "is this name dev anywhere?" control give a false
+  // reading against the real root lockfile.
+  it('treats a package resolved BOTH dev and runtime as shipped, never dev-only', () => {
+    const counts = npmDepCounts({
+      packages: {
+        '': { name: 'thing', version: '1.0.0' },
+        'node_modules/tinyglobby': { version: '1.0.0', dev: true },
+        'apps/x/node_modules/tinyglobby': { version: '1.0.0' },
+      },
+    });
+    expect(counts).toEqual({ shipped: 1, devOnly: 0, total: 1 });
+  });
+
+  it('REFUSES a lockfile with no packages map rather than reporting it as shipping nothing', () => {
+    expect(() => npmDepCounts({})).toThrow(/cannot measure/);
+    expect(() => npmDepCounts(null)).toThrow(/cannot measure/);
+  });
+
+  it('REFUSES a Cargo.lock that parsed to zero packages', () => {
+    expect(() => cargoDepCounts('# not a lockfile\n')).toThrow(/ZERO \[\[package\]\]/);
+    expect(cargoDepCounts('[[package]]\nname = "a"\n[[package]]\nname = "b"\n').shipped).toBe(2);
+  });
+
+  it('records an unreadable lockfile as null, never as zero', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'census-measure-'));
+    try {
+      writeFileSync(join(dir, 'package-lock.json'), '{ this is not json');
+      const m = measureLockfiles(dir, ['package-lock.json']);
+      // null and {shipped:0} must not collapse: one is "we could not read it", the other
+      // is "it ships nothing", and only the second may excuse a file from classification.
+      expect(m.get('package-lock.json')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('build-only classification is DERIVED from the measurement', () => {
+  const lockfiles = ['shipped-thing/package-lock.json'];
+  const measured = (m: unknown) =>
+    classify(lockfiles, { uncovered: new Map(), measurements: new Map([[lockfiles[0], m]]) })
+      .rows[0];
+
+  it('excuses a lockfile that resolves zero runtime dependencies', () => {
+    expect(measured({ shipped: 0, devOnly: 12, total: 12 }).bucket).toBe('build-only');
+  });
+
+  it('does NOT excuse one that resolves even a single runtime dependency', () => {
+    expect(measured({ shipped: 1, devOnly: 11, total: 12 }).bucket).toBe('UNCLASSIFIED');
+  });
+
+  // The load-bearing half. If an unmeasurable lockfile fell into build-only, a parse
+  // failure would silently excuse a file from coverage — turning the guard's own blind
+  // spot into a clean bucket, which is precisely the class it was built to expose.
+  it('does NOT excuse a lockfile it could not measure', () => {
+    expect(measured(null).bucket).toBe('UNCLASSIFIED');
+  });
+
+  it('does NOT excuse an empty lockfile with no dev entries either', () => {
+    expect(measured({ shipped: 0, devOnly: 0, total: 0 }).bucket).toBe('UNCLASSIFIED');
+  });
+});
+
+/**
+ * THE SBOM POSITIVE CONTROL.
+ *
+ * The check this replaces was `components === 0`. Measured against the real desktop npm
+ * lockfile, a syft run that catalogued NO dependency at all still returned 2 components —
+ * the synthetic `type: 'file'` node for the scanned path, plus the subject's own root
+ * package. The threshold sat below the value that "catalogued nothing" actually produces,
+ * so it could not fire. A guard whose failing condition is unreachable is not weak; it is
+ * unfalsifiable, and its green is quoted as evidence exactly like a real one.
+ */
+describe('countCataloguedDependencies', () => {
+  const bom = (components: unknown[]) => ({ components });
+
+  it('excludes the synthetic file node and the subject root package', () => {
+    expect(
+      countCataloguedDependencies(
+        bom([
+          { name: '@papercusp/desktop', version: '0.0.17', type: 'library' },
+          { name: '/repo/papercusp-desktop/package-lock.json', type: 'file' },
+        ]),
+        'papercusp-desktop/package-lock.json',
+        '/repo',
+      ),
+    ).toBe(0);
+  });
+
+  it('counts real dependencies', () => {
+    expect(
+      countCataloguedDependencies(
+        bom([
+          { name: '/repo/package-lock.json', type: 'file' },
+          { name: 'left-pad', version: '1.3.0', type: 'library' },
+          { name: 'vitest', version: '4.0.0', type: 'library' },
+        ]),
+        'package-lock.json',
+        '/repo',
+      ),
+    ).toBe(2);
+  });
+
+  it('survives a document with no components at all', () => {
+    expect(countCataloguedDependencies({}, 'package-lock.json', '/repo')).toBe(0);
+  });
+});
+
+describe('assertSbomCoverage', () => {
+  it('PASSES when the catalog meets the lockfile’s own shipped count', () => {
+    // Calibrated against all four real subjects 2026-09-05: catalogued runs at or just
+    // above shipped (the excess is root and workspace package nodes), never below.
+    expect(() => assertSbomCoverage('a', 510, { shipped: 509, devOnly: 0, total: 509 })).not.toThrow();
+    expect(() => assertSbomCoverage('a', 615, { shipped: 615, devOnly: 0, total: 615 })).not.toThrow();
+    expect(() => assertSbomCoverage('a', 1, { shipped: 0, devOnly: 12, total: 12 })).not.toThrow();
+  });
+
+  it('REFUSES a catalog shorter than the lockfile it was made from', () => {
+    expect(() => assertSbomCoverage('x/package-lock.json', 0, { shipped: 12, devOnly: 0, total: 12 })).toThrow(
+      /missing 12 of them/,
+    );
+  });
+
+  // The exact historical shape: a cataloger that read nothing, reported through the OLD
+  // total-component count, looks like a pass. Through the dependency count plus the
+  // lockfile's own reading, it is a refusal.
+  it('REFUSES the measured desktop-lockfile shape that the old zero-check let through', () => {
+    expect(() => assertSbomCoverage('papercusp-desktop/package-lock.json', 0, { shipped: 12, devOnly: 0, total: 12 })).toThrow(
+      /A short catalog is not a small graph/,
+    );
+  });
+
+  it('still refuses an empty catalog when it has no independent measurement to compare', () => {
+    expect(() => assertSbomCoverage('x', 0, null)).toThrow(/cannot be corroborated/);
+    expect(() => assertSbomCoverage('x', 3, null)).not.toThrow();
+  });
+});
+
 describe('the repository itself (real-tree assertion)', () => {
   const lockfiles = censusOrThrow(ROOT);
   const rootLock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8')) as unknown;
-  const result = classifyCensus({ lockfiles, workspaceDirs: rootWorkspaceDirs(rootLock) });
+  const measurements = measureLockfiles(ROOT, lockfiles);
+  const result = classifyCensus({
+    lockfiles,
+    workspaceDirs: rootWorkspaceDirs(rootLock),
+    measurements,
+  });
 
   it('has every lockfile in the tree explicitly classified', () => {
     expect(result.offenders.map((o) => o.path)).toEqual([]);
@@ -237,15 +418,41 @@ describe('the repository itself (real-tree assertion)', () => {
   });
 
   // Pins the finding this guard was built from, so a later "cleanup" that quietly drops
-  // these rows has to argue with a test instead of a comment.
-  it('still records the two measured advisory blind spots', () => {
+  // the row has to argue with a test instead of a comment.
+  it('still records the measured advisory blind spot', () => {
     const uncovered = result.rows.filter((r) => r.bucket === 'uncovered-baselined');
-    expect(uncovered.map((r) => r.path).sort()).toEqual([
+    expect(uncovered.map((r) => r.path)).toEqual([
       'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
-      'papercusp-desktop/package-lock.json',
     ]);
-    // The shipped desktop app's own npm graph is the one that matters most here.
-    expect(uncovered.some((r) => r.path === 'papercusp-desktop/package-lock.json')).toBe(true);
+  });
+
+  // THE CORRECTION. This row was baselined as "12 deps ... SHIPPED ... the highest-
+  // priority row here" while every one of those 12 entries is `dev: true` build tooling.
+  // The count was accurate and its unit was wrong, which is why nothing about it looked
+  // suspect. Pinned as a real-tree assertion rather than a comment so re-baselining it as
+  // shipped debt has to first make the lockfile actually resolve a runtime dependency.
+  it('classifies the desktop npm lockfile as build-only, not as shipped debt', () => {
+    const row = result.rows.find((r) => r.path === 'papercusp-desktop/package-lock.json');
+    expect(row?.bucket).toBe('build-only');
+    expect(row?.measured?.shipped).toBe(0);
+    expect(row?.measured?.devOnly).toBeGreaterThan(0);
+  });
+
+  // The other half of the same correction: the surviving baselined row is uncovered
+  // because it genuinely resolves runtime dependencies, not because nobody measured it.
+  it('measures the surviving uncovered row as genuinely shipped', () => {
+    const row = result.rows.find(
+      (r) => r.path === 'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
+    );
+    expect(row?.bucket).toBe('uncovered-baselined');
+    expect(row?.measured?.shipped).toBeGreaterThan(400);
+  });
+
+  it('measures every npm and cargo lockfile in the tree', () => {
+    const unmeasured = result.rows
+      .filter((r) => (r.ecosystem === 'npm' || r.ecosystem === 'cargo') && r.measured === null)
+      .map((r) => r.path);
+    expect(unmeasured).toEqual([]);
   });
 
   // CROSS-GUARD INVARIANT. "covered" is a claim about what ANOTHER script scans; if that
@@ -258,7 +465,10 @@ describe('the repository itself (real-tree assertion)', () => {
   });
 
   it('keeps the uncovered baseline shrink-only and reason-carrying', () => {
-    expect(UNCOVERED_BASELINE.size).toBeLessThanOrEqual(2);
+    // Ratcheted 2 -> 1 when papercusp-desktop/package-lock.json left the baseline for the
+    // DERIVED build-only bucket. Shrink-only means this number goes down or an entry earns
+    // its way out with a measurement; it is never raised to make room for a new blind spot.
+    expect(UNCOVERED_BASELINE.size).toBeLessThanOrEqual(1);
     for (const [path, entry] of UNCOVERED_BASELINE) {
       expect(entry.reason.length, `${path} needs a real reason`).toBeGreaterThan(40);
       expect(entry.deps, `${path} needs its measured graph size`).toBeGreaterThan(0);
