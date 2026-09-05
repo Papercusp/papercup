@@ -9,6 +9,7 @@
  * mutation in the same database transaction.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey, PLAN_ADVISORY_LOCK_NAMESPACE } from './agent-tools/plans/plan-lock-key';
@@ -16,6 +17,55 @@ import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-te
 import { setSpecClause, type SpecClauseSql, type SpecClauseWrite } from './agent-tools/plans/spec-clauses-store';
 
 export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
+
+/** A reviewer posts this JSON through an authenticated Threadable verb (for
+ * example work_items:comment). Authorship/time come from the append-only post,
+ * never from this body or the amendment caller. Per-BAR hashes permit one review
+ * to approve several sequential amendments without approving unrelated changes. */
+export const acceptanceBarApprovalSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal('acceptance-bar-amendment-approval'),
+  rubricRef: z.string().min(1),
+  subjectPlan: z.string().min(1),
+  bars: z.array(z.object({
+    barKey: z.string().min(1),
+    priorBarHash: z.string().regex(/^[a-f0-9]{64}$/),
+    nextBarHash: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).min(1).max(1000),
+}).strict().refine((receipt) => new Set(receipt.bars.map((bar) => bar.barKey)).size === receipt.bars.length,
+  'approval BAR keys must be unique');
+
+export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
+
+export async function resolveAcceptanceBarApproval(
+  sql: SpecClauseSql,
+  args: { workspaceId: string; approvalRef?: string; approvedBy?: string; expected: AcceptanceBarApproval },
+): Promise<{ approvalRef: string; approvedBy: string; approvedAt: string }> {
+  const match = /^thread-post:([1-9][0-9]*)$/.exec(args.approvalRef?.trim() ?? '');
+  if (!match) throw new Error('acceptance_bar_approval_required: use thread-post:<id> from an authenticated reviewer post containing the preview approval JSON');
+  const [post] = await sql<Array<{ author_id: string | null; body: string; approved_at: string }>>`
+    SELECT author_id, body,
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS approved_at
+      FROM harness_shared.coord_thread_posts
+     WHERE workspace_id = ${args.workspaceId} AND id = ${match[1]}::bigint
+       AND origin = 'local' AND octet_length(body) <= 262144
+     FOR SHARE`;
+  if (!post?.author_id?.trim()) throw new Error('acceptance_bar_approval_unreadable');
+  let body: unknown;
+  try { body = JSON.parse(post.body); } catch { throw new Error('acceptance_bar_approval_invalid_receipt'); }
+  const parsed = acceptanceBarApprovalSchema.safeParse(body);
+  if (!parsed.success) throw new Error('acceptance_bar_approval_invalid_receipt');
+  const receipt = parsed.data;
+  if (receipt.rubricRef !== args.expected.rubricRef || receipt.subjectPlan !== args.expected.subjectPlan ||
+      args.expected.bars.some((expected) => !receipt.bars.some((bar) =>
+        bar.barKey === expected.barKey && bar.priorBarHash === expected.priorBarHash && bar.nextBarHash === expected.nextBarHash))) {
+    throw new Error('acceptance_bar_approval_stale_or_mismatched');
+  }
+  if (args.approvedBy && args.approvedBy.trim() !== post.author_id) {
+    throw new Error('acceptance_bar_approval_author_mismatch');
+  }
+  return { approvalRef: `thread-post:${match[1]}`, approvedBy: post.author_id, approvedAt: post.approved_at };
+}
 
 /** Refresh execution projections from the canonical rubric, never from its old
  * Requirements seed. Called inside the transaction that writes that rubric. */

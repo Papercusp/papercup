@@ -1294,13 +1294,25 @@ describe('template_data persistence boundary — the set-template-data door', ()
       criterion: { key: before!.criteria[0]!.key, field: 'driftMarkers' as const,
         mode: 'replace' as const, text: 'The first outcome is absent after the transaction commits.' },
       actorId: 'amendment-actor', reason: 'Make the falsifier observable.',
-      approvalRef: 'fixture:outside-approval', approvedBy: 'outside-reviewer',
+      approvedBy: 'outside-reviewer',
     };
-    const after = await rubrics.amendRubric(amendment);
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef: 'fixture:outside-approval' }))
+      .rejects.toThrow('acceptance_bar_approval_required');
+    const approvalRef = await postApproval(amendment);
+    await expect(rubrics.amendRubric({ ...amendment, approvalRef, approvedBy: 'spoofed-reviewer' }))
+      .rejects.toThrow('acceptance_bar_approval_author_mismatch');
+    const accepted = { ...amendment, approvalRef, approvedAt: '2000-01-01T00:00:00Z',
+      idempotencyKey: 'semantic-amendment-replay', expectedRubricRevision: before!.revision };
+    const after = await rubrics.amendRubric(accepted);
     expect(after).not.toBeNull();
     const current = await rubrics.getRubric(seeded.rubricSlug);
     expect(current!.barSetHash).not.toBe(before!.barSetHash);
     expect(current!.criteria[1]!.barHash).toBe(before!.criteria[1]!.barHash);
+    const replayed = await rubrics.amendRubric(accepted);
+    expect(replayed!.barSetHash).toBe(current!.barSetHash);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
+    await expect(rubrics.amendRubric({ ...accepted, reason: 'Reuse the token for a different request.' }))
+      .rejects.toThrow('acceptance_bar_amendment_replay_conflict');
     const projections = await db.adminSql`SELECT r.source_rubric_revision, r.source_bar_set_hash
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
@@ -1313,8 +1325,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
       FROM harness_shared.harness_plans WHERE workspace_id=${workspaceId}
         AND harness_slug='papercusp' AND plan_slug=${subject}`;
     expect(Number(subjectBeforeFailure.acceptance_bar_rubric_revision)).toBe(current!.revision);
-    await expect(rubrics.amendRubric({ ...amendment,
+    expect(subjectBeforeFailure.content).toContain('Approved-By: outside-reviewer');
+    expect(subjectBeforeFailure.content).not.toContain('Approved-At: 2000-01-01');
+    const nextAmendment = { ...amendment,
       criterion: { ...amendment.criterion, text: 'The first outcome is absent or has the wrong value.' },
+    };
+    await expect(rubrics.amendRubric({ ...nextAmendment, approvalRef }))
+      .rejects.toThrow('acceptance_bar_approval_stale_or_mismatched');
+    await expect(rubrics.amendRubric({ ...nextAmendment,
+      approvalRef: await postApproval(nextAmendment),
       faultInjection: 'after-projection',
     })).rejects.toThrow('acceptance_bar_amendment_fault_injected:after-projection');
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
@@ -1324,6 +1343,68 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(subjectAfterFailure).toEqual(subjectBeforeFailure);
     const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    expect(history.n).toBe(4);
+  });
+
+  async function postApproval(input: Parameters<typeof rubrics.amendRubric>[0], author = 'outside-reviewer') {
+    const preview = await rubrics.previewAcceptanceBarAmendment(input);
+    expect(preview).not.toBeNull();
+    const workspaceId = activeWorkspaceId();
+    const thread = `approval-${preview!.approval.subjectPlan}`;
+    await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id,thread_id,parent_kind,parent_ref)
+      VALUES (${workspaceId},${thread},'plan',${preview!.approval.subjectPlan}) ON CONFLICT DO NOTHING`;
+    const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
+      (workspace_id,thread_id,author_id,body) VALUES
+      (${workspaceId},${thread},${author},${JSON.stringify(preview!.approval)}) RETURNING id`;
+    return `thread-post:${post.id}`;
+  }
+
+  it('previews structural plane amendments without writes and requires an actual outside-lineage approval', async () => {
+    const seeded = await seedBarContract('plane-approval-subject');
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: 'Require observed live behavior.',
+      criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: 'live' as const },
+    };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview!.changedBars).toEqual(['R-1']);
+    expect(preview!.projectionCount).toBe(2);
+    expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
+    expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
+    await expect(rubrics.amendRubric({ ...amendment,
+      approvalRef: await postApproval(amendment, 'amendment-actor'),
+    })).rejects.toThrow('acceptance_bar_approval_in_implementer_lineage');
+    const approvalRef = await postApproval(amendment);
+    const after = await rubrics.amendRubric({ ...amendment, approvalRef });
+    expect(after!.criteria[0]!.evidencePlane).toBe('live');
+    const projections = await db.adminSql`SELECT r.source_bar_key, r.evidence_plane, r.required_evidence
+      FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r USING (workspace_id,harness_slug,plan_slug,spec_id)
+      WHERE c.workspace_id=${seeded.workspaceId} AND c.harness_slug='papercusp' AND c.plan_slug=${seeded.subject}
+        AND r.revision=c.current_revision ORDER BY c.spec_id`;
+    expect(projections[0]!.evidence_plane).toBe('live');
+    expect(projections[0]!.required_evidence).toContain('live');
+    expect(projections[1]!.evidence_plane).toBe('tree');
+  });
+
+  it('serializes competing BAR amendments and refuses the stale CAS without partial writes', async () => {
+    const seeded = await seedBarContract('concurrent-bar-subject');
+    const before = await rubrics.getRubric(seeded.rubricSlug);
+    const inputs = ['live', 'deployed'].map((evidencePlane) => ({
+      rubricId: seeded.rubricSlug, actorId: 'amendment-actor', reason: `Require ${evidencePlane} evidence.`,
+      expectedRubricRevision: before!.revision,
+      criterionEvidencePlane: { key: before!.criteria[0]!.key, evidencePlane: evidencePlane as 'live' | 'deployed' },
+    }));
+    const first = { ...inputs[0]!, approvalRef: await postApproval(inputs[0]!) };
+    const second = { ...inputs[1]!, approvalRef: await postApproval(inputs[1]!) };
+    const results = await Promise.allSettled([rubrics.amendRubric(first), rubrics.amendRubric(second)]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const refusal = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
+    expect(String(refusal.reason)).toContain('acceptance_bar_amendment_revision_conflict');
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision! + 1);
+    const [history] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
     expect(history.n).toBe(4);
   });
 
