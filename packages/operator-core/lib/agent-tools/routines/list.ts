@@ -516,7 +516,7 @@ export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
   capability: 'operator:read',
   guidance: {
     // Arg guidance and the `paused` semantics are deliberately NOT restated here:
@@ -565,6 +565,15 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Free-text filter — case-insensitive substring match against name OR install slug.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Max routine rows returned, applied AFTER installSlug/harness/name/q/group. Bounds routines[] only — `count` still reports the true total, so a narrowed read is never mistaken for a smaller fleet. Ignored with rollup:true (that path already returns one row per group).',
+      ),
     group: z
       .string()
       .max(120)
@@ -682,7 +691,7 @@ export default defineTool({
       if (d.routines.length > CAP) {
         rows.push({
           installSlug: '(truncated)',
-          name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name/group, rollup:true, or payloadTier:"full"`,
+          name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name/group/limit, rollup:true, or payloadTier:"full"`,
           triggerKind: null,
           cron: null,
           targetRole: null,
@@ -845,6 +854,9 @@ export default defineTool({
       return { ...routine, ...(plane ? { plane } : {}) };
     });
     // {data} envelope so the payload-tier shaper applies.
-    return { data: { count: routines.length, routines } };
+    // `limit` bounds the rows only; `count` stays the true total so a narrowed read
+    // is never mistaken for a smaller fleet (same contract as locks:list registryCount).
+    const limited = typeof args.limit === 'number' ? routines.slice(0, args.limit) : routines;
+    return { data: { count: routines.length, routines: limited } };
   },
 });
