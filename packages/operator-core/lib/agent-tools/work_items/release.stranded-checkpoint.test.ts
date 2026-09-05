@@ -50,13 +50,38 @@ vi.mock('../../work-items-release-request', () => ({
   resolveWorkItemReleaseRequest: vi.fn(async () => null),
 }));
 
+/**
+ * release.ts migrated to `getWorkItemCheckpointWithMeta` (it needs `updatedAtMs` for the
+ * checkpointed-but-unowned window), but this factory still hand-listed only the OLD
+ * `getWorkItemCheckpoint`. A hand-listed factory returns `undefined` for any member it
+ * forgot, so the tool crashed on `undefined(...)` for every case that reads a checkpoint:
+ * 13 of 17 tests here were red on that alone, across every recorded run since the rename.
+ * That is the EXACT failure the work-items mock above is commented to avoid — so this one
+ * uses the same partial (importOriginal) form, which cannot silently drop a future member.
+ *
+ * The `getWorkItemCheckpoint` seam is KEPT as the "what does the checkpoint say" knob, so
+ * every mockResolvedValue / mockRejectedValue / toHaveBeenCalledWith below keeps its
+ * original meaning; only the return is adapted to the WithMeta shape.
+ */
 const getWorkItemCheckpoint = vi.fn();
-vi.mock('../../work-item-checkpoint', () => ({
-  getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
+vi.mock('../../work-item-checkpoint', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getWorkItemCheckpointWithMeta: async (...a: unknown[]) => ({
+    checkpoint: ((await getWorkItemCheckpoint(...a)) as string | null) ?? null,
+    updatedAtMs: null,
+  }),
 }));
 vi.mock('../coordination/messages', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   readOutbox,
+}));
+// EI-14883: the open-escalation read is a live coord/PG fold — keep it mocked so these
+// unit tests never reach a real backend. Default [] = no open escalation = silent, so
+// every pre-existing case above is unaffected.
+const listEscalationsM = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock('../coordination/escalations', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  listEscalations: listEscalationsM,
 }));
 
 import { releaseWorkItem, setWorkItemClaimHold, type WorkItem } from '../../work-items';
@@ -133,6 +158,7 @@ beforeEach(() => {
   mockResolvedTyped(holdM, { id: 'WI-PARK', harness: 'papercusp', hold: true, applicable: true });
   getWorkItemCheckpoint.mockResolvedValue(null);
   outboxM.mockResolvedValue([]);
+  listEscalationsM.mockResolvedValue([]);
 });
 
 describe('work_items:release — stranding warning (WI-38297)', () => {
@@ -355,5 +381,135 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
 
     const b = await body({ id: ITEM });
     expect(b.results[0].completionAssertionWarning).toMatch(/msg-completion-holds/);
+  });
+});
+
+/**
+ * EI-14883 — the OPEN-ESCALATION disclosure.
+ *
+ * Observed live on WI-3627 (2026-07-17): the holder did the owner-gated steps correctly
+ * (enumerate + coord:escalate), then plain-released with no claimHold and no state change.
+ * The row stayed claimable, so scheduler:get_next handed it to the next drive-by fleet
+ * member ~2.5h later, who had no new information and could only re-derive "already
+ * escalated, awaiting a decision" from the comment thread.
+ *
+ * FALSIFIABILITY: `escalationNamesItem` and the claimable-state gate are left REAL here
+ * (only the coord fold is mocked), so these exercise the actual matcher. The "names a
+ * DIFFERENT item" and "already parked needs-human" cases are the permanent CONTROLS —
+ * without them, a warning wired to fire on ANY open escalation, or on EVERY release,
+ * would pass the positive test just as happily.
+ */
+describe('work_items:release — open-escalation disclosure (EI-14883)', () => {
+  const ITEM = 'WI-3627';
+  const escalation = (over: Record<string, unknown> = {}) => ({
+    msg_id: 'esc-3627',
+    ts: '2026-07-17T14:02:00.000Z',
+    from: 'su-b7b40c9b',
+    kind: 'escalation',
+    severity: 'blocker',
+    summary: `${ITEM} needs an owner decision before it can proceed`,
+    body: 'Enumerated the options; only the owner can pick one.',
+    resolved: null,
+    ...over,
+  });
+
+  it('warns when a release re-pools an item whose escalation is still open', async () => {
+    listEscalationsM.mockResolvedValue([escalation()]);
+    const b = await body({ id: ITEM });
+    expect(b.results[0]).toMatchObject({ ok: true, id: ITEM, released: true });
+    const w = b.results[0].openEscalationWarning as string;
+    expect(w).toBeTypeOf('string');
+    expect(w).toMatch(/esc-3627/);
+    // It must tell the releaser what to DO, and name BOTH durable dispositions.
+    expect(w).toMatch(/needs-human/);
+    expect(w).toMatch(/claimHold:true/);
+    // Machine-readable, so a caller can branch instead of regex-ing the prose.
+    expect(b.results[0].openEscalation).toMatchObject({
+      msgId: 'esc-3627',
+      from: 'su-b7b40c9b',
+      severity: 'blocker',
+    });
+  });
+
+  // THE CONTROL. A warning wired to fire whenever ANY escalation is open would pass the
+  // positive case above; only this can tell the two implementations apart.
+  it('stays SILENT when the open escalation names a different item', async () => {
+    listEscalationsM.mockResolvedValue([
+      escalation({ msg_id: 'esc-other', summary: 'WI-9999 needs a decision', body: 'unrelated' }),
+    ]);
+    const b = await body({ id: ITEM });
+    expect(b.results[0]).toMatchObject({ ok: true, released: true });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+    expect(b.results[0].openEscalation).toBeUndefined();
+  });
+
+  // Boundary: a longer id must not be matched by a shorter one that prefixes it.
+  it('does not match a different item whose id merely prefixes this one', async () => {
+    listEscalationsM.mockResolvedValue([escalation({ summary: 'WI-36271 needs a decision' })]);
+    const b = await body({ id: ITEM });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+  });
+
+  // THE SECOND CONTROL, and the whole point of the item: the agent who ALREADY applied
+  // the correct durable disposition must not be nagged for having done it right.
+  it('stays SILENT when the row was already parked needs-human', async () => {
+    listEscalationsM.mockResolvedValue([escalation()]);
+    mockImplementationTyped(releaseM, async (id, opts) => {
+      opts?.onPriorState?.({ assignee: 'me', wasClaimed: true });
+      return wi({ id, assignee: null, state: 'needs-human' });
+    });
+    const b = await body({ id: ITEM });
+    expect(b.results[0]).toMatchObject({ ok: true, released: true });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+  });
+
+  // The design decision this fix turns on: match ANY open escalation, not just the
+  // releasing holder's. Hop 1 escalates and releases; hop 2 claims, re-discovers the same
+  // wall, releases. Scoping to the prior holder would go silent for every repeat — which
+  // is the part that actually burns turns.
+  it('warns on an escalation raised by someone OTHER than the releasing holder', async () => {
+    listEscalationsM.mockResolvedValue([escalation({ from: 'su-first-hop' })]);
+    identity.ownerId = 'su-second-hop';
+    releaseReporting({ assignee: 'su-second-hop', wasClaimed: true });
+    const b = await body({ id: ITEM });
+    expect(b.results[0].openEscalationWarning).toMatch(/su-first-hop/);
+  });
+
+  it('stays silent when the release was not holding a claim', async () => {
+    listEscalationsM.mockResolvedValue([escalation()]);
+    releaseReporting({ assignee: null, wasClaimed: false });
+    const b = await body({ id: ITEM });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+  });
+
+  // claimHold:true IS the durable disposition the warning asks for — do not ask twice.
+  it('stays silent when the caller already applied the durable park', async () => {
+    listEscalationsM.mockResolvedValue([escalation()]);
+    const b = await body({
+      id: 'WI-PARK',
+      claimHold: true,
+      claimHoldRelease: { condition: 'owner decides', trigger: 'coord:escalation-resolved' },
+    });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+  });
+
+  it('degrades to a normal release (no crash, no warning) when the escalation read fails', async () => {
+    listEscalationsM.mockRejectedValue(new Error('pg down'));
+    const b = await body({ id: ITEM });
+    expect(b.results[0]).toMatchObject({ ok: true, id: ITEM, released: true });
+    expect(b.results[0].openEscalationWarning).toBeUndefined();
+  });
+
+  // Release is bulk (up to 200 items) and listEscalations folds the workspace's whole
+  // open set, so a per-item read would multiply that by the batch size.
+  it('folds the open-escalation set ONCE per call, not once per item', async () => {
+    listEscalationsM.mockResolvedValue([escalation()]);
+    const b = await body({ ids: [ITEM, 'WI-OTHER', 'WI-THIRD'] });
+    expect(b.results).toHaveLength(3);
+    expect(listEscalationsM).toHaveBeenCalledTimes(1);
+    // ...and it still evaluates each item independently against that one fold.
+    expect(b.results[0].openEscalationWarning).toMatch(/esc-3627/);
+    expect(b.results[1].openEscalationWarning).toBeUndefined();
+    expect(b.results[2].openEscalationWarning).toBeUndefined();
   });
 });

@@ -90,6 +90,11 @@ const CLAMPED_REASON = LONG_REASON.slice(0, 500);
 // body identical while giving `.mock.calls[N][i]` real element types.
 const sendMessageM = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({}) as never));
 vi.mock('../coordination/messages', () => ({ sendMessage: sendMessageM }));
+// EI-14883: release.ts folds the workspace's OPEN escalations to flag a re-pooled item
+// that is still awaiting a decision. Left unmocked that is a live coord/PG read inside a
+// unit test — stubbed empty here so these tests stay hermetic and the disclosure stays
+// silent; its own behaviour is pinned in release.stranded-checkpoint.test.ts.
+vi.mock('../coordination/escalations', () => ({ listEscalations: vi.fn(async () => []) }));
 
 type Out = { data: any };
 const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
