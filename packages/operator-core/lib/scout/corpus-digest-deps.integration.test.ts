@@ -172,6 +172,7 @@ describe('state-of-Hive production readers (real PG)', () => {
       topics: [OBSERVATION_TOPIC],
       createdBy: 'kettle',
       payload: {
+        lane: 'observation',
         observation: {
           rubricRef: 'pot-coordination-health',
           sourceHive: 'papercusp',

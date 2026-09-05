@@ -621,6 +621,51 @@ describe('applyRubricAmendment (rubrics:amend pure core)', () => {
     expect(out.criteria).toEqual(stored().criteria);
   });
 
+  it('replaces a complete acceptance criterion set so checks and a declared BAR can land atomically', () => {
+    const existing = rubric([crit({ key: 'r-1', barKey: 'R-1', role: 'outcome', mandatory: true })], {
+      kind: 'acceptance',
+      subjectPlan: 'subject-plan',
+      status: 'active',
+    });
+    const replacement = [
+      { ...existing.criteria[0]!, check: { kind: 'tests' as const, files: ['r-1.test.ts'] } },
+      crit({
+        key: 'r-2',
+        barKey: 'R-2',
+        role: 'outcome',
+        mandatory: true,
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }),
+    ];
+    const out = applyRubricAmendment(existing, {
+      rubricId: existing.rubricId,
+      criteria: replacement,
+    });
+    expect(out.criteria).toEqual(replacement);
+    expect(out.status).toBe('active');
+    expect(out.subjectPlan).toBe('subject-plan');
+  });
+
+  it('keeps complete-set replacement acceptance-only and mutually exclusive with a patch', () => {
+    expect(() =>
+      applyRubricAmendment(stored(), {
+        rubricId: 'su-agent-behavior',
+        criteria: stored().criteria,
+      }),
+    ).toThrow(/acceptance-kind only/);
+    const acceptance = rubric([crit({ key: 'r-1' })], {
+      kind: 'acceptance',
+      subjectPlan: 'subject-plan',
+    });
+    expect(() =>
+      applyRubricAmendment(acceptance, {
+        rubricId: acceptance.rubricId,
+        criteria: acceptance.criteria,
+        criterion: { key: 'r-1', field: 'method', mode: 'append', text: 'extra' },
+      }),
+    ).toThrow(/cannot be combined/);
+  });
+
   it('an amendment shaped for proposeRubric passes the loss-guard (all criteria present)', () => {
     const out = applyRubricAmendment(stored(), {
       rubricId: 'su-agent-behavior',

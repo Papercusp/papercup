@@ -72,18 +72,40 @@ export async function synchronizeAcceptanceBarSubjectRevision(
  * example work_items:comment). Authorship/time come from the append-only post,
  * never from this body or the amendment caller. Per-BAR hashes permit one review
  * to approve several sequential amendments without approving unrelated changes. */
-export const acceptanceBarApprovalSchema = z.object({
-  schemaVersion: z.literal(1),
-  kind: z.literal('acceptance-bar-amendment-approval'),
-  rubricRef: z.string().min(1),
-  subjectPlan: z.string().min(1),
-  bars: z.array(z.object({
-    barKey: z.string().min(1),
-    priorBarHash: z.string().regex(/^[a-f0-9]{64}$/),
-    nextBarHash: z.string().regex(/^[a-f0-9]{64}$/),
-  }).strict()).min(1).max(1000),
-}).strict().refine((receipt) => new Set(receipt.bars.map((bar) => bar.barKey)).size === receipt.bars.length,
-  'approval BAR keys must be unique');
+export const acceptanceBarApprovalSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    kind: z.literal('acceptance-bar-amendment-approval'),
+    rubricRef: z.string().min(1),
+    subjectPlan: z.string().min(1),
+    bars: z
+      .array(
+        z
+          .object({
+            barKey: z.string().min(1),
+            priorBarHash: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .nullable(),
+            nextBarHash: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .nullable(),
+          })
+          .strict()
+          .refine(
+            (bar) => bar.priorBarHash !== null || bar.nextBarHash !== null,
+            'an approval BAR must have a prior or next hash',
+          ),
+      )
+      .min(1)
+      .max(1000),
+  })
+  .strict()
+  .refine(
+    (receipt) => new Set(receipt.bars.map((bar) => bar.barKey)).size === receipt.bars.length,
+    'approval BAR keys must be unique',
+  );
 
 export type AcceptanceBarApproval = z.infer<typeof acceptanceBarApprovalSchema>;
 
@@ -143,20 +165,29 @@ export async function synchronizeAcceptanceBarRevision(
     SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
       hashtext(${planAdvisoryLockKey(args.workspaceId, args.harnessSlug, subjectPlan)})) AS ok`;
   if (!lock?.ok) throw new Error('acceptance_bar_revision_subject_busy');
-  const subjects = await sql<Array<{ plan_slug: string }>>`
-    SELECT plan_slug FROM harness_shared.harness_plans
+  const subjects = await sql<Array<{ plan_slug: string; content: string }>>`
+    SELECT plan_slug, content FROM harness_shared.harness_plans
      WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
        AND plan_slug = ${subjectPlan} FOR UPDATE`;
   if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
-  const clauses = await sql<Array<{
-    spec_id: string; source_val_id: string | null; current_revision: number | string;
-    source_bar_key: string; plan_item_id: string;
-    behavior_class: SpecClauseWrite['behaviorClass']; required_evidence: string[];
-    required_test_layers: string[]; mutation_required: boolean;
-    lifecycle_status: SpecClauseWrite['lifecycleStatus'];
-    supersedes_spec_id: string | null; supersedes_revision: number | null;
-    exemption: Record<string, unknown> | null;
-  }>>`
+  const subject = subjects[0]!;
+  let clauses = await sql<
+    Array<{
+      spec_id: string;
+      source_val_id: string | null;
+      current_revision: number | string;
+      source_bar_key: string;
+      plan_item_id: string;
+      behavior_class: SpecClauseWrite['behaviorClass'];
+      required_evidence: string[];
+      required_test_layers: string[];
+      mutation_required: boolean;
+      lifecycle_status: SpecClauseWrite['lifecycleStatus'];
+      supersedes_spec_id: string | null;
+      supersedes_revision: number | null;
+      exemption: Record<string, unknown> | null;
+    }>
+  >`
     SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
            r.plan_item_id, r.behavior_class, r.required_evidence, r.required_test_layers,
            r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
@@ -170,12 +201,89 @@ export async function synchronizeAcceptanceBarRevision(
      ORDER BY c.spec_id LIMIT 1001`;
   if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
   const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
+  const revisions = new Map<string, number>();
+  const missing = data.criteria.filter(
+    (criterion) =>
+      criterion.role !== 'disclosure' &&
+      !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)),
+  );
+  if (missing.length > 0) {
+    // A post-start BAR addition is declared first in the subject plan's
+    // Requirements + Design map. Reuse that exact deterministic source instead
+    // of asking the amendment caller to duplicate a second mapping payload.
+    const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+    const requirements = parseRequirementBars(subject.content);
+    if (!requirements.ok) {
+      throw new Error(
+        `acceptance_bar_revision_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
+      );
+    }
+    const mappings = parseBarMappings(subject.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+    if (!mappings.ok) {
+      throw new Error(
+        `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
+      );
+    }
+    const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
+    for (const criterion of missing) {
+      const barKey = criterion.barKey ?? criterion.key;
+      const mapping = mappingByKey.get(barKey);
+      if (!mapping || !criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
+        throw new Error(`acceptance_bar_revision_mapping_missing:${barKey}`);
+      }
+      for (const planItemId of mapping.planItemIds) {
+        const specId = `AUTO-BAR-${barKey}-${planItemId}`;
+        const result = await setSpecClause(
+          {
+            planSlug: subjectPlan,
+            specId,
+            expectedRevision: 0,
+            planItemId,
+            behavior: criterion.model!,
+            behaviorClass: 'happy-path',
+            requiredEvidence: [criterion.evidencePlane],
+            lifecycleStatus: 'draft',
+            falsifier: { observation: criterion.driftMarkers! },
+            acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
+            sourceBar: {
+              barKey,
+              barHash: criterion.barHash,
+              barSetHash: data.barSetHash,
+              rubricSlug: args.rubricSlug,
+              rubricRevision: args.rubricRevision,
+              evidencePlane: criterion.evidencePlane,
+            },
+            actorId: args.actorId,
+          },
+          { executor: sql, workspaceId: args.workspaceId, harnessSlug: args.harnessSlug },
+        );
+        if (result.status === 'created' || result.status === 'revised' || result.status === 'unchanged') {
+          revisions.set(specId, result.revision);
+        } else {
+          throw new Error(`acceptance_bar_revision_projection_conflict:${specId}:${result.status}`);
+        }
+      }
+    }
+    clauses = await sql<typeof clauses>`
+      SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
+             r.plan_item_id, r.behavior_class, r.required_evidence, r.required_test_layers,
+             r.mutation_required, r.lifecycle_status, r.supersedes_spec_id,
+             r.supersedes_revision, r.exemption
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+         AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
+       WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
+         AND c.plan_slug = ${subjectPlan} AND r.source_bar_key IS NOT NULL
+       ORDER BY c.spec_id LIMIT 1001`;
+    if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+  }
   if (data.criteria.some((criterion) => criterion.role !== 'disclosure' &&
     !clauses.some((clause) => clause.source_bar_key === (criterion.barKey ?? criterion.key)))) {
     throw new Error('acceptance_bar_revision_mapping_missing');
   }
-  const revisions = new Map<string, number>();
   for (const clause of clauses) {
+    if (revisions.has(clause.spec_id)) continue;
     const criterion = byKey.get(clause.source_bar_key);
     if (!criterion?.barHash || !criterion.evidencePlane || !data.barSetHash) {
       throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);

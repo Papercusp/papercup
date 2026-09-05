@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import type { FleetPopulationLifecycleSnapshot } from './fleet-population';
+import { COUNT_EVIDENCE_COMPARISON_RULE } from '../../count-evidence-contract';
 
 export const FLEET_METRICS_SCHEMA_VERSION = 'fleet-metrics-v1' as const;
 
@@ -68,8 +69,8 @@ export const FLEET_METRIC_POPULATIONS = {
   terminalAuthority: 'lifecycle-terminal-work-items',
 } as const;
 
-export const FLEET_METRIC_COMPARISON_RULE =
-  'compare only identical population, window, and unit; otherwise name an explicit reconciliation transform' as const;
+/** Backward-compatible fleet name for the shared count-contract rule. */
+export const FLEET_METRIC_COMPARISON_RULE = COUNT_EVIDENCE_COMPARISON_RULE;
 
 /**
  * The admission identity that every current-spec `claimable` count must satisfy.

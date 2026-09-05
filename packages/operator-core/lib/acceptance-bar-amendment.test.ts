@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  acceptanceBarApprovalSchema,
   acceptanceBarAmendmentKey,
   withAcceptanceBarAmendmentTransaction,
 } from './acceptance-bar-amendment';
@@ -48,6 +49,35 @@ describe('acceptance BAR amendment transaction contract', () => {
     expect(acceptanceBarMeaningField('replication')).toBe(false);
   });
 
+  it('represents BAR additions and removals explicitly in approval receipts', () => {
+    const added = acceptanceBarApprovalSchema.safeParse({
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'plan',
+      bars: [{ barKey: 'R-11', priorBarHash: null, nextBarHash: 'a'.repeat(64) }],
+    });
+    expect(added.success).toBe(true);
+
+    const removed = acceptanceBarApprovalSchema.safeParse({
+      schemaVersion: 1,
+      kind: 'acceptance-bar-amendment-approval',
+      rubricRef: 'acceptance-plan',
+      subjectPlan: 'plan',
+      bars: [{ barKey: 'R-2', priorBarHash: 'b'.repeat(64), nextBarHash: null }],
+    });
+    expect(removed.success).toBe(true);
+    expect(
+      acceptanceBarApprovalSchema.safeParse({
+        schemaVersion: 1,
+        kind: 'acceptance-bar-amendment-approval',
+        rubricRef: 'acceptance-plan',
+        subjectPlan: 'plan',
+        bars: [{ barKey: 'R-2', priorBarHash: null, nextBarHash: null }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects an empty cross-plan transaction before opening a workspace', async () => {
     await expect(withAcceptanceBarAmendmentTransaction({ plans: [] }, async () => true)).rejects.toThrow(
       /at least one plan is required/,
@@ -68,4 +98,3 @@ describe('acceptance BAR amendment transaction contract', () => {
     ).rejects.toThrow(/must share one workspace/);
   });
 });
-
