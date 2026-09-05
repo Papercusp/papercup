@@ -642,6 +642,13 @@ describe('renderCoordLegend + anti-desync (P-002)', () => {
     expect(legend).toContain('[coord+N]');
   });
 
+  it('makes a delivered block authoritative before redundant live-state reads', () => {
+    const legend = renderCoordLegend();
+    expect(legend).toContain('answer from the matching\nline BEFORE making any tool call');
+    expect(legend).toContain('For “who holds X,” use the `#` scope-window');
+    expect(legend).toContain('An empty or no-match result\nfrom another surface does not negate the delivered line');
+  });
+
   it('ANTI-DESYNC: every glyph the renderer can emit is documented in the legend', () => {
     const legend = renderCoordLegend();
     for (const [key, entry] of Object.entries(COORD_LEGEND)) {
