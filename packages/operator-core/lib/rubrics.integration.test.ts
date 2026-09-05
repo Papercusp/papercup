@@ -1247,6 +1247,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const { workspaceId, subject } = seeded;
     const before = await rubrics.getRubric(seeded.rubricSlug);
     const data = await storedTemplateData(seeded.rubricSlug);
+    const preview = await rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug, actorId: 'method-author',
+      criterion: { key: before!.criteria[0]!.key, field: 'method', mode: 'replace', text: 'Run the current fixture.' },
+    });
+    expect(preview).toMatchObject({ approvalRequired: false, priorBarSetHash: before!.barSetHash,
+      nextBarSetHash: before!.barSetHash, cohortDisposition: { cohort: 'post-epoch', action: 'preserve' } });
+    expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['method-only'] }));
+    expect(preview!.sourceSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
     const next = { ...data, criteria: data.criteria.map((criterion) => ({
       ...criterion, method: 'Execute the current integration fixture.',
       check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
@@ -1369,6 +1378,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
     expect(preview!.changedBars).toEqual(['R-1']);
     expect(preview!.projectionCount).toBe(2);
+    expect(preview!.changes).toContainEqual(expect.objectContaining({ barKey: 'R-1', kinds: ['bar-meaning', 'evidence-plane'] }));
+    expect(preview!.revisionMovement).toMatchObject({ rubric: { from: 1, to: 2 }, subject: { from: 1, to: 2 } });
     expect(preview!.approval.bars[0]!.priorBarHash).toBe(before!.criteria[0]!.barHash);
     expect(preview!.approval.bars[0]!.nextBarHash).not.toBe(before!.criteria[0]!.barHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before!.revision);
