@@ -68,6 +68,88 @@ import type {
  */
 const WORK_ITEMS_GET_SOFT_TTL_MS = 20_000;
 
+/**
+ * The effective bound on the diagnostic thread window.
+ *
+ * P-002 (WI-2145856): this is the value the `threadLimit` schema used to enforce
+ * as a hard `.max()`, turning every larger request into `invalid_args`. It is now
+ * a CLAMP applied here, so the number is referenced by the schema description, the
+ * clamp itself, and the `argRedirects` guidance rather than restated in three
+ * places that can drift apart.
+ */
+export const THREAD_WINDOW_MAX = 10;
+
+/**
+ * P-002 (WI-2145856): every undeclared key a real caller reached for when they
+ * meant "return the fuller record", measured from the filed `invalid_args`
+ * corpus for this tool (46 filings, the largest sub-cluster after the
+ * `threadLimit` cap).
+ *
+ * They are NOT typos, which is why the near-name and nested-path rungs in
+ * `suggestArgName` cannot reach them: `includeComments` is not within edit
+ * distance of `detail`, so the caller got only the bare "this tool accepts
+ * ONLY: …" list. The measured consequence of that dead end is documented on
+ * `invalidInputCorrections` — a caller reads it as "this tool has no such
+ * capability" and DROPS the argument, when in fact `detail:true` is exactly the
+ * switch they wanted. `lifecycle` and `priorAttempts` are the sharpest case:
+ * both are real fields this tool returns, but only under `detail:true`, so the
+ * bare rejection denies the existence of something the caller correctly
+ * believed was there.
+ *
+ * An authored redirect outranks both guess rungs, so naming them here is what
+ * converts the dead end into the answer.
+ */
+const DETAIL_SWITCH_ALIASES = [
+  'full',
+  'include',
+  'includeAll',
+  'includeComments',
+  'include_comments',
+  'comments',
+  'includeThread',
+  'include_thread',
+  'includeCheckpoints',
+  'include_checkpoints',
+  'includeChecks',
+  'includeEvidence',
+  'includeCompletion',
+  'includePlan',
+  'includeHistory',
+  'include_history',
+  'includeLinks',
+  'lifecycle',
+  'priorAttempts',
+] as const;
+
+/**
+ * Keep the redirect map DERIVED from the alias list above so a newly-measured
+ * key cannot regress to the bare "accepts ONLY" dead end, the same discipline
+ * `coord:send` uses for its section-only fields.
+ */
+const TERMINAL_FILTER_REDIRECT =
+  'id — an id-addressed read already returns the item whatever its state, terminal included, so there is nothing to enable. State FILTERING lives on work_items:list.';
+
+const workItemsGetArgRedirects: Record<string, string> = {
+  ...Object.fromEntries(
+    DETAIL_SWITCH_ALIASES.map((key) => [
+      key,
+      `detail — set it to true for the single full-record switch (topics, thread posts, links, \`lifecycle\`, \`priorAttempts\`). If you only want COMMENTS, prefer \`threadLimit\` (1–${THREAD_WINDOW_MAX}): it is bounded and much cheaper than the full render.`,
+    ]),
+  ),
+  // NOT aliased to `threadLimit`, on purpose — the plan's ALIAS-vs-BETTER-ERROR
+  // rule. Accepting `limit` would fuse two different questions: on an
+  // already-bulk tool a caller writing `limit` may mean "how many WORK-ITEMS"
+  // (which is `ids`) or "how many COMMENT posts" (`threadLimit`). Answering
+  // either one silently would return a different measurement than the one
+  // asked for, so the rejection stands and names BOTH destinations.
+  limit:
+    `ids — …but only if you meant how many WORK-ITEMS: this tool is already bulk, so you pass the ids themselves (1–100), not a count. If you meant how many COMMENT posts, that is \`threadLimit\` (0–${THREAD_WINDOW_MAX}). \`limit\` is refused rather than aliased because those are two different questions and guessing would answer the wrong one.`,
+  // Correct-as-designed: there is no terminal filter to enable. Say that
+  // outright, so the caller stops hunting for the switch.
+  include_terminal: TERMINAL_FILTER_REDIRECT,
+  includeTerminal: TERMINAL_FILTER_REDIRECT,
+};
+
 type SourceProjectionContext = { sourceProjection?: unknown };
 
 /**
@@ -195,6 +277,10 @@ export default defineTool({
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` — check-row capacity in the checkpoint ({ count, cap, remaining }); `null` means the checkpoint read failed, while count 0 means the read succeeded and no check rows are stored.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's.",
     notWhen: 'Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).',
     chaining: 'work_items:list → work_items:get { ids:[…] } for detail on the ones you care about.',
+    // P-002 (WI-2145856). These render into the `invalid_args` rejection itself,
+    // not into the prompt-weight budget, so they cost the catalog nothing and are
+    // read at exactly the moment the caller is stuck.
+    argRedirects: workItemsGetArgRedirects,
     seeAlso: [
       'work_items:observe (claimability of these ids without taking them)',
       'work_items:comment (post an update on one)',
@@ -247,10 +333,27 @@ export default defineTool({
         .number()
         .int()
         .min(0)
-        .max(10)
+        // P-002 (WI-2145856): this was `.max(10)`, which REJECTED any larger
+        // window — measured 50 filings of the tool-contract `invalid_args`
+        // class on this one bound (callers passed 12/20/40/50/100), every one
+        // a pure round-trip that then retried with 10 and succeeded. The plan's
+        // CLAMP-vs-REJECT rule says clamp on a READ-ONLY call where the cap is
+        // arbitrary and the value does not change what is MEASURED. It does not
+        // here, and that is a property of the result rather than a hope: the
+        // window always carries a same-snapshot `total` beside `shown`
+        // (get-shape.ts `projectThreadWindow`: "`shown` and `total` stay in-band
+        // so a short window is never mistaken for the whole conversation"), so a
+        // clamped read cannot be misread as "the thread has only 10 posts" —
+        // the false-negative that would have made rejecting correct. The shaper
+        // can ALSO cut posts below the requested count for tier budget, so a
+        // caller already cannot assume returned == requested.
+        // A bound is still declared (a real typo like 100000 should be caught),
+        // just far above the effective window, and the clamp is DISCLOSED in-band
+        // as `threadLimitClamped` rather than applied silently.
+        .max(100)
         .optional()
         .describe(
-          'return a bounded oldest-first recent-comment window instead of loading the full thread; 0 explicitly suppresses thread work, positive values return up to 10 posts with a same-snapshot total',
+          `return a bounded oldest-first recent-comment window instead of loading the full thread; 0 explicitly suppresses thread work, positive values return up to ${THREAD_WINDOW_MAX} posts with a same-snapshot total. The effective window is capped at ${THREAD_WINDOW_MAX}: a larger value is CLAMPED (not rejected) and the result reports \`threadLimitClamped:{requested,applied}\` — read \`threadWindow.total\`, not \`shown\`, for how many posts exist.`,
         ),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
@@ -311,6 +414,17 @@ export default defineTool({
         // cheap to recompute.
         const hasThreadLimit = args.threadLimit !== undefined;
         const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
+        // P-002: clamp rather than reject (see the `threadLimit` schema note).
+        // The requested value is kept so the clamp can be DISCLOSED in-band —
+        // a silently-shortened window is exactly the bounded-measurement trap
+        // this repo treats as a false negative, and the disclosure plus
+        // `threadWindow.total` is what makes the clamp safe.
+        const effectiveThreadLimit =
+          args.threadLimit === undefined ? undefined : Math.min(args.threadLimit, THREAD_WINDOW_MAX);
+        const threadLimitClamped =
+          args.threadLimit !== undefined && args.threadLimit > THREAD_WINDOW_MAX
+            ? { requested: args.threadLimit, applied: THREAD_WINDOW_MAX }
+            : undefined;
         // Any explicit threadLimit wins over detail:true so the diagnostic path
         // never pays the unbounded full-render read. Zero is the explicit
         // projection-only form: do not call the low-level window reader, whose
@@ -353,7 +467,7 @@ export default defineTool({
         // items. A failure is explicit and fail-soft so the ordinary work-item
         // read remains usable.
         const threadWindowRead = boundedThread
-          ? getWorkItemThreadWindow(id, args.threadLimit!, args.harness)
+          ? getWorkItemThreadWindow(id, effectiveThreadLimit!, args.harness)
               .then((threadWindow) => ({ threadWindow, failed: false as const }))
               .catch(() => ({ threadWindow: null, failed: true as const }))
           : Promise.resolve({ threadWindow: undefined, failed: false as const });
@@ -684,6 +798,10 @@ export default defineTool({
           ...(planItemTextDrift ? { planItemTextDrift } : {}),
           ...(boundedThread ? { threadWindow: threadWindowReadResult.threadWindow } : {}),
           ...(threadWindowReadResult.failed ? { threadWindowReadFailed: true as const } : {}),
+          // P-002: present ONLY when the requested window exceeded the effective
+          // cap. Its absence therefore means "you got the window you asked for",
+          // never "no clamp information available".
+          ...(threadLimitClamped ? { threadLimitClamped } : {}),
           ...(lifecycle ? { lifecycle } : {}),
           ...(priorAttempts ? { priorAttempts } : {}),
           ...(priorAttemptRefResolution ? { priorAttemptRefResolution } : {}),

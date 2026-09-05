@@ -74,11 +74,43 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
   expect(returns).toContain('\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker');
   expect(returns).toContain('do not infer checkpoint authorship from \`workItem.updatedAt\`');
 });
-it('documents and enforces the threadLimit 0–10 cap', () => {
+// P-002 (WI-2145856) rewrote this contract rather than removing its guard. The
+// cap used to REJECT: `threadLimit:11` threw, which is what this test pinned. It
+// is now CLAMPED, because 50 filings of that rejection were pure round-trips that
+// retried with 10 and succeeded, and the window's same-snapshot `total` means a
+// shortened window cannot be misread as the whole thread. The assertions below
+// pin the REPLACEMENT contract at the same strength: the value is accepted, the
+// underlying reader is still never asked for more than the cap, and the clamp is
+// disclosed rather than silent.
+it('documents the threadLimit window and still accepts the in-range values', () => {
   expect(get.description).toContain('`threadLimit`');
   expect(get.description).toContain('(0–10)');
-  expect(() => parse({ id: 'WI-thread-limit', threadLimit: 11 })).toThrow(/<=10/);
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 10 })).not.toThrow();
+  expect(() => parse({ id: 'WI-thread-limit', threadLimit: 0 })).not.toThrow();
+  expect(() => parse({ id: 'WI-thread-limit', threadLimit: -1 })).toThrow();
+});
+
+it('clamps an over-cap threadLimit instead of rejecting it, and says so', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-clamp', title: 't' });
+  getWorkItemThreadWindow.mockResolvedValue({ total: 37, posts: [{ body: 'c' }], topics: [] });
+  const r = (await env({ id: 'WI-clamp', threadLimit: 25 })).results[0];
+  // The reader is asked for the CAP, never the caller's larger number — the
+  // clamp must happen before the query, not by trimming a bigger result.
+  expect(getWorkItemThreadWindow).toHaveBeenCalledWith('WI-clamp', 10, undefined);
+  expect(r).toMatchObject({ ok: true, threadLimitClamped: { requested: 25, applied: 10 } });
+  // `total` is the other half of why clamping is safe: it reports the real size
+  // of the thread, so 1 shown post out of 37 is legible as a window.
+  expect(r.threadWindow.total).toBe(37);
+});
+
+it('omits the clamp marker when the request was within the cap', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-noclamp', title: 't' });
+  getWorkItemThreadWindow.mockResolvedValue({ total: 2, posts: [], topics: [] });
+  const r = (await env({ id: 'WI-noclamp', threadLimit: 5 })).results[0];
+  expect(getWorkItemThreadWindow).toHaveBeenCalledWith('WI-noclamp', 5, undefined);
+  // Absence must mean "you got what you asked for" — if the marker were always
+  // present its presence would carry no information.
+  expect(r).not.toHaveProperty('threadLimitClamped');
 });
 
 it('EI-21885040199084336: accepts detail as the boolean-or-string-enum convention other :get tools use', () => {

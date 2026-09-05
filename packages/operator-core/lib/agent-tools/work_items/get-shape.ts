@@ -521,6 +521,12 @@ function compactSingleRow(
       ? { threadWindow: projectThreadWindow(r.threadWindow, tier, dropped) }
       : {}),
     ...(r.threadWindowReadFailed ? { threadWindowReadFailed: true } : {}),
+    // P-002 (WI-2145856): the clamp disclosure is a BOUNDEDNESS MARKER on the
+    // window the caller is about to read, so it must survive every shape tier —
+    // dropping it under budget would restore exactly the silent-short-window
+    // reading the clamp was allowed to exist only because it avoids. It is a
+    // two-number object, so it never meaningfully competes for that budget.
+    ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     checkpoint: clip(checkpoint, checkpointCap),
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
@@ -842,6 +848,12 @@ function projectRow(
         }
       : {}),
     ...(r.threadWindowReadFailed ? { threadWindowReadFailed: true } : {}),
+    // P-002 (WI-2145856): the clamp disclosure is a BOUNDEDNESS MARKER on the
+    // window the caller is about to read, so it must survive every shape tier —
+    // dropping it under budget would restore exactly the silent-short-window
+    // reading the clamp was allowed to exist only because it avoids. It is a
+    // two-number object, so it never meaningfully competes for that budget.
+    ...(r.threadLimitClamped !== undefined ? { threadLimitClamped: r.threadLimitClamped } : {}),
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
