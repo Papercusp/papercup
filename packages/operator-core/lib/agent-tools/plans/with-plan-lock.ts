@@ -49,9 +49,12 @@ import {
 } from './plan-activation-gate';
 import {
   assertNoSilentRubricTemplateDataLoss,
+  guardAcceptanceBarTemplateDataWrite,
+  type AcceptanceBarAmendmentAuthorization,
   type RubricLossAck,
 } from './rubric-loss-guard';
-import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
+import { RUBRIC_TEMPLATE_NAME, rubricTemplateDataSchema } from './rubric-template';
+import { resolveAgentIdentity } from '../coordination/identity';
 import {
   resolvePlanScope,
   syntheticPlanPath,
@@ -135,6 +138,12 @@ export interface TemplateDataPatch {
    * sets this, while rubrics:propose / rubrics:amend pass the ones their caller supplied.
    */
   rubricLossAck?: RubricLossAck;
+  /**
+   * Capability issued only by the canonical BAR amendment writer.  It is not
+   * persisted; withPlanLock consumes it to distinguish an intentional BAR
+   * amendment from generic/template/migration writes.
+   */
+  barAmendment?: AcceptanceBarAmendmentAuthorization;
 }
 
 /**
@@ -175,6 +184,9 @@ export interface WithPlanLockOpts {
   harnessSlug?: string;
   /** Workspace. Omit → resolved from the registry / DEFAULT. */
   workspaceId?: string;
+  /** Authenticated actor for server-owned BAR provenance. When omitted, a
+   * transport context is resolved from the first argument when available. */
+  actorId?: string;
   /** Advisory-lock acquisition budget before reporting busy. Default ~5s. */
   ttlSec?: number;
   /**
@@ -304,6 +316,15 @@ export async function withPlanLock<T>(
   const filePath = syntheticPlanPath(harnessSlug, slug);
   const lockKey = planAdvisoryLockKey(workspaceId, harnessSlug, slug);
   const budgetMs = (opts.ttlSec ?? 5) * 1000;
+  let authenticatedActorId = opts.actorId?.trim() || null;
+  if (!authenticatedActorId && _ctx && typeof _ctx === 'object') {
+    try {
+      authenticatedActorId = resolveAgentIdentity(_ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+    } catch {
+      // In-process callers may intentionally omit a transport context. The BAR
+      // guard will still refuse a mismatched/unauthenticated amendment marker.
+    }
+  }
 
   return withWorkspace(workspaceId, async (tx) => {
     // Serialize same-plan writers via a transaction-scoped advisory lock, taken through the ONE
@@ -350,10 +371,11 @@ export async function withPlanLock<T>(
         }
       : null;
 
-    const { newBody, value, templateData, inputSchema, outputSchema } = await mutator(
+    const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema } = await mutator(
       cur?.content ?? null,
       meta,
     );
+    let templateData = templateDataPatch;
 
     // P-008/P-009: dependency validity belongs at the one locked body-write
     // seam, not in selected verbs. Compare the complete before/after snapshots
@@ -432,6 +454,72 @@ export async function withPlanLock<T>(
     const writesInputSchema = inputSchema !== undefined;
     // And for the declared OUTPUT schema (plans:set-output-schema, P-026/D-017).
     const writesOutputSchema = outputSchema !== undefined;
+
+    // P-004/D-009: every template_data writer crosses this seam. Once an
+    // acceptance BAR has an adoption contract, only the canonical amendment
+    // capability may alter BAR meaning. The subject-plan row is read under the
+    // same transaction/lock so provenance cannot be spoofed by a stale caller
+    // snapshot. METHOD-only edits remain legal and their BAR provenance is
+    // canonicalized back to the stored/subject values.
+    if (writesTemplateData && cur) {
+      const storedTemplate = rubricTemplateDataSchema.safeParse(cur.template_data);
+      let subjectPlanState:
+        | {
+            status: string | null;
+            revision: number | null;
+            adoptionEpoch: number | null;
+            cohort: 'post-epoch' | 'legacy-backfilled' | null;
+            seededAt: string | null;
+            seededBy: string | null;
+          }
+        | undefined;
+      const subjectPlan = storedTemplate.success ? storedTemplate.data.subjectPlan : undefined;
+      if (subjectPlan) {
+        const subjectRows = await tx<
+          Array<{
+            status: string | null;
+            version: number | string | null;
+            acceptance_bar_epoch: number | string | null;
+            acceptance_bar_cohort: 'post-epoch' | 'legacy-backfilled' | null;
+            acceptance_bar_seeded_at: string | Date | null;
+            acceptance_bar_seeded_by: string | null;
+          }>
+        >`
+          SELECT status, version, acceptance_bar_epoch, acceptance_bar_cohort,
+                 acceptance_bar_seeded_at, acceptance_bar_seeded_by
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${workspaceId}
+             AND harness_slug = ${harnessSlug}
+             AND plan_slug = ${subjectPlan}
+           LIMIT 1
+        `;
+        const subject = subjectRows[0];
+        if (subject) {
+          subjectPlanState = {
+            status: subject.status,
+            revision: subject.version == null ? null : Number(subject.version),
+            adoptionEpoch: subject.acceptance_bar_epoch == null ? null : Number(subject.acceptance_bar_epoch),
+            cohort: subject.acceptance_bar_cohort,
+            seededAt:
+              subject.acceptance_bar_seeded_at == null
+                ? null
+                : subject.acceptance_bar_seeded_at instanceof Date
+                  ? subject.acceptance_bar_seeded_at.toISOString()
+                  : String(subject.acceptance_bar_seeded_at),
+            seededBy: subject.acceptance_bar_seeded_by,
+          };
+        }
+      }
+      const guarded = guardAcceptanceBarTemplateDataWrite({
+        slug,
+        storedTemplateData: cur.template_data,
+        nextTemplateData: templateData!.data,
+        subjectPlan: subjectPlanState,
+        actorId: authenticatedActorId,
+        amendment: templateData!.barAmendment,
+      });
+      templateData = { ...templateData!, data: guarded.data };
+    }
 
     // EI-21972673091438558 — the rubric loss-guard, at the ONE seam both doors cross.
     // A rubric IS a plan row whose criteria live in template_data, so `rubrics:propose`

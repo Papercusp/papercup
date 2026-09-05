@@ -26,6 +26,7 @@ import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { guardAcceptanceBarTemplateDataWrite } from '../../../agent-tools/plans/rubric-loss-guard';
 // LEAF import, deliberately NOT `plans/source` (WI-2141279): a projection module is in
 // the perf peer-child's import graph, and `plans/source` transitively reaches
 // `agent-tools/locks/configure`, which calls into the stubbed `@papercusp/db-org` at
@@ -341,6 +342,32 @@ async function writeToPg(
       candidateStatus: row.status,
     },
     async (tx) => {
+      // P-004/D-005: a federated whole-plan replay is another direct
+      // template_data writer. Do not let a remote/migration payload delete or
+      // rewrite a started acceptance BAR; canonicalize provenance to the local
+      // stored contract before the upsert. Per-part bootstrap inserts have no
+      // existing row to overwrite and remain no-clobber.
+      let templateDataForWrite = row.template_data;
+      if (!partFederationOn && row.template_data !== undefined) {
+        const currentRows = await tx<Array<{ template_data: unknown }>>`
+          SELECT template_data
+            FROM harness_shared.harness_plans
+           WHERE workspace_id = ${opts.workspaceId}
+             AND harness_slug = ${row.harness_slug}
+             AND plan_slug = ${row.plan_slug}
+           LIMIT 1
+        `;
+        const currentTemplateData = currentRows[0]?.template_data;
+        if (currentTemplateData !== undefined && currentTemplateData !== null) {
+          const guarded = guardAcceptanceBarTemplateDataWrite({
+            slug: row.plan_slug,
+            storedTemplateData: currentTemplateData,
+            nextTemplateData: row.template_data,
+            actorId: sourceLogDevice,
+          });
+          templateDataForWrite = guarded.data;
+        }
+      }
       // plan-federation-regrain D-004: when per-part federation is ON, the
       // recompose owns content + scalars. This whole-blob path is bootstrap-only.
       if (partFederationOn) {
@@ -353,7 +380,7 @@ async function writeToPg(
           VALUES
             (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
              ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
-             ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+             ${row.template ?? null}, ${templateDataForWrite == null ? null : JSON.stringify(templateDataForWrite)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
              ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
              ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
              COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
@@ -389,7 +416,7 @@ async function writeToPg(
         VALUES
           (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
            ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
-           ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+           ${row.template ?? null}, ${templateDataForWrite == null ? null : JSON.stringify(templateDataForWrite)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
            ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
            ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
            COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),

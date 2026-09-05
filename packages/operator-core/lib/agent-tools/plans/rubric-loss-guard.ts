@@ -24,6 +24,8 @@
  */
 
 import { rubricTemplateDataSchema } from './rubric-template';
+import type { AcceptanceBarContract, AcceptanceBarProvenance } from './rubric-template';
+import { hashPlanContent } from './content-hash';
 
 /** The marker string that tags an embedded replication drill in method/replication
  *  prose. Losing it from a criterion's combined procedure text is a guard violation. */
@@ -236,4 +238,243 @@ export function assertNoSilentRubricTemplateDataLoss(args: {
       `returns the stored one), or make the removal through rubrics:propose / rubrics:amend, which ` +
       `take dropKeys / allowMethodShrink + shrinkReason / classDowngradeReason.`,
   );
+}
+
+/**
+ * The authenticated operation which is allowed to alter a started BAR.  This is
+ * deliberately a capability passed by the canonical amendment writer, not a
+ * caller-controlled field inside template_data.  P-005 extends the approval
+ * fields with the cross-plan decision receipt; the persistence seam already
+ * understands the distinction so generic/template/migration writers cannot
+ * accidentally become amendment writers.
+ */
+export interface AcceptanceBarAmendmentAuthorization {
+  actorId: string;
+  reason: string;
+  /** Server-recorded approval receipt (required by the cross-plan amendment path). */
+  approvalRef?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+}
+
+/** Authoritative subject-plan state used to repair caller-supplied provenance. */
+export interface AcceptanceBarSubjectState {
+  status?: string | null;
+  revision?: number | null;
+  adoptionEpoch?: number | null;
+  cohort?: 'post-epoch' | 'legacy-backfilled' | null;
+  seededAt?: string | null;
+  seededBy?: string | null;
+}
+
+export interface AcceptanceBarWriteGuardInput {
+  slug: string;
+  storedTemplateData: unknown;
+  nextTemplateData: unknown;
+  subjectPlan?: AcceptanceBarSubjectState | null;
+  actorId?: string | null;
+  amendment?: AcceptanceBarAmendmentAuthorization;
+  now?: string;
+}
+
+export interface AcceptanceBarWriteGuardResult {
+  data: Record<string, unknown>;
+  started: boolean;
+  changed: boolean;
+  changes: Array<{ barKey: string; kind: 'added' | 'removed' | 'meaning' | 'provenance'; fields: string[] }>;
+}
+
+const BAR_MEANING_FIELDS = [
+  'model',
+  'barKey',
+  'barHash',
+  'driftMarkers',
+  'role',
+  'mandatory',
+  'requiredScope',
+  'evidencePlane',
+  'passRatings',
+  'coversBarKeys',
+] as const;
+
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, nested]) => nested !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalValue(nested)]),
+    );
+  }
+  return value;
+}
+
+function equalValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(canonicalValue(a)) === JSON.stringify(canonicalValue(b));
+}
+
+function barKeyOf(criterion: Record<string, unknown>): string {
+  return String(criterion.barKey ?? criterion.key ?? '').trim();
+}
+
+function barSetHash(criteria: readonly Record<string, unknown>[]): string | undefined {
+  const pairs = criteria
+    .map((criterion) => [barKeyOf(criterion), String(criterion.barHash ?? '').trim()] as const)
+    .filter(([key, hash]) => key && /^[a-f0-9]{64}$/.test(hash))
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (pairs.length === 0 || new Set(pairs.map(([key]) => key)).size !== pairs.length) return undefined;
+  return hashPlanContent(JSON.stringify(pairs));
+}
+
+function deriveContract(
+  stored: AcceptanceBarContract,
+  subject: AcceptanceBarSubjectState | null | undefined,
+): AcceptanceBarContract {
+  return {
+    ...stored,
+    // A subject-plan row is the authority.  Fall back to the stored contract only
+    // for legacy rows whose subject was deleted/unreadable; never trust incoming data.
+    ...(subject?.adoptionEpoch != null && subject.adoptionEpoch > 0
+      ? { adoptionEpoch: subject.adoptionEpoch }
+      : {}),
+    ...(subject?.cohort ? { cohort: subject.cohort } : {}),
+    ...(subject?.revision != null && subject.revision > 0 ? { subjectPlanRevision: subject.revision } : {}),
+    ...(subject?.seededAt ? { seededAt: subject.seededAt } : {}),
+    ...(subject?.seededBy ? { seededBy: subject.seededBy } : {}),
+  };
+}
+
+function deriveProvenance(
+  stored: AcceptanceBarProvenance | undefined,
+  contract: AcceptanceBarContract,
+  subject: AcceptanceBarSubjectState | null | undefined,
+  actorId: string | null | undefined,
+  amendment: AcceptanceBarAmendmentAuthorization | undefined,
+  now: string,
+): AcceptanceBarProvenance {
+  if (stored) return stored;
+  const legacy = subject?.cohort === 'legacy-backfilled' || subject?.status === 'ready' || subject?.status === 'active';
+  return {
+    lifecycle: legacy ? 'legacy-backfilled' : 'pre-implementation',
+    declaredAt: contract.seededAt || now,
+    // For a newly amended bar, the authenticated amendment actor is the only
+    // honest author.  Seed/backfill rows derive this from the server seed pin.
+    declaredBy: amendment?.actorId || actorId || contract.seededBy,
+  };
+}
+
+/**
+ * Guard every template_data persistence path after a subject's BAR contract has
+ * started.  BAR meaning changes are rejected unless the caller is the canonical
+ * amendment operation; provenance/approver fields are always canonicalized from
+ * the stored contract and subject-plan state, so spoofed JSON can never become
+ * authoritative.  METHOD-only edits remain legal: D-002 deliberately fills the
+ * METHOD after implementation.
+ */
+export function guardAcceptanceBarTemplateDataWrite(
+  args: AcceptanceBarWriteGuardInput,
+): AcceptanceBarWriteGuardResult {
+  const storedParsed = rubricTemplateDataSchema.safeParse(args.storedTemplateData);
+  const nextParsed = rubricTemplateDataSchema.safeParse(args.nextTemplateData);
+  if (!nextParsed.success) {
+    // The registry/schema writer will provide the richer validation diagnostic;
+    // this guard only adds the important started-BAR refusal for a destructive
+    // clear or malformed direct upgrade.
+    if (storedParsed.success && storedParsed.data.barContract) {
+      throw new Error(
+        `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
+          'template_data cannot be cleared or replaced with an unvalidated shape outside rubrics:amend',
+      );
+    }
+    return { data: (args.nextTemplateData ?? {}) as Record<string, unknown>, started: false, changed: false, changes: [] };
+  }
+  const next = nextParsed.data as unknown as Record<string, unknown>;
+  if (!storedParsed.success || storedParsed.data.kind !== 'acceptance' || !storedParsed.data.barContract) {
+    return { data: next, started: false, changed: false, changes: [] };
+  }
+  const stored = storedParsed.data as unknown as Record<string, unknown>;
+  const storedContract = stored.barContract as AcceptanceBarContract;
+  const storedCriteria = (stored.criteria as unknown[]).map((criterion) => criterion as Record<string, unknown>);
+  const nextCriteria = (next.criteria as unknown[]).map((criterion) => criterion as Record<string, unknown>);
+  if (next.kind !== 'acceptance' || next.subjectPlan !== stored.subjectPlan) {
+    throw new Error(
+      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
+        'kind and subjectPlan are server-owned and cannot be changed by a generic template_data write',
+    );
+  }
+
+  const priorByKey = new Map(storedCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
+  const nextByKey = new Map(nextCriteria.map((criterion) => [barKeyOf(criterion), criterion]));
+  const changes: AcceptanceBarWriteGuardResult['changes'] = [];
+  for (const [key, prior] of priorByKey) {
+    const candidate = nextByKey.get(key);
+    if (!candidate) {
+      changes.push({ barKey: key, kind: 'removed', fields: ['bar'] });
+      continue;
+    }
+    const fields = BAR_MEANING_FIELDS.filter((field) => !equalValue(prior[field], candidate[field]));
+    if (fields.length > 0) changes.push({ barKey: key, kind: 'meaning', fields: [...fields] });
+    if (!equalValue(prior.barProvenance, candidate.barProvenance)) {
+      changes.push({ barKey: key, kind: 'provenance', fields: ['barProvenance'] });
+    }
+  }
+  for (const key of nextByKey.keys()) {
+    if (!priorByKey.has(key)) changes.push({ barKey: key, kind: 'added', fields: ['bar'] });
+  }
+  const changedMeaning = changes.some((change) => ['added', 'removed', 'meaning'].includes(change.kind));
+  if (changedMeaning && !args.amendment) {
+    throw new Error(
+      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
+        `BAR meaning cannot change outside rubrics:amend (changes: ${changes
+          .filter((change) => change.kind !== 'provenance')
+          .map((change) => `${change.barKey}:${change.fields.join('|')}`)
+          .join(', ')})`,
+    );
+  }
+  if (args.amendment) {
+    if (!args.amendment.actorId.trim() || !args.amendment.reason.trim()) {
+      throw new Error(`invalid_args: rubric '${args.slug}' amendment requires authenticated actorId and a reason`);
+    }
+    if (args.actorId && args.actorId !== args.amendment.actorId) {
+      throw new Error(
+        `invalid_args: rubric '${args.slug}' amendment actorId does not match the authenticated writer`,
+      );
+    }
+  }
+
+  const now = args.now ?? new Date().toISOString();
+  const contract = deriveContract(storedContract, args.subjectPlan);
+  const canonicalCriteria = nextCriteria.map((criterion) => {
+    const key = barKeyOf(criterion);
+    const prior = priorByKey.get(key);
+    const provenance = deriveProvenance(
+      prior?.barProvenance as AcceptanceBarProvenance | undefined,
+      contract,
+      args.subjectPlan,
+      args.actorId,
+      args.amendment,
+      now,
+    );
+    return { ...criterion, barProvenance: provenance };
+  });
+  const computedSetHash = barSetHash(canonicalCriteria);
+  const canonicalData: Record<string, unknown> = {
+    ...next,
+    kind: 'acceptance',
+    subjectPlan: stored.subjectPlan,
+    criteria: canonicalCriteria,
+    barContract: contract,
+    ...(computedSetHash ? { barSetHash: computedSetHash } : { barSetHash: stored.barSetHash }),
+    // These are server-owned provenance fields.  Preserve the existing values;
+    // never accept a caller-authored replacement or a fabricated approver.
+    ...(stored.proposedBy !== undefined ? { proposedBy: stored.proposedBy } : {}),
+    ...(stored.ratifiedBy !== undefined ? { ratifiedBy: stored.ratifiedBy } : {}),
+  };
+  return {
+    data: canonicalData,
+    started: true,
+    changed: changes.length > 0,
+    changes,
+  };
 }

@@ -169,9 +169,36 @@ describe('resolveTierSpec — user-defined menu', () => {
 
   it('OFF-LADDER FLOOR composes with resolveRoleOwnModelSpec as "no override"', () => {
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // The menu must NAME release-manager's home tier ('deep') for this to reach
+    // the freeze path at all — with a menu lacking that name, resolveTierSpec
+    // fails on the unknown tier and returns null for an unrelated reason, so
+    // the assertion would pass while testing nothing.
+    const deepIsHaiku = [{ name: 'deep', spec: 'haiku' }];
+    expect(resolveTierSpec({ tier: 'deep', role: 'release-manager', tiers: deepIsHaiku })).toMatchObject({ clamped: 'floor', spec: 'opus:xhigh' });
     // clamped:'floor' is the documented no-override signal, so an off-ladder
     // role never has its committed pin replaced by a weaker menu row.
-    expect(resolveRoleOwnModelSpec('release-manager', { tiers: noOpus })).toBeNull();
+    expect(resolveRoleOwnModelSpec('release-manager', { tiers: deepIsHaiku })).toBeNull();
+  });
+
+  it('OFF-LADDER FLOOR allows a STRONGER pick — the owner own-model lever still works', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // cup defaults to sonnet, absent from this one-row menu, so this lands on
+    // the off-ladder path too. Freezing every unrankable floor would refuse the
+    // very escalation the lever exists for, so only a weaker class is clamped.
+    const r = resolveTierSpec({ tier: 'standard', role: 'cup', tiers: [{ name: 'standard', spec: 'opus:xhigh' }] });
+    expect(r).toMatchObject({ ok: true, spec: 'opus:xhigh', tier: 'standard' });
+    expect(r).not.toHaveProperty('clamped');
+  });
+
+  it('OFF-LADDER FLOOR left unenforced is LOUD: a cross-provider pick resolves but carries a note', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    // gpt-5.5 is not rankable against the Claude ladder, so the pick stands as
+    // explicit owner intent — but the unenforced floor is reported rather than
+    // passing silently, which was the actual defect in WI-7340.
+    const r = resolveTierSpec({ tier: 'standard', role: 'cup', tiers: [{ name: 'standard', spec: 'gpt-5.5:high' }] });
+    expect(r).toMatchObject({ ok: true, spec: 'gpt-5.5:high' });
+    expect(r).not.toHaveProperty('clamped');
+    expect((r as { note?: string }).note).toContain('could NOT be enforced');
   });
 
   it('an empty tiers array falls back to the default menu', () => {

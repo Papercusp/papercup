@@ -31,6 +31,7 @@ import {
   normalizeAcceptanceBarCriterion,
   type ProposeRubricCriterion,
 } from './rubrics';
+import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 
 export const ACCEPTANCE_BAR_CONTRACT_EPOCH = 1;
 export const MAX_REQUIREMENT_BARS = 200;
@@ -601,6 +602,31 @@ export async function seedAcceptanceBarsInTransaction(
     ...(existing ? { existingTemplateData: existing.template_data } : {}),
   });
   if (!built.ok) return built;
+
+  // P-004/D-009: this activation seeder is a direct SQL writer, so it must
+  // cross the same started-BAR guard as withPlanLock. A post-start meaning
+  // change is an amendment, never a migration/seed overwrite; provenance is
+  // canonicalized from the locked subject-plan state before any SQL write.
+  if (existingTemplate?.success && existingTemplate.data.barContract) {
+    const guarded = guardAcceptanceBarTemplateDataWrite({
+      slug: rubricSlug,
+      storedTemplateData: existing.template_data,
+      nextTemplateData: built.templateData,
+      subjectPlan: {
+        status: input.planStatus,
+        revision: input.planVersion,
+        adoptionEpoch: input.adoptionEpoch,
+        cohort: input.cohort,
+      },
+      actorId: input.actorId,
+    });
+    built = {
+      ...built,
+      templateData: guarded.data,
+      criteria: (guarded.data.criteria as ProposeRubricCriterion[]),
+      barSetHash: String(guarded.data.barSetHash ?? built.barSetHash),
+    };
+  }
 
   const sameBarMeaning = existingTemplate?.success
     ? existingTemplate.data.criteria.every((criterion) => {

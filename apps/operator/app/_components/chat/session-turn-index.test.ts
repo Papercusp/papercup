@@ -375,18 +375,4 @@ describe('turnAtInstant', () => {
   it('refuses on an empty transcript', () => {
     expect(turnAtInstant([], iso(60_000))).toBe(-1);
   });
-
-  it('PROBE', async () => {
-    const { sessionTimelineToChatMessages } = await import('./session-transcript-mapping');
-    const msgs = sessionTimelineToChatMessages([
-      { kind: 'prompt', text: 'first question', ts: iso(0) },
-      { kind: 'text', text: 'first answer', ts: iso(60_000) },
-      { kind: 'prompt', text: 'second question', ts: iso(120_000) },
-      { kind: 'text', text: 'second answer', ts: iso(180_000) },
-    ] as never);
-    const t = deriveSessionTurns(msgs);
-    throw new Error(
-      JSON.stringify({ msgs: msgs.map((m) => ({ r: m.role, ts: m.ts, c: m.content })), t }),
-    );
-  });
 });

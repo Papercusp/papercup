@@ -595,6 +595,12 @@ export async function probeEndpoint(
   timeoutMs = spec.timeoutMs ?? 3000,
   /** Injectable ONLY so the wedge verdict is testable without wedging a real server. */
   readListenTable: ListenTableReader = listListeningSockets,
+  /**
+   * Injectable ONLY so the WI-7329 memory-pressure leg is testable without a
+   * real swap-thrashing process. Defaults to the real `/proc` sampler, which is
+   * fail-soft and Linux-only and returns null everywhere else.
+   */
+  sampleMemory: (pid: number) => Promise<ProcessMemoryPressure | null> = readProcessMemoryPressure,
 ): Promise<ProbeResult> {
   const start = Date.now();
   // EI-2339: an onDemand endpoint (no systemd unit, spawned ad hoc) being down
@@ -652,8 +658,17 @@ export async function probeEndpoint(
     // "code bug vs. swap-thrash" is worth the ~500ms to answer. Skipped entirely
     // when no pid was readable (nothing listening, or another uid owns it), so
     // an ordinary connection-refused failure pays nothing.
+    // `.catch` is NOT redundant with the sampler's own internal fail-soft: this
+    // guards the SEAM. The default reader swallows its own /proc errors, but an
+    // injected sampler (or a failure in the dynamic `node:fs/promises` import
+    // before that try/catch is reached) would otherwise propagate out of here
+    // and take down the health probe — a diagnostic breaking the probe it rides
+    // on is the same class of defect as the bug it diagnoses. Caught by this
+    // module's own fail-soft test, which failed before this line existed.
     const memoryPressure =
-      wedge?.pid != null ? ((await sampleMemory(wedge.pid)) ?? undefined) : undefined;
+      wedge?.pid != null
+        ? ((await sampleMemory(wedge.pid).catch(() => null)) ?? undefined)
+        : undefined;
     const memoryNote = describeMemoryPressure(memoryPressure ?? null) ?? undefined;
     const preflightNote = preflight === 'indeterminate'
       ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`

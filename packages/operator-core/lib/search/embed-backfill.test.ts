@@ -928,6 +928,58 @@ describe('embed-backfill drain policy (P-005)', () => {
     expect(perRow).not.toHaveBeenCalled();
   });
 
+  it('splits a large batch into bounded chunks rather than one all-or-nothing sidecar call', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({ k0: `k${i}`, body: `b${i}` }));
+    const { sql } = fakeSql([rows, [], [], [], []]);
+    const batchCalls: string[][] = [];
+    const embedMany = async (texts: string[]) => {
+      batchCalls.push(texts);
+      return texts.map(() => VEC);
+    };
+    const perRow = vi.fn(async () => VEC);
+
+    const stats = await backfillTable(sql, ORDERED, perRow, 20, 'gemma', true, embedMany);
+
+    expect(stats.embedded).toBe(20);
+    // No single call may carry more than BATCH_EMBED_CHUNK_SIZE. The budget from
+    // sidecarBatchTimeoutMs is COUNT-scaled, so an unbounded call also has an
+    // unbounded deadline — 128 texts buys a 142s all-or-nothing bet against a
+    // 200s SWEEP_BUDGET_MS shared by 16 targets.
+    expect(batchCalls.map((c) => c.length)).toEqual([16, 4]);
+    expect(perRow).not.toHaveBeenCalled();
+  });
+
+  it('KEEPS the vectors a chunk already produced when a LATER chunk breaches its deadline', async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({ k0: `k${i}`, body: `b${i}` }));
+    const { sql } = fakeSql([rows, [], [], [], []]);
+    let call = 0;
+    const embedMany = async (texts: string[]) => {
+      call += 1;
+      if (call === 1) return texts.map(() => VEC);
+      // The exact live failure: the AbortController in sidecarEmbedBatch firing
+      // because the sidecar is slower than the count-scaled budget allows.
+      throw new Error('This operation was aborted');
+    };
+    const perRow = vi.fn(async () => VEC);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let stats;
+    try {
+      stats = await backfillTable(sql, ORDERED, perRow, 20, 'gemma', true, embedMany);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Every row still lands.
+    expect(stats.embedded).toBe(20);
+    // …but ONLY the 4 rows past the breach pay the per-row price. This is the whole
+    // point of chunking: before it, a breach discarded the entire batch, so all 20
+    // rows were re-embedded one at a time AFTER the full budget had already been
+    // spent — the sidecar was charged twice for the same rows, which is how one
+    // target consumed the sweep budget and starved the other 15.
+    expect(perRow).toHaveBeenCalledTimes(4);
+  });
+
   it('falls back to the PER-ROW embedder when the batch call fails, so one bad row cannot sink its batch', async () => {
     const rows = [
       { k0: 'a', body: 'aaa' },

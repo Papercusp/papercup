@@ -2168,6 +2168,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     {
       slug: input.rubricId,
       intent: `rubrics:propose ${input.rubricId}`,
+      ...(input.by ? { actorId: input.by } : {}),
       ...scope,
       // EI-10443: record a plan_revisions audit row for the propose write.
       afterWrite: rubricRevisionAfterWrite(
@@ -2359,6 +2360,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
     {
       slug: input.rubricId,
       intent: `rubrics:amend ${input.rubricId}`,
+      ...(input.by ? { actorId: input.by } : {}),
       ...scope,
       afterWrite: rubricRevisionAfterWrite(
         input.rubricId,
@@ -2401,7 +2403,18 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
         // Same as propose: the in-lock boundary guard needs the amendment's own
         // acknowledgements (EI-21972673091438558) — `amended` is the re-proposal that
         // assertNoSilentRubricLoss just checked, so its acks are the authoritative ones.
-        templateData: { data: templateData, rubricLossAck: rubricLossAckOf(amended) },
+        templateData: {
+          data: templateData,
+          rubricLossAck: rubricLossAckOf(amended),
+          // P-004: this capability is consumed at withPlanLock's persistence
+          // boundary and never serialized into template_data. Generic callers
+          // (including plans:set-template-data and seed/migration writers) do
+          // not receive it and therefore cannot alter a started BAR.
+          barAmendment: {
+            actorId: amended.by ?? stored.createdBy ?? '',
+            reason: `rubrics:amend ${input.rubricId}`,
+          },
+        },
         value: true,
       };
     },

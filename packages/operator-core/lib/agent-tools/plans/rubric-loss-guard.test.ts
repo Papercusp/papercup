@@ -22,6 +22,7 @@ import {
   METHOD_SHRINK_GUARD_MIN_CHARS,
   REPLICATION_DRILL_MARKER,
   type RubricLossCriterion,
+  guardAcceptanceBarTemplateDataWrite,
 } from './rubric-loss-guard';
 
 const LONG_DRILL =
@@ -199,5 +200,91 @@ describe('assertNoSilentRubricTemplateDataLoss — the persistence boundary', ()
         }),
       ).not.toThrow();
     }
+  });
+});
+
+describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint', () => {
+  const contract = {
+    schemaVersion: 1 as const,
+    adoptionEpoch: 1,
+    cohort: 'post-epoch' as const,
+    subjectPlanRevision: 7,
+    seededAt: '2026-09-04T20:00:00.000Z',
+    seededBy: 'seed-author',
+  };
+  const criterion = (overrides: Record<string, unknown> = {}) => ({
+    key: 'r-1',
+    title: 'Outcome',
+    model: 'The outcome holds.',
+    method: 'Initial method.',
+    driftMarkers: 'The outcome is absent.',
+    barKey: 'R-1',
+    barHash: 'a'.repeat(64),
+    role: 'outcome' as const,
+    mandatory: true,
+    requiredScope: ['tree'],
+    evidencePlane: 'tree' as const,
+    passRatings: ['healthy'],
+    barProvenance: {
+      lifecycle: 'pre-implementation' as const,
+      declaredAt: contract.seededAt,
+      declaredBy: 'seed-author',
+    },
+    ...overrides,
+  });
+  const started = (overrides: Record<string, unknown> = {}) => ({
+    kind: 'acceptance' as const,
+    subjectPlan: 'subject-plan',
+    characteristic: 'contract',
+    criteria: [criterion(overrides)],
+    ratingScale: ['healthy', 'unknown'],
+    barSetHash: 'b'.repeat(64),
+    barContract: contract,
+    proposedBy: 'seed-author',
+  });
+
+  it('refuses BAR meaning changes through a generic writer', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: started(),
+        nextTemplateData: started({ model: 'A weaker outcome.' }),
+      }),
+    ).toThrow(/cannot change outside rubrics:amend/);
+  });
+
+  it('allows METHOD edits but overwrites spoofed provenance from the stored contract', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started(),
+      nextTemplateData: started({
+        method: 'Run the new structured check.',
+        barProvenance: {
+          lifecycle: 'legacy-backfilled',
+          declaredAt: '2030-01-01T00:00:00.000Z',
+          declaredBy: 'spoofed-caller',
+        },
+      }),
+      subjectPlan: { revision: 8, adoptionEpoch: 1, cohort: 'post-epoch' },
+    });
+    expect(result.data.criteria).toMatchObject([
+      { method: 'Run the new structured check.', barProvenance: criterion().barProvenance },
+    ]);
+    expect(result.data.barContract).toMatchObject({ subjectPlanRevision: 8, seededBy: 'seed-author' });
+  });
+
+  it('accepts a meaning change only with the canonical amendment capability', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started(),
+      nextTemplateData: started({ model: 'An intentionally amended outcome.' }),
+      actorId: 'amend-author',
+      amendment: { actorId: 'amend-author', reason: 'Correct the declared contract.' },
+    });
+    expect(result.changed).toBe(true);
+    expect(result.data.criteria).toMatchObject([{ model: 'An intentionally amended outcome.' }]);
+    expect((result.data.criteria as Array<Record<string, unknown>>)[0]).toMatchObject({
+      barProvenance: criterion().barProvenance,
+    });
   });
 });
