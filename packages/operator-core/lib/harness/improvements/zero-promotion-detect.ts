@@ -3,8 +3,13 @@
  *
  * The recurrence guard for the promotion gap (P-003): a plan that is started +
  * eligible and carries OPEN plan-items but has ZERO work-items means plan→work-item
- * promotion silently stopped producing placeable work — the exact failure that left
- * the Queen idle before P-003. This module is the PURE detection core (a filter over
+ * promotion silently produced nothing for it. Historically that starved placement and
+ * left the Queen idle before P-003; with the Mug/Kettle tier RETIRED nothing places
+ * work from plans any more, so the surviving cost is ATTRIBUTION — directly-filed
+ * work carries no source_plan_slug and cannot be joined back to the plan. The finding
+ * is worded and ranked for that smaller harm (EI-20119196410091151); do not restore
+ * the old "nothing to place" phrasing, which invites minting duplicate work-items for
+ * items already in flight. This module is the PURE detection core (a filter over
  * per-plan counts); it has NO I/O, so it is fully unit-testable.
  *
  * Wiring (LIVE — WI-707): registered as the `papercusp-zero-promotion` collector in
@@ -22,6 +27,11 @@ export interface PlanPromotionCount {
   harnessSlug: string;
   /** Plan-items that are NOT done/dropped (what promotion would mint work for). */
   openItemCount: number;
+  /** Of those open items, how many are already `wip`. When every open item is wip the
+   *  work is in-flight and OWNED, so the residual cost is attribution only — minting
+   *  work-items there would duplicate work someone is already doing. Optional so the
+   *  pure detector stays callable from tests/callers that do not supply it. */
+  wipItemCount?: number;
   /** Work-items whose source_plan_slug is this plan (any non-terminal state). */
   workItemCount: number;
   /** An open SPEC TRIAD filing explains this intentional zero-conversion. */
@@ -37,7 +47,11 @@ export interface ZeroPromotionFinding {
   key: string;
   title: string;
   body: string;
-  severity: 'major';
+  /** `minor`, not `major`: with the Mug/Kettle tier retired nothing places work from
+   *  plans any more, so zero promotion no longer starves a placement loop — it costs
+   *  ATTRIBUTION (directly-filed work carries no source_plan_slug). A real but small
+   *  reporting gap, and severity is what triage ranks on (EI-20119196410091151). */
+  severity: 'minor';
   /** harness:<slug> so triage keys off the owning hive. */
   scope: string;
   findingClass: 'promotion:zero-conversion';
@@ -51,18 +65,31 @@ export interface ZeroPromotionFinding {
 export function detectZeroPromotion(plans: readonly PlanPromotionCount[]): ZeroPromotionFinding[] {
   return plans
     .filter((p) => p.openItemCount > 0 && p.workItemCount === 0 && !p.specTriadBlocked)
-    .map((p) => ({
-      source: 'zero-promotion' as const,
-      key: p.planSlug,
-      title: `Started plan has open items but zero work-items: ${p.planSlug}`,
-      body:
-        `Plan ${p.planSlug} (${p.harnessSlug}) has ${p.openItemCount} open plan-item(s) but 0 work-items. ` +
-        `plan→work-item promotion is not producing placeable work, so the Mug has nothing to place from it ` +
-        `(unified-work-item-ledger P-003/P-009).`,
-      severity: 'major' as const,
-      scope: `harness:${p.harnessSlug}`,
-      findingClass: 'promotion:zero-conversion' as const,
-    }));
+    .map((p) => {
+      // Every open item already wip ⇒ the work is in flight and OWNED. This is the case
+      // where the old "nothing to place" wording was most misleading: it reads as starved
+      // input and invites "make promotion fire", which on a nearly-finished plan mints
+      // work-items for work that is already being done (EI-20119196410091151).
+      const allWip = p.wipItemCount !== undefined && p.wipItemCount === p.openItemCount;
+      return {
+        source: 'zero-promotion' as const,
+        key: p.planSlug,
+        title: `Started plan has open items but zero work-items: ${p.planSlug}`,
+        body:
+          `Plan ${p.planSlug} (${p.harnessSlug}) has ${p.openItemCount} open plan-item(s) but 0 work-items. ` +
+          `Work delivered under this plan will not be attributable to it: items filed directly ` +
+          `(improvements:capture / work_items:create) carry no source_plan_slug, so the plan cannot be ` +
+          `joined to the work that delivered it. ` +
+          (allWip
+            ? `All ${p.openItemCount} open item(s) are already wip — in flight and owned. Do NOT mint ` +
+              `work-items for them; the gap here is attribution only.`
+            : `If these items are genuinely unstarted, promotion producing zero work-items is worth a look.`) +
+          ` (unified-work-item-ledger P-003/P-009.)`,
+        severity: 'minor' as const,
+        scope: `harness:${p.harnessSlug}`,
+        findingClass: 'promotion:zero-conversion' as const,
+      };
+    });
 }
 
 /**
@@ -102,6 +129,7 @@ export async function collectZeroPromotionSignals(
       harness_slug: string;
       plan_slug: string;
       open_items: number;
+      wip_items: number;
       work_items: number;
       spec_triad_blocked: boolean;
     }[]
@@ -117,7 +145,10 @@ export async function collectZeroPromotionSignals(
       SELECT s.harness_slug, s.plan_slug,
              COUNT(*) FILTER (
                WHERE COALESCE(it->>'status', 'todo') NOT IN ('done', 'dropped')
-             )::int AS open_items
+             )::int AS open_items,
+             COUNT(*) FILTER (
+               WHERE COALESCE(it->>'status', 'todo') = 'wip'
+             )::int AS wip_items
         FROM started s
         LEFT JOIN LATERAL jsonb_array_elements(COALESCE(s.items, '[]'::jsonb)) it ON true
        GROUP BY s.harness_slug, s.plan_slug
@@ -129,7 +160,7 @@ export async function collectZeroPromotionSignals(
          AND source_plan_slug IS NOT NULL
        GROUP BY source_plan_slug, harness_slug
     )
-    SELECT o.harness_slug, o.plan_slug, o.open_items,
+    SELECT o.harness_slug, o.plan_slug, o.open_items, o.wip_items,
            COALESCE(w.work_items, 0) AS work_items,
            EXISTS (
              SELECT 1
@@ -151,6 +182,7 @@ export async function collectZeroPromotionSignals(
     planSlug: r.plan_slug,
     harnessSlug: r.harness_slug,
     openItemCount: Number(r.open_items),
+    wipItemCount: Number(r.wip_items),
     workItemCount: Number(r.work_items),
     specTriadBlocked: r.spec_triad_blocked,
   }));
