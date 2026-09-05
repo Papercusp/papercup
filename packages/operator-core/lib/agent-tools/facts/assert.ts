@@ -530,22 +530,34 @@ export default defineTool({
     // Transport ceiling 4000 ≫ the stored cap: the store TRUNCATES to FACT_BODY_MAX_CHARS
     // (code-run-self-state-adoption-2026-07-03 P-007 — the hard zod reject cost the WHOLE
     // write 7×/14d; truncate-not-reject preserves the fact, '…' makes it visible).
-    // EI-18670525043445474: the 4000 here is TRANSPORT headroom only (so a slightly-
-    // over-cap write is accepted-and-clipped instead of hard-rejected and lost whole —
-    // code-run-self-state-adoption-2026-07-03 P-007, after a hard reject cost 7 whole
-    // writes in 14d). The REAL cap a caller must size against is FACT_BODY_MAX_CHARS
-    // (1200 as of EI-18681984560352579 / migration 664, raised from 500 — the old
-    // cap was silently amputating the operative clause of real conclusions) —
-    // front-loaded below because a caller sizing off the bare `maxLength: 4000` in
-    // the schema (without reading the rest of the description) silently loses
-    // everything past the real cap, discovered only after the write via
-    // truncated.droppedTail.
+    // EI-18670525043445474: the 4000 here is TRANSPORT headroom only. It is NOT the
+    // effective cap and it is deliberately NOT tightened to FACT_BODY_MAX_CHARS: the
+    // body must reach the handler for truncationRefusal() to MEASURE the overage and
+    // preview the exact tail that would be cut. A zod .max(FACT_BODY_MAX_CHARS) here
+    // would trade that for a generic "too big" and lose the acceptTruncation escape.
+    //
+    // ⚠ EI-20352525205864881: this block and the description below used to say an
+    // over-cap write was "accepted-and-clipped rather than rejected-and-lost" and
+    // "silently dropped … only visible after the fact". That stopped being true at
+    // EI-18685042986450096, which moved the cap to a REFUSAL BEFORE THE WRITE (see
+    // the acceptTruncation check further down) — but neither string was updated, so
+    // for weeks the tool description every agent reads promised the OPPOSITE of the
+    // behaviour. A caller who believed it neither shortened the body nor passed
+    // acceptTruncation, and was refused: measured 2026-09-05, over-cap body was the
+    // single largest facts:assert failure family (497 of 994 invalid_input calls in
+    // 9 days). Prose that misdescribes enforcement AT SYMPTOM TIME is the same class
+    // cap-prose-drift.test.ts exists for; body-cap-prose-matches-behaviour.test.ts
+    // is the guard that keeps these two strings honest about refuse-vs-clip.
+    //
+    // The REAL cap a caller must size against is FACT_BODY_MAX_CHARS (1200 as of
+    // EI-18681984560352579 / migration 664, raised from 500 — the old cap was
+    // silently amputating the operative clause of real conclusions).
     body: z
       .string()
       .min(1)
       .max(4000)
       .describe(
-        `HARD-CLIPPED AT ${FACT_BODY_MAX_CHARS} CHARS — size your write to this, not the 4000 schema ceiling (that 4000 is transport headroom only, so an over-cap write is accepted-and-clipped rather than rejected-and-lost; anything past ${FACT_BODY_MAX_CHARS} is silently dropped and only visible after the fact via the response's truncated.droppedTail). Front-load the operative clause. The conclusion — write tight, ≤${FACT_BODY_MAX_CHARS}-char conclusions, not documents.`,
+        `REFUSED ABOVE ${FACT_BODY_MAX_CHARS} CHARS — size your write to this, not the 4000 schema ceiling (4000 is transport headroom only, so the refusal can measure your exact overage and preview the tail that would be cut). An over-cap body is NOT silently clipped: NO WRITE HAPPENS and the error names how many chars to cut — either shorten it, or re-call with acceptTruncation:true to force the clipped write through. Front-load the operative clause; write tight, not documents.`,
       ),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
     slot: z
