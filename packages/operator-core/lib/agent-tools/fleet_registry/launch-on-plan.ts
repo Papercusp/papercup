@@ -2369,6 +2369,13 @@ export default defineTool({
         'No harness for the plan. Pass `harness: "<slug>"` (the harness the plan belongs to) — this session is not harness-scoped.',
       );
     }
+    // workspace-work-scope-policy-2026-09-04 P-005: a fleet on a plan in a harness the
+    // workspace policy excludes is refused at the door (parked, never deleted).
+    {
+      const { gateWorkScope } = await import('../../work-scope-policy');
+      const scope = await gateWorkScope('fleet:launch-on-plan', { harness, plan: args.plan ?? null, actor: (ctx as { ownerId?: string }).ownerId ?? null });
+      if (!scope.allowed) return err(scope.message);
+    }
 
     // Validate the plan exists before opening any windows (fail clean, not N dead members).
     // Hoist the resolved harness/workspace so the promotion failsafe below reuses them.
