@@ -229,12 +229,18 @@ export default defineTool({
     // EI-10887: `order` selects WHICH END of the range survives `limit`.
     //   desc (default) → the TAIL  (newest turns — where the session left off)
     //   asc            → the HEAD  (turn 0 onward — the kickoff prompt / loop goal)
-    // The CASE keeps this a SINGLE parameterized query: when asc, the first sort
-    // key is turn_idx (ASC) and the second is a constant; when desc, the first key
-    // is a constant (all rows tie) and the second is turn_idx (DESC). Output is
-    // ALWAYS re-normalised to chronological below, so `order` never changes the
-    // shape the caller reads — only which slice of a too-large range they get.
+    // A self read is owner-scoped across the caller's entire carry-respawn
+    // chain, so turn_idx is not a chronological key across the rows being read.
+    // Use the source event time (falling back to ingest time for sources without
+    // a turn timestamp) to select the head/tail, with a complete deterministic
+    // tie-break. Explicit session/ref reads retain their historical per-session
+    // turn_idx ordering. Output is ALWAYS re-normalised to chronological below,
+    // so `order` only selects which slice survives `limit`.
     const asc = args.order === 'asc';
+    const selfAscending = selfSession && asc;
+    const selfDescending = selfSession && !asc;
+    const namedAscending = !selfSession && asc;
+    const namedDescending = !selfSession && !asc;
     const rows = await tx<Array<{
       source_kind: string;
       session_id: string;
@@ -257,8 +263,16 @@ export default defineTool({
          AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
          AND (${lo}::int IS NULL OR turn_idx >= ${lo})
          AND (${hi}::int IS NULL OR turn_idx <= ${hi})
-    ORDER BY CASE WHEN ${asc} THEN turn_idx END ASC NULLS LAST,
-             CASE WHEN ${asc} THEN NULL::int ELSE turn_idx END DESC NULLS LAST
+    ORDER BY CASE WHEN ${selfAscending} THEN COALESCE(ts, ingested_at) END ASC NULLS LAST,
+             CASE WHEN ${selfDescending} THEN COALESCE(ts, ingested_at) END DESC NULLS LAST,
+             CASE WHEN ${selfAscending} THEN source_kind END ASC NULLS LAST,
+             CASE WHEN ${selfDescending} THEN source_kind END DESC NULLS LAST,
+             CASE WHEN ${selfAscending} THEN session_id END ASC NULLS LAST,
+             CASE WHEN ${selfDescending} THEN session_id END DESC NULLS LAST,
+             CASE WHEN ${selfAscending} THEN turn_idx END ASC NULLS LAST,
+             CASE WHEN ${selfDescending} THEN turn_idx END DESC NULLS LAST,
+             CASE WHEN ${namedAscending} THEN turn_idx END ASC NULLS LAST,
+             CASE WHEN ${namedDescending} THEN turn_idx END DESC NULLS LAST
        LIMIT ${limit}
     `;
     // A desc (tail) fetch comes back newest-first; flip it so every response is
