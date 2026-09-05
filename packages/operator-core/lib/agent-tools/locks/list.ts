@@ -93,6 +93,22 @@ export default defineTool({
         args: { paths: ['<repo-relative path>'] },
         note: 'locks:list is the RESOURCE plane (registered named resources like git-sync:<slug>); FILE locks are a different plane and live in locks:queue { paths: [...] }. This tool carries only a bounded `fileLocks` SUMMARY, never per-path rows, so there is nothing here for `paths` to filter. Use locks:queue for "who holds this file".',
       },
+      // EI-20222565902879889 — the SINGULAR of the cluster above. Measured in
+      // tool_invocations at 1 call / 1 agent (2026-08-22, invalid_input) and never
+      // repeated, so it is not sized like `paths`; it is here because it is the SAME
+      // plane confusion with the same remedy, the redirect renders only on the failure
+      // path (no always-on prompt-weight cost), and it makes this tool's coverage of
+      // its measured rejecting keys complete rather than nearly complete.
+      //
+      // It also carries one thing the plural entry cannot: the caller who typed `path`
+      // is holding ONE file and is the caller most likely to retry with a SCALAR, which
+      // locks:queue's own schema rejects — a second round-trip. So the note names the
+      // array shape explicitly.
+      path: {
+        tool: 'locks:queue',
+        args: { paths: ['<repo-relative path>'] },
+        note: 'locks:list is the RESOURCE plane (registered named resources like git-sync:<slug>); FILE locks are a different plane and live in locks:queue. Note the arg there is PLURAL and takes an ARRAY even for a single file: locks:queue { paths: ["<one/path.ts>"] } — a scalar is rejected. This tool carries only a bounded `fileLocks` SUMMARY, never per-path rows, so there is nothing here for `path` to select. Use locks:queue for "who holds this file".',
+      },
       workspace:
         'this tool has NO `workspace` arg and needs none — it is a workspace-global diagnostic that already reads your session scope, so the rows are that workspace\'s. DROP the key. Narrow with `resource` (exact registered name) or `q` + `limit` (substring browse); there is no cross-workspace listing.',
       harness:

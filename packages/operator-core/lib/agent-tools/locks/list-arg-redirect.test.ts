@@ -41,6 +41,19 @@ function assertPathsRedirect(redirect: unknown): void {
   expect(r.note ?? '').toMatch(/summary|plane/i);
 }
 
+/**
+ * EI-20222565902879889 — the extra duty the SINGULAR `path` note carries: it must teach
+ * locks:queue's ARRAY shape. Extracted for the same reason as assertPathsRedirect above,
+ * so a deliberately-wrong control can be run through the identical assertions.
+ */
+function assertTeachesArrayShape(note: string): void {
+  // The shape itself: an array, shown or named.
+  expect(note).toMatch(/array|\[/i);
+  // And WHY it matters — that a bare scalar is not accepted. Without this the caller
+  // reads "use locks:queue" and retries with the scalar they already had.
+  expect(note).toMatch(/plural|scalar/i);
+}
+
 describe('locks:list guidance.argRedirects', () => {
   it('routes a caller passing `paths` to the file plane (locks:queue)', () => {
     assertPathsRedirect(listTool.guidance?.argRedirects?.paths);
@@ -65,6 +78,35 @@ describe('locks:list guidance.argRedirects', () => {
     expect(() => assertPathsRedirect({ tool: 'locks:queue', args: { paths: ['a/b.ts'] } })).toThrow();
   });
 
+  it('EI-20222565902879889: routes the SINGULAR `path` to the file plane too', () => {
+    // Same plane confusion as `paths`, so it must satisfy the same predicate —
+    // reusing it (rather than a looser one) is what makes this a real assertion.
+    assertPathsRedirect(listTool.guidance?.argRedirects?.path);
+  });
+
+  it('EI-20222565902879889: the `path` note names the ARRAY shape locks:queue requires', () => {
+    // The caller who typed SINGULAR `path` is holding one file and is therefore the
+    // one most likely to retry with a scalar — which locks:queue's own schema rejects,
+    // costing a second round-trip. The plural entry has no reason to say this; this one
+    // must. Guarding the note's CONTENT, not just its presence, is the whole point.
+    const note = (listTool.guidance?.argRedirects?.path as { note?: string } | undefined)?.note ?? '';
+    assertTeachesArrayShape(note);
+
+    // Falsifiability, same tier the rest of this file uses: run the SAME predicate over
+    // deliberately-wrong notes. Without these, the assertion above is not evidence —
+    // a predicate that accepted anything would satisfy it just as well.
+    expect(() => assertTeachesArrayShape('')).toThrow();
+    // Names the right tool and the right plane, but teaches nothing about the shape:
+    // the half-fix produced by copying the plural entry verbatim.
+    expect(() => assertTeachesArrayShape('locks:queue is the FILE plane; use it instead')).toThrow();
+
+    // Control: the PLURAL note is a plausible thing to copy here, and it does NOT
+    // carry the scalar warning — so if someone later collapses the two entries into
+    // one shared string, this test fails instead of silently losing the guidance.
+    const pluralNote = (listTool.guidance?.argRedirects?.paths as { note?: string } | undefined)?.note ?? '';
+    expect(pluralNote).not.toMatch(/scalar/i);
+  });
+
   it('tells callers passing `workspace`/`harness`/`mine` to drop the key, and what to use', () => {
     // These three are DROPs, not renames: none has a counterpart on this surface.
     expect(listTool.guidance?.argRedirects?.workspace).toMatch(/workspace-global|ambient/i);
@@ -77,6 +119,9 @@ describe('locks:list guidance.argRedirects', () => {
     // Guards the failure mode where someone "fixes" the rejection by adding the key to
     // the schema, which would put a second, silently-diverging file plane on this tool.
     expect(listTool.args.safeParse({ paths: ['a/b.ts'] }).success).toBe(false);
+    // The singular is the likelier "fix": it LOOKS like a harmless narrowing arg next
+    // to `resource`, so adding it would quietly grow a second file plane on this tool.
+    expect(listTool.args.safeParse({ path: 'a/b.ts' }).success).toBe(false);
     expect(listTool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(false);
     expect(listTool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
     expect(listTool.args.safeParse({ mine: true }).success).toBe(false);
