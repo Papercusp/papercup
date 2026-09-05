@@ -945,20 +945,14 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     }
   }
 
-  // overwatch-role-2026-06-15 (B-10 / D-009): the OVERWATCH role ships DARK behind
-  // papercusp-overwatch (default OFF) until B-12's live staging proof. The role is
-  // statically REGISTERED (so the BuiltinAgentRole union + ROLE_ENVELOPES stay stable)
-  // but not ACTIVATABLE while the flag is off — refuse to spawn it here, at the central
-  // role-admission chokepoint that cup:spawn + every agent-driven launch funnel
-  // through (B-04 additionally gates the autonomous wake-loop routine; B-08 the UI
-  // pane). Role-scoped so a flag-read fault never touches other roles; getFlag fails
-  // safe to FLAG_DEFAULTS[OVERWATCH]=false (a closed gate) when PostHog is unreachable.
-  if (role === 'kettle' && !(await getFlag(FLAGS.OVERWATCH, 'system'))) {
-    return fail(
-      'spawn rejected: role="kettle" is gated behind the papercusp-overwatch flag ' +
-        '(default OFF until B-12 proves it live on staging) — enable it in /admin/features to spawn.',
-    );
-  }
+  // WI-38240: the papercusp-overwatch spawn-door gate that used to sit here
+  // (overwatch-role-2026-06-15 B-10 / D-009) is DELETED — `kettle` was the ONLY role it
+  // governed, and the retirement gate above refuses every retired-tier role first, so it
+  // was unreachable. Do NOT re-add a role gate here: operator-spawn.test.ts asserts kettle
+  // is refused for RETIREMENT and explicitly NOT for overwatch, and a gate above the
+  // retirement refusal would change which error a caller sees.
+  // FLAGS.OVERWATCH itself is NOT retired and must stay — overwatch/{cross-monitor,
+  // snapshot,watchdog}.ts and the wake-loop routine registration still read it.
 
   // EI-249: refuse to launch a bee whose brief still holds an un-substituted
   // template placeholder. A literal `{item}` / `brief-NN` means an upstream
@@ -987,17 +981,10 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   let spawnModelTier: string | null = null;
   let spawnModelBackend: string | null = null;
   let spawnCompactionLimit: number | null = null;
-  // True only when `spawnModelSpec` was populated by the account-steering DEFAULT
-  // fallback below (a role's own committed floor, promoted only because it crosses
-  // backends) — never by an explicit caller pick (`input.modelSpec`/`input.tier`) or
-  // an owner-configured own-model override (`resolveRoleOwnModelSpec`). The bench-
-  // scoped opus pin (P-033 Fix 2, below) must still win over this DEFAULT the same
-  // way it always won when a role's own default happened to need no promotion —
-  // without this flag a codex-family committed default (e.g. cup's gpt-5.6-luna:high,
-  // P-020) silently pre-fills spawnModelSpec, and the pin's `if (!spawnModelSpec)`
-  // guard then never fires (the bench feature goes silently inert for every migrated
-  // role — caught by the P-033 Fix 2 test suite going red on the P-020 migration).
-  let spawnModelSpecIsImplicitDefault = false;
+  // WI-38240: `spawnModelSpecIsImplicitDefault` used to be tracked here so the
+  // bench-scoped opus pin (P-033 Fix 2) could out-rank an account-steering DEFAULT
+  // fallback. That pin was `role === 'cup'` only and has been deleted with the rest of
+  // the retired-tier bench block, leaving this flag write-only — so it is gone too.
   if (!spawnModelSpec && input.tier && input.tier.trim()) {
     const [{ resolveTierSpec }, { tiers, tierCeilings }] = await Promise.all([
       import('./model-tiers'),
@@ -1087,7 +1074,6 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     const committedDefault = roleModelDefault(role);
     if (committedDefault && inferBackendFromModelSpec(committedDefault)) {
       spawnModelSpec = committedDefault;
-      spawnModelSpecIsImplicitDefault = true;
     }
   }
   const inferredBackend = inferBackendFromModelSpec(spawnModelSpec ?? undefined);
@@ -1186,16 +1172,20 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // carries the wake key the caller sleeps on.
   let admission: SpawnAdmission;
   let reclaimed: { count: number; workspaces: string[] };
-  const ownerBeeCeiling = role === 'cup' ? await ownerMaxBeesCeiling(input.workspaceId) : null;
   try {
     ({ admission, reclaimed } = await admitSpawn(sql, {
       workspaceId: input.workspaceId,
       spawnId,
       idempotencyKey: idemKey,
-      // Always enforce the global safety cap against every spawned role. The owner
-      // max-bees knob is a bee budget, so it is enforced as a second, bee-only cap.
+      // Always enforce the global safety cap against every spawned role. WI-38240: the
+      // second, bee-only owner max-bees cap that used to be passed here is GONE — it was
+      // `role === 'cup'` only, and cup is refused by the retirement gate above, so it
+      // resolved to null on every reachable path. The owner max-bees knob itself is NOT
+      // dead and must stay: `ownerMaxBeesCeiling()` still governs live spawns through
+      // `getSpawnHeadroom()` and `effectiveSpawnCeiling()`, neither of which is behind
+      // the retirement gate. Only this unreachable branch is removed.
       cap: spawnConcurrencyCeiling(),
-      roleCap: ownerBeeCeiling == null ? null : { role: 'cup', cap: ownerBeeCeiling },
+      roleCap: null,
       record: (tx) =>
         recordSpawn(tx, {
           spawnId,
@@ -1249,7 +1239,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       failedAttemptSpawnId,
       doorOutcome,
       doorCap: spawnConcurrencyCeiling(),
-      doorRoleCap: ownerBeeCeiling,
+      doorRoleCap: null, // WI-38240: was `ownerBeeCeiling`, always null since cup is retired.
       parentRole: input.parentRole ?? 'operator',
       childRole: role,
       fleetSlug: input.fleet?.slug ?? null,
@@ -1275,8 +1265,10 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   }
   if (admission.kind === 'over_cap') {
     const awaitEvent = spawnSlotEventKey(input.workspaceId);
-    const capLabel = admission.role === 'cup' ? 'owner maxBees' : 'maxSimultaneousAgents';
-    const runningLabel = admission.role === 'cup' ? `${admission.running} bee spawns` : `${admission.running} spawns`;
+    // WI-38240: both labels used to branch on `admission.role === 'cup'`. Cup is refused
+    // by the retirement gate above, so only the non-cup arm was ever reachable.
+    const capLabel = 'maxSimultaneousAgents';
+    const runningLabel = `${admission.running} spawns`;
     const res = await fail(
       `spawn rejected: ${runningLabel} already running (fleet ceiling ${admission.cap} — ${capLabel}). ` +
         `Do not drop or busy-wait: events:await { event: "${awaitEvent}" }, end your turn, and retry this spawn on wake (a slot-free wakes you) — or fleet:cancel one.`,
@@ -1393,20 +1385,6 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   const extras = [...(input.extras ?? [])];
   if (input.featureId) extras.push(`FEATURE_ID=${input.featureId}`);
   if (input.chunkId) extras.push(`CHUNK_ID=${input.chunkId}`);
-  // The `bee` role's prompt lives in the hive blueprints `coding`/`work`
-  // (blueprints/coding/prompts/bee.md) — there is no full `bee.md` in base/coding-factory/etc.
-  // invoke() resolves a role's prompt from the BLUEPRINT_ID extra (it does NOT
-  // read the member's .papercusp/blueprint.yaml for prompt resolution), so a bee
-  // placed onto a non-hive member (e.g. an external-bench benchmark clone, which
-  // `extends: coding`) resolved the bare [base] chain → `<harnessDir>/prompts/bee.md`
-  // → "no prompt file for role=bee" and the bee exited rc=1 / $0 / empty diff.
-  // A bee is intrinsically a hive worker, so default its prompt blueprint to `coding`
-  // unless the caller already pinned one. Arm-neutral (both hive + queen-ablated
-  // benchmark arms place identical bees), so it cannot bias the comparison.
-  if (role === 'cup' && !extras.some((e) => e.startsWith('BLUEPRINT_ID='))) {
-    extras.push('BLUEPRINT_ID=coding');
-  }
-
   // Per-hive override (domain-generic-hive-architecture-2026-06-18 P-012/P-013/D-013):
   // materialize the home Hive's FEDERATED promptOverride.* into a local-tier blueprint
   // tree and pass its root via BLUEPRINT_LOCAL_ROOT= so the AUTONOMOUS spawn's prompt
@@ -1439,81 +1417,15 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     workspaceId: input.workspaceId,
   });
 
-  // ── external-bench bee SELF-SUFFICIENCY (impartial-benchmark D-020 fix) ──────────────────────────────
-  // In the real-Queen benchmark arm (hive-backlog-realqueen.ts) the Queen persona PLACES a bee via
-  // `cup:spawn`, but her brief is a situational OVERLAY — not the "claim + implement this lone bench
-  // feature" directive. So a Queen-placed bench bee booted with FEATURE_ID set but no instruction to claim
-  // its (unassigned, taken_by NULL) feature → it found no actionable work and exited $0, no diff, no usage
-  // (the seeded feature later went `cancelled`). The WORKING scripted arm (hive-backlog-live.ts) avoids this
-  // by spawning every bee with the BENCH_BEE_DIRECTIVE brief (proven: 10/11 non-empty diffs on the xbh* run,
-  // feature → `passed`). Two further hazards on this path: (a) the Queen's `cup:spawn` only pins
-  // PAPERCUSP_SPAWN_BACKEND in extraEnv when a TIER resolves a backend (none here), so the bee command is
-  // built from whatever process.env.AGENT_CMD the SPAWNING process holds — and the Queen's spawns run in the
-  // long-running :3170 host, whose env can differ from the launcher; an unset AGENT_CMD falls through to
-  // `omp -p` (a local/self model → no usage sample, no real diff). (b) the claude-code spawn path is
-  // sandbox-default-ON, and bubblewrap's loopback needs CAP_NET_ADMIN the host lacks → rc=1, no diff.
-  //
-  // FIX (gated, bench-scoped, arm-neutral): when PAPERCUSP_XBENCH_CUP_DIRECTIVE is set (the bench launcher
-  // sets it on the SHARED env both hosts read), every placed `bee` (a) gets that directive APPENDED to its
-  // brief so — whatever situational overlay the Queen attaches — it claims + implements its lone seeded
-  // feature, and (b) gets PAPERCUSP_SPAWN_BACKEND/PAPERCUSP_FLEET_SANDBOX pinned PER-SPAWN (the exact
-  // self-sufficient pins bench-harness-live.ts's `driveToDone` sets) so it runs the real claude/opus backend
-  // regardless of which process built the spawn command. Only ever active under the bench env flag — normal
-  // hive/operator spawns are untouched. The Queen's placement/eviction/re-placement/adaptive-wake treatment
-  // is unchanged: she still decides WHO/WHEN; this only guarantees the bee she places can DO the work.
-  const benchBeeDirective =
-    role === 'cup'
-      ? (
-          process.env.PAPERCUSP_XBENCH_CUP_DIRECTIVE ??
-          process.env.PAPERCUSP_XBENCH_BEE_DIRECTIVE /* legacy env name — dual-accept until callers migrate */ ??
-          ''
-        ).trim()
-      : '';
-  if (benchBeeDirective) {
-    // The account-steering DEFAULT fallback (P-020, above) is not an explicit pick —
-    // let the bench-scoped pin below own model+backend selection exactly as it did
-    // before a role's own committed default could cross backends (P-033 Fix 2).
-    if (spawnModelSpecIsImplicitDefault) {
-      spawnModelSpec = null;
-      spawnModelBackend = null;
-      spawnModelSpecIsImplicitDefault = false;
-    }
-    // Append the directive when the placer's brief lacks it (the real-Queen arm, whose situational overlay
-    // never contains it). The FIFO arm's executeBatch already passes the SAME directive as the brief, so
-    // skip the append there to avoid a duplicate paragraph (idempotent either way).
-    if (!(input.brief ?? '').includes(benchBeeDirective)) {
-      input = {
-        ...input,
-        brief: input.brief ? `${input.brief}\n\n${benchBeeDirective}` : benchBeeDirective,
-      };
-    }
-    // Pin the bench backend/sandbox per-spawn (self-sufficient, like driveToDone) — every bench bee, not
-    // only the appended ones — unless the caller already resolved a backend (tier) or explicitly overrode
-    // these in the process env. Default-on so a spawn built in a host lacking AGENT_CMD/PAPERCUSP_SPAWN_BACKEND
-    // still runs claude, not omp.
-    if (!spawnModelBackend && process.env.PAPERCUSP_SPAWN_BACKEND == null) {
-      extraEnv.PAPERCUSP_SPAWN_BACKEND = 'claude-code';
-    }
-    if (process.env.PAPERCUSP_FLEET_SANDBOX == null) {
-      extraEnv.PAPERCUSP_FLEET_SANDBOX = '0';
-    }
-    // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). Pin THIS bench bee to opus PER-SPAWN via
-    // PAPERCUSP_SPAWN_MODEL — the highest-precedence model channel (applyRoleModel / invoke.ts resolveModel
-    // read it FIRST, above the global AGENT_MODELS map + the committed role floor). This makes the opus
-    // requirement BENCH-SCOPED: only bees under the bench flag are pinned, so non-bench hives keep their
-    // normal haiku floor (no more GLOBAL AGENT_MODELS opus on :3170 affecting every hive). FAIL-CLOSED:
-    // the rate-limit governor WAITS on a paused opus bucket rather than substituting, and the model-tiers
-    // floor-clamp never downgrades below opus — a paused/throttled opus stalls the bench spawn, it never
-    // silently drops to sonnet/haiku (the provable-opus-only requirement). Skip only if a TIER already
-    // resolved an explicit per-spawn model (its floor-clamp already governs). Configurable via
-    // PAPERCUSP_XBENCH_MODEL (default opus:xhigh) so the pin is one knob, not scattered. Skip only when an
-    // explicit per-spawn modelSpec/tier already resolved (spawnModelSpec) — line below applies it, its own
-    // floor-clamp governs. (This sets extraEnv; the spawnModelSpec block further down would override it, but
-    // we guard here to keep the intent explicit and avoid stamping then overwriting.)
-    if (!spawnModelSpec) {
-      extraEnv.PAPERCUSP_SPAWN_MODEL = (process.env.PAPERCUSP_XBENCH_MODEL ?? 'opus:xhigh').trim();
-    }
-  }
+  // WI-38240: the external-bench bee SELF-SUFFICIENCY block (impartial-benchmark D-020 /
+  // P-033 Fix 2) that used to sit here is DELETED. Everything in it hung off
+  // `benchBeeDirective`, which was `role === 'cup' ? … : ''` — the brief append, the
+  // per-spawn PAPERCUSP_SPAWN_BACKEND/PAPERCUSP_FLEET_SANDBOX pins, and the bench-scoped
+  // opus pin. `cup` is refused by the retirement gate above, so the directive was '' on
+  // every reachable path and the whole block was unreachable.
+  // The PAPERCUSP_XBENCH_* env vars are NOT dead and must stay: blueprint/launch-blueprint.ts
+  // (the Queen/mug pin), external-bench/su-independent-backlog.ts and
+  // external-bench/hive-backlog-realqueen.ts all still set and read them.
   // THE UMBILICAL (voice gap fix): thread the operator's durable `s-…` spawnId into
   // the child's env so invoke()/spawn-mcp bakes it as the signed MCP URL's STABLE
   // `client=` param. Without this the child minted a fresh random `spawnId` per boot
