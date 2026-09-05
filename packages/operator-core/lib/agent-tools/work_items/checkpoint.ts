@@ -356,6 +356,74 @@ function mergeChecksPreservingCarried(
 }
 
 /**
+ * Make enough room for a concise append body when a legacy note's carried checks
+ * already consume the whole checkpoint cap.
+ *
+ * The normal append path trims old narrative bytes from the front, which preserves
+ * the new addendum. That cannot help when the CHECKS section alone is over-cap:
+ * there is no room left for any body, so appendBodyPreservationGuard would refuse
+ * the write and strand progress indefinitely. Legacy rows predate today's field and
+ * row caps, so bound their fields first, then evict the cheapest-to-reproduce rows
+ * from the tail until the submitted body fits. Callers are told about any row loss
+ * through the existing checksDropped channel, and the transform never drops a row
+ * merely because a normal within-cap append needs old narrative trimming.
+ */
+function fitChecksForAppendBody(
+  body: string,
+  checks: ReadonlyArray<AppendChecksOverflowRow>,
+): {
+  merged: AppendChecksOverflowRow[];
+  dropped: AppendChecksOverflowRow[];
+  truncatedFields: number;
+} {
+  const repairs: CarryArgRepair[] = [];
+  const bounded = checks.map((row, i) => {
+    const out = { ...row };
+    out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `carriedChecks[${i}].claim`, repairs);
+    if (typeof out.recheck === 'string') {
+      out.recheck = truncateCarryField(
+        out.recheck,
+        CARRY_ROW_SOFT_CAPS.recheck,
+        `carriedChecks[${i}].recheck`,
+        repairs,
+      );
+    }
+    if (typeof out.verified === 'string') {
+      out.verified = truncateCarryField(
+        out.verified,
+        CARRY_ROW_SOFT_CAPS.verified,
+        `carriedChecks[${i}].verified`,
+        repairs,
+      );
+    }
+    if (typeof out.contested === 'string') {
+      out.contested = truncateCarryField(
+        out.contested,
+        CARRY_ROW_SOFT_CAPS.contested,
+        `carriedChecks[${i}].contested`,
+        repairs,
+      );
+    }
+    return out;
+  });
+
+  let merged = bounded;
+  if (withCarryNoteChecks(body, merged).length <= CHECKPOINT_CAP) {
+    return { merged, dropped: [], truncatedFields: repairs.length };
+  }
+
+  // Put evidence-bearing rows first only when the cap actually bites; stable
+  // ordering within each tier keeps ordinary notes from churning.
+  merged = evidenceFirst(merged);
+  const dropped: AppendChecksOverflowRow[] = [];
+  while (merged.length > 0 && withCarryNoteChecks(body, merged).length > CHECKPOINT_CAP) {
+    dropped.push(merged.pop()!);
+  }
+
+  return { merged, dropped: dropped.reverse(), truncatedFields: repairs.length };
+}
+
+/**
  * Return the exact PRIOR check rows that the additive normalizer would evict.
  *
  * This deliberately mirrors the transform rather than deriving victims from the
@@ -1614,7 +1682,7 @@ export default defineTool({
                     ? mergeChecksPreservingCarried(prior, suppliedChecks)
                     : null;
                 if (preservedOverflow) suppliedChecksNotRetained = preservedOverflow.notRetained;
-                const merged = preservedOverflow
+                let merged = preservedOverflow
                   ? preservedOverflow.merged
                   : patchedExistingChecks !== null
                     ? patchedExistingChecks
@@ -1623,6 +1691,30 @@ export default defineTool({
                         ? prior
                         : normalizeCheckEntries(effectiveChecks, prior)
                       : prior;
+                // EI-22392265719579261: a legacy note can fit the row-count cap while
+                // its carried fields still consume the entire byte cap. In that state
+                // the normal body trim has no room to retain a concise append, so fit
+                // the carried checks against the submitted addendum first. This is
+                // deliberately scoped to the over-cap append case; ordinary appends
+                // continue preserving every carried row byte-for-byte.
+                if (
+                  didAttemptJoin &&
+                  joinAddendum &&
+                  withCarryNoteChecks(joinAddendum, merged).length > CHECKPOINT_CAP
+                ) {
+                  const fitted = fitChecksForAppendBody(joinAddendum, merged);
+                  if (fitted.truncatedFields > 0 || fitted.dropped.length > 0) {
+                    merged = fitted.merged;
+                    legacyChecksNormalization.truncatedFields = Math.max(
+                      legacyChecksNormalization.truncatedFields,
+                      fitted.truncatedFields,
+                    );
+                    legacyChecksNormalization.droppedRows = Math.max(
+                      legacyChecksNormalization.droppedRows,
+                      fitted.dropped.length,
+                    );
+                  }
+                }
                 // Recomputed on every transform invocation (the store may retry it under
                 // its lock) so the last run — the one whose result is stored — wins.
                 // Drop detection must use the same stable identity as the merge and
@@ -1836,6 +1928,7 @@ export default defineTool({
          *  see, so a `let … | null = null` narrows to `never` at the read below and the
          *  branch fails to compile. `0` means "no legacy excess absorbed". */
         const legacyOverCapNormalization = { legacyExcess: 0 };
+        const legacyChecksNormalization = { truncatedFields: 0, droppedRows: 0 };
         const overflowGuard: CheckpointGuard | null =
           !wantsConfirmShrink && suppliedChecks !== undefined
             ? (_priorNote) => {
@@ -2211,8 +2304,20 @@ export default defineTool({
            * reason — the union overflowed the CARRY_NOTE_MAX_CHECKS cap and the carried
            * tail was evicted. So a count below what you stored does not by itself tell
            * you which of the two happened; read `checksDroppedNote`, which now says.
-           */
+          */
           checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
+          ...(legacyChecksNormalization.truncatedFields > 0 || legacyChecksNormalization.droppedRows > 0
+            ? {
+                legacyChecksNormalization: {
+                  truncatedFields: legacyChecksNormalization.truncatedFields,
+                  droppedRows: legacyChecksNormalization.droppedRows,
+                  note:
+                    'Legacy carried check rows were bounded only because their serialized section left no room ' +
+                    'for the submitted append body. The append body was preserved; any yielded rows are listed in ' +
+                    '`checksDropped`.',
+                },
+              }
+            : {}),
           /**
            * EI-18741016606334594: `✓VERIFIED` rows whose claim is quantified beyond what
            * their own recheck can observe. Read off the STORED note (like `checks` above)
@@ -2325,7 +2430,12 @@ export default defineTool({
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                 checksDroppedNote:
-                  legacyOverCapNormalization.legacyExcess > 0
+                  legacyChecksNormalization.truncatedFields > 0 || legacyChecksNormalization.droppedRows > 0
+                    ? `LEGACY BYTE NORMALIZATION, not a replace and not your mistake: the carried checks were ` +
+                      `bounded to preserve the submitted append body. ${legacyChecksNormalization.truncatedFields} ` +
+                      `carried field(s) were shortened and ${droppedCheckClaims.length} carried row(s) yielded; ` +
+                      `the append body was retained and the yielded claims are listed above.`
+                    : legacyOverCapNormalization.legacyExcess > 0
                     ? `LEGACY CAP NORMALIZATION, not a replace and not your mistake: this checkpoint was already ` +
                       `carrying ${legacyOverCapNormalization.legacyExcess} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap before ` +
                       `your write — a pre-existing state that used to make every additive write to this note refuse ` +

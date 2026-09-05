@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-04T15:09:14.944Z",
+  "generatedAt": "2026-09-05T21:43:39.924Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 115639,
-      "sha256": "40bf6bcf1705ca3bf9aa724a21c8a14855cab0e211f22c4d76514cbbcdcf8f92",
+      "totalBytes": 116503,
+      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
       "sections": [
         {
           "heading": "(preamble)",
@@ -109,8 +109,8 @@
         {
           "heading": "## Tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 2849,
-          "sha256": "12a4d742e89838996c49da09f1ad14a1afc8f5a1eb3e2b03ee10ffc59b24869a"
+          "bytes": 3021,
+          "sha256": "3b3cddb5a71ecf18cef641864082b0d8e662e1e8319fefe3867934ec5ea1f5af"
         },
         {
           "heading": "## Tools, docs, memory",
@@ -133,8 +133,8 @@
         {
           "heading": "## Coord injection protocol",
           "origin": "generated",
-          "bytes": 2278,
-          "sha256": "5282dc2a9afdd86889c215d61d70bf8ebf0c965f432746ec06884cf97bdd0cef"
+          "bytes": 2970,
+          "sha256": "28677788f7e353e58fbc74aee6b8b58f857232b7b7e30f21a58d003b9bdc49d3"
         },
         {
           "heading": "## Wire schemas",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 115639,
-      "sha256": "40bf6bcf1705ca3bf9aa724a21c8a14855cab0e211f22c4d76514cbbcdcf8f92",
+      "totalBytes": 116503,
+      "sha256": "c0d5bd480d0304a6cacdf7ac18dbc307fcb2bc06a0d903c4411c1d5d1f65979b",
       "sections": [
         {
           "heading": "(preamble)",
@@ -253,8 +253,8 @@
         {
           "heading": "## Tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 2849,
-          "sha256": "12a4d742e89838996c49da09f1ad14a1afc8f5a1eb3e2b03ee10ffc59b24869a"
+          "bytes": 3021,
+          "sha256": "3b3cddb5a71ecf18cef641864082b0d8e662e1e8319fefe3867934ec5ea1f5af"
         },
         {
           "heading": "## Tools, docs, memory",
@@ -277,8 +277,8 @@
         {
           "heading": "## Coord injection protocol",
           "origin": "generated",
-          "bytes": 2278,
-          "sha256": "5282dc2a9afdd86889c215d61d70bf8ebf0c965f432746ec06884cf97bdd0cef"
+          "bytes": 2970,
+          "sha256": "28677788f7e353e58fbc74aee6b8b58f857232b7b7e30f21a58d003b9bdc49d3"
         },
         {
           "heading": "## Wire schemas",

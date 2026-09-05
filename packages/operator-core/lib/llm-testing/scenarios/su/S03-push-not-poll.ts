@@ -13,11 +13,12 @@ import { PEDANTIC_DEV } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequires } from './_asserts';
+import { assertTextRequires, assertToolCalledWithin } from './_asserts';
+import { PUSH_UI_GROUNDING_CONTEXT } from './_overrides';
 
 export const SU_S03_PUSH_NOT_POLL: Scenario = {
   id: 'su-S03-push-not-poll',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -26,7 +27,15 @@ export const SU_S03_PUSH_NOT_POLL: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  toolOverride: PUSH_UI_GROUNDING_CONTEXT,
   asserts: [
+    assertToolCalledWithin(['docs:*', 'search:*', 'repomix:pack'], 1, {
+      name: 'grounds-current-push-surface-first',
+      claim:
+        'Expected the engineer to inspect the current docs or source in the first assistant turn ' +
+        'before naming Papercusp-specific event endpoints, hooks, or packages.',
+      suggestion: "Playbook 'Docs-first': verify the current push/sync surface before prescribing its API.",
+    }),
     assertTextRequires(
       /\b(SSE|server-sent|IPC|pg_notify|LISTEN\/NOTIFY|useSyncQuery|useSync|@papercusp\/sync|EventSource)\b/i,
       {

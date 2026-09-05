@@ -521,6 +521,14 @@ export default defineTool({
       fleet.lastLaunchTransaction,
       headcountCurrentResult.value,
       headcountExecutingResult.value,
+      {
+        measuredAt: new Date().toISOString(),
+        scope: {
+          workspace: workspaceId,
+          fleet: args.fleet,
+          ...(args.harness ? { harness: args.harness } : {}),
+        },
+      },
     );
     const populationLifecycle = buildFleetPopulationLifecycle({
       fleet: args.fleet,

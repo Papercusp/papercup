@@ -2950,7 +2950,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(stored).toContain('LEGACY-50 holds');
         });
 
-        it('refuses an append when over-cap legacy checks would trim the submitted body', async () => {
+        it('normalizes over-cap legacy checks while preserving the submitted append body', async () => {
           const legacyChecks = Array.from({ length: 83 }, (_, i) => ({
             id: `legacy-${String(i + 1).padStart(2, '0')}`,
             claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
@@ -2963,14 +2963,24 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
           const r = (await one({ id: 'WI-7', checkpoint: addendum, append: true })) as {
             ok: boolean;
-            error?: string;
             errorCode?: string;
+            checksDropped?: string[];
+            checksDroppedNote?: string;
+            legacyChecksNormalization?: { truncatedFields: number; droppedRows: number };
           };
 
-          expect(r.ok).toBe(false);
-          expect(r.errorCode).toBe('append_body_overflow');
-          expect(r.error).toContain('submitted append body');
-          expect(readCurrent()).toBe(prior);
+          expect(r.ok).toBe(true);
+          expect(r.errorCode).toBeUndefined();
+          expect(readCurrent()).toContain(addendum);
+          expect(readCurrent().length).toBeLessThanOrEqual(32000);
+          expect(r.checksDropped?.length).toBeGreaterThan(0);
+          expect(r.checksDroppedNote).toContain('LEGACY BYTE NORMALIZATION');
+          // This fixture exceeds the byte cap through row count/serialized evidence,
+          // not any individual soft field cap. Row-only normalization must not claim
+          // that a field was shortened; that signal is reserved for truncateCarryField
+          // repairs, while droppedRows reports the legacy rows yielded for body space.
+          expect(r.legacyChecksNormalization?.truncatedFields).toBe(0);
+          expect(r.legacyChecksNormalization?.droppedRows).toBeGreaterThan(0);
         });
 
         /**

@@ -14,6 +14,7 @@ import type { Scenario, ToolCallEvent } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolMatch } from './_asserts';
+import { DESIGN_STATUS_BADGE_CONTEXT } from './_overrides';
 
 function reachesForDesignSystem(tc: ToolCallEvent): boolean {
   const name = tc.name.replace(/^mcp__agentmcp__/, '');
@@ -26,7 +27,7 @@ function reachesForDesignSystem(tc: ToolCallEvent): boolean {
 
 export const SU_S04_DESIGN_FIRST: Scenario = {
   id: 'su-S04-design-first',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -35,6 +36,7 @@ export const SU_S04_DESIGN_FIRST: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  toolOverride: DESIGN_STATUS_BADGE_CONTEXT,
   asserts: [
     assertToolMatch(reachesForDesignSystem, {
       name: 'reaches-for-design-system',

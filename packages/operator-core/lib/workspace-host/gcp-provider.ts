@@ -283,6 +283,8 @@ export interface GcpWorkspaceHostApiClient {
     query: WorkspaceHostCatalogQuery,
     connection: WorkspaceHostProviderConnection,
   ): Promise<readonly WorkspaceHostImage[]>;
+  /** Read the immutable source image's minimum boot-disk size before planning mutations. */
+  getImageDiskSizeGb(imageId: string): Promise<number>;
   estimatePrice(
     desired: WorkspaceHostDesiredSpec,
     connection: WorkspaceHostProviderConnection,
@@ -1396,12 +1398,17 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         throw new Error('GCP upgrade requires a controller-authored host bootstrap');
       }
       const imageId = assertGcpImmutableImageId(request.image.id, 'gcp.upgrade.image.id');
+      // Validate and normalize before emitting a destructive delete step. The final Compute
+      // client retains its own clamp, but waiting until insert-instance would leave an upgrade
+      // with a deleted runtime VM when the new image is larger than the retained boot disk.
+      const imageDiskSizeGb = await this.client.getImageDiskSizeGb(imageId);
       const observed = await this.client.getInstance(projectId, zone, instance.providerId);
       if (!observed?.recreateInput) {
         throw new Error('GCP upgrade requires a fresh instance read with recreateInput');
       }
       const disk = requireKnownResource(request.host.resources, [DISK_KIND], request.action);
       const [bootDisk, dataDisk] = observed.recreateInput.disks;
+      const bootDiskSizeGb = Math.max(bootDisk.initializeParams.diskSizeGb, imageDiskSizeGb);
       if (refName(dataDisk.source) !== refName(disk.providerId) || dataDisk.autoDelete) {
         throw new Error('GCP upgrade refused because the retained data disk identity is ambiguous');
       }
@@ -1447,7 +1454,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               disks: [
                 {
                   ...bootDisk,
-                  initializeParams: { ...bootDisk.initializeParams, sourceImage: imageId },
+                  initializeParams: {
+                    ...bootDisk.initializeParams,
+                    sourceImage: imageId,
+                    diskSizeGb: bootDiskSizeGb,
+                  },
                 },
                 { ...dataDisk, autoDelete: false, source: dataDisk.source },
               ],
@@ -1599,13 +1610,22 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     ];
   }
 
-  private planProvision(
+  private async planProvision(
     request: Extract<WorkspaceHostPlanRequest, { action: 'provision' | 'restore' }>,
     ctx: WorkspaceHostProviderContext,
     sourceSnapshotName?: string,
-  ): readonly WorkspaceHostPlanStep[] {
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
     const desired = request.desired;
     const settings = readSettings(desired);
+    // This is an admission-time lookup. It must happen before the plan can be applied because
+    // GCP rejects boot disks below their source image's size, while the plan intentionally creates
+    // network and data-disk resources before the VM. The API client repeats the clamp at mutation
+    // time as defense in depth, but it is too late to prevent partial infrastructure.
+    const imageDiskSizeGb = await this.client.getImageDiskSizeGb(settings.imageId);
+    if (!Number.isFinite(imageDiskSizeGb) || imageDiskSizeGb <= 0) {
+      throw new Error(`GCP source image '${settings.imageId}' reported an invalid disk size`);
+    }
+    const bootDiskGiB = Math.max(settings.bootDiskGiB, imageDiskSizeGb);
     const commonLabels = labels(desired, ctx.workspaceId);
     const hostTag = stableName('pc-host', desired.hostId);
     const steps: WorkspaceHostPlanStep[] = [];
@@ -1871,7 +1891,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               autoDelete: true,
               initializeParams: {
                 sourceImage: settings.imageId,
-                diskSizeGb: settings.bootDiskGiB,
+                diskSizeGb: bootDiskGiB,
                 diskType: settings.bootDiskType,
                 ...(settings.kmsKeyName ? { diskEncryptionKey: { kmsKeyName: settings.kmsKeyName } } : {}),
               },

@@ -12,6 +12,7 @@ import type { Scenario, ToolCallEvent } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolMatch } from './_asserts';
+import { KEYED_WRITE_CONTEXT } from './_overrides';
 
 /** Does this tool call set_state with keyed args for WI-42 → blocked? */
 function emitsCorrectKeyedArgs(tc: ToolCallEvent): boolean {
@@ -23,7 +24,7 @@ function emitsCorrectKeyedArgs(tc: ToolCallEvent): boolean {
 
 export const SU_S07_KEYED_WRITE: Scenario = {
   id: 'su-S07-keyed-write',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -32,6 +33,7 @@ export const SU_S07_KEYED_WRITE: Scenario = {
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 3, maxWallSecs: 180, maxCostUsd: 1.5 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
+  toolOverride: KEYED_WRITE_CONTEXT,
   asserts: [
     assertToolMatch(emitsCorrectKeyedArgs, {
       name: 'set-state-correct-keyed-args',

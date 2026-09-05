@@ -140,6 +140,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   readonly setInstanceMetadataCalls: Array<{ input: GcpInstanceMetadataInput; requestId: string }> = [];
   readonly snapshotCalls: Array<{ input: GcpSnapshotInsertInput; requestId: string }> = [];
   readonly waitedOperations: GcpOperationRef[] = [];
+  imageDiskSizeGb = 40;
   startCalls = 0;
   stopCalls = 0;
   resetCalls = 0;
@@ -352,6 +353,10 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
 
   async getSnapshot(_projectId: string, name: string) {
     return this.snapshots.get(name);
+  }
+
+  async getImageDiskSizeGb(_imageId: string) {
+    return this.imageDiskSizeGb;
   }
 
   async insertNetwork(_projectId: string, input: GcpNetworkInsertInput, requestId: string) {
@@ -623,6 +628,25 @@ async function provision(
 }
 
 describe('GCP workspace-host provider planning', () => {
+  it('normalizes an undersized boot disk during planning before any provider mutation can run', async () => {
+    const { client, provider } = providerAndClient();
+    client.imageDiskSizeGb = 32;
+    const spec = desired();
+    spec.provider = { ...spec.provider, bootDiskGiB: 30 };
+
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'image-floor', idempotencyKey: 'image-floor', desired: spec },
+      context(),
+    );
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+
+    expect(instance.disks[0].initializeParams.diskSizeGb).toBe(32);
+    expect(client.insertNetworkCalls).toHaveLength(0);
+    expect(client.insertDiskCalls).toHaveLength(0);
+  });
+
   it('builds a deterministic managed resource graph with RFC-4122 request UUIDs and hardened instance inputs', async () => {
     const { provider } = providerAndClient();
     const request = {

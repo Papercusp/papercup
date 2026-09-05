@@ -781,6 +781,15 @@ describe('boot disk sizing against the source image', () => {
     return { client: makeClient(fetchImpl), body };
   }
 
+  it('exposes the image floor for admission planning and fails closed when it cannot be read', async () => {
+    const imageId = `projects/${PROJECT}/global/images/papercusp-workspace-host-0-0-18-r18`;
+    const readable = harness('32').client;
+    await expect(readable.getImageDiskSizeGb(imageId)).resolves.toBe(32);
+
+    const unreadable = harness(undefined).client;
+    await expect(unreadable.getImageDiskSizeGb(imageId)).rejects.toThrow('gcp_preflight_http_404');
+  });
+
   // The failure this exists to prevent: bootDiskGiB defaults to 30 while the shipped
   // workspace-host image is 32 GB, so GCP rejected every default-config provision with
   // "Requested disk size cannot be smaller than the image size (32 GB)".

@@ -585,6 +585,22 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     ];
   }
 
+  /**
+   * Read the source image's minimum boot-disk size for admission-time provisioning validation.
+   * Unlike the mutation-time fallback below, this method is strict: a plan must not begin
+   * creating network or data-disk resources when the image floor cannot be established.
+   */
+  async getImageDiskSizeGb(sourceImage: string): Promise<number> {
+    const ref = required(sourceImage, 'source_image');
+    const url = /^https?:\/\//.test(ref) ? ref : `${COMPUTE_API}/${ref.replace(/^\/+/, '')}`;
+    const image = await this.request<RawImage>(url);
+    const diskSizeGb = numberValue(image.diskSizeGb);
+    if (diskSizeGb === undefined || diskSizeGb <= 0) {
+      throw new Error(`GCP source image '${ref}' did not report a valid disk size`);
+    }
+    return diskSizeGb;
+  }
+
   async estimatePrice(
     _desired: WorkspaceHostDesiredSpec,
     _connection: WorkspaceHostProviderConnection,
@@ -1005,11 +1021,8 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
    * cannot be read, so an unrelated lookup failure never blocks a provision that would succeed.
    */
   private async sourceImageDiskSizeGb(sourceImage: string): Promise<number | undefined> {
-    const ref = sourceImage.trim();
-    if (!ref) return undefined;
-    const url = /^https?:\/\//.test(ref) ? ref : `${COMPUTE_API}/${ref.replace(/^\/+/, '')}`;
     try {
-      return numberValue((await this.getOrUndefined<RawImage>(url))?.diskSizeGb);
+      return await this.getImageDiskSizeGb(sourceImage);
     } catch {
       return undefined;
     }

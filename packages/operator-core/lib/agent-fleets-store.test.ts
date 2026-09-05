@@ -16,6 +16,7 @@ import {
   measureFleetProductiveHeadcount,
   projectFleetHeadcountState,
 } from './agent-fleets-store';
+import { compareCountEvidence } from './count-evidence-contract';
 
 const LIB_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const STORE_MOCK_START_RE = /vi\.mock\(\s*(['"])[^'"]*agent-fleets-store\1/;
@@ -232,12 +233,14 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
         transactionWorkerReadyMembers: 1,
       },
     });
-    expect(projectFleetHeadcountState(
+    const projected = projectFleetHeadcountState(
       enabled,
-      { workerReadyMemberIds: ['su-ready-live'] } as never,
+      { transactionId: 'tx-current', workerReadyMemberIds: ['su-ready-live'] } as never,
       ['su-ready-live', 'su-other-live', 'su-idle-live'],
       new Set(['su-ready-live', 'su-other-live']),
-    )).toEqual({
+      { measuredAt: '2026-09-05T20:00:00.000Z', scope: { fleet: 'fleet-a' } },
+    );
+    expect(projected).toMatchObject({
       enabled: true,
       target: 4,
       current: 2,
@@ -251,6 +254,38 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
         transactionWorkerReadyMembers: 1,
       },
     });
+    expect(projected.countEvidence.productive).toMatchObject({
+      value: 2,
+      contract: {
+        population: { id: 'live-roster-recent-execution-intersection' },
+        cutoff: { kind: 'rolling-window', durationMs: 60 * 60_000, end: 'measuredAt' },
+        status: { id: 'recently-executing-live-member' },
+        writer: { id: 'executingOwnersSince+measureFleetProductiveHeadcount' },
+        measuredAt: '2026-09-05T20:00:00.000Z',
+      },
+    });
+    expect(projected.countEvidence.liveRoster).toMatchObject({
+      value: 3,
+      contract: { population: { id: 'fleet-live-launch-roster' }, cutoff: { kind: 'none' } },
+    });
+    expect(projected.countEvidence.transactionWorkerReady).toMatchObject({
+      value: 1,
+      contract: {
+        population: {
+          id: 'current-launch-transaction-worker-ready',
+          selector: { transactionId: 'tx-current' },
+        },
+        status: { id: 'transaction-worker-ready' },
+      },
+    });
+    const wrongPopulationComparison = compareCountEvidence(
+      projected.countEvidence.productive,
+      projected.countEvidence.transactionWorkerReady,
+    );
+    expect(wrongPopulationComparison).toMatchObject({ comparable: false, delta: null });
+    expect(wrongPopulationComparison.mismatches.map((mismatch) => mismatch.path)).toEqual(
+      expect.arrayContaining(['metric.id', 'population.id', 'cutoff.kind', 'status.id', 'writer.id']),
+    );
   });
 
   // WI-2034624 REGRESSION. `current` was the live roster INTERSECT the CURRENT

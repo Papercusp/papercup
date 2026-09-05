@@ -26,6 +26,13 @@ import type {
   FreshLaunchWorkerAttestation,
 } from './agent-launch-core';
 import { normalizeSuContextSize } from './su-context-size.mjs';
+import {
+  COUNT_EVIDENCE_COMPARISON_RULE,
+  COUNT_EVIDENCE_SCHEMA_VERSION,
+  type CountContractDimension,
+  type CountCutoff,
+  type CountEvidence,
+} from './count-evidence-contract';
 
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
@@ -481,6 +488,146 @@ export interface FleetHeadcountState {
   underStrength: boolean | null;
   verdict: FleetHeadcountVerdict;
   basis: FleetHeadcountBasis;
+  countEvidence: {
+    productive: CountEvidence | null;
+    liveRoster: CountEvidence | null;
+    transactionWorkerReady: CountEvidence | null;
+    note: string;
+  };
+}
+
+export interface FleetHeadcountObservation {
+  measuredAt?: string;
+  scope?: Record<string, CountContractDimension>;
+}
+
+function buildFleetHeadcountCountEvidence(
+  measuredCurrent: number | null,
+  basis: FleetHeadcountBasis,
+  transaction: FleetLaunchTransaction | null | undefined,
+  observation?: FleetHeadcountObservation,
+): FleetHeadcountState['countEvidence'] {
+  const measuredAt = observation?.measuredAt ?? new Date().toISOString();
+  const scope = observation?.scope ?? {};
+  const evidence = (args: {
+    value: number | null;
+    metricId: string;
+    metricDefinition: string;
+    populationId: string;
+    populationSelector: CountContractDimension;
+    populationDefinition: string;
+    cutoff: CountCutoff;
+    statusId: string;
+    statusDefinition: string;
+    writerId: string;
+    zeroMeaning: string;
+    axis: string;
+  }): CountEvidence | null => args.value == null ? null : ({
+    value: args.value,
+    contract: {
+      schemaVersion: COUNT_EVIDENCE_SCHEMA_VERSION,
+      metric: { id: args.metricId, definition: args.metricDefinition },
+      population: {
+        id: args.populationId,
+        selector: args.populationSelector,
+        definition: args.populationDefinition,
+      },
+      cutoff: args.cutoff,
+      status: { id: args.statusId, definition: args.statusDefinition },
+      writer: { id: args.writerId, revision: 'fleet-headcount-contract-v1' },
+      unit: { id: 'coord-owner', definition: 'distinct coordination owner ids' },
+      exactness: { status: 'exact' },
+      zeroMeaning: args.zeroMeaning,
+      scope: { ...scope, headcountAxis: args.axis },
+      measuredAt,
+      comparisonRule: COUNT_EVIDENCE_COMPARISON_RULE,
+    },
+  });
+
+  const liveRoster = evidence({
+    value: basis.liveRosterMembers,
+    metricId: 'fleet-live-roster-count',
+    metricDefinition: 'members in the canonical live launch roster, excluding the leader',
+    populationId: 'fleet-live-launch-roster',
+    populationSelector: { source: 'liveFleetMemberIds', mode: 'launch', leaderExcluded: true },
+    populationDefinition: 'the fleet roster rows currently considered live for launch capacity',
+    cutoff: { kind: 'none' },
+    statusId: 'live-roster-member',
+    statusDefinition: 'member remains in the canonical live launch roster',
+    writerId: 'liveFleetMemberIds',
+    zeroMeaning: 'the live launch roster contains no non-leader members at measuredAt',
+    axis: 'live-roster',
+  });
+  const transactionWorkerReady = evidence({
+    value: basis.transactionWorkerReadyMembers,
+    metricId: 'fleet-transaction-worker-ready-count',
+    metricDefinition: 'worker-ready ids recorded only by the current launch transaction',
+    populationId: 'current-launch-transaction-worker-ready',
+    populationSelector: {
+      transactionId: transaction?.transactionId ?? null,
+      source: 'lastLaunchTransaction.workerReadyMemberIds',
+    },
+    populationDefinition: 'members whose four-stage readiness was persisted on this launch transaction only',
+    cutoff: { kind: 'none' },
+    statusId: 'transaction-worker-ready',
+    statusDefinition: 'recorded ready by the current launch transaction; diagnostic only',
+    writerId: 'refreshGovernorWorkerAttestation',
+    zeroMeaning: 'this launch transaction recorded no worker-ready ids; it says nothing about members from earlier launches',
+    axis: 'transaction-worker-ready',
+  });
+  const productive = evidence({
+    value: measuredCurrent,
+    metricId: 'fleet-productive-headcount',
+    metricDefinition: 'the population used to size productive fleet capacity',
+    populationId:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'live-roster-recent-execution-intersection'
+        : 'legacy-live-roster-fallback',
+    populationSelector:
+      basis.kind === 'agent-origin-execution-attested'
+        ? {
+            liveSource: 'liveFleetMemberIds(mode=launch)',
+            executionSources: ['harness_shared.tool_invocations(call_origin=agent)', 'harness_shared.agent_activity'],
+          }
+        : { source: 'liveFleetMemberIds', mode: 'launch', legacyFallback: true },
+    populationDefinition:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'live non-leader fleet members with recent execution in either authoritative tool ledger'
+        : 'legacy fleet live roster used only when no worker-attestation contract exists',
+    cutoff:
+      basis.kind === 'agent-origin-execution-attested'
+        ? {
+            kind: 'rolling-window',
+            field: 'agent-origin-or-native-tool-activity',
+            durationMs: FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
+            end: 'measuredAt',
+          }
+        : { kind: 'none' },
+    statusId:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'recently-executing-live-member'
+        : 'legacy-live-roster-member',
+    statusDefinition:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'member is live and appears in either execution ledger during the rolling window'
+        : 'member is live in a legacy fleet with no modern worker contract',
+    writerId:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'executingOwnersSince+measureFleetProductiveHeadcount'
+        : 'measureFleetProductiveHeadcount/legacy-live-roster-fallback',
+    zeroMeaning:
+      basis.kind === 'agent-origin-execution-attested'
+        ? 'no live members emitted observable execution during the rolling window; this is not a transaction-ready count'
+        : 'the legacy live roster contains no members',
+    axis: 'productive',
+  });
+  return {
+    productive,
+    liveRoster,
+    transactionWorkerReady,
+    note:
+      'These are three different populations. Productive headcount may be compared over time only to the productive contract; transaction worker-ready is diagnostic and never caps it.',
+  };
 }
 
 export function projectFleetHeadcountState(
@@ -488,11 +635,18 @@ export function projectFleetHeadcountState(
   transaction: FleetLaunchTransaction | null | undefined,
   liveMemberIds: readonly string[] | null,
   executingMemberIds: ReadonlySet<string> | null,
+  observation?: FleetHeadcountObservation,
 ): FleetHeadcountState {
   const { current: measuredCurrent, basis } = measureFleetProductiveHeadcount(
     transaction,
     liveMemberIds,
     executingMemberIds,
+  );
+  const countEvidence = buildFleetHeadcountCountEvidence(
+    measuredCurrent,
+    basis,
+    transaction,
+    observation,
   );
   if (profile === undefined) {
     return {
@@ -503,6 +657,7 @@ export function projectFleetHeadcountState(
       underStrength: null,
       verdict: 'unknown',
       basis,
+      countEvidence,
     };
   }
   if (profile == null || !profile.enabled) {
@@ -514,6 +669,7 @@ export function projectFleetHeadcountState(
       underStrength: null,
       verdict: 'disabled',
       basis,
+      countEvidence,
     };
   }
   if (measuredCurrent == null) {
@@ -525,6 +681,7 @@ export function projectFleetHeadcountState(
       underStrength: null,
       verdict: 'unknown',
       basis,
+      countEvidence,
     };
   }
   const shortfall = Math.max(0, profile.target - measuredCurrent);
@@ -536,6 +693,7 @@ export function projectFleetHeadcountState(
     underStrength: shortfall > 0,
     verdict: shortfall > 0 ? 'under-strength' : 'at-target',
     basis,
+    countEvidence,
   };
 }
 

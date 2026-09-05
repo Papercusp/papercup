@@ -40,7 +40,7 @@ import { ORIENT_BOOTSTRAP_CONTEXT } from './_overrides';
 
 export const SU_S17_ORIENT_BOOTSTRAP: Scenario = {
   id: 'su-S17-orient-bootstrap',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
