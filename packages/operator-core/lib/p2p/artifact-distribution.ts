@@ -527,9 +527,21 @@ export type DistributionResolutionReason =
   | 'ok'
   | 'no-manifest'
   | 'yanked'
+  | 'yank-retention-expired'
   | 'no-sources'
   | 'offline-no-pin'
   | 'key-revoked';
+
+/**
+ * Why a caller wants these bytes.
+ *
+ * Lives here, beside the yank rule it selects, rather than in the Cupboard
+ * layer: a yank refuses a NEW acquisition but must keep serving a `repair` of
+ * a version already on disk (D-007), and that decision has to be made in the
+ * one place deliverability is decided (D-040 ruling 4) or the two answers drift.
+ */
+export const DELIVERY_INTENTS = ['install', 'update', 'repair'] as const;
+export type DeliveryIntent = (typeof DELIVERY_INTENTS)[number];
 
 export interface DistributionResolution {
   readonly deliverable: boolean;
@@ -545,6 +557,12 @@ export interface ResolveOptions {
   readonly offline?: boolean;
   /** Entitlement key version held by the caller, for private listings. */
   readonly keyVersion?: number;
+  /**
+   * Why the bytes are wanted. Defaults to `'install'` — fail-closed, so a
+   * caller who does not say is treated as making a new acquisition and is
+   * refused by a yank, rather than slipping past one by omission.
+   */
+  readonly intent?: DeliveryIntent;
 }
 
 /**
@@ -554,7 +572,7 @@ export interface ResolveOptions {
  * never by locator shape, so adding an IPFS provider changes nothing here.
  */
 export function resolveDistributionSources(state: ArtifactDistributionState, options: ResolveOptions): DistributionResolution {
-  const { nowMs, offline = false, keyVersion } = options;
+  const { nowMs, offline = false, keyVersion, intent = 'install' } = options;
   const policy = state.manifest?.pinning ?? DEFAULT_PINNING_POLICY;
   const pinHealth = evaluatePinHealth(state, nowMs);
 
@@ -566,7 +584,17 @@ export function resolveDistributionSources(state: ArtifactDistributionState, opt
 
   const refuse = (reason: DistributionResolutionReason): DistributionResolution => ({ deliverable: false, reason, sources, pinHealth });
   if (!state.manifest) return refuse('no-manifest');
-  if (state.yankedAtMs !== null) return refuse('yanked');
+  if (state.yankedAtMs !== null) {
+    // A yank withdraws the version from NEW acquisition, but must not brick an
+    // install that already works: a `repair` keeps resolving until the
+    // retention window closes. Key revocation below is deliberately NOT
+    // relaxed the same way — a yank is the publisher withdrawing a version,
+    // a revocation is the buyer's right ending, which is terminal for every
+    // intent.
+    const yank = yankOutcome(state);
+    if (intent !== 'repair') return refuse('yanked');
+    if (yank.retainUntilMs !== null && nowMs > yank.retainUntilMs) return refuse('yank-retention-expired');
+  }
   if (keyVersion !== undefined && state.revokedKeyVersions.includes(keyVersion)) return refuse('key-revoked');
   if (sources.length === 0) return refuse(offline ? 'offline-no-pin' : 'no-sources');
   return { deliverable: true, reason: 'ok', sources, pinHealth };
