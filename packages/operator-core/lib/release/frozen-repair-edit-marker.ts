@@ -28,6 +28,16 @@ import {
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
+export type FrozenRepairMarkerLegStatus = 'red' | 'admitted' | 'green';
+
+/** P-022: one P-021 manifest leg, status-only — exactly what the completion guard needs. */
+export interface FrozenRepairMarkerLeg {
+  legId: string;
+  status: FrozenRepairMarkerLegStatus;
+  /** Normalized subject paths (the leg's admission allowlist). */
+  subjectPaths: string[];
+}
+
 export interface FrozenRepairEditMarker {
   candidate: string;
   repairHead: string;
@@ -35,6 +45,16 @@ export interface FrozenRepairEditMarker {
   /** Already normalized, so a reader only has to normalize its own edited path. */
   failingPaths: string[];
   updatedAtMs: number;
+  /**
+   * P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3): every path
+   * the admission ledger carries on the CURRENT lineage (`admissions[].paths ∪ unchanged`),
+   * normalized. Projected from the same queue write as the rest of the marker, so a
+   * completion guard reading it sees the lineage the gate will judge — not staging's tip.
+   * Empty for a queue with no admissions yet.
+   */
+  admittedPaths: string[];
+  /** P-022: the P-021 repair manifest's legs (red / admitted / green), or [] before P-021 derived one. */
+  legs: FrozenRepairMarkerLeg[];
 }
 
 export function frozenRepairMarkerPath(): string {
@@ -66,6 +86,20 @@ export function projectFrozenRepairMarker(
         ...new Set(queue.failingTests.map(normalizeRepoPath).filter((p) => p.length > 0)),
       ].sort(),
       updatedAtMs: queue.updatedAtMs,
+      admittedPaths: [
+        ...new Set(
+          (queue.admissions ?? [])
+            .flatMap((a) => [...(a.paths ?? []), ...(a.unchanged ?? [])])
+            .map(normalizeRepoPath)
+            .filter((p) => p.length > 0),
+        ),
+      ].sort(),
+      legs: (queue.manifest?.rows ?? []).map((row) => ({
+        legId: row.legId,
+        status:
+          row.status.kind === 'green' ? 'green' : row.status.kind === 'admitted' ? 'admitted' : 'red',
+        subjectPaths: [...new Set(row.subjectPaths.map(normalizeRepoPath).filter((p) => p.length > 0))].sort(),
+      })),
     };
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify(marker), 'utf8');
@@ -83,12 +117,28 @@ export function readFrozenRepairMarker(
     const m = parsed as Record<string, unknown>;
     if (typeof m.candidate !== 'string' || typeof m.repairHead !== 'string') return null;
     if (!Array.isArray(m.failingPaths)) return null;
+    // P-022 fields are tolerated when absent (a marker written before P-022): the guard then
+    // sees an empty ledger, which is the honest reading of a row that recorded no admissions.
+    const strings = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((p): p is string => typeof p === 'string') : [];
+    const legs: FrozenRepairMarkerLeg[] = Array.isArray(m.legs)
+      ? m.legs.flatMap((leg): FrozenRepairMarkerLeg[] => {
+          if (!leg || typeof leg !== 'object') return [];
+          const l = leg as Record<string, unknown>;
+          if (typeof l.legId !== 'string') return [];
+          const status: FrozenRepairMarkerLegStatus =
+            l.status === 'green' ? 'green' : l.status === 'admitted' ? 'admitted' : 'red';
+          return [{ legId: l.legId, status, subjectPaths: strings(l.subjectPaths) }];
+        })
+      : [];
     return {
       candidate: m.candidate,
       repairHead: m.repairHead,
       phase: typeof m.phase === 'string' ? m.phase : 'unknown',
       failingPaths: m.failingPaths.filter((p): p is string => typeof p === 'string'),
       updatedAtMs: typeof m.updatedAtMs === 'number' ? m.updatedAtMs : 0,
+      admittedPaths: strings(m.admittedPaths),
+      legs,
     };
   } catch {
     return null;

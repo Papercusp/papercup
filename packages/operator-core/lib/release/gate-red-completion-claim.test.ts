@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  gateRedCompletionClaimVerdict,
   gateRedCompletionClaimWarning,
   looksLikeGateRedFixClaim,
 } from './gate-red-completion-claim';
 import type { FrozenRepairEditMarker } from './frozen-repair-edit-marker';
 import type { PathContainment } from './judged-sha-containment';
+import { renderAdmitCommand } from './repair-manifest';
 
 const marker: FrozenRepairEditMarker = {
   candidate: 'c'.repeat(40),
@@ -12,6 +14,8 @@ const marker: FrozenRepairEditMarker = {
   phase: 'repair-in-progress',
   failingPaths: ['a/failing.test.ts', 'b/failing.test.ts'],
   updatedAtMs: 1,
+  admittedPaths: [],
+  legs: [],
 };
 
 /** Containment stub: every path in `contained` is carried by the judged sha. */
@@ -148,5 +152,115 @@ describe('gateRedCompletionClaimWarning (P-006)', () => {
       },
     );
     expect(w).toBeUndefined();
+  });
+});
+
+// P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3): the REFUSAL.
+describe('gateRedCompletionClaimVerdict (P-022)', () => {
+  const legs: FrozenRepairEditMarker['legs'] = [
+    { legId: 'test-file:a/failing.test.ts', status: 'red', subjectPaths: ['a/failing.test.ts'] },
+    { legId: 'test-file:b/failing.test.ts', status: 'red', subjectPaths: ['b/failing.test.ts'] },
+    { legId: 'lint-leg:lint:tsc', status: 'red', subjectPaths: ['lib/x.ts'] },
+  ];
+  const withLedger = (admittedPaths: string[], legsOverride = legs): FrozenRepairEditMarker => ({
+    ...marker,
+    admittedPaths,
+    legs: legsOverride,
+  });
+  const claim = (filesChanged?: string[]) => ({ summary: 'Fixed 2 gate reds', filesChanged });
+
+  it('allows a completion that makes no gate claim, whatever the ledger says', () => {
+    const v = gateRedCompletionClaimVerdict({ summary: 'renamed a helper', filesChanged: ['a/failing.test.ts'] }, { marker: withLedger([]) });
+    expect(v).toEqual({ refuse: false, reason: 'no-claim' });
+  });
+
+  it('allows when nothing is frozen — an ordinary commit IS the judged lineage', () => {
+    expect(gateRedCompletionClaimVerdict(claim(['a/failing.test.ts']), { marker: null })).toEqual({ refuse: false, reason: 'no-frozen-queue' });
+  });
+
+  it('REFUSES a gate-red claim whose red-radius paths are not in the admission ledger, naming the exact admit command', () => {
+    const v = gateRedCompletionClaimVerdict(claim(['a/failing.test.ts', 'b/failing.test.ts']), { marker: withLedger([]) });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('unadmitted-paths');
+    expect(v.unadmittedPaths).toEqual(['a/failing.test.ts', 'b/failing.test.ts']);
+    expect(v.judgedSha).toBe(marker.repairHead);
+    // The SAME renderer the P-021 manifest uses, so the refusal and the manifest row agree byte-for-byte.
+    expect(v.admitCommand).toBe(renderAdmitCommand(['a/failing.test.ts', 'b/failing.test.ts']));
+    expect(v.admitCommand).toMatch(/release:repair-queue \{ op: ?'admit'/);
+    expect(v.detail).toContain('REFUSED');
+    expect(v.detail).toContain(v.admitCommand!);
+    expect(v.detail).toContain('No completion record or state transition was written');
+  });
+
+  it('allows when every claimed red-radius path is admitted AND its leg no longer reads red', () => {
+    const admittedLegs = legs.map((l) => (l.subjectPaths[0] === 'lib/x.ts' ? l : { ...l, status: 'admitted' as const }));
+    const v = gateRedCompletionClaimVerdict(claim(['a/failing.test.ts', 'b/failing.test.ts']), {
+      marker: withLedger(['a/failing.test.ts', 'b/failing.test.ts'], admittedLegs),
+    });
+    expect(v).toMatchObject({ refuse: false, reason: 'admitted', admittedPaths: ['a/failing.test.ts', 'b/failing.test.ts'] });
+  });
+
+  it('a path in the ledger whose leg STILL reads red is refused as not-yet-verified, not as unadmitted', () => {
+    const v = gateRedCompletionClaimVerdict(claim(['a/failing.test.ts']), { marker: withLedger(['a/failing.test.ts']) });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('unadmitted-paths');
+    expect(v.detail).toMatch(/admitted but their leg still reads red/);
+  });
+
+  it('the PARTIAL claim — one admitted, one not — is refused for exactly the unadmitted path', () => {
+    const half = legs.map((l) => (l.subjectPaths[0] === 'a/failing.test.ts' ? { ...l, status: 'admitted' as const } : l));
+    const v = gateRedCompletionClaimVerdict(claim(['a/failing.test.ts', 'b/failing.test.ts']), {
+      marker: withLedger(['a/failing.test.ts'], half),
+    });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.unadmittedPaths).toEqual(['b/failing.test.ts']);
+  });
+
+  it('paths outside the red radius are not this bug — allowed with no-relevant-paths', () => {
+    const v = gateRedCompletionClaimVerdict(claim(['docs/README.md']), { marker: withLedger([]) });
+    expect(v).toMatchObject({ refuse: false, reason: 'no-relevant-paths' });
+  });
+
+  it('a prose claim with NO filesChanged while legs are red is refused: paths-required', () => {
+    const v = gateRedCompletionClaimVerdict(claim(), { marker: withLedger([]) });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('paths-required');
+    expect(v.redLegs.map((l) => l.legId)).toEqual(legs.map((l) => l.legId));
+  });
+
+  it('a prose claim with no filesChanged is ALLOWED once no leg is red (pre-P-021 marker or all green)', () => {
+    expect(gateRedCompletionClaimVerdict(claim(), { marker: withLedger([], []) })).toMatchObject({ refuse: false, reason: 'no-relevant-paths' });
+    const green = legs.map((l) => ({ ...l, status: 'green' as const }));
+    expect(gateRedCompletionClaimVerdict(claim(), { marker: withLedger([], green) })).toMatchObject({ refuse: false, reason: 'no-relevant-paths' });
+  });
+
+  it('the gate-red CONDITION item is refused while any manifest leg reads red, whatever the prose says', () => {
+    const v = gateRedCompletionClaimVerdict({ summary: 'closing the streak item' }, { gateRedConditionItem: true, marker: withLedger([]) });
+    expect(v.refuse).toBe(true);
+    if (!v.refuse) throw new Error('unreachable');
+    expect(v.reason).toBe('legs-still-red');
+    expect(v.redLegs).toHaveLength(3);
+    expect(v.detail).toContain('gate-red condition item');
+  });
+
+  it('the gate-red CONDITION item closes once every leg is admitted or green', () => {
+    const done = legs.map((l, i) => ({ ...l, status: i === 0 ? ('green' as const) : ('admitted' as const) }));
+    const v = gateRedCompletionClaimVerdict({ summary: 'closing the streak item' }, { gateRedConditionItem: true, marker: withLedger(['lib/x.ts'], done) });
+    expect(v.refuse).toBe(false);
+  });
+
+  it('normalizes declared paths before matching the radius and the ledger', () => {
+    const admittedLegs = legs.map((l) => ({ ...l, status: 'admitted' as const }));
+    const v = gateRedCompletionClaimVerdict(claim(['./a/failing.test.ts']), { marker: withLedger(['a/failing.test.ts'], admittedLegs) });
+    expect(v).toMatchObject({ refuse: false, reason: 'admitted' });
+  });
+
+  it('fails OPEN on a detector fault, and says so', () => {
+    const broken = { ...withLedger([]), legs: null as unknown as FrozenRepairEditMarker['legs'] };
+    expect(gateRedCompletionClaimVerdict(claim(['a/failing.test.ts']), { marker: broken })).toEqual({ refuse: false, reason: 'detector-fault' });
   });
 });

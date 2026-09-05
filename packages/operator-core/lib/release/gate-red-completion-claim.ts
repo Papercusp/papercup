@@ -24,7 +24,12 @@ import { integrationRoot } from '../release-deploy-launch';
 import {
   normalizeRepoPath,
 } from './frozen-candidate-repair-queue';
-import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-repair-edit-marker';
+import {
+  readFrozenRepairMarker,
+  type FrozenRepairEditMarker,
+  type FrozenRepairMarkerLeg,
+} from './frozen-repair-edit-marker';
+import { renderAdmitCommand } from './repair-manifest';
 
 /**
  * Phrasings that assert gate progress. Kept narrow on purpose: a false positive here
@@ -143,5 +148,193 @@ export function gateRedCompletionClaimWarning(
     };
   } catch {
     return undefined; // fail open — a detector fault must never block a close
+  }
+}
+
+/**
+ * P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3): the REFUSAL
+ * form of the check above.
+ *
+ * The Aug-30 warning proved the claim class is real and that a warning does not stop it —
+ * the false record still enters the ledger and a successor inherits it as fact. D-007 #3
+ * rules that `work_items:complete` on a gate-red condition item, or on any completion whose
+ * prose claims a gate red fixed, REFUSES unless the admission ledger holds the claimed paths
+ * on the current lineage AND the leg reads admitted or green.
+ *
+ * Evidence source: the frozen-repair marker, which the ONE queue write path projects beside
+ * the queue row (`admittedPaths` = admissions[].paths ∪ unchanged; `legs` = the P-021
+ * manifest's statuses). Reading the projection keeps this check synchronous, DB-free and
+ * fail-open on a detector fault, exactly like its sibling — while still answering from the
+ * lineage the gate will judge rather than from staging's tip.
+ *
+ * Silence rules (deliberate): no claim ⇒ allow; no frozen queue ⇒ allow (an ordinary commit
+ * IS the judged lineage); a claim that names only paths outside the red radius ⇒ allow (not
+ * this bug). Everything else is decided, and the refusal names the exact admit command.
+ */
+export type GateRedClaimVerdict =
+  | {
+      refuse: false;
+      reason: 'no-claim' | 'no-frozen-queue' | 'no-relevant-paths' | 'admitted' | 'detector-fault';
+      candidate?: string;
+      judgedSha?: string;
+      admittedPaths?: string[];
+    }
+  | {
+      refuse: true;
+      reason: 'unadmitted-paths' | 'legs-still-red' | 'paths-required';
+      candidate: string;
+      judgedSha: string;
+      /** Claimed paths in the red radius that the admission ledger does NOT carry (or whose leg is still red). */
+      unadmittedPaths: string[];
+      /** Manifest legs still red at the judged lineage. */
+      redLegs: FrozenRepairMarkerLeg[];
+      /** The exact command that lands the unadmitted paths; null when no path is known. */
+      admitCommand: string | null;
+      detail: string;
+    };
+
+export interface GateRedClaimVerdictOptions {
+  /**
+   * The item being completed IS the gate-red condition singleton (`gate-red-streak:<harness>` /
+   * `frozen-repair-convergence:<pipeline>`). Closing it asserts the gate is green, so every
+   * manifest leg must read admitted or green regardless of what the prose says.
+   */
+  gateRedConditionItem?: boolean;
+  /** Injected for tests; omitted means "read the real marker". */
+  marker?: FrozenRepairEditMarker | null;
+}
+
+const legStatusByPath = (legs: readonly FrozenRepairMarkerLeg[]): Map<string, FrozenRepairMarkerLeg['status']> => {
+  const out = new Map<string, FrozenRepairMarkerLeg['status']>();
+  for (const leg of legs) {
+    for (const p of leg.subjectPaths) {
+      const prev = out.get(p);
+      // A path named by two legs is only "done" when BOTH are: red wins, then admitted, then green.
+      if (prev === 'red' || leg.status === 'red') out.set(p, 'red');
+      else if (prev === 'admitted' || leg.status === 'admitted') out.set(p, 'admitted');
+      else out.set(p, 'green');
+    }
+  }
+  return out;
+};
+
+export function gateRedCompletionClaimVerdict(
+  evidence: GateRedClaimEvidence | undefined,
+  opts: GateRedClaimVerdictOptions = {},
+): GateRedClaimVerdict {
+  try {
+    const prosaicClaim = looksLikeGateRedFixClaim(evidence);
+    const conditionItem = opts.gateRedConditionItem === true;
+    if (!prosaicClaim && !conditionItem) return { refuse: false, reason: 'no-claim' };
+
+    const marker = 'marker' in opts ? opts.marker : readFrozenRepairMarker();
+    if (!marker) return { refuse: false, reason: 'no-frozen-queue' };
+
+    const candidate = marker.candidate;
+    const judgedSha = marker.repairHead;
+    const admitted = new Set(marker.admittedPaths.map(normalizeRepoPath).filter((p) => p.length > 0));
+    const statusByPath = legStatusByPath(marker.legs);
+    const redLegs = marker.legs.filter((l) => l.status === 'red');
+    const radius = new Set<string>([
+      ...marker.failingPaths.map(normalizeRepoPath),
+      ...marker.legs.flatMap((l) => l.subjectPaths),
+    ]);
+    radius.delete('');
+
+    const refusalTail =
+      ` The fix may be real, but the gate judges frozen candidate ${candidate.slice(0, 12)} at ` +
+      `${judgedSha.slice(0, 12)} — nothing reaches it until admitted (D-007). After git-sync commits ` +
+      `your edit, run the admit command, then re-send this completion citing the admission. ` +
+      `No completion record or state transition was written.`;
+
+    // Closing the gate-red condition item asserts the WHOLE gate is green: every leg must
+    // read admitted or green at the judged lineage. A pre-P-021 marker (no legs) falls
+    // through to the path check below.
+    if (conditionItem && redLegs.length > 0) {
+      const pathless = redLegs.filter((l) => l.subjectPaths.length === 0);
+      const paths = [...new Set(redLegs.flatMap((l) => l.subjectPaths))].sort();
+      return {
+        refuse: true,
+        reason: 'legs-still-red',
+        candidate,
+        judgedSha,
+        unadmittedPaths: paths,
+        redLegs,
+        admitCommand: paths.length ? renderAdmitCommand(paths) : null,
+        detail:
+          `⛔ GATE-RED CLOSE REFUSED: this is the gate-red condition item, and ${redLegs.length} ` +
+          `manifest leg(s) still read red-at-candidate on the judged lineage: ` +
+          `${redLegs.map((l) => l.legId).join(', ')}.` +
+          (paths.length ? ` Their subject paths: ${paths.join(', ')}.` : '') +
+          (pathless.length ? ` ${pathless.length} leg(s) name no subject path — admit the files you fixed by hand.` : '') +
+          refusalTail,
+      };
+    }
+
+    const declared = [
+      ...new Set(
+        (evidence?.filesChanged ?? [])
+          .filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
+          .map(normalizeRepoPath)
+          .filter((p) => p.length > 0),
+      ),
+    ].sort();
+    const relevant = declared.filter((p) => radius.has(p));
+
+    if (relevant.length === 0) {
+      // A prose gate-progress claim with NO paths in the red radius while legs are still red:
+      // there is nothing the ledger can hold, so the claim is unfalsifiable as written. Ask
+      // for the paths rather than let "fixed the gate reds" enter the record on its own.
+      if (prosaicClaim && declared.length === 0 && redLegs.length > 0) {
+        const paths = [...new Set(redLegs.flatMap((l) => l.subjectPaths))].sort();
+        return {
+          refuse: true,
+          reason: 'paths-required',
+          candidate,
+          judgedSha,
+          unadmittedPaths: paths,
+          redLegs,
+          admitCommand: paths.length ? renderAdmitCommand(paths) : null,
+          detail:
+            `⛔ GATE-PROGRESS CLAIM REFUSED: this completion asserts gate-red progress but names no ` +
+            `filesChanged, while ${redLegs.length} manifest leg(s) still read red on the judged lineage ` +
+            `(${redLegs.map((l) => l.legId).join(', ')}). Name the repo-relative paths you fixed in ` +
+            `filesChanged so the claim can be checked against the admission ledger.` +
+            refusalTail,
+        };
+      }
+      return { refuse: false, reason: 'no-relevant-paths', candidate, judgedSha, admittedPaths: [...admitted].sort() };
+    }
+
+    const unadmittedPaths = relevant.filter((p) => !admitted.has(p) || statusByPath.get(p) === 'red');
+    if (unadmittedPaths.length === 0) {
+      return { refuse: false, reason: 'admitted', candidate, judgedSha, admittedPaths: relevant };
+    }
+    const notInLedger = unadmittedPaths.filter((p) => !admitted.has(p));
+    const legStillRed = unadmittedPaths.filter((p) => admitted.has(p));
+    return {
+      refuse: true,
+      reason: 'unadmitted-paths',
+      candidate,
+      judgedSha,
+      unadmittedPaths,
+      redLegs,
+      admitCommand: renderAdmitCommand(unadmittedPaths),
+      detail:
+        `⛔ GATE-PROGRESS CLAIM REFUSED: this completion asserts gate-red progress, but ` +
+        `${unadmittedPaths.length} of the red-radius path(s) it names ` +
+        (notInLedger.length
+          ? `are NOT in the admission ledger on the judged lineage (${notInLedger.join(', ')})`
+          : '') +
+        (notInLedger.length && legStillRed.length ? ' and ' : '') +
+        (legStillRed.length
+          ? `are admitted but their leg still reads red (${legStillRed.join(', ')} — the re-verify has not passed yet; wait for the gate's next tick)`
+          : '') +
+        `. Admit with: ${renderAdmitCommand(unadmittedPaths)}.` +
+        refusalTail,
+    };
+  } catch {
+    // A detector fault must never block a close (EI-24) — but say so, rather than reading as "allowed".
+    return { refuse: false, reason: 'detector-fault' };
   }
 }

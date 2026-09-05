@@ -152,7 +152,12 @@ import {
   type TestRunLedgerRow,
   type TestingRunInvocation,
 } from './test-result-binding';
-import { gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
+import {
+  gateRedCompletionClaimVerdict,
+  gateRedCompletionClaimWarning,
+} from '../../release/gate-red-completion-claim';
+import { GATE_RED_STREAK_CONDITION_PREFIX } from '../../work-items-admission';
+import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionable-conditions';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -2870,6 +2875,46 @@ async function completeOne(
   }
   if (selfReviewError) {
     refuseGate(selfReviewError, { selfReviewError });
+  }
+
+  // ---- P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3) ----
+  // A completion that claims a gate red fixed — by its prose, or because the item IS the
+  // gate-red condition singleton — is refused unless the admission ledger holds the claimed
+  // paths on the judged lineage and the leg reads admitted or green. The Aug-30 P-006 check
+  // below the write stays as the WARNING for the containment nuance; this is the gate that
+  // keeps the false claim out of the record in the first place. The identity read is
+  // best-effort: when it cannot be answered the prose matcher still applies.
+  {
+    let gateRedConditionItem = false;
+    try {
+      const rows = (await getOrgPg().sql.unsafe(
+        `SELECT condition_key
+           FROM harness_shared.work_items
+          WHERE feature_id = $1 AND harness_slug = $2 AND workspace_id = $3
+          LIMIT 1`,
+        [it.id, existing.harness ?? '', activeWorkspaceId()],
+      )) as unknown;
+      const key = Array.isArray(rows) ? (rows[0] as { condition_key?: unknown } | undefined)?.condition_key : null;
+      gateRedConditionItem =
+        typeof key === 'string' &&
+        (key.startsWith(GATE_RED_STREAK_CONDITION_PREFIX) ||
+          key.startsWith(FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX));
+    } catch {
+      /* identity read is advisory — the prose matcher below still decides */
+    }
+    const gateRedVerdict = gateRedCompletionClaimVerdict(completionEvidenceForGate, { gateRedConditionItem });
+    if (gateRedVerdict.refuse) {
+      refuseGate(`refusing to complete ${it.id}: ${gateRedVerdict.detail}`, {
+        gateRedClaimRefusal: {
+          reason: gateRedVerdict.reason,
+          candidate: gateRedVerdict.candidate,
+          judgedSha: gateRedVerdict.judgedSha,
+          unadmittedPaths: gateRedVerdict.unadmittedPaths,
+          redLegs: gateRedVerdict.redLegs.map((l) => l.legId),
+          admitCommand: gateRedVerdict.admitCommand,
+        },
+      });
+    }
   }
 
   // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------

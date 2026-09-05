@@ -8,6 +8,8 @@ const marker: FrozenRepairEditMarker = {
   phase: 'repair-in-progress',
   failingPaths: ['a/failing.test.ts'],
   updatedAtMs: 1,
+  admittedPaths: [],
+  legs: [],
 };
 
 describe('gateClaimCarryLint (P-007)', () => {

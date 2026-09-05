@@ -2576,6 +2576,17 @@ export interface ChangeInCandidate {
    * `markerJudging` — see its doc-comment below.
    */
   judgingContainsPath?: boolean | null;
+  /**
+   * P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3): does the
+   * frozen queue's ADMISSION LEDGER carry this path on the judged lineage? `true` = an
+   * admission named it (changed or unchanged-identical); `false` = a queue is frozen and no
+   * admission names it — the lever is `release:repair-queue { op:'admit', paths:[…] }`;
+   * `null` / absent = no frozen queue, so an ordinary commit IS the judged lineage and the
+   * question does not arise. Sits beside `judgingContainsPath`, which compares BLOBS: the
+   * two disagree exactly when a later edit (yours or a peer's) moved staging's content
+   * after the admission, and that disagreement is the diagnosis.
+   */
+  admittedToLineage?: boolean | null;
   /** The commit a checkpoint fired right now would judge (post quiet-cut). */
   nextCandidateSha: string | null;
   nextContainsPath: boolean | null;
@@ -2820,6 +2831,29 @@ function inferredJudgingContainmentRefusal(): RefusedAnswer {
  * verdict. Separated from the git/systemd reads so the phrasing — which is the whole
  * deliverable here — is unit-testable without a repo.
  */
+import { renderAdmitCommand } from './release/repair-manifest';
+
+/**
+ * P-022 (D-007 #3): is `relPath` carried by the frozen queue's admission ledger? Pure over
+ * the diagnostic's `admissions` so the tool, the cell and the completion guard all answer
+ * from the same rows. `null` when there is no frozen queue (the question does not arise).
+ */
+export function admittedToLineageFor(
+  queue:
+    | { admissions?: readonly { paths?: readonly string[]; unchanged?: readonly string[] }[] | null }
+    | null
+    | undefined,
+  relPath: string | null,
+): boolean | null {
+  if (!queue || !relPath) return null;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
+  const target = norm(relPath);
+  if (!target) return null;
+  return (queue.admissions ?? []).some((a) =>
+    [...(a.paths ?? []), ...(a.unchanged ?? [])].some((p) => norm(p) === target),
+  );
+}
+
 export function evaluateChangeInCandidate(args: {
   relPath: string | null;
   candidates: GateCandidates;
@@ -2828,6 +2862,39 @@ export function evaluateChangeInCandidate(args: {
   markerJudging?: MarkerContainment | null;
   markerNext?: MarkerContainment | null;
   /** P-011: the submodule the path lives in, when it does — carried through verbatim. */
+  submodule?: ChangeInCandidate['submodule'];
+  /** P-022: the admission-ledger verdict for `relPath` (`admittedToLineageFor`); omitted = no queue. */
+  admittedToLineage?: boolean | null;
+}): ChangeInCandidate {
+  const core = evaluateChangeInCandidateCore(args);
+  const admittedToLineage = args.admittedToLineage;
+  if (admittedToLineage === undefined || admittedToLineage === null || !args.relPath) return core;
+  // The ledger verdict only ADDS to the blob verdict: it never overrides a refusal or a
+  // marker verdict, it explains the one case the blob compare cannot — content that moved
+  // after (or never went through) an admission — and names the D-007 lever.
+  const lever = renderAdmitCommand([args.relPath]);
+  const clause =
+    admittedToLineage === false
+      ? core.judgingContainsPath === true
+        ? ` The judged blob happens to equal staging's, but NO admission names this path — the frozen queue's ledger does not carry it (D-007): ${lever}.`
+        : ` Not in the admission ledger on the judged lineage either — the lever is ${lever} (after git-sync commits the edit).`
+      : core.judgingContainsPath === false
+        ? ` An admission DOES carry this path on the lineage, so the mismatch is a LATER edit (yours or a peer's) that moved staging's content after it — admit again only if that edit is yours.`
+        : ' Admitted to the judged lineage (D-007 ledger).';
+  return {
+    ...core,
+    admittedToLineage,
+    detail: core.detail ? `${core.detail}${clause}` : clause.trim(),
+  };
+}
+
+function evaluateChangeInCandidateCore(args: {
+  relPath: string | null;
+  candidates: GateCandidates;
+  judging: PathContainment | null;
+  next: PathContainment | null;
+  markerJudging?: MarkerContainment | null;
+  markerNext?: MarkerContainment | null;
   submodule?: ChangeInCandidate['submodule'];
 }): ChangeInCandidate {
   const { relPath, candidates, judging, next } = args;
@@ -6203,6 +6270,9 @@ export async function gitPipelinePosition(
       markerJudging: candidates.judgingSha ? (markerBySha.get(candidates.judgingSha) ?? null) : null,
       markerNext: candidates.nextCandidateSha ? (markerBySha.get(candidates.nextCandidateSha) ?? null) : null,
       submodule: submoduleField,
+      // P-022: the ledger verdict rides beside the blob verdict — same diagnostic the
+      // gate-owner brief and /admin/git read, so the three cannot disagree about "admitted".
+      admittedToLineage: admittedToLineageFor(snap.gate?.repairQueue ?? null, superRelPath),
     });
     // P-011: a submodule path whose containment could NOT be measured (gitlink unreadable,
     // submodule not checked out) is hoisted on the containment leg with the classifier's

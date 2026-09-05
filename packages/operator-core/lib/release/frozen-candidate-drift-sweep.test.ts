@@ -8,6 +8,8 @@ const marker: FrozenRepairEditMarker = {
   phase: 'repair-in-progress',
   failingPaths: ['a/failing.test.ts', 'b/failing.test.ts'],
   updatedAtMs: 1,
+  admittedPaths: [],
+  legs: [],
 };
 
 describe('detectFrozenCandidateDrift (P-008) — the attestation leg', () => {

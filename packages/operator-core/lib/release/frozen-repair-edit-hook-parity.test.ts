@@ -65,6 +65,8 @@ const marker: FrozenRepairEditMarker = {
   phase: 'repair-in-progress',
   failingPaths: ['packages/operator-core/lib/release/x.test.ts'],
   updatedAtMs: 1,
+  admittedPaths: [],
+  legs: [],
 };
 
 describe('hook/module warning parity', () => {
