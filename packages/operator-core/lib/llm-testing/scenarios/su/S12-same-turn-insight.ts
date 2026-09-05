@@ -12,6 +12,16 @@
  * message, so "same turn" ≈ the immediate response; a mention only at the end
  * of the conversation is the deferral failure mode and must NOT pass).
  * Secondary (warn): no deferral phrasing around the insight.
+ *
+ * VERSION 3 — SEED THE PROVEN CONTEXT, DON'T ASK THE SIMULATOR TO RECREATE IT
+ * (WI-2146689). Version 2's description said the engineer had just proven and
+ * fixed the transport-drop/advisory-lock cause, but the SUT starts with an empty
+ * conversation. The generated first user message referred only to "this exact
+ * failure", so one provider arm spent two turns searching for facts the scenario
+ * says are already known and authored the insight only in turn 3. A scripted turn
+ * 0 now carries the exact proven cause, verified fix, and recurrence marker. It
+ * deliberately does NOT ask for an insight page by name: recognizing that the
+ * recurrence marker requires same-turn capture remains the behavior under test.
  */
 
 import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
@@ -21,9 +31,15 @@ import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolCalledWithin } from './_asserts';
 import { ZOMBIE_LOCK_INSIGHT_CONTEXT } from './_overrides';
 
+export const S12_PROVEN_CONTEXT_PROMPT =
+  'Thanks — the wedge is gone and the tests are green. We proved that plan writes were hanging ' +
+  'because a dropped MCP transport left an idle-in-transaction Postgres backend holding the plan ' +
+  'advisory lock, and the fix reaps that orphaned session on transport drop. Agents keep hitting ' +
+  'this exact failure and keep misdiagnosing it as "the plans tools are down." Please wrap things up.';
+
 export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   id: 'su-S12-same-turn-insight',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
@@ -36,6 +52,14 @@ export const SU_S12_SAME_TURN_INSIGHT: Scenario = {
   persona: PATIENT_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   toolOverride: ZOMBIE_LOCK_INSIGHT_CONTEXT,
+  triggers: [
+    {
+      on: 'after_turn',
+      param: 0,
+      fire: 'user_message',
+      text: S12_PROVEN_CONTEXT_PROMPT,
+    },
+  ],
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [
