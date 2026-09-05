@@ -41,18 +41,28 @@ describe('resolveCupboardBaseUrl', () => {
   });
 });
 
-describe('the default host must be reachable (cupboard-dead-default-host-2026-07-19)', () => {
-  it('does not default to the branded host while it is unbound', () => {
-    // cupboard.papercusp.com is NOT wired to the worker: the [[routes]]
-    // custom_domain block in apps/operator-public/wrangler.toml is commented
-    // out, and DNS points at the papercusp.com apex. Defaulting to it means
-    // every unconfigured process hangs until timeout, then 503s.
+describe('the shipped default must not carry account identity (WI-38321)', () => {
+  it('defaults to the branded host', () => {
+    expect(DEFAULT_CUPBOARD_URL).toBe(BRANDED_CUPBOARD_URL);
+  });
+
+  it('never defaults to an account-subdomain origin, whatever it is set to', () => {
+    // A *.workers.dev origin embeds the Cloudflare ACCOUNT subdomain — here, the
+    // owner's GitHub handle — and this constant is compiled into serve.mjs and
+    // spa/assets/base-url-*.js in every desktop bundle, which is what put it in
+    // front of the release identity gate (WI-38233 → WI-38321).
     //
-    // When DNS is genuinely repointed at the worker, flip DEFAULT_CUPBOARD_URL
-    // back to BRANDED_CUPBOARD_URL and DELETE this test in the same change —
-    // verified by `curl https://cupboard.papercusp.com/listings` returning 200
-    // rather than hanging.
-    expect(DEFAULT_CUPBOARD_URL).not.toBe(BRANDED_CUPBOARD_URL);
+    // Asserted against the VALUE's shape, not against one known-bad literal, so
+    // a different account or a renamed worker cannot quietly reintroduce it.
+    expect(new URL(DEFAULT_CUPBOARD_URL).hostname.endsWith('.workers.dev')).toBe(false);
+  });
+
+  it('does not hardcode any account-subdomain origin as a fallback either', () => {
+    // The tempting "fix" for a local hang is to reintroduce the worker origin as
+    // a fallback constant. That ships the handle again just as surely as the
+    // default did. A local network exception belongs in PAPERCUSP_CUPBOARD_URL,
+    // which resolveCupboardBaseUrl() already honours.
+    expect(BRANDED_CUPBOARD_URL.includes('workers.dev')).toBe(false);
   });
 
   it('is a well-formed https origin with no trailing slash or path', () => {

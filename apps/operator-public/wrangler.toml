@@ -3,18 +3,27 @@
 # Plan: papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24 (P-051a/b).
 # v5 §10 — Cupboard server architecture.
 #
-# Served at https://papercusp-cupboard.aviynw.workers.dev — that workers.dev
-# origin is the ONLY reachable one today and is what the operator defaults to
+# Served at https://cupboard.papercusp.com — the branded host is LIVE and bound
+# to this Worker, and is what the operator now defaults to
 # (packages/operator-core/lib/cupboard/base-url.ts). The desktop operator's
 # Cupboard UI (Phase 9 P-052, already shipped) reads PAPERCUSP_CUPBOARD_URL and
 # falls back to that same default.
 #
-# ⚠ The branded hostnames in this file are ASPIRATIONAL, not live:
-#   - cupboard.papercusp.dev  — does not resolve at all.
-#   - cupboard.papercusp.com  — resolves to the papercusp.com apex A record
-#     (18.204.152.241, NOT Cloudflare); TCP :443 connects but TLS never
-#     completes, so callers hang until timeout and report an opaque HTTP 503.
-# See plan cupboard-dead-default-host-2026-07-19.
+# ⚠ EARLIER REVISIONS OF THIS FILE SAID THE OPPOSITE. They claimed the branded
+# hostnames were "ASPIRATIONAL, not live", that the papercusp.com zone was NOT on
+# Cloudflare, and that cupboard.papercusp.com resolved to a dead apex A record at
+# 18.204.152.241. That was measured from the papercusp dev box and is FALSE of
+# the world (WI-38321, 2026-09-05):
+#   - The zone IS on Cloudflare — NS itzel/john.ns.cloudflare.com — and cupboard,
+#     apex and www resolve ONLY to 104.21.73.140 / 172.67.145.145 via both
+#     Cloudflare-DoH and Google-DoH. 18.204.152.241 is in NO record of the zone.
+#   - Fetched from an EXTERNAL vantage, https://cupboard.papercusp.com/listings
+#     returns a body byte-identical in size to this Worker's own origin.
+# The dev box silently blackholes TLS to every papercusp-family hostname by SNI
+# (EI-16742; agent-insights/su-box-sni-tls-blackhole-not-outage), which fabricates
+# exactly the "connects but never completes TLS" symptom quoted above. Do NOT
+# re-derive this file's DNS claims from a curl run on that box: it cannot tell
+# "the host is down" from "this box blocks the name", and it fails toward "down".
 #
 # Bindings (run once before first deploy):
 #   wrangler d1 create papercusp-cupboard
@@ -26,22 +35,18 @@
 #   GITHUB_CLIENT_SECRET  — same
 #   IP_HASH_PEPPER        — 32 random bytes, base64
 #
-# Domain setup — NOT DONE, and it is a real outage source (see the ⚠ above).
-# The branded host is currently unbound, so anything defaulting to it hangs.
-# To actually bind it (owner action — needs registrar + Cloudflare access):
-#   1. Add the papercusp.com ZONE to the Cloudflare account holding this Worker,
-#      and point the registrar's nameservers at Cloudflare. Today the zone is
-#      NOT on Cloudflare — apex, www and cupboard all resolve to 18.204.152.241
-#      and hang on TLS, which is the whole bug.
-#   2. Uncomment the [[routes]] custom_domain block below. Wrangler then creates
-#      the DNS record and binds the Worker on `wrangler deploy` — no dashboard
-#      step. Keep it COMMENTED until step 1 is done: `wrangler deploy` FAILS if
-#      the zone is not in the account, so uncommenting early breaks deploys.
-#   3. `wrangler deploy`, then verify the host answers rather than hangs:
-#        curl -sS -o /dev/null -w '%{http_code}' https://cupboard.papercusp.com/listings
-#   4. Only then flip DEFAULT_CUPBOARD_URL in
-#      packages/operator-core/lib/cupboard/base-url.ts back to the branded host
-#      and drop the guard test that pins it away from there.
+# Domain setup — steps 1, 3 and 4 are DONE. The zone is on Cloudflare, the host
+# serves this Worker, and DEFAULT_CUPBOARD_URL is the branded host.
+#
+# Step 2 — the [[routes]] custom_domain block below — is still commented, and
+# that is a deliberate gap, not an oversight: the binding exists (proven by the
+# byte-identical response) but was made out-of-band, so it is not declarative and
+# nothing in this repo recreates it. Uncommenting is the durable fix AND is
+# unsafe to do blind, because `wrangler deploy` FAILS outright if the zone is not
+# in the same Cloudflare account as this Worker — which is exactly the fact that
+# cannot be checked from the dev box. Whoever has account access should confirm
+# the zone is in this account, then uncomment it and deploy; until then the
+# branded host depends on an out-of-band record nobody here can restore.
 name = "papercusp-cupboard"
 main = "src/index.ts"
 compatibility_date = "2026-04-01"

@@ -5,59 +5,64 @@
  *   - PAPERCUSP_CUPBOARD_URL env var if set (override / self-host)
  *   - else DEFAULT_CUPBOARD_URL — the origin the worker actually serves
  *
- * ⚠ The default is deliberately the workers.dev origin, NOT the branded
- * `cupboard.papercusp.com` (cupboard-dead-default-host-2026-07-19). The branded
- * hostname resolves to the `papercusp.com` apex A record (18.204.152.241 — not
- * Cloudflare); it accepts TCP :443 but never completes the TLS handshake, so
- * every request against it HANGS until the caller's timeout and surfaces as an
- * opaque `HTTP 503` ("Couldn't reach the Cupboard server"). It was never bound
- * to the worker declaratively — the `[[routes]] custom_domain` block in
- * apps/operator-public/wrangler.toml is commented out — so it only ever worked
- * while someone had wired it by hand in the Cloudflare dashboard.
+ * ⚠⚠ DO NOT "FIX" A LOCAL TIMEOUT HERE BY POINTING THE DEFAULT BACK AT A
+ * workers.dev ORIGIN. From this dev box, every papercusp-family hostname is
+ * silently blackholed at the TLS ClientHello — see the normative insight
+ * agent-insights/su-box-sni-tls-blackhole-not-outage (EI-16742). A local probe
+ * therefore CANNOT distinguish "the Cupboard is down" from "this box blocks the
+ * name", and it fails in the direction that looks like a real outage. That
+ * confusion has now produced three separate wrong conclusions about this very
+ * constant, so verify from OUTSIDE this box or not at all.
  *
- * A dead DEFAULT is far worse than an unbranded one: every process WITHOUT an
- * env override (a packaged desktop app, a fresh service launch) silently ate a
- * full timeout on every Cupboard call. Restore BRANDED_CUPBOARD_URL as the
- * default once DNS actually points at the worker — verify with
- *   curl -sS -o /dev/null -w '%{http_code}' https://cupboard.papercusp.com/listings
- * returning 200 rather than hanging. base-url.test.ts pins the default against
- * the known-unreachable host so it cannot silently drift back.
+ * The discriminator, if you need to re-establish it (same IP, same second, only
+ * the SNI differs):
+ *   openssl s_client -connect 104.21.73.140:443 -servername cloudflare.com
+ *       → CONNECTION ESTABLISHED
+ *   openssl s_client -connect 104.21.73.140:443 -servername cupboard.papercusp.com
+ *       → silent drop, no handshake, no reset
+ * Port 80 completes TCP in ~50ms and then hangs on the `Host:` header, which is
+ * the same filter seen from the other side. `curl` reports `conn=0.000000`,
+ * which reads like "cannot connect" but is really "the handshake was eaten".
  *
- * ⚠⚠ 2026-09-05 (WI-38321) — A SINGLE 200 IS NOT ENOUGH TO FLIP THIS. The
- * branded host's DNS FLAPS between the Cloudflare edge and the dead apex, so the
- * verification curl above passes and fails within the same few minutes. Measured
- * inside one 6-minute window:
- *   09:27 — 1.1.1.1 and 8.8.8.8 both returned Cloudflare (104.21.73.140 /
- *           172.67.145.145); GET /listings returned 200 in 0.58s with a body
- *           BYTE-IDENTICAL to the workers.dev origin's (46,107 bytes) — which
- *           does prove the custom domain is really bound to THIS worker.
- *   09:33 — 1.1.1.1 returned 18.204.152.241 (the dead apex) while this box's
- *           local resolver still returned Cloudflare; curl -4 hung the full 8s,
- *           curl -6 refused in 2ms, and Node's fetch timed out at 8s. The
- *           workers.dev origin answered 200 in 521ms throughout.
- * So the remaining fix is NARROWER than "move the worker to a custom domain"
- * (that is already done): it is to REMOVE the stale 18.204.152.241 A record from
- * the papercusp.com zone so resolution stops alternating. Until a resolver-side
- * check is stable across repeated probes — not one lucky 200 — flipping this
- * default re-ships the exact hanging-default outage this note exists to prevent.
- * Do not trust a check run from this dev box alone: its LAN is independently
- * known to poison papercusp.com names, so local success and local failure are
- * both uninformative about real users.
+ * WHAT IS ACTUALLY TRUE OF THE BRANDED HOST (verified 2026-09-05, WI-38321):
+ *   - The papercusp.com zone is on Cloudflare NS (itzel/john.ns.cloudflare.com);
+ *     `cupboard`, the apex and `www` resolve ONLY to 104.21.73.140 /
+ *     172.67.145.145 via Cloudflare-DoH and Google-DoH alike. The 18.204.152.241
+ *     "dead apex" cited by earlier revisions of this comment is in NO record of
+ *     the real zone — it is what this box's port-53 path returns, not the zone.
+ *   - Fetched from an EXTERNAL vantage, https://cupboard.papercusp.com/listings
+ *     returns a body byte-for-byte the size of the worker's own origin response,
+ *     so the custom domain is genuinely bound to THIS worker.
+ *   - EI-12991 closed on the same finding: "both the safe default and branded
+ *     endpoint are reachable".
+ *
+ * WORKING ON THIS BOX: the Cupboard will not answer here, by design of the local
+ * filter and nothing else. Set PAPERCUSP_CUPBOARD_URL to the worker's own
+ * origin in gitignored local config (.env.local) — local config is the right
+ * home for a local network exception. It must NOT come back into this file: the
+ * worker origin embeds the Cloudflare account subdomain, and that is the
+ * identity string this default exists to keep out of shipped bundles (WI-38233,
+ * WI-38321). Anything hardcoded here ships to every user.
  */
 
 /**
- * The branded hostname. NOT reachable today (see the note above) — kept named
- * so the intended canonical host stays discoverable, and so the guard test can
- * assert we are not defaulting to it while it is dead.
+ * The canonical branded hostname, bound to the Cupboard worker via the
+ * `[[routes]] custom_domain` entry in apps/operator-public/wrangler.toml.
+ *
+ * It carries no account identity, which is the whole point: the worker's own
+ * *.workers.dev origin embeds the Cloudflare account subdomain, so defaulting to
+ * that origin compiled the owner's GitHub handle into serve.mjs and
+ * spa/assets/base-url-*.js in every desktop bundle (WI-38233 accepted this as a
+ * disclosed mitigation; WI-38321 is the fix).
  */
 export const BRANDED_CUPBOARD_URL = 'https://cupboard.papercusp.com';
 
 /**
- * The origin the Cupboard worker actually serves (verified 2026-07-19: 200 in
- * ~0.3s for both /listings and /listings/:id; re-verified 2026-09-05: 200 in
- * ~0.5s from both curl and Node while the branded host was timing out).
+ * What an unconfigured process talks to. Deliberately the branded host — see the
+ * header note before changing it, and in particular before "fixing" a hang you
+ * observed from this dev box.
  */
-export const DEFAULT_CUPBOARD_URL = 'https://papercusp-cupboard.aviynw.workers.dev';
+export const DEFAULT_CUPBOARD_URL = BRANDED_CUPBOARD_URL;
 
 export function resolveCupboardBaseUrl(): string {
   const env = process.env.PAPERCUSP_CUPBOARD_URL;
