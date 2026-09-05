@@ -520,6 +520,20 @@ describe('terminal writes structurally require an assumption declaration (P-017 
     ).toBe(true);
   });
 
+  it('accepts the server-stamped assumptions object on a read→retry', () => {
+    expect(
+      parse({
+        id: 'WI-1',
+        state: 'done',
+        completionRef: REF,
+        assumptions: {
+          declared: 'none',
+          resolvedAt: '2026-09-05T21:00:00.000Z',
+        },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts one or more facts:assert keys', () => {
     expect(
       parse({ id: 'WI-1', state: 'done', completionRef: REF, assumptions: ['gate-red-is-flake'] }).success,
