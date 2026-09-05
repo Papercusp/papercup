@@ -281,7 +281,23 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({
-    scope: z.enum(FACT_SCOPES),
+    // EI-21149876417311061 (+ the `scope: Invalid option` family: EI-21161865091989242,
+    // EI-21320781883732426, EI-22368562068872107) — the ONE filing shape in this cluster
+    // that no `argRedirects` entry can ever reach. `scope` IS a declared key, so the
+    // rejection is an invalid ENUM VALUE, and `invalidInputCorrections` only runs over
+    // UNRECOGNIZED KEYS — a redirect authored here would never fire. The teaching has to
+    // live on the field itself, which is the only surface the caller sees.
+    //
+    // The measured guess is `scope: 'plan'`, and it is a reasonable one: facts are folded
+    // into plan-bound briefs, plan slugs address nearly everything else in this catalog,
+    // and the bare "expected one of workspace|role|owner|harness|work_item" names the
+    // five without saying that plan-scoped standing state has a DIFFERENT home. Naming
+    // that home is what stops the retry loop.
+    scope: z
+      .enum(FACT_SCOPES)
+      .describe(
+        `Which scope's live facts to list — exactly one of ${FACT_SCOPES.join(' | ')}. There is deliberately NO \`plan\` scope: a standing claim that binds a PLAN belongs in that plan's Decisions (plans:add-decision), which is addressable and auditable afterwards, where a fact is not. For a plan-lane conclusion that must ride every orient, scope it to the \`harness\` the plan lives in, or to the \`work_item\` executing it.`,
+      ),
     scopeRef: z.string().max(120).optional(),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
