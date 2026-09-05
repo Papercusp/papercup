@@ -36,6 +36,11 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
 
 import pgQueryTool, { PG_QUERY_MODE } from './pg_query';
 import { PgReadQueryTimeoutError } from '../../pg-read-query';
+// EI-21596258009994255: the refusal text a caller actually reads is RENDERED by
+// formatIssues, which resolves an `invalid_union` down to the closest branch's own
+// sub-issues. Asserting the schema merely *carries* a message would pass while the
+// caller still saw Zod's generic line, so the assertions below render it.
+import { formatIssues } from '@papercusp/tooldef';
 
 const OK_RESULT = { rowCount: 1, truncated: false, fields: ['x'], elapsedMs: 3, rows: [{ x: 1 }] };
 
@@ -870,5 +875,65 @@ describe('dev:pg_query — result envelope is a discriminated union (P-011)', ()
     // Guard the premise too: if these ever genuinely converge, the union above is
     // no longer the right shape and this test should be the thing that says so.
     expect(Object.keys(one)).not.toEqual(Object.keys(list));
+  });
+});
+
+/**
+ * EI-21596258009994255 — `describe` with the WRONG VALUE.
+ *
+ * `describe` is DECLARED, so none of the `argRedirects` machinery fires:
+ * `invalidInputCorrections` returns early unless a key was UNRECOGNIZED. The measured
+ * refusal was the bare Zod line "describe: Invalid input: expected string, received
+ * object" — it names the type and never the string to send, and the reporting caller
+ * had passed `{ schema, table }`, which is the natural shape when a relation is thought
+ * of as two parts.
+ */
+describe('dev:pg_query `describe` value shape (EI-21596258009994255)', () => {
+  /** What a caller actually reads back for these args. */
+  const refusalFor = (input: unknown): string => {
+    const parsed = pgQueryTool.args.safeParse(input);
+    if (parsed.success) throw new Error(`expected a refusal, got acceptance: ${JSON.stringify(parsed.data)}`);
+    return formatIssues(parsed.error.issues as never, input);
+  };
+
+  it('CONTROL: the correct dotted string is accepted — the constraint is real, not merely re-worded', () => {
+    const parsed = pgQueryTool.args.safeParse({ describe: 'harness_shared.work_items' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('names the dotted STRING to send when the caller passes { schema, table }', () => {
+    const rendered = refusalFor({ describe: { schema: 'harness_shared', table: 'work_items' } });
+    // The correction has to carry a copyable value, not just a type name.
+    expect(rendered).toContain('"harness_shared.work_items"');
+    expect(rendered).toMatch(/not an object/i);
+    // The glob form is the reason this is NOT widened to accept the object: an object
+    // cannot express it. If that stops being true the widening argument changes, so the
+    // reasoning is pinned here rather than left in a comment.
+    expect(rendered).toContain('"harness_shared.*"');
+  });
+
+  it('POSITIVE CONTROL: the generic Zod line is no longer what the caller sees', () => {
+    // Without the substitution this is EXACTLY the text that was measured in the field.
+    // If the custom error is dropped or stops reaching formatIssues' union-leaf
+    // resolution, this assertion is the one that fails.
+    const rendered = refusalFor({ describe: { schema: 'harness_shared', table: 'work_items' } });
+    expect(rendered).not.toMatch(/expected string, received object/);
+  });
+
+  it('covers the other non-string shapes a caller reaches for', () => {
+    for (const value of [['harness_shared.work_items'], 42, { relation: 'work_items' }]) {
+      expect(refusalFor({ describe: value })).toContain('"harness_shared.work_items"');
+    }
+  });
+
+  it('the published arg description states the same shape, so the fix is not refusal-only', () => {
+    // A caller who reads the schema before calling must not have to trigger the refusal
+    // to learn the form; these two texts drifting apart is the failure this pins.
+    const schema = z.toJSONSchema(pgQueryTool.args as never, { io: 'input' }) as { anyOf?: Array<{ properties?: Record<string, { description?: string }> }> };
+    const described = (schema.anyOf ?? [])
+      .map((branch) => branch.properties?.describe?.description)
+      .filter((d): d is string => typeof d === 'string' && d.length > 0);
+    expect(described.length).toBeGreaterThan(0);
+    expect(described.some((d) => d.includes('"harness_shared.work_items"'))).toBe(true);
   });
 });

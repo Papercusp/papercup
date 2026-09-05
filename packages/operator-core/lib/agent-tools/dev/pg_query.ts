@@ -109,6 +109,36 @@ function canonicalRelationRedirect(ref: string): string | null {
 }
 
 /**
+ * EI-21596258009994255: `describe` is DECLARED, so a caller who sends it with the
+ * wrong VALUE gets none of the `argRedirects` machinery — `invalidInputCorrections`
+ * returns early unless a key was unrecognized. The measured refusal was the bare Zod
+ * line "describe: Invalid input: expected string, received object", which names the
+ * type and not the string to send; the reporting caller had passed
+ * `describe: { schema, table }`, the natural shape when a relation is thought of as
+ * two parts. Nothing on the surface showed the qualified form, because the arg's own
+ * text mentioned `schema.table` only inside a reference to the psql meta-command and
+ * then offered "a bare table name" as the accepted form.
+ *
+ * A Zod-level `error` is the right seam: it replaces the leaf message `formatIssues`
+ * already renders (verified against the live renderer, which resolves an
+ * `invalid_union` down to the closest branch's own sub-issues), so it reaches the
+ * caller at the moment of refusal without a new mechanism. It is NOT part of the
+ * published JSON Schema, so it costs zero prompt weight — dev:pg_query has 46 chars
+ * of headroom against the 1500 budget, so a `description`/`chaining` sentence was not
+ * available to carry this.
+ *
+ * Deliberately NOT widened to accept the object: the string form also carries the
+ * glob (`harness_shared.*` LISTS relations), which an object cannot express, so
+ * accepting `{ schema, table }` would add a second, strictly weaker encoding of one
+ * intent rather than removing the misread.
+ */
+const DESCRIBE_VALUE_SHAPE =
+  'describe takes the relation as a dotted STRING — describe: "harness_shared.work_items" ' +
+  '(a bare table name also resolves), or a glob — describe: "harness_shared.*" — to LIST ' +
+  'matching relations. It is not an object: { schema, table } is refused; join the two ' +
+  'with a dot instead.';
+
+/**
  * EI-20218730860484837: PostgreSQL's `regprocedure` input syntax requires a
  * function signature, even for a zero-argument function. The raw 22P02 error
  * says only "expected a left parenthesis", which sends a caller back to SQL
@@ -258,11 +288,14 @@ export default defineTool({
     }),
     z.object({
       sql: z.never().optional().describe('Only valid for SQL calls; omit it when passing `describe`.'),
+      // EI-21596258009994255: the `error` carries the VALUE SHAPE to the refusal (see
+      // DESCRIBE_VALUE_SHAPE); the `.describe()` states it up front, so a caller reaching
+      // for `{ schema, table }` is corrected before the call as well as after it.
       describe: z
-        .string()
+        .string({ error: DESCRIBE_VALUE_SHAPE })
         .min(1)
         .describe(
-          'Instead of running SQL, describe a relation: columns, indexes and constraints — the psql `\\d schema.table` equivalent. Accepts a bare table name, or a `*`/glob pattern to LIST matching relations.',
+          'Instead of running SQL, describe a relation: columns, indexes and constraints — the psql `\\d` equivalent. A dotted STRING, not an object: `"harness_shared.work_items"` (a bare table name also resolves), or a `*`/glob — `"harness_shared.*"` — to LIST matching relations.',
         ),
       maxRows: z
         .number()
