@@ -151,6 +151,7 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { dependsOnSpec } from '../../freshness/tool-schema';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
+import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
