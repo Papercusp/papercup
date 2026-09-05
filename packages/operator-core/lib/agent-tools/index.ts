@@ -1129,6 +1129,7 @@ import './work_items/bulk_dedup';
 // Blackboard tuple-space primitives (fleet-as-supervised-blackboard D-004): claim_next
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
 import './work_items/claim_next';
+import './work_items/rehome';
 import './work_items/observe';
 // hybrid-bee-scheduler-work-stealing-2026-06-22 — the per-bee SPEC-DRIVEN claim path: the bee's
 // scheduler:get_next pulls deterministically per its Queen-issued claim spec within the global

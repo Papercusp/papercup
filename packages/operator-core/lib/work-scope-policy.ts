@@ -172,9 +172,12 @@ export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePo
 }
 
 /** The refusal envelope every gated tool returns for a denial (one shape, greppable). */
-export function workScopeRefusal(v: WorkScopeDenied, extra?: Record<string, unknown>): Record<string, unknown> {
+export function workScopeRefusal(
+  v: WorkScopeDenied,
+  extra?: Record<string, unknown>,
+): { ok: false; error: string; harness: string | null; message: string; [k: string]: unknown } {
   return {
-    ok: false,
+    ok: false as const,
     error: v.code,
     harness: v.harness,
     allowHarnesses: v.allowHarnesses,

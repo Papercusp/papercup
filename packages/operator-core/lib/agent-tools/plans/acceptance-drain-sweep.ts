@@ -94,6 +94,11 @@ export interface AcceptanceDrainSweepResult {
   filed: AcceptanceDrainSweepFiled[];
   /** Refusing plans left unfiled because the per-run cap was hit. */
   deferred: number;
+  /**
+   * workspace-work-scope-policy-2026-09-04 P-008: rows whose harness the workspace
+   * work-scope policy excludes — held, never filed against, never deleted.
+   */
+  scopeSkipped: number;
   /** Per-plan failures, reported rather than thrown. */
   errors: string[];
   /** Set when the sweep declined to run at all. */
@@ -140,6 +145,7 @@ function empty(summary: string, skipped?: AcceptanceDrainSweepResult['skipped'])
     shippableNow: 0,
     filed: [],
     deferred: 0,
+    scopeSkipped: 0,
     errors: [],
     ...(skipped ? { skipped } : {}),
     summary,
