@@ -53,6 +53,7 @@ const DDL = `
     title text,
     summary text,
     status text,
+    taken_by text,
     lane text,
     payload jsonb,
     item_kind text NOT NULL DEFAULT 'task',
@@ -66,10 +67,24 @@ const DDL = `
     admitted_at timestamptz,
     admitted_by text,
     see_also text[],
+    completion_ref jsonb,
+    terminal_completion_ref text,
+    authority text,
+    source_plan_slug text,
+    source_plan_item_ids text[],
     terminal_reason text,
     terminal_owner text,
     closed_ts bigint,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
+  );
+  CREATE TABLE harness_shared.work_item_deps (
+    workspace_id text NOT NULL,
+    blocked_kind text NOT NULL,
+    blocked_ref text NOT NULL,
+    blocker_kind text NOT NULL,
+    blocker_ref text NOT NULL,
+    dep_type text NOT NULL DEFAULT 'blocks',
+    satisfaction text NOT NULL DEFAULT 'settled'
   );
   CREATE TABLE harness_shared.scout_routed_ideas (
     idea_id text PRIMARY KEY,
@@ -160,7 +175,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.scout_routed_ideas,
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.scout_routed_ideas,
     harness_shared.work_item_occurrences,
     harness_shared.dedup_edges, harness_shared.dedup_adjudications,
     harness_shared.admission_runs, harness_shared.dedup_shard_map`;
@@ -801,7 +816,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(ledger).toEqual([{ model_id: override }]);
   }, 60_000);
 
-  it('includes durable parks but mutates only an exact duplicate, preserving park and occurrence provenance', async () => {
+  it('includes durable parks for judging but the shared guard refuses every mutation and records the hold', async () => {
     await seed();
     const mergedPark = {
       _claimHold: true,
@@ -828,36 +843,32 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
               'open', NULL, ${JSON.stringify(distinctPark)}::text::jsonb, 'change', 'watch:other', 4, 4,
               '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
 
-    const result = await runBulk({
-      workspaceId: WS,
-      harnessSlug: HARNESS,
-      runId: 'bulk-parks',
-      sql: db.sql,
-      census: { chunkCount: 2, targetTokens: 1_000 },
-      llmCall: async (input) => {
-        expect(input.system).toContain('DUPLICATION ONLY');
-        expect(input.messages[0]?.content).toContain('a::b');
-        expect(input.messages[0]?.content).toContain('c::d');
-        return {
-          text: '',
-          json: {
-            judgements: [
-              { pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' },
-              { pairKey: 'c::d', verdict: 'distinct', reason: 'different failure and remedy' },
-            ],
-          },
-          inputTokens: 100,
-          outputTokens: 30,
-        };
-      },
-    });
-
-    expect(result).toMatchObject({
-      scope: 'machine-emitter-targeted',
-      converged: true,
-      initialCensus: 2,
-      finalCensus: 0,
-    });
+    await expect(
+      runBulk({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-parks',
+        sql: db.sql,
+        census: { chunkCount: 2, targetTokens: 1_000 },
+        llmCall: async (input) => {
+          expect(input.system).toContain('DUPLICATION ONLY');
+          expect(input.messages[0]?.content).toContain('a::b');
+          expect(input.messages[0]?.content).toContain('c::d');
+          expect(input.messages[0]?.content).toContain('su-parked-duplicate');
+          return {
+            text: '',
+            json: {
+              judgements: [
+                { pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' },
+                { pairKey: 'c::d', verdict: 'distinct', reason: 'different failure and remedy' },
+              ],
+            },
+            inputTokens: 100,
+            outputTokens: 30,
+          };
+        },
+      }),
+    ).rejects.toThrow(/merge guard refused 2 endpoint/);
 
     const parked = await db.sql<
       Array<{
@@ -871,18 +882,11 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         FROM harness_shared.work_items
        WHERE feature_id = ANY(ARRAY['b', 'd']::text[])
        ORDER BY feature_id`;
-    expect(parked[0]).toMatchObject({
+    expect(parked[0]).toEqual({
       feature_id: 'b',
-      status: 'dropped',
-      terminal_owner: 'system:work-item-admission-bulk-dedup',
-      payload: {
-        ...mergedPark,
-        admissionMerge: {
-          canonicalId: 'a',
-          runId: 'bulk-parks-stage-1',
-          actor: 'system:work-item-admission-bulk-dedup',
-        },
-      },
+      status: 'open',
+      terminal_owner: null,
+      payload: mergedPark,
     });
     expect(parked[1]).toEqual({
       feature_id: 'd',
@@ -897,27 +901,115 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
              evidence
         FROM harness_shared.work_item_occurrences
        ORDER BY occurrence_id`;
-    expect(occurrences).toEqual([
-      {
-        canonical: 'a',
-        kind: 'duplicate',
-        evidence: {
-          mergedFrom: 'b',
-          summary: 'Clone failure again summary',
-          runId: 'bulk-parks-stage-1',
-          disposition: 'r-finding-merge',
-        },
-      },
-    ]);
+    expect(occurrences).toEqual([]);
 
     const adjudications = await db.sql<Array<{ a: string; b: string; verdict: string; canonical: string | null }>>`
       SELECT a, b, verdict, canonical
         FROM harness_shared.dedup_adjudications
        ORDER BY a, b`;
-    expect(adjudications).toEqual([
-      { a: 'a', b: 'b', verdict: 'r-finding-merge', canonical: 'a' },
-      { a: 'c', b: 'd', verdict: 'distinct', canonical: null },
+    expect(adjudications).toEqual([]);
+
+    const ledger = await db.sql<
+      Array<{
+        status: string;
+        held: number;
+        attempted: number;
+        successful: number;
+        rolled_back: number;
+        unchanged: number;
+        rows_changed: number;
+        refusal_reasons: string[];
+      }>
+    >`
+      SELECT detail->>'status' AS status, held,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,rolledBack}')::int AS rolled_back,
+             (detail #>> '{outcome,unchanged}')::int AS unchanged,
+             (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed,
+             ARRAY(SELECT entry->>'reason' FROM jsonb_array_elements(detail->'guardRefusals') entry ORDER BY 1)
+               AS refusal_reasons
+        FROM harness_shared.admission_runs
+       WHERE id = 'bulk-parks-stage-1'`;
+    expect(ledger).toEqual([
+      {
+        status: 'blocked',
+        held: 2,
+        attempted: 2,
+        successful: 0,
+        rolled_back: 0,
+        unchanged: 2,
+        rows_changed: 0,
+        refusal_reasons: ['claim-held', 'claim-held'],
+      },
     ]);
+  }, 60_000);
+
+  it('rolls back the bulk stage when claim and dependency evidence drift after judging', async () => {
+    await seed();
+    let mutated = false;
+    await expect(
+      runBulk({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-post-judge-drift',
+        sql: db.sql,
+        census: { chunkCount: 2, targetTokens: 1_000 },
+        llmCall: async () => {
+          if (!mutated) {
+            mutated = true;
+            await db.sql`
+              UPDATE harness_shared.work_items
+                 SET taken_by = 'su-claimed-after-judge', updated_ts = updated_ts + 1
+               WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'b'`;
+            await db.sql`
+              INSERT INTO harness_shared.work_item_deps
+                (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+              VALUES (${WS}, 'issue', 'downstream', 'issue', 'b', 'blocks', 'settled')`;
+          }
+          return {
+            text: '',
+            json: {
+              judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' }],
+            },
+            inputTokens: 100,
+            outputTokens: 20,
+          };
+        },
+      }),
+    ).rejects.toThrow(/merge guard refused 1 endpoint/);
+
+    const [loser] = await db.sql<Array<{ status: string; taken_by: string | null; canonical: string | null }>>`
+      SELECT status, taken_by, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items WHERE feature_id = 'b'`;
+    expect(loser).toEqual({ status: 'open', taken_by: 'su-claimed-after-judge', canonical: null });
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    const [ledger] = await db.sql<
+      Array<{
+        status: string;
+        reason: string;
+        attempted: number;
+        successful: number;
+        unchanged: number;
+        rows_changed: number;
+      }>
+    >`
+      SELECT detail->>'status' AS status,
+             detail #>> '{guardRefusals,0,reason}' AS reason,
+             (detail #>> '{outcome,attempted}')::int AS attempted,
+             (detail #>> '{outcome,successful}')::int AS successful,
+             (detail #>> '{outcome,unchanged}')::int AS unchanged,
+             (detail #>> '{outcome,uniqueRowsChanged}')::int AS rows_changed
+        FROM harness_shared.admission_runs WHERE id = 'bulk-post-judge-drift-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'blocked',
+      reason: 'snapshot-drift',
+      attempted: 1,
+      successful: 0,
+      unchanged: 1,
+      rows_changed: 0,
+    });
   }, 60_000);
 
   it('rolls back the complete stage and marks it failed when an injected post-judgement census rises', async () => {

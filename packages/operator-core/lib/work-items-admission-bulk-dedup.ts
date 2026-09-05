@@ -24,11 +24,16 @@ import {
 } from './work-items-admission-census';
 import {
   admissionPairKey,
+  bindAdmissionMergeSnapshot,
   buildPromoterPrompt,
   parsePromoterJudgements,
   persistAdmissionPlan,
   planPromoterDispositions,
+  promoterEvidenceForPrompt,
+  readAdmissionMergeSnapshots,
   responsePayload,
+  type AdmissionMergeGuardRefusal,
+  type AdmissionPlanPersistenceResult,
   type AdmissionRunOutcome,
   type PromoterItem,
   type PromoterJudgement,
@@ -201,7 +206,7 @@ interface BulkStageEnvelope {
 }
 
 export interface BulkModelFailureClassification {
-  kind: 'transport' | 'protocol' | 'capacity' | 'quality' | 'lease' | 'unknown';
+  kind: 'transport' | 'protocol' | 'capacity' | 'quality' | 'guard' | 'lease' | 'unknown';
   class: string;
   retryable: boolean;
   message: string;
@@ -213,6 +218,24 @@ export class BulkAdmissionBlockedError extends Error {
     super(message);
     this.name = 'BulkAdmissionBlockedError';
     this.classification = classification;
+  }
+}
+
+export class BulkAdmissionMergeGuardBlockedError extends BulkAdmissionBlockedError {
+  readonly persistence: AdmissionPlanPersistenceResult;
+  constructor(persistence: AdmissionPlanPersistenceResult) {
+    const summary = persistence.guardRefusals
+      .slice(0, 5)
+      .map((refusal) => `${refusal.itemId}:${refusal.reason}`)
+      .join(', ');
+    super(`bulk admission merge guard refused ${persistence.guardRefusals.length} endpoint(s): ${summary}`, {
+      kind: 'guard',
+      class: 'merge_guard_refused',
+      retryable: true,
+      message: summary,
+    });
+    this.name = 'BulkAdmissionMergeGuardBlockedError';
+    this.persistence = persistence;
   }
 }
 
@@ -252,6 +275,8 @@ export interface BulkDedupStageResult {
   reusedBatches: number;
   /** D-007 report for the frozen independent-label replay (non-empty stages). */
   mergeQuality?: AdmissionMergeQualityReport;
+  /** Exact protected/drifted endpoints the shared writer refused. */
+  guardRefusals?: AdmissionMergeGuardRefusal[];
 }
 
 export interface BulkDedupRunResult {
@@ -575,6 +600,26 @@ async function readBulkInput(
     }
   }
 
+  // Bind every destructive endpoint to one complete, versioned evidence and
+  // reference snapshot before any model batch is built. Ghost-only context
+  // remains lean because it can never be mutated by this stage.
+  const endpointIds = [...new Set(pairs.flatMap((pair) => [pair.a.id, pair.b.id]))].sort();
+  const snapshotsById = await readAdmissionMergeSnapshots(sql, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    ids: endpointIds,
+  });
+  for (const id of endpointIds) {
+    const item = items.get(id);
+    if (!item) continue;
+    const bound = bindAdmissionMergeSnapshot(item, snapshotsById.get(id));
+    items.set(id, { ...item, ...bound });
+  }
+  for (const pair of pairs) {
+    pair.a = items.get(pair.a.id) ?? pair.a;
+    pair.b = items.get(pair.b.id) ?? pair.b;
+  }
+
   const ghostIdsByShard = new Map<number, string[]>();
   for (const row of mapRows) {
     if (row.role !== 'ghost') continue;
@@ -583,7 +628,15 @@ async function readBulkInput(
   for (const [shard, ids] of ghostIdsByShard) ghostIdsByShard.set(shard, [...new Set(ids)].sort());
 
   const fingerprint = createHash('sha256')
-    .update(pairs.map((pair) => `${pair.pairKey}\x00${pairShard.get(pair.pairKey) ?? -1}`).join('\x01'))
+    .update(
+      pairs
+        .map(
+          (pair) =>
+            `${pair.pairKey}\x00${pairShard.get(pair.pairKey) ?? -1}\x00` +
+            `${pair.a.mergeSnapshot?.fingerprint ?? 'missing'}\x00${pair.b.mergeSnapshot?.fingerprint ?? 'missing'}`,
+        )
+        .join('\x01'),
+    )
     .digest('hex');
   return { items, pairs, pairShard, ghostIdsByShard, memberCount: memberRows.length, fingerprint };
 }
@@ -605,6 +658,7 @@ export function buildBulkDedupPrompt(
         `## item ${item.id} state=${item.state} admission=${item.admission ?? 'legacy'} kind=${item.kind}`,
         `<title>${item.title.slice(0, 1_000)}</title>`,
         `<summary>${item.summary.slice(0, 4_000)}</summary>`,
+        `<evidence>${promoterEvidenceForPrompt(item)}</evidence>`,
       ].join('\n'),
     )
     .join('\n\n');
@@ -1107,11 +1161,17 @@ async function failBulkStage(
   const message = error instanceof Error ? error.message : String(error);
   const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
   const failure = classifyBulkModelFailure(error);
-  const status = failure.kind === 'capacity' || failure.kind === 'quality' ? 'blocked' : 'failed';
+  const guardPersistence = error instanceof BulkAdmissionMergeGuardBlockedError ? error.persistence : null;
+  const status =
+    failure.kind === 'capacity' || failure.kind === 'quality' || failure.kind === 'guard' ? 'blocked' : 'failed';
   const allowCompletedQualityDisposition = failure.kind === 'quality';
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
+           held = CASE
+             WHEN ${guardPersistence !== null} THEN ${guardPersistence?.guardRefusals.length ?? 0}
+             ELSE held
+           END,
            detail = (COALESCE(detail, '{}'::jsonb) - 'errorCause') ||
                     ${JSON.stringify({
                       status,
@@ -1123,16 +1183,17 @@ async function failBulkStage(
                       outcome: {
                         unit: 'pairs',
                         attempted,
-                        successful: null,
+                        successful: guardPersistence ? 0 : null,
                         // A failed stage is transactionally rolled back; the
                         // exact number of writes is unknowable when the error
                         // occurs during model/protocol handling.
-                        rolledBack: null,
-                        unchanged: null,
-                        uniqueRowsChanged: null,
+                        rolledBack: guardPersistence ? guardPersistence.uniqueRowsChanged : null,
+                        unchanged: guardPersistence ? attempted : null,
+                        uniqueRowsChanged: guardPersistence ? 0 : null,
                         failureReason: status === 'failed' ? message : null,
                         blockedReason: status === 'blocked' ? message : null,
                       } satisfies AdmissionRunOutcome,
+                      ...(guardPersistence ? { guardRefusals: guardPersistence.guardRefusals } : {}),
                       ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
                     })}::text::jsonb
      WHERE id = ${runId}
@@ -2029,15 +2090,13 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         planPromoterDispositions(stageItems, input.pairs, judged.judgements),
         input.items,
       );
-      const merged = plan.dispositions.filter((disposition) => disposition.action === 'merge').length;
-      const held = plan.dispositions.filter((disposition) => disposition.action === 'hold').length;
       let committed:
         | { census: AdmissionCensusRunResult; scopedPairsAfter: number; stage: BulkDedupStageResult }
         | undefined;
 
       await sql.begin(async (rawTx) => {
         const tx = rawTx as unknown as OrgSql;
-        await persistAdmissionPlan(tx, {
+        const persistence = await persistAdmissionPlan(tx, {
           workspaceId: opts.workspaceId,
           harnessSlug: opts.harnessSlug,
           runId: stageRunId,
@@ -2045,10 +2104,20 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           nowMs: now(),
           pending: stageItems,
           plan,
+          snapshots: stageItems.flatMap((item) => (item.mergeSnapshot ? [item.mergeSnapshot] : [])),
+          withinTransaction: true,
           promoteUnmerged: false,
           mergeAnyAdmission: true,
           actor: BULK_DEDUP_ACTOR,
         });
+        // A guarded refusal is an intentional no-mutation outcome for the
+        // complete stage. Throwing inside this transaction rolls back any
+        // sibling writes too; failBulkStage records the exact refusal set.
+        if (persistence.guardRefusals.length > 0) {
+          throw new BulkAdmissionMergeGuardBlockedError(persistence);
+        }
+        const merged = persistence.mergedIds.length;
+        const held = persistence.held.length;
         await opts.beforePostStageCensus?.(tx, stageIndex);
         const nextCensus = await runCensus({
           ...censusBase,
@@ -2086,8 +2155,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           servedAccounts: judged.servedAccounts,
           reusedBatches: judged.reusedBatches,
           mergeQuality,
+          guardRefusals: persistence.guardRefusals,
         };
-        const verdicts = plan.adjudications.reduce<Record<string, number>>((acc, row) => {
+        const verdicts = persistence.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
           return acc;
         }, {});
@@ -2133,13 +2203,14 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    outcome: {
                      unit: 'pairs',
                      attempted: input.pairs.length,
-                     successful: plan.adjudications.length,
+                     successful: persistence.adjudications.length,
                      rolledBack: 0,
-                     unchanged: Math.max(0, plan.adjudications.length - merged),
-                     uniqueRowsChanged: merged,
+                     unchanged: Math.max(0, input.pairs.length - persistence.adjudications.length),
+                     uniqueRowsChanged: persistence.uniqueRowsChanged,
                      failureReason: null,
                      blockedReason: null,
                    } satisfies AdmissionRunOutcome,
+                   guardRefusals: persistence.guardRefusals,
                  })}::text::jsonb
            WHERE id = ${stageRunId}
              AND detail->'lease'->>'ownerId' = ${executionId}
@@ -2176,13 +2247,14 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           outcome: {
             unit: 'pairs',
             attempted: input.pairs.length,
-            successful: plan.adjudications.length,
+            successful: persistence.adjudications.length,
             rolledBack: 0,
-            unchanged: Math.max(0, plan.adjudications.length - merged),
-            uniqueRowsChanged: merged,
+            unchanged: Math.max(0, input.pairs.length - persistence.adjudications.length),
+            uniqueRowsChanged: persistence.uniqueRowsChanged,
             failureReason: null,
             blockedReason: null,
           } satisfies AdmissionRunOutcome,
+          guardRefusals: persistence.guardRefusals,
         };
         // Merge only terminal fields. Spreading the pre-judge envelope here
         // would overwrite `checkpoints.batches` with its stale snapshot and
