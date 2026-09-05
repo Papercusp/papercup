@@ -1,0 +1,15 @@
+{
+  "measuredAt": "2026-09-05T20:33Z",
+  "target": "portal :3081 release osoChjb97qhK7F76n-BA9-20260905201607350, ?app=home, viewport 1280x800",
+  "probe": "verdict js over nav.rail .rail-apps / .rail-foot",
+  "railApps": { "clientHeight": 376, "scrollHeight": 1170, "clipped": 794, "top": 92, "bottom": 468, "total": 30, "fullyVisible": 9 },
+  "order": ["Home","Papercup Chat","Mail","Calendar","Phone","Desktops","Plans","Inbox","Workspaces","Brainstorm","Overview","HUD","Work","Learning","Workflow Editor","Health","PRs","Insights","Conversations","ADV Settings","Docs","History","Git","Stats","Tests","Create","Scheduled","Frames","Evaluation","Coordination"],
+  "foot": ["Cloud","Cupboard","DEV","Support","Settings","Launched sessions"],
+  "railRows": {
+    "1280x800": { "home": { "activeVisible": true, "activeTop": 92 }, "health": { "activeVisible": true, "activeTop": 430 }, "coord": { "activeVisible": true, "activeTop": 430 } },
+    "1366x768": { "home": { "activeVisible": true, "activeTop": 92 }, "health": { "activeVisible": true, "activeTop": 398 }, "coord": { "activeVisible": true, "activeTop": 398 } }
+  },
+  "focusable": 36,
+  "dividers": 0,
+  "conclusion": "Rail has no section primitive; the 15 new kinds sit at the end of .rail-apps after Learning/Workflow Editor and above the .rail-foot utility kinds; scrollIntoView(block:nearest) keeps the marked item visible at both viewports. Left flat (P-007 else-branch)."
+}

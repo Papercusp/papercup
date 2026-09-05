@@ -105,7 +105,7 @@ function VditorUnavailable({
             fontSize: 13,
             lineHeight: 1.6,
             color: 'var(--fg, #e6e6e6)',
-            background: '#19232A',
+            background: 'var(--bg-1, #19232a)',
             fontFamily:
               'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
           }}
@@ -145,6 +145,86 @@ function VditorUnavailable({
  * only — which is why `MarkdownEditor.cdn.test.ts` asserts none of them do.
  */
 export const VDITOR_CDN = '/vditor';
+
+export type MarkdownColorScheme = 'light' | 'dark';
+
+function colorChannels(value: string): [number, number, number] | null {
+  const color = value.trim();
+  const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i)?.[1];
+  if (hex) {
+    const full = hex.length === 3
+      ? hex.split('').map((part) => `${part}${part}`).join('')
+      : hex;
+    return [
+      Number.parseInt(full.slice(0, 2), 16),
+      Number.parseInt(full.slice(2, 4), 16),
+      Number.parseInt(full.slice(4, 6), 16),
+    ];
+  }
+  const rgb = color.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  return rgb
+    ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])]
+    : null;
+}
+
+/** Resolve Vditor's binary content theme from the host's live semantic theme.
+ * Portal themes name their scheme explicitly. Custom themes do not, so their
+ * computed `--bg` luminance is the source of truth rather than a hard-coded id
+ * list. */
+export function resolveMarkdownColorScheme(
+  root: HTMLElement | null = typeof document === 'undefined'
+    ? null
+    : document.documentElement,
+): MarkdownColorScheme {
+  if (!root || typeof window === 'undefined') return 'dark';
+  if (root.dataset.theme === 'portal-light') return 'light';
+  if (root.dataset.theme === 'portal-dark') return 'dark';
+  const styles = window.getComputedStyle(root);
+  const channels = colorChannels(styles.getPropertyValue('--bg'));
+  if (channels) {
+    const [red, green, blue] = channels;
+    return (red * 299 + green * 587 + blue * 114) / 1000 >= 160
+      ? 'light'
+      : 'dark';
+  }
+  const colorScheme = styles.colorScheme;
+  return colorScheme.includes('light') && !colorScheme.includes('dark')
+    ? 'light'
+    : 'dark';
+}
+
+function useMarkdownColorScheme(): MarkdownColorScheme {
+  const [scheme, setScheme] = useState<MarkdownColorScheme>(() =>
+    resolveMarkdownColorScheme(),
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const sync = () => setScheme(resolveMarkdownColorScheme());
+    window.addEventListener('papercusp:theme-changed', sync);
+    window.addEventListener('storage', sync);
+    const observer = typeof MutationObserver === 'undefined'
+      ? null
+      : new MutationObserver(sync);
+    observer?.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'style'],
+    });
+    const media = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)')
+      : null;
+    media?.addEventListener?.('change', sync);
+    media?.addListener?.(sync);
+    sync();
+    return () => {
+      window.removeEventListener('papercusp:theme-changed', sync);
+      window.removeEventListener('storage', sync);
+      observer?.disconnect();
+      media?.removeEventListener?.('change', sync);
+      media?.removeListener?.(sync);
+    };
+  }, []);
+  return scheme;
+}
 
 // Vditor renders ```plantuml blocks by POSTING the diagram source to
 // plantuml.com. `cdn` cannot redirect it (the render fn takes a cdn arg and
@@ -316,6 +396,7 @@ export function MarkdownPreview({
   const onParsedRef = useRef(onParsed);
   onParsedRef.current = onParsed;
   const [loadError, setLoadError] = useState(false);
+  const colorScheme = useMarkdownColorScheme();
   useEffect(() => {
     if (!ref.current) return;
     let cancelled = false;
@@ -327,8 +408,8 @@ export function MarkdownPreview({
       const previewOpts: Record<string, unknown> = {
         cdn: VDITOR_CDN,
         transform: neutralizePlantuml,
-        mode: 'dark',
-        theme: { current: 'dark' },
+        mode: colorScheme,
+        theme: { current: colorScheme },
         math: { engine: 'KaTeX' },
         anchor: 1,
         lang: 'en_US',
@@ -372,7 +453,7 @@ export function MarkdownPreview({
       console.error('[MarkdownPreview] vditor failed to load:', err);
     });
     return () => { cancelled = true; };
-  }, [value, outline]);
+  }, [value, outline, colorScheme]);
 
   if (loadError) {
     return <VditorUnavailable className={className} style={style} raw={value} />;
@@ -381,14 +462,14 @@ export function MarkdownPreview({
   if (outline) {
     const position = outline === 'right' ? 'right' : 'left';
     return (
-      <div className={className} style={{ display: 'flex', flex: '1 1 auto', minHeight: 0, gap: 16, background: '#19232A', ...style }}>
+      <div className={className} style={{ display: 'flex', flex: '1 1 auto', minHeight: 0, gap: 16, background: 'var(--bg-1, #19232a)', ...style }}>
         {position === 'left' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
         )}
         <div
           ref={ref}
           className="vditor-reset pc-md-preview"
-          style={{ flex: 1, background: '#19232A', color: '#e6e6e6', minWidth: 0, minHeight: 0 }}
+          style={{ flex: 1, background: 'var(--bg-1, #19232a)', color: 'var(--fg, #e6e6e6)', minWidth: 0, minHeight: 0 }}
         />
         {position === 'right' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
@@ -397,9 +478,9 @@ export function MarkdownPreview({
           .pc-md-outline ul { list-style: none; padding-left: 12px; margin: 0; }
           .pc-md-outline > ul { padding-left: 0; }
           .pc-md-outline li { margin: 2px 0; }
-          .pc-md-outline a { color: #aaa; text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
-          .pc-md-outline a:hover { color: #fff; background: #232E37; }
-          .pc-md-preview, .pc-md-preview pre, .pc-md-preview code { background-color: #19232A !important; }
+          .pc-md-outline a { color: var(--fg-mute, #7f9bb4); text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
+          .pc-md-outline a:hover { color: var(--fg, #e7f7ff); background: var(--bg-3, rgba(255,255,255,0.075)); }
+          .pc-md-preview, .pc-md-preview pre, .pc-md-preview code { background-color: var(--bg-1, #0b1220) !important; }
           ${markdownPreviewReadableCodeCss}
         `}</style>
       </div>
@@ -411,7 +492,7 @@ export function MarkdownPreview({
       <div
         ref={ref}
         className={`vditor-reset pc-md-preview ${className ?? ''}`}
-        style={{ background: '#19232A', color: '#e6e6e6', ...style }}
+        style={{ background: 'var(--bg-1, #19232a)', color: 'var(--fg, #e6e6e6)', ...style }}
       />
       <style>{markdownPreviewReadableCodeCss}</style>
     </>
@@ -483,6 +564,9 @@ export function MarkdownEditor({
   const initialValueRef = useRef(value);
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const colorScheme = useMarkdownColorScheme();
+  const colorSchemeRef = useRef(colorScheme);
+  colorSchemeRef.current = colorScheme;
 
   // Mount: deps are config-only so value changes don't remount.
   useEffect(() => {
@@ -492,10 +576,11 @@ export function MarkdownEditor({
       await loadVditorCss();
       const Vditor = (await import('vditor')).default;
       if (cancelled || !containerRef.current) return;
+      const initialColorScheme = colorSchemeRef.current;
       const inst = new Vditor(containerRef.current, {
         cdn: VDITOR_CDN,
         mode,
-        theme: 'dark',
+        theme: initialColorScheme === 'dark' ? 'dark' : 'classic',
         lang: 'en_US',
         cache: { enable: false },
         undoDelay: 0,
@@ -504,7 +589,7 @@ export function MarkdownEditor({
         toolbar,
         outline: outline ? { enable: true, position: outline } : { enable: false, position: 'left' },
         preview: {
-          theme: { current: 'dark' },
+          theme: { current: initialColorScheme },
           math: { engine: 'KaTeX' },
           transform: neutralizePlantuml,
         },
@@ -596,6 +681,16 @@ export function MarkdownEditor({
     else editorRef.current.enable();
   }, [readOnly, ready]);
 
+  // Update the live editor without remounting so cursor, undo, dirty, and
+  // scroll state survive an operator or portal theme switch.
+  useEffect(() => {
+    if (!ready || !editorRef.current) return;
+    editorRef.current.setTheme(
+      colorScheme === 'dark' ? 'dark' : 'classic',
+      colorScheme,
+    );
+  }, [colorScheme, ready]);
+
   if (loadError) {
     return (
       <VditorUnavailable
@@ -615,24 +710,25 @@ export function MarkdownEditor({
          * element is the scroll container — Vditor's outline click handler
          * does \`vditor.ir.element.scrollTop = …\`, so .vditor-ir MUST be the
          * overflow:auto layer (not its inner <pre>) for outline links to work. */
-        /* Use the darker blue-tinted gray (#19232A) that the user identified
-         * from the screenshot as the preferred tone. Vditor's default dark
-         * theme bleeds the lighter greenish-gray (#26-282E ~ #262D32) into
-         * scrolled regions. Apply uniformly so scroll never reveals a delta. */
-        .pc-md-editor-host.vditor--dark {
-          --panel-background-color: #19232A !important;
-          --toolbar-background-color: #19232A !important;
-          --textarea-background-color: #19232A !important;
-          background-color: #19232A !important;
+        /* Vditor owns its class-level palette, but the host owns the semantic
+         * surface. Apply live tokens in both classic and dark modes so a
+         * theme switch never reveals a stale hard-coded strip while scrolling. */
+        .pc-md-editor-host.vditor {
+          --panel-background-color: var(--bg-1) !important;
+          --toolbar-background-color: var(--bg-1) !important;
+          --textarea-background-color: var(--bg-1) !important;
+          background-color: var(--bg-1) !important;
+          color: var(--fg) !important;
         }
-        .pc-md-editor-host.vditor--dark .vditor-content,
-        .pc-md-editor-host.vditor--dark .vditor-ir,
-        .pc-md-editor-host.vditor--dark .vditor-wysiwyg,
-        .pc-md-editor-host.vditor--dark .vditor-sv,
-        .pc-md-editor-host.vditor--dark .vditor-reset,
-        .pc-md-editor-host.vditor--dark .vditor-outline,
-        .pc-md-editor-host.vditor--dark .vditor-toolbar {
-          background-color: #19232A !important;
+        .pc-md-editor-host.vditor .vditor-content,
+        .pc-md-editor-host.vditor .vditor-ir,
+        .pc-md-editor-host.vditor .vditor-wysiwyg,
+        .pc-md-editor-host.vditor .vditor-sv,
+        .pc-md-editor-host.vditor .vditor-reset,
+        .pc-md-editor-host.vditor .vditor-outline,
+        .pc-md-editor-host.vditor .vditor-toolbar {
+          background-color: var(--bg-1) !important;
+          color: var(--fg) !important;
         }
         .pc-md-editor-host.vditor { display: flex !important; flex-direction: column !important; height: 100% !important; min-height: 0; }
         .pc-md-editor-host.vditor > .vditor-toolbar { flex: 0 0 auto; }

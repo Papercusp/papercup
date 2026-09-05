@@ -267,6 +267,7 @@ export default function PlanDashboard({
   const [, setOpenPlanPopup] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
   const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
   const [, setPopupView] = useQueryState('ppv', parseAsString);
+  const [, setPlanTarget] = useQueryState('jump', parseAsString);
 
   // PlansPane starts this same idempotent warm-up before a sidebar row click,
   // but the dashboard is also independently deep-linkable. Warm here too so
@@ -292,15 +293,25 @@ export default function PlanDashboard({
     // PlanPopupModal. PlanEditor.handleParsed consumes the mark when Vditor
     // finishes the first body render.
     beginInteraction(PERF_INTERACTIONS.planPopupOpen);
+    void setPopupView('plan');
+    void setPlanTarget(null);
     void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
-  }, [setOpenPlanPopup, harness, planSlug]);
+  }, [setOpenPlanPopup, setPlanTarget, setPopupView, harness, planSlug]);
+
+  const openPlanTarget = useCallback((target: string) => {
+    beginInteraction(PERF_INTERACTIONS.planPopupOpen);
+    void setPopupView('plan');
+    void setPlanTarget(target);
+    void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
+  }, [setOpenPlanPopup, setPlanTarget, setPopupView, harness, planSlug]);
 
   const openTranscriptSearch = useCallback(() => {
     // The popup's Sessions tab IS the plan-scoped transcript search surface
     // (PlanSessionsTab) — open the popup directly onto it.
     void setPopupView('sessions');
+    void setPlanTarget(null);
     void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
-  }, [setPopupView, setOpenPlanPopup, harness, planSlug]);
+  }, [setPopupView, setPlanTarget, setOpenPlanPopup, harness, planSlug]);
 
   const [launching, setLaunching] = useState(false);
   const onLaunch = useCallback(async () => {
@@ -344,7 +355,10 @@ export default function PlanDashboard({
   // plan-dashboard-derive.ts so they unit-test without this import graph.
   const counts = useMemo(() => statusCountsOf(plan?.items), [plan?.items]);
   const itemGroups = useMemo(() => groupPlanItems(plan?.items), [plan?.items]);
-  const railDecisions = useMemo(() => newestDecisions(plan?.decisions, 2), [plan?.decisions]);
+  const railDecisions = useMemo(
+    () => newestDecisions(plan?.decisions, plan?.decisions?.length ?? 0),
+    [plan?.decisions],
+  );
   const feedEntries = useMemo(
     () => collapsePlanActivity(activity.data as PlanActivityFeedRow[] | undefined),
     [activity.data],
@@ -578,7 +592,7 @@ export default function PlanDashboard({
                         >
                           {itemIcon(it.effectiveStatus)}
                         </span>
-                        <span className="plan-dash__iref">{linked?.featureId ?? it.id}</span>
+                        <span className="plan-dash__iref">{it.id}</span>
                         <span
                           className={`plan-dash__itext${terminal ? ' plan-dash__itext--dim' : ''}${
                             it.effectiveStatus === 'dropped' ? ' plan-dash__itext--dropped' : ''
@@ -596,26 +610,37 @@ export default function PlanDashboard({
                         </span>
                       </>
                     );
-                    return linked ? (
-                      <button
-                        key={it.id}
-                        type="button"
-                        className="plan-dash__irow plan-dash__irow--link"
-                        onClick={() =>
-                          void setOpenWorkItem(encodeScopedRef(harness, linked.featureId))
-                        }
-                        aria-label={`Open ${linked.featureId}`}
-                        data-testid={`plan-dash-item-${it.id}`}
-                      >
-                        {inner}
-                      </button>
-                    ) : (
+                    return (
                       <div
                         key={it.id}
                         className="plan-dash__irow"
                         data-testid={`plan-dash-item-${it.id}`}
                       >
-                        {inner}
+                        <button
+                          type="button"
+                          className="plan-dash__irow-main"
+                          onClick={() => openPlanTarget(it.id)}
+                          aria-label={`View full details for ${it.id}`}
+                          data-testid={`plan-dash-item-detail-${it.id}`}
+                        >
+                          {inner}
+                        </button>
+                        {linked ? (
+                          <button
+                            type="button"
+                            className="plan-dash__iwork"
+                            onClick={() =>
+                              void setOpenWorkItem(
+                                encodeScopedRef(harness, linked.featureId),
+                              )
+                            }
+                            aria-label={`Open linked work item ${linked.featureId}`}
+                            data-testid={`plan-dash-item-work-${it.id}`}
+                          >
+                            <ExternalLink size={12} aria-hidden="true" />
+                            {linked.featureId}
+                          </button>
+                        ) : null}
                       </div>
                     );
                   })}
@@ -709,17 +734,24 @@ export default function PlanDashboard({
             Decisions
             <span className="plan-dash__sec-line" aria-hidden="true" />
             <span className="plan-dash__sec-h-note">
-              newest {railDecisions.length} of {plan?.decisions?.length ?? railDecisions.length}
+              {railDecisions.length} decision{railDecisions.length === 1 ? '' : 's'}
             </span>
           </div>
           {railDecisions.map((d) => (
-            <div key={d.id} className="plan-dash__drow">
+            <button
+              key={d.id}
+              type="button"
+              className="plan-dash__drow"
+              onClick={() => openPlanTarget(d.id)}
+              aria-label={`View full details for ${d.id}`}
+              data-testid={`plan-dash-decision-${d.id}`}
+            >
               <span className="plan-dash__dref">{d.id}</span>
               <span className="plan-dash__dtext" title={d.title ?? d.body ?? d.id}>
                 {d.title?.trim() || d.body?.trim().split('\n')[0] || d.id}
               </span>
               {d.date ? <span className="plan-dash__dago">{d.date}</span> : null}
-            </div>
+            </button>
           ))}
         </div>
       ) : null}

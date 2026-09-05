@@ -20,9 +20,11 @@
  * with transcript search (PlanSessionsTab). Tab state is `?ppv` (nuqs, D-003)
  * so the popup is deep-linkable + agent-driveable.
  */
-import { useMemo, useRef } from "react";
-import { parseAsStringEnum, useQueryState } from "nuqs";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Minimize2 } from "lucide-react";
+import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Modal } from "@/app/harness/Modal";
+import { Tooltip } from "@/app/harness/Tooltip";
 import PlanDetail from "@/app/admin/plans/PlanDetail";
 import { usePlanList, type AuthorIdentity } from "@/app/admin/plans/plans-api";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
@@ -63,7 +65,11 @@ export default function PlanPopupModal({
     "ppv",
     parseAsStringEnum<PlanPopupView>([...POPUP_VIEWS]).withDefault("plan"),
   );
+  const [, setPlanTarget] = useQueryState("jump", parseAsString);
   const dirtyRef = useRef(false);
+  const popupSurfaceRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // `wppop` carries only the stable scoped identity (`harness::slug`). The
@@ -105,10 +111,51 @@ export default function PlanPopupModal({
       : (provenancePlan?.ownerIdentity ?? null);
 
   const open = planSlug !== null;
+  const fullscreenAvailable =
+    typeof document !== "undefined" &&
+    document.fullscreenEnabled !== false &&
+    typeof HTMLElement !== "undefined" &&
+    typeof HTMLElement.prototype.requestFullscreen === "function" &&
+    typeof document.exitFullscreen === "function";
+
+  useEffect(() => {
+    if (!open || typeof document === "undefined") {
+      setIsFullscreen(false);
+      return;
+    }
+    const sync = () => {
+      setIsFullscreen(document.fullscreenElement === popupSurfaceRef.current);
+    };
+    document.addEventListener("fullscreenchange", sync);
+    sync();
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, [open]);
+
+  const toggleFullscreen = async () => {
+    const target = popupSurfaceRef.current;
+    if (!target || !fullscreenAvailable) return;
+    setFullscreenError(null);
+    try {
+      if (document.fullscreenElement === target) {
+        await document.exitFullscreen();
+        return;
+      }
+      await target.requestFullscreen();
+    } catch {
+      setFullscreenError("The browser did not allow fullscreen for this popup.");
+    }
+  };
 
   const reallyClose = () => {
     dirtyRef.current = false;
+    if (
+      typeof document !== "undefined" &&
+      document.fullscreenElement === popupSurfaceRef.current
+    ) {
+      void document.exitFullscreen().catch(() => {});
+    }
     void setView(null); // drop ?ppv so the next open lands on the Plan tab
+    void setPlanTarget(null); // a later open must not inherit a stale P/D jump
     onClose();
   };
 
@@ -147,6 +194,11 @@ export default function PlanPopupModal({
             padding: 0,
           }}
         >
+          <div
+            ref={popupSurfaceRef}
+            className="plan-popup__surface"
+            data-testid="plan-popup-fullscreen-surface"
+          >
           <div className="plan-popup__header">
             <div className="plan-popup__identity">
               <div className="plan-popup__title" title={planSlug ?? undefined}>
@@ -186,6 +238,38 @@ export default function PlanPopupModal({
                 Sessions
               </button>
             </div>
+            <Tooltip
+              side="bottom"
+              label={
+                fullscreenError ??
+                (fullscreenAvailable
+                  ? isFullscreen
+                    ? "Restore plan popup"
+                    : "View plan fullscreen"
+                  : "Fullscreen is not available in this browser")
+              }
+            >
+              <button
+                type="button"
+                className="plan-popup__fullscreen"
+                onClick={() => void toggleFullscreen()}
+                disabled={!fullscreenAvailable}
+                aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                aria-pressed={isFullscreen}
+                title={
+                  fullscreenAvailable
+                    ? undefined
+                    : "Fullscreen is not available in this browser"
+                }
+                data-testid="plan-popup-fullscreen"
+              >
+                {isFullscreen ? (
+                  <Minimize2 size={14} aria-hidden="true" />
+                ) : (
+                  <Maximize2 size={14} aria-hidden="true" />
+                )}
+              </button>
+            </Tooltip>
             <button
               type="button"
               className="plan-popup__close"
@@ -218,6 +302,7 @@ export default function PlanPopupModal({
               />
             </div>
           )}
+          </div>
         </Modal>
       ) : null}
       {confirmEl}

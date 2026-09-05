@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  NuqsTestingAdapter,
+  type OnUrlUpdateFunction,
+} from "nuqs/adapters/testing";
 import type { AuthorIdentity } from "@/app/admin/plans/plans-api";
 
 const { planRows, planListState, usePlanList } = vi.hoisted(() => ({
@@ -34,8 +37,32 @@ vi.mock("@/app/admin/plans/plans-api", () => ({
 }));
 
 vi.mock("@/app/harness/Modal", () => ({
-  Modal: ({ open, children }: { open: boolean; children: ReactNode }) =>
-    open ? <div data-testid="plan-popup-modal">{children}</div> : null,
+  Modal: ({
+    open,
+    children,
+    contentClassName,
+    contentStyle,
+  }: {
+    open: boolean;
+    children: ReactNode;
+    contentClassName?: string;
+    contentStyle?: CSSProperties;
+  }) =>
+    open ? (
+      <div
+        data-testid="plan-popup-modal"
+        className={contentClassName}
+        style={contentStyle}
+      >
+        {children}
+      </div>
+    ) : null,
+}));
+
+vi.mock("@/app/harness/Tooltip", () => ({
+  Tooltip: ({ label, children }: { label: ReactNode; children: ReactNode }) => (
+    <span title={typeof label === "string" ? label : undefined}>{children}</span>
+  ),
 }));
 
 vi.mock("@/app/admin/plans/PlanDetail", () => ({
@@ -60,25 +87,76 @@ afterEach(() => {
   planListState.loading = false;
   planListState.error = null;
   usePlanList.mockClear();
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>)
+    .requestFullscreen;
+  delete (document as unknown as Record<string, unknown>).fullscreenEnabled;
+  delete (document as unknown as Record<string, unknown>).fullscreenElement;
+  delete (document as unknown as Record<string, unknown>).exitFullscreen;
   cleanup();
 });
 
 const renderPopup = (
   origin: "scout" | null | undefined,
   ownerIdentity?: AuthorIdentity | null,
+  options?: {
+    searchParams?: string;
+    onUrlUpdate?: OnUrlUpdateFunction;
+    onClose?: () => void;
+  },
 ) =>
   render(
-    <NuqsTestingAdapter searchParams="">
+    <NuqsTestingAdapter
+      searchParams={options?.searchParams ?? ""}
+      onUrlUpdate={options?.onUrlUpdate}
+    >
       <PlanPopupModal
         planSlug="provenance-plan"
         harnessSlug="papercusp"
         planTitle="Provenance plan"
         origin={origin}
         ownerIdentity={ownerIdentity}
-        onClose={() => {}}
+        onClose={options?.onClose ?? (() => {})}
       />
     </NuqsTestingAdapter>,
   );
+
+function installFullscreenApi(enabled = true) {
+  let fullscreenElement: Element | null = null;
+  const requestFullscreen = vi.fn(function request(this: HTMLElement) {
+    fullscreenElement = this;
+    document.dispatchEvent(new Event("fullscreenchange"));
+    return Promise.resolve();
+  });
+  const exitFullscreen = vi.fn(() => {
+    fullscreenElement = null;
+    document.dispatchEvent(new Event("fullscreenchange"));
+    return Promise.resolve();
+  });
+  Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
+    configurable: true,
+    value: enabled ? requestFullscreen : undefined,
+  });
+  Object.defineProperty(document, "fullscreenEnabled", {
+    configurable: true,
+    value: enabled,
+  });
+  Object.defineProperty(document, "fullscreenElement", {
+    configurable: true,
+    get: () => fullscreenElement,
+  });
+  Object.defineProperty(document, "exitFullscreen", {
+    configurable: true,
+    value: exitFullscreen,
+  });
+  return {
+    requestFullscreen,
+    exitFullscreen,
+    externalExit: () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    },
+  };
+}
 
 describe("PlanPopupModal provenance", () => {
   it.each([
@@ -182,6 +260,71 @@ describe("PlanPopupModal provenance", () => {
       includeLegacy: true,
       harness_slugs: ["papercusp"],
       enabled: true,
+    });
+  });
+});
+
+describe("PlanPopupModal fullscreen and target lifecycle", () => {
+  it("fullscreenes the complete popup surface, restores it, and follows external exit", async () => {
+    const fullscreen = installFullscreenApi();
+    renderPopup(null, null);
+
+    const surface = screen.getByTestId("plan-popup-fullscreen-surface");
+    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+
+    await waitFor(() =>
+      expect(fullscreen.requestFullscreen).toHaveBeenCalledTimes(1),
+    );
+    expect(fullscreen.requestFullscreen.mock.instances[0]).toBe(surface);
+    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+
+    fullscreen.externalExit();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    await waitFor(() =>
+      expect(fullscreen.exitFullscreen).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("disables fullscreen with an explanation when the API is unavailable", () => {
+    installFullscreenApi(false);
+    renderPopup(null, null);
+
+    const button = screen.getByRole("button", {
+      name: "Enter fullscreen",
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.closest("[title]")?.getAttribute("title")).toContain(
+      "Fullscreen is not available",
+    );
+  });
+
+  it("clears stale popup view and P/D target state on close", async () => {
+    const onUrlUpdate = vi.fn<OnUrlUpdateFunction>();
+    const onClose = vi.fn();
+    renderPopup(null, null, {
+      searchParams: "?ppv=sessions&jump=D-004",
+      onUrlUpdate,
+      onClose,
+    });
+
+    fireEvent.click(screen.getByTestId("plan-popup-close"));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const writes = onUrlUpdate.mock.calls.map((call) => call[0].queryString);
+      expect(
+        writes.some(
+          (search) => !search.includes("ppv=") && !search.includes("jump="),
+        ),
+      ).toBe(true);
     });
   });
 });

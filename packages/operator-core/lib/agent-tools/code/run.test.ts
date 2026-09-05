@@ -127,6 +127,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
   });
 
+  it('documents colon-only namespace conversion and preserves underscores within segments', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const description = tool?.description ?? '';
+
+    expect(description).toContain('only the namespace/verb separator `:` becomes `.`');
+    expect(description).toContain('while `_` stays inside each segment');
+    expect(description).toContain('work_items:get → tools.work_items.get or tools.workItems.get');
+    expect(description).not.toContain('`:`/`_` → `.`');
+  });
+
   it('documents the explicit final-media return contract', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

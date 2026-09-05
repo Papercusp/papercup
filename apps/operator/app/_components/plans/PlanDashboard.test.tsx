@@ -534,7 +534,7 @@ describe('PlanDashboard activity feed', () => {
 });
 
 describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-2026-08-31)', () => {
-  it('renders the Now card, the segmented band, and the newest-2 decisions', () => {
+  it('renders the Now card, the segmented band, and every decision as a full-detail action', () => {
     seed();
     planData.value = plan({
       slug: 'p1',
@@ -558,15 +558,19 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
     expect(band.querySelectorAll('.plan-dash__band-seg').length).toBe(3); // done, wip, todo
     expect(band.textContent).toContain('2 in progress');
     expect(band.textContent).toContain('nothing needs you');
-    // Decisions: newest 2 by numeric id, newest first; the third is elided.
+    // Decisions: every D-entry stays available, newest first, and opens the
+    // canonical full plan at its exact anchor.
     const dec = screen.getByTestId('plan-dash-decisions');
     const refs = Array.from(dec.querySelectorAll('.plan-dash__dref')).map((n) => n.textContent);
-    expect(refs).toEqual(['D-007', 'D-003']);
-    expect(dec.textContent).toContain('newest 2 of 3');
-    expect(dec.textContent).not.toContain('Oldest ruling');
+    expect(refs).toEqual(['D-007', 'D-003', 'D-001']);
+    expect(dec.textContent).toContain('3 decisions');
+    fireEvent.click(screen.getByTestId('plan-dash-decision-D-001'));
+    expect(setters['ppv']).toHaveBeenCalledWith('plan');
+    expect(setters['jump']).toHaveBeenCalledWith('D-001');
+    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
   });
 
-  it('groups items by status and deep-links a promoted row to ?wpop via its featureId', () => {
+  it('opens every P-item in the full plan and keeps a separate linked-work-item action', () => {
     seed();
     planData.value = plan({
       slug: 'p1',
@@ -586,15 +590,24 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
     expect(items.textContent).toContain('In progress · 1');
     expect(items.textContent).toContain('Up next · 1');
     expect(items.textContent).toContain('Done · 1');
-    // The promoted item renders its work-item ref and deep-links it.
+    // The promoted item retains both identities. Its main action opens P-002
+    // in the canonical plan; the separate work action opens WI-77.
     const promoted = screen.getByTestId('plan-dash-item-P-002');
-    expect(promoted.tagName).toBe('BUTTON');
     expect(promoted.textContent).toContain('WI-77');
-    fireEvent.click(promoted);
+    fireEvent.click(screen.getByTestId('plan-dash-item-detail-P-002'));
+    expect(setters['ppv']).toHaveBeenCalledWith('plan');
+    expect(setters['jump']).toHaveBeenCalledWith('P-002');
+    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
+    expect(setters['wpop']).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('plan-dash-item-work-P-002'));
     expect(setters['wpop']).toHaveBeenCalledWith('papercusp::WI-77');
-    // Unpromoted rows are plain divs showing their P-id.
-    expect(screen.getByTestId('plan-dash-item-P-003').tagName).toBe('DIV');
+
+    // An unpromoted row is equally actionable and targets its own P-anchor.
     expect(screen.getByTestId('plan-dash-item-P-003').textContent).toContain('P-003');
+    fireEvent.click(screen.getByTestId('plan-dash-item-detail-P-003'));
+    expect(setters['jump']).toHaveBeenCalledWith('P-003');
+    expect(setters['wppop']).toHaveBeenLastCalledWith('papercusp::p1');
   });
 
   it('collapses consecutive generic edit rows into a run and promotes rationales to notes', () => {
