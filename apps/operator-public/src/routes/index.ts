@@ -8,7 +8,12 @@ import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
 import { commerceRoute } from './commerce.ts';
 
-export function buildApi(): Hono<{ Bindings: Env }> {
+/**
+ * `fetchImpl` is threaded through to the commerce checkout route so its outbound
+ * provider call can be exercised without network access. Production calls
+ * `buildApi()` with no options and gets the runtime's own fetch.
+ */
+export function buildApi(options: { fetchImpl?: typeof fetch } = {}): Hono<{ Bindings: Env }> {
   const api = new Hono<{ Bindings: Env }>();
   api.get('/', (c) => c.json({ service: 'papercusp-cupboard', status: 'ok' }));
   api.get('/healthz', (c) => c.json({ ok: true }));
@@ -19,7 +24,7 @@ export function buildApi(): Hono<{ Bindings: Env }> {
   api.route('/', adminRoute());
   api.route('/', workspaceHostArtifactsRoute());
   api.route('/', creatorDraftsRoute());
-  api.route('/', commerceRoute());
+  api.route('/', commerceRoute({ fetchImpl: options.fetchImpl }));
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

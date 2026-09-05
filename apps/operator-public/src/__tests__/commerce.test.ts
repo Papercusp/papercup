@@ -11,11 +11,27 @@
  */
 
 import { createHmac } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApi } from '../routes/index.ts';
 import type { Env } from '../env.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
+
+/**
+ * Only `resolveGithubBearer` is mocked — the real `AuthError` is kept, so the
+ * route's `instanceof AuthError` branch is the one actually exercised rather
+ * than a look-alike that would pass whether or not the branch were correct.
+ * The webhook routes below do not consult it (they authenticate by signature).
+ */
+const auth = vi.hoisted(() => ({ resolveGithubBearer: vi.fn() }));
+vi.mock('../auth.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auth.ts')>();
+  return { ...actual, resolveGithubBearer: auth.resolveGithubBearer };
+});
+
+// Imported AFTER the vi.mock above; the mock spreads the real module, so this
+// is the genuine AuthError class the route branches on.
+const { AuthError } = await import('../auth.ts');
 
 const SIGNING_FIXTURE = 'cupboard-fixture-signing-material';
 
@@ -24,11 +40,11 @@ function sign(rawBody: string, timestampSec: number, material = SIGNING_FIXTURE)
   return `t=${timestampSec},v1=${mac}`;
 }
 
-function harness(overrides: Partial<Env> = {}) {
+function harness(overrides: Partial<Env> = {}, options: { fetchImpl?: typeof fetch } = {}) {
   const { db, raw } = makeSqliteDb();
   const { env } = makeEnv({ STRIPE_WEBHOOK_SECRET: SIGNING_FIXTURE, ...overrides });
   env.DB = db;
-  return { api: buildApi(), env, raw };
+  return { api: buildApi(options), env, raw };
 }
 
 const NOW_SEC = Math.floor(Date.now() / 1000);
@@ -266,5 +282,254 @@ describe('migration 019 schema', () => {
         )
         .run(),
     ).toThrow(/CHECK/i);
+  });
+});
+
+/**
+ * POST /commerce/checkout-sessions (D-045 §3c) — the hosted half of the
+ * cupboard:checkout door.
+ *
+ * NOTE the path carries NO `/v1` prefix: `buildApi()` is mounted at the Worker
+ * root and every sub-route uses `api.route('/', …)`. WI-2146343's brief named
+ * `/v1/commerce/checkout-sessions`, which would 404.
+ *
+ * Stripe is reached through an injected `fetchImpl`, so these exercise the real
+ * route, real SQLite and the real migrations without network access. What they
+ * are actually about is the two ways this endpoint can cost real money: creating
+ * a SECOND session for one order, and recording an order for a session that does
+ * not exist.
+ */
+const CATALOG_SEED: Array<[string, string, number, string]> = [
+  ['cat-1', 'product.defined', 1_000, '{"productId":"prod-1","skuRef":"sku-1","creatorId":"creator-1","title":"A Pot"}'],
+  ['cat-2', 'offer.defined', 2_000, '{"offerId":"offer-1","productId":"prod-1","pricingModel":"one-time","price":{"amountMinor":2500,"currency":"USD"}}'],
+];
+
+function seedCatalog(raw: ReturnType<typeof makeSqliteDb>['raw'], extra: Array<[string, string, number, string]> = []): void {
+  for (const [id, kind, at, payload] of [...CATALOG_SEED, ...extra]) {
+    raw
+      .prepare(
+        'INSERT INTO commerce_ledger_events (ledger_event_id, kind, occurred_at_ms, provider, provider_event_id, payload_json) VALUES (?, ?, ?, ?, NULL, ?)',
+      )
+      .run(id, kind, at, 'operator', payload);
+  }
+}
+
+/** Records every outbound Stripe call so "exactly once" is assertable. */
+function stripeStub(response: { status: number; body: string } = { status: 200, body: JSON.stringify({ id: 'cs_test_1', url: 'https://checkout.test/pay/cs_test_1' }) }) {
+  const calls: { url: string; body: string; headers: Record<string, string> }[] = [];
+  const impl = (async (url: unknown, init: unknown) => {
+    const i = init as RequestInit;
+    calls.push({ url: String(url), body: String(i.body ?? ''), headers: (i.headers ?? {}) as Record<string, string> });
+    return new Response(response.body, { status: response.status });
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+const CHECKOUT_BODY = {
+  buyerOrgId: 'buyer-1',
+  offerId: 'offer-1',
+  successUrl: 'https://example.test/ok',
+  cancelUrl: 'https://example.test/no',
+  idempotencyKey: 'checkout-key-1',
+};
+
+async function checkout(api: ReturnType<typeof buildApi>, env: Env, body: Record<string, unknown> = CHECKOUT_BODY) {
+  return api.request(
+    '/commerce/checkout-sessions',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    env,
+  );
+}
+
+describe('POST /commerce/checkout-sessions — authentication', () => {
+  beforeEach(() => {
+    auth.resolveGithubBearer.mockReset();
+  });
+
+  it('401s an unauthenticated caller and never reaches Stripe', async () => {
+    auth.resolveGithubBearer.mockRejectedValue(new AuthError('missing_bearer'));
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+    const res = await checkout(api, env);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'unauthorized', reason: 'missing_bearer' });
+    expect(stripe.calls).toHaveLength(0);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'").get()).toMatchObject({ n: 0 });
+  });
+
+  it('401s BEFORE disclosing whether this deployment has Stripe configured', async () => {
+    // An anonymous caller must not be able to probe deployment config: with no
+    // secret key AND no bearer, the answer is 401, never the 503.
+    auth.resolveGithubBearer.mockRejectedValue(new AuthError('github_rejected'));
+    const stripe = stripeStub();
+    const { api, env } = harness({ STRIPE_SECRET_KEY: undefined }, { fetchImpl: stripe.impl });
+    const res = await checkout(api, env);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /commerce/checkout-sessions — refusals', () => {
+  beforeEach(() => {
+    auth.resolveGithubBearer.mockReset();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 42, login: 'buyer-user' });
+  });
+
+  it('fails CLOSED with 503 when the deployment has no Stripe secret key', async () => {
+    const stripe = stripeStub();
+    const { api, env } = harness({ STRIPE_SECRET_KEY: undefined }, { fetchImpl: stripe.impl });
+    const res = await checkout(api, env);
+    expect(res.status).toBe(503);
+    expect((await res.json() as { error: string }).error).toBe('provider_not_configured');
+    // The point of failing closed: we never called the provider.
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it('404s an offer the ledger has never defined', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, offerId: 'offer-does-not-exist' });
+    expect(res.status).toBe(404);
+    expect((await res.json() as { error: string }).error).toBe('unknown_offer');
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it('422s an inactive offer, distinctly from an unknown one', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw, [
+      ['cat-3', 'offer.defined', 2_500, '{"offerId":"offer-off","productId":"prod-1","pricingModel":"one-time","price":{"amountMinor":2500,"currency":"USD"},"active":false}'],
+    ]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, offerId: 'offer-off' });
+    expect(res.status).toBe(422);
+    expect((await res.json() as { error: string }).error).toBe('inactive_offer');
+  });
+
+  it('422s a free offer — those never go through Checkout', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw, [
+      ['cat-4', 'offer.defined', 2_500, '{"offerId":"offer-free","productId":"prod-1","pricingModel":"free","price":{"amountMinor":0,"currency":"USD"}}'],
+    ]);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, offerId: 'offer-free' });
+    expect(res.status).toBe(422);
+    expect((await res.json() as { error: string }).error).toBe('unsupported_pricing_model');
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it('422s quantity > 1 rather than silently charging for one seat', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+    const res = await checkout(api, env, { ...CHECKOUT_BODY, quantity: 3 });
+    expect(res.status).toBe(422);
+    expect((await res.json() as { error: string }).error).toBe('unsupported_quantity');
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it.each(['buyerOrgId', 'offerId', 'successUrl', 'cancelUrl', 'idempotencyKey'])('400s when %s is missing', async (field) => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+    const body: Record<string, unknown> = { ...CHECKOUT_BODY };
+    delete body[field];
+    const res = await checkout(api, env, body);
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('invalid_request');
+  });
+
+  it('502s when Stripe refuses, and records NO order for a session that does not exist', async () => {
+    const stripe = stripeStub({ status: 402, body: JSON.stringify({ error: { message: 'Your card was declined.' } }) });
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+    const res = await checkout(api, env);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ error: 'provider_error', detail: 'Your card was declined.' });
+    // An order.created whose session does not exist is an order nothing can pay.
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'").get()).toMatchObject({ n: 0 });
+  });
+});
+
+describe('POST /commerce/checkout-sessions — creation and idempotency', () => {
+  beforeEach(() => {
+    auth.resolveGithubBearer.mockReset();
+    auth.resolveGithubBearer.mockResolvedValue({ id: 42, login: 'buyer-user' });
+  });
+
+  it('creates a session, appends order.created, and projects a pending order', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+
+    const res = await checkout(api, env);
+    expect(res.status).toBe(201);
+    const json = await res.json() as { orderId: string; providerSessionId: string; url: string };
+    expect(json.providerSessionId).toBe('cs_test_1');
+    expect(json.url).toBe('https://checkout.test/pay/cs_test_1');
+    expect(json.orderId).toMatch(/^ord_[0-9a-f]{32}$/);
+
+    // Sent form-encoded, carrying the order id Stripe will echo back on the webhook.
+    expect(stripe.calls).toHaveLength(1);
+    expect(stripe.calls[0].headers['content-type']).toBe('application/x-www-form-urlencoded');
+    expect(stripe.calls[0].body).toContain(`client_reference_id=${json.orderId}`);
+    expect(stripe.calls[0].body).toContain('line_items%5B0%5D%5Bprice_data%5D%5Bunit_amount%5D=2500');
+    expect(stripe.calls[0].headers['idempotency-key']).toBe(json.orderId);
+
+    const order = raw.prepare('SELECT order_id, buyer_id, state, amount_minor, provider_ref FROM commerce_orders WHERE order_id = ?').get(json.orderId);
+    expect(order).toMatchObject({ order_id: json.orderId, buyer_id: 'buyer-1', state: 'pending', amount_minor: 2500, provider_ref: 'cs_test_1' });
+  });
+
+  it('replays the SAME idempotencyKey to the same order without a second Stripe call', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+
+    const first = await checkout(api, env);
+    const firstJson = await first.json() as { orderId: string; url: string };
+    const second = await checkout(api, env);
+    const secondJson = await second.json() as { orderId: string; providerSessionId: string; url: string; replayed: boolean };
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(200);
+    expect(secondJson.replayed).toBe(true);
+    expect(secondJson.orderId).toBe(firstJson.orderId);
+    expect(secondJson.providerSessionId).toBe('cs_test_1');
+    // The URL is not reducer state — it is read back from the originating event.
+    expect(secondJson.url).toBe(firstJson.url);
+
+    // The two properties that make this idempotent rather than merely repeatable.
+    expect(stripe.calls).toHaveLength(1);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'").get()).toMatchObject({ n: 1 });
+  });
+
+  it('gives two buyers sharing an idempotencyKey DIFFERENT orders', async () => {
+    // The key is client-chosen, so it is scoped to its buyer: otherwise the
+    // second buyer would be handed the first buyer's order and checkout URL.
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+
+    const a = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'buyer-a' });
+    const b = await checkout(api, env, { ...CHECKOUT_BODY, buyerOrgId: 'buyer-b' });
+    const aJson = await a.json() as { orderId: string };
+    const bJson = await b.json() as { orderId: string };
+
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(aJson.orderId).not.toBe(bJson.orderId);
+    expect(stripe.calls).toHaveLength(2);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM commerce_ledger_events WHERE kind = 'order.created'").get()).toMatchObject({ n: 2 });
+  });
+
+  it('a different idempotencyKey for the same buyer+offer opens a distinct order', async () => {
+    const stripe = stripeStub();
+    const { api, env, raw } = harness({ STRIPE_SECRET_KEY: 'test-secret-material' }, { fetchImpl: stripe.impl });
+    seedCatalog(raw);
+
+    const first = await checkout(api, env);
+    const second = await checkout(api, env, { ...CHECKOUT_BODY, idempotencyKey: 'checkout-key-2' });
+    expect((await first.json() as { orderId: string }).orderId).not.toBe((await second.json() as { orderId: string }).orderId);
+    expect(stripe.calls).toHaveLength(2);
   });
 });

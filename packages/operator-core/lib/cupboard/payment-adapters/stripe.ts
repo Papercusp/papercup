@@ -241,3 +241,106 @@ export function buildStripeCheckoutSessionParams(input: { order: Order; offer: O
     },
   };
 }
+
+export const STRIPE_CHECKOUT_SESSIONS_URL = 'https://api.stripe.com/v1/checkout/sessions';
+
+/**
+ * Flatten a Checkout params object into Stripe's form encoding.
+ *
+ * Stripe's REST API is `application/x-www-form-urlencoded`, NOT JSON — nested
+ * structures travel as bracket paths (`line_items[0][price_data][currency]`).
+ * Posting `JSON.stringify(params)` is accepted by the transport and then
+ * rejected as a malformed request, which is why this lives beside the builder
+ * rather than being improvised at the call site.
+ *
+ * `undefined` and `null` members are DROPPED, not encoded as the strings
+ * "undefined"/"null": `buildStripeCheckoutSessionParams` leaves
+ * `payment_intent_data` undefined for non-one-time offers, and sending that
+ * literal would be a Stripe 400.
+ */
+export function encodeStripeFormParams(params: Record<string, unknown>): URLSearchParams {
+  const out = new URLSearchParams();
+  const walk = (prefix: string, value: unknown): void => {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => walk(`${prefix}[${index}]`, entry));
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const [key, inner] of Object.entries(value as Record<string, unknown>)) walk(`${prefix}[${key}]`, inner);
+      return;
+    }
+    out.append(prefix, String(value));
+  };
+  for (const [key, value] of Object.entries(params)) walk(key, value);
+  return out;
+}
+
+export type StripeCheckoutSessionResult =
+  | { ok: true; sessionId: string; url: string }
+  | { ok: false; code: 'provider-error' | 'malformed-response'; status: number | null; detail: string };
+
+/**
+ * POST a built params object to Stripe and return the session handle.
+ *
+ * `fetchImpl` is injected so a caller can exercise this without network access,
+ * and the secret key is a parameter rather than a module-scope global, so a
+ * deployment that has not configured one cannot post unauthenticated by default.
+ *
+ * `idempotencyKey` is forwarded as Stripe's own `Idempotency-Key` header: a
+ * retry — ours or a client replay — must not create a SECOND Checkout Session
+ * and therefore a second charge. Ledger-side idempotency cannot cover the
+ * window between the Stripe call and the ledger append; only the provider can,
+ * which is what this header is for.
+ */
+export async function createStripeCheckoutSession(input: {
+  secretKey: string;
+  params: Record<string, unknown>;
+  fetchImpl: typeof fetch;
+  idempotencyKey?: string;
+}): Promise<StripeCheckoutSessionResult> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${input.secretKey}`,
+    'content-type': 'application/x-www-form-urlencoded',
+  };
+  if (input.idempotencyKey) headers['idempotency-key'] = input.idempotencyKey;
+
+  let response: Response;
+  try {
+    response = await input.fetchImpl(STRIPE_CHECKOUT_SESSIONS_URL, {
+      method: 'POST',
+      headers,
+      body: encodeStripeFormParams(input.params).toString(),
+    });
+  } catch (err) {
+    return { ok: false, code: 'provider-error', status: null, detail: err instanceof Error ? err.message : String(err) };
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    // Surface Stripe's own message when it sent one, never the raw body, which
+    // echoes the request (including params we would rather not re-emit).
+    let detail = `stripe responded ${response.status}`;
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: unknown } };
+      if (typeof parsed?.error?.message === 'string') detail = parsed.error.message;
+    } catch {
+      /* non-JSON error body — keep the status-only detail */
+    }
+    return { ok: false, code: 'provider-error', status: response.status, detail };
+  }
+
+  let parsed: { id?: unknown; url?: unknown };
+  try {
+    parsed = JSON.parse(text) as { id?: unknown; url?: unknown };
+  } catch {
+    return { ok: false, code: 'malformed-response', status: response.status, detail: 'stripe response was not JSON' };
+  }
+  if (typeof parsed.id !== 'string' || !parsed.id) {
+    return { ok: false, code: 'malformed-response', status: response.status, detail: 'stripe response carried no session id' };
+  }
+  if (typeof parsed.url !== 'string' || !parsed.url) {
+    return { ok: false, code: 'malformed-response', status: response.status, detail: 'stripe response carried no checkout url' };
+  }
+  return { ok: true, sessionId: parsed.id, url: parsed.url };
+}

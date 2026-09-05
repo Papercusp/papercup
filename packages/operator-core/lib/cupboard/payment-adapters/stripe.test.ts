@@ -26,7 +26,10 @@ import {
   buildStripeCheckoutSessionParams,
   computeStripeSignature,
   createStripeAdapter,
+  createStripeCheckoutSession,
+  encodeStripeFormParams,
   parseStripeSignatureHeader,
+  STRIPE_CHECKOUT_SESSIONS_URL,
   STRIPE_DEFAULT_TOLERANCE_SEC,
   STRIPE_PROVIDER,
 } from './stripe';
@@ -520,5 +523,135 @@ describe('stripe → inbox → ledger', () => {
     const replay = await ingestWebhook({ adapter, store, request });
     expect(replay.outcome).toBe('duplicate');
     expect(store.records()).toHaveLength(1);
+  });
+});
+
+/**
+ * The transport half of Checkout (D-045 §3c). `buildStripeCheckoutSessionParams`
+ * is pure and was already covered above; what is asserted here is the part that
+ * actually reaches Stripe — the FORM encoding (their API is not JSON) and the
+ * failure ladder, since every one of those branches is a path a live buyer can
+ * hit and none of them can be observed from the builder's return value.
+ */
+describe('encodeStripeFormParams', () => {
+  it('flattens nested structures into Stripe bracket paths', () => {
+    const encoded = encodeStripeFormParams({
+      mode: 'payment',
+      line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: 2500 } }],
+      metadata: { orderId: 'ord_1' },
+    });
+    expect(encoded.get('mode')).toBe('payment');
+    expect(encoded.get('line_items[0][quantity]')).toBe('1');
+    expect(encoded.get('line_items[0][price_data][currency]')).toBe('usd');
+    expect(encoded.get('line_items[0][price_data][unit_amount]')).toBe('2500');
+    expect(encoded.get('metadata[orderId]')).toBe('ord_1');
+  });
+
+  it('DROPS undefined and null rather than encoding the literal strings', () => {
+    // buildStripeCheckoutSessionParams leaves payment_intent_data undefined for
+    // non-one-time offers; encoding it as "undefined" is a Stripe 400.
+    const encoded = encodeStripeFormParams({ a: 'kept', payment_intent_data: undefined, b: null });
+    expect(encoded.has('payment_intent_data')).toBe(false);
+    expect(encoded.has('b')).toBe(false);
+    expect(encoded.get('a')).toBe('kept');
+    expect([...encoded.keys()]).toEqual(['a']);
+  });
+
+  it('round-trips a real built params object without emitting undefined', () => {
+    const subProduct: Product = { productId: 'prod-1', skuRef: 'sku-1', creatorId: 'creator-1', title: 'A Pot', active: true };
+    const subOffer: Offer = { offerId: 'offer-1', productId: 'prod-1', pricingModel: 'subscription', price: { amountMinor: 2500, currency: 'USD' }, active: true };
+    const subOrder: Order = {
+      orderId: 'ord_real',
+      offerId: 'offer-1',
+      productId: 'prod-1',
+      buyerId: 'buyer-1',
+      amount: { amountMinor: 2500, currency: 'USD' },
+      state: 'pending',
+      provider: STRIPE_PROVIDER,
+      providerRef: null,
+      refundedMinor: 0,
+      createdAtMs: 0,
+      updatedAtMs: 0,
+    };
+    const built = buildStripeCheckoutSessionParams({
+      order: subOrder,
+      offer: subOffer,
+      product: subProduct,
+      successUrl: 'https://example.test/ok',
+      cancelUrl: 'https://example.test/no',
+    });
+    if (!built.ok) throw new Error(`expected a build, got ${built.code}`);
+    const encoded = encodeStripeFormParams(built.params);
+    expect(encoded.toString()).not.toContain('undefined');
+    expect(encoded.get('mode')).toBe('subscription');
+    expect(encoded.get('client_reference_id')).toBe('ord_real');
+    expect(encoded.get('line_items[0][price_data][recurring][interval]')).toBe('month');
+  });
+});
+
+describe('createStripeCheckoutSession', () => {
+  function stubFetch(response: { status: number; body: string } | Error) {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const impl = (async (url: unknown, init: unknown) => {
+      calls.push({ url: String(url), init: init as RequestInit });
+      if (response instanceof Error) throw response;
+      return new Response(response.body, { status: response.status });
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  const params = { mode: 'payment', client_reference_id: 'ord_1' };
+
+  it('posts form-encoded to the Checkout Sessions endpoint with the bearer key', async () => {
+    const { impl, calls } = stubFetch({ status: 200, body: JSON.stringify({ id: 'cs_live_1', url: 'https://checkout.test/s' }) });
+    const result = await createStripeCheckoutSession({ secretKey: 'test-key-material', params, fetchImpl: impl });
+
+    expect(result).toEqual({ ok: true, sessionId: 'cs_live_1', url: 'https://checkout.test/s' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(STRIPE_CHECKOUT_SESSIONS_URL);
+    expect(calls[0].init.method).toBe('POST');
+    const headers = calls[0].init.headers as Record<string, string>;
+    expect(headers.authorization).toBe('Bearer test-key-material');
+    // The content type is the whole point: JSON here is silently malformed to Stripe.
+    expect(headers['content-type']).toBe('application/x-www-form-urlencoded');
+    expect(calls[0].init.body).toBe('mode=payment&client_reference_id=ord_1');
+  });
+
+  it('forwards an idempotency key as Stripe’s own header, and omits it when absent', async () => {
+    const withKey = stubFetch({ status: 200, body: JSON.stringify({ id: 'cs_1', url: 'https://checkout.test/s' }) });
+    await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: withKey.impl, idempotencyKey: 'ord_abc' });
+    expect((withKey.calls[0].init.headers as Record<string, string>)['idempotency-key']).toBe('ord_abc');
+
+    const without = stubFetch({ status: 200, body: JSON.stringify({ id: 'cs_1', url: 'https://checkout.test/s' }) });
+    await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: without.impl });
+    expect('idempotency-key' in (without.calls[0].init.headers as Record<string, string>)).toBe(false);
+  });
+
+  it('surfaces Stripe’s own error message on a non-2xx', async () => {
+    const { impl } = stubFetch({ status: 402, body: JSON.stringify({ error: { message: 'Your card was declined.' } }) });
+    const result = await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: impl });
+    expect(result).toEqual({ ok: false, code: 'provider-error', status: 402, detail: 'Your card was declined.' });
+  });
+
+  it('falls back to a status-only detail when the error body is not JSON', async () => {
+    const { impl } = stubFetch({ status: 500, body: '<html>gateway</html>' });
+    const result = await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: impl });
+    expect(result).toEqual({ ok: false, code: 'provider-error', status: 500, detail: 'stripe responded 500' });
+  });
+
+  it('reports a transport throw as a provider error rather than rejecting', async () => {
+    const { impl } = stubFetch(new Error('connect ECONNREFUSED'));
+    const result = await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: impl });
+    expect(result).toEqual({ ok: false, code: 'provider-error', status: null, detail: 'connect ECONNREFUSED' });
+  });
+
+  it.each([
+    ['not JSON at all', 'yes ok', 'stripe response was not JSON'],
+    ['a 200 carrying no session id', JSON.stringify({ url: 'https://checkout.test/s' }), 'stripe response carried no session id'],
+    ['a 200 carrying no url', JSON.stringify({ id: 'cs_1' }), 'stripe response carried no checkout url'],
+  ])('refuses %s instead of returning a half-formed handle', async (_label, body, detail) => {
+    const { impl } = stubFetch({ status: 200, body });
+    const result = await createStripeCheckoutSession({ secretKey: 'k', params, fetchImpl: impl });
+    expect(result).toEqual({ ok: false, code: 'malformed-response', status: 200, detail });
   });
 });

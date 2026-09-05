@@ -21,6 +21,13 @@ export interface Env {
    *  a deployment that has not configured it fails CLOSED — the commerce webhook
    *  route answers 503 rather than accepting a delivery it cannot authenticate. */
   STRIPE_WEBHOOK_SECRET?: string;
+  /** Stripe API secret key (`sk_…`), installed via
+   *  `wrangler secret put STRIPE_SECRET_KEY` (P-010 / D-045 §3c). OPTIONAL for
+   *  the same fail-closed reason as the webhook secret above: a deployment that
+   *  has not configured it answers 503 on the checkout-session route rather than
+   *  attempting an unauthenticated call to Stripe. Installing it in a deployment
+   *  is an OWNER credential action, deliberately outside any agent's scope. */
+  STRIPE_SECRET_KEY?: string;
 
   // Vars
   ENVIRONMENT: string;
