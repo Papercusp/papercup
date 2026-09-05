@@ -306,6 +306,13 @@
     // operator-core lint:tsc by +3 against a baseline of 0 — one missing declaration
     // surfacing as three errors, which is exactly the absorption this list prevents.
     "scripts/check-partial-install.mjs",
+    // WI-2144851 / P-007 — the reachable-advisory gate. Registered for this list's FIRST
+    // reason: it is imported directly by reachable-advisories-guard.test.ts, which is what
+    // makes the gate's discrimination falsifiable. Enrolling it also typechecks `analyze()`'s
+    // arity at the call site — the two-lens reconciliation added a 4th parameter
+    // (fullAuditJson), and under a `@ts-ignore`d import a call that silently dropped it
+    // would still compile while quietly restoring the optimistic single-lens reading.
+    "scripts/check-reachable-advisories.mjs",
     // EI-19313879938405219 — the sidecar externals-boundary verifier. Registered for
     // this list's FIRST reason: it is imported directly by
     // verify-sidecar-host-compat.test.ts, which is what makes the checker's fail-OPEN

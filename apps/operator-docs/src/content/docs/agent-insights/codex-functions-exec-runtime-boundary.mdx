@@ -5,14 +5,18 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Codex functions.exec is a V8 isolate: use session-preserving recovery paths"
-description: "Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, and use tracked-session ptool for authenticated local agent-tools verification."
+description: "Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion and raw markdown backticks out of outer JS template literals, quote heredoc delimiters, send at most one apply_patch operation per target path, and use tracked-session ptool for authenticated local agent-tools verification."
 type: Insight
 discovered: 2026-08-12
-tags: ["codex", "capability", "mcp", "recovery"]
+tags: ["codex", "capability", "mcp", "recovery", "apply_patch"]
 status: active
 documents:
   - "apps/operator/scripts/ptool.mjs"
   - "packages/agent-mcp/snapshot-tools.sh"
+  - "apps/operator/scripts/hooks/cc/pretooluse-apply-patch-duplicate-target-guard.mjs"
+  - "apps/operator/prompts/papercusp-su.codex.md"
+plans:
+  - "fleet-friction-remediation-2026-08-21"
 ---
 
 # The boundary
@@ -45,6 +49,48 @@ const cmd = `ptool tools:find --json - \"\${PAPERCUSP_WORKSPACE}\"`;
 ```
 
 The first form avoids JavaScript interpolation entirely; the second produces a literal `${PAPERCUSP_WORKSPACE}` for the shell to expand. This is separate from `ptool`'s own workspace resolution and does not change the authenticated recovery paths below.
+
+# The heredoc boundary: quote the delimiter, terminate at column 0
+
+`ptool` payloads reach the shell through a heredoc, and the same "one layer resolves before the next" logic applies one level down.
+
+Always quote the opening delimiter — `<<'JSON'`, never `<<JSON`. Unquoted, the shell expands `$`, backticks and backslashes *inside the body*, so a JSON payload containing a `$`, a shell-looking token, or a Windows path is silently corrupted before `ptool` parses it. Quoted, the body passes through byte-for-byte.
+
+The closing delimiter must sit at column 0, alone on its line. Leading whitespace — an editor auto-indent, or a heredoc nested inside an indented `if`/`for` — means the shell never recognises the terminator and swallows the rest of the script as payload.
+
+Do not put arbitrary JSON in shell single quotes: one apostrophe in prose, completion evidence, or a work-item body ends the quote and breaks the command before `ptool` runs. Use the quoted heredoc, or `--json-file` for anything large or awkward.
+
+These compose with the JavaScript boundary above. A heredoc assembled inside a `functions.exec` template literal is subject to **both** V8 interpolation and shell expansion, so prefer an ordinary JavaScript string there.
+
+# apply_patch: at most one operation per target path
+
+An `apply_patch` envelope may carry at most one operation per target path. Two `*** Update File:` blocks naming the same file reject the entire patch before anything is written:
+
+```
+apply_patch verification failed: invalid patch: multiple operations target <path>
+```
+
+This is deterministic validation, not a flake: re-sending the same patch reproduces it exactly. The rejection is atomic, so nothing needs cleaning up — only the envelope shape is wrong.
+
+The shape that triggers it is a reasonable one, which is why it recurs. An author keeps an unrelated edit visually separate by giving it its own block, frequently with a *different* file's block in between, so the collision is not adjacent in the source and does not look wrong on review. The class was filed independently five times (EI-21353344120350526, EI-21354846297369687, EI-21565696681975825, EI-21573638140720842, EI-22346861820470210); the last states the gap precisely — the behaviour is deterministic "but was not surfaced before submission".
+
+The fix is mechanical: one block per FILE, one `@@` hunk per REGION. The hunks remain exactly as separate and as readable as the blocks were, so the change itself needs no restructuring.
+
+```
+*** Begin Patch
+*** Update File: packages/operator-core/lib/queue.ts
+@@ class RepairQueue
+-  const a = 1;
++  const a = 2;
+@@ function retire
+-  return null;
++  return queue;
+*** End Patch
+```
+
+Editing several *different* files in one patch is correct and unaffected, as is a rename (`*** Update File:` followed by `*** Move to:`) — that pair is one operation, not two.
+
+A managed Codex home installs `pretooluse-apply-patch-duplicate-target-guard.mjs`, which detects this before dispatch and names the colliding paths plus the merge fix. It fails open by design, and it only inspects column-0 `*** ` operation headers, so a patch whose *content* documents apply_patch (this page, for instance) is never falsely denied.
 
 # Supported recovery paths
 
