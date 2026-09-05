@@ -212,7 +212,7 @@ function perUseTerms(value: unknown): PerUseOfferTerms | null {
     return null;
   }
   return {
-    unitPriceMicros: terms.unitPriceMicros,
+    unitPriceMicros: terms.unitPriceMicros as number,
     meterUnit: terms.meterUnit,
     priceVersion: terms.priceVersion,
     splitManifestHash: terms.splitManifestHash.toLowerCase(),
