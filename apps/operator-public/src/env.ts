@@ -16,6 +16,11 @@ export interface Env {
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
   IP_HASH_PEPPER: string;
+  /** Stripe endpoint signing secret (`whsec_…`), installed via
+   *  `wrangler secret put STRIPE_WEBHOOK_SECRET` (P-010). OPTIONAL on purpose:
+   *  a deployment that has not configured it fails CLOSED — the commerce webhook
+   *  route answers 503 rather than accepting a delivery it cannot authenticate. */
+  STRIPE_WEBHOOK_SECRET?: string;
 
   // Vars
   ENVIRONMENT: string;

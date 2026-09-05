@@ -270,23 +270,28 @@ describe('refundDashboard', () => {
     expect(pos.refundableMinor).toBe(0);
   });
 
-  it('holds at zero when TWO full refunds are pending at once', () => {
-    // Proof-by-execution of why this rail exists. `refund.requested` validates
-    // against `Order.refundedMinor`, which only advances on `refund.succeeded`
-    // — so two full-amount requests are BOTH accepted, and only the second
-    // `refund.succeeded` dies with `refund-exceeds-order`. A dashboard reading
-    // refundedMinor alone would report the full amount refundable throughout.
+  it('holds at zero once a second full refund is REFUSED at request time', () => {
+    // This test was filed (EI-22438759043480870) as proof-by-execution that the
+    // reducer accepted TWO full-amount pending refunds, because `refund.requested`
+    // validated against `Order.refundedMinor`, which only advances on
+    // `refund.succeeded`. That defect is FIXED in P-010: capacity is now
+    // settled + RESERVED, so the second request is refused where it is still
+    // actionable rather than at settlement, on a refund already promised.
+    //
+    // The dashboard rail this test guards is unchanged and still load-bearing:
+    // `refundableMinor` is computed from settled + pending, never from
+    // `refundedMinor` alone, so a refund in flight is never reported refundable.
     const ledger = ledgerOf([
       ...baseEvents(),
       ev('refund.requested', { refundId: 'ref-1', orderId: 'ord-1', amount: USD(5000) }),
       ev('refund.requested', { refundId: 'ref-2', orderId: 'ord-1', amount: USD(5000) }),
     ]);
-    expect(ledger.rejected).toEqual([]);
-    expect(ledger.refunds.size).toBe(2);
+    expect(ledger.rejected.map((r) => r.code)).toEqual(['refund-exceeds-order']);
+    expect(ledger.refunds.size).toBe(1);
     expect(ledger.orders.get('ord-1')!.refundedMinor).toBe(0);
 
     const [pos] = refundDashboard({ ledger, installations: [] });
-    expect(pos.pendingMinor).toBe(10_000);
+    expect(pos.pendingMinor).toBe(5000);
     expect(pos.refundableMinor).toBe(0);
   });
 

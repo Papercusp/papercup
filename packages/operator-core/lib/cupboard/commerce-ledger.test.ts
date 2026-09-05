@@ -216,6 +216,79 @@ describe('reduceLedger — money and transition rejections', () => {
     expect(state.orders.get('order-1')?.refundedMinor).toBe(4000);
   });
 
+  // Regression, EI-22438759043480870 (filed by su-43e03bbc against P-011's dashboard work).
+  // Capacity for a NEW request is settled + RESERVED. Checking settlement alone let two
+  // full-amount requests both sit pending, moving the refusal from request time to
+  // settlement time — where it lands on a refund an operator already promised a customer.
+  it('rejects a SECOND full refund REQUEST while the first is still pending', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(5000) }, { at: 6_000 }),
+      ev('refund.requested', { refundId: 'ref-2', orderId: 'order-1', amount: USD(5000) }, { at: 7_000 }),
+    ]);
+    expect(codesOf(state)).toEqual(['refund-exceeds-order']);
+    expect(state.refunds.size).toBe(1);
+    expect(state.refunds.get('ref-1')).toMatchObject({ state: 'pending' });
+  });
+
+  it('counts pending requests toward capacity cumulatively, not just the full-amount case', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(3000) }, { at: 6_000 }),
+      ev('refund.requested', { refundId: 'ref-2', orderId: 'order-1', amount: USD(2000) }, { at: 7_000 }),
+      ev('refund.requested', { refundId: 'ref-3', orderId: 'order-1', amount: USD(1) }, { at: 8_000 }),
+    ]);
+    expect(codesOf(state)).toEqual(['refund-exceeds-order']);
+    expect([...state.refunds.keys()].sort()).toEqual(['ref-1', 'ref-2']);
+  });
+
+  it('releases the reservation when a pending refund fails, freeing the capacity again', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(5000) }, { at: 6_000 }),
+      ev('refund.failed', { refundId: 'ref-1' }, { at: 7_000 }),
+      ev('refund.requested', { refundId: 'ref-2', orderId: 'order-1', amount: USD(5000) }, { at: 8_000 }),
+    ]);
+    expect(state.rejected).toEqual([]);
+    expect(state.refunds.get('ref-2')).toMatchObject({ state: 'pending' });
+  });
+
+  it('does not let one order’s pending refund consume another order’s capacity', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('order.created', { orderId: 'order-2', offerId: 'offer-1', buyerId: 'buyer-2' }, { at: 5_000 }),
+      ev('order.paid', { orderId: 'order-2' }, { at: 5_500 }),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(5000) }, { at: 6_000 }),
+      ev('refund.requested', { refundId: 'ref-2', orderId: 'order-2', amount: USD(5000) }, { at: 7_000 }),
+    ]);
+    expect(state.rejected).toEqual([]);
+    expect(state.refunds.size).toBe(2);
+  });
+
+  it('settles a pending refund without double-counting its own reservation', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(5000) }, { at: 6_000 }),
+      ev('refund.succeeded', { refundId: 'ref-1', orderId: 'order-1', amount: USD(5000) }, { at: 7_000 }),
+    ]);
+    expect(state.rejected).toEqual([]);
+    expect(state.orders.get('order-1')).toMatchObject({ state: 'refunded', refundedMinor: 5000 });
+    expect(state.entitlements.get(entitlementIdFor('order-1'))).toMatchObject({ state: 'revoked' });
+  });
+
+  // Settlement deliberately does NOT reserve against other pending refunds: a provider-side
+  // refund that already executed is REALITY, and the ledger must record it. The reservation
+  // exists to refuse a request we have not yet promised, never to deny a completed fact.
+  it('still records a provider-side settlement while another refund is pending', () => {
+    const state = reduceLedger([
+      ...paidOrderEvents(5000),
+      ev('refund.requested', { refundId: 'ref-1', orderId: 'order-1', amount: USD(2000) }, { at: 6_000 }),
+      ev('refund.succeeded', { refundId: 'ref-provider', orderId: 'order-1', amount: USD(5000) }, { at: 7_000 }),
+    ]);
+    expect(state.rejected).toEqual([]);
+    expect(state.orders.get('order-1')).toMatchObject({ state: 'refunded', refundedMinor: 5000 });
+  });
+
   it('rejects a currency mismatch between refund and order', () => {
     const state = reduceLedger([
       ...paidOrderEvents(5000),
