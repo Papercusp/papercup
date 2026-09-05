@@ -41,7 +41,13 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 import { resolveCupboardBaseUrl } from './base-url';
 import type { Installation, Organization, SeatPolicy, CreatorProfile } from './commerce-accounts';
-import { reduceLedger, type LedgerEvent } from './commerce-ledger';
+import {
+  reduceLedger,
+  type LedgerEvent,
+  type Money,
+  type PerUseOfferTerms,
+  type PricingModel,
+} from './commerce-ledger';
 import {
   gateCheckout,
   gateCommerceDashboards,
@@ -173,11 +179,28 @@ export type CheckoutHostedErrorCode =
 
 export interface CheckoutSessionOk {
   readonly ok: true;
+  readonly kind: 'hosted-checkout';
   readonly orderId: string;
   readonly providerSessionId: string;
   readonly url: string;
   /** True when the route replayed an existing order for a repeated key (200). */
   readonly idempotentReplay: boolean;
+}
+
+export interface PerUseCheckoutPreflightOk {
+  readonly ok: true;
+  readonly kind: 'microcharge-preflight';
+  readonly rail: 'p2p-microcharge';
+  readonly preflightId: string;
+  readonly channel: {
+    readonly channelId: string;
+    readonly payer: string;
+    readonly seller: string;
+    readonly releaseRef: string;
+    readonly escrowMicros: string;
+    readonly committedMicros: string;
+  };
+  readonly terms: PerUseOfferTerms & { readonly currency: string };
 }
 
 export interface CheckoutSessionFailed {
@@ -187,7 +210,12 @@ export interface CheckoutSessionFailed {
   readonly detail: string | null;
 }
 
-export type CheckoutSessionResult = CheckoutSessionOk | CheckoutSessionFailed;
+export type CheckoutSessionSuccess =
+  | CheckoutSessionOk
+  | PerUseCheckoutPreflightOk;
+export type CheckoutSessionResult =
+  | CheckoutSessionSuccess
+  | CheckoutSessionFailed;
 
 export interface CheckoutTransportDeps {
   readonly fetchImpl?: typeof fetch;
@@ -263,6 +291,71 @@ export async function postCheckoutSession(
     };
   }
 
+  if (payload.checkoutKind === 'microcharge-preflight') {
+    const channel = payload.channel;
+    const terms = payload.terms;
+    if (
+      payload.rail !== 'p2p-microcharge' ||
+      typeof payload.preflightId !== 'string' ||
+      !channel ||
+      typeof channel !== 'object' ||
+      Array.isArray(channel) ||
+      !terms ||
+      typeof terms !== 'object' ||
+      Array.isArray(terms)
+    ) {
+      return {
+        ok: false,
+        status: response.status,
+        error: 'malformed_response',
+        detail: `expected a microcharge preflight contract from ${CHECKOUT_SESSIONS_PATH}`,
+      };
+    }
+    const c = channel as Record<string, unknown>;
+    const t = terms as Record<string, unknown>;
+    if (
+      typeof c.channelId !== 'string' ||
+      typeof c.payer !== 'string' ||
+      typeof c.seller !== 'string' ||
+      typeof c.releaseRef !== 'string' ||
+      typeof c.escrowMicros !== 'string' ||
+      typeof c.committedMicros !== 'string' ||
+      !Number.isSafeInteger(t.unitPriceMicros) ||
+      typeof t.meterUnit !== 'string' ||
+      typeof t.priceVersion !== 'string' ||
+      typeof t.splitManifestHash !== 'string' ||
+      typeof t.currency !== 'string'
+    ) {
+      return {
+        ok: false,
+        status: response.status,
+        error: 'malformed_response',
+        detail: `expected complete channel + terms from ${CHECKOUT_SESSIONS_PATH}`,
+      };
+    }
+    return {
+      ok: true,
+      kind: 'microcharge-preflight',
+      rail: 'p2p-microcharge',
+      preflightId: payload.preflightId,
+      channel: {
+        channelId: c.channelId,
+        payer: c.payer,
+        seller: c.seller,
+        releaseRef: c.releaseRef,
+        escrowMicros: c.escrowMicros,
+        committedMicros: c.committedMicros,
+      },
+      terms: {
+        unitPriceMicros: t.unitPriceMicros as number,
+        meterUnit: t.meterUnit,
+        priceVersion: t.priceVersion,
+        splitManifestHash: t.splitManifestHash,
+        currency: t.currency,
+      },
+    };
+  }
+
   const orderId = payload.orderId;
   const providerSessionId = payload.providerSessionId;
   const url = payload.url;
@@ -279,6 +372,7 @@ export async function postCheckoutSession(
 
   return {
     ok: true,
+    kind: 'hosted-checkout',
     orderId,
     providerSessionId,
     url,
@@ -287,11 +381,125 @@ export async function postCheckoutSession(
 }
 
 // ---------------------------------------------------------------------------
+// Hosted offer authoring
+// ---------------------------------------------------------------------------
+
+export const COMMERCE_OFFERS_PATH = '/commerce/offers';
+
+export interface CommerceOfferPublishRequest {
+  readonly productId: string;
+  readonly offerId: string;
+  readonly skuRef: string;
+  readonly title: string;
+  readonly pricingModel: PricingModel;
+  readonly price: Money;
+  readonly perUse?: PerUseOfferTerms;
+  readonly active?: boolean;
+}
+
+export type CommerceOfferPublishResult =
+  | {
+      readonly ok: true;
+      readonly replayed: boolean;
+      readonly product: Record<string, unknown>;
+      readonly offer: Record<string, unknown>;
+    }
+  | {
+      readonly ok: false;
+      readonly status: number;
+      readonly error: string;
+      readonly detail: string | null;
+    };
+
+/** Publish a product + offer through the authenticated hosted ledger door. */
+export async function postCommerceOffer(
+  request: CommerceOfferPublishRequest,
+  deps: CheckoutTransportDeps = {},
+): Promise<CommerceOfferPublishResult> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = (deps.baseUrl ?? resolveCupboardBaseUrl()).replace(/\/+$/, '');
+
+  let token = deps.authToken;
+  if (token === undefined) {
+    const { getGhAuthToken } = await import('../identity/gh-token');
+    const resolved = await getGhAuthToken();
+    if (resolved.kind !== 'ok') {
+      return {
+        ok: false,
+        status: 401,
+        error: 'gh_auth_required',
+        detail: 'no GitHub token is available to authenticate the offer publish request',
+      };
+    }
+    token = resolved.token;
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(`${base}${COMMERCE_OFFERS_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: 'transport_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  const payload = (body ?? {}) as Record<string, unknown>;
+  if (response.status !== 200 && response.status !== 201) {
+    return {
+      ok: false,
+      status: response.status,
+      error:
+        typeof payload.error === 'string'
+          ? payload.error
+          : `http_${response.status}`,
+      detail:
+        typeof payload.detail === 'string' ? payload.detail : null,
+    };
+  }
+  if (
+    typeof payload.replayed !== 'boolean' ||
+    !payload.product ||
+    typeof payload.product !== 'object' ||
+    !payload.offer ||
+    typeof payload.offer !== 'object'
+  ) {
+    return {
+      ok: false,
+      status: response.status,
+      error: 'malformed_response',
+      detail: `expected { replayed, product, offer } from ${COMMERCE_OFFERS_PATH}`,
+    };
+  }
+  return {
+    ok: true,
+    replayed: payload.replayed,
+    product: payload.product as Record<string, unknown>,
+    offer: payload.offer as Record<string, unknown>,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The four calls the doors make
 // ---------------------------------------------------------------------------
 
 export type CheckoutDoorOutcome =
-  | { readonly ok: true; readonly session: CheckoutSessionOk; readonly orderId: string }
+  | { readonly ok: true; readonly session: CheckoutSessionSuccess }
   | { readonly ok: false; readonly code: string; readonly detail: string; readonly status?: number };
 
 /**
@@ -314,7 +522,7 @@ export async function checkoutDoor(
   if (!session.ok) {
     return { ok: false, code: session.error, detail: session.detail ?? '', status: session.status };
   }
-  return { ok: true, session, orderId: session.orderId };
+  return { ok: true, session };
 }
 
 export async function refundRequestDoor(input: RefundDoorInput): Promise<RefundDoorDecision> {
