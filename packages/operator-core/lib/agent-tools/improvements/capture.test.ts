@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
-import captureTool, { defaultScorecardConditionKey } from './capture';
+import captureTool, { defaultScorecardConditionKey, deriveToolFailureCaptureText } from './capture';
 import { coerceCaptureArgs, coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import {
   captureImprovement,
@@ -884,6 +884,58 @@ describe('defaultScorecardConditionKey (EI-19325151590626958) — the pure deriv
     // scorecard-emission-pulse / overwatch-scorecard-backstop use `scorecard-pulse:<hive>` and
     // `scorecard-backstop:<hive>` — rubric/emitter AND hive, never a bare rubric.
     expect(defaultScorecardConditionKey({ rubricRef: 'x', sourceHive: 'y' })).toMatch(/^scorecard:[^:]+:[^:]+$/);
+  });
+});
+
+describe('deriveToolFailureCaptureText (WI-2146402) — title and body derive independently', () => {
+  const toolFailure = {
+    toolName: 'facts:assert',
+    errorCode: 'invalid_args',
+    message: 'Attempting to assert a scoped work-item fact without harness was rejected.',
+    reproduced: true,
+  } as const;
+
+  it('derives a body from toolFailure even when the caller supplies its own title', () => {
+    // This is the exact defect shape measured live: 23 of 24 permanently-empty
+    // ungraded filings carried a custom title alongside a toolFailure report and no
+    // body — the prior implementation discarded toolFailure entirely once title was
+    // truthy, so the body was never derived.
+    const { title, body } = deriveToolFailureCaptureText({
+      title: 'facts:assert work-item scope requires shareable harness and settledBy fields',
+      toolFailure,
+    });
+    expect(title).toBe('facts:assert work-item scope requires shareable harness and settledBy fields');
+    expect(body).toBeTruthy();
+    expect(body).toContain('facts:assert');
+    expect(body).toContain(toolFailure.message);
+  });
+
+  it('still derives both title and body when neither is supplied (the original shorthand)', () => {
+    const { title, body } = deriveToolFailureCaptureText({ toolFailure });
+    expect(title).toContain('facts:assert');
+    expect(body).toContain(toolFailure.message);
+  });
+
+  it('never overrides an explicitly supplied body', () => {
+    const { title, body } = deriveToolFailureCaptureText({
+      title: 'custom title',
+      body: 'custom body',
+      toolFailure,
+    });
+    expect(title).toBe('custom title');
+    expect(body).toBe('custom body');
+  });
+
+  it('still throws when neither title nor toolFailure is supplied', () => {
+    expect(() => deriveToolFailureCaptureText({})).toThrow(
+      'improvements:capture requires title unless toolFailure is supplied',
+    );
+  });
+
+  it('an explicit title with no toolFailure carries no derived body (unchanged, non-toolFailure path)', () => {
+    const { title, body } = deriveToolFailureCaptureText({ title: 'plain title' });
+    expect(title).toBe('plain title');
+    expect(body).toBeUndefined();
   });
 });
 

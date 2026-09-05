@@ -335,18 +335,28 @@ export interface ToolFailureCaptureTextInput {
  * title/body only creates another invalid-input loop. Explicit prose still wins;
  * omitted prose is derived deterministically and bounded by the same storage
  * limits as authored prose.
+ *
+ * WI-2146402: `title` and `body` are derived INDEPENDENTLY — a caller supplying
+ * its own descriptive `title` alongside `toolFailure` still gets a body derived
+ * from the structured report when it omits one. The prior form returned as soon
+ * as `input.title` was truthy, discarding `toolFailure` entirely in that case;
+ * every real caller that composes its own title (rather than accepting the
+ * generic derived one) supplies a `toolFailure` for classification and expects
+ * the shorthand to cover the body it didn't write, so that early return produced
+ * a permanently empty, un-gradeable filing (24 of 651 ungraded rows, measured
+ * 2026-09-05) instead of ever exercising the field-listing fallback below.
  */
 export function deriveToolFailureCaptureText(input: ToolFailureCaptureTextInput): { title: string; body?: string } {
-  if (input.title) return { title: input.title, body: input.body };
   const failure = input.toolFailure;
-  if (!failure) throw new Error('improvements:capture requires title unless toolFailure is supplied');
-
-  const qualifier = failure.errorCode?.trim() || failure.status?.trim();
-  const title = clampText(
-    `${failure.toolName} tool-call failure${qualifier ? ` (${qualifier})` : ''}`,
-    LIMITS.SHORT_TITLE,
-  );
+  if (!input.title && !failure) {
+    throw new Error('improvements:capture requires title unless toolFailure is supplied');
+  }
+  const qualifier = failure?.errorCode?.trim() || failure?.status?.trim();
+  const title = input.title
+    ? input.title
+    : clampText(`${failure!.toolName} tool-call failure${qualifier ? ` (${qualifier})` : ''}`, LIMITS.SHORT_TITLE);
   if (input.body) return { title, body: input.body };
+  if (!failure) return { title, body: undefined };
 
   const fields: Array<[string, unknown]> = [
     ['Tool', failure.toolName],
