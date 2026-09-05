@@ -391,3 +391,94 @@ describe('createFailoverPool — deeper edges (depth pass, su-7f3e0376)', () => 
     expect(p.peek!().accountId).toBe('c');
   });
 });
+
+describe('createFailoverPool — recovery horizon + bounded readmit (codex-auto-route-all-walled-fail-fast-2026-09-05)', () => {
+  const T = 1_000_000;
+
+  it('earliestAvailableAt() is 0 while any account is unparked and serviceable', () => {
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T });
+    expect(p.earliestAvailableAt!()).toBe(0);
+    p.onExhausted('a', T + 3_600_000);
+    expect(p.earliestAvailableAt!()).toBe(0); // b still serves
+  });
+
+  it('an all-parked pool reports the EARLIEST park expiry', () => {
+    const p = createFailoverPool([acct('a'), acct('b'), acct('c')], { now: () => T });
+    p.onExhausted('a', T + 3 * 3_600_000);
+    p.onExhausted('b', T + 7 * 24 * 3_600_000);
+    p.onExhausted('c', T + 90_000);
+    expect(p.earliestAvailableAt!()).toBe(T + 90_000);
+  });
+
+  it('keyOf Infinity makes an unparked account NOT serviceable; recoverAtOf supplies its horizon', () => {
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T });
+    p.onExhausted('a', T + 3_600_000);
+    // b is not parked by the pool, but the durable rate hints say its 7d window is full until T+2h.
+    const horizon = p.earliestAvailableAt!({
+      keyOf: (e) => (e.accountId === 'b' ? Infinity : 0),
+      recoverAtOf: (e) => (e.accountId === 'b' ? T + 2 * 3_600_000 : undefined),
+    });
+    expect(horizon).toBe(T + 3_600_000); // a's park (1h) is sooner than b's window reset (2h)
+  });
+
+  it('recoverAtOf RAISES a parked account\'s horizon past its park when the external reset is later', () => {
+    const p = createFailoverPool([acct('a')], { now: () => T });
+    p.onExhausted('a', T + 60_000); // a short pool park…
+    // …but the store knows the weekly window is walled for another 2 days.
+    expect(p.earliestAvailableAt!({ recoverAtOf: () => T + 2 * 86_400_000 })).toBe(T + 2 * 86_400_000);
+  });
+
+  it('is Infinity when every account is out and none has a known recovery instant', () => {
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T });
+    expect(p.earliestAvailableAt!({ keyOf: () => Infinity })).toBe(Infinity);
+  });
+
+  it('honours an explicit `now` and treats an expired park as serviceable', () => {
+    const p = createFailoverPool([acct('a')], { now: () => T });
+    p.onExhausted('a', T + 10_000);
+    expect(p.earliestAvailableAt!({ now: T + 5_000 })).toBe(T + 10_000);
+    expect(p.earliestAvailableAt!({ now: T + 10_000 })).toBe(0);
+  });
+
+  it('parkState() reports when the park began and until when; undefined once cleared or expired', () => {
+    let t = T;
+    const p = createFailoverPool([acct('a')], { now: () => t });
+    expect(p.parkState!('a')).toBeUndefined();
+    p.onExhausted('a', T + 30_000);
+    expect(p.parkState!('a')).toEqual({ parkedAt: T, until: T + 30_000 });
+    t = T + 30_000;
+    expect(p.parkState!('a')).toBeUndefined(); // expired
+  });
+
+  it('readmit() returns true and clears the park; false for an account that is not parked', () => {
+    const p = createFailoverPool([acct('a')], { now: () => T });
+    expect(p.readmit!('a')).toBe(false);
+    p.onExhausted('a', T + 30_000);
+    expect(p.readmit!('a', { reason: 'store' })).toBe(true);
+    expect(p.parkState!('a')).toBeUndefined();
+    expect(p.earliestAvailableAt!()).toBe(0);
+  });
+
+  it('a transport readmit bounded by maxParkMs REFUSES a park longer than the transport horizon (a usage wall)', () => {
+    const logs: string[] = [];
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T, log: (_l, m) => logs.push(m) });
+    p.onExhausted('a', T + 7 * 24 * 3_600_000); // a measured 7d wall
+    p.onExhausted('b', T + 60_000); // a short transport-circuit-sized park
+    expect(p.readmit!('a', { reason: 'transport', maxParkMs: 300_000 })).toBe(false);
+    expect(p.parkState!('a')).toBeDefined(); // the wall survives
+    expect(logs.some((m) => /readmit \(transport\) REFUSED/.test(m))).toBe(true);
+    expect(p.readmit!('b', { reason: 'transport', maxParkMs: 300_000 })).toBe(true);
+    expect(p.parkState!('b')).toBeUndefined();
+    // An admin readmit carries no bound and clears even the wall.
+    expect(p.readmit!('a', { reason: 'admin' })).toBe(true);
+    expect(p.parkState!('a')).toBeUndefined();
+  });
+
+  it('reload() prunes the park stamp of an account that left the pool', () => {
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T });
+    p.onExhausted('a', T + 30_000);
+    p.reload!([acct('b')]);
+    expect(p.parkState!('a')).toBeUndefined();
+    expect(p.earliestAvailableAt!()).toBe(0);
+  });
+});

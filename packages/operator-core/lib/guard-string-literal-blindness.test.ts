@@ -567,6 +567,12 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // source to text-match code tokens; the census prefilter is fooled by its documented .mjs
     // paths plus generic readFileSync/.test usage, so masking would add no protection.
     'check-declared-deps-extracted.mjs',
+    // check-insight-normative.mjs scans agent-insight DOCS (`isInsightDoc` selects .md/.mdx
+    // frontmatter) — never JS/TS source. The census prefilter trips only on its
+    // `./lib/tracked-files.mjs` import specifier (added 2026-09-04) plus a generic
+    // readFileSync/.test pair; a JS comment stripper applied to Markdown would corrupt the
+    // frontmatter it validates, so the exposure is recorded here instead.
+    'check-insight-normative.mjs',
     // check-format.mjs is a RANGE PARSER, not a source-token guard. Its only regex
     // parses @@ hunk metadata from `git diff`; the source file itself is read solely
     // to translate those line ranges into character offsets for Prettier. Masking

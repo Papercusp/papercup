@@ -776,6 +776,41 @@ const XHIVE_ROLE_ASYMMETRY =
   'benign: role-asymmetric pair in one e2e frame — hive-A (:131) sends and carries the outbound grant (:136); ' +
   'hive-B (:119) only receives, and cross-hive-wiring.ts:455 reads the seam only on the send leg.';
 
+/**
+ * 2026-09-05 (gate red on frozen candidate 50ed2739, adjudicated by the LIVE_GATE_OPS holder) —
+ * `GuardSpec` / `ExclusiveWaitParams` carry two seam FAMILIES that are mutually exclusive BY
+ * THE INTERFACE'S OWN CONTRACT (resource-lock-guard.ts `GuardSpec` doc comments):
+ *   - `onTick` is the DRAIN-WAIT progress callback (EI-18769559897594065): it fires only while
+ *     `maxDrainSec > 0` is draining shared holders, and its purpose is to reset an MCP client's
+ *     idle clock via `ctx.progress`. deploy-cli is a CLI with no `ctx.progress`, and its
+ *     'release-deploy' guard is `maxDrainSec: 0` (never drains), so the seam has nothing to
+ *     fire into at deploy-deps.ts.
+ *   - `hostLocalOwnerPid` + `onStaleHolderReclaimed` are the HOST-LOCAL PID self-heal
+ *     (EI-18674647773291145): the extractor parses a pid out of the HOLDER's owner string and
+ *     applies only to deploy-cli's `release-deploy:<pid>:<uuid>` identity shape. db:migrate,
+ *     dev:restart and locks:acquire run under agent/session identities that carry no pid, and
+ *     the extractor itself lives in apps/operator (deploy-deps.ts) — unreachable from
+ *     operator-core without inverting the dependency direction. The session half of the
+ *     dead-holder test (`deadOwnerOracle`) IS wired where it applies (acquire_resource.ts).
+ * Wiring the other family at each site would be a silent no-op, not a recovered concern.
+ */
+const WAIT_MODE_SPECIFIC_SEAM =
+  'adjudicated 2026-09-05: GuardSpec/ExclusiveWaitParams seam family is inapplicable at this site by contract — ' +
+  'onTick fires only during a maxDrainSec>0 drain into ctx.progress (deploy-cli has neither); hostLocalOwnerPid/' +
+  'onStaleHolderReclaimed parse a pid only out of deploy-cli\'s release-deploy:<pid>:<uuid> identity (apps/operator), ' +
+  'which agent/session owners at migrate/restart/locks:acquire never carry.';
+
+/**
+ * 2026-09-05 — the rubric live DRILL (`scout/rubric-live-drill.ts`) deliberately omits
+ * `onScoutDraftCreated`: in production (`register-scout-action.ts:442`) that hook pings the
+ * Mug about a NEWLY routed draft to start the review feedback loop; a drill's drafts are
+ * synthetic (`origin: 'drill'`, `noveltyCorpus: async () => []`) and must never be announced
+ * as real work. Same harness-vs-production shape as `HARNESS_VS_PRODUCTION` above.
+ */
+const DRILL_VS_PRODUCTION =
+  'adjudicated 2026-09-05: rubric live drill vs production Scout action — the Mug draft-routed ping is ' +
+  'deliberately not wired for synthetic drill drafts';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -801,6 +836,15 @@ const FAIL_BASELINE = new Map([
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', HIVE_HOME_GUARD_REPAIRED],
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', HIVE_HOME_GUARD_REPAIRED],
   ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', XHIVE_ROLE_ASYMMETRY],
+  // 2026-09-05 — seeded from `--list` after the seams landed on tip (frozen candidate 50ed2739
+  // gate red); each row adjudicated in the constant it cites, not recorded-and-deferred.
+  ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/register-scout-action.ts|noveltyCorpus', OVERRIDE_WITH_REAL_DEFAULT],
+  ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/rubric-live-drill.ts|onScoutDraftCreated', DRILL_VS_PRODUCTION],
+  ['DesktopAuditDeps|packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts|now', OVERRIDE_WITH_REAL_DEFAULT],
+  ['ExclusiveWaitParams|packages/operator-core/lib/agent-tools/locks/acquire_resource.ts|hostLocalOwnerPid', WAIT_MODE_SPECIFIC_SEAM],
+  ['GuardSpec|apps/operator/lib/release/deploy-deps.ts|onTick', WAIT_MODE_SPECIFIC_SEAM],
+  ['GuardSpec|packages/operator-core/lib/agent-tools/db/migrate.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
+  ['GuardSpec|packages/operator-core/lib/agent-tools/dev/restart.ts|hostLocalOwnerPid,onStaleHolderReclaimed', WAIT_MODE_SPECIFIC_SEAM],
 ]);
 
 /** The line-independent identity a baseline row matches on. */

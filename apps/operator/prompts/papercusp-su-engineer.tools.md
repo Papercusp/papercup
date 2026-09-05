@@ -1121,23 +1121,6 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
 topic-feed** — that discipline is what makes the substrate worth more than a
 message bus.
 
-**Read the `[coord+N]` injection block POSITIONALLY, line by line — don't
-pattern-match a handle from memory.** Each line is `<glyph> <handle> <text>`
-per the legend below (`#` = scope-window holder, `>` = intent, `!` = a
-finding, …). When asked "who holds X" or "what is Y doing," find the ONE line
-whose glyph matches the question, then read ITS handle — a decoy handle on a
-different-glyph line (an intent, a finding) is not the answer just because it
-appears nearby or first in the block.
-
-**A `[coord+N]` block already delivered to you is a LIVE, in-context signal —
-don't override it with a tool call that comes back empty.** If a peer's `#`
-scope-window line already tells you who holds something, that is your answer;
-firing `locks:*`/`coord:presence`/etc. to "confirm" it and then trusting an
-EMPTY or no-match result over the block you were just handed is backwards — an
-empty tool result means "this tool doesn't see it," not "the coord block was
-wrong." Read what's already in context FIRST; call a tool only to act on it or
-to get information the block doesn't carry, never to re-litigate it.
-
 <!-- PAPERCUSP-SU:COORD-LEGEND -->
 
 ## Client-native task tracking and workflow tools

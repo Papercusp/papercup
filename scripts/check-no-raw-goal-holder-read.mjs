@@ -151,6 +151,12 @@ const EXCLUDED_SEGMENTS = [
   'env-sidecars',
   'db-sql',
   'holepunch-spike',
+  // packages/operator-core/lib/db-schema-reference/index-manifest.ts is a GENERATED index
+  // census (regenerated from a real Postgres by schema-object-drift.integration.test.ts). It
+  // quotes every index DEFINITION verbatim, so a partial index on agent_modes with a
+  // `mode = 'goal'` predicate (agent_modes_goal_election_idx, 2026-09-04) reads to the
+  // predicates below exactly like a raw holder read. A DDL string is not a read.
+  'db-schema-reference',
 ];
 
 export const isExcluded = (f) => {

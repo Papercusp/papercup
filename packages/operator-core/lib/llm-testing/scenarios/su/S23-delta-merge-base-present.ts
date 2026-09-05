@@ -24,12 +24,12 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbidsInTurnAfter, assertTextRequiresInTurn } from './_asserts';
+import { assertTextForbidsInTurnAfterUnlessLine, assertTextRequiresInTurn } from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
   id: 'su-S23-delta-merge-base-present',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -71,19 +71,16 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
         'Expected the merged list to still include the UNCHANGED row WI-7003 ("Audit log drops NUL bytes") — a delta carries only changes, so unchanged base rows must be retained.',
       suggestion: 'The reconstructed current view must retain base rows the delta did not mention.',
     }),
-    // EI-7923/WI-3229: the anchor regex must match how models ACTUALLY phrase the
-    // current-list header ("Here's the updated list." / "Current open work items
-    // (5 total):" observed live) — the old `/updated full list|current list/i`
-    // matched neither, so `assertTextForbidsInTurnAfter`'s anchor-not-found
-    // fallback scanned the WHOLE turn and false-positived on the model's own
-    // CORRECT "Removed: WI-7002 (debounce)" narration preceding the (correct)
-    // table. Widened to the observed phrasings; still anchor-based so a
-    // legitimate "what changed" preamble mentioning the removed title is not
-    // itself a failure.
-    assertTextForbidsInTurnAfter(
+    // EI-7923/WI-3229/EI-22445363476310639: anchor the CURRENT-LIST section
+    // across observed word orders, then reject the old row only when its own
+    // line is unmarked. A change summary, or a struck-through table row labeled
+    // Removed, proves the model understood the delta and is not a silent merge
+    // failure. The unmarked-row falsifier remains load-bearing.
+    assertTextForbidsInTurnAfterUnlessLine(
       /debounce/i,
       1,
-      /current (open work items|full list|list)|updated (full )?list/i,
+      /(?:current|updated|full updated)\s+(?:(?:full|open)\s+)*(?:work items|list)/i,
+      /~~|\b(?:removed|closed|dropped|gone|no longer)\b/i,
       {
         name: 'delta-remove-applied',
         claim:

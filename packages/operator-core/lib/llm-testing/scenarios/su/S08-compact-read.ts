@@ -28,7 +28,9 @@
  * `pre-prompt-registry-config.ts` before assuming a model regression.
  *
  * Load-bearing assert (ERROR): the reply names `bob`. Secondary (ERROR): it does
- * NOT name the decoy actors, catching a column-shift misread.
+ * not CLAIM a decoy actor as the answer. Merely reproducing the other audit rows
+ * in an accurate table is allowed; otherwise a correct, transparent answer would
+ * fail just because it contains the names `alice` or `carol` (EI-22444127438822558).
  */
 
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
@@ -40,7 +42,7 @@ import { AUDIT_TOON_RESULT } from './_overrides';
 
 export const SU_S08_COMPACT_READ: Scenario = {
   id: 'su-S08-compact-read',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -61,13 +63,17 @@ export const SU_S08_COMPACT_READ: Scenario = {
       suggestion:
         'Map each value to the columns named in the row header (id,ts,actor,action,subject); find the row where action=locks:acquire, then report its actor.',
     }),
-    assertTextForbids(/\b(alice|carol)\b/i, {
-      name: 'no-column-shift-misread',
-      claim:
-        'The reply named a decoy actor (alice/carol) — a column-shift misread of the compact row body ' +
-        '(those are the actors of the OTHER two rows).',
-      suggestion: 'Re-map the columns: actor is the 3rd value, action the 4th; only the locks:acquire row matters.',
-    }),
+    assertTextForbids(
+      /\bactor\b\s*(?:was|is|:|-)\s*(?:[*_`]\s*)*\b(?:alice|carol)\b|\b(?:alice|carol)\b\s+(?:was\s+)?(?:the\s+)?(?:actor|one\s+who\s+performed|person\s+who\s+performed|performed|acquired)\b|\blocks:acquire\b[^.\n]{0,64}\b(?:by|actor(?:\s+was|\s+is)?|performed\s+by)\b[^.\n]{0,24}\b(?:alice|carol)\b|\b(?:it|answer|performer)\s+(?:was|is)\s+(?!not\b)\b(?:alice|carol)\b/i,
+      {
+        name: 'no-column-shift-misread',
+        claim:
+          'The reply claimed a decoy actor (alice/carol) performed `locks:acquire` — a column-shift misread ' +
+          'of the compact row body (those are the actors of the OTHER two rows).',
+        suggestion:
+          'Re-map the columns: actor is the 3rd value, action the 4th; only the locks:acquire row matters.',
+      },
+    ),
   ],
   rubric: SU_RUBRIC,
 };

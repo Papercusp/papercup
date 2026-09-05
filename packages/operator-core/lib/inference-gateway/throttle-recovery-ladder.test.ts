@@ -38,12 +38,14 @@ const decide = (over: {
   status?: number;
   retryIntent?: boolean;
   lastExhaustResetAt?: number;
+  poolRecoveryAt?: number;
   state?: Partial<ThrottleLadderState>;
 }) =>
   decideThrottleRecovery({
     status: over.status ?? 429,
     retryIntent: over.retryIntent ?? true,
     lastExhaustResetAt: over.lastExhaustResetAt ?? 0,
+    ...(over.poolRecoveryAt === undefined ? {} : { poolRecoveryAt: over.poolRecoveryAt }),
     state: state(over.state),
     budgets: BUDGETS,
     now: NOW,
@@ -119,6 +121,54 @@ test('a passed absorb deadline forecloses the absorb', () => {
     state: { absorbDeadlineAt: NOW - 1 },
   });
   assert.deepEqual(d, { action: 'forward', transient: false });
+});
+
+// ── rung (2) × the pool recovery horizon (codex-auto-route-all-walled-fail-fast-2026-09-05) ──
+
+test('ALL-WALLED FAIL-FAST: a pool horizon PAST the absorb deadline forwards instead of absorbing', () => {
+  // The failed account's own reset is hours out AND the pool's earliest recovery is 3h out —
+  // sleeping the 2-minute absorb budget cannot find capacity, so fail fast.
+  const d = decide({
+    lastExhaustResetAt: NOW + 3 * 3600_000,
+    poolRecoveryAt: NOW + 3 * 3600_000,
+  });
+  assert.deepEqual(d, { action: 'forward', transient: false });
+});
+
+test('a pool horizon INSIDE the absorb deadline still absorbs', () => {
+  const d = decide({
+    lastExhaustResetAt: NOW + 3 * 3600_000,
+    poolRecoveryAt: NOW + 90_000, // a sibling's park expires in 90s, budget is 120s
+  });
+  assert.deepEqual(d, { action: 'absorb', backoffMs: 0, transient: false });
+});
+
+test('a pool horizon of 0 (some account can serve now) absorbs — the re-pick will find it', () => {
+  const d = decide({ lastExhaustResetAt: NOW + 3 * 3600_000, poolRecoveryAt: 0 });
+  assert.deepEqual(d, { action: 'absorb', backoffMs: 0, transient: false });
+});
+
+test('an UNKNOWN pool horizon (Infinity) never absorbs', () => {
+  const d = decide({ lastExhaustResetAt: NOW + 3 * 3600_000, poolRecoveryAt: Infinity });
+  assert.deepEqual(d, { action: 'forward', transient: false });
+});
+
+test('a horizon exactly AT the absorb deadline is still inside the budget', () => {
+  const d = decide({ lastExhaustResetAt: NOW + 3 * 3600_000, poolRecoveryAt: NOW + 120_000 });
+  assert.equal(d.action, 'absorb');
+});
+
+test('the horizon gates the ABSORB only: a transient wait on the same slot is unaffected', () => {
+  const d = decide({ lastExhaustResetAt: NOW + 5_000, poolRecoveryAt: NOW + 3 * 3600_000 });
+  assert.deepEqual(d, { action: 'wait', waitMs: 5_000, transient: true });
+});
+
+test('omitting the horizon preserves the pre-horizon goldens exactly', () => {
+  assert.deepEqual(decide({ lastExhaustResetAt: NOW + 3 * 3600_000 }), {
+    action: 'absorb',
+    backoffMs: 0,
+    transient: false,
+  });
 });
 
 // ── rung (3): forward ───────────────────────────────────────────────────────

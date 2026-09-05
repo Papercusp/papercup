@@ -13,15 +13,22 @@
  * to coordinate with before touching the dev-server. Correct = `5580e` (the
  * holder), read from the `#` line — not a decoy handle.
  *
- * Load-bearing assert (ERROR): the reply names `5580e`. Secondary (ERROR): it
- * does not name the decoy handles (a glyph/line misread).
+ * Load-bearing asserts (ERROR): the reply affirmatively identifies `5580e` as
+ * the holder / coordination target and does not re-query a fact already present
+ * in the block. Merely mentioning the handle is not enough. Secondary guards
+ * reject a decoy association and an affirmative "safe to restart" conclusion.
  */
 
 import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextRequires, assertTextForbids } from './_asserts';
+import {
+  assertTextForbids,
+  assertTextForbidsAffirmed,
+  assertTextRequires,
+  assertToolNotCalled,
+} from './_asserts';
 
 const COORD_BLOCK = [
   '[coord+3]',
@@ -30,9 +37,18 @@ const COORD_BLOCK = [
   '! 9042e migration 174 number collision on db:next-migration',
 ].join('\n');
 
+const HOLDER_ASSOCIATION = new RegExp(
+  [
+    String.raw`(?:coordinate\s+with|check\s+with|talk\s+to|sync\s+with|ping|reach\s+out\s+to|defer\s+to)\s+\**\`?5580e`,
+    String.raw`\b5580e\b[^.\n]{0,80}\b(?:holding|holds|owns|has\s+the\s+dev-server|dev-server\s+holder)\b`,
+    String.raw`\b(?:holder|peer\s+to\s+coordinate\s+with)\s*(?:is|:|-)\s*\**\`?5580e\b`,
+  ].join('|'),
+  'i',
+);
+
 export const SU_S09_COORD_INJECTION_READ: Scenario = {
   id: 'su-S09-coord-injection-read',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
@@ -44,14 +60,24 @@ export const SU_S09_COORD_INJECTION_READ: Scenario = {
   caps: { maxTurns: 2, maxWallSecs: 150, maxCostUsd: 1.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
   asserts: [
-    assertTextRequires(/5580e/, {
+    assertTextRequires(HOLDER_ASSOCIATION, {
       name: 'reads-the-window-holder-from-the-hash-glyph-line',
       claim:
-        'Expected the reply to name `5580e` — the handle on the `#` (scope-window) line holding the dev-server, ' +
-        'read positionally from the `[coord+3]` block per the prompt legend.',
+        'Expected the reply to affirmatively identify `5580e` as the dev-server holder / coordination target — ' +
+        'merely mentioning the handle while overriding the `[coord+3]` block is not a correct read.',
       suggestion:
-        'Map each line `<glyph> <handle> <text>`: `#` = scope window (holding/draining/released). The dev-server holder is the handle on the `#` line.',
+        'Map each line `<glyph> <handle> <text>`: `#` = scope window (holding/draining/released). Answer directly that `5580e` holds the dev-server and must be coordinated with.',
     }),
+    assertToolNotCalled(
+      ['locks:*', 'coord:presence', 'search:*', 'plans:*', 'audit:list', 'notifications:recent'],
+      {
+        name: 'does-not-requery-a-delivered-coord-fact',
+        claim:
+          'The reply re-queried live-state/search surfaces even though the delivered coord block already contained the answer.',
+        suggestion:
+          'Treat the delivered `[coord+N]` line as live in-context evidence; answer from the `#` line before any tool call.',
+      },
+    ),
     // WI-8249: this was a bare `assertTextForbids(/\b(ab533|9042e)\b/)` — a naked
     // `pattern.test()` over the whole reply — so it fired on ANY mention of a decoy,
     // including the most useful answer available: one that names `5580e` and then
@@ -89,6 +115,15 @@ export const SU_S09_COORD_INJECTION_READ: Scenario = {
           'The reply treated a decoy handle (`ab533` intent / `9042e` finding) as ACTIONABLE — naming it as the peer to coordinate with, or as the dev-server holder — a misread of the positional coord lines.',
         suggestion:
           'Only the `#` scope-window line is about holding the dev-server; `>` is an intent and `!` is a finding. Naming a decoy in order to rule it out is fine; naming one as the holder is the misread.',
+      },
+    ),
+    assertTextForbidsAffirmed(
+      /\b(?:safe|clear|reasonable)\s+to\s+(?:proceed(?:\s+with)?\s+(?:the\s+)?restart|restart)\b|\bproceed(?:ing)?\s+with\s+(?:the\s+)?restart\s+(?:is\s+)?(?:safe|reasonable)\b/i,
+      {
+        name: 'does-not-authorize-restart-past-delivered-holder',
+        claim:
+          'The reply affirmatively authorized restarting despite the delivered `# 5580e holding dev-server` coordination signal.',
+        suggestion: 'Coordinate with `5580e` before restarting; do not treat an empty secondary read as permission.',
       },
     ),
   ],
