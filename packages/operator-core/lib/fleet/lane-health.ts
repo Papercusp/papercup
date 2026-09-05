@@ -1,9 +1,135 @@
 /** Family-complete fleet claim-lane health, shared by runtime and preflight callers. */
-import { formatSpecRef, type ClaimSpec, type FilterNode } from '../scheduler/claim-spec';
+import { claimSpecReferencesField, formatSpecRef, type ClaimSpec, type FilterNode } from '../scheduler/claim-spec';
 import { matchesClaimSpecFilter, type ClaimSpecSubject } from '../scheduler/claim-spec-match';
 import type { ClaimSpecRecord } from '../scheduler/claim-spec-store';
 
 export interface ClaimSpecFamilyReachability { issue: boolean; feature: boolean }
+
+export type FleetClaimabilityState =
+  | 'paused'
+  | 'drained'
+  | 'spec-empty'
+  | 'floor-gated'
+  | 'claimable'
+  | 'unknown';
+
+export interface FleetClaimabilityInterpretation {
+  state: FleetClaimabilityState;
+  exactness: {
+    status: 'exact' | 'partial' | 'unknown';
+    reason: string;
+  };
+  evidence: {
+    fleetPaused: boolean | null;
+    matchedByFilter: number | null;
+    excluded: Record<string, number> | null;
+  };
+}
+
+/**
+ * Give a zero an explicit meaning without widening it into a backlog claim.
+ * `evidenceComplete:false` is load-bearing: callers with only one storage-family
+ * diagnosis may still report what they observed, but may not certify drainage.
+ */
+export function interpretFleetClaimability(input: {
+  claimable: number | null;
+  matchedByFilter: number | null;
+  excluded: Record<string, number> | null;
+  fleetPaused: boolean | null;
+  planScoped?: boolean | null;
+  drainConfirmed?: boolean;
+  evidenceComplete?: boolean;
+}): FleetClaimabilityInterpretation {
+  const evidence = {
+    fleetPaused: input.fleetPaused,
+    matchedByFilter: input.matchedByFilter,
+    excluded: input.excluded,
+  };
+  if (input.fleetPaused === true) {
+    return {
+      state: 'paused',
+      exactness: { status: 'exact', reason: 'fleet control state is winding-down' },
+      evidence,
+    };
+  }
+  if (input.drainConfirmed) {
+    return {
+      state: 'drained',
+      exactness: { status: 'exact', reason: 'independent terminal/exhaustion evidence confirms the scoped lane is complete' },
+      evidence,
+    };
+  }
+  if (input.fleetPaused == null || input.claimable == null) {
+    return {
+      state: 'unknown',
+      exactness: { status: 'unknown', reason: 'pause state or family-complete claimable count was not measured' },
+      evidence,
+    };
+  }
+
+  const evidenceComplete = input.evidenceComplete !== false;
+  if (input.claimable > 0) {
+    return {
+      state: 'claimable',
+      exactness: {
+        status: evidenceComplete ? 'exact' : 'partial',
+        reason: evidenceComplete
+          ? 'family-complete lane health reports rows surviving every claim floor'
+          : 'at least one measured family reports rows surviving every claim floor',
+      },
+      evidence,
+    };
+  }
+  if (input.matchedByFilter == null || input.excluded == null) {
+    return {
+      state: 'unknown',
+      exactness: { status: 'unknown', reason: 'zero was observed without complete matched-row and exclusion-floor evidence' },
+      evidence,
+    };
+  }
+  if (input.matchedByFilter === 0) {
+    if (input.planScoped == null) {
+      return {
+        state: 'unknown',
+        exactness: { status: evidenceComplete ? 'unknown' : 'partial', reason: 'zero-match evidence lacks the scope kind needed to distinguish an empty spec from a completed scoped lane' },
+        evidence,
+      };
+    }
+    return {
+      state: input.planScoped ? 'drained' : 'spec-empty',
+      exactness: {
+        status: evidenceComplete ? 'exact' : 'partial',
+        reason: evidenceComplete
+          ? input.planScoped
+            ? 'the exact plan-scoped active population is empty'
+            : 'the exact non-plan claim-spec filter matches zero active rows'
+          : input.planScoped
+            ? 'the measured plan-scoped families have no survivors, but another family lacks matched-row/floor detail'
+            : 'the measured non-plan filter matches zero rows, but another family lacks matched-row/floor detail',
+      },
+      evidence,
+    };
+  }
+
+  const activeFloors = Object.values(input.excluded).some((count) => count > 0);
+  if (activeFloors) {
+    return {
+      state: 'floor-gated',
+      exactness: {
+        status: evidenceComplete ? 'exact' : 'partial',
+        reason: evidenceComplete
+          ? 'matched rows exist and every one is excluded by one or more claim floors'
+          : 'a measured family has matched rows excluded by claim floors; other families are incomplete',
+      },
+      evidence,
+    };
+  }
+  return {
+    state: 'unknown',
+    exactness: { status: 'unknown', reason: 'zero claimable contradicts nonzero matched rows with no active exclusion floor' },
+    evidence,
+  };
+}
 
 export interface FleetLaneHealth {
   /** Legacy issue-family aliases. New decisions must consume `effective`. */
@@ -26,6 +152,8 @@ export interface FleetLaneHealth {
   spec: {
     ref: string; specId: string; revision: number | null; matchedBy: string;
     harness: string; assigneeScoped: string | null;
+    /** Whether the filter is explicitly bound to plan/plan_item semantics. */
+    planScoped?: boolean;
   };
 }
 
@@ -160,6 +288,8 @@ export async function readClaimSpecLaneHealth(args: {
         specId: args.spec.specId, revision: args.spec.revision ?? args.record.revision,
         matchedBy: args.matchedBy ?? 'supplied', harness: args.harness,
         assigneeScoped: args.assignee ?? null,
+        planScoped:
+          claimSpecReferencesField(args.spec, 'plan') || claimSpecReferencesField(args.spec, 'plan_item'),
       },
     };
   } catch {
