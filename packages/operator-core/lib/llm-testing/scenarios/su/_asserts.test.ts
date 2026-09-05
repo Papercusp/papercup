@@ -24,9 +24,11 @@ import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 import {
   assertCodeRunOrBulkOrSingleTurnFanout,
+  assertToolCalledWithin,
   assertToolCalledWithArrayArg,
   assertTextForbidsAffirmed,
   assertTextForbidsInTurnAfter,
+  assertTextForbidsInTurnAfterUnlessLine,
   assertTextForbidsFromTurn,
   assertTextRequiresFromTurn,
 } from './_asserts';
@@ -77,6 +79,31 @@ function mkRun(turns: TurnResult[]): RunSummary {
 }
 
 const META = { name: 't', claim: 'c' };
+
+describe('assertToolCalledWithin', () => {
+  const assertion = assertToolCalledWithin(['docs:author'], 2, META);
+
+  it('passes when the tool is called in either allowed early turn', () => {
+    expect(assertion.eval(mkRun([
+      mkTurn(),
+      mkTurn({ toolCalls: [{ name: 'docs:author', input: { slug: 'insight' } }] }),
+    ]))).toEqual([]);
+  });
+
+  it('fails when the call is deferred beyond the allowed turn window', () => {
+    expect(assertion.eval(mkRun([
+      mkTurn(),
+      mkTurn(),
+      mkTurn({ toolCalls: [{ name: 'docs:author', input: { slug: 'late' } }] }),
+    ]))).toHaveLength(1);
+  });
+
+  it('matches canonical names behind an MCP prefix', () => {
+    expect(assertion.eval(mkRun([
+      mkTurn({ toolCalls: [{ name: 'mcp__agentmcp__docs:author', input: { slug: 'prefixed' } }] }),
+    ]))).toEqual([]);
+  });
+});
 
 describe('assertTextForbidsInTurnAfter', () => {
   it('does NOT violate on a correct merged reply that narrates the removal before the anchor (EI-7923 regression)', () => {
@@ -133,6 +160,55 @@ describe('assertTextForbidsInTurnAfter', () => {
     // Old anchor never matches this phrasing -> falls back to whole-turn scan -> false violation.
     const violations = assertTextForbidsInTurnAfter(/debounce/i, 1, /updated full list|current list/i, META).eval(run);
     expect(violations).toHaveLength(1); // documents the bug this WI fixed
+  });
+});
+
+describe('assertTextForbidsInTurnAfterUnlessLine', () => {
+  const currentList = /(?:current|updated|full updated)\s+(?:(?:full|open)\s+)*(?:work items|list)/i;
+  const visiblyRemoved = /~~|\b(?:removed|closed|dropped|gone|no longer)\b/i;
+  const assertion = assertTextForbidsInTurnAfterUnlessLine(
+    /debounce/i,
+    1,
+    currentList,
+    visiblyRemoved,
+    META,
+  );
+
+  it('allows the live struck-through row when the same line explicitly marks it removed', () => {
+    const run = mkRun([
+      mkTurn(),
+      mkTurn({
+        assistantText:
+          "Here's the updated full list of open work items, with changes noted:\n\n" +
+          '| ~~WI-7002~~ | ~~Flaky harness-fs-watcher debounce~~ | **Removed** |\n' +
+          '| WI-7003 | Audit log drops NUL bytes | No change |\n' +
+          '\n- WI-7002 debounce is gone from the open set.',
+      }),
+    ]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('recognizes the live reversed heading and ignores a removal in the preceding change summary', () => {
+    const run = mkRun([
+      mkTurn(),
+      mkTurn({
+        assistantText:
+          '**Changes since last check:**\n- WI-7002 debounce — removed\n\n' +
+          '**Full updated open work items:**\n| WI-7003 | Audit log drops NUL bytes |',
+      }),
+    ]);
+    expect(assertion.eval(run)).toEqual([]);
+  });
+
+  it('still rejects an unmarked removed row in the current-list section', () => {
+    const run = mkRun([
+      mkTurn(),
+      mkTurn({
+        assistantText:
+          '**Full updated open work items:**\n| WI-7002 | Flaky harness-fs-watcher debounce |\n',
+      }),
+    ]);
+    expect(assertion.eval(run)).toHaveLength(1);
   });
 });
 

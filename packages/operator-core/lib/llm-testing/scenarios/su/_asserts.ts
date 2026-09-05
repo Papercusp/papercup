@@ -84,6 +84,25 @@ export function assertToolCalled(specs: string[], meta: Meta): CustomAssert {
   };
 }
 
+/** ERROR unless one of `specs` is called within the first `turnCount`
+ * assistant turns. This distinguishes an immediate action from a deferred
+ * close-out call that eventually happens only after repeated prompting. */
+export function assertToolCalledWithin(
+  specs: string[],
+  turnCount: number,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turns = run.turns.slice(0, Math.max(0, turnCount));
+      const hit = turns.some((turn) => turn.toolCalls.some((tc) => nameMatches(tc.name, specs)));
+      return hit ? [] : [violation(meta)];
+    },
+  };
+}
+
 /** ERROR if ANY of `specs` (exact or `group:*`) was called — the load-bearing
  *  "must NOT fire" gate (the built-in `tool_not_called` is warn-only). */
 export function assertToolNotCalled(specs: string[], meta: Meta): CustomAssert {
@@ -313,6 +332,33 @@ export function assertTextForbidsInTurnAfter(
       const marker = lastMatchIndex(turn.assistantText, sectionStart);
       const text = marker >= 0 ? turn.assistantText.slice(marker) : turn.assistantText;
       return pattern.test(text) ? [violation(meta, turnIdx)] : [];
+    },
+  };
+}
+
+/** Like `assertTextForbidsInTurnAfter`, but checks matching LINES and permits
+ * a match when that same line satisfies `allowedLine`. This is for current-view
+ * answers that may show a historical row only when it is visibly annotated as
+ * removed/closed; an unmarked row still fails the merge contract. */
+export function assertTextForbidsInTurnAfterUnlessLine(
+  pattern: RegExp,
+  turnIdx: number,
+  sectionStart: RegExp,
+  allowedLine: RegExp,
+  meta: Meta,
+): CustomAssert {
+  return {
+    kind: 'custom',
+    name: meta.name,
+    eval: (run) => {
+      const turn = run.turns[turnIdx];
+      if (!turn) return [violation(meta)];
+      const marker = lastMatchIndex(turn.assistantText, sectionStart);
+      const text = marker >= 0 ? turn.assistantText.slice(marker) : turn.assistantText;
+      const forbidden = new RegExp(pattern.source, pattern.flags.replaceAll('g', ''));
+      const allowed = new RegExp(allowedLine.source, allowedLine.flags.replaceAll('g', ''));
+      const badLine = text.split('\n').find((line) => forbidden.test(line) && !allowed.test(line));
+      return badLine === undefined ? [] : [violation(meta, turnIdx)];
     },
   };
 }

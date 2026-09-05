@@ -179,6 +179,27 @@ export const ZOMBIE_LOCK_INSIGHT_CONTEXT: ToolDispatchOverride = {
     if (canon === 'plans:search') {
       return { content: [{ text: JSON.stringify({ hits: [] }) }] };
     }
+    if (canon === 'docs:author') {
+      const slug = typeof a.slug === 'string' ? a.slug : 'zombie-plan-lock-transport-drop';
+      const section = typeof a.section === 'string' ? a.section : 'agent-insights';
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              ok: true,
+              ref: `${section}/${slug}`,
+              slug,
+              section,
+              harness: a.harness ?? 'engineering',
+              status: a.status ?? 'active',
+              path: `apps/operator-docs/src/content/docs/${section}/${slug}.mdx`,
+              anchored: true,
+              read: { slugs: [`${section}/${slug}`], harness: a.harness ?? 'engineering' },
+            }),
+          },
+        ],
+      };
+    }
     if (canon === 'locks:acquire') {
       return {
         content: [
