@@ -22,6 +22,7 @@
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
   getOriginScheduler,
+  ORIGIN_SCHEDULER_CLASSES,
   type OriginSchedulerClass,
   type OriginSchedulerRunOptions,
 } from '@papercusp/sync';
@@ -79,7 +80,115 @@ export interface OriginSchedulerFetchDecision {
     | 'bulk';
   origin?: string;
   requestClass?: OriginSchedulerClass;
+  /**
+   * What the CALLER asked for, before the demote-only rule was applied.
+   * Present only when a hint was supplied and understood. Comparing it with
+   * `requestClass` is how a test (or a diagnostic) tells "the hint was
+   * honoured" from "the hint was an escalation and was ignored" — the two are
+   * indistinguishable from `requestClass` alone.
+   */
+  requestClassHint?: OriginSchedulerClass;
   method?: string;
+}
+
+/**
+ * `RequestInit` plus the criticality signal this wrapper understands.
+ *
+ * Callers do not otherwise get a say in scheduling: `classifyOriginSchedulerFetch`
+ * derives the class from the HTTP method alone, so a hidden global-chrome read
+ * (bootstrap, auth, profile) lands in the SAME `foreground-read` lane as the
+ * read the visible view is waiting on, and competes with it for the two slots
+ * a connection-capped path actually has (EI-22367004519166693).
+ *
+ * The wrapper deliberately does NOT try to recognise those callers itself. A
+ * path list of "these URLs are background" inside the wrapper would be
+ * hand-maintained metadata describing code it does not own — it goes stale
+ * silently, and it cannot see the case that matters, where the SAME endpoint is
+ * critical for one caller and incidental for another. Only the caller knows
+ * whether the visible view is waiting on this read, so the caller supplies it.
+ */
+export type OriginSchedulerFetchInit = RequestInit & {
+  /**
+   * Explicit scheduling class. Subject to the demote-only rule below, so this
+   * can lower a request's priority but never raise it.
+   */
+  papercuspRequestClass?: OriginSchedulerClass;
+};
+
+/** Request priority as the Fetch standard spells it (Priority Hints). */
+type FetchPriorityHint = 'high' | 'low' | 'auto';
+
+const CLASS_PRIORITY_ORDER: readonly OriginSchedulerClass[] = ORIGIN_SCHEDULER_CLASSES;
+
+/** Lower index == higher scheduling priority, matching the scheduler's own
+ *  class order. An unknown class sorts last so it can only ever demote. */
+function classRank(value: OriginSchedulerClass): number {
+  const index = CLASS_PRIORITY_ORDER.indexOf(value);
+  return index === -1 ? CLASS_PRIORITY_ORDER.length : index;
+}
+
+function isSchedulerClass(value: unknown): value is OriginSchedulerClass {
+  return (
+    typeof value === 'string' && (CLASS_PRIORITY_ORDER as readonly string[]).includes(value)
+  );
+}
+
+function priorityHintOf(
+  input: RequestInfo | URL,
+  init?: OriginSchedulerFetchInit,
+): FetchPriorityHint | undefined {
+  const fromInit = (init as { priority?: unknown } | undefined)?.priority;
+  if (fromInit !== undefined) {
+    return typeof fromInit === 'string' ? (fromInit as FetchPriorityHint) : undefined;
+  }
+  // A caller that built a `Request` carries `priority` on the request itself.
+  const candidate =
+    typeof input === 'object' && input !== null
+      ? (input as { priority?: unknown })
+      : undefined;
+  const fromRequest = candidate?.priority;
+  return typeof fromRequest === 'string' ? (fromRequest as FetchPriorityHint) : undefined;
+}
+
+/**
+ * The caller's requested class, if any.
+ *
+ * Two spellings are accepted, in this order:
+ *   1. `papercuspRequestClass` — explicit, and the only way to name a specific
+ *      lane. Costs nothing on the wire: `fetch` ignores unknown init fields.
+ *   2. `priority: 'low'` — the STANDARD Fetch Priority hint. Honouring it means
+ *      a caller that already marks a read as unimportant to the web platform
+ *      does not have to learn a papercusp-specific field to be scheduled that
+ *      way. `'high'`/`'auto'` are read but map to no demotion, because raising
+ *      priority is not something a hint is allowed to do (see below).
+ */
+function hintedClassOf(
+  input: RequestInfo | URL,
+  init?: OriginSchedulerFetchInit,
+): OriginSchedulerClass | undefined {
+  const explicit = init?.papercuspRequestClass;
+  if (isSchedulerClass(explicit)) return explicit;
+  return priorityHintOf(input, init) === 'low' ? 'background-sync' : undefined;
+}
+
+/**
+ * Apply a caller hint under the DEMOTE-ONLY rule: the result is whichever of
+ * the two classes has lower scheduling priority.
+ *
+ * This is the invariant that makes an unauthenticated, caller-supplied signal
+ * safe to honour at all. `interactive-control` is a RESERVED lane — the
+ * scheduler holds a slot back for it so a read wave cannot starve a user's
+ * write. If a hint could raise priority, any caller could move itself into that
+ * lane and the reservation would protect nothing; and since the wrapper sees
+ * every operator API call in the app, "any caller" is a large surface. Demotion
+ * needs no such trust: a caller can only ever volunteer to wait longer.
+ */
+function applyClassHint(
+  derived: OriginSchedulerClass,
+  hint: OriginSchedulerClass | undefined,
+): OriginSchedulerClass {
+  if (!hint) return derived;
+  return classRank(hint) > classRank(derived) ? hint : derived;
 }
 
 interface InstallHandle {
