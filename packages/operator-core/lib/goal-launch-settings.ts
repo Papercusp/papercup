@@ -449,6 +449,58 @@ export interface GoalLaunchRefusal {
   current: number;
   requested: number;
   message: string;
+  /**
+   * What POPULATION `current` measured (spend-attribution…-2026-09-04 P-004).
+   *
+   * A ceiling refusal is a readout attached to a REFUSAL, so it is among the
+   * worst places for a bare number. `has spent 6200 of its 10000 cent budget`
+   * reads as a fact about what the goal cost; it is a fact about the goal's POT
+   * SUBSET, which in this workspace is a small minority of the real figure.
+   *
+   * REQUIRED, not optional: a refusal that cannot say what it counted is the
+   * defect, so a new refusal reason must choose a label rather than inherit a
+   * silent default.
+   */
+  currentScope: string;
+}
+
+/**
+ * Population labels for {@link GoalLaunchRefusal.currentScope}.
+ *
+ * ⚠ `BUDGET_POT` deliberately DUPLICATES `GOAL_SPEND_POT_SCOPE` from
+ * `./goals/spend-rollup` rather than importing it. That module reaches
+ * `@papercusp/agent-mcp`, which imports THIS file, so the import would close a
+ * runtime cycle. Duplication is the lesser evil here, but only because it is
+ * PINNED: `goal-launch-refusal-scopes.test.ts` fails if the two literals ever
+ * diverge, which is the repo's rule for code-describing metadata that cannot be
+ * derived.
+ */
+export const REFUSAL_SCOPES = {
+  /** Mirrors GOAL_SPEND_POT_SCOPE — see the cycle note above. */
+  BUDGET_POT: 'inside-goal-pots:authoritative',
+  /**
+   * The value carried no provenance marker, so its population is UNKNOWN. Not a
+   * synonym for the pot scope: the gate's SELECT filters on nothing, so an
+   * unmarked legacy figure reaches this ceiling identically to a rollup-written
+   * one. Labelling it as pot-scoped would assert provenance nothing verified —
+   * the precise error this plan exists to stop.
+   */
+  BUDGET_UNVERIFIED: 'unverified-provenance:unmarked-snapshot',
+  LIVE_AGENTS_IN_GOAL: 'live-agents-in-goal',
+  LIVE_AGENTS_IN_FLEET: 'live-agents-in-fleet',
+} as const;
+
+/**
+ * The population a stored `spentCents` actually describes, judged from the
+ * marker beside it rather than assumed. Both known writers
+ * (`spend-rollup.ts`'s tick and `goals:update`'s verified rollup) persist a
+ * pot-leg figure; anything unmarked is reported as unverified instead of being
+ * granted their standing.
+ */
+export function budgetSpendScope(source: string | null): string {
+  return source === 'goal-pots-rollup' || source === 'goal-spend-tick'
+    ? REFUSAL_SCOPES.BUDGET_POT
+    : REFUSAL_SCOPES.BUDGET_UNVERIFIED;
 }
 
 /**
@@ -912,7 +964,13 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Drain fleet: ${brief.drainFleet.slug ?? 'not declared'}; live=${brief.drainFleet.live ?? 'unknown'}; working=${brief.drainFleet.working ?? 'unknown'}; control=${brief.drainFleet.controlState ?? 'unknown'}`,
     `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
     `Launch: headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
-    `Budget: spent=${brief.budget.spentCents ?? 'unknown'}c / ${brief.budget.budgetCents ?? 'undeclared'}c${brief.budget.spentCentsAt ? ` at ${brief.budget.spentCentsAt}` : ''}`,
+    // P-004: NAME THE POPULATION. This line lands in the kickoff of every agent
+    // that works the goal, which makes it the most-read rendering of this number
+    // anywhere — and `spent=` unqualified reads as what the goal has cost. It is
+    // the POT leg only. The scope is omitted when there is no figure to mislabel.
+    `Budget: spent=${brief.budget.spentCents ?? 'unknown'}c${
+      brief.budget.spentCents == null ? '' : ` [${budgetSpendScope(brief.budget.spentCentsSource)}]`
+    } / ${brief.budget.budgetCents ?? 'undeclared'}c${brief.budget.spentCentsAt ? ` at ${brief.budget.spentCentsAt}` : ''}`,
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
@@ -1299,6 +1357,7 @@ export async function readGoalPortfolioBrief(args: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
         spentCents: launch.budget?.spentCents ?? null,
         spentCentsAt: launch.budget?.spentCentsAt ?? null,
+        spentCentsSource: launch.budget?.spentCentsSource ?? null,
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires,
@@ -1357,6 +1416,7 @@ export async function readGoalPortfolioBrief(args: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
         spentCents: launch.budget?.spentCents ?? null,
         spentCentsAt: launch.budget?.spentCentsAt ?? null,
+        spentCentsSource: launch.budget?.spentCentsSource ?? null,
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires: [],
@@ -1549,6 +1609,7 @@ export async function readGoalLaunchSettings(
              launch_settings, budget_cents, budget_window_sec,
              metadata->'spentCents' AS spent_cents,
              metadata->>'spentCentsAt' AS spent_cents_at,
+             metadata->>'spentCentsSource' AS spent_cents_source,
              metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
     if (!rows.length) {
@@ -1564,6 +1625,7 @@ export async function readGoalLaunchSettings(
       budget_window_sec?: unknown;
       spent_cents?: unknown;
       spent_cents_at?: unknown;
+      spent_cents_source?: unknown;
       drain_fleet?: unknown;
     };
     const parsed = parseGoalLaunchSettings(row.launch_settings, `goal ${goalId} launch_settings`);
@@ -1575,6 +1637,7 @@ export async function readGoalLaunchSettings(
         budgetCents: asFiniteCents(row.budget_cents),
         spentCents: asFiniteCents(row.spent_cents),
         spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
+        spentCentsSource: typeof row.spent_cents_source === 'string' ? row.spent_cents_source : null,
       },
       brief: title
         ? {
@@ -2106,13 +2169,25 @@ export async function resolveGoalLaunchForGoal(args: {
             `forbids inventing one)`,
         );
       } else if (budget.spentCents >= budget.budgetCents) {
+        const spendScope = budgetSpendScope(budget.spentCentsSource);
         refusal = {
           reason: 'goal_budget_exceeded',
           limit: budget.budgetCents,
           current: budget.spentCents,
           requested: count,
+          currentScope: spendScope,
           message:
-            `goal ${goalId} has spent ${budget.spentCents} of its ${budget.budgetCents} cent budget` +
+            // NAME THE POPULATION (P-004). Unqualified, this line reads as the
+            // goal's total cost. It is the pot subset — which is why the scope
+            // travels in the sentence, not just in the structured field a human
+            // reading the refusal will never see.
+            `goal ${goalId} has spent ${budget.spentCents} of its ${budget.budgetCents} cent budget ` +
+            `[measured over ${spendScope}` +
+            `${
+              spendScope === REFUSAL_SCOPES.BUDGET_UNVERIFIED
+                ? ' — this figure carries no provenance marker, so what it counted is unknown'
+                : "; spend billed OUTSIDE this goal's pots is not in this number"
+            }]` +
             `${budget.spentCentsAt ? ` (platform snapshot at ${budget.spentCentsAt})` : ''}; further agent/fleet ` +
             `launches are refused. Review spend and raise budget_cents on the goal, or wind the goal down. ` +
             `The owner has an open escalation for this (deduped per goal).`,
@@ -2168,6 +2243,9 @@ export async function resolveGoalLaunchForGoal(args: {
         limit: ceilings.maxAgents,
         current: headcount.total,
         requested: count,
+        // Already named inline ("N live") in the prose below; carried structurally
+        // too so a consumer never has to parse a sentence to learn the population.
+        currentScope: REFUSAL_SCOPES.LIVE_AGENTS_IN_GOAL,
         message:
           `goal ${goalId} allows ${ceilings.maxAgents} concurrent agent(s)${provenance(settings?.maxAgents)}; ` +
           `${headcount.total} live, so launching ${count} more would exceed it. Raise maxAgents in the goal's ` +
@@ -2187,6 +2265,7 @@ export async function resolveGoalLaunchForGoal(args: {
         limit: ceilings.maxPerFleet,
         current: headcount.fleet ?? 0,
         requested: count,
+        currentScope: REFUSAL_SCOPES.LIVE_AGENTS_IN_FLEET,
         message:
           `goal ${goalId} allows ${ceilings.maxPerFleet} agent(s) per fleet${provenance(settings?.maxPerFleet)}; ` +
           `fleet ${args.fleetSlug} has ${headcount.fleet ?? 0} live, so launching ${count} more would exceed it. ` +
