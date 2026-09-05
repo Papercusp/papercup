@@ -1799,3 +1799,96 @@ describe('P-002: progress-certified checkpoint:await', () => {
     }
   });
 });
+
+/**
+ * P-003 — the D-004 interlock on the RECOMMENDATION side.
+ *
+ * P-002 proved that no PROGRESS-GATED route reaches `release:checkpoint-run`. That is a claim
+ * about one branch family: the routes taken when a run is in flight and its heartbeat is being
+ * certified. D-004 is stronger and total — while a run is inside its auto-refire re-triage
+ * window, NO path may recommend firing the gate by hand, because doing so discards the in-flight
+ * rescue and spends a ~55min suite.
+ *
+ * The sites below are deliberately the ones P-002 does NOT cover: they are reached with no run
+ * certified in flight, so the progress gate never sees them. Each carries the re-triage flag on
+ * the same `checkpointRunInFlight` reading that the certificate reads, which is how the flag is
+ * actually delivered in production (git-pipeline-position emits it beside the heartbeat).
+ */
+describe('P-003: D-004 forbids a manual checkpoint-run inside the re-triage window', () => {
+  /** The re-triage reading as production emits it: the voided run is no longer active. */
+  const inRetriage = { active: false, inRetriageWindow: true, candidate: null, startedAtMs: null, elapsedSec: null, asOfAgeMs: 0 };
+
+  const staleVerdict = {
+    state: 'gate-verdict-stale' as const,
+    authoritative: false,
+    consecutiveReds: 3,
+    failingTests: [] as string[],
+    fireStale: false,
+    fireStaleReason: null,
+    verdictStale: true,
+    verdictStaleReason: 'superseded pin',
+  };
+
+  /** Site A — a stale gate verdict with nothing in flight. */
+  const staleVerdictSite = (run?: Record<string, unknown>) =>
+    input({
+      position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+      gate: (run ? { ...staleVerdict, checkpointRunInFlight: run } : staleVerdict) as never,
+    });
+
+  /** Site B — a force-deployed lineage ahead of the green pin. */
+  const aheadOfGateSite = (run?: Record<string, unknown>) =>
+    input({
+      position: position({ verdictProvenance: { ...position().verdictProvenance, deployOrigin: 'ahead-of-gate' } }),
+      gate: (run ? { ...input().gate, checkpointRunInFlight: run } : input().gate) as never,
+    });
+
+  const sites: ReadonlyArray<{ name: string; build: (run?: Record<string, unknown>) => ReleaseTraceInput }> = [
+    { name: 'stale gate verdict', build: staleVerdictSite },
+    { name: 'deployed lineage ahead of the green pin', build: aheadOfGateSite },
+  ];
+
+  // ── CONTROLS ───────────────────────────────────────────────────────────────
+  // Without these, a suppression that fired unconditionally — or a fixture that stopped
+  // reaching the verb for an unrelated reason — would satisfy every assertion below while
+  // proving nothing. Each site must genuinely recommend the forbidden verb when the window
+  // is absent, or the property under test is untested.
+
+  it('CONTROL: with no re-triage window, every site DOES recommend firing the gate by hand', () => {
+    for (const { name, build } of sites) {
+      expect({ site: name, verb: buildReleaseTrace(build()).nextVerb?.name }).toEqual({
+        site: name,
+        verb: 'release:checkpoint-run',
+      });
+    }
+  });
+
+  it('CONTROL: an in-flight reading WITHOUT the flag still recommends it', () => {
+    // Proves the suppression keys on the re-triage window itself, not on the mere presence of a
+    // `checkpointRunInFlight` reading — which every production trace carries.
+    for (const { name, build } of sites) {
+      const verb = buildReleaseTrace(build({ ...inRetriage, inRetriageWindow: undefined })).nextVerb?.name;
+      expect({ site: name, verb }).toEqual({ site: name, verb: 'release:checkpoint-run' });
+    }
+  });
+
+  // ── THE INTERLOCK ──────────────────────────────────────────────────────────
+
+  it('suppresses the manual run on every site while the window is open', () => {
+    for (const { name, build } of sites) {
+      const verb = buildReleaseTrace(build(inRetriage)).nextVerb;
+      expect({ site: name, verb: verb?.name }).not.toEqual({ site: name, verb: 'release:checkpoint-run' });
+    }
+  });
+
+  it('names D-004 and the discarded-rescue cost instead of going silent', () => {
+    // A bare null teaches the reader nothing and invites them to reach for the forbidden verb
+    // from memory — the same reasoning the withheld-authority guard records above.
+    for (const { name, build } of sites) {
+      const verb = buildReleaseTrace(build(inRetriage)).nextVerb;
+      expect({ site: name, hasVerb: verb !== null && verb !== undefined }).toEqual({ site: name, hasVerb: true });
+      expect(verb?.reason).toContain('re-triage window');
+      expect(verb?.reason).toContain('discards');
+    }
+  });
+});

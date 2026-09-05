@@ -1081,18 +1081,46 @@ function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | nul
 function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const verb = unguardedNextVerb(input);
   if (verb?.name !== 'release:checkpoint-run') return verb;
-  const withheld = manualCheckpointRunWithheld(input);
-  if (!withheld) return verb;
 
-  return {
-    name: 'checkpoint:await',
-    args: { pipeline: input.pipeline },
-    reason:
-      `MANUAL CHECKPOINT AUTHORITY WITHHELD by ${withheld.governingRef}: ${withheld.reason} ` +
-      `A release:checkpoint-run recommendation (${verb.reason}) was suppressed — do NOT fire the gate by hand: ` +
-      'a manual fire inside a re-triage window discards the auto-refire rescue and spends a ~55min suite. ' +
-      'Await the next scheduled verdict, or record a newer decision granting manual authority before launching.',
-  };
+  const withheld = manualCheckpointRunWithheld(input);
+  if (withheld) {
+    return {
+      name: 'checkpoint:await',
+      args: { pipeline: input.pipeline },
+      reason:
+        `MANUAL CHECKPOINT AUTHORITY WITHHELD by ${withheld.governingRef}: ${withheld.reason} ` +
+        `A release:checkpoint-run recommendation (${verb.reason}) was suppressed — do NOT fire the gate by hand: ` +
+        'a manual fire inside a re-triage window discards the auto-refire rescue and spends a ~55min suite. ' +
+        'Await the next scheduled verdict, or record a newer decision granting manual authority before launching.',
+    };
+  }
+
+  // P-003 / D-004. The withheld-authority guard above answers "is there a recorded DECISION
+  // forbidding this?"; the re-triage window is a live RUNTIME fact and answers a different
+  // question, so a trace with no such decision on file reached the forbidden verb anyway.
+  //
+  // Read through the certificate rather than the raw reading so this module keeps ONE reader of
+  // the flag: the certificate resolves it on every basis including `no-run`, which is precisely
+  // the shape production emits here — the auto-refire has VOIDED the previous run, so nothing is
+  // active, and an absent run must not be able to launder the prohibition away.
+  if (certifyCheckpointProgress(retriageReading(input), input.snapshotGeneration).inRetriageWindow) {
+    return {
+      name: 'checkpoint:await',
+      args: { pipeline: input.pipeline },
+      reason:
+        'D-004: the gate is inside its auto-refire re-triage window, so manual checkpoint authority is withheld. ' +
+        `A release:checkpoint-run recommendation (${verb.reason}) was suppressed — firing here discards the ` +
+        'in-flight rescue the refire already started and spends a ~55min suite to re-learn what it is measuring. ' +
+        'Await the refire\'s verdict; it is judging a candidate this trace cannot see yet.',
+    };
+  }
+
+  return verb;
+}
+
+/** The reading the re-triage flag rides on, preferring the gate's over the position's. */
+function retriageReading(input: ReleaseTraceInput): ProgressCertificateInput | null | undefined {
+  return input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
 }
 
 export function buildReleaseTrace(input: ReleaseTraceInput) {
