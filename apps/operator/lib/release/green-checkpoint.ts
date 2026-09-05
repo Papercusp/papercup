@@ -75,6 +75,7 @@ import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/releas
 // P-007 / D-004: the fail-closed predicate that replaced D-001's staging-join veto.
 import { assessFrozenLineagePromotion } from "@papercusp/operator-core/lib/release/frozen-lineage-promotion";
 import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
+import type { LineageLedgerReconcileResult } from "@papercusp/operator-core/lib/release/frozen-lineage-ledger-reconcile";
 import {
   describeRetriageTarget,
   resolveRetriageTarget,
@@ -1154,6 +1155,28 @@ export interface CheckpointDeps {
   writeFrozenRepairQueue?(
     queue: FrozenCandidateRepairQueue | null,
   ): Promise<void>;
+  /**
+   * P-027 (D-014): the lost-update-safe writer. Re-reads the row, applies the PURE reducer to
+   * the FRESH copy and CAS-writes it on `updatedAtMs` — so an admission that landed while this
+   * run's suite was running (the row's repairHead moved) is carried, never overwritten by the
+   * run-start snapshot. `unchanged` means the reducer returned the fresh row itself (a verdict
+   * for a head the row has already moved past); `absent` means the row was retired mid-run and
+   * nothing was written. Optional so historical stubs stay source-compatible: without it the
+   * gate applies the reducer to its snapshot and calls `writeFrozenRepairQueue` (pre-D-014).
+   */
+  transitionFrozenRepairQueue?(
+    transition: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
+  ): Promise<FrozenRepairQueueTransitionResult>;
+  /**
+   * P-027 (D-014): reconcile the row with `refs/papercusp/frozen/<candidate>` at run start —
+   * every lineage commit beyond the row's repairHead gets its ledger entry rebuilt from the
+   * commit and repairHead advances to the ref. The result is PERSISTED (through the CAS
+   * transition) and returned; a refusal (`ref-behind-row`, `lineage-diverged`,
+   * `commit-unreadable`, …) returns the input row untouched with the reason in `detail`.
+   */
+  reconcileFrozenRepairQueueWithLineage?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<FrozenRepairQueueReconcileResult>;
   /**
    * P-008: after main advances to a proven frozen repairHead, make staging descend from that
    * exact lineage without changing staging's tree. The real dep holds `git-sync:<slug>` for
@@ -5130,6 +5153,78 @@ export function repairSignatureFromVerdict(result: {
  *  the fresh failing set WITHOUT spending a full suite; a green proceeds to that full gate,
  *  which is the promotion proof. Nothing here retires the queue, and nothing here reads a ref
  *  it was not handed. */
+/** P-027 (D-014): what `CheckpointDeps.transitionFrozenRepairQueue` reports back. */
+export interface FrozenRepairQueueTransitionResult {
+  status: "written" | "unchanged" | "absent";
+  /** The row as it stands after the call (fresh-derived), null when absent. */
+  queue: FrozenCandidateRepairQueue | null;
+}
+
+/** P-027 (D-014): what `CheckpointDeps.reconcileFrozenRepairQueueWithLineage` reports back. */
+export interface FrozenRepairQueueReconcileResult {
+  status: string;
+  queue: FrozenCandidateRepairQueue;
+  /** Ledger entries rebuilt from lineage commits by this call. */
+  reconciled: number;
+  detail: string;
+}
+
+/**
+ * P-027 (D-014): persist a queue transition WITHOUT the lost update.
+ *
+ * Every queue write the gate makes after its run-start read used to hand the reducer's result
+ * — computed from that snapshot — straight to `writeFrozenRepairQueue`. Between the read and
+ * the write a suite runs (up to an hour), and `release:repair-queue { op:'admit' }` may
+ * advance the persisted row's repairHead in that window; the stale write-back then dropped the
+ * admission from the row while the lineage ref kept the commit (measured 2026-09-05 17:41Z).
+ * With the CAS dep wired, the reducer is applied to the FRESH row instead and the write is
+ * version-guarded; without it (unit stubs, non-recording CLI runs) behaviour is byte-identical
+ * to before. `absent` (the row was retired mid-run) is deliberately NOT written back: that
+ * would resurrect a retired queue from a snapshot — the same defect in the other direction.
+ * The returned queue is what the caller must continue with; its snapshot is stale by definition.
+ */
+async function commitFrozenRepairQueueTransition(
+  deps: CheckpointDeps,
+  snapshot: FrozenCandidateRepairQueue,
+  transition: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
+  label: string,
+): Promise<FrozenCandidateRepairQueue> {
+  if (deps.transitionFrozenRepairQueue) {
+    const outcome = await deps.transitionFrozenRepairQueue(transition);
+    if (outcome.queue) return outcome.queue;
+    deps.log(
+      `frozen repair queue ${label}: the row is gone (retired while this run was in flight) — ` +
+        `not resurrecting it from this run's ${snapshot.repairHead.slice(0, 8)} snapshot`,
+    );
+    return transition(snapshot);
+  }
+  const next = transition(snapshot);
+  await deps.writeFrozenRepairQueue?.(next);
+  return next;
+}
+
+/**
+ * P-027 (D-014): a VERDICT transition is only valid for the head it measured. If the fresh
+ * row's repairHead has moved (an admission landed during the suite), the measured head is no
+ * longer the queue's head: the verdict is SUPERSEDED — the row is returned as-is (the newer
+ * head is unjudged and the next run verifies it), and `onSuperseded` is told so the run can
+ * log and stop treating its result as the queue's verdict. Never records a red or a green
+ * against a head the row no longer carries.
+ */
+function verdictTransitionAtHead(
+  measuredHead: string,
+  reducer: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
+  onSuperseded: (fresh: FrozenCandidateRepairQueue) => void,
+): (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue {
+  return (fresh) => {
+    if (fresh.repairHead !== measuredHead) {
+      onSuperseded(fresh);
+      return fresh;
+    }
+    return reducer(fresh);
+  };
+}
+
 export async function verifyRepairHead(
   deps: RepairHeadVerificationDeps,
   queue: FrozenCandidateRepairQueue,
@@ -9384,11 +9479,17 @@ async function runGreenCheckpointInner(
         );
       }
     } else if (fired?.spawnId) {
-      dispatchQueue = markFrozenRepairFixerDispatched(dispatchQueue, {
-        spawnId: fired.spawnId,
-        nowMs: Date.now(),
-      });
-      await deps.writeFrozenRepairQueue?.(dispatchQueue);
+      const dispatchedSpawnId = fired.spawnId;
+      dispatchQueue = await commitFrozenRepairQueueTransition(
+        deps,
+        dispatchQueue,
+        (fresh) =>
+          markFrozenRepairFixerDispatched(fresh, {
+            spawnId: dispatchedSpawnId,
+            nowMs: Date.now(),
+          }),
+        "fixer-dispatched",
+      );
     }
 
     if (dispatchError) throw dispatchError;
@@ -9628,6 +9729,28 @@ async function runGreenCheckpointInner(
   // only the promotion path (`main` fast-forwarded to the lineage) or an explicit operator
   // `release:repair-queue { op: 'retire', confirm: true }` clears the row.
   if (repairQueue) {
+    // P-027 (D-014): ledger totality at run start. The lineage ref and the queue row are two
+    // stores; a lost update (pre-D-014 run write-back) could leave the row BEHIND the ref, so
+    // the gate would judge a head the lineage had already moved past and an agent's next admit
+    // would refuse `lineage-ref-moved`. Rebuild the missing entries from the commits themselves
+    // and advance repairHead to the ref before anything below reads the row. Non-fatal: a
+    // reconcile that cannot run leaves today's behaviour; a refusal is logged, never guessed.
+    if (deps.reconcileFrozenRepairQueueWithLineage) {
+      try {
+        const reconciled =
+          await deps.reconcileFrozenRepairQueueWithLineage(repairQueue);
+        if (reconciled.reconciled > 0) {
+          deps.log(`FROZEN_REPAIR_LEDGER_RECONCILED: ${reconciled.detail}`);
+        } else if (reconciled.status !== "in-sync") {
+          deps.log(`FROZEN_REPAIR_LEDGER_DISAGREES: ${reconciled.detail}`);
+        }
+        repairQueue = reconciled.queue;
+      } catch (e) {
+        deps.log(
+          `frozen repair ledger reconcile skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
     // P-007 / D-004: a process may die after proving the exact repair green but before `main`
     // fast-forwards to it. The old resume published an additive staging-history join and re-cut
     // the gate at the joined sha; the lineage commit is now the promotion target itself, so the
@@ -9635,8 +9758,15 @@ async function runGreenCheckpointInner(
     // selectively and, on green, the full canonical gate at that same sha before promoting —
     // idempotent, and it can never fall through to a moving tip.
     if (repairQueue.phase === "ready-to-promote") {
-      repairQueue = { ...repairQueue, phase: "ready-to-verify" };
-      await deps.writeFrozenRepairQueue?.(repairQueue);
+      repairQueue = await commitFrozenRepairQueueTransition(
+        deps,
+        repairQueue,
+        (fresh) =>
+          fresh.phase === "ready-to-promote"
+            ? { ...fresh, phase: "ready-to-verify" }
+            : fresh,
+        "resume-ready-to-promote",
+      );
       deps.log(
         `resuming frozen repair ${repairQueue.repairHead.slice(0, 8)}: it proved green but never ` +
           `advanced ${cfg.releaseRef}; re-verifying at its own sha before promotion`,
@@ -9674,11 +9804,17 @@ async function runGreenCheckpointInner(
             `${repairQueue.candidate.slice(0, 8)} and never verified — running the repair ` +
             `verification at that head instead of spending another dispatch on it.`,
         );
-        repairQueue = markFrozenRepairFixerFinished(repairQueue, {
-          spawnId: deadSpawnId,
-          repairHead: repairQueue.repairHead,
-          nowMs: Date.now(),
-        });
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          (fresh) =>
+            markFrozenRepairFixerFinished(fresh, {
+              spawnId: deadSpawnId,
+              repairHead: fresh.repairHead,
+              nowMs: Date.now(),
+            }),
+          "dead-fixer-admitted-head",
+        );
       } else {
         // P-005: a dead fixer that admitted nothing may deserve an attempt REFUND — but
         // only on evidence (zero tool invocations = infrastructure death), and never
@@ -9687,13 +9823,19 @@ async function runGreenCheckpointInner(
           .classifyDeadFrozenRepairFixer?.(deadSpawnId)
           .catch(() => null);
         const attemptsBefore = repairQueue.attempts;
-        repairQueue = markFrozenRepairFixerDead(repairQueue, {
-          spawnId: deadSpawnId,
-          nowMs: Date.now(),
-          ...(deathClass?.infrastructure
-            ? { unproductiveInfrastructureDeath: { reason: deathClass.reason } }
-            : {}),
-        });
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          (fresh) =>
+            markFrozenRepairFixerDead(fresh, {
+              spawnId: deadSpawnId,
+              nowMs: Date.now(),
+              ...(deathClass?.infrastructure
+                ? { unproductiveInfrastructureDeath: { reason: deathClass.reason } }
+                : {}),
+            }),
+          "dead-fixer",
+        );
         if (repairQueue.attempts < attemptsBefore) {
           deps.log(
             `FIXER_ATTEMPT_REFUNDED: fixer ${deadSpawnId} died of infrastructure without doing ` +
@@ -9708,7 +9850,6 @@ async function runGreenCheckpointInner(
           );
         }
       }
-      await deps.writeFrozenRepairQueue?.(repairQueue);
       decision = decideFrozenCandidateRepairQueue(repairQueue, {
         nowMs: Date.now(),
       });
@@ -9722,11 +9863,16 @@ async function runGreenCheckpointInner(
     {
       const ageRung = frozenRepairAgeEscalationRung(repairQueue, Date.now());
       if (ageRung > (repairQueue.ageEscalatedRung ?? 0)) {
-        repairQueue = markFrozenRepairAgeEscalated(repairQueue, {
-          rung: ageRung,
-          nowMs: Date.now(),
-        });
-        await deps.writeFrozenRepairQueue?.(repairQueue);
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          (fresh) =>
+            markFrozenRepairAgeEscalated(fresh, {
+              rung: ageRung,
+              nowMs: Date.now(),
+            }),
+          "age-escalated",
+        );
         await deps
           .escalate?.(
             `frozen candidate ${repairQueue.candidate.slice(0, 8)} has been held ${ageRung * 8}h and is still not green`,
@@ -9754,11 +9900,17 @@ async function runGreenCheckpointInner(
       // observed since 2026-08-19 was a re-cut in disguise, and a re-cut is exactly the
       // treadmill the freeze exists to stop. Retire stays OWNER-ONLY.
       if (repairQueue.phase !== "blocked") {
-        repairQueue = markFrozenRepairExhausted(repairQueue, {
-          reason: decision.reason,
-          nowMs: Date.now(),
-        });
-        await deps.writeFrozenRepairQueue?.(repairQueue);
+        const exhaustedReason = decision.reason;
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          (fresh) =>
+            markFrozenRepairExhausted(fresh, {
+              reason: exhaustedReason,
+              nowMs: Date.now(),
+            }),
+          "exhausted",
+        );
         await deps
           .escalate?.(
             `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair (${decision.reason})`,
@@ -9942,11 +10094,17 @@ async function runGreenCheckpointInner(
           // branch that fired 20 times in one day with 0 resumes (2026-09-02). Now it BLOCKS
           // the queue with the same row/candidate/repairHead, escalates once, and holds:
           // agents and humans converge onto the frozen lineage through admission.
-          repairQueue = markFrozenRepairExhausted(repairQueue, {
-            reason: dispatchInfeasible.reason,
-            nowMs: Date.now(),
-          });
-          await deps.writeFrozenRepairQueue?.(repairQueue);
+          const infeasibleReason = dispatchInfeasible.reason;
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps,
+            repairQueue,
+            (fresh) =>
+              markFrozenRepairExhausted(fresh, {
+                reason: infeasibleReason,
+                nowMs: Date.now(),
+              }),
+            "dispatch-infeasible",
+          );
           await deps
             .escalate?.(
               `frozen candidate ${repairQueue.candidate.slice(0, 8)} held: no fixer dispatchable (${dispatchInfeasible.reason})`,
@@ -10087,14 +10245,37 @@ async function runGreenCheckpointInner(
         if (canRequeue) {
           // P-006: the selective verification re-ran EVERY entry (that is what `selective`
           // means), so every kind was measured and the typed fresh signature replaces the row's.
-          repairQueue = markFrozenRepairVerificationRed(repairQueue, {
-            repairHead: candidate,
-            failingTests: verification.failingTests,
-            signature: verification.signature,
-            signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
-            nowMs: Date.now(),
-          });
-          await deps.writeFrozenRepairQueue?.(repairQueue);
+          // P-027 (D-014): the verdict is for `candidate` (this run's repairHead). If an
+          // admission advanced the row while the suite ran, the red is SUPERSEDED — the row
+          // keeps the newer, unjudged head and the next run verifies it; recording this red
+          // against it would overwrite the admission (the 2026-09-05 17:41Z lost update).
+          let supersededBy = null as FrozenCandidateRepairQueue | null;
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps,
+            repairQueue,
+            verdictTransitionAtHead(
+              candidate,
+              (fresh) =>
+                markFrozenRepairVerificationRed(fresh, {
+                  repairHead: candidate,
+                  failingTests: verification.failingTests,
+                  signature: verification.signature,
+                  signatureContext: { gateRegistry: NON_TEST_GATE_SCRIPTS },
+                  nowMs: Date.now(),
+                }),
+              (fresh) => {
+                supersededBy = fresh;
+              },
+            ),
+            "repair-head-red",
+          );
+          if (supersededBy) {
+            deps.log(
+              `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} not recorded — an ` +
+                `admission advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while this ` +
+                `run judged; that head is unjudged and the next run verifies it`,
+            );
+          }
         }
         const summary =
           `frozen repair head ${candidate.slice(0, 8)} is still red at its own sha (${verification.summary}); ` +
@@ -11279,19 +11460,42 @@ async function runGreenCheckpointInner(
         typecheckPreflight,
       });
       if (repairVerification && repairQueue) {
-        repairQueue = markFrozenRepairVerificationRed(repairQueue, {
-          repairHead: candidate,
-          ...measuredSignature,
-          nowMs: Date.now(),
-        });
         // EI-22430783328866306 (second half): persist the red BEFORE the dispatch attempt,
         // exactly as the ready-to-test branch below does. `reserveFrozenCandidateRepairFixer`
-        // is a CAS on the row's `updatedAtMs`, and the transition above has already bumped
-        // the in-memory stamp — so a reserve against the un-persisted row always misses
-        // ("could not reserve its dispatch window", observed 2026-09-05T16:43Z run e9cdc8b9),
-        // the run returns terminal from the reservationBlocked arm, and the verdict is lost
-        // again: the queue stays `ready-to-verify` with no round at this repairHead.
-        await deps.writeFrozenRepairQueue(repairQueue);
+        // is a CAS on the row's `updatedAtMs`, and the transition bumps the stamp — so a
+        // reserve against an un-persisted row always misses ("could not reserve its dispatch
+        // window", observed 2026-09-05T16:43Z run e9cdc8b9), the run returns terminal from the
+        // reservationBlocked arm, and the verdict is lost again: the queue stays
+        // `ready-to-verify` with no round at this repairHead.
+        //
+        // P-027 (D-014): applied to the FRESH row, and only if its repairHead is still the head
+        // this suite judged — an admission that landed during the hour-long suite supersedes
+        // the verdict instead of being overwritten by it.
+        let supersededBy = null as FrozenCandidateRepairQueue | null;
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          verdictTransitionAtHead(
+            candidate,
+            (fresh) =>
+              markFrozenRepairVerificationRed(fresh, {
+                repairHead: candidate,
+                ...measuredSignature,
+                nowMs: Date.now(),
+              }),
+            (fresh) => {
+              supersededBy = fresh;
+            },
+          ),
+          "full-gate-red",
+        );
+        if (supersededBy) {
+          deps.log(
+            `FROZEN_REPAIR_VERDICT_SUPERSEDED: full-gate red at ${candidate.slice(0, 8)} not recorded — ` +
+              `an admission advanced repairHead to ${supersededBy.repairHead.slice(0, 8)} while the ` +
+              `suite ran; that head is unjudged and the next run verifies it`,
+          );
+        }
         repairQueueRedPersisted = true;
       } else if (
         initialCandidateVerification &&
@@ -11309,30 +11513,55 @@ async function runGreenCheckpointInner(
         // unambiguously the SAME queue in the SAME writable phase; any mismatch (a
         // concurrent retire, a phase advance, a read fault) falls back to today's
         // behaviour (the in-memory snapshot) rather than risk operating on the wrong row.
-        const freshQueue = await deps
-          .readFrozenRepairQueue?.()
-          .catch(() => null);
-        const queueForRedTransition =
-          freshQueue &&
-          freshQueue.candidate === repairQueue.candidate &&
-          freshQueue.phase === "ready-to-test"
-            ? freshQueue
-            : repairQueue;
-        if (queueForRedTransition !== repairQueue) {
-          deps.log(
-            `frozen candidate ${repairQueue.candidate.slice(0, 8)} repairHead re-read before red ` +
-              `transition: preserving converged repairHead ${queueForRedTransition.repairHead.slice(0, 8)} ` +
-              `(was ${repairQueue.repairHead.slice(0, 8)} in the pre-suite snapshot)`,
+        //
+        // P-027 (D-014) generalizes this: with the CAS transition wired the reducer is applied
+        // to the fresh row inside a version-guarded write, so the re-read below is only the
+        // pre-D-014 fallback for stubs and non-recording runs that expose no transition hook.
+        const snapshotHead = repairQueue.repairHead;
+        if (deps.transitionFrozenRepairQueue) {
+          repairQueue = await commitFrozenRepairQueueTransition(
+            deps,
+            repairQueue,
+            (fresh) =>
+              markFrozenCandidateVerificationRed(fresh, {
+                ...measuredSignature,
+                nowMs: Date.now(),
+              }),
+            "candidate-red",
           );
+          if (repairQueue.repairHead !== snapshotHead) {
+            deps.log(
+              `frozen candidate ${repairQueue.candidate.slice(0, 8)} red transition applied to the fresh ` +
+                `row: preserving converged repairHead ${repairQueue.repairHead.slice(0, 8)} ` +
+                `(was ${snapshotHead.slice(0, 8)} in the pre-suite snapshot)`,
+            );
+          }
+        } else {
+          const freshQueue = await deps
+            .readFrozenRepairQueue?.()
+            .catch(() => null);
+          const queueForRedTransition =
+            freshQueue &&
+            freshQueue.candidate === repairQueue.candidate &&
+            freshQueue.phase === "ready-to-test"
+              ? freshQueue
+              : repairQueue;
+          if (queueForRedTransition !== repairQueue) {
+            deps.log(
+              `frozen candidate ${repairQueue.candidate.slice(0, 8)} repairHead re-read before red ` +
+                `transition: preserving converged repairHead ${queueForRedTransition.repairHead.slice(0, 8)} ` +
+                `(was ${repairQueue.repairHead.slice(0, 8)} in the pre-suite snapshot)`,
+            );
+          }
+          repairQueue = markFrozenCandidateVerificationRed(
+            queueForRedTransition,
+            {
+              ...measuredSignature,
+              nowMs: Date.now(),
+            },
+          );
+          await deps.writeFrozenRepairQueue(repairQueue);
         }
-        repairQueue = markFrozenCandidateVerificationRed(
-          queueForRedTransition,
-          {
-            ...measuredSignature,
-            nowMs: Date.now(),
-          },
-        );
-        await deps.writeFrozenRepairQueue(repairQueue);
         repairQueueRedPersisted = true;
       } else if (!repairQueue) {
         // P-013 / D-007: opening a NEW convergence cycle is the deployed default and is
@@ -11379,11 +11608,16 @@ async function runGreenCheckpointInner(
       if (deferNewRepairDispatch && repairQueue && !repairQueueRedPersisted) {
         // Compatibility callers create the queue only after the suite. Persist its red
         // transition before allowing the moving-tip rescue to inspect the failure.
-        repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
-          ...measuredSignature,
-          nowMs: Date.now(),
-        });
-        await deps.writeFrozenRepairQueue(repairQueue);
+        repairQueue = await commitFrozenRepairQueueTransition(
+          deps,
+          repairQueue,
+          (fresh) =>
+            markFrozenCandidateVerificationRed(fresh, {
+              ...measuredSignature,
+              nowMs: Date.now(),
+            }),
+          "deferred-candidate-red",
+        );
       }
       // `repairQueue` is null here only when the P-013 off switch suppressed the cycle —
       // there is then no queue to dispatch a fixer for. The explicit guard is what keeps
@@ -12628,11 +12862,34 @@ async function runGreenCheckpointInner(
     // candidate's CAS-advanced admission ledger ref. Anything else — a tip cut, a commit no
     // admission authored, an unreadable ancestry — holds the queue and leaves `main` untouched.
     // P-008 folds the promoted lineage back into staging afterwards.
-    repairQueue = markFrozenRepairVerificationGreen(repairQueue, {
-      repairHead: candidate,
-      nowMs: Date.now(),
-    });
-    await deps.writeFrozenRepairQueue?.(repairQueue);
+    // P-027 (D-014): the green is for `candidate`. If an admission advanced the row during the
+    // suite, this green is SUPERSEDED: the row keeps the newer head unjudged (so the promotion
+    // proof below — judged sha == repairHead — refuses, fail-closed) and nothing is overwritten.
+    let greenSupersededBy = null as FrozenCandidateRepairQueue | null;
+    repairQueue = await commitFrozenRepairQueueTransition(
+      deps,
+      repairQueue,
+      verdictTransitionAtHead(
+        candidate,
+        (fresh) =>
+          markFrozenRepairVerificationGreen(fresh, {
+            repairHead: candidate,
+            nowMs: Date.now(),
+          }),
+        (fresh) => {
+          greenSupersededBy = fresh;
+        },
+      ),
+      "repair-head-green",
+    );
+    if (greenSupersededBy) {
+      deps.log(
+        `FROZEN_REPAIR_VERDICT_SUPERSEDED: green at ${candidate.slice(0, 8)} not recorded — an ` +
+          `admission advanced repairHead to ${greenSupersededBy.repairHead.slice(0, 8)} while the ` +
+          `suite ran; the newer head is unjudged, so ${cfg.releaseRef} does not advance to ` +
+          `${candidate.slice(0, 8)} and the next run verifies the lineage head`,
+      );
+    }
     const lineageRef = frozenLineageRef(repairQueue.candidate);
     const promotion = assessFrozenLineagePromotion({
       candidate: repairQueue.candidate,
@@ -16086,6 +16343,49 @@ export function realCheckpointDeps(
             const { writeFrozenCandidateRepairQueue } =
               await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFrozenCandidateRepairQueue(repairTarget, queue);
+          },
+          // P-027 (D-014): the lost-update-safe writer — re-read, reduce on the fresh row,
+          // CAS-write on `updatedAtMs` (see applyFrozenCandidateRepairQueueTransition).
+          async transitionFrozenRepairQueue(transition) {
+            const { applyFrozenCandidateRepairQueueTransition } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            const outcome = await applyFrozenCandidateRepairQueueTransition(
+              repairTarget,
+              transition,
+            );
+            return { status: outcome.status, queue: outcome.queue };
+          },
+          // P-027 (D-014): ledger totality — rebuild the row's missing admissions from the
+          // lineage ref's commits, INSIDE the CAS transition so a concurrent admit is carried.
+          async reconcileFrozenRepairQueueWithLineage(queue) {
+            const { reconcileFrozenRepairQueueWithLineageRef } =
+              await import("@papercusp/operator-core/lib/release/frozen-lineage-ledger-reconcile");
+            const { applyFrozenCandidateRepairQueueTransition } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            let last = null as LineageLedgerReconcileResult | null;
+            const outcome = await applyFrozenCandidateRepairQueueTransition(
+              repairTarget,
+              (fresh) => {
+                last = reconcileFrozenRepairQueueWithLineageRef(fresh, {
+                  root: cfg.integrationRoot,
+                });
+                return last.queue;
+              },
+            );
+            if (!last) {
+              return {
+                status: outcome.status,
+                queue: outcome.queue ?? queue,
+                reconciled: 0,
+                detail: `queue row ${outcome.status}; nothing to reconcile`,
+              };
+            }
+            return {
+              status: last.status,
+              queue: outcome.queue ?? last.queue,
+              reconciled: last.reconciled.length,
+              detail: last.detail,
+            };
           },
           async absorbPromotedLineageIntoStaging(
             queue: FrozenCandidateRepairQueue,

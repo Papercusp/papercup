@@ -563,6 +563,14 @@ export interface FrozenRepairAdmission {
   /** whole-blob: the number of ledgered hunks by OTHER agents the admitted blobs may carry. */
   foreignHunksAccepted?: number;
   foreignAgents?: string[];
+  /**
+   * P-027 (D-014): HOW this ledger row came to exist. Absent ⇒ written by the admit door in the
+   * same call that advanced the lineage ref. `reconciled-from-ref` ⇒ the row was REBUILT from
+   * the admission commit itself (its `%P` parent, `%ct` time, diff-tree and trailers) by
+   * `reconcileFrozenRepairQueueWithLineageRef`, because a lost-update had dropped the door's
+   * row while the ref kept the commit. The entry is derived from the commit, never guessed.
+   */
+  provenance?: 'reconciled-from-ref';
 }
 
 /** Ledger cap: a runaway admission loop cannot grow the persisted queue without bound. The
@@ -620,6 +628,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
         ? { foreignHunksAccepted: e.foreignHunksAccepted }
         : {}),
       ...(foreignAgents ? { foreignAgents } : {}),
+      ...(e.provenance === 'reconciled-from-ref' ? { provenance: e.provenance } : {}),
     });
   }
   return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
