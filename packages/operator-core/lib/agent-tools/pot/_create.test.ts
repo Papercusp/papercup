@@ -36,11 +36,14 @@ let releaseSeedCalls: Array<{ potSlug: string }>;
 // local resolver tier (mirroring harness:create's `path` -> localDirs pattern) instead
 // of the old unconditional `localDirs: []`.
 let resolveExtendsCalls: Array<{ localDirs?: string[] }>;
+/** Pack id whose LOAD should throw, to exercise per-co-seed-pack failure isolation. */
+let loadPackFailFor: string | null;
 
 beforeEach(() => {
   vi.resetModules();
   registry = { projects: [] };
   scaffoldImpl = async () => {};
+  loadPackFailFor = null;
   tmpParent = mkdtempSync(join(tmpdir(), 'pot-create-test-'));
   ensureCalls = [];
   deletePotCalls = [];
@@ -146,22 +149,29 @@ beforeEach(() => {
   // knowledge-packs P-005: the seed step is mocked (its own behavior is pinned in
   // lib/knowledge-packs/seed.test.ts); the flag gate resolves ON deterministically.
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => true, onFlagChange: () => () => {} }));
+  // Both mocks ECHO the requested pack id rather than hardcoding 'coding'. The
+  // create path seeds the declared pack AND the shared co-seed packs
+  // (knowledge-packs/co-seed), so an id-blind mock would report every one of them
+  // as 'coding' and make a per-pack assertion impossible.
   vi.doMock('../../knowledge-packs/load-packs', () => ({
-    loadKnowledgePack: async () => ({
-      pack: {
-        manifest: { id: 'coding', title: 'T', description: 'd', version: '1.0.0' },
-        items: [{ id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' }],
-      },
-      source: 'builtin',
-      warnings: [],
-    }),
+    loadKnowledgePack: async (packId: string) => {
+      if (loadPackFailFor && packId === loadPackFailFor) throw new Error(`load boom: ${packId}`);
+      return {
+        pack: {
+          manifest: { id: packId, title: 'T', description: 'd', version: '1.0.0' },
+          items: [{ id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' }],
+        },
+        source: 'builtin',
+        warnings: [],
+      };
+    },
   }));
   vi.doMock('../../knowledge-packs/seed', () => ({
     shapesFromDetection: () => undefined,
-    seedPackIntoHive: async () => ({
+    seedPackIntoHive: async (args: { pack: { manifest: { id: string; version: string } } }) => ({
       ok: true,
-      packId: 'coding',
-      packVersion: '1.0.0',
+      packId: args.pack.manifest.id,
+      packVersion: args.pack.manifest.version,
       seeded: 1,
       ids: ['mem-1'],
       skippedByShape: 0,
@@ -352,6 +362,59 @@ describe('createPotHarness', () => {
     });
     expect(res.ok).toBe(true);
     expect(res.seededLearnings).toBeUndefined();
+    // The co-seed lives inside the same gate, so opting out of seeding opts out
+    // of the shared packs too — not just the declared one.
+    expect(res.coSeededLearnings).toBeUndefined();
+  });
+
+  // WI-2145732: the `papercusp` pack (tier-1 PRODUCT knowledge) shipped in the
+  // bundle but nothing seeded it, so its learnings reached no install. The ids
+  // are asserted as LITERALS on purpose: reading them back out of
+  // CO_SEED_PACK_IDS would assert only that the list equals itself.
+  it('co-seeds the shared packs alongside the blueprint-declared pack', async () => {
+    const { createPotHarness } = await import('./_create');
+    const res = await createPotHarness({ slug: 'co-seed-pot', workspaceId: 'default', parentDir: tmpParent });
+    expect(res.ok).toBe(true);
+    expect(res.seededLearnings).toEqual({ packId: 'coding', packVersion: '1.0.0', count: 1 });
+    expect(res.coSeededLearnings).toEqual([
+      { packId: 'fleet-lessons', packVersion: '1.0.0', count: 1 },
+      { packId: 'papercusp', packVersion: '1.0.0', count: 1 },
+    ]);
+  });
+
+  it('never co-seeds a pack that IS the declared pack', async () => {
+    const { createPotHarness } = await import('./_create');
+    const res = await createPotHarness({
+      slug: 'declared-papercusp-pot',
+      workspaceId: 'default',
+      parentDir: tmpParent,
+      knowledgePack: 'papercusp',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.seededLearnings).toEqual({ packId: 'papercusp', packVersion: '1.0.0', count: 1 });
+    // seeded once as the declared pack, so it must NOT appear again as a co-seed
+    expect(res.coSeededLearnings).toEqual([{ packId: 'fleet-lessons', packVersion: '1.0.0', count: 1 }]);
+  });
+
+  it('one failing co-seed pack neither suppresses the next nor fails the declared pack', async () => {
+    // The reason the co-seed try/catch is PER PACK. With a single wrapping catch
+    // this test fails: 'papercusp' would never be attempted, and the throw would
+    // fall through to the declared-pack handler and overwrite a good
+    // seededLearnings with an error.
+    loadPackFailFor = 'fleet-lessons';
+    // A best-effort co-seed failure is EXPECTED to warn; assert the warning
+    // rather than silencing it (vitest-fail-on-console would otherwise fail here).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { createPotHarness } = await import('./_create');
+    const res = await createPotHarness({ slug: 'partial-co-seed-pot', workspaceId: 'default', parentDir: tmpParent });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet-lessons co-seed failed'));
+    warn.mockRestore();
+    expect(res.ok).toBe(true);
+    expect(res.seededLearnings).toEqual({ packId: 'coding', packVersion: '1.0.0', count: 1 });
+    expect(res.coSeededLearnings).toEqual([
+      { packId: 'fleet-lessons', error: 'load boom: fleet-lessons' },
+      { packId: 'papercusp', packVersion: '1.0.0', count: 1 },
+    ]);
   });
 
   it('rolls back fully when schema provisioning fails — no orphan entry or dir', async () => {

@@ -111,6 +111,17 @@ export interface CreatePotResult {
   waked?: boolean;
   /** Present when seeding was attempted (knowledge-packs P-005). */
   seededLearnings?: SeededLearningsSummary;
+  /**
+   * One entry per SHARED co-seed pack actually attempted (knowledge-packs/co-seed
+   * — `fleet-lessons`, `papercusp`), in seed order. Present only when at least one
+   * was attempted; a pack that is absent, empty, or IS the declared pack is not
+   * attempted and so has no entry.
+   *
+   * This is REPORTED rather than only logged so the co-seed is observable by a
+   * caller and assertable by a test. Before this, the one co-seed was a
+   * `console.log` and nothing could see whether it had happened.
+   */
+  coSeededLearnings?: SeededLearningsSummary[];
   /** Present when per-pot learning-loop provisioning was attempted (P-020). */
   provisionedLoop?: ProvisionedLoopSummary;
   /** Present when a fresh coding-pot repo was finalized — commit + branch + optional
@@ -403,6 +414,9 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //     joins the stack). Runs before the first wake so the Mug's opening
     //     turn already recalls the pack.
     let seededLearnings: SeededLearningsSummary | undefined;
+    // One entry per SHARED co-seed pack actually attempted. Reported on the
+    // result (not just logged) so the co-seed is observable and assertable.
+    const coSeededLearnings: SeededLearningsSummary[] = [];
     if (opts.knowledgePack !== null) {
       // EI-1539: imported OUTSIDE the try so the catch below can name the default
       // pack too — the error path must never hardcode a pack id, or it reports a
@@ -463,33 +477,56 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
               ...(res.error ? { error: res.error } : {}),
             };
           }
-          // knowledge-pack-loop-integrity-2026-07-19 P-006a: a new pot ALSO
-          // seeds the SHARED fleet-lessons pack (cross-hive lessons adopted
-          // from the candidate loop) so it starts current instead of waiting
-          // for the delivery routine's next tick. Best-effort + undo-stacked
-          // like the blueprint pack; skipped when absent/empty or when it IS
-          // the declared pack.
+          // A new pot ALSO seeds the SHARED co-seed packs (knowledge-packs/co-seed:
+          // `fleet-lessons` — cross-hive lessons adopted from the candidate loop,
+          // knowledge-pack-loop-integrity-2026-07-19 P-006a; and `papercusp` —
+          // tier-1 PRODUCT knowledge, memory-corpus-hygiene-and-release-distribution-2026-08-03
+          // D-003/D-008) so it starts current instead of waiting for the delivery
+          // routine's next tick. Best-effort + undo-stacked like the blueprint
+          // pack; a pack that is absent, empty, or IS the declared pack is skipped.
+          //
+          // The try/catch is PER PACK, deliberately: with a list, a single
+          // wrapping catch would let the first failing pack silently suppress
+          // every pack after it — the co-seed equivalent of a swallowed loop.
+          //
+          // The OUTER try guards only the list import: without it a co-seed
+          // failure would fall through to the declared-pack catch below and
+          // overwrite a SUCCESSFUL `seededLearnings` with an error — reporting
+          // the blueprint pack as failed because a shared pack was not.
           try {
-            const { FLEET_LESSONS_PACK_ID } = await import('../../knowledge-packs/candidates-shared');
-            if (packId !== FLEET_LESSONS_PACK_ID) {
-              const fleet = await loadKnowledgePack(FLEET_LESSONS_PACK_ID);
-              if (fleet && fleet.pack.items.length > 0) {
-                const fr = await seedPackIntoPot({
+            const { CO_SEED_PACK_IDS } = await import('../../knowledge-packs/co-seed');
+            for (const coSeedPackId of CO_SEED_PACK_IDS) {
+              if (coSeedPackId === packId) continue; // already seeded as the declared pack
+              try {
+                const shared = await loadKnowledgePack(coSeedPackId);
+                if (!shared || shared.pack.items.length === 0) continue;
+                const sr = await seedPackIntoPot({
                   workspaceId: ws,
                   potSlug: opts.slug,
-                  pack: fleet.pack,
+                  pack: shared.pack,
                   ...(opts.projectShapes ? { shapes: opts.projectShapes } : {}),
                   ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
                 });
-                undo.push(fr.undo);
+                undo.push(sr.undo);
+                coSeededLearnings.push({
+                  packId: coSeedPackId,
+                  packVersion: sr.packVersion,
+                  count: sr.seeded,
+                });
                 console.log(
-                  `[pot:create] seeded fleet-lessons v${fr.packVersion} (${fr.seeded} learning(s)) into ${opts.slug}`,
+                  `[pot:create] seeded ${coSeedPackId} v${sr.packVersion} (${sr.seeded} learning(s)) into ${opts.slug}`,
+                );
+              } catch (e) {
+                const coSeedMsg = e instanceof Error ? e.message : String(e);
+                coSeededLearnings.push({ packId: coSeedPackId, error: coSeedMsg.slice(0, 200) });
+                console.warn(
+                  `[pot:create] ${coSeedPackId} co-seed failed (${opts.slug}, best-effort): ${coSeedMsg}`,
                 );
               }
             }
           } catch (e) {
             console.warn(
-              `[pot:create] fleet-lessons seed failed (${opts.slug}, best-effort): ${e instanceof Error ? e.message : e}`,
+              `[pot:create] co-seed pack list unavailable (${opts.slug}, best-effort): ${e instanceof Error ? e.message : e}`,
             );
           }
         }
@@ -829,6 +866,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       path,
       waked,
       ...(seededLearnings ? { seededLearnings } : {}),
+      ...(coSeededLearnings.length > 0 ? { coSeededLearnings } : {}),
       ...(provisionedLoop ? { provisionedLoop } : {}),
       ...(repoInit ? { repoInit } : {}),
     };
