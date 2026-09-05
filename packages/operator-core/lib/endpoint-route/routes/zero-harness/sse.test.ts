@@ -135,12 +135,87 @@ describe('interestFilterFor — the fail-open parse table', () => {
     // exactly the failure the cap is meant to avoid. Falling back to no filter
     // is merely today's behaviour, which is always safe.
     const mod = await import('./sse');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const tooMany = Array.from({ length: mod.MAX_DECLARED_QUERY_NAMES + 1 }, (_, i) => `q${i}`);
     expect(mod.interestFilterFor(`http://x/sse?queries=${tooMany.join(',')}`)).toBeUndefined();
+
+    // The crossing is VISIBLE. Every fail-open case delivers the same observable
+    // behaviour — full fan-out — so without this the one case where the client
+    // ASKED for filtering and silently did not get it is indistinguishable from
+    // a client that never asked, and from the feature being switched off.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatch(/OVER CAP/);
+    warn.mockRestore();
 
     // Calibration: one fewer name is under the cap and DOES produce a filter,
     // so the assertion above is about the cap and not about a broken URL.
     const atCap = tooMany.slice(0, mod.MAX_DECLARED_QUERY_NAMES);
     expect(mod.interestFilterFor(`http://x/sse?queries=${atCap.join(',')}`)).toBeTypeOf('function');
+  });
+});
+
+describe('interest declaration observability — the fail-open cases are distinguishable', () => {
+  /**
+   * Every fail-open disposition produces the SAME observable stream behaviour:
+   * full fan-out. So from the outside, a client that asked for filtering and
+   * silently did not get it looks exactly like a client that never asked, and
+   * exactly like the feature being off. The counters are the only place that
+   * difference is recorded — which is what makes the reversion reportable
+   * rather than merely survivable.
+   */
+  async function mod() {
+    return await import('./sse');
+  }
+
+  beforeEach(async () => {
+    (await mod()).resetInterestObservations();
+  });
+
+  it('separates over-cap from absent, empty and unreadable', async () => {
+    const m = await mod();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tooMany = Array.from({ length: m.MAX_DECLARED_QUERY_NAMES + 1 }, (_, i) => `q${i}`);
+
+    m.interestDeclarationFor('http://x/sse'); // absent
+    m.interestDeclarationFor('http://x/sse?queries='); // empty
+    m.interestDeclarationFor('not a url at all'); // unreadable
+    m.interestDeclarationFor('http://x/sse?queries=a,b'); // declared
+    m.interestDeclarationFor(`http://x/sse?queries=${tooMany.join(',')}`); // over-cap
+
+    const { counts, lastOverCap } = m.interestObservations();
+    expect(counts).toEqual({
+      absent: 1,
+      empty: 1,
+      unreadable: 1,
+      declared: 1,
+      'over-cap': 1,
+    });
+    expect(lastOverCap?.declaredCount).toBe(m.MAX_DECLARED_QUERY_NAMES + 1);
+    warn.mockRestore();
+  });
+
+  it('reports the disposition that matches the filter actually applied', async () => {
+    const m = await mod();
+
+    // The recorded reason and the delivered behaviour come from ONE resolution,
+    // so they cannot drift into saying different things about one connection.
+    const declared = m.interestDeclarationFor('http://x/sse?queries=a,b');
+    expect(declared.disposition).toBe('declared');
+    expect(declared.failsOpen).toBe(false);
+    expect(m.interestFilterFor('http://x/sse?queries=a,b')).toBeTypeOf('function');
+
+    m.resetInterestObservations();
+    const absent = m.interestDeclarationFor('http://x/sse');
+    expect(absent.disposition).toBe('absent');
+    expect(absent.failsOpen).toBe(true);
+    expect(m.interestFilterFor('http://x/sse')).toBeUndefined();
+  });
+
+  it('a reset actually clears — otherwise every count above is cumulative noise', async () => {
+    const m = await mod();
+    m.interestDeclarationFor('http://x/sse');
+    expect(m.interestObservations().counts.absent).toBeGreaterThan(0); // positive control
+    m.resetInterestObservations();
+    expect(m.interestObservations().counts.absent).toBe(0);
   });
 });
