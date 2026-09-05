@@ -196,6 +196,13 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
         regressionStatus: GateStatus;
         /** Probe pool only; `null` for a task that owes no probe signal. */
         probeStatus: GateStatus | null;
+        /**
+         * How many of this task's repeats actually produced a judge composite. P-002:
+         * `composite` above is a MEAN, and `mean([])` is 0 — indistinguishable from a
+         * genuine zero score. The count is what lets the real-anchor gate tell "scored
+         * badly" (a regression) apart from "never scored" (nothing to compare).
+         */
+        scoredRepeats: number;
         /** Trace refs for this task's runs — the artifact references the verdict cites. */
         traceRefs: string[];
       }
@@ -300,6 +307,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
                 : probeReportedEveryRepeat
                   ? 'pass'
                   : 'not-measured',
+          scoredRepeats: composites.length,
           traceRefs,
         });
       }
@@ -307,6 +315,9 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     const train = perTask.filter((r) => r.pool === 'train');
     const devAnchor = perTask.filter((r) => r.pool === 'dev-anchor');
     const probes = perTask.filter((r) => r.pool === 'probe');
+    // P-002: the real-anchor pool stops being scored-then-discarded here. Its aggregate
+    // is built exactly like the dev-anchor's, and it now reaches `decideAccept` as a gate.
+    const realAnchor = perTask.filter((r) => r.pool === 'real-anchor');
     const trainVector = train.map((r) => r.composite);
 
     const totalCost = perTask.reduce((s, r) => s + r.cost, 0);
@@ -316,6 +327,21 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       trainAgg: mean(trainVector),
       trainVector,
       devAnchorAgg: mean(devAnchor.map((r) => r.composite)),
+      realAnchorAgg: mean(realAnchor.map((r) => r.composite)),
+      // P-002 / D-004(3) — coverage-only evidence for the real-anchor comparison. A task
+      // counts as measured when EVERY repeat produced a composite, mirroring the
+      // per-repeat discipline the regression signal already uses: a partially-scored task
+      // yields a mean over fewer runs than the champion's, which is not apples-to-apples.
+      // The zero-real-anchor case is `not-measured`, so a cycle that never exercised real
+      // work cannot promote — never the vacuous `mean([]) === 0` that would read as a
+      // catastrophic regression, and never a silent pass.
+      realAnchorEvidence: buildEvidence(
+        realAnchor.map((r) => ({
+          taskId: r.taskId,
+          status: (repeats > 0 && r.scoredRepeats === repeats ? 'pass' : 'not-measured') as GateStatus,
+          traceRefs: r.traceRefs,
+        })),
+      ),
       // Mean cost PER RUN across every (task × repeat).
       meanCost: totalRuns ? totalCost / totalRuns : 0,
       // P-003 — typed evidence, not booleans. Every task owes the regression signal;

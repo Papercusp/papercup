@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateGates, rollUpEvidenceStatus, unmeasuredEvidence, type DeterministicEvidence, type GateInputs, type GateStatus } from '../gates';
+import {
+  comparisonEvidence,
+  evaluateGates,
+  rollUpEvidenceStatus,
+  unmeasuredEvidence,
+  type DeterministicEvidence,
+  type GateInputs,
+  type GateStatus,
+} from '../gates';
 
 /** Evidence that a signal WAS collected across `taskIds` and came out `status`. */
 const measured = (status: GateStatus, taskIds: string[] = ['t1']): DeterministicEvidence => ({
@@ -24,6 +32,9 @@ const pass: GateInputs = {
   candidateDevAnchorAgg: 7.2,
   championDevAnchorAgg: 7.3,
   delta: 0.2,
+  candidateRealAnchorAgg: 6.9,
+  championRealAnchorAgg: 7.0,
+  realAnchorEvidence: measured('pass', ['real-t1']),
   regressionEvidence: measured('pass'),
   probeEvidence: measured('pass'),
   candidateMeanCost: 1.0,
@@ -37,7 +48,14 @@ describe('evaluateGates', () => {
     expect(v.accept).toBe(true);
     expect(v.results.every((r) => r.pass)).toBe(true);
     expect(v.results.map((r) => r.gate).sort()).toEqual(
-      ['cost', 'dev-anchor-no-regress', 'improvement', 'no-new-regressions', 'probe-caught'].sort(),
+      [
+        'cost',
+        'dev-anchor-no-regress',
+        'improvement',
+        'no-new-regressions',
+        'probe-caught',
+        'real-anchor-no-regress',
+      ].sort(),
     );
   });
 
@@ -132,6 +150,127 @@ describe('evaluateGates — unmeasured deterministic evidence', () => {
     const v = evaluateGates({ ...pass, candidateMeanCost: 1.6 });
     expect(v.results.find((r) => r.gate === 'cost')?.status).toBe('fail');
     expect(v.results.find((r) => r.gate === 'improvement')?.status).toBe('pass');
+  });
+});
+
+/**
+ * P-002 / D-004(3) — the real-anchor gate.
+ *
+ * The hole this closes, stated as the plan states it: "real-anchor is scored-but-excluded
+ * from aggregation, so a prompt can win while getting worse at real work." The first test
+ * is that sentence as a fixture — every OTHER gate holds, and the candidate is still
+ * rejected purely because it got worse on real shipped features.
+ */
+describe('evaluateGates — real-anchor-no-regress (P-002)', () => {
+  it('REJECTS a candidate that wins on train and holds the dev-anchor but regresses the real-anchor', () => {
+    const v = evaluateGates({ ...pass, candidateRealAnchorAgg: 6.5 }); // 6.5 < 7.0 − 0.2 = 6.8
+    expect(v.accept).toBe(false);
+    expect(v.outcome).toBe('reject');
+    const gate = v.results.find((r) => r.gate === 'real-anchor-no-regress');
+    expect(gate?.status).toBe('fail');
+    // Falsifiability control: nothing ELSE objected — this candidate would have been
+    // crowned champion before P-002, on exactly these numbers.
+    expect(v.results.filter((r) => r.status !== 'pass').map((r) => r.gate)).toEqual(['real-anchor-no-regress']);
+  });
+
+  it('accepts a real-anchor dip inside δ — the slack is judge variance, not a licence to regress', () => {
+    // 6.85 ≥ 7.0 − 0.2 = 6.8
+    expect(evaluateGates({ ...pass, candidateRealAnchorAgg: 6.85 }).accept).toBe(true);
+    // …and one hundredth further down is not.
+    expect(evaluateGates({ ...pass, candidateRealAnchorAgg: 6.79 }).accept).toBe(false);
+  });
+
+  it('is INCONCLUSIVE when the cycle ran against no real-anchor tasks — never a vacuous pass', () => {
+    const v = evaluateGates({
+      ...pass,
+      // What loop-deps produces for an empty real-anchor pool: mean([]) === 0 on both
+      // sides, with coverage saying nothing was measured.
+      candidateRealAnchorAgg: 0,
+      championRealAnchorAgg: 0,
+      realAnchorEvidence: unmeasuredEvidence([]),
+    });
+    expect(v.outcome).toBe('inconclusive');
+    expect(v.accept).toBe(false);
+    const gate = v.results.find((r) => r.gate === 'real-anchor-no-regress');
+    expect(gate?.status).toBe('not-measured');
+    expect(gate?.pass).toBe(false);
+    expect(gate?.detail).toContain('NOT MEASURED');
+  });
+
+  it('reads an unmeasured real-anchor as a GAP, not as the catastrophic regression mean([])===0 would imply', () => {
+    // Candidate 0 vs champion 7.0 is a −7.0 margin; without coverage evidence in front of
+    // the comparison this would libel the candidate as a proven real-work regression.
+    const v = evaluateGates({
+      ...pass,
+      candidateRealAnchorAgg: 0,
+      realAnchorEvidence: unmeasuredEvidence(['real-t1']),
+    });
+    expect(v.results.find((r) => r.gate === 'real-anchor-no-regress')?.status).toBe('not-measured');
+    expect(v.outcome).toBe('inconclusive');
+  });
+
+  it('names the numbers it compared, so a reader can audit the verdict', () => {
+    const detail = evaluateGates(pass).results.find((r) => r.gate === 'real-anchor-no-regress')?.detail ?? '';
+    expect(detail).toContain('6.900');
+    expect(detail).toContain('7.000');
+    expect(detail).toContain('1/1 tasks measured');
+  });
+});
+
+/**
+ * The engine change P-002 needed: an evidence-backed gate whose evidence PASSES now goes
+ * on to evaluate its own condition (coverage gates the comparison; the margin decides it).
+ * For the two pre-existing evidence gates the condition merely re-reads the same status,
+ * so behaviour must be unchanged across all three states. These are the controls that
+ * fail if someone "simplifies" the combination back to `evidence.status` alone — or
+ * forward to ignoring evidence entirely.
+ */
+describe('evaluateGates — evidence/condition combination is behaviour-preserving', () => {
+  for (const status of ['pass', 'fail', 'not-measured'] as const) {
+    it(`maps ${status} regression evidence onto a ${status} gate, exactly as before`, () => {
+      const evidence = status === 'not-measured' ? unmeasuredEvidence(['t1']) : measured(status);
+      const gate = evaluateGates({ ...pass, regressionEvidence: evidence }).results.find(
+        (r) => r.gate === 'no-new-regressions',
+      );
+      expect(gate?.status).toBe(status);
+    });
+
+    it(`maps ${status} probe evidence onto a ${status} gate, exactly as before`, () => {
+      const evidence = status === 'not-measured' ? unmeasuredEvidence(['t1']) : measured(status);
+      const gate = evaluateGates({ ...pass, probeEvidence: evidence }).results.find((r) => r.gate === 'probe-caught');
+      expect(gate?.status).toBe(status);
+    });
+  }
+});
+
+/**
+ * comparisonEvidence — a no-regression claim needs BOTH sides measured (P-002). The
+ * champion's coverage is the half a candidate-only check silently drops.
+ */
+describe('comparisonEvidence', () => {
+  it('passes only when both sides were measured', () => {
+    expect(comparisonEvidence(measured('pass'), measured('pass')).status).toBe('pass');
+  });
+
+  it('is not-measured when the INCUMBENT was never scored on the pool, however complete the candidate is', () => {
+    const e = comparisonEvidence(measured('pass', ['a', 'b']), unmeasuredEvidence([]));
+    expect(e.status).toBe('not-measured');
+    // The candidate's own coverage is still reported — the gap is the champion's.
+    expect(e.coverage.measured).toBe(2);
+  });
+
+  it('is not-measured when the CANDIDATE was never scored on the pool', () => {
+    expect(comparisonEvidence(unmeasuredEvidence(['a']), measured('pass')).status).toBe('not-measured');
+  });
+
+  it('sums both sides of the coverage and keeps every artifact reference', () => {
+    const e = comparisonEvidence(measured('pass', ['a']), measured('pass', ['b', 'c']));
+    expect(e.coverage).toEqual({ measured: 3, required: 3, unmeasuredTaskIds: [] });
+    expect(e.artifacts).toEqual(['trace://a', 'trace://b', 'trace://c']);
+  });
+
+  it('keeps a measured FAIL decisive over a gap on the other side', () => {
+    expect(comparisonEvidence(measured('fail'), unmeasuredEvidence([])).status).toBe('fail');
   });
 });
 

@@ -35,7 +35,9 @@ const MEASURED_PASS = {
 };
 
 function evalOf(id: string, agg: number): VariantEval {
-  return { variantId: id, trainAgg: agg, trainVector: [agg], devAnchorAgg: agg, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS };
+  // P-002: the real-anchor is measured and flat across variants here, so it neither
+  // blocks nor drives these accepts — the gates under test stay the ones being tested.
+  return { variantId: id, trainAgg: agg, trainVector: [agg], devAnchorAgg: agg, realAnchorAgg: 7.0, realAnchorEvidence: MEASURED_PASS, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS };
 }
 
 function baseDeps(over: Partial<LoopDeps> = {}): { d: LoopDeps; calls: string[] } {
@@ -255,11 +257,11 @@ describe('runOptimizationLoop', () => {
         baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
         async evaluate(variantId) {
           if (variantId === 'baseline') {
-            return { evalResult: { variantId, trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.0, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
+            return { evalResult: { variantId, trainAgg: 7.0, trainVector: [7, 7], devAnchorAgg: 7.0, realAnchorAgg: 7.0, realAnchorEvidence: MEASURED_PASS, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
           }
           // higher trainAgg (clears the improvement gate) but a trade-off vector so it
           // does not dominate baseline → the frontier keeps both members.
-          return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
+          return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, realAnchorAgg: 7.0, realAnchorEvidence: MEASURED_PASS, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
         },
         async propose() { return { overlay: { promptOverrides: { worker: 'v' } }, rationale: 'x', diffFromParent: 'worker', costUsd: 0 } as CandidateProposal; },
         async promote() {},
