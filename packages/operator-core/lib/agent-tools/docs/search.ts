@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
+import { assessDocsCoverage, docsCoverageNote } from './semantic-coverage';
 import {
   HARNESS_REQUIRED_DETAIL,
   isEngineeringDocsSentinel,
@@ -274,7 +275,7 @@ export default defineTool({
     chaining:
       'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error.',
     returns:
-      "{ hits, hitCount, surface, legs, applied, scopeNote?, crossSurface? }. READ `crossSurface` WHENEVER IT IS PRESENT: it means the semantic leg RAN against your surface and matched nothing above the similarity floor, so the `hits` above are lexical-only and may be entirely off-topic even when there are dozens of them. Rather than only advising a retry, the sibling 'engineering' surface (agent-insights/ + the Papercusp framework reference) was searched FOR you; `crossSurface.hits` are keyword hits from there. Re-run `docs:search { harness: 'engineering' }` for that corpus's full hybrid ranking. Absent when your surface matched something topical, on the engineering surface itself, for non-superusers, or when the embedder was blocked/not-run (a broken embedder says nothing about which corpus holds the answer).",
+      "{ hits, hitCount, surface, legs, applied, scopeNote?, crossSurface?, embedCoverage? }. `embedCoverage` appears ONLY when the semantic leg ran but its corpus is under-embedded or unmeasured (verdict 'degraded'|'unknown'): hits may be missing pages that exist. Absent = nothing to report, not healthy-by-omission. READ `crossSurface` WHENEVER IT IS PRESENT: it means the semantic leg RAN against your surface and matched nothing above the similarity floor, so the `hits` above are lexical-only and may be entirely off-topic even when there are dozens of them. Rather than only advising a retry, the sibling 'engineering' surface (agent-insights/ + the Papercusp framework reference) was searched FOR you; `crossSurface.hits` are keyword hits from there. Re-run `docs:search { harness: 'engineering' }` for that corpus's full hybrid ranking. Absent when your surface matched something topical, on the engineering surface itself, for non-superusers, or when the embedder was blocked/not-run (a broken embedder says nothing about which corpus holds the answer).",
     seeAlso: ['docs:outline (browse the full section tree when the term is unknown)', 'docs:get (read a matched page)'],
   },
   capability: 'docs:read',
@@ -300,6 +301,7 @@ export default defineTool({
       applied: z.unknown().optional(),
       scopeNote: z.unknown().optional(),
       crossSurface: z.unknown().optional(),
+      embedCoverage: z.unknown().optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -629,6 +631,16 @@ export default defineTool({
       ? [surfacedAuthority, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
       : finalHits;
     const reportedSemanticHitCount = reportedHits.filter((hit) => 'semantic' in hit && hit.semantic === true).length;
+    // EI-20031763618968912: `legs` answers "was this really a hybrid search"; it does NOT
+    // answer "was the corpus underneath it complete". Those are different failures — a
+    // dead embedder vs. a semantic leg that ran perfectly over a partially-embedded
+    // corpus — and only the first was reported here. doc_sections is filled by a sync
+    // sweep that inserts with `embedding NULL` plus a separate backfill, so the second is
+    // real. Reuses the WI-9393 / D-018 coverage gate rather than measuring anything here;
+    // stays absent on the healthy path and whenever the semantic leg did not run (see
+    // semantic-coverage.ts for both suppression rules). Fail-soft: a null assessment
+    // simply says nothing.
+    const embedCoverage = docsCoverageNote(await assessDocsCoverage(), legsAny?.semantic);
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
       ...(surfacedAuthority ? { currentAuthority: surfacedAuthority } : {}),
@@ -645,6 +657,7 @@ export default defineTool({
       // indistinguishable from a healthy search that found less.
       legs,
       applied,
+      ...(embedCoverage ? { embedCoverage } : {}),
       ...(crossSurface ? { crossSurface } : {}),
       ...(scopeNote ? { scopeNote } : {}),
     };
