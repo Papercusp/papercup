@@ -8,7 +8,11 @@ import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
 import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
+import { prepaidCreditsRoute } from './prepaid-credits.ts';
 import type { Organization } from '@papercusp/operator-core/lib/cupboard/commerce-accounts';
+import { prepaidCreditCatalogEvents } from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
+import { appendLedgerEvents, projectLedger } from '../commerce-store.ts';
+import { projectPrepaidCredits } from '../prepaid-credit-store.ts';
 
 /**
  * `fetchImpl` is threaded through to the commerce checkout route so its outbound
@@ -35,8 +39,25 @@ export function buildApi(
   api.route('/', adminRoute());
   api.route('/', workspaceHostArtifactsRoute());
   api.route('/', creatorDraftsRoute());
+  // The top-up SKU is a fixed idempotent catalog fact. Install it immediately
+  // before the existing Checkout handler reads the commerce ledger, without
+  // modifying that shared route while parallel commerce work is in flight.
+  api.use('/commerce/checkout-sessions', async (c, next) => {
+    await appendLedgerEvents(c.env.DB, prepaidCreditCatalogEvents());
+    await projectLedger(c.env.DB);
+    await next();
+  });
+  // A signed accepted webhook has already updated the commerce authority when
+  // control returns here. Rebuild the dependent credit projection before the
+  // 200 reaches Stripe. Duplicates run the same repair path, so a prior
+  // projection failure is recovered by the provider's normal retry.
+  api.use('/commerce/webhooks/*', async (c, next) => {
+    await next();
+    if (c.res.status === 200) await projectPrepaidCredits(c.env.DB);
+  });
   api.route('/', commerceRoute({ fetchImpl: options.fetchImpl, loadOrgs: options.loadOrgs }));
   api.route('/', walletBindingRoute());
+  api.route('/', prepaidCreditsRoute());
   api.onError((err, c) => {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: 'internal', detail: msg }, 500);

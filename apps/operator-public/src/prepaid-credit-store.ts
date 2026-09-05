@@ -11,7 +11,7 @@ import {
   type PrepaidCreditEvent,
   type PrepaidCreditLedgerState,
   type PrepaidCreditRejectionCode,
-} from '@papercusp/operator-core/lib/cupboard/prepaid-credits';
+} from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
 import { loadLedgerEvents } from './commerce-store.ts';
 
 interface PrepaidCreditEventRow {
@@ -252,7 +252,11 @@ export async function appendPrepaidCreditEvent(
     }
   }
 
-  const latestAtMs = creditEvents.reduce(
+  const latestCreditAtMs = creditEvents.reduce(
+    (latest, event) => Math.max(latest, event.occurredAtMs),
+    -1,
+  );
+  const latestCommerceAtMs = commerceEvents.reduce(
     (latest, event) => Math.max(latest, event.occurredAtMs),
     -1,
   );
@@ -260,7 +264,11 @@ export async function appendPrepaidCreditEvent(
   const event: PrepaidCreditEvent = {
     creditEventId: input.creditEventId,
     kind: input.kind,
-    occurredAtMs: Math.max(requestedAtMs, latestAtMs + 1),
+    occurredAtMs: Math.max(
+      requestedAtMs,
+      latestCreditAtMs + 1,
+      latestCommerceAtMs + 1,
+    ),
     principalId: input.principalId,
     payload: input.payload,
   };

@@ -11,7 +11,7 @@ import {
   type PrepaidCreditBalance,
   type PrepaidCreditRejectionCode,
   type PrepaidCreditReservation,
-} from '@papercusp/operator-core/lib/cupboard/prepaid-credits';
+} from '@papercusp/operator-core/lib/cupboard/prepaid-credits.ts';
 import type { Env } from '../env.ts';
 import { AuthError, resolveGithubBearer } from '../auth.ts';
 import {
