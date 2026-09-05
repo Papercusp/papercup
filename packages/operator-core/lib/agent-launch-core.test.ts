@@ -537,6 +537,7 @@ describe('resolveResumeTarget', () => {
       agent: 'claude',
       cwd: '/repo',
       started_at: '2026-08-29T00:04:31.000Z',
+      binding_started_at: '2026-08-29 00:04:31.000123+00',
       ended_at: null,
       exit_code: null,
       ended_by: null,
@@ -551,6 +552,11 @@ describe('resolveResumeTarget', () => {
       sessionId: 'earlier-native-uuid',
       ownerId: OWNER,
       advSessionId: 20807,
+      binding: {
+        coordOwnerId: OWNER,
+        sessionId: 'current-native-uuid',
+        startedAt: '2026-08-29 00:04:31.000123+00',
+      },
     });
 
     const fragment = candidateFragmentOf(launchCoreSql.mock.calls as unknown as { 0?: TemplateStringsArray }[]);

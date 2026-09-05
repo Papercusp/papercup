@@ -67,6 +67,7 @@ const MIGRATIONS = [
   '1005-hosted-service-lifecycle-runtime.sql',
   '1009-hosted-workspace-reverse-connectors.sql',
   '1010-hosted-provider-delegation-metadata.sql',
+  '1126-hosted-two-tenant-boundary-repair.sql',
 ] as const;
 
 const CONFIGURATION = {
@@ -244,7 +245,7 @@ function cookie(plane: AssembledHostedControlPlane, session: HostedSession): str
   return `${HOSTED_SESSION_COOKIE}=${encodeURIComponent(encoded)}`;
 }
 
-function request(
+async function request(
   plane: AssembledHostedControlPlane,
   pathname: string,
   session?: HostedSession,
@@ -619,8 +620,9 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     expect(verify.status).toBe(200);
 
     const restarted = await createHostedRuntime(CONFIGURATION, runtimeDependencies());
-    const sessionAfterRestart = await request(restarted, '/hosted/auth/session', sessionA);
-    expect(sessionAfterRestart.status).toBe(200);
+    const resolverProbe = `${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}&args=%7B%7D`;
+    const sessionAfterRestart = await request(restarted, resolverProbe, sessionA);
+    expect(sessionAfterRestart.status, await sessionAfterRestart.clone().text()).toBe(200);
     const verifyAfterRestart = await request(
       restarted,
       `/hosted/workspaces/${WORKSPACE_A}/provider-delegations/verify`,
@@ -640,19 +642,28 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
        WHERE organization_id = ${ORG_A}::uuid AND user_id = ${USER_A}::uuid
     `;
     const revokedAt = Date.now();
-    const staleSession = await request(restarted, '/hosted/auth/session', sessionA);
+    const staleSession = await request(restarted, resolverProbe, sessionA);
     expect(staleSession.status).toBe(401);
     expect(Date.now() - revokedAt).toBeLessThan(60_000);
     expect(sessionA.permissionVersion).toBe(oldVersion);
+    await expect(
+      runService((tx) =>
+        tx`
+          UPDATE papercusp_auth.organization_memberships
+             SET role = 'owner', updated_at = updated_at + interval '2 seconds'
+           WHERE organization_id = ${ORG_A}::uuid AND user_id = ${USER_A}::uuid
+        `,
+      ),
+    ).rejects.toThrow(/hosted_service may only reduce membership lifecycle state/);
 
-    const liveTenantB = await request(restarted, '/hosted/auth/session', sessionB);
+    const liveTenantB = await request(restarted, resolverProbe, sessionB);
     expect(liveTenantB.status).toBe(200);
     await sql`
       UPDATE papercusp_auth.organization_memberships
          SET status = 'revoked', revoked_at = now(), updated_at = updated_at + interval '2 seconds'
        WHERE organization_id = ${ORG_B}::uuid AND user_id = ${USER_B}::uuid
     `;
-    const revokedSession = await request(restarted, '/hosted/auth/session', sessionB);
+    const revokedSession = await request(restarted, resolverProbe, sessionB);
     expect(revokedSession.status).toBe(403);
   });
 
@@ -678,14 +689,15 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
              revocation_reason = 'acceptance complete', updated_at = now()
        WHERE id = ${grant.id}::uuid
     `;
-    const secondRevocation = await sql<Array<{ id: string }>>`
-      UPDATE papercusp_auth.support_access_grants
-         SET revoked_at = now(), revoked_by_user_id = ${USER_A}::uuid,
-             revocation_reason = 'second attempt', updated_at = now()
-       WHERE id = ${grant.id}::uuid
-       RETURNING id::text AS id
-    `.catch(() => []);
-    expect(secondRevocation).toEqual([]);
+    await expect(
+      sql<Array<{ id: string }>>`
+        UPDATE papercusp_auth.support_access_grants
+           SET revoked_at = now(), revoked_by_user_id = ${USER_A}::uuid,
+               revocation_reason = 'second attempt', updated_at = now()
+         WHERE id = ${grant.id}::uuid
+         RETURNING id::text AS id
+      `,
+    ).rejects.toThrow(/revocation is immutable/);
 
     const [expired] = await sql<Array<{ id: string }>>`
       INSERT INTO papercusp_auth.support_access_grants

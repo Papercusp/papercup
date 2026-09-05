@@ -40,6 +40,16 @@ vi.mock('../../psu-launch-log.mjs', async (orig) => ({
 
 const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
 const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
+const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => true));
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  markAdvSessionEnded: (...args: unknown[]) => markAdvSessionEndedMock(...args),
+}));
+const resolveSessionStatesMock = vi.hoisted(() => vi.fn());
+vi.mock('../coordination/liveness-oracle', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
+}));
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   findLiveHost: (ownerId: string) => findLiveHostMock(ownerId),
@@ -268,6 +278,10 @@ beforeEach(() => {
   });
   callerIdentity.current.ownerId = 'su-caller';
   releaseAgentLaunchClaimMock.mockResolvedValue(true);
+  markAdvSessionEndedMock.mockReset();
+  markAdvSessionEndedMock.mockResolvedValue(true);
+  resolveSessionStatesMock.mockReset();
+  resolveSessionStatesMock.mockResolvedValue(new Map([['su-a1a71', { sessionState: 'ended' }]]));
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
@@ -908,11 +922,18 @@ describe('resume + fork (D-004/D-007)', () => {
     agent: 'claude',
     cwd: '/repo',
     endedAt: '2026-07-11T10:00:00.000Z',
+    endedBy: 'self' as const,
     live: false,
     advSessionId: 11,
+    binding: {
+      coordOwnerId: 'su-a1a71',
+      sessionId: 'sid-dead',
+      startedAt: '2026-07-11 09:00:00.123456+00',
+    },
   };
 
   it('starts an identity-preserving fresh successor for an ended critical source', async () => {
+    findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
     fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
     buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
@@ -955,6 +976,7 @@ describe('resume + fork (D-004/D-007)', () => {
   });
 
   it('promotes a dormant critical resume to an identity-preserving fresh successor', async () => {
+    findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
     fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
     renderCarryBriefTextMock.mockReturnValue('checkpoint: recover the held claim');
@@ -994,6 +1016,113 @@ describe('resume + fork (D-004/D-007)', () => {
       },
     });
     expect(textOf(res)).toContain('DORMANT at CRITICAL context pressure');
+  });
+
+  describe('successor predecessor reconciliation (EI-22446987530949437)', () => {
+    const stale = { ...dead, endedAt: null, endedBy: null };
+    const request = { successor: { agentId: dead.ownerId }, idempotencyKey: 'successor-cas' };
+
+    beforeEach(() => {
+      resolveResumeTargetMock.mockReset();
+      resolveResumeTargetMock.mockResolvedValue(stale);
+      findLiveHostMock.mockReset();
+      findLiveHostMock.mockReturnValue(null);
+    });
+
+    it.each(['ended', 'suspect'])('reconciles a stale open binding with %s evidence before spawn', async (sessionState) => {
+      resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState }]]));
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(false);
+      expect(resolveSessionStatesMock).toHaveBeenCalledWith([{ ownerId: dead.ownerId }], { hydratePerId: true });
+      expect(markAdvSessionEndedMock).toHaveBeenCalledWith(11, null, 'reconciler', {
+        expectedBinding: dead.binding,
+        throwOnError: true,
+      });
+      expect(claimAgentLaunchMock.mock.invocationCallOrder[0]).toBeLessThan(markAdvSessionEndedMock.mock.invocationCallOrder[0]);
+      expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(spawnConsoleMock.mock.invocationCallOrder[0]);
+      expect(spawnedCommand()).toContain('--owner-id=su-a1a71');
+      expect(textOf(res)).toContain('actual exit time remains unknown');
+    });
+
+    it.each(['live', 'parked', 'recorded', 'draining', 'unknown', undefined])('refuses %s evidence without ending or spawning', async (sessionState) => {
+      resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState }]]));
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+    });
+
+    it.each([
+      { advSessionId: 12 },
+      { binding: { ...dead.binding, coordOwnerId: 'su-other' } },
+      { binding: { ...dead.binding, sessionId: 'sid-successor' } },
+      { binding: { ...dead.binding, startedAt: '2026-07-11 09:00:00.123457+00' } },
+    ])('refuses a changed persisted incarnation (%j)', async (change) => {
+      resolveResumeTargetMock.mockResolvedValueOnce(stale).mockResolvedValueOnce({ ...stale, ...change });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('predecessor binding changed');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a live host appearing after the terminal verdict', async () => {
+      findLiveHostMock.mockReturnValueOnce(null).mockReturnValue({ pid: 42 });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('LIVE source host appeared');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a concurrent binding update that wins the lifecycle CAS', async () => {
+      markAdvSessionEndedMock.mockResolvedValue(false);
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('lost its compare-and-swap');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses missing incarnation evidence without changing any row', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, binding: null });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('exact predecessor binding is unavailable');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('finishes a half-written terminal marker before bootstrap can see an open binding', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, endedBy: 'reconciler' });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(false);
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).toHaveBeenCalledWith(11, null, 'reconciler', {
+        expectedBinding: dead.binding,
+        throwOnError: true,
+      });
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['oracle', 'writer'])('keeps a failed %s read/write fail-closed', async (seam) => {
+      (seam === 'oracle' ? resolveSessionStatesMock : markAdvSessionEndedMock).mockRejectedValueOnce(new Error('database unavailable'));
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('reconciliation failed');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalled();
+    });
+
+    it('does not reconcile an idempotency replay', async () => {
+      claimAgentLaunchMock.mockResolvedValueOnce({ won: false, priorSummary: { opened: 1 }, priorLaunchedAt: 1, priorLaunchedBy: 'su-caller' });
+      const res = await launchAgent.handler(request, ctx);
+      expect(dataOf(res)?.deduped).toBe(true);
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
   });
 
   it('refuses an identity-preserving successor when the source is still live', async () => {

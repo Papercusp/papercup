@@ -31,7 +31,7 @@ const row = (over: Partial<SessionPortRow> = {}): SessionPortRow => ({
 describe('session-port stale cleanup', () => {
   it('fails a pending target, deletes its artifact, and marks cleanup complete', async () => {
     const updateTarget = vi.fn(async () => true);
-    const endTarget = vi.fn(async () => undefined);
+    const endTarget = vi.fn(async () => true);
     const recordTelemetry = vi.fn(async () => true);
     const transition = vi.fn(async (id, workspaceId, status, fields) => row({ id, workspaceId, status, metadata: fields.metadata }));
     const result = await cleanupExpiredSessionPorts({
@@ -68,7 +68,7 @@ describe('session-port stale cleanup', () => {
       deleteArtifact: async () => false,
       pruneArtifacts: async () => ({ scanned: 0, removed: 0, errors: 0 }),
       updateTarget: async () => false,
-      endTarget: async () => undefined,
+      endTarget: async () => false,
       transition,
       recordTelemetry: async () => true,
     });

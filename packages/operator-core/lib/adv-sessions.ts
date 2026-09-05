@@ -992,8 +992,15 @@ export function hasAdvSessionTerminalEvidence(
   return row != null && (row.endedAt != null || row.endedBy != null);
 }
 
+export interface AdvSessionExpectedBinding {
+  coordOwnerId: string;
+  sessionId: string | null;
+  /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
+  startedAt: string;
+}
+
 /**
- * Mark a session ended.
+ * Mark a session ended. Returns whether the row was updated.
  *
  * `endedBy` is REQUIRED on purpose: a row that cannot say who ended it cannot say whether
  * its `ended_at` is an observation, and that ambiguity is what made a sweep look like a
@@ -1006,13 +1013,6 @@ export function hasAdvSessionTerminalEvidence(
  * agents (WI-38054) — and because node-pty hands a signal death an `exitCode` of 0, the
  * resulting row actively asserts a clean exit instead of merely failing to describe one.
  */
-export interface AdvSessionExpectedBinding {
-  coordOwnerId: string;
-  sessionId: string | null;
-  /** PostgreSQL's full-precision started_at::text, never a JS Date round-trip. */
-  startedAt: string;
-}
-
 export async function markAdvSessionEnded(
   id: number,
   exitCode: number | null,

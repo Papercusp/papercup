@@ -13,11 +13,15 @@
  * and its ambiguity guard — multiple active rows must not be selected by mutable
  * `started_at` ordering.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
-import { reanchorAdvSessionNativeId, reanchorAdvSessionNativeIdByOwner } from './adv-sessions';
+import { markAdvSessionEnded, reanchorAdvSessionNativeId, reanchorAdvSessionNativeIdByOwner, type AdvSessionExpectedBinding } from './adv-sessions';
 import { resolveSessionRef } from './compaction-usage';
+
+// Exercise the lifecycle SQL without scheduling real delayed cleanup of test rows.
+vi.mock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: vi.fn() }));
+vi.mock('./session-archive-hook', () => ({ scheduleArchiveForAdvSession: vi.fn() }));
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -56,6 +60,47 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;
+});
+
+describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)', () => {
+  async function predecessor(): Promise<{ id: number; binding: AdvSessionExpectedBinding }> {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    await admin`UPDATE harness_shared.adv_sessions SET started_at = '2026-09-05 18:00:00.123456+00'::timestamptz WHERE id = ${id}`;
+    const [row] = await admin<{ started_at: string }[]>`
+      SELECT started_at::text AS started_at FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    return { id, binding: { coordOwnerId: OWNER, sessionId: DEAD_ID, startedAt: row.started_at } };
+  }
+
+  it('ends only the exact observed binding, preserving full timestamp precision and provenance', async () => {
+    const { id, binding } = await predecessor();
+    expect(binding.startedAt).toContain('.123456');
+    await expect(markAdvSessionEnded(id, null, 'reconciler', { expectedBinding: binding, throwOnError: true })).resolves.toBe(true);
+    const [row] = await admin`SELECT ended_at, ended_by, exit_code FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(row.ended_at).not.toBeNull();
+    expect(row.ended_by).toBe('reconciler');
+    expect(row.exit_code).toBeNull();
+  });
+
+  it.each(['owner', 'native', 'started'])('refuses when %s changes after the predecessor was observed', async (field) => {
+    const { id, binding } = await predecessor();
+    if (field === 'owner') await admin`UPDATE harness_shared.adv_sessions SET coord_owner_id = 'su-other' WHERE id = ${id}`;
+    if (field === 'native') await admin`UPDATE harness_shared.adv_sessions SET session_id = ${FRESH_ID} WHERE id = ${id}`;
+    if (field === 'started') await admin`UPDATE harness_shared.adv_sessions SET started_at = started_at + interval '1 microsecond' WHERE id = ${id}`;
+    await expect(markAdvSessionEnded(id, null, 'reconciler', { expectedBinding: binding, throwOnError: true })).resolves.toBe(false);
+    const [row] = await admin`SELECT ended_at, ended_by FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(row.ended_at).toBeNull();
+    expect(row.ended_by).toBeNull();
+  });
+
+  it('preserves an existing terminal observation on a retry', async () => {
+    const { id, binding } = await predecessor();
+    await markAdvSessionEnded(id, 0, 'self', { throwOnError: true });
+    const [before] = await admin`SELECT ended_at, ended_by, exit_code FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    await expect(markAdvSessionEnded(id, null, 'reconciler', { expectedBinding: binding, throwOnError: true })).resolves.toBe(false);
+    const [after] = await admin`SELECT ended_at, ended_by, exit_code FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    expect(after).toEqual(before);
+  });
 });
 
 describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column regression guard)', () => {

@@ -49,6 +49,11 @@ import launchOnPlan, {
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
 import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import type { WorkItem } from '../../work-items';
+import { foldLaunchProfile, type GoalLaunchSettings } from '../../goal-launch-settings';
+import {
+  goalFleetLeaderProfile,
+  resolveGoalFleetLeadership,
+} from './goal-fleet-launch-options';
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -93,6 +98,32 @@ describe('applyGoalLaunchProfileToDefaults (WI-2146552)', () => {
 
   it('does not let an absent leader profile inherit a member-only model', () => {
     expect(applyGoalLaunchProfileToDefaults(fallback, {})).toEqual(fallback);
+  });
+
+  it('composes a delegated leader and members onto distinct model commands', () => {
+    const settings = {
+      defaults: { agent: 'claude', account: 'auto', carry: 'warm' },
+      roles: {
+        'plan-fleet-leader': { model: 'opus', effort: 'max' },
+        'plan-fleet-member': { model: 'haiku', effort: 'low' },
+      },
+    } as GoalLaunchSettings;
+    const leadership = resolveGoalFleetLeadership({
+      goalId: 'g-1',
+      callerOwnerId: 'su-goal',
+    });
+    expect(leadership).toMatchObject({ ok: true, leader: 'spawn' });
+
+    const leader = applyGoalLaunchProfileToDefaults(
+      fallback,
+      goalFleetLeaderProfile({ settings, family: 'plan' }),
+    );
+    const member = applyGoalLaunchProfileToDefaults(
+      fallback,
+      foldLaunchProfile(settings, 'plan-fleet-member'),
+    );
+    expect(memberLaunchCommand({ ...base, ...leader })).toContain('--model=opus:max');
+    expect(memberLaunchCommand({ ...base, ...member })).toContain('--model=haiku:low');
   });
 });
 
