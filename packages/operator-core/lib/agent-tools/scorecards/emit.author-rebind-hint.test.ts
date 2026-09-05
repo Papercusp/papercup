@@ -44,6 +44,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...real, getOrgPg: () => ({ sql: {} }) };
 });
+vi.mock('../../acceptance-author-identity', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../acceptance-author-identity')>();
+  // grader-eligibility now resolves the plan's principal implementers over the
+  // org PG before the author rails; the getOrgPg stub above has no `sql`, and
+  // the seat question is not what these hint tests exercise.
+  return { ...real, resolvePlanImplementerIdentities: async () => [] };
+});
 
 import { emitScorecard } from './emit';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';

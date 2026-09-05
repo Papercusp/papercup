@@ -283,6 +283,49 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  it('refuses a same-author re-emit while the subject still has a live pending audit', async () => {
+    getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+    getIssue.mockResolvedValue(null);
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-PENDING-SAME-AUTHOR',
+        createdAt: '2026-08-27T14:00:00.000Z',
+        createdBy: 'su-subject-author',
+        subject: { kind: 'plan', ref: 'plan-x' },
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        nKeys: 1,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-27T14:00:00.000Z',
+        },
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+
+    const res = await emitScorecard(
+      {
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        terminal: true,
+        force: true,
+        subject: { kind: 'plan', ref: 'plan-x' },
+      },
+      { createdBy: 'su-subject-author', ctxHarness: 'papercusp' },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_required' });
+    expect((res as { error?: string }).error).toContain('EI-PENDING-SAME-AUTHOR');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('control (THE mirror rule): a SELF-audit is refused and nothing is filed or settled', async () => {
     const res = await emitScorecard(auditArgs, {
       createdBy: 'su-grader-author', // the graded card's own author
@@ -348,7 +391,9 @@ describe('scorecards:emit grading audit path (P-013)', () => {
         },
       },
     };
-    getIssue.mockResolvedValueOnce(settledGradedCard).mockResolvedValueOnce(priorAudit);
+    // The settled-subject exception and the generic supersedes validator both
+    // read the referenced audit card; keep both reads on the same prior card.
+    getIssue.mockResolvedValueOnce(settledGradedCard).mockResolvedValueOnce(priorAudit).mockResolvedValueOnce(priorAudit);
 
     const res = await emitScorecard(
       { ...auditArgs, supersedes: 'EI-AUDIT-OLD' },
