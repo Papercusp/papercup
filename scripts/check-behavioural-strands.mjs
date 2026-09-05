@@ -480,7 +480,7 @@ export function mentionsSeamMember(text, members) {
 
 const CLIP = 25;
 
-function formatFindings({ triggers, tests, clipped, baseNote, ran }) {
+function formatFindings({ triggers, tests, wider, narrow, members, usedWide, clipped, baseNote, ran }) {
   const lines = [];
   lines.push('⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites.');
   lines.push('');
@@ -502,15 +502,26 @@ function formatFindings({ triggers, tests, clipped, baseNote, ran }) {
   if (tests.length === 0) {
     lines.push('No downstream call-count/order assertions reachable from this change. Nothing to run.');
   } else {
-    lines.push(`${tests.length} reachable test file(s) assert on call count or order:`);
+    lines.push(
+      `Reachable test files in other workspaces asserting on call count or order: ${wider.length}` +
+        (members.length > 0 ? `; of those, ${narrow.length} also name a seam member (${members.join(', ')}).` : '.'),
+    );
+    lines.push(
+      usedWide
+        ? narrow.length === 0
+          ? 'No test names a seam member, so the WIDER band is named below — a narrow set is a ranking, never a reason to report less.'
+          : 'Naming the WIDER band (--wide).'
+        : 'Naming the narrowed set. The wider band is still real — an aliased mock can carry a stale count without naming the seam; --wide names it.',
+    );
+    lines.push('');
     for (const f of tests.slice(0, clipped ? CLIP : tests.length)) lines.push(`  ${f}`);
     if (clipped && tests.length > CLIP) {
       lines.push(`  … and ${tests.length - CLIP} more (--all to list them, --json for the full set)`);
     }
     lines.push('');
     if (!ran) {
-      lines.push('RUN THEM — this is the only detector for this class:');
-      lines.push('  node scripts/check-behavioural-strands.mjs --run   # same selection, then runs it');
+      lines.push('RUN THEM — running them IS the detector for this class; there is no tsc for it:');
+      lines.push(`  node scripts/check-behavioural-strands.mjs --run${usedWide ? ' --wide' : ''}`);
       lines.push('or, from an agent, the same set through the router:');
       lines.push(`  testing:run { files: [${tests.slice(0, 3).map((f) => `"${f}"`).join(', ')}${tests.length > 3 ? ', …' : ''}] }`);
     }
@@ -527,6 +538,7 @@ function main() {
   const wantJson = argv.includes('--json');
   const wantRun = argv.includes('--run');
   const wantAll = argv.includes('--all');
+  const wantWide = argv.includes('--wide');
   const baseIdx = argv.indexOf('--base');
   const requestedBase = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
   const filesArg = argv.find((a) => a.startsWith('--files='));
@@ -539,14 +551,24 @@ function main() {
         .filter(Boolean)
     : [];
 
-  if (!resolvesRevision(requestedBase)) {
-    const msg = `--base '${requestedBase}' does not resolve to a revision in the superproject; refusing to compare against a pathspec.`;
+  const submodules = submodulePaths();
+
+  // The base must resolve as a REVISION in at least one repo of this tree — otherwise
+  // `git diff <base>` reinterprets it as a pathspec, returns a working-tree diff with
+  // status 0, and every later `git show <base>:<file>` yields empty text: the guard then
+  // counts files as examined while having compared against nothing. A submodule-only
+  // revision is legitimate (that is where this guard's trigger class lives), so accept it
+  // here and let the per-file routing pick the repo it actually resolves in.
+  const baseRepos = [
+    resolvesRevision(requestedBase) ? 'superproject' : null,
+    ...submodules.filter((s) => resolvesRevision(requestedBase, resolve(ROOT, s))),
+  ].filter(Boolean);
+  if (baseRepos.length === 0) {
+    const msg = `--base '${requestedBase}' does not resolve to a revision in the superproject or any submodule; refusing to compare against a pathspec.`;
     if (wantJson) console.log(JSON.stringify({ ok: false, error: msg }, null, 2));
     else console.error(msg);
     return EXIT_NOT_CHECKED;
   }
-
-  const submodules = submodulePaths();
 
   // Which files to examine. Declared mode fixes WHICH files, never WHETHER they differ.
   let candidates;
@@ -571,8 +593,15 @@ function main() {
   const usedSubmoduleHead = new Set();
   for (const file of candidates) {
     const { submodule, cwd, relPath } = repoForPath(file, submodules);
-    const base = submodule === null ? requestedBase : 'HEAD';
-    if (submodule !== null && requestedBase !== 'HEAD') usedSubmoduleHead.add(submodule);
+    // A superproject revision does not name submodule content, so `--base <sha>` is only
+    // meaningful inside a submodule when that same expression also resolves THERE. Try it,
+    // and disclose the fallback rather than silently comparing against a different base
+    // than the caller asked for.
+    let base = requestedBase;
+    if (submodule !== null && !resolvesRevision(requestedBase, cwd)) {
+      base = 'HEAD';
+      if (requestedBase !== 'HEAD') usedSubmoduleHead.add(submodule);
+    }
     const beforeText = git(['show', `${base}:${relPath}`], { cwd, allowFail: true });
     if (beforeText === null) continue; // new file: it can strand nothing that already exists
     const abs = resolve(ROOT, file);
@@ -634,11 +663,19 @@ function main() {
   const reachable = reverseReachable({ seeds, files: allFiles, readFile, byDir, byEntryDir });
   const changedWorkspaces = new Set(seeds.map((f) => workspaceOf(f, packageDirs)));
 
-  const tests = [...reachable]
+  const wider = [...reachable]
     .filter((f) => TEST_RE.test(f))
     .filter((f) => !changedWorkspaces.has(workspaceOf(f, packageDirs)))
     .filter((f) => hasCountOrOrderAssertion(readFile(f)))
     .sort();
+
+  const members = seamMemberNames(triggers);
+  const narrow = wider.filter((f) => mentionsSeamMember(readFile(f), members));
+  // The narrow set is a ranking, not a filter that may hide work: when it comes out empty
+  // the wider band is what gets named, so this can never print "nothing to run" while
+  // reachable tests with count assertions exist.
+  const usedWide = wantWide || narrow.length === 0;
+  const tests = usedWide ? wider : narrow;
 
   let exit = 0;
   let ran = false;
@@ -658,13 +695,29 @@ function main() {
   if (wantJson) {
     console.log(
       JSON.stringify(
-        { ok: true, notChecked: false, base: requestedBase, examined, identical, triggers, tests, ran, runResult },
+        {
+          ok: true,
+          notChecked: false,
+          base: requestedBase,
+          examined,
+          identical,
+          triggers,
+          seamMembers: members,
+          tests,
+          narrow,
+          wider,
+          usedWide,
+          ran,
+          runResult,
+        },
         null,
         2,
       ),
     );
   } else {
-    console.log(formatFindings({ triggers, tests, clipped: !wantAll, baseNote, ran }));
+    console.log(
+      formatFindings({ triggers, tests, wider, narrow, members, usedWide, clipped: !wantAll, baseNote, ran }),
+    );
   }
   return exit;
 }
