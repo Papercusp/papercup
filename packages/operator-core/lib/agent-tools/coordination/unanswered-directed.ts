@@ -107,6 +107,8 @@ import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { MACHINE_SENDER_PATTERN } from './machine-authored';
 import { fetchSatisfiedDirectiveMessageIds } from './directive-effect-read';
 import { endedRecordedOwnerIds } from '../../adv-sessions';
+import { listPresence } from './presence';
+import { resolveSessionStates, type LivenessSubject } from './liveness-oracle';
 import type { SessionState } from './presence-wakeability';
 
 export interface UnansweredDirectedEntry {
@@ -216,6 +218,11 @@ export const UNANSWERED_SENDER_CAP = 32;
  * EVIDENCE OF DEATH — the precise inversion this whole split exists to avoid.
  */
 export type EndedSendersFn = (ownerIds: string[]) => Promise<ReadonlySet<string>>;
+
+/** DI seam for the sender-side mirror's batched recipient-liveness read. */
+export type OpenAskRecipientStatesFn = (
+  ownerIds: string[],
+) => Promise<ReadonlyMap<string, SessionState | null | undefined>>;
 
 export interface UnansweredDirectedRow {
   recipient: string;
@@ -832,6 +839,20 @@ export interface OpenAskEntry {
   to: string;
   summary?: string;
   ageMs: number;
+  /** Populated only when the sender-side liveness partition runs. */
+  recipientState?: SessionState | 'unknown';
+}
+
+/**
+ * EI-22401733710869471: one row per distinct recipient still owed an answer.
+ * The `newest` array is display-capped, so this bounded rollup is what lets the
+ * liveness partition account for the exact count it can safely classify.
+ */
+export interface OpenAskRecipientRollup {
+  to: string;
+  count: number;
+  oldestAgeMs: number;
+  recipientState?: SessionState | 'unknown';
 }
 
 export interface OpenAskSummary {
@@ -842,6 +863,16 @@ export interface OpenAskSummary {
   oldestTo: string;
   /** Newest-first, capped at NEWEST_CAP even when `count` is larger. */
   newest: OpenAskEntry[];
+  /** As with unanswered_directed.staleCount, positively-dead asks are retained
+   *  here for reporting but no longer count as a live obligation. */
+  staleCount: number;
+  staleOldestAgeMs: number;
+  /** Bounded per-recipient rollup used by the liveness partition. */
+  recipients: OpenAskRecipientRollup[];
+  /** Set when the rollup omits at least one distinct recipient. */
+  recipientsTruncated?: true;
+  /** A stale count is a floor when recipients were omitted or unaccounted. */
+  staleCountBounded?: true;
 }
 
 export interface OpenAskRow {
@@ -853,6 +884,11 @@ export interface OpenAskRow {
   newest_to: (string | null)[] | null;
   newest_summary: (string | null)[] | null;
   newest_ts_ms: (string | number | null)[] | null;
+  /** EI-22401733710869471 per-recipient rollup — absent on hand-built rows. */
+  recipient_total?: string | number | null;
+  recipient_ids?: (string | null)[] | null;
+  recipient_cnts?: (string | number | null)[] | null;
+  recipient_oldest_ts_ms?: (string | number | null)[] | null;
 }
 
 /**
@@ -889,14 +925,172 @@ export function rowsToOpenAsksMap(
         ageMs: Number.isFinite(ts) ? Math.max(0, nowMs - ts) : 0,
       });
     }
+    const recipientIds = r.recipient_ids ?? [];
+    const recipientCnts = r.recipient_cnts ?? [];
+    const recipientOldest = r.recipient_oldest_ts_ms ?? [];
+    const recipients: OpenAskRecipientRollup[] = [];
+    for (let i = 0; i < recipientIds.length; i++) {
+      const to = recipientIds[i];
+      if (!to) continue;
+      const rcnt = Number(recipientCnts[i]);
+      if (!Number.isFinite(rcnt) || rcnt <= 0) continue;
+      const rOldest = Number(recipientOldest[i]);
+      recipients.push({
+        to,
+        count: rcnt,
+        oldestAgeMs: Number.isFinite(rOldest) ? Math.max(0, nowMs - rOldest) : 0,
+      });
+    }
+    const recipientTotal = Number(r.recipient_total);
     out.set(r.sender, {
       count: cnt,
       oldestAgeMs: Number.isFinite(oldestTs) ? Math.max(0, nowMs - oldestTs) : 0,
       oldestTo: r.oldest_to ?? newest[0]?.to ?? '',
       newest,
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      recipients,
+      ...(Number.isFinite(recipientTotal) && recipientTotal > recipients.length
+        ? { recipientsTruncated: true as const }
+        : {}),
     });
   }
   return out;
+}
+
+/**
+ * PURE: split an open-ask summary into asks whose recipient is positively dead
+ * and asks that still have a recipient who may answer. Only an explicit
+ * `'ended'` verdict demotes; unknown, missing, throwing, and over-cap evidence
+ * all keep the ask counted. This mirrors partitionUnansweredByLiveness while
+ * preserving the sender-side summary shape.
+ */
+export function partitionOpenAsksByLiveness(
+  summary: OpenAskSummary,
+  recipientState: (ownerId: string) => SessionState | null | undefined,
+): OpenAskSummary {
+  const resolve = (ownerId: string): SessionState | 'unknown' => {
+    try {
+      return recipientState(ownerId) ?? 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  };
+
+  const recipients: OpenAskRecipientRollup[] = [];
+  let staleCount = 0;
+  let staleOldestAgeMs = 0;
+  let liveCount = 0;
+  let liveOldestAgeMs = 0;
+  for (const r of summary.recipients) {
+    const state = resolve(r.to);
+    recipients.push({ ...r, recipientState: state });
+    if (state === 'ended') {
+      staleCount += r.count;
+      staleOldestAgeMs = Math.max(staleOldestAgeMs, r.oldestAgeMs);
+    } else {
+      liveCount += r.count;
+      liveOldestAgeMs = Math.max(liveOldestAgeMs, r.oldestAgeMs);
+    }
+  }
+
+  // A recipient beyond the rollup cap, or a legacy row without a rollup, is
+  // unaccounted/unknown and therefore remains a live obligation.
+  const unaccounted = Math.max(0, summary.count - (staleCount + liveCount));
+  const bounded = unaccounted > 0 || summary.recipientsTruncated === true;
+  const count = liveCount + unaccounted;
+  if (staleCount === 0) {
+    return {
+      ...summary,
+      recipients,
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      ...(bounded ? { staleCountBounded: true as const } : {}),
+    };
+  }
+
+  const stateByTo = new Map(recipients.map((r) => [r.to, r.recipientState]));
+  const oldestLive = recipients.reduce<OpenAskRecipientRollup | undefined>((oldest, r) => {
+    if (r.recipientState === 'ended') return oldest;
+    return !oldest || r.oldestAgeMs > oldest.oldestAgeMs ? r : oldest;
+  }, undefined);
+  return {
+    ...summary,
+    count,
+    oldestAgeMs: unaccounted > 0 ? summary.oldestAgeMs : liveOldestAgeMs,
+    oldestTo: unaccounted > 0 ? summary.oldestTo : oldestLive?.to ?? '',
+    newest: summary.newest.map((e) => ({
+      ...e,
+      recipientState: stateByTo.get(e.to) ?? 'unknown',
+    })),
+    staleCount,
+    staleOldestAgeMs,
+    recipients,
+    ...(bounded ? { staleCountBounded: true as const } : {}),
+  };
+}
+
+/**
+ * Resolve open-ask recipients through the shared liveness oracle in one batch.
+ * Presence rows are read first so a missing owner remains UNKNOWN rather than
+ * inheriting the oracle's bare-id `ended` derivation. Positive ended-session
+ * evidence still demotes a reaped recipient. No `hydratePerId`: this is a
+ * bounded batch and every subject sent to the oracle already carries its
+ * presence-row fields.
+ */
+async function resolveOpenAskRecipientStates(ownerIds: string[]): Promise<Map<string, SessionState | null>> {
+  const ids = [...new Set(ownerIds.filter(Boolean))].slice(0, UNANSWERED_SENDER_CAP);
+  if (ids.length === 0) return new Map();
+  try {
+    const presence = await listPresence({ workspaceId: coordWorkspaceId(), ownerIds: ids });
+    const present = new Map(presence.map((p) => [p.ownerId, p]));
+    const subjects: LivenessSubject[] = presence.map((p) => ({
+      ownerId: p.ownerId,
+      heartbeatAt: p.heartbeatAt,
+      stale: p.stale,
+      host: p.host,
+      pid: p.pid,
+      source: p.source,
+      agentRole: p.agentRole ?? null,
+    }));
+    const [verdicts, ended] = await Promise.all([
+      resolveSessionStates(subjects),
+      endedRecordedOwnerIds(ids),
+    ]);
+    return new Map(
+      ids.map((id) => {
+        if (!present.has(id)) return [id, ended.has(id) ? ('ended' as const) : null];
+        const state = verdicts.get(id)?.sessionState;
+        return [id, state ?? (ended.has(id) ? ('ended' as const) : null)];
+      }),
+    );
+  } catch {
+    return new Map(ids.map((id) => [id, null]));
+  }
+}
+
+/** Batch-decorate open asks with recipient liveness; failures fail open. */
+export async function decorateOpenAsksLiveness(
+  map: Map<string, OpenAskSummary>,
+  opts: { recipientStatesFn?: OpenAskRecipientStatesFn } = {},
+): Promise<Map<string, OpenAskSummary>> {
+  const recipientIds = new Set<string>();
+  for (const summary of map.values()) {
+    for (const r of summary.recipients) recipientIds.add(r.to);
+  }
+  if (recipientIds.size === 0) return map;
+  let states: ReadonlyMap<string, SessionState | null | undefined>;
+  try {
+    states = await (opts.recipientStatesFn ?? resolveOpenAskRecipientStates)([...recipientIds]);
+  } catch {
+    return map;
+  }
+  return new Map(
+    [...map].map(([sender, summary]) => [
+      sender,
+      partitionOpenAsksByLiveness(summary, (ownerId) => states.get(ownerId)),
+    ]),
+  );
 }
 
 /**
@@ -906,12 +1100,19 @@ export function rowsToOpenAsksMap(
  */
 export async function fetchOpenAsks(
   senderIds: string[],
-  opts: { nowMs?: number; lookbackMs?: number; perRecipientCap?: number } = {},
+  opts: {
+    nowMs?: number;
+    lookbackMs?: number;
+    perRecipientCap?: number;
+    /** DI seam for the sender-side recipient-liveness partition. */
+    recipientStatesFn?: OpenAskRecipientStatesFn;
+  } = {},
 ): Promise<Map<string, OpenAskSummary>> {
   if (senderIds.length === 0 || !coordHasPgFastPath()) return new Map();
   const nowMs = opts.nowMs ?? Date.now();
   const sinceMs = nowMs - (opts.lookbackMs ?? UNANSWERED_LOOKBACK_MS);
   const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
+  const recipientCap = UNANSWERED_SENDER_CAP;
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
   const rows = await sql<OpenAskRow[]>`
@@ -1010,6 +1211,26 @@ export async function fetchOpenAsks(
             AND lr.to_id = o.from_id
             AND lr.ts_ms >= o.ts_ms
        ) < o.ask_rank
+    ),
+    -- EI-22401733710869471: "newest_*" is display-capped, so the sender-side
+    -- liveness split needs its own bounded per-recipient rollup. Recipients
+    -- beyond the cap stay counted as unknown by the pure partition.
+    per_recipient AS (
+      SELECT from_id AS sender,
+             recipient AS to_id,
+             count(*)::bigint AS rcnt,
+             min(ts_ms) AS roldest
+        FROM open_final
+       GROUP BY from_id, recipient
+    ),
+    recipient_rollup AS (
+      SELECT sender,
+             count(*)::bigint AS recipient_total,
+             (array_agg(to_id ORDER BY rcnt DESC, to_id))[1:${recipientCap}] AS recipient_ids,
+             (array_agg(rcnt ORDER BY rcnt DESC, to_id))[1:${recipientCap}] AS recipient_cnts,
+             (array_agg(roldest ORDER BY rcnt DESC, to_id))[1:${recipientCap}] AS recipient_oldest_ts_ms
+        FROM per_recipient
+       GROUP BY sender
     )
     SELECT from_id AS sender,
            count(*) AS cnt,
@@ -1018,9 +1239,15 @@ export async function fetchOpenAsks(
            (array_agg(msg_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_ids,
            (array_agg(recipient ORDER BY ts_ms DESC))[1:${cap}] AS newest_to,
            (array_agg(summary ORDER BY ts_ms DESC))[1:${cap}] AS newest_summary,
-           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${cap}] AS newest_ts_ms
+           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${cap}] AS newest_ts_ms,
+           rr.recipient_total,
+           rr.recipient_ids,
+           rr.recipient_cnts,
+           rr.recipient_oldest_ts_ms
       FROM open_final
-     GROUP BY from_id
+      JOIN recipient_rollup rr ON rr.sender = open_final.from_id
+     GROUP BY from_id, rr.recipient_total, rr.recipient_ids, rr.recipient_cnts, rr.recipient_oldest_ts_ms
   `;
-  return rowsToOpenAsksMap(rows, nowMs, cap);
+  const map = rowsToOpenAsksMap(rows, nowMs, cap);
+  return decorateOpenAsksLiveness(map, opts);
 }
