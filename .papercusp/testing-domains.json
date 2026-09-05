@@ -142,8 +142,7 @@
           "id": "wdio",
           "label": "WebdriverIO",
           "globs": [
-            "tools/perf-test/wdio/specs/**/*.spec.ts",
-            "tools/perf-test/wdio/*.node-test.ts"
+            "tools/perf-test/wdio/specs/**/*.spec.ts"
           ],
           "runners": [
             {

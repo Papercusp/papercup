@@ -212,7 +212,11 @@ function RequirementContractView({ snapshot, onOpenWork }: {
   const workRef = (id: string) => <WorkRefPill id={id} kind="work-item"
     href={`/admin/plans?${new URLSearchParams({ plan: snapshot.planSlug, gate: snapshot.planSlug,
       [CHAT_WORK_ITEM_POPUP_PARAM]: encodeScopedRef(snapshot.plan?.harnessSlug, id) })}`}
-    onActivate={() => onOpenWork(id)} />;
+    onActivate={(event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      onOpenWork(id);
+    }} />;
 
   return <section className="pc-requirements" aria-label="Requirements">
     <h3>Requirements</h3>

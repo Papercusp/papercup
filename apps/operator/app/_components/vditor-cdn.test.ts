@@ -93,13 +93,13 @@ describe('vditor cdn (WI-7088)', () => {
     const src = stripComments(await readFile(MARKDOWN_EDITOR, 'utf8'));
 
     const entryPoints = src.match(VDITOR_ENTRY_POINTS) ?? [];
-    const mathEngines = src.match(/math:\s*\{\s*engine:\s*'KaTeX'\s*\}/g) ?? [];
+    const mathEngines = src.match(/math:\s*\{\s*engine:\s*['"]KaTeX['"]\s*\}/g) ?? [];
 
     // The direct statement of the property: nothing may select MathJax. The
     // count assertion below implies this today (a MathJax pin displaces a
     // KaTeX one and breaks the count), but only indirectly and with a far
     // worse failure message.
-    expect(src).not.toMatch(/engine:\s*'MathJax'/);
+    expect(src).not.toMatch(/engine:\s*['"]MathJax['"]/);
 
     // Comment-stripping is load-bearing here, not cosmetic: the raw source
     // carries 6 entry-point-shaped tokens, 3 of which are prose describing the

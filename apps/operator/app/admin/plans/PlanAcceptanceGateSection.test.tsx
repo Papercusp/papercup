@@ -148,6 +148,10 @@ describe('unified requirement inspection', () => {
     expect(within(detail).getByText('author')).toBeTruthy();
     const work = within(detail).getAllByRole('link', { name: 'WI-1' })[0]!;
     expect(work.getAttribute('href')).toContain('wpop=papercusp%3A%3AWI-1');
+    // Keep the current plan/expanded requirement while nuqs opens the popup.
+    // WorkRefPill forwards the event; its caller must cancel native navigation.
+    expect(fireEvent.click(work)).toBe(false);
+    expect(detail.open).toBe(true);
     expect(screen.getByText('All requirements accepted.')).toBeTruthy();
     expect(screen.getByText(/release checks and deployment follow acceptance/)).toBeTruthy();
   });

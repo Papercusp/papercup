@@ -14,7 +14,8 @@ import { resolveSelectionKind } from './DetailPanel';
 type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
 const { syncCalls } = vi.hoisted(() => ({ syncCalls: [] as SyncCall[] }));
 
-vi.mock('@papercusp/sync', () => ({
+vi.mock('@papercusp/sync', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string; enabled?: boolean; args?: Record<string, unknown> }) => {
     syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
