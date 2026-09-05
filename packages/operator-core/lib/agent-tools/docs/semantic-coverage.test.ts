@@ -118,6 +118,21 @@ describe('assessDocsCoverage', () => {
     await expect(assessDocsCoverage(deps)).resolves.toBeNull();
   });
 
+  /**
+   * The one failure this module's own fail-soft design would otherwise HIDE forever.
+   *
+   * `assessDocsCoverage` swallows every error to null, and on a healthy corpus a correct
+   * run ALSO produces no visible field — so a renamed/moved export would silently degrade
+   * this to a permanent no-op that looks exactly like "the corpus is fine". Nothing else
+   * in this file exercises the real specifiers: the seam-injected tests bypass them and
+   * the inert-under-vitest test returns before reaching them. Pin them here.
+   */
+  it('resolves the real coverage-gate exports it lazily imports (guards the silent no-op)', async () => {
+    const gate = await import('../../search/coverage-gate');
+    expect(typeof gate.assessSurfaceCoverage).toBe('function');
+    expect(typeof gate.loadCoverageSnapshotCached).toBe('function');
+  });
+
   it('returns null instead of throwing when the assessment itself throws', async () => {
     const deps: DocsCoverageDeps = {
       loadSnapshot: async () => new Map() as CoverageSnapshot,
