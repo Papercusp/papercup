@@ -30,12 +30,23 @@
  *
  * ── Why it is SHARED, not copied ───────────────────────────────────────────
  * [owner 2026-08-10] the goal popup should "mimic the design used in the
- * equivalent popup in the sessions tab for the hide and expand buttons". Ten
- * call sites now render this grammar — five in SessionChatModal, five in
- * GoalDetailPanel — and a copied ternary in each is how the two popups drift
- * apart on the first restyle of either. Same rule the goal popup already
- * follows for the rails themselves (AgentOrders/AgentDossier/FleetPeersRail are
- * imported verbatim, never forked) and for `chat-controls.css`.
+ * equivalent popup in the sessions tab for the hide and expand buttons". This
+ * component was extracted for exactly that: five call sites in SessionChatModal
+ * and, originally, five more in GoalDetailPanel — a copied ternary in each is
+ * how the two popups drift apart on the first restyle of either. Same rule the
+ * goal popup already follows for the rails themselves
+ * (AgentOrders/AgentDossier/FleetPeersRail are imported verbatim, never forked)
+ * and for `chat-controls.css`.
+ *
+ * ⚠ AS BUILT SINCE WI-38428 (2026-08-13) THE GOAL POPUP RENDERS NONE OF THESE.
+ * Its directional toggle row was deliberately replaced by
+ * `GoalPanelVisibilityMenu` — one grouped checkbox popover — so the five
+ * goal-side call sites are gone and SessionChatModal is now the only consumer
+ * of the button itself. GoalDetailPanel and that menu still import
+ * PANEL_TOOLBAR_BUTTON_STYLE, which is what keeps the two toolbars matching.
+ * Do NOT "restore" the goal toggles to make this docblock true again: the
+ * popover is the later, deliberate design, and reinstating the row would
+ * revert it.
  *
  * ⚠ The button carries `display: inline-flex` INLINE, matching what the
  * sessions popup shipped and the owner signed off on in the desktop shell.

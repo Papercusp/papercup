@@ -1091,6 +1091,9 @@ describe('decorateUnansweredDirected — P-007 (fleet-reliability-verification-2
       count: 2,
       oldestAgeMs: 90_000,
       newest: [{ msgId: 'm1', from: 'a2', ageMs: 1000 }],
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      senders: [{ from: 'a2', count: 2, oldestAgeMs: 90_000 }],
     };
     await decorateUnansweredDirected(agents, async () => new Map([['a1', summary]]));
     expect((agents[0] as { unanswered?: UnansweredDirectedSummary }).unanswered).toEqual(summary);

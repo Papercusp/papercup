@@ -78,6 +78,16 @@ function SessionRow({
       </span>
       <span className="pc-peer__r2">
         <span className="pc-peer__state" data-col={row.column}>
+          {/* An ended session says so IN WORDS, ahead of its last state.
+              `column` is the state it STOPPED in, kept deliberately as history
+              (a test agent that ended while `working` is evidence the testing
+              ran) — but rendered alone it claims the agent is working now, on a
+              rail whose heading asks exactly that. The CSS greys the dot too;
+              this text is the cue that survives a colour-blind reader, a
+              high-contrast theme, or a screen reader, none of which can see the
+              dot change. Matches SessionChatModal, which spells the terminal
+              state out rather than tinting it. */}
+          {row.ended ? <>ended&nbsp;· </> : null}
           {COLUMN_WORD[row.column]}
           {age ? ` ${age}` : ''}
         </span>

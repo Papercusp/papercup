@@ -50,7 +50,16 @@
  * workspace member therefore stops being subsumed automatically, with no list to update.
  *
  * Measured 2026-09-05: 13 lockfiles — 7 Cargo.lock, 6 package-lock.json. 2 covered,
- * 3 subsumed, 6 not-shipped, 2 uncovered-baselined.
+ * 3 subsumed, 1 build-only, 6 not-shipped, 1 uncovered-baselined.
+ *
+ * A THIRD BLIND SPOT, FOUND BY THIS FILE'S OWN FIRST RUN
+ *
+ * The counts above changed once the census stopped counting lockfile ENTRIES and started
+ * measuring SHIPPED dependencies (see npmDepCounts). The desktop npm lockfile was
+ * baselined as "12 deps ... SHIPPED ... the highest-priority row here"; all 12 entries
+ * are `dev: true` build tooling and its shipped count is zero. The number was accurate
+ * and the unit was wrong, which is the harder failure to see: nothing about a plausible
+ * count announces that it is measuring something other than what its name says.
  *
  * FALSIFIABILITY
  *
@@ -154,22 +163,106 @@ export const NOT_SHIPPED_LOCKFILES = new Map([
  */
 export const UNCOVERED_BASELINE = new Map([
   [
-    'papercusp-desktop/package-lock.json',
-    {
-      deps: 12,
-      reason:
-        'the shipped desktop app own npm graph. papercusp-desktop is deliberately not a root workspace member, so `npm audit` at the repo root never walks it. Small graph (12 entries), but it is SHIPPED — this is the highest-priority row here.',
-    },
-  ],
-  [
     'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
     {
       deps: 509,
       reason:
-        'harness docs viewer; 509 entries, the largest uncovered graph. Not a root workspace member, so the root audit cannot reach it. Whether it ships is unsettled — resolve that first, then either gate it or move it to NOT_SHIPPED_LOCKFILES with the reason.',
+        'harness docs viewer; 509 entries, ALL of them runtime (zero dev-only) — the largest genuinely uncovered graph. Not a root workspace member, so the root audit cannot reach it. Whether it ships is unsettled — resolve that first, then either gate it or move it to NOT_SHIPPED_LOCKFILES with the reason.',
     },
   ],
 ]);
+
+/**
+ * Count the entries in an npm lockfile that describe SHIPPED code, and the entries that
+ * describe build tooling. `dev: true` is npm's own resolved verdict, written by the
+ * installer that walked the manifest — not a guess from a dependency name.
+ *
+ * WHY THIS EXISTS — A COUNT WHOSE UNITS WERE WRONG SENT THE CENSUS TO THE WRONG FILE
+ *
+ * The first version of this file counted `packages` ENTRIES and called the total "deps",
+ * then baselined `papercusp-desktop/package-lock.json` at "12 deps ... it is SHIPPED —
+ * this is the highest-priority row here." Measured 2026-09-05, every one of those 12
+ * entries is `dev: true` (`@tauri-apps/cli` plus its 11 platform binaries, 11 of which
+ * are also `optional`), so the shipped-dependency count of that lockfile is ZERO. The
+ * row was real, its number was real, and the conclusion drawn from it — gate this next —
+ * was work that would have bought nothing.
+ *
+ * So the bucket is DERIVED from this measurement rather than curated: an npm lockfile
+ * that resolves no runtime dependency ships nothing, and the lockfile itself says so.
+ * A dependency promoted out of `devDependencies` moves that file back into the
+ * classification set on the next run, with no list for anyone to remember to update.
+ */
+export function npmDepCounts(lockJson) {
+  const packages = lockJson?.packages;
+  if (!packages || typeof packages !== 'object') {
+    throw new Error(
+      'npm lockfile has no `packages` map — cannot measure its shipped dependency count. ' +
+        'Refusing rather than reporting an unreadable lockfile as shipping nothing.',
+    );
+  }
+  const shipped = new Set();
+  const devOnly = new Set();
+  for (const [key, entry] of Object.entries(packages)) {
+    if (key === '') continue;
+    const name = entry?.name ?? key.split('node_modules/').pop();
+    const id = `${name}@${entry?.version ?? '?'}`;
+    if (entry?.dev === true) devOnly.add(id);
+    else shipped.add(id);
+  }
+  // A package resolved at two paths — dev in one tree, runtime in another — SHIPS. Asking
+  // "is this name dev anywhere?" instead gives the opposite answer, and it is the reading
+  // that produced a false positive control while this file was being written: several
+  // names sampled from the root lockfile looked dev-only and were present in the SBOM,
+  // which appeared to disprove syft's dev exclusion. They were present because a
+  // NON-dev copy of the same name existed elsewhere in the graph.
+  for (const id of shipped) devOnly.delete(id);
+  return {
+    shipped: shipped.size,
+    devOnly: devOnly.size,
+    total: shipped.size + devOnly.size,
+    // The lockfile's own root package — the artifact being inventoried, not one of its
+    // dependencies. Carried so the SBOM count can exclude it by name rather than by path.
+    rootName: packages['']?.name ?? null,
+  };
+}
+
+/** `[[package]]` blocks in a Cargo.lock. Cargo has no dev/runtime split at this layer. */
+export function cargoDepCounts(lockText) {
+  const shipped = (lockText.match(/^\[\[package\]\]/gm) ?? []).length;
+  if (shipped === 0) {
+    throw new Error(
+      'Cargo.lock declares ZERO [[package]] blocks — the file did not parse as a lockfile. ' +
+        'Refusing rather than reporting an unreadable lockfile as shipping nothing.',
+    );
+  }
+  return { shipped, devOnly: 0, total: shipped };
+}
+
+/**
+ * Measure every census row. The IO half of the derivation above; `classifyCensus` stays
+ * pure and takes the result. A row that cannot be measured is recorded as `null` rather
+ * than as zero, because "we could not read it" and "it ships nothing" must not collapse
+ * into the same bucket — that collapse is the whole defect this measurement repairs.
+ */
+export function measureLockfiles(root, lockfiles) {
+  const measurements = new Map();
+  for (const path of lockfiles) {
+    const name = path.split('/').pop() ?? path;
+    const ecosystem = LOCKFILE_ECOSYSTEMS.get(name) ?? 'unknown';
+    try {
+      if (ecosystem === 'npm') {
+        measurements.set(path, npmDepCounts(JSON.parse(readFileSync(join(root, path), 'utf8'))));
+      } else if (ecosystem === 'cargo') {
+        measurements.set(path, cargoDepCounts(readFileSync(join(root, path), 'utf8')));
+      } else {
+        measurements.set(path, null);
+      }
+    } catch {
+      measurements.set(path, null);
+    }
+  }
+  return measurements;
+}
 
 /**
  * Walk the tree for lockfiles. Returns repo-relative POSIX paths, sorted.
@@ -274,6 +367,7 @@ export function rootWorkspaceDirs(rootLockJson) {
 export function classifyCensus({
   lockfiles,
   workspaceDirs,
+  measurements = new Map(),
   covered = COVERED_LOCKFILES,
   notShipped = NOT_SHIPPED_LOCKFILES,
   uncovered = UNCOVERED_BASELINE,
@@ -283,9 +377,10 @@ export function classifyCensus({
     const name = path.split('/').pop() ?? path;
     const ecosystem = LOCKFILE_ECOSYSTEMS.get(name) ?? 'unknown';
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    const measured = measurements.get(path) ?? null;
 
     if (covered.has(path)) {
-      rows.push({ path, ecosystem, bucket: 'covered', note: covered.get(path) });
+      rows.push({ path, ecosystem, bucket: 'covered', measured, note: covered.get(path) });
       continue;
     }
     // Derived, not asserted: an npm lockfile whose directory is a root workspace member
@@ -295,12 +390,27 @@ export function classifyCensus({
         path,
         ecosystem,
         bucket: 'subsumed',
+        measured,
         note: `${dir} is a root workspace member; its dependencies hoist into the audited root lockfile`,
       });
       continue;
     }
+    // Derived, not asserted (see npmDepCounts): an npm lockfile that resolves no runtime
+    // dependency ships no third-party code, so no advisory gate can owe it coverage. The
+    // measurement must be PRESENT to reach this bucket — an unmeasurable lockfile stays
+    // in the classification set rather than being excused by a failed read.
+    if (ecosystem === 'npm' && measured !== null && measured.shipped === 0 && measured.devOnly > 0) {
+      rows.push({
+        path,
+        ecosystem,
+        bucket: 'build-only',
+        measured,
+        note: `all ${measured.devOnly} resolved entries are dev-only build tooling; the lockfile resolves zero runtime dependencies, so it ships no third-party code`,
+      });
+      continue;
+    }
     if (notShipped.has(path)) {
-      rows.push({ path, ecosystem, bucket: 'not-shipped', note: notShipped.get(path) });
+      rows.push({ path, ecosystem, bucket: 'not-shipped', measured, note: notShipped.get(path) });
       continue;
     }
     if (uncovered.has(path)) {
@@ -309,12 +419,16 @@ export function classifyCensus({
         path,
         ecosystem,
         bucket: 'uncovered-baselined',
+        // The BASELINED figure and the LIVE measurement are kept apart on purpose: a
+        // baseline is a record of the debt when it was accepted, and `measured` is what
+        // the lockfile says now. Collapsing them would hide a graph that grew.
         deps: entry.deps,
+        measured,
         note: entry.reason,
       });
       continue;
     }
-    rows.push({ path, ecosystem, bucket: 'UNCLASSIFIED' });
+    rows.push({ path, ecosystem, bucket: 'UNCLASSIFIED', measured });
   }
 
   // A curated entry pointing at a path the census no longer contains is stale. Reported,
@@ -354,7 +468,7 @@ export function sbomSubjects(rows) {
  * green exit, which is the same "measured nothing" reading this whole guard is built to
  * prevent. The gate legs above never touch syft, so the gate stays runnable without it.
  */
-export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SYFT_BIN } = {}) {
+export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SYFT_BIN, measurements = new Map() } = {}) {
   const bin = syft || join(process.env.HOME ?? '', '.local', 'bin', 'syft');
   if (!existsSync(bin)) {
     throw new Error(
@@ -370,17 +484,68 @@ export function emitSbom(subjects, outPath, { root = ROOT, syft = process.env.SY
       { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
     );
     const parsed = JSON.parse(out);
-    const components = parsed.components?.length ?? 0;
-    if (components === 0) {
-      throw new Error(
-        `syft catalogued ZERO components from ${subject}. An empty inventory is not evidence of a ` +
-          'small dependency graph; it means the cataloger did not read the file.',
-      );
-    }
-    documents.push({ subject, components, bom: parsed });
+    const catalogued = countCataloguedDependencies(parsed, subject, root);
+    assertSbomCoverage(subject, catalogued, measurements.get(subject) ?? null);
+    documents.push({ subject, components: parsed.components?.length ?? 0, catalogued, bom: parsed });
   }
   writeFileSync(outPath, `${JSON.stringify({ generatedFrom: subjects, documents }, null, 2)}\n`);
-  return documents.map(({ subject, components }) => ({ subject, components }));
+  return documents.map(({ subject, components, catalogued }) => ({ subject, components, catalogued }));
+}
+
+/**
+ * Dependency components in a CycloneDX document, excluding the two components that are
+ * present whether or not the cataloger read anything: the synthetic `type: 'file'` node
+ * syft emits for the scanned path, and the subject lockfile's own root package.
+ *
+ * This distinction is the entire reason the previous `components === 0` check could not
+ * fire. Measured 2026-09-05 against `papercusp-desktop/package-lock.json`, syft
+ * catalogued exactly those two components and no dependency at all — a 2, not a 0, so
+ * the guard passed and reported an inventory containing none of the file's packages.
+ * A threshold placed below the value that "catalogued nothing" actually produces is not
+ * a weak guard; it is an unfalsifiable one.
+ */
+export function countCataloguedDependencies(bom, subject, root = ROOT) {
+  const components = bom?.components ?? [];
+  const subjectAbs = join(root, subject);
+  return components.filter((c) => {
+    if (c?.type === 'file') return false;
+    if (c?.name === subjectAbs || c?.name === subject) return false;
+    return true;
+  }).length;
+}
+
+/**
+ * The POSITIVE control on the inventory: two independent readings of the same lockfile
+ * must agree. `measured.shipped` is this file's own parse of the lockfile; `catalogued`
+ * is what syft's cataloger produced from it. A cataloger that silently declined the file
+ * makes the second number collapse while the first stays intact, which is the only way
+ * to tell "this artifact genuinely has few dependencies" from "nothing read it".
+ *
+ * syft excludes npm `dev` dependencies, which is why the comparison is against
+ * `measured.shipped` and not the entry total — calibrated 2026-09-05 across all four
+ * shipped subjects: docs-viewer 509 shipped / 510 catalogued, root 2469 / 2482,
+ * desktop-npm 0 / 1, Cargo 615 / 615. Catalogued runs at or just above shipped (the
+ * excess is root and workspace package nodes), never below, so a shortfall is signal.
+ */
+export function assertSbomCoverage(subject, catalogued, measured) {
+  if (measured === null) {
+    if (catalogued === 0) {
+      throw new Error(
+        `syft catalogued ZERO dependency components from ${subject}, and this file could not ` +
+          'independently measure the lockfile either, so the emptiness cannot be corroborated. ' +
+          'Refusing rather than writing an inventory that may simply not have been read.',
+      );
+    }
+    return;
+  }
+  if (catalogued < measured.shipped) {
+    throw new Error(
+      `syft catalogued ${catalogued} dependency component(s) from ${subject}, but the lockfile ` +
+        `itself resolves ${measured.shipped} shipped dependenc(ies). The inventory is missing ` +
+        `${measured.shipped - catalogued} of them. A short catalog is not a small graph — it ` +
+        'means the cataloger declined part or all of the file. Refusing to write it.',
+    );
+  }
 }
 
 function main(argv) {
@@ -391,19 +556,41 @@ function main(argv) {
   const lockfiles = censusOrThrow(ROOT);
   const rootLock = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf8'));
   const workspaceDirs = rootWorkspaceDirs(rootLock);
-  const result = classifyCensus({ lockfiles, workspaceDirs });
+  const measurements = measureLockfiles(ROOT, lockfiles);
+  const result = classifyCensus({ lockfiles, workspaceDirs, measurements });
 
-  const order = ['covered', 'subsumed', 'not-shipped', 'uncovered-baselined', 'UNCLASSIFIED'];
+  const order = [
+    'covered',
+    'subsumed',
+    'build-only',
+    'not-shipped',
+    'uncovered-baselined',
+    'UNCLASSIFIED',
+  ];
   console.log(`lockfile census: ${result.total} lockfile(s)`);
   for (const bucket of order) {
     if (result.byBucket[bucket]) console.log(`  ${String(result.byBucket[bucket]).padStart(3)}  ${bucket}`);
   }
 
+  const buildOnly = result.rows.filter((r) => r.bucket === 'build-only');
+  for (const row of buildOnly) {
+    console.log(`\n   build-only: ${row.path} — ${row.note}`);
+  }
+
   const uncoveredRows = result.rows.filter((r) => r.bucket === 'uncovered-baselined');
   if (uncoveredRows.length > 0) {
-    const deps = uncoveredRows.reduce((n, r) => n + (r.deps ?? 0), 0);
-    console.log(`\n⚠ ${uncoveredRows.length} shipped lockfile(s) with NO advisory coverage (~${deps} deps) — baselined debt, shrink-only:`);
-    for (const row of uncoveredRows) console.log(`     ${row.path}  (${row.deps} deps)\n       ${row.note}`);
+    // Report the LIVE shipped count, not the baselined one. The baseline records what the
+    // debt was when it was accepted; quoting it back as the current size is how a graph
+    // that grew keeps reporting its old, smaller number.
+    const deps = uncoveredRows.reduce((n, r) => n + (r.measured?.shipped ?? r.deps ?? 0), 0);
+    console.log(`\n⚠ ${uncoveredRows.length} shipped lockfile(s) with NO advisory coverage (~${deps} shipped deps) — baselined debt, shrink-only:`);
+    for (const row of uncoveredRows) {
+      const live = row.measured ? `${row.measured.shipped} shipped, ${row.measured.devOnly} dev-only` : 'UNMEASURABLE';
+      const drift = row.measured && row.measured.shipped > row.deps
+        ? `  ⚠ GREW since baselining (${row.deps} → ${row.measured.shipped})`
+        : '';
+      console.log(`     ${row.path}  (${live}; baselined at ${row.deps})${drift}\n       ${row.note}`);
+    }
   }
 
   for (const row of result.stale) {
@@ -424,9 +611,11 @@ function main(argv) {
   }
 
   if (sbomOut) {
-    const emitted = emitSbom(sbomSubjects(result.rows), sbomOut);
+    const emitted = emitSbom(sbomSubjects(result.rows), sbomOut, { measurements });
     console.log(`\nSBOM written to ${sbomOut}:`);
-    for (const row of emitted) console.log(`     ${row.subject}  ${row.components} components`);
+    for (const row of emitted) {
+      console.log(`     ${row.subject}  ${row.catalogued} dependency components (${row.components} total)`);
+    }
   }
 
   if (strict && result.offenders.length > 0) process.exit(1);

@@ -5,8 +5,10 @@ import { describe, it, expect } from 'vitest';
 import {
   rowsToUnansweredMap,
   rowsToOpenAsksMap,
+  partitionUnansweredByLiveness,
   UNANSWERED_NEWEST_CAP,
   type UnansweredDirectedRow,
+  type UnansweredDirectedSummary,
   type OpenAskRow,
 } from './unanswered-directed';
 
@@ -241,5 +243,194 @@ describe('rowsToOpenAsksMap (pure)', () => {
       NOW,
     );
     expect(map.get('su-a')?.oldestTo).toBe('');
+  });
+});
+
+/**
+ * EI-20085805220385722 — the live/stale split. The defect: `unanswered_directed`
+ * counted a 31h-old ack-request from a sender that had been DEAD for a day, and
+ * the playbook says that counter OUTRANKS the agent's own work. Nobody was
+ * behind that ask.
+ *
+ * The invariant every test below defends: ONLY a positive 'ended' verdict
+ * demotes a message. Unknown, missing, over-cap, and a THROWING probe all leave
+ * it counting — suppressing a genuinely blocked peer because a liveness probe
+ * failed is strictly worse than the noise this fixes.
+ */
+describe('per-sender rollup fold (pure)', () => {
+  const rollupRow = (overrides: Partial<UnansweredDirectedRow> = {}): UnansweredDirectedRow =>
+    row({
+      cnt: 3,
+      oldest_ts_ms: NOW - 300_000,
+      sender_total: 2,
+      sender_ids: ['su-dead', 'su-live'],
+      sender_cnts: [2, 1],
+      sender_oldest_ts_ms: [NOW - 300_000, NOW - 60_000],
+      ...overrides,
+    });
+
+  it('folds the rollup arrays into `senders`, and reports the TOTAL as count (liveness-blind)', () => {
+    const s = rowsToUnansweredMap([rollupRow()], NOW).get('su-a');
+    expect(s?.count).toBe(3);
+    expect(s?.staleCount).toBe(0);
+    expect(s?.senders).toEqual([
+      { from: 'su-dead', count: 2, oldestAgeMs: 300_000 },
+      { from: 'su-live', count: 1, oldestAgeMs: 60_000 },
+    ]);
+    expect(s?.sendersTruncated).toBeUndefined();
+  });
+
+  it('marks `sendersTruncated` when the rollup dropped a sender past the cap', () => {
+    const s = rowsToUnansweredMap([rollupRow({ sender_total: 9 })], NOW).get('su-a');
+    expect(s?.sendersTruncated).toBe(true);
+  });
+
+  it('a row carrying no rollup at all folds to an empty `senders`, never a partial one', () => {
+    // Backwards compatibility: every pre-existing hand-built row and any row
+    // from a seam that predates the rollup must still fold, with `count` intact.
+    const s = rowsToUnansweredMap([row({ cnt: 4 })], NOW).get('su-a');
+    expect(s?.count).toBe(4);
+    expect(s?.senders).toEqual([]);
+    expect(s?.sendersTruncated).toBeUndefined();
+  });
+
+  it('skips rollup entries with a missing id or a non-positive count', () => {
+    const s = rowsToUnansweredMap(
+      [
+        rollupRow({
+          sender_total: 3,
+          sender_ids: ['su-dead', null, 'su-zero'],
+          sender_cnts: [2, 5, 0],
+          sender_oldest_ts_ms: [NOW - 300_000, NOW - 1000, NOW - 1000],
+        }),
+      ],
+      NOW,
+    ).get('su-a');
+    expect(s?.senders.map((x) => x.from)).toEqual(['su-dead']);
+  });
+});
+
+describe('partitionUnansweredByLiveness (pure)', () => {
+  const summary = (overrides: Partial<UnansweredDirectedSummary> = {}): UnansweredDirectedSummary =>
+    rowsToUnansweredMap(
+      [
+        row({
+          cnt: 3,
+          oldest_ts_ms: NOW - 300_000,
+          newest_ids: ['m-dead', 'm-live'],
+          newest_from: ['su-dead', 'su-live'],
+          newest_summary: [null, null],
+          newest_ts_ms: [NOW - 300_000, NOW - 60_000],
+          sender_total: 2,
+          sender_ids: ['su-dead', 'su-live'],
+          sender_cnts: [2, 1],
+          sender_oldest_ts_ms: [NOW - 300_000, NOW - 60_000],
+        }),
+      ],
+      NOW,
+    ).get('su-a')!;
+
+  it('DEMOTES a positively-ended sender out of `count` without losing it', () => {
+    const out = partitionUnansweredByLiveness(summary(), (id) =>
+      id === 'su-dead' ? 'ended' : 'live',
+    );
+    expect(out.count).toBe(1); // only su-live's ask still preempts
+    expect(out.staleCount).toBe(2); // su-dead's two are reported, not dropped
+    expect(out.staleOldestAgeMs).toBe(300_000);
+    expect(out.staleCountBounded).toBeUndefined();
+  });
+
+  it('`oldestAgeMs` follows `count`s population — not the dead sender it just demoted', () => {
+    // The whole point of the filed defect: a 31h age reported for a message
+    // nobody is waiting on. It must now report the LIVE oldest.
+    const out = partitionUnansweredByLiveness(summary(), (id) =>
+      id === 'su-dead' ? 'ended' : 'live',
+    );
+    expect(out.oldestAgeMs).toBe(60_000);
+  });
+
+  it('stamps `senderState` on the newest entries so both populations stay readable', () => {
+    const out = partitionUnansweredByLiveness(summary(), (id) =>
+      id === 'su-dead' ? 'ended' : 'live',
+    );
+    expect(out.newest.map((e) => [e.msgId, e.senderState])).toEqual([
+      ['m-dead', 'ended'],
+      ['m-live', 'live'],
+    ]);
+  });
+
+  // ── FAIL-OPEN: the load-bearing invariant, in every direction it can fail ──
+
+  it('an UNKNOWN verdict (null) keeps the message counting', () => {
+    const out = partitionUnansweredByLiveness(summary(), () => null);
+    expect(out.count).toBe(3);
+    expect(out.staleCount).toBe(0);
+    expect(out.senders.every((s) => s.senderState === 'unknown')).toBe(true);
+  });
+
+  it('a MISSING verdict (undefined) keeps the message counting', () => {
+    const out = partitionUnansweredByLiveness(summary(), () => undefined);
+    expect(out.count).toBe(3);
+    expect(out.staleCount).toBe(0);
+  });
+
+  it('a THROWING liveness probe keeps every message counting', () => {
+    const out = partitionUnansweredByLiveness(summary(), () => {
+      throw new Error('oracle exploded');
+    });
+    expect(out.count).toBe(3);
+    expect(out.staleCount).toBe(0);
+    expect(out.oldestAgeMs).toBe(300_000);
+  });
+
+  it('only `ended` demotes — parked/suspect/draining/recorded all still count', () => {
+    for (const state of ['parked', 'suspect', 'draining', 'recorded', 'live'] as const) {
+      const out = partitionUnansweredByLiveness(summary(), () => state);
+      expect(out.count, `${state} must not demote`).toBe(3);
+      expect(out.staleCount, `${state} must not demote`).toBe(0);
+    }
+  });
+
+  it('messages the rollup could not account for stay in `count` and mark the floor', () => {
+    // A recipient with senders past UNANSWERED_SENDER_CAP: cnt=10 but the
+    // rollup only explains 3. The 7 unaccounted are UNKNOWN, so they keep
+    // counting, and `staleCount` is reported as the floor it is.
+    const bounded = { ...summary(), count: 10, sendersTruncated: true as const };
+    const out = partitionUnansweredByLiveness(bounded, (id) =>
+      id === 'su-dead' ? 'ended' : 'live',
+    );
+    expect(out.count).toBe(8); // 1 live + 7 unaccounted
+    expect(out.staleCount).toBe(2);
+    expect(out.staleCountBounded).toBe(true);
+    // Unaccounted ages are unknown, so the age falls back to the whole
+    // population's oldest rather than under-reporting it.
+    expect(out.oldestAgeMs).toBe(300_000);
+  });
+
+  it('marks the floor even when the bounded partition found NOTHING stale', () => {
+    // A zero computed over a capped sender set is still a floor — reading it as
+    // a total is exactly the error the marker exists to prevent.
+    const bounded = { ...summary(), sendersTruncated: true as const };
+    const out = partitionUnansweredByLiveness(bounded, () => 'live');
+    expect(out.staleCount).toBe(0);
+    expect(out.staleCountBounded).toBe(true);
+  });
+
+  it('a fully-live recipient keeps its original numbers untouched', () => {
+    const before = summary();
+    const out = partitionUnansweredByLiveness(before, () => 'live');
+    expect(out.count).toBe(before.count);
+    expect(out.oldestAgeMs).toBe(before.oldestAgeMs);
+    expect(out.newest).toEqual(before.newest); // not restamped when nothing moved
+    expect(out.staleCountBounded).toBeUndefined();
+  });
+
+  it('a summary with no rollup is a no-op — never a silent demotion to zero', () => {
+    // The seam-swapped / legacy path: `senders` is empty, so EVERY message is
+    // unaccounted. It must all stay in `count`, whatever the oracle says.
+    const legacy = rowsToUnansweredMap([row({ cnt: 5 })], NOW).get('su-a')!;
+    const out = partitionUnansweredByLiveness(legacy, () => 'ended');
+    expect(out.count).toBe(5);
+    expect(out.staleCount).toBe(0);
   });
 });

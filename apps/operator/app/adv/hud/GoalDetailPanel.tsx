@@ -75,6 +75,14 @@
  * `PanelToggleButton` for the five toggles, `usePopupMaximize` for the expand
  * pair this popup previously had no equivalent of. Neither is a goal-flavoured
  * variant, so the next restyle of either popup lands in both.
+ *
+ * ⚠ SUPERSEDED IN PART BY WI-38428 (2026-08-13): the five directional toggles
+ * described above are GONE from this popup. `GoalPanelVisibilityMenu` replaced
+ * that row with one grouped checkbox popover, so this file no longer renders
+ * `PanelToggleButton` and imports only PANEL_TOOLBAR_BUTTON_STYLE from it. The
+ * expand pair (`usePopupMaximize`) and the shared toolbar style are still live
+ * exactly as described. The popover is the later deliberate design — do not
+ * reinstate the chevron row to make this paragraph true again.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
@@ -101,8 +109,11 @@ import { useOwnerSessionChat } from '@/app/_components/chat/use-owner-session-ch
 
    Both are SHARED with that popup rather than re-derived here — the same
    verbatim-reuse rule P-021 states for the rails and P-018 for the CSS. The
-   toggle carries the constant-label + chevron grammar; the hook carries the
-   full-window/full-screen pair with its browser-vs-desktop split. */
+   hook carries the full-window/full-screen pair with its browser-vs-desktop
+   split; PANEL_TOOLBAR_BUTTON_STYLE keeps this toolbar's buttons identical to
+   the sessions popup's. NOTE we import the STYLE only, not PanelToggleButton
+   itself — WI-38428 replaced this popup's chevron toggle row with
+   GoalPanelVisibilityMenu, so the button has no call site here any more. */
 import { PANEL_TOOLBAR_BUTTON_STYLE } from '@/app/_components/chat/PanelToggleButton';
 import { usePopupMaximize } from '@/app/_components/chat/use-popup-maximize';
 import { Maximize, Maximize2, MessagesSquare, Minimize, Minimize2, X } from 'lucide-react';

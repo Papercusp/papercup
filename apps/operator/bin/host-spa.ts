@@ -31,7 +31,7 @@ import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // host is a Node process, and the barrel pulls in @tauri-apps/api and the
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
-import { cspReportOnlyHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
+import { cspHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
 import { describeMissingBundle } from '../lib/spa-build-status';
 import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
 export { hostedBrowserApiMarker };
@@ -277,12 +277,13 @@ async function serveIndexHtml(
       // elsewhere); only this dynamic shell opts out, so any normal reload now gets the
       // latest flags + bundle.
       'cache-control': 'no-store, max-age=0',
-      // P-006: report-only CSP on the SPA DOCUMENT (a CSP applies to the document
-      // it is served with, so the hashed asset responses are the wrong place for
-      // it). Report-only never blocks, so this cannot break the shell — it turns
-      // the browser into a second egress sensor whose blind spots differ from
-      // resource timing's.
-      ...cspReportOnlyHeaders(),
+      // P-006: the CSP goes on the SPA DOCUMENT (a CSP applies to the document it
+      // is served with, so the hashed asset responses are the wrong place for it).
+      // Now ENFORCING (P-005 clause 4) after the policy was validated against live
+      // sessions — see csp-policy.ts for the measurement that licensed the flip.
+      // It stays permissive on every axis EXCEPT origin, so the only thing it can
+      // block is a fetch from a host we do not own, which is the point.
+      ...cspHeaders(),
       // P-005 (WI-4498): cross-origin isolation, so onnxruntime-web's threaded
       // wasm backend (the only backend it ships) can use SharedArrayBuffer.
       // See crossOriginIsolationHeaders() for why this is safe unconditionally.

@@ -3,6 +3,45 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/check-lockfile-census.mjs and regenerate.
 /**
+ * Count the entries in an npm lockfile that describe SHIPPED code, and the entries that
+ * describe build tooling. `dev: true` is npm's own resolved verdict, written by the
+ * installer that walked the manifest — not a guess from a dependency name.
+ *
+ * WHY THIS EXISTS — A COUNT WHOSE UNITS WERE WRONG SENT THE CENSUS TO THE WRONG FILE
+ *
+ * The first version of this file counted `packages` ENTRIES and called the total "deps",
+ * then baselined `papercusp-desktop/package-lock.json` at "12 deps ... it is SHIPPED —
+ * this is the highest-priority row here." Measured 2026-09-05, every one of those 12
+ * entries is `dev: true` (`@tauri-apps/cli` plus its 11 platform binaries, 11 of which
+ * are also `optional`), so the shipped-dependency count of that lockfile is ZERO. The
+ * row was real, its number was real, and the conclusion drawn from it — gate this next —
+ * was work that would have bought nothing.
+ *
+ * So the bucket is DERIVED from this measurement rather than curated: an npm lockfile
+ * that resolves no runtime dependency ships nothing, and the lockfile itself says so.
+ * A dependency promoted out of `devDependencies` moves that file back into the
+ * classification set on the next run, with no list for anyone to remember to update.
+ */
+export function npmDepCounts(lockJson: any): {
+    shipped: number;
+    devOnly: number;
+    total: number;
+    rootName: any;
+};
+/** `[[package]]` blocks in a Cargo.lock. Cargo has no dev/runtime split at this layer. */
+export function cargoDepCounts(lockText: any): {
+    shipped: any;
+    devOnly: number;
+    total: any;
+};
+/**
+ * Measure every census row. The IO half of the derivation above; `classifyCensus` stays
+ * pure and takes the result. A row that cannot be measured is recorded as `null` rather
+ * than as zero, because "we could not read it" and "it ships nothing" must not collapse
+ * into the same bucket — that collapse is the whole defect this measurement repairs.
+ */
+export function measureLockfiles(root: any, lockfiles: any): Map<any, any>;
+/**
  * Walk the tree for lockfiles. Returns repo-relative POSIX paths, sorted.
  *
  * Symlinked directories are NOT followed. That is deliberate and is the opposite of the
@@ -42,7 +81,7 @@ export function rootWorkspaceDirs(rootLockJson: any): Set<any>;
  * @param {Map<string,string>} [input.notShipped]
  * @param {Map<string,{deps:number,reason:string}>} [input.uncovered]
  */
-export function classifyCensus({ lockfiles, workspaceDirs, covered, notShipped, uncovered, }: {
+export function classifyCensus({ lockfiles, workspaceDirs, measurements, covered, notShipped, uncovered, }: {
     lockfiles: string[];
     workspaceDirs: Set<string>;
     covered?: Map<string, string> | undefined;
@@ -56,6 +95,7 @@ export function classifyCensus({ lockfiles, workspaceDirs, covered, notShipped, 
         path: string;
         ecosystem: string;
         bucket: string;
+        measured: any;
         note: string | undefined;
         deps?: undefined;
     } | {
@@ -63,11 +103,13 @@ export function classifyCensus({ lockfiles, workspaceDirs, covered, notShipped, 
         ecosystem: string;
         bucket: string;
         deps: number;
+        measured: any;
         note: string;
     } | {
         path: string;
         ecosystem: string;
         bucket: string;
+        measured: any;
         note?: undefined;
         deps?: undefined;
     })[];
@@ -75,6 +117,7 @@ export function classifyCensus({ lockfiles, workspaceDirs, covered, notShipped, 
         path: string;
         ecosystem: string;
         bucket: string;
+        measured: any;
         note: string | undefined;
         deps?: undefined;
     } | {
@@ -82,11 +125,13 @@ export function classifyCensus({ lockfiles, workspaceDirs, covered, notShipped, 
         ecosystem: string;
         bucket: string;
         deps: number;
+        measured: any;
         note: string;
     } | {
         path: string;
         ecosystem: string;
         bucket: string;
+        measured: any;
         note?: undefined;
         deps?: undefined;
     })[];
@@ -110,13 +155,42 @@ export function sbomSubjects(rows: any): any;
  * green exit, which is the same "measured nothing" reading this whole guard is built to
  * prevent. The gate legs above never touch syft, so the gate stays runnable without it.
  */
-export function emitSbom(subjects: any, outPath: any, { root, syft }?: {
+export function emitSbom(subjects: any, outPath: any, { root, syft, measurements }?: {
     root?: string | undefined;
     syft?: string | undefined;
+    measurements?: Map<any, any> | undefined;
 }): {
     subject: any;
     components: any;
+    catalogued: any;
 }[];
+/**
+ * Dependency components in a CycloneDX document, excluding the two components that are
+ * present whether or not the cataloger read anything: the synthetic `type: 'file'` node
+ * syft emits for the scanned path, and the subject lockfile's own root package.
+ *
+ * This distinction is the entire reason the previous `components === 0` check could not
+ * fire. Measured 2026-09-05 against `papercusp-desktop/package-lock.json`, syft
+ * catalogued exactly those two components and no dependency at all — a 2, not a 0, so
+ * the guard passed and reported an inventory containing none of the file's packages.
+ * A threshold placed below the value that "catalogued nothing" actually produces is not
+ * a weak guard; it is an unfalsifiable one.
+ */
+export function countCataloguedDependencies(bom: any, subject: any, root?: string): any;
+/**
+ * The POSITIVE control on the inventory: two independent readings of the same lockfile
+ * must agree. `measured.shipped` is this file's own parse of the lockfile; `catalogued`
+ * is what syft's cataloger produced from it. A cataloger that silently declined the file
+ * makes the second number collapse while the first stays intact, which is the only way
+ * to tell "this artifact genuinely has few dependencies" from "nothing read it".
+ *
+ * syft excludes npm `dev` dependencies, which is why the comparison is against
+ * `measured.shipped` and not the entry total — calibrated 2026-09-05 across all four
+ * shipped subjects: docs-viewer 509 shipped / 510 catalogued, root 2469 / 2482,
+ * desktop-npm 0 / 1, Cargo 615 / 615. Catalogued runs at or just above shipped (the
+ * excess is root and workspace package nodes), never below, so a shortfall is signal.
+ */
+export function assertSbomCoverage(subject: any, catalogued: any, measured: any): void;
 export const ROOT: string;
 /** Lockfile basenames that pin a resolved dependency graph, by ecosystem. */
 export const LOCKFILE_ECOSYSTEMS: Map<string, string>;

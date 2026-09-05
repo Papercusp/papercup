@@ -1086,12 +1086,18 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
   });
 
   it('keeps provenance server-authored and documents the supported attribution paths (EI-20271029497680025)', () => {
-    const guidance = captureTool.guidance as { notWhen?: string };
-    expect(guidance.notWhen).toMatch(/Do not pass internal provenance fields/);
-    expect(guidance.notWhen).toMatch(/createdBy/);
+    // Split across two guidance fields under P-011 prompt-weight pressure: the
+    // PROHIBITION stays in `notWhen` (counted, and the caller must see it before
+    // the call), while the longer attribution remedy moved to `seeAlso` (not
+    // counted). Asserted per-field rather than over a concatenation, so a future
+    // trim that drops the prohibition from the weighted half cannot be masked by
+    // the free half still mentioning it.
+    const guidance = captureTool.guidance as { notWhen?: string; seeAlso?: string[] };
+    expect(guidance.notWhen).toMatch(/Never pass createdBy/);
     expect(guidance.notWhen).toMatch(/sourceRole/);
-    expect(guidance.notWhen).toMatch(/assign_to:"self"/);
-    expect(guidance.notWhen).toMatch(/observation\.refs/);
+    const seeAlso = (guidance.seeAlso ?? []).join('\n');
+    expect(seeAlso).toMatch(/assign_to:"self"/);
+    expect(seeAlso).toMatch(/observation\.refs/);
 
     const r = argsSchema.safeParse({
       title: 'caller-supplied provenance must fail loud',

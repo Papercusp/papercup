@@ -106,19 +106,79 @@
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { MACHINE_SENDER_PATTERN } from './machine-authored';
 import { fetchSatisfiedDirectiveMessageIds } from './directive-effect-read';
+import { resolveSessionStates } from './liveness-oracle';
+import type { SessionState } from './presence-wakeability';
 
 export interface UnansweredDirectedEntry {
   msgId: string;
   from: string;
   summary?: string;
   ageMs: number;
+  /**
+   * EI-20085805220385722: which population this entry belongs to. `'ended'`
+   * means the SENDER is positively dead, so nobody is behind the ask and it is
+   * counted in `staleCount` rather than `count`. Every other value — including
+   * `'unknown'` — means it still counts. Absent when liveness was never
+   * resolved at all (the pure fold, a swapped seam), which reads the same as
+   * `'unknown'`: it counts.
+   */
+  senderState?: SessionState | 'unknown';
+}
+
+/**
+ * EI-20085805220385722: one row per distinct sender still awaiting this
+ * recipient's reply. The liveness split CANNOT be computed from `newest` —
+ * that list is capped at `cap` while `count` is exact, so a sender beyond the
+ * cap is simply absent from it. This rollup is what makes an exact-as-bounded
+ * partition possible.
+ */
+export interface UnansweredSenderRollup {
+  from: string;
+  count: number;
+  oldestAgeMs: number;
+  senderState?: SessionState | 'unknown';
 }
 
 export interface UnansweredDirectedSummary {
+  /**
+   * Messages this recipient still OWES an answer to, from a sender who is not
+   * positively dead. THIS is the number wired to preempt an agent's own work
+   * ("a directed message awaiting YOUR answer OUTRANKS your own work"), so it
+   * deliberately counts every sender whose liveness is live, parked, suspect,
+   * recorded OR unknown — only a POSITIVE `'ended'` verdict demotes a message
+   * out of it (EI-20085805220385722; see partitionUnansweredByLiveness).
+   */
   count: number;
+  /** Oldest age within `count`'s population. */
   oldestAgeMs: number;
-  /** Newest-first, capped at NEWEST_CAP even when `count` is larger. */
+  /**
+   * Newest-first, capped at NEWEST_CAP even when `count` is larger. Spans BOTH
+   * populations — read each entry's `senderState` to tell which. (Capping this
+   * list per-population would make a 3-entry display depend on which side a
+   * liveness probe happened to resolve.)
+   */
   newest: UnansweredDirectedEntry[];
+  /**
+   * Still-unanswered messages whose sender is positively `'ended'`. Nobody is
+   * blocked on these: they are reported so the obligation is never silently
+   * dropped, but they do not ride the preemption priority.
+   *
+   * ⚠ A FLOOR, not a total — it is computed over at most
+   * {@link UNANSWERED_SENDER_CAP} distinct senders, and any sender past that
+   * cap stays in `count`. `staleCountBounded` is set when that happened. The
+   * asymmetry is deliberate: under-reporting stale is today's behaviour, while
+   * over-reporting it would suppress a real blocked peer.
+   */
+  staleCount: number;
+  /** Oldest age within `staleCount`'s population; 0 when it is empty. */
+  staleOldestAgeMs: number;
+  /** Set only when the distinct-sender set exceeded {@link UNANSWERED_SENDER_CAP},
+   *  so `staleCount` is a floor rather than a total. */
+  staleCountBounded?: true;
+  /** Per-sender rollup, bounded to {@link UNANSWERED_SENDER_CAP} (busiest first). */
+  senders: UnansweredSenderRollup[];
+  /** Set when `senders` omits at least one distinct sender. */
+  sendersTruncated?: true;
 }
 
 /** A message older than this is dropped from the read entirely — an ancient,
@@ -126,6 +186,26 @@ export interface UnansweredDirectedSummary {
 export const UNANSWERED_LOOKBACK_MS = 3 * 24 * 3600 * 1000;
 /** Per-recipient cap on the `newest` list (the count itself is never capped). */
 export const UNANSWERED_NEWEST_CAP = 3;
+/**
+ * Per-recipient cap on the distinct senders whose liveness is resolved for the
+ * stale split. fetchUnansweredDirected is called with WHOLE ROSTERS
+ * (fleet/assignments.ts, fleet-audit.ts), and while a recipient's sender set is
+ * normally tiny it is not bounded by construction — so the decoration is capped
+ * rather than allowed to grow with the fleet. Senders past the cap stay in
+ * `count` (fail open) and set `staleCountBounded`.
+ */
+export const UNANSWERED_SENDER_CAP = 32;
+
+/**
+ * The narrow slice of the liveness oracle this module depends on — declared
+ * structurally so the DI seam does not drag the oracle's whole option surface
+ * into a unit test. Only `sessionState` is read, and only a positive `'ended'`
+ * ever changes an outcome.
+ */
+export type ResolveSessionStatesFn = (
+  subjects: readonly { ownerId: string }[],
+  opts?: { nowMs?: number },
+) => Promise<Map<string, { sessionState: SessionState | null }>>;
 
 export interface UnansweredDirectedRow {
   recipient: string;
@@ -135,6 +215,11 @@ export interface UnansweredDirectedRow {
   newest_from: (string | null)[] | null;
   newest_summary: (string | null)[] | null;
   newest_ts_ms: (string | number | null)[] | null;
+  /** EI-20085805220385722 per-sender rollup — absent on a hand-built row. */
+  sender_total?: string | number | null;
+  sender_ids?: (string | null)[] | null;
+  sender_cnts?: (string | number | null)[] | null;
+  sender_oldest_ts_ms?: (string | number | null)[] | null;
 }
 
 /**
@@ -148,6 +233,12 @@ export interface UnansweredDirectedRow {
  * `unanswered_only` filter, EI-13159) passes a larger cap so it can recover
  * every unanswered message's msg_id, not just the newest 3 — `count` was
  * always exact; only `newest` was ever capped.
+ *
+ * EI-20085805220385722: this fold stays PURE and liveness-BLIND. It returns the
+ * TOTAL as `count` (unchanged, pre-partition) with `staleCount: 0`, and merely
+ * populates `senders` — the rollup that makes the split computable at all.
+ * The split itself is {@link partitionUnansweredByLiveness}, a separate pure
+ * function, so both of its failure directions unit-test without PG.
  */
 export function rowsToUnansweredMap(
   rows: readonly UnansweredDirectedRow[],
@@ -176,13 +267,121 @@ export function rowsToUnansweredMap(
         ageMs: Number.isFinite(ts) ? Math.max(0, nowMs - ts) : 0,
       });
     }
+    const senderIds = r.sender_ids ?? [];
+    const senderCnts = r.sender_cnts ?? [];
+    const senderOldest = r.sender_oldest_ts_ms ?? [];
+    const senders: UnansweredSenderRollup[] = [];
+    for (let i = 0; i < senderIds.length; i++) {
+      const from = senderIds[i];
+      if (!from) continue;
+      const scnt = Number(senderCnts[i]);
+      if (!Number.isFinite(scnt) || scnt <= 0) continue;
+      const sOldest = Number(senderOldest[i]);
+      senders.push({
+        from,
+        count: scnt,
+        oldestAgeMs: Number.isFinite(sOldest) ? Math.max(0, nowMs - sOldest) : 0,
+      });
+    }
+    const senderTotal = Number(r.sender_total);
     out.set(r.recipient, {
       count: cnt,
       oldestAgeMs: Number.isFinite(oldestTs) ? Math.max(0, nowMs - oldestTs) : 0,
       newest,
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      senders,
+      ...(Number.isFinite(senderTotal) && senderTotal > senders.length
+        ? { sendersTruncated: true as const }
+        : {}),
     });
   }
   return out;
+}
+
+/**
+ * PURE: split a summary's `count` into the population a peer is actually
+ * BLOCKED behind (`count`) and the population whose sender is positively dead
+ * (`staleCount`) — EI-20085805220385722.
+ *
+ * ⚠ THE LOAD-BEARING INVARIANT — FAIL OPEN TOWARD COUNTING. Only a POSITIVE
+ * `'ended'` verdict may demote a message. An oracle error, a timeout, an
+ * unknown verdict, a missing row, a sender past {@link UNANSWERED_SENDER_CAP},
+ * or a `senderState` predicate that THROWS all leave the message in `count` —
+ * today's behaviour. The degradation direction is not symmetric and must stay
+ * that way: suppressing a genuinely blocked peer because a liveness probe
+ * failed is strictly worse than the stale-counter noise this fixes. Both
+ * directions are tested explicitly.
+ *
+ * `senderState` is the caller's liveness lookup. Returning `null`/`undefined`
+ * means "not measured" and is recorded as `'unknown'` — never collapsed into a
+ * state (mirrors LivenessVerdict.sessionState's own null contract).
+ */
+export function partitionUnansweredByLiveness(
+  summary: UnansweredDirectedSummary,
+  senderState: (ownerId: string) => SessionState | null | undefined,
+): UnansweredDirectedSummary {
+  const resolve = (ownerId: string): SessionState | 'unknown' => {
+    try {
+      return senderState(ownerId) ?? 'unknown';
+    } catch {
+      // A throwing probe is ABSENCE of evidence, never evidence of death.
+      return 'unknown';
+    }
+  };
+
+  const senders: UnansweredSenderRollup[] = [];
+  let staleCount = 0;
+  let staleOldestAgeMs = 0;
+  let liveCount = 0;
+  let liveOldestAgeMs = 0;
+  for (const s of summary.senders) {
+    const state = resolve(s.from);
+    senders.push({ ...s, senderState: state });
+    if (state === 'ended') {
+      staleCount += s.count;
+      staleOldestAgeMs = Math.max(staleOldestAgeMs, s.oldestAgeMs);
+    } else {
+      liveCount += s.count;
+      liveOldestAgeMs = Math.max(liveOldestAgeMs, s.oldestAgeMs);
+    }
+  }
+
+  // Messages the rollup could not account for (a sender past the cap, or a row
+  // carrying no rollup at all) are UNKNOWN, so they stay in `count` — and their
+  // ages are unknown too, which is why `oldestAgeMs` then falls back to the
+  // whole population's oldest rather than the live subset's.
+  const unaccounted = Math.max(0, summary.count - (staleCount + liveCount));
+  const bounded = unaccounted > 0 || summary.sendersTruncated === true;
+  const count = liveCount + unaccounted;
+  if (staleCount === 0) {
+    // Nothing to demote: preserve the original numbers byte-for-byte so a
+    // fully-live recipient is untouched by this pass. `staleCountBounded` still
+    // applies — a ZERO computed over a capped sender set is a floor too, and
+    // reading it as a total is the exact error the marker exists to prevent.
+    return {
+      ...summary,
+      senders,
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      ...(bounded ? { staleCountBounded: true as const } : {}),
+    };
+  }
+
+  const stateByFrom = new Map(senders.map((s) => [s.from, s.senderState]));
+  return {
+    ...summary,
+    count,
+    oldestAgeMs: unaccounted > 0 ? summary.oldestAgeMs : liveOldestAgeMs,
+    newest: summary.newest.map((e) => ({
+      ...e,
+      senderState: stateByFrom.get(e.from) ?? 'unknown',
+    })),
+    staleCount,
+    staleOldestAgeMs,
+    ...(bounded ? { staleCountBounded: true as const } : {}),
+    senders,
+  };
 }
 
 /**
@@ -204,12 +403,20 @@ export function rowsToUnansweredMap(
  */
 export async function fetchUnansweredDirected(
   recipientIds: string[],
-  opts: { nowMs?: number; lookbackMs?: number; perRecipientCap?: number } = {},
+  opts: {
+    nowMs?: number;
+    lookbackMs?: number;
+    perRecipientCap?: number;
+    /** DI seam (unit tests): override the liveness oracle used for the
+     *  EI-20085805220385722 live/stale split. */
+    resolveSessionStatesFn?: ResolveSessionStatesFn;
+  } = {},
 ): Promise<Map<string, UnansweredDirectedSummary>> {
   if (recipientIds.length === 0 || !coordHasPgFastPath()) return new Map();
   const nowMs = opts.nowMs ?? Date.now();
   const sinceMs = nowMs - (opts.lookbackMs ?? UNANSWERED_LOOKBACK_MS);
   const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
+  const senderCap = UNANSWERED_SENDER_CAP;
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
   // P-013: an expectEffect directive is answered by the named side effect itself,
@@ -468,18 +675,96 @@ export async function fetchUnansweredDirected(
             AND lr.to_id = o.from_id
             AND lr.ts_ms >= o.ts_ms
        ) < o.ask_rank
+    ),
+    -- EI-20085805220385722: the per-(recipient,sender) rollup that makes the
+    -- live/stale split computable. It CANNOT come from the newest_* arrays
+    -- above: those are sliced [1:cap] while cnt is count(*) over every row, so
+    -- a sender past the cap is simply absent — and a partition derived from
+    -- them would yield a partial staleCount that READS like a total, which is
+    -- worse than no split at all.
+    per_sender AS (
+      SELECT recipient, from_id AS sender, count(*)::bigint AS scnt, min(ts_ms) AS soldest
+        FROM unanswered
+       GROUP BY recipient, from_id
+    ),
+    -- Busiest sender first, so the bounded slice keeps the senders accounting
+    -- for the most of cnt; sender_total reports whether anything was dropped
+    -- (the fold turns that into sendersTruncated / staleCountBounded rather
+    -- than letting a floor read as a total).
+    sender_rollup AS (
+      SELECT recipient,
+             count(*)::bigint AS sender_total,
+             (array_agg(sender ORDER BY scnt DESC, sender))[1:${senderCap}] AS sender_ids,
+             (array_agg(scnt ORDER BY scnt DESC, sender))[1:${senderCap}] AS sender_cnts,
+             (array_agg(soldest ORDER BY scnt DESC, sender))[1:${senderCap}] AS sender_oldest_ts_ms
+        FROM per_sender
+       GROUP BY recipient
     )
-    SELECT recipient,
+    SELECT u.recipient,
            count(*) AS cnt,
-           min(ts_ms) AS oldest_ts_ms,
-           (array_agg(msg_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_ids,
-           (array_agg(from_id ORDER BY ts_ms DESC))[1:${cap}] AS newest_from,
-           (array_agg(summary ORDER BY ts_ms DESC))[1:${cap}] AS newest_summary,
-           (array_agg(ts_ms ORDER BY ts_ms DESC))[1:${cap}] AS newest_ts_ms
-      FROM unanswered
-     GROUP BY recipient
+           min(u.ts_ms) AS oldest_ts_ms,
+           (array_agg(u.msg_id ORDER BY u.ts_ms DESC))[1:${cap}] AS newest_ids,
+           (array_agg(u.from_id ORDER BY u.ts_ms DESC))[1:${cap}] AS newest_from,
+           (array_agg(u.summary ORDER BY u.ts_ms DESC))[1:${cap}] AS newest_summary,
+           (array_agg(u.ts_ms ORDER BY u.ts_ms DESC))[1:${cap}] AS newest_ts_ms,
+           sr.sender_total,
+           sr.sender_ids,
+           sr.sender_cnts,
+           sr.sender_oldest_ts_ms
+      FROM unanswered u
+      JOIN sender_rollup sr ON sr.recipient = u.recipient
+     GROUP BY u.recipient, sr.sender_total, sr.sender_ids, sr.sender_cnts, sr.sender_oldest_ts_ms
   `;
-  return rowsToUnansweredMap(rows, nowMs, cap);
+  const map = rowsToUnansweredMap(rows, nowMs, cap);
+  return decorateUnansweredLiveness(map, opts);
+}
+
+/**
+ * EI-20085805220385722: resolve each still-waiting SENDER's liveness and apply
+ * {@link partitionUnansweredByLiveness}. A sender whose session has ended has
+ * nobody behind the ask, so its message must not ride the "outranks your own
+ * work" preemption — but it is REPORTED (staleCount), never silently dropped.
+ *
+ * Two deliberate bounds:
+ *   - NO `hydratePerId`. That option costs one point-read PER SUBJECT and its
+ *     own doc reserves it for small-N bare-id callers, "never for whole
+ *     rosters" — and this function IS called with whole rosters
+ *     (fleet/assignments.ts, fleet-audit.ts). Every leg we need is batched:
+ *     the recordedEnded branch derives 'ended' from endedRecordedOwnerIds with
+ *     no presence row at all.
+ *   - The distinct-sender set is capped in SQL ({@link UNANSWERED_SENDER_CAP}
+ *     per recipient) and the union is resolved in ONE oracle call.
+ *
+ * Best-effort like its sibling decorations: ANY failure returns the
+ * unpartitioned map, i.e. every message keeps counting.
+ */
+async function decorateUnansweredLiveness(
+  map: Map<string, UnansweredDirectedSummary>,
+  opts: { nowMs?: number; resolveSessionStatesFn?: ResolveSessionStatesFn } = {},
+): Promise<Map<string, UnansweredDirectedSummary>> {
+  const senderIds = new Set<string>();
+  for (const summary of map.values()) {
+    for (const s of summary.senders) senderIds.add(s.from);
+  }
+  if (senderIds.size === 0) return map;
+  const resolveFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
+  let verdicts: Map<string, { sessionState: SessionState | null }>;
+  try {
+    verdicts = await resolveFn(
+      [...senderIds].map((ownerId) => ({ ownerId })),
+      { nowMs: opts.nowMs },
+    );
+  } catch {
+    return map; // fail OPEN — an oracle failure never demotes a live obligation
+  }
+  const out = new Map<string, UnansweredDirectedSummary>();
+  for (const [recipient, summary] of map) {
+    out.set(
+      recipient,
+      partitionUnansweredByLiveness(summary, (ownerId) => verdicts.get(ownerId)?.sessionState),
+    );
+  }
+  return out;
 }
 
 /**

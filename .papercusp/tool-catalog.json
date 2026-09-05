@@ -13083,7 +13083,7 @@
           "POST"
         ]
       },
-      "description": "Move a GOAL record's standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, budgetWindowSec?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. Partial — omitted fields stay untouched. status:\"killed\" when the kill criterion trips, \"achieved\" when the outcome is met. status FANS OUT: \"paused\"|\"killed\"|\"achieved\" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; \"active\" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.",
+      "description": "Move a GOAL record's standing state (harness_shared.goals). Partial — omitted fields stay untouched; budgetCents, budgetWindowSec, tripwires, parentId, launchSettings and drainFleet take null to CLEAR. status:\"killed\" when the kill criterion trips, \"achieved\" when the outcome is met. status FANS OUT: \"paused\"|\"killed\"|\"achieved\" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; \"active\" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.",
       "capabilities": [
         "goals:write"
       ],
@@ -14339,7 +14339,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. Free-text observation evidence belongs in the top-level body; observation.evidence is not a valid field. For a rubric scorecard, put evidence in each observation.ratings[criterion].evidence.",
-        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing peer question — coord:send with expects:\"answer\"; an owner decision — coord:ask-owner. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:\"self\" to claim and observation.refs for evidence attribution.",
+        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing peer question — coord:send with expects:\"answer\"; an owner decision — coord:ask-owner. Never pass createdBy/source/sourceRole/filedByRole: server-derived, and the strict schema rejects them.",
         "chaining": "improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them."
       }
     },
@@ -20788,7 +20788,7 @@
           "POST"
         ]
       },
-      "description": "List SU plans from the PG-canonical plan store. One row per plan with title, stored status, read-time lifecycle reconciliation, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status=\"draft\" (flagged via isLegacy).",
+      "description": "List SU plans from the PG-canonical plan store. One row per plan with title, stored status, read-time lifecycle reconciliation, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates. Legacy plans (no frontmatter) surface as status=\"draft\" (flagged via isLegacy).",
       "capabilities": [
         "plans:read"
       ],
@@ -25825,7 +25825,7 @@
           "POST"
         ]
       },
-      "description": "Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. A present queue this build cannot parse is rendered as unreadable and every mutation refuses; it is never treated as absent. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
+      "description": "Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.",
       "capabilities": [
         "operator:write"
       ],
@@ -31722,7 +31722,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history; when ref is omitted, it clears the sole matching active blocker and refuses ambiguity.",
+      "description": "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
       "capabilities": [
         "work_items:write"
       ],

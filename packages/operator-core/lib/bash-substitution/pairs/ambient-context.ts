@@ -114,6 +114,19 @@ const DATE_READ_PATTERN =
  * to draw the line the pattern matcher cannot: `cover()` sees one atom, never
  * how long ago the payload landed.
  *
+ * ⚠ SECOND, INDEPENDENT TRAP — THE RENDERING, not the carry (EI-20086558925351815).
+ * `host.now` is UTC; this box's TZ is EDT (-04:00) and most shell surfaces render
+ * LOCAL by default (`ls -l` mtime, bare `date`, `stat`'s `%y`). Differencing the two
+ * manufactures a phantom 4h gap, and the bias is toward the ALARMING reading: the
+ * agent-facing stamp looks 4h AHEAD, so a perfectly live artifact reads as STALE.
+ * Measured: an agent compared a 17:01 UTC session stamp against a 13:00 EDT file
+ * mtime, concluded "the file is stale, the job never wrote to it", and shipped that
+ * in a visible response before `date` exposed it — 13:00 EDT IS 17:00 UTC, and the
+ * file had been written ~2 minutes earlier. Note this is NOT the carry defect above:
+ * both values were fresh. Render the other side in UTC before comparing
+ * (`TZ=UTC stat -c '%y %n'`, `date -u`); `TZ=UTC` is INERT on git's `%cI`/`%cd`,
+ * which need a `--date=*-local` format to honour it.
+ *
  * Why the fix is guidance and not a `host.now` state cell (the other option
  * considered): the cell registry is a VERDICT registry, not a generic re-read
  * handle. Every CellSpec requires an `assessment` naming a closed set of decision
@@ -128,10 +141,10 @@ export const clockRead: BashSubstitutionPair = {
   bashPattern: DATE_READ_PATTERN,
   toolName: 'coord:orient',
   advisoryText:
-    'The current time ALREADY ARRIVED — `host.now` on your last coord:orient is an ISO-8601 UTC instant, and every `date` format is a rendering of it. Read it there; do not call anything (calling orient to read a clock costs more than `date` did). ⚠ It is a SNAPSHOT of when that orient ran, not a live clock: if orient was an EARLIER turn, or you are differencing it for an age/duration, run `date -u` — a carried value yields a plausible wrong number, not an error.',
+    'The current time ALREADY ARRIVED — `host.now` on your last coord:orient is an ISO-8601 UTC instant, and every `date` format is a rendering of it. Read it there; do not call anything (calling orient to read a clock costs more than `date` did). ⚠ It is a SNAPSHOT of when that orient ran, not a live clock: if orient was an EARLIER turn, or you are differencing it for an age/duration, run `date -u` — a carried value yields a plausible wrong number, not an error. ⚠ AND it is UTC while this box renders LOCAL (-04:00): if you are reaching for `date` to compare against an `ls -l`/`stat`/`journalctl` stamp, swapping in `host.now` CAUSES a phantom 4h gap that reads as STALE. Put the other side in UTC first (`TZ=UTC stat -c \'%y %n\'`) rather than differencing a UTC instant against a local rendering.',
   routing: {
     want: 'the current date/time',
-    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing. ⚠ SNAPSHOT of when orient ran — on a LATER turn, or to compute an age/duration, `date -u` is correct',
+    use: '`host.now` — already in your coord:orient payload (ISO-8601 UTC). Call nothing. ⚠ SNAPSHOT of when orient ran — on a LATER turn, or to compute an age/duration, `date -u` is correct. ⚠ It is UTC while this box RENDERS LOCAL (-04:00), so differencing it against an `ls -l`/`stat`/bare-`date` stamp invents a phantom 4h gap that reads as STALE — put the other side in UTC first (`TZ=UTC stat -c \'%y %n\'`)',
     insteadOf:
       '`date` / `date -u` / `date +%s`. ⚠ a `$(date …)` substitution INSIDE another command is string interpolation — keep using bash; so is `date -d @<epoch>` (a different instant)',
   },

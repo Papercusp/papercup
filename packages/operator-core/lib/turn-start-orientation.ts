@@ -195,8 +195,17 @@ export interface OrientationToolSurface {
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
-  /** Directed messages awaiting THIS agent's reply. */
+  /** Directed messages awaiting THIS agent's reply, from a sender who is not
+   *  positively dead — the population that genuinely outranks your own work. */
   unansweredDirected: number;
+  /**
+   * EI-20085805220385722: still-unanswered asks whose SENDER has ended. Split
+   * OUT of `unansweredDirected` (nobody is blocked behind them, so they must
+   * not preempt) but still REPORTED, because a silently vanished obligation is
+   * the worse failure — this file's own `unanswered` primitive was reshaped
+   * once already after a false ZERO lost a real commitment.
+   */
+  unansweredStale: number;
   /** Newest actionable inbox headlines; count remains `unansweredDirected`. */
   inboxRecent: OrientationInboxEntry[];
   /** Directed messages THIS agent sent that await a PEER's reply; null means
@@ -781,6 +790,9 @@ export interface OrientationDeps {
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
+    /** EI-20085805220385722: asks whose SENDER is positively ended. Optional so
+     *  an older/stubbed seam still satisfies this contract (absent ⇒ 0). */
+    staleCount?: number;
   }>;
   announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
   /** WI-2142142: directed messages this agent sent that a peer has not yet
