@@ -29,6 +29,7 @@ import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { ACTIVE_FEATURE_FAMILY_KINDS, type ActiveFeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { checkPlanAdmission, type PlanAdmissionRefusal } from '../../agent-tools/plans/plan-admission-gate';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
@@ -66,7 +67,17 @@ function nextManualToken(): number {
   return t;
 }
 
-export type ScheduledPlanFireRefusalReason = 'template-missing' | 'not-startable' | 'concurrency-skip';
+export type ScheduledPlanFireRefusalReason =
+  | 'template-missing'
+  | 'not-startable'
+  | 'concurrency-skip'
+  /**
+   * P-004: the plan's inputs are fine, but the pot's governance has not admitted this
+   * exact revision. Kept distinct from 'not-startable' because the remedy is a
+   * ratification round, not a repair of the plan document — collapsing them would
+   * send whoever reads the refusal to edit a plan that needs no editing.
+   */
+  | 'not-admitted';
 
 type FailedPlanStartReadiness = Extract<PlanStartReadiness, { ready: false }>;
 
@@ -116,6 +127,8 @@ export interface ScheduledPlanFireRefusal extends ScheduledPlanFireResultBase {
   retryable: boolean;
   /** Full start-gate evidence for a not-startable refusal. */
   readiness?: FailedPlanStartReadiness;
+  /** Full admission evidence for a 'not-admitted' refusal (P-004). */
+  admission?: PlanAdmissionRefusal;
   /** The already-running plan run that caused a concurrency skip. */
   priorRunId?: number;
 }
@@ -299,6 +312,44 @@ async function runScheduledPlanFireTx(
       ...(execution ? { execution } : {}),
     };
   }
+  // P-004 admission on the SCHEDULED fire path. This door never touches
+  // checkPlanStartable — it holds its own template row and calls the readiness oracle
+  // directly — so the admission check placed in the start gate cannot reach it. That
+  // makes this the door where enforcement matters MOST, not least: an armed schedule
+  // fires unattended, so a revision that lost its ratification (edited, expired,
+  // paused, revoked) would otherwise keep running at 03:00 with nobody watching.
+  //
+  // The hash comes from the template row already read above rather than a second
+  // query, so the verdict is about the revision this fire is about to execute.
+  const admission = await checkPlanAdmission({
+    slug: templateSlug,
+    door: 'scheduled',
+    opts: { workspaceId, harnessSlug: planStorageSlug },
+    planRevisionHash: template.content_hash ?? '',
+  });
+  if (!admission.admitted) {
+    const detail = `${admission.refusal.code}: ${admission.refusal.hint}`;
+    console.warn(`[plan-run] template '${templateSlug}' is not admitted to run — skip. ${detail}`);
+    return {
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'not-admitted',
+      detail,
+      // Retryable: a ratification round can admit this same revision later without
+      // anything about the plan changing, so the trigger outbox should try again —
+      // unlike a schema mismatch, which stays refused until the plan is edited.
+      retryable: true,
+      admission: admission.refusal,
+      ...(execution ? { execution } : {}),
+    };
+  }
+
   // Executor kind (D-006/P-009): only forward-active feature-family kinds may
   // mint work. Historical `chunk` config is read-compatible but falls back to
   // `feature`, so a stale schedule cannot recreate retired rows.

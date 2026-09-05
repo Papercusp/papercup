@@ -28,6 +28,7 @@ import {
 } from '../../release/frozen-candidate-repair-queue';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { admitPathsOntoRepairHead, retractAdmission } from '../../release/repair-head-admission';
+import { claimRepairManifestLeg } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
@@ -57,6 +58,17 @@ const argsSchema = z.preprocess(
       paths: z.array(z.string().min(1)).min(1).max(50),
       reason: z.string().min(8).max(2000).optional(),
       confirm: z.boolean().optional(),
+    }),
+    z.object({
+      /**
+       * P-021 (D-007 #1): claim one repair-manifest leg. Claiming a leg claims its subject
+       * paths — the caller's presence `current_files` is set to them so peers see the lane.
+       * `release:true` gives the leg back (only the holder may).
+       */
+      op: z.literal('claim-leg'),
+      /** The manifest row's `legId` (from get → repairQueue.manifest.rows[].legId). */
+      leg: z.string().min(1).max(300),
+      release: z.boolean().optional(),
     }),
     z.object({
       op: z.literal('retire'),
@@ -246,7 +258,7 @@ export default defineTool({
   name: 'release:repair-queue',
   profile: 'engineer',
   description:
-    'Inspect, admit onto, or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
+    'Inspect, admit onto, claim-leg{leg} (take one manifest row; claims its paths), or retire the operator-home green-checkpoint frozen repair queue. Workspace-global: omit harness/workspace. admit{paths} is THE door for landing a gate-red fix on the judged lineage: it replays EXACTLY the named paths from the integration branch onto repairHead as one proved commit (diff-tree == allowlist, or refused); never touches the immutable candidate, never reads the tip as a whole; dry-run unless confirm:true. converge is an alias of admit. retire: dry-run unless confirm:true, exact-identity JSONB CAS.',
   capability: 'operator:write',
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
@@ -267,14 +279,14 @@ export default defineTool({
     chaining:
       'Landing a fix: admit{paths} (dry run) → verdict would-admit + proof → re-call confirm:true → admitted, phase ready-to-verify; the gate re-verifies at the new repairHead next tick. Retiring: get → verify exact identity + retireAllowed → retire with those fields and confirm:true.',
     returns:
-      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics and callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId). An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
+      "get: explicit repairQueueRead value|absent|unreadable plus phase/age/fixer/reservation/decision diagnostics, callerAuthorization (a signed release-fixer is delegated only when its spawn id exactly equals repairQueue.fixerSpawnId), and repairQueue.manifest (P-021 / D-007 #1: one row per leg — legId, kind, subjectPaths, statusLabel red-at-candidate|admitted-in-#N@sha|green-at-sha, admitCommand, claim) + manifestSummary {legs,red,admitted,green,claimed,pathless}. claim-leg{leg, release?}: verdict claimed|released with row, paths, admitCommand and presenceFiles (your presence current_files set to the leg's subject paths); refused with reason no-such-leg (legIds listed) | held-by-other (holder) | already-green | no-manifest (the gate derives it on its next queue write) | persist_failed. An unreadable persisted row renders in-band and admit/retire refuse with repair-queue-unreadable. admit verdicts: no-frozen-queue (nothing frozen — an ordinary staging commit is already the judged lineage) | already-admitted (every named path already has its staging content on repairHead; idempotent) | would-admit (dry run: the commit was built and PROVED but not published — proof.diff is the exact diff-tree name set, proof.unchanged the allowlisted paths with no change, proof.blobs the source blob per path) | admitted (repairHead moved to movedRepairHead.to; persisted, phase ready-to-verify) | refused with reason: paths_required | invalid-paths | stray-paths (the built commit touched paths outside your allowlist — never published) | lineage-ref-moved (a concurrent admission won; re-read and admit onto the current repairHead) | source-unresolvable / repair-head-unresolvable / git-failed | persist_failed (the lineage ref was rolled back so ref and row still agree). containment[] reports, per requested path, whether the judged sha carries staging's current content — equal blobs prove that PATH is current, NOT that the candidate is. retire: refuses a live/unknown fixer and an active dispatch reservation; a CAS miss returns casMiss with the post-write diagnostic under current.",
     seeAlso: ['release:deploy', 'dev:pipeline_position', 'release:trace'],
   },
   args: argsSchema,
   result: z
     .object({
       ok: z.boolean().optional(),
-      op: z.enum(['get', 'admit', 'retire']).optional(),
+      op: z.enum(['get', 'admit', 'claim-leg', 'retire']).optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
       repairQueueRead: z.unknown().optional(),
@@ -343,11 +355,11 @@ export default defineTool({
       });
     }
     if (inspected.read.status === 'unreadable') {
-      const op = args.op === 'retire' ? 'retire' : 'admit';
+      const op = args.op === 'retire' ? 'retire' : args.op === 'claim-leg' ? 'claim-leg' : 'admit';
       return json({
         ok: false,
         op,
-        ...(op === 'retire' ? { retired: false } : { admitted: false }),
+        ...(op === 'retire' ? { retired: false } : op === 'claim-leg' ? { claimed: false } : { admitted: false }),
         refused: true,
         verdict: 'refused',
         reason: 'repair-queue-unreadable',
@@ -564,6 +576,152 @@ export default defineTool({
               note: retracted
                 ? 'The queue row could not be written, so the lineage ref was retracted to the previous repairHead; nothing moved. Re-run.'
                 : 'The queue row could not be written AND the lineage ref could not be retracted: the ref is at the admission but the row is not. Re-read the queue before relying on the judged sha.',
+            }),
+      });
+    }
+    if (args.op === 'claim-leg') {
+      // P-021 (D-007 #1): claiming a leg claims its paths. The manifest row is the unit a
+      // fixer takes; the claim is carried on the queue row (the ONE write path re-derives
+      // the manifest with `previous` so a claim survives every rebuild), and the caller's
+      // presence `current_files` is set to the leg's subject paths so lock contention and
+      // fleet placement see the lane without a separate declare-intent.
+      const queue = inspected.queue;
+      const legId = args.leg.trim();
+      const release = args.release === true;
+      const base = {
+        op: 'claim-leg' as const,
+        leg: legId,
+        release,
+        target: inspected.target,
+        repairQueue: inspected.diagnostic,
+        repairQueueRead: compactRead,
+        callerAuthorization,
+      };
+      if (!queue) {
+        return json({
+          ok: true,
+          claimed: false,
+          verdict: 'no-frozen-queue',
+          nextAction:
+            'No frozen repair queue, so there is no manifest and nothing to claim. Fix on staging as normal; ' +
+            'git-sync commits it and the next candidate is cut from that tip. Do not fire release:checkpoint-run.',
+          ...base,
+        });
+      }
+      if (
+        ctx.role !== 'su' &&
+        !isOperatorConfigWriteRole(ctx.role) &&
+        ctx.isSuperuser !== true &&
+        callerAuthorization.authorized !== true
+      ) {
+        throw new Error(
+          'release:repair-queue claim-leg requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
+        );
+      }
+      if (!queue.manifest) {
+        return json({
+          ok: false,
+          claimed: false,
+          refused: true,
+          verdict: 'refused',
+          reason: 'no-manifest',
+          detail:
+            'The frozen queue carries no repair manifest yet: the gate derives it on its next queue write ' +
+            '(a freeze, an admission, a re-verify). Re-read with op:get after the next green-checkpoint tick.',
+          ...base,
+        });
+      }
+      const identity = readIdentity(ctx);
+      const outcome = claimRepairManifestLeg(queue.manifest, {
+        legId,
+        actor: identity.ownerId,
+        atMs: Date.now(),
+        release,
+      });
+      if (!outcome.ok) {
+        return json({
+          ok: false,
+          claimed: false,
+          refused: true,
+          verdict: 'refused',
+          reason: outcome.reason,
+          ...(outcome.reason === 'no-such-leg'
+            ? {
+                legIds: outcome.legIds,
+                detail: `No manifest leg ${JSON.stringify(legId)}; the manifest names ${outcome.legIds.length} leg(s) — copy a legId from repairQueue.manifest.rows[].`,
+              }
+            : outcome.reason === 'held-by-other'
+              ? {
+                  row: outcome.row,
+                  holder: outcome.holder,
+                  detail: `Leg ${legId} is held by ${outcome.holder.actor} — coordinate with the holder (coord:send), never contest a live claim.`,
+                }
+              : {
+                  row: outcome.row,
+                  detail: `Leg ${legId} is already ${outcome.row.statusLabel}; there is nothing left to claim on it.`,
+                }),
+          ...base,
+        });
+      }
+      const next: FrozenCandidateRepairQueue = { ...queue, manifest: outcome.manifest };
+      let persisted = true;
+      try {
+        await writeFrozenCandidateRepairQueue(inspected.target, next);
+      } catch {
+        persisted = false;
+      }
+      // Claiming a leg claims its paths: publish them as the caller's current files. Best-effort —
+      // the claim itself is on the queue row; presence is the peer-visible mirror of it.
+      let presenceFiles: string[] | null = null;
+      if (persisted && !outcome.released && outcome.paths.length > 0) {
+        try {
+          const [{ resolveAgentIdentity }, { writePresence }] = await Promise.all([
+            import('../coordination/identity'),
+            import('../coordination/presence'),
+          ]);
+          await writePresence(resolveAgentIdentity(ctx), { currentFiles: outcome.paths });
+          presenceFiles = outcome.paths;
+        } catch {
+          presenceFiles = null;
+        }
+      }
+      const auditRecorded = await recordAudit(identity.ownerId, {
+        op: 'claim-leg',
+        leg: legId,
+        release,
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        paths: outcome.paths,
+        persisted,
+      });
+      const released = release && persisted;
+      return json({
+        ok: persisted,
+        claimed: persisted && !release,
+        released,
+        verdict: persisted ? (release ? 'released' : 'claimed') : 'refused',
+        row: outcome.row,
+        paths: outcome.paths,
+        admitCommand: outcome.row.admitCommand,
+        presenceFiles,
+        persisted,
+        auditRecorded,
+        ...base,
+        repairQueue: persisted
+          ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
+          : inspected.diagnostic,
+        ...(persisted
+          ? {
+              nextAction: release
+                ? `Leg ${legId} released; its ${outcome.paths.length} subject path(s) are unclaimed again.`
+                : outcome.row.admitCommand
+                  ? `You hold leg ${legId} (${outcome.row.statusLabel}). Fix its subject paths on staging, wait for git-sync to commit, then land it with: ${outcome.row.admitCommand}. Do NOT fire release:checkpoint-run.`
+                  : `You hold leg ${legId} (${outcome.row.statusLabel}) but its subject paths are unknown — name the files you fix by hand in release:repair-queue { op:'admit', paths:[…] }. Do NOT fire release:checkpoint-run.`,
+            }
+          : {
+              refused: true,
+              reason: 'persist_failed',
+              note: 'The queue row could not be written; the claim is not recorded. Re-read the queue and retry.',
             }),
       });
     }

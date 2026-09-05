@@ -45,6 +45,23 @@ export const FLAGS = {
   // (which is exactly what you need to decide whether to turn it back on). Only the
   // committed->proposed DOWNGRADE is suppressed. See complete.ts's third downgrade stage.
   TERMINAL_CRITERIA_ENFORCEMENT: "papercusp-terminal-criteria-enforcement",
+  // progress-certified-release-trace-2026-09-05 (P-005, D-015): the STEERING kill-switch for
+  // the checkpoint progress certificate in release:trace's nextVerb. Default ON (derived
+  // FLAG_DEFAULTS — deliberately NOT in DARK_FLAGS): ON is the shipped behaviour, so the flag
+  // ships matching production and changes nothing on its own.
+  //
+  // It exists for ONE carried risk, named in D-015: reachability of the `stalled` branch is
+  // now tested end-to-end (producer -> certifier), but DEFAULT_STALL_THRESHOLD_MS = 600_000 is
+  // labelled in-source "A JUDGEMENT, NOT A MEASUREMENT" and its falsifier — a healthy run
+  // observed with a >600s heartbeat gap — remains unrun. A run that legitimately goes quiet
+  // inside one long test file would be certified `stalled` and steer every reader away from
+  // a correct `checkpoint:await`. OFF restores that plain await instead.
+  //
+  // OFF is a STEERING switch, not a safety switch. The D-004 re-triage interlock in
+  // safeNextVerb is NOT gated by it: that interlock withholds a manual release:checkpoint-run
+  // inside the auto-refire window, and disabling a threshold judgement must never re-arm the
+  // discarded-rescue footgun. See release-trace.ts progressGatedAwait vs safeNextVerb.
+  RELEASE_TRACE_PROGRESS_CERTIFICATE: "papercusp-release-trace-progress-certificate",
   PG_MUTATE_TOOL: "papercusp-pg-mutate-tool",
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   HARNESS_PHASES: "papercusp-harness-phases",

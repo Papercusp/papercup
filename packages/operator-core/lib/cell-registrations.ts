@@ -2665,7 +2665,7 @@ export const WORK_SCOPE_CELL: CellSpec = {
       "readWorkScopePolicy() — the operator_pot_control_policy row's `workScope` key, the one store every dispatch gate reads through the pot-control cache — projected by buildWorkScopeStatusPayload()",
     liveExercised: true,
     evidence:
-      "workspace:work_scope { op:'get' } on :3170 at 2026-09-05T02:41Z returned mode enforce / allowHarnesses ['papercusp'] / ledger denied≥1 rehomed 5, and the independent acceptance grade EI-22392650507748189 re-read the same row live (ledger denied 3); the status lens is exercised through state:read on :3170 in WI-2145092's verification.",
+      "workspace:work_scope { op:'get' } on :3170 at 2026-09-05T02:41Z returned mode enforce / allowHarnesses ['papercusp'] / ledger denied≥1 rehomed 5, and the independent acceptance grade EI-22392650507748189 re-read the same row live (ledger denied 3). The cell itself: state:read { cell:'workspace.workScope' } on :3170 at 2026-09-05T14:52Z (WI-2145092) returned value 'enforce', assessment enforce with evidence enforced=true / allowHarnesses=['papercusp'], and workspace:work_scope_status on the same host returned ledger denied 4 / held 0 / rehomed 5.",
   },
 
   resolver:

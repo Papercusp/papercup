@@ -910,4 +910,46 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
         "if this flips true, FLAG_DEFAULTS is broken and the assertions above are vacuous",
     ).toBe(false);
   });
+
+  // progress-certified-release-trace-2026-09-05 P-005 / D-015. Same device as the guard
+  // above, for the same reason and against the opposite failure: this flag is a REVERT
+  // switch for a carried threshold judgement, so the danger is not that someone turns it
+  // off — that is what it is for — but that it ships or drifts default-OFF and the
+  // certificate never steers anything, leaving the whole plan's work inert while every
+  // test still passes. Default-ON is the property the plan actually delivered.
+  it("RELEASE_TRACE_PROGRESS_CERTIFICATE stays default-ON and never goes dark (P-005)", () => {
+    const key = FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE;
+
+    expect(
+      FLAG_DEFAULTS[key],
+      "the progress certificate is the shipped release:trace steering — default-OFF " +
+        "would make P-002..P-005 dead code that no caller ever reaches",
+    ).toBe(true);
+    expect(
+      DARK_FLAGS.has(key),
+      `${key} must NOT be in DARK_FLAGS — it is a revert switch for a shipped behaviour, ` +
+        "not incomplete work parked dark",
+    ).toBe(false);
+
+    // INDEPENDENT PIN — a raw wire literal, so a RENAME fails here (where the reason is
+    // written down) instead of silently detaching the io seam in trace.ts that names it.
+    const WIRE_KEY = "papercusp-release-trace-progress-certificate";
+    expect(
+      (ALL_FLAG_KEYS as readonly string[]).includes(WIRE_KEY),
+      `the progress-certificate flag must keep the wire key '${WIRE_KEY}'`,
+    ).toBe(true);
+    expect(key as string).toBe(WIRE_KEY);
+    expect(
+      FLAG_DEFAULTS[WIRE_KEY as keyof typeof FLAG_DEFAULTS],
+      "resolved through the wire literal, independently of the FLAGS constant",
+    ).toBe(true);
+
+    // FALSIFIABILITY CONTROL, for the same reason as the guard above: every assertion
+    // here is toBe(true), so a FLAG_DEFAULTS that resolved truthy for everything would
+    // satisfy all of them.
+    expect(
+      FLAG_DEFAULTS[FLAGS.GMAIL_AUTO_SEND],
+      "control: a known owner-authority dark flag must still resolve default-OFF",
+    ).toBe(false);
+  });
 });

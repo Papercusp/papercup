@@ -63,7 +63,25 @@ import {
   type ScoutReadyCandidate,
 } from './ready-plan-autostart';
 import { buildScoutPlanTemplate } from './scout-plan-draft';
+import {
+  configurePlanAdmissionCertificateSource,
+  configurePlanAdmissionPolicySource,
+} from '../agent-tools/plans/plan-admission-gate';
 import type { Sql } from 'postgres';
+
+// P-004: this sweep is an admission door, so it now asks the plan-admission gate
+// before promoting anything. Default the POLICY seam to "this pot has not opted in",
+// which is the state of every existing pot and keeps these cases about the sweep's
+// own behaviour. Left unconfigured, the gate's default source would reach the real
+// hive-policy store through this file's fake `sql` — which is not a governance
+// answer, just an unreachable dependency. The opt-in path has its own case below.
+beforeEach(() => {
+  configurePlanAdmissionPolicySource(async () => null);
+});
+afterEach(() => {
+  configurePlanAdmissionPolicySource(null);
+  configurePlanAdmissionCertificateSource(null);
+});
 
 const cand = (planSlug: string, hasOpenItems: boolean, hasAnyItems = hasOpenItems): ScoutReadyCandidate => ({
   planSlug,
@@ -276,6 +294,46 @@ describe('startReadyScoutPlan', () => {
       planSlug: 'scout-x-2026-07-02',
       createdBy: 'scout-ready-autostart',
     });
+  });
+
+  // P-004 (WI-2146077). This sweep is the one admission door with no human in front
+  // of it: it turns a `ready` flip into claimable work on its own schedule, so an
+  // unadmitted revision here becomes work the whole fleet picks up. It reaches no
+  // plan-start-gate entrypoint, so the gate wired into checkPlanStartable cannot
+  // cover it — these two cases are what prove its OWN call runs.
+  it('REFUSES an unadmitted plan before promoting or writing the axis', async () => {
+    // A pot that HAS opted into governance but has no certificate source is refused,
+    // never passed — the fail-closed rule.
+    configurePlanAdmissionPolicySource(async () => ({
+      policyVersion: 3,
+      quorumBps: 5_000,
+      approvalBps: 6_667,
+      ratificationWindowSec: 3_600,
+      materiality: { maxChangedLines: 200, maxChangedItems: 3 },
+    }));
+    const { sql, queries } = fakeSql([{ prev_op_status: null }]);
+
+    const r = await startReadyScoutPlan(sql, args, axis(true));
+
+    expect(r.outcome).toBe('not-admitted');
+    expect(r.promoted).toBe(0);
+    expect(r.axisWritten).toBe(false);
+    expect(r.admission?.code).toBe('missing-certificate');
+    // The refusal must precede BOTH side effects, not merely report after them.
+    expect(promoteMock).not.toHaveBeenCalled();
+    expect(queries().join('\n')).not.toMatch(/SET\s+op_status/);
+  });
+
+  it('CONTROL: the same plan starts normally once the pot has not opted in', async () => {
+    // The falsifier for the case above — without it, a refusal that fired
+    // unconditionally would look identical to a working gate.
+    const { sql } = fakeSql([{ prev_op_status: null }]);
+    promoteMock.mockResolvedValueOnce({ promoted: 2, skipped: 0 });
+
+    const r = await startReadyScoutPlan(sql, args, axis(true));
+
+    expect(r.outcome).toBe('started');
+    expect(promoteMock).toHaveBeenCalledTimes(1);
   });
 
   it('is a no-op (no promotion) when the plan was already started — race-safe', async () => {

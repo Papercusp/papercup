@@ -110,7 +110,46 @@ interface GitPipelineSnapshot {
     lastFixerAtMs: number | null;
     lastFixerCandidate: string | null;
     flakyWorkspaces: string[];
+    // frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-021 (D-007 #1): the
+    // frozen repair queue's manifest — one row per leg, the same rows the gate-red work-item
+    // and the owner brief render. Only the fields this panel reads are typed here.
+    repairQueue?: {
+      phase: string;
+      candidate: string;
+      repairHead: string;
+      manifest: RepairManifestView | null;
+      manifestSummary: RepairManifestSummaryView | null;
+    } | null;
   };
+}
+interface RepairManifestView {
+  candidate: string;
+  repairHead: string;
+  builtAtMs: number;
+  rows: {
+    legId: string;
+    kind: string;
+    workspace?: string;
+    subjectPaths: string[];
+    subjectPathsTruncated: number;
+    statusLabel: string;
+    admitCommand: string | null;
+    claim: { actor: string; atMs: number } | null;
+  }[];
+  rowsTruncated: number;
+}
+interface RepairManifestSummaryView {
+  legs: number;
+  red: number;
+  admitted: number;
+  green: number;
+  claimed: number;
+  pathless: number;
+}
+function manifestStatusTone(label: string): Tone {
+  if (label.startsWith('green')) return 'good';
+  if (label.startsWith('admitted')) return 'warn';
+  return 'bad';
 }
 
 // ── helpers ──
@@ -639,6 +678,91 @@ export default function GitClient() {
                   </span>
                 </div>
               </div>
+
+              {/* frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-021 (D-007 #1):
+                  the frozen candidate's REPAIR MANIFEST — one row per leg with its subject
+                  paths, status, holder and the exact admit command. The same rows land on the
+                  gate-red work-item and in the owner brief; this is the operator's view. */}
+              {st.gate.repairQueue?.manifest && (
+                <div className="pc-git__card" style={{ gridColumn: '1 / -1' }}>
+                  <div className="pc-git__card-h">
+                    repair manifest{' '}
+                    <span className="pc-git__muted mono">
+                      candidate {st.gate.repairQueue.candidate.slice(0, 8)} · repairHead{' '}
+                      {st.gate.repairQueue.repairHead.slice(0, 8)} · {st.gate.repairQueue.phase}
+                    </span>{' '}
+                    {st.gate.repairQueue.manifestSummary && (
+                      <>
+                        <StatusPill
+                          tone={st.gate.repairQueue.manifestSummary.red > 0 ? 'bad' : 'good'}
+                          label={`${st.gate.repairQueue.manifestSummary.red} red`}
+                        />{' '}
+                        <StatusPill tone="warn" label={`${st.gate.repairQueue.manifestSummary.admitted} admitted`} />{' '}
+                        <StatusPill tone="good" label={`${st.gate.repairQueue.manifestSummary.green} green`} />{' '}
+                        <StatusPill tone="neutral" label={`${st.gate.repairQueue.manifestSummary.claimed} claimed`} />
+                        {st.gate.repairQueue.manifestSummary.pathless > 0 && (
+                          <>
+                            {' '}
+                            <StatusPill tone="warn" label={`${st.gate.repairQueue.manifestSummary.pathless} pathless`} />
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                          <th style={{ padding: '4px 6px' }}>leg</th>
+                          <th style={{ padding: '4px 6px' }}>kind</th>
+                          <th style={{ padding: '4px 6px' }}>status</th>
+                          <th style={{ padding: '4px 6px' }}>subject paths</th>
+                          <th style={{ padding: '4px 6px' }}>claim</th>
+                          <th style={{ padding: '4px 6px' }}>admit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {st.gate.repairQueue.manifest.rows.map((row) => (
+                          <tr key={row.legId} style={{ borderTop: '1px solid rgba(128,128,128,0.25)', verticalAlign: 'top' }}>
+                            <td className="mono" style={{ padding: '4px 6px' }}>
+                              {row.legId}
+                              {row.workspace ? <span className="pc-git__muted"> ({row.workspace})</span> : null}
+                            </td>
+                            <td style={{ padding: '4px 6px' }}>{row.kind}</td>
+                            <td style={{ padding: '4px 6px' }}>
+                              <StatusPill tone={manifestStatusTone(row.statusLabel)} label={row.statusLabel} />
+                            </td>
+                            <td className="mono" style={{ padding: '4px 6px' }}>
+                              {row.subjectPaths.length > 0 ? row.subjectPaths.join(', ') : <span className="pc-git__muted">unknown — name paths by hand</span>}
+                              {row.subjectPathsTruncated > 0 ? (
+                                <span className="pc-git__muted"> +{row.subjectPathsTruncated} more</span>
+                              ) : null}
+                            </td>
+                            <td style={{ padding: '4px 6px' }}>
+                              {row.claim ? (
+                                <>
+                                  <span className="mono">{row.claim.actor}</span>{' '}
+                                  <span className="pc-git__muted">{fmtRel(row.claim.atMs)}</span>
+                                </>
+                              ) : (
+                                <span className="pc-git__muted">unclaimed</span>
+                              )}
+                            </td>
+                            <td className="mono" style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>
+                              {row.admitCommand ?? '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {st.gate.repairQueue.manifest.rowsTruncated > 0 && (
+                      <div className="pc-git__muted" style={{ padding: '4px 6px' }}>
+                        +{st.gate.repairQueue.manifest.rowsTruncated} more leg(s) not shown — read the gate-red work-item for the full manifest.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div className="pc-git__card">
                 <div className="pc-git__card-h">

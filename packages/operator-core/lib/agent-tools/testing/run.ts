@@ -26,6 +26,22 @@
  * writes NO rows; it only stamps `PAPERCUSP_TEST_RUN_GROUP=<runId>` so the
  * reporter correlates the run's rows and `testing:flakiness` can find them.
  *
+ * ⚠ "one row per file" describes the row GRANULARITY, NOT the write TIMING.
+ * The live reporter (libs/test-config/src/admin-test-runs-reporter.ts) QUEUES
+ * each row in memory at `onTestModuleEnd` and performs its ONLY write in
+ * `flushPending()`, called from `onTestRunEnd`/`onExit` — because `worktree_dirty`
+ * and `commit_sha` are whole-RUN facts derived from a before/after git snapshot
+ * that does not exist at file-completion time (D-007: "missing proof of stability
+ * is dirty, never a false clean"). Consequence: a run killed mid-flight (batch
+ * watchdog, SIGKILL) writes NOTHING — every already-computed per-file result is
+ * lost, and leaves no trace (zero `cancelled`/`running` rows in 7 days / 459k rows).
+ * Measured on real run-groups: per-file completions span up to ~24s while every
+ * row is inserted within ~10ms of the others, ~1s after the last file (EI-20343103917336944).
+ * ⛔ Do NOT reason about this ledger from
+ * `packages/operator-core/test/reporters/admin-test-runs-reporter.ts` — that copy
+ * DOES insert per-file, but it is wired to no vitest config and is a superseded
+ * fossil; `defineVitestConfig` auto-wires the libs/test-config one.
+ *
  * ── The correctness argument ────────────────────────────────────────────────
  * 372 raw-`vitest run` commands appear in the corpus across 44 sessions, 107 of
  * them with no `cd` — i.e. root-level `vitest run <path>`, exactly the

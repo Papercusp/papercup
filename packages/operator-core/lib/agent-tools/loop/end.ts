@@ -54,8 +54,48 @@ const SURVIVING_AWAITS_LISTED_CAP = 10;
  * hunt down via events:status. So the receipt scopes its claim to LOOP wakes
  * and enumerates the surviving awaits itself. The always-armed
  * `coord:inbox-wake:` self-wake is liveness plumbing every live agent holds —
- * excluded, not a deliberate bench.
+ * excluded, not a deliberate bench (but by SHAPE, not by key alone — see
+ * isKeepaliveInboxWake).
  */
+
+/**
+ * Is this await the always-armed `coord:inbox-wake:` KEEPALIVE — liveness plumbing
+ * every live agent holds — as opposed to one a caller DELIBERATELY registered on
+ * that same key?
+ *
+ * WI-2146110 / EI-22395297051930111: this exclusion used to be a KEY-PREFIX test
+ * alone, which cannot tell those two apart. So a deliberate
+ * `events:await { event: 'coord:inbox-wake:<owner>', timeout_sec: 3600, on_timeout: 'wake' }`
+ * was filtered out of `survivingAwaits`, and the receipt then asserted "no independent
+ * event awaits remain active for this owner" while that bounded await was live — it
+ * woke the session ~16s later. A false statement about live state is worse than the
+ * blanket claim EI-21349668185386229 already removed, because it reads as a checked one.
+ *
+ * The two populations separate cleanly by SHAPE, not by key: the keepalive is UNBOUNDED
+ * and merely EXPIRES, while a deliberate await is BOUNDED and WAKES on its deadline.
+ * Measured 2026-09-05: all 83 then-active `coord:inbox-wake:*` rows were uniformly
+ * `timeout_behavior='expire'` with `expires_ts IS NULL`.
+ *
+ * Deliberately NOT `awaitGuaranteesRewake` (turn-end-tracking.ts): that helper excludes
+ * EVERY inbox-wake key unconditionally, which is correct for its own question ("will I
+ * be re-woken?") and wrong for this one ("what survives this stop and could still wake
+ * me?"). Reusing it here would preserve the exact bug this fixes.
+ *
+ * An UNBOUNDED await deliberately placed on the keepalive key stays excluded: it is
+ * indistinguishable from the keepalive by shape, and cannot be relied on to wake anyone
+ * anyway (the same boundedness reasoning as WI-6604).
+ */
+export function isKeepaliveInboxWake(a: {
+  eventKey: string;
+  expiresTs?: string | null;
+  timeoutBehavior?: string | null;
+}): boolean {
+  if (!a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)) return false;
+  // `timeoutBehavior` defaults to 'wake' (the store's own default), matching
+  // awaitGuaranteesRewake's reading of the same column.
+  return a.expiresTs == null || (a.timeoutBehavior ?? 'wake') !== 'wake';
+}
+
 export function survivingAwaitsNote(surviving: { await_id: number; event_key: string }[] | null): string {
   if (surviving === null) {
     // The read failed — still never restate the disproven blanket claim.
@@ -80,9 +120,9 @@ export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
-    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. If an autonomy-implying mode remains active with no deliberate event await, the stop refuses unless `acknowledgeWakeLessAutonomy:true` consciously overrides the safety guard. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
+    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
   guidance: {
-    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool ignores `harness` if passed (loops are keyed by owner). Better to loop:end than burn empty wakes spinning.',
+    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining:
@@ -425,7 +465,9 @@ export default defineTool({
       try {
         const rows = await listActiveAwaits(ownerId);
         survivingAwaits = rows
-          .filter((r) => !r.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX))
+          // WI-2146110: exclude the keepalive by SHAPE, not by key prefix alone — a
+          // DELIBERATE bounded wake-on-timeout await on that same key must surface.
+          .filter((r) => !isKeepaliveInboxWake(r))
           .map((r) => ({ await_id: r.id, event_key: r.eventKey, expires_ts: r.expiresTs }));
       } catch {
         survivingAwaits = null;

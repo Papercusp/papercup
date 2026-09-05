@@ -82,7 +82,9 @@ export default defineTool({
         // P-006/P-008 start gate. Arming runs nothing itself, which is exactly why it
         // is checked here: an armed plan whose required inputs are unset would fail in
         // an unattended 03:00 routine instead of in front of whoever armed it.
-        const gate = await checkPlanStartable(slug, opts);
+        // Door 'scheduled': arming is what makes the plan fire unattended later, so
+        // the admission verdict this door needs is the one the scheduled fire needs.
+        const gate = await checkPlanStartable(slug, opts, null, 'scheduled');
         // The refusal already carries `slug` — spreading it is the whole result.
         if (!gate.ok) return { ok: false as const, ...gate.refusal };
         const res = await armPlanSchedule({

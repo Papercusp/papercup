@@ -1892,3 +1892,130 @@ describe('P-003: D-004 forbids a manual checkpoint-run inside the re-triage wind
     }
   });
 });
+
+/**
+ * P-005 / D-015 — the steering kill-switch (FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE).
+ *
+ * D-015 settled REACHABILITY of the `stalled` branch but explicitly carried one risk forward:
+ * DEFAULT_STALL_THRESHOLD_MS = 600_000 is a declared JUDGEMENT, and its falsifier — a healthy run
+ * observed with a heartbeat gap wider than 600s — is unrun. A run that legitimately goes quiet
+ * inside one long test file would therefore be certified `stalled` and steer every reader off a
+ * correct await. The flag is the owner's revert for exactly that case.
+ *
+ * Two properties are worth a test, and only one of them is obvious:
+ *   1. OFF really does restore the pre-certificate verb (not a third, untested behaviour), and
+ *   2. OFF does NOT disarm the D-004 re-triage interlock. That interlock reads the certificate
+ *      too, so gating "the certificate" wholesale would have quietly re-armed the discarded-rescue
+ *      footgun — a steering switch silently becoming a safety switch.
+ *
+ * Every OFF assertion is paired with an ON control, because a fixture that stopped reaching the
+ * gated branch for an unrelated reason satisfies every "did not steer" assertion while proving
+ * nothing.
+ */
+describe('P-005: the progress-certificate steering kill-switch', () => {
+  const candidate = 'b'.repeat(40);
+
+  const staleVerdictGate = {
+    state: 'gate-verdict-stale' as const,
+    authoritative: false,
+    consecutiveReds: 3,
+    failingTests: [] as string[],
+    fireStale: false,
+    fireStaleReason: null,
+    verdictStale: true,
+    verdictStaleReason: 'superseded pin',
+  };
+
+  /** A run in flight at the not-green-pinned site, with the switch in a stated position. */
+  const traceWithRun = (run: Record<string, unknown>, progressCertificateEnabled?: boolean) =>
+    buildReleaseTrace(
+      input({
+        snapshotGeneration: NOW_MS,
+        progressCertificateEnabled,
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: {
+          ...staleVerdictGate,
+          checkpointRunInFlight: { active: true, candidate, elapsedSec: 42, ...run },
+        } as never,
+      }),
+    );
+
+  /** The heartbeat shape D-015 proved a producer can emit: aged past the stall threshold. */
+  const stalledRun = {
+    activeSource: 'run-lock',
+    ...advancingHeartbeat({ startedAgoMs: 3_600_000, lastSeenAgoMs: 1_800_000 }),
+    asOfAgeMs: null,
+  };
+
+  const healthyRun = { activeSource: 'run-lock', ...advancingHeartbeat(), asOfAgeMs: null };
+
+  it('CONTROL: with the switch at its default the stalled fixture DOES steer off the await', () => {
+    // Calibration for every OFF assertion below. If this stops reaching `processes:list`, the
+    // fixture no longer exercises the gated branch and the OFF tests prove nothing.
+    const out = traceWithRun(stalledRun);
+    expect(out.nextVerb?.name).toBe('processes:list');
+    expect(out.nextVerb?.reason).toContain('NOT certified as advancing');
+  });
+
+  it('an omitted switch and an explicit true are the same reading', () => {
+    // Undefined means ON on purpose: a caller that has not been taught the flag must keep the
+    // shipped behaviour rather than silently losing the certificate.
+    expect(traceWithRun(stalledRun, true).nextVerb).toEqual(traceWithRun(stalledRun).nextVerb);
+  });
+
+  it('OFF: a certified stall returns the plain await, undecorated', () => {
+    const out = traceWithRun(stalledRun, false);
+    expect(out.nextVerb?.name).toBe('checkpoint:await');
+    expect(out.nextVerb?.reason).toContain('await its terminal verdict');
+    // The revert must be total: no certificate wording may survive on the verb.
+    expect(out.nextVerb?.reason).not.toContain('NOT certified as advancing');
+    expect(out.nextVerb?.reason).not.toContain('Do not fire release:checkpoint-run');
+  });
+
+  it('OFF: a HEALTHY run also returns the plain await, so OFF is one behaviour and not two', () => {
+    // The switch reverts the whole steering, not just its stalled branch. Gating only `stalled`
+    // would leave a third behaviour — decorated awaits with no stall detection — that nothing
+    // has ever exercised in production.
+    const out = traceWithRun(healthyRun, false);
+    expect(out.nextVerb?.name).toBe('checkpoint:await');
+    expect(out.nextVerb?.reason).not.toContain('heartbeat advanced past its start');
+    expect(out.nextVerb?.reason).toEqual(traceWithRun({ active: true, candidate }, false).nextVerb?.reason);
+  });
+
+  it('OFF: the D-004 re-triage interlock STILL withholds manual checkpoint authority', () => {
+    // The property that makes this a steering switch rather than a safety switch. `inRetriageWindow`
+    // is a window-membership fact that no threshold enters, so the carried threshold risk is not a
+    // reason to let a manual run through.
+    const inRetriage = {
+      active: false,
+      inRetriageWindow: true,
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        progressCertificateEnabled: false,
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: { ...staleVerdictGate, checkpointRunInFlight: inRetriage } as never,
+      }),
+    );
+    expect(out.nextVerb?.name).not.toBe('release:checkpoint-run');
+    expect(out.nextVerb?.reason).toContain('re-triage window');
+    expect(out.nextVerb?.reason).toContain('discards');
+  });
+
+  it('CONTROL: with the switch OFF and no re-triage window, that site DOES recommend the manual run', () => {
+    // Without this the assertion above passes for a site that never reaches the forbidden verb at
+    // all — the suppression would be untested and read as proven.
+    const out = buildReleaseTrace(
+      input({
+        progressCertificateEnabled: false,
+        position: position({ positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        gate: staleVerdictGate as never,
+      }),
+    );
+    expect(out.nextVerb?.name).toBe('release:checkpoint-run');
+  });
+});

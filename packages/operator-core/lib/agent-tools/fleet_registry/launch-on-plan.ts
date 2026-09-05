@@ -2458,10 +2458,15 @@ export default defineTool({
     if (planSlug && planRow) {
       let gate: Awaited<ReturnType<typeof checkPlanStartable>>;
       try {
-        gate = await checkPlanStartable(planSlug, {
-          workspaceId: planRow.workspaceId,
-          harnessSlug: planRow.harnessSlug,
-        });
+        gate = await checkPlanStartable(
+          planSlug,
+          {
+            workspaceId: planRow.workspaceId,
+            harnessSlug: planRow.harnessSlug,
+          },
+          null,
+          'fleet-launch',
+        );
       } catch (e: any) {
         // Name the component that actually failed. Anything thrown here is a
         // defect in the start gate itself, NOT a plan-resolution problem — say
@@ -2472,6 +2477,16 @@ export default defineTool({
         );
       }
       if (!gate.ok) {
+        // Two different refusals reach here, and they send the reader to different
+        // places: an inputs refusal is repaired in the plan document, a P-004
+        // admission refusal is repaired by ratifying the revision under the pot's
+        // governance policy. Reporting either as the other wastes the whole trip.
+        if (gate.kind === 'admission') {
+          return err(
+            `Plan \`${planSlug}\` is not admitted to run (${gate.refusal.code}): ${gate.refusal.hint}` +
+              ` [revision ${gate.refusal.planRevisionHash || 'unknown'}, policy epoch ${gate.refusal.policyVersion}]`,
+          );
+        }
         return err(
           `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
             (gate.refusal.missing.length > 0 ? ` (missing: ${gate.refusal.missing.join(', ')})` : ''),

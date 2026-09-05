@@ -39,6 +39,8 @@ const TABS: ReadonlyArray<{
   // Sibling of Schedules by design: that page inventories everything RECURRING,
   // this one everything RUNNING (task-manager-no-escape-2026-07-27 P-018).
   { href: '/admin/tasks', label: 'Tasks' },
+  // WI-2145092: the workspace work-scope policy (which harnesses agents may work).
+  { href: '/admin/work-scope', label: 'Work scope' },
   { href: '/admin/cupboard-moderation', label: 'Cupboard', term: 'cupboard' },
 ];
 

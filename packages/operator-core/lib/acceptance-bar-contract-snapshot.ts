@@ -758,7 +758,7 @@ export function projectAcceptanceBarContractSnapshot(
           ? 'dropped-only'
           : 'live';
     const workContractState: AcceptanceBarTrace['readiness']['workContract'] =
-      contracts.length === 0 ? 'missing' : contracts.every((contract) => contract.current) ? 'current' : 'stale';
+      contracts.length === 0 ? 'missing' : contracts.some((contract) => contract.current) ? 'current' : 'stale';
     const proofState: AcceptanceBarTrace['proof']['state'] = input.evidence.truncated
       ? 'truncated'
       : currentEvidence.length > 0

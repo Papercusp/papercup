@@ -37,8 +37,21 @@ export interface PlanAdmissionSubject {
   readonly slug: string;
   readonly door: PlanAdmissionDoor;
   readonly opts?: PlanSourceOpts;
-  /** A row the door already loaded. Supplied to avoid a second read, never to change the verdict. */
+  /**
+   * A row the door already loaded. Supplied to avoid a second read, never to change
+   * the verdict. Keyed on PRESENCE: supplying `null` states that the door looked and
+   * found no plan, and no read is attempted — omit the key entirely to have the gate
+   * load the row itself.
+   */
   readonly row?: PlanRow | null;
+  /**
+   * The revision hash the door is acting on, for a door that holds the hash but not a
+   * `PlanRow` (the scheduled fire reads the plan with its own query). Supplied, no row
+   * is read at all — which is the point: a second read could return a NEWER revision
+   * than the one the door is about to run, and admitting that revision would be a
+   * verdict about a plan nobody is starting.
+   */
+  readonly planRevisionHash?: string;
   readonly nowMs?: number;
 }
 
@@ -86,6 +99,43 @@ export function configurePlanAdmissionCertificateSource(source: PlanAdmissionCer
 export function configurePlanAdmissionPolicySource(source: PlanAdmissionPolicySource | null): void {
   state.policySource = source;
 }
+
+/**
+ * Where each admission door is WIRED. The counterpart of PLAN_START_DOORS, and it is
+ * a separate registry for a reason: the start gate has six doors that all funnel
+ * through one chokepoint, while admission has seven spread over four files, because
+ * three of them (the scheduled fire, the status flips, the scout autostart sweep)
+ * reach no chokepoint at all — they hold their own row and run their own SQL.
+ *
+ * That spread IS the failure mode this registry exists to catch. P-004's original
+ * delivery shipped `assertPlanAdmission` with ZERO callers and read as complete,
+ * which is precisely what a registry-plus-guard makes impossible to repeat: adding a
+ * door here without wiring it fails the build, and wiring one without registering it
+ * leaves the door unaudited.
+ *
+ * A door may name SEVERAL files ('scheduled' is armed in one place and fired in
+ * another); the guard requires every listed file to reach an entrypoint, so a
+ * half-wired pair cannot pass on the strength of its wired half.
+ */
+export const PLAN_ADMISSION_DOOR_SITES = [
+  { door: 'status', files: ['lib/agent-tools/plans/set-plan-status.ts'] },
+  { door: 'promotion', files: ['lib/agent-tools/plans/set-plan-status.ts'] },
+  { door: 'start', files: ['lib/agent-tools/plans/start.ts', 'lib/agent-tools/plans/launch.ts'] },
+  { door: 'run-now', files: ['lib/agent-tools/plans/run-now.ts'] },
+  {
+    door: 'scheduled',
+    files: ['lib/agent-tools/plans/arm-schedule.ts', 'lib/harness/routines/plan-run-action.ts'],
+  },
+  { door: 'autostart', files: ['lib/scout/ready-plan-autostart.ts'] },
+  { door: 'fleet-launch', files: ['lib/agent-tools/fleet_registry/launch-on-plan.ts'] },
+] as const;
+
+/**
+ * A site satisfies the guard by calling one of these: `checkPlanAdmission` directly,
+ * or `checkPlanStartable`, which calls it on the site's behalf and is where the five
+ * start-shaped doors are gated.
+ */
+export const PLAN_ADMISSION_GATE_ENTRYPOINTS = ['checkPlanAdmission', 'checkPlanStartable'] as const;
 
 /** Why a door did not evaluate admission at all. Both are PASSES, and both say so out loud. */
 export type PlanAdmissionSkipReason = 'no-admission-policy' | 'plan-not-found';
@@ -167,12 +217,18 @@ export async function checkPlanAdmission(subject: PlanAdmissionSubject): Promise
   const policy = await (state.policySource ?? defaultPolicySource)({ slug: subject.slug, opts });
   if (!policy) return { admitted: true, skipped: 'no-admission-policy' };
 
-  // Absent plan: the door has its own not_found shape (same argument as
-  // plan-start-gate's module header). Refusing here would invent a second one.
-  const row = subject.row ?? (await getPlanRow(subject.slug, opts));
-  if (!row) return { admitted: true, skipped: 'plan-not-found' };
-
-  const planRevisionHash = row.contentHash ?? '';
+  let planRevisionHash = subject.planRevisionHash;
+  if (planRevisionHash === undefined) {
+    // `row` is keyed on PRESENCE, not truthiness: its type is `PlanRow | null`, so an
+    // explicit null is the door saying "I looked, there is no plan" — a fact, not an
+    // omission. Falling through to a read there would re-ask a question the door has
+    // already answered, and answer it from a different transaction.
+    const row = 'row' in subject ? (subject.row ?? null) : await getPlanRow(subject.slug, opts);
+    // Absent plan: the door has its own not_found shape (same argument as
+    // plan-start-gate's module header). Refusing here would invent a second one.
+    if (!row) return { admitted: true, skipped: 'plan-not-found' };
+    planRevisionHash = row.contentHash ?? '';
+  }
   const resolved = state.certificateSource
     ? await state.certificateSource.resolve({ slug: subject.slug, door: subject.door, planRevisionHash, policy, nowMs })
     : { certificate: null, governance: null };

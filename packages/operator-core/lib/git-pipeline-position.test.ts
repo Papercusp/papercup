@@ -5670,6 +5670,8 @@ describe('stage levers (P-005)', () => {
     admissions: [],
     blockedReason: null,
     dispatchReservation: null,
+    manifest: null,
+    manifestSummary: null,
     sharedTreeCollision: {
       measured: false,
       repairInFlight: false,

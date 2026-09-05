@@ -272,11 +272,24 @@ export default defineTool({
     // rejected with an opaque "full anyOf schema, no field pointer" error. Carry is
     // a valid flat setting for a FRESH launch; source launches preserve the target
     // loop/profile carry, while `members[i].carry` overrides the fresh flat value.
-    argRedirects: {
-      carry:
-        "For a FRESH launch, pass top-level `carry:'warm'|'cold'`; `members[i].carry` overrides it for that member. " +
-        'For a RESUME/FORK, carry follows the target session/fleet loop profile; use loop:arm { carry } to retune the resumed agent.',
-    },
+    //
+    // ⛔ There is deliberately NO `argRedirects.carry` here, and re-adding one would
+    // not help. `invalidInputCorrections` runs ONLY over UNRECOGNIZED KEYS, and
+    // `carry` IS a declared key on BOTH branches of the union below — so the
+    // rejection those four filings hit is a BRANCH/VALUE failure, never an unknown
+    // key, and a redirect authored here could never fire. (This is the same shape
+    // facts:list documents for its `scope` enum.) One was authored anyway and sat
+    // dead until the class-wide reachability guard found it:
+    // tool-arg-redirect-contract.ts, P-004 of
+    // tool-contract-class-sizing-and-non-vacuous-guard-2026-09-05.
+    //
+    // Those filings are ALREADY FIXED, and not by this redirect: EI-22084251948568820
+    // (closed 2026-09-02) added `unknownArgHint` support for union-rooted schemas in
+    // libs/generic/tooldef/src/define-tool.ts, so the rejection now names the
+    // offending field instead of dumping the whole anyOf. The redirect was a
+    // supplementary guidance touch landed alongside that real repair; removing it
+    // takes away nothing a caller was receiving. The remaining teaching lives on the
+    // two `carry` field descriptions below, which is the surface a caller sees.
   },
   capability: 'capability:terminal',
   requirePrincipal: false,

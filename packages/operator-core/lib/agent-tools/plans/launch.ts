@@ -147,7 +147,7 @@ async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
   //    before any run row exists — a refused launch must leave no trace. Per-invocation
   //    `inputs` are merged over the plan's stored values and validated together, so
   //    what the agent is seeded with is exactly what was approved.
-  const gate = await checkPlanStartable(input.slug, scopeOpts, input.inputs ?? null);
+  const gate = await checkPlanStartable(input.slug, scopeOpts, input.inputs ?? null, 'start');
   if (!gate.ok) {
     return {
       isError: true,

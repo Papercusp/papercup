@@ -24,6 +24,8 @@
 import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { checkPlanAdmission, type PlanAdmissionRefusal } from './plan-admission-gate';
+import type { PlanAdmissionDoor } from './plan-admission-enforcement';
 
 /**
  * Every verb that can set a plan running. The P-007 guard test asserts each of these
@@ -69,9 +71,18 @@ export interface PlanStartRefusal {
   hint: string;
 }
 
+/**
+ * A refusal from this gate is one of TWO different things, and the caller must be
+ * able to tell them apart: `inputs` means the plan document is not ready to run,
+ * `admission` means the pot's governance has not admitted this exact revision. They
+ * carry different error tags and different remedies, so they are discriminated by
+ * `kind` rather than collapsed into one shape — a governance refusal reported as a
+ * missing input sends the reader to fix the wrong thing.
+ */
 export type PlanStartGateResult =
   | { ok: true; row: PlanRow | null; inputs: unknown }
-  | { ok: false; refusal: PlanStartRefusal; row: PlanRow };
+  | { ok: false; kind: 'inputs'; refusal: PlanStartRefusal; row: PlanRow }
+  | { ok: false; kind: 'admission'; refusal: PlanAdmissionRefusal; row: PlanRow };
 
 /**
  * Shallow-merge per-invocation overrides over the plan's stored values (D-008 Q2).
@@ -106,6 +117,7 @@ export async function checkPlanStartable(
   slug: string,
   opts: PlanSourceOpts = {},
   overrides?: Record<string, unknown> | null,
+  door: PlanAdmissionDoor = 'start',
 ): Promise<PlanStartGateResult> {
   const row = await getPlanRow(slug, opts);
   // Absent plan: not this gate's error to report (see the module header).
@@ -120,6 +132,7 @@ export async function checkPlanStartable(
   if (!lifecycle.satisfied) {
     return {
       ok: false,
+      kind: 'inputs',
       row,
       refusal: {
         error: 'plan_inputs_not_ready',
@@ -132,6 +145,17 @@ export async function checkPlanStartable(
       },
     };
   }
+
+  // P-004 admission. LAST, and deliberately so: readiness and the BAR contract are
+  // properties of the plan document that the author can fix themselves, while
+  // admission is a governance verdict about the exact revision. Checking governance
+  // first would answer "not ratified" about a revision that was never runnable, and
+  // send the author to a ratification round for a plan they still have to repair.
+  //
+  // The row loaded above is passed through so the verdict is about the revision this
+  // call is acting on — re-reading here could admit a revision the door never saw.
+  const admission = await checkPlanAdmission({ slug, door, opts, row });
+  if (!admission.admitted) return { ok: false, kind: 'admission', row, refusal: admission.refusal };
   return verdict;
 }
 
@@ -152,6 +176,7 @@ export function startVerdictForRow(
 
   return {
     ok: false,
+    kind: 'inputs',
     row,
     refusal: {
       error: 'plan_inputs_not_ready',
@@ -170,6 +195,21 @@ export function startVerdictForRow(
 export function planStartRefusalContent(refusal: PlanStartRefusal) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
+    isError: true as const,
+  };
+}
+
+/**
+ * Render EITHER refusal kind as a tool error result, verbatim.
+ *
+ * Callers take the whole refused result rather than `.refusal`, so a door cannot
+ * accidentally forward an admission refusal through the inputs-shaped renderer and
+ * mislabel a governance verdict as a missing input. Each refusal already carries its
+ * own `error` tag, so nothing has to be re-derived here.
+ */
+export function planGateRefusalContent(result: Extract<PlanStartGateResult, { ok: false }>) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result.refusal) }],
     isError: true as const,
   };
 }

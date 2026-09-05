@@ -363,7 +363,10 @@ describe('authorizeDelivery — yanked-version behavior', () => {
 describe('verifySignedPackage', () => {
   function storeWith(hash: string) {
     const store = memoryArtifactStore();
-    store.put({ storageKey: cupboardArtifactKey(hash), sizeBytes: 10, contentHash: hash });
+    // `put` takes an ArtifactRef and derives the content-addressed storage key
+    // itself — passing a storageKey would be asserting the key the store is
+    // responsible for computing.
+    store.put({ contentHash: hash, sizeBytes: 10, contentType: 'application/octet-stream' });
     return store;
   }
   const accept = () => true;

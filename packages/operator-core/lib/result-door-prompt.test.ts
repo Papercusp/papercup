@@ -65,11 +65,16 @@ describe('result-door standing-context section', () => {
     expect(renderResultDoorSection()).toContain(`at most ${MAX_PICK_PATHS} paths`);
   });
 
-  it('warns that `projection` is a dispatch arg, not a nested tools:invoke arg', () => {
-    // The nested form is rejected by the inner tool as an unknown key
-    // (EI-19386035445533031) — the single most likely way to mis-send it.
+  it('teaches that BOTH tools:invoke projection placements work', () => {
+    // The nested form WAS rejected as an unknown key (EI-19386035445533031,
+    // 2026-08-02), and this prompt documented that. It was then fixed on both
+    // sides — the dispatch layer strips a nested `projection` before the target's
+    // schema sees it, and `forwardToolsInvokeProjection` moves an outer one into
+    // `args` — so the old text taught agents away from a working form, citing a
+    // closed bug (EI-20345793765413803). Pin the corrected claim, not the stale one.
     const text = renderResultDoorSection();
-    expect(text).toMatch(/NOT nested in `args`/);
+    expect(text).toMatch(/BOTH placements work/);
+    expect(text).not.toMatch(/NOT nested in `args`/);
   });
 
   it('teaches the real roots of the high-risk keyed envelopes', () => {

@@ -250,6 +250,13 @@ export interface DeliveryAuthorization {
    * version is withdrawn and must not be offered to anyone new.
    */
   readonly servingYankedForExistingInstall: boolean;
+  /**
+   * The entitlement key version this decision was made under, or `null` for a
+   * refusal or a free release. Returned so a caller fetching the bytes passes
+   * the SAME key version this authorization used, instead of looking the grant
+   * up a second time and risking two answers.
+   */
+  readonly keyVersion: number | null;
 }
 
 export interface AuthorizeDeliveryInput {
@@ -286,6 +293,7 @@ export function authorizeDelivery(input: AuthorizeDeliveryInput): DeliveryAuthor
     sources: [],
     pinHealth: null,
     servingYankedForExistingInstall: false,
+    keyVersion: null,
   });
 
   // ── 1. Entitlement (fail-closed) ──────────────────────────────────────────
@@ -374,6 +382,7 @@ export function authorizeDelivery(input: AuthorizeDeliveryInput): DeliveryAuthor
     sources: resolution.sources,
     pinHealth: resolution.pinHealth,
     servingYankedForExistingInstall: servingYanked,
+    keyVersion: grant?.keyVersion ?? null,
   };
 }
 

@@ -71,9 +71,11 @@ So when a call could return a lot, bound it AT THE SOURCE first — the tool's o
 \`limit\`/filter/\`since\` args, or a narrower query. When you cannot, reduce it in
 flight with \`projection\`.
 
-**\`projection\` is a DISPATCH argument accepted on EVERY tool.** It sits BESIDE the
-tool's own args, never inside them — with \`tools:invoke\` that means alongside
-\`name\`/\`args\`, NOT nested in \`args\`, where the inner tool rejects it as an unknown key.
+**\`projection\` is a DISPATCH argument accepted on EVERY tool** — a sibling of the
+tool's own arguments, not one of them. With \`tools:invoke\` BOTH placements work: one
+beside \`name\`/\`args\` is forwarded into the target for you; one nested inside \`args\`
+is honoured as sent — prefer nesting if your client validates the published schema,
+which declares only \`name\`/\`args\`. Sending both reduces twice: inner, then wrapper.
 
     projection: { pick: ["results[].id", "results[].workItem.state"] } // work_items:get object-root envelope
     projection: { pick: ["[].id", "[].title"] }                 // ARRAY-root body (a bare list)

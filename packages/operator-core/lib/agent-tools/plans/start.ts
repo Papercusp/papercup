@@ -229,7 +229,10 @@ export default defineTool({
         // features from, so it IS an execution signal. Gating the earliest door means
         // a plan missing its arguments is caught here rather than by whichever
         // downstream thing eventually tries to run it.
-        const gate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx));
+        // The 'start' door is named explicitly rather than left to the default: the
+        // door is what the P-004 admission verdict is ABOUT, so a site that does not
+        // say which door it is cannot be audited as wired.
+        const gate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx), null, 'start');
         if (!gate.ok) {
           ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
           // The refusal already carries `slug`; only harnessSlug is additive here.

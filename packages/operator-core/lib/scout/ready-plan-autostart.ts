@@ -111,6 +111,7 @@ import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 import { routineStorageSlug } from '../pot-membership';
 import { BLENDER_PLAN_SQL_PATTERN } from '../agent-tools/plans/plan-provenance';
+import { checkPlanAdmission, type PlanAdmissionRefusal } from '../agent-tools/plans/plan-admission-gate';
 
 // ── tunables ──────────────────────────────────────────────────────────────────
 
@@ -220,7 +221,14 @@ export type ReadyScoutStartOutcome =
   /** The row is already on the axis (a race, or a pre-retirement start). */
   | 'already-started'
   /** No such plan row in this workspace/harness. */
-  | 'plan-not-found';
+  | 'plan-not-found'
+  /**
+   * P-004: the pot's governance has not admitted this exact plan revision. Distinct
+   * from every other outcome here because nothing was attempted — no promotion, no
+   * axis write — and the remedy is a ratification round rather than anything about
+   * this sweep.
+   */
+  | 'not-admitted';
 
 export interface ReadyScoutStartResult {
   outcome: ReadyScoutStartOutcome;
@@ -235,6 +243,8 @@ export interface ReadyScoutStartResult {
   specTriadMissing?: string[];
   /** The repair work-item filed by the promotion refusal, if any. */
   specTriadWorkItem?: string | null;
+  /** Full admission evidence for a 'not-admitted' outcome (P-004). */
+  admission?: PlanAdmissionRefusal;
 }
 
 /** Start ONE ratified scout plan in the hive's own workspace: promote its items
@@ -252,6 +262,27 @@ export async function startReadyScoutPlan(
   args: { workspaceId: string; planStorageSlug: string; planSlug: string },
   deps: { mugKettleSystemEnabledFn?: () => Promise<boolean> } = {},
 ): Promise<ReadyScoutStartResult> {
+  // P-004 admission, FIRST — before the axis read, the promotion, and the
+  // op_status='started' write below. This sweep is the one door with no human in
+  // front of it: it turns a `ready` flip into claimable work on its own schedule, so
+  // an unadmitted revision here becomes work the whole fleet picks up before anyone
+  // notices. It reaches none of the other wiring sites (it runs its own SQL and calls
+  // no plan-start-gate entrypoint), which is exactly why it needs its own call.
+  const admission = await checkPlanAdmission({
+    slug: args.planSlug,
+    door: 'autostart',
+    opts: { workspaceId: args.workspaceId, harnessSlug: args.planStorageSlug },
+  });
+  if (!admission.admitted) {
+    return {
+      outcome: 'not-admitted',
+      promoted: 0,
+      flagOff: false,
+      axisWritten: false,
+      admission: admission.refusal,
+    };
+  }
+
   // P-070 / D-064: op_status is the OPERATIONAL axis and retires with the tier.
   // Fail-CLOSED — mugKettleSystemEnabled's own catch resolves an unreadable flag
   // to retired, because a false `true` reserves freshly-promoted items for a

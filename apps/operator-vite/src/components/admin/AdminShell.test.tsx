@@ -57,6 +57,7 @@ const TAB_HREFS = [
   '/admin/dbos',
   '/admin/schedules',
   '/admin/tasks',
+  '/admin/work-scope',
   '/admin/cupboard-moderation',
 ];
 
@@ -101,7 +102,7 @@ describe('AdminShell', () => {
     expect(tabs.map((t) => t.getAttribute('href'))).toEqual(TAB_HREFS);
 
     // Static (non-lexicon) labels render verbatim.
-    for (const label of ['Run', 'Features', 'Triggers', 'Recipes', 'Git', 'Substrate', 'DBOS', 'Schedules']) {
+    for (const label of ['Run', 'Features', 'Triggers', 'Recipes', 'Git', 'Substrate', 'DBOS', 'Schedules', 'Tasks', 'Work scope']) {
       expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
   });

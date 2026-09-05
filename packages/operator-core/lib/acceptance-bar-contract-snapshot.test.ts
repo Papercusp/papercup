@@ -253,6 +253,19 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('keeps historical contracts visible without letting them invalidate a current discharge', () => {
+    const input = fixture(1);
+    const prior = { ...input.workContracts.rows[0]! };
+    input.clauses.rows[0]!.revision = 2;
+    input.clauses.rows[0]!.currentRevision = 2;
+    input.workContracts.rows[0]!.specRevision = 2;
+    input.workContracts.rows.push(prior);
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.workContracts).toHaveLength(2);
+    expect(snapshot.bars[0]!.readiness.workContract).toBe('current');
+    input.workContracts.rows = [prior];
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.readiness.workContract).toBe('stale');
+  });
   it('projects exact source revisions, per-BAR trace, authoritative grading, and one content hash', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(fixture());
 

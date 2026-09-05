@@ -712,6 +712,12 @@ export async function withPlanLock<T>(
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND plan_slug = ${slug}
         `;
+        const { synchronizeAcceptanceBarRevision } = await import('../../acceptance-bar-amendment');
+        await synchronizeAcceptanceBarRevision(tx as never, {
+          workspaceId, harnessSlug, rubricSlug: slug, rubricRevision: newVersion,
+          templateData: templateData!.data,
+          actorId: authenticatedActorId ?? 'system:plan-template-write',
+        });
       }
       if (writesInputSchema) {
         const schemaJson =

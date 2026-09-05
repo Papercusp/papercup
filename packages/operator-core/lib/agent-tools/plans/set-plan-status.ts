@@ -39,6 +39,7 @@ import { ObservationEvidenceError } from '../../harness/improvements/observation
 import { evaluatePlanAcceptanceGate, type CitationDeployment } from '../../plan-acceptance-gate';
 import { launchAcceptanceGrader, resolveAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
+import { checkPlanAdmission } from './plan-admission-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
@@ -442,6 +443,42 @@ export default defineTool({
               error: gate.code ?? 'ratification_gate_failed',
               message: gate.message,
               ...(gate.ideaId ? { ideaId: gate.ideaId } : {}),
+            };
+          }
+        }
+        // P-004 admission on the two status flips that are execution signals.
+        // ACTIVATION ('active') is when the orchestrator may start picking work off
+        // the plan; PROMOTION ('shipped') is when its result becomes the accepted
+        // record. Every other flip (draft/ready/superseded/deprecated) moves the
+        // document without running or accepting anything, so gating them would refuse
+        // edits governance has no interest in — and would make repairing a
+        // revision-mismatch impossible, since repair goes through a status write.
+        //
+        // Placed BEFORE planRevisionCapture deliberately: the capture stamps a new
+        // revision, and a refusal must leave the plan exactly as it was, not stamped
+        // with a revision that never took effect.
+        const admissionDoor = status === 'active' ? 'status' : status === 'shipped' ? 'promotion' : null;
+        if (admissionDoor) {
+          const admission = await checkPlanAdmission({
+            slug,
+            door: admissionDoor,
+            opts: {
+              ...(harnessSlug ? { harnessSlug } : {}),
+              ...(((sctx as { workspaceId?: string }).workspaceId ?? '').trim()
+                ? { workspaceId: ((sctx as { workspaceId?: string }).workspaceId ?? '').trim() }
+                : {}),
+            },
+          });
+          if (!admission.admitted) {
+            return {
+              ok: false as const,
+              slug,
+              error: admission.refusal.error,
+              code: admission.refusal.code,
+              message: admission.refusal.hint,
+              detail: admission.refusal.detail,
+              planRevisionHash: admission.refusal.planRevisionHash,
+              policyVersion: admission.refusal.policyVersion,
             };
           }
         }

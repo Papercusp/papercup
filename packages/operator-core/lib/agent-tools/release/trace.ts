@@ -2,6 +2,8 @@
 import * as path from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { gitPipelinePosition } from '../../git-pipeline-position';
 import { gitPipelineSnapshot } from '../../git-pipeline-stats';
 import { computeDeployStatus, integrationRoot } from '../../release-deploy-launch';
@@ -347,8 +349,18 @@ export default defineTool({
       },
     );
 
+    // P-005 / D-015 io seam: buildReleaseTrace stays pure, so the steering kill-switch is
+    // resolved HERE and handed in. `.catch(() => true)` fails OPEN to the shipped default-ON
+    // behaviour — a flag store that is down must not silently strip the certificate, because a
+    // missing certificate is indistinguishable from a healthy run in the rendered verb.
+    const progressCertificateEnabled = await getFlag(
+      FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE,
+      identity.ownerId,
+    ).catch(() => true);
+
     const trace = buildReleaseTrace({
       position,
+      progressCertificateEnabled,
       deploy,
       pipeline,
       inspectedKeys: keys,

@@ -14,7 +14,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { getPlanRow } from './source';
-import { checkPlanStartable, planStartRefusalContent } from './plan-start-gate';
+import { checkPlanStartable, planGateRefusalContent } from './plan-start-gate';
 import { runScheduledPlanFire } from '../../harness/routines/plan-run-action';
 
 const argsSchema = z.object({
@@ -59,8 +59,10 @@ export default defineTool({
     }
     // P-006 start gate — with any per-invocation overrides merged in FIRST, so what is
     // validated is exactly what the run will execute with, not the stored values.
-    const gate = await checkPlanStartable(args.slug, opts, args.inputs ?? null);
-    if (!gate.ok) return planStartRefusalContent(gate.refusal);
+    const gate = await checkPlanStartable(args.slug, opts, args.inputs ?? null, 'run-now');
+    // Whole result, not `.refusal`: this door can now be refused for readiness OR for
+    // P-004 admission, and the two carry different error tags.
+    if (!gate.ok) return planGateRefusalContent(gate);
 
     const { sql } = getOrgPg();
     const res = await runScheduledPlanFire(sql, {
