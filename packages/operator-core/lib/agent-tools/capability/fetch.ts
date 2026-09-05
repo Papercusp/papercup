@@ -2,8 +2,9 @@
  * capability:fetch — make an outbound HTTP request. A thin wrapper over the
  * platform `fetch`, routed through dispatch so a distinct `capability:net`
  * capability can be gated by the envelope (P-010,
- * `agent-capability-confinement-2026-06-13`). The OS sandbox's egress policy
- * remains the containment backstop (D-006).
+ * `agent-capability-confinement-2026-06-13`). The server-resolved operation
+ * profile also applies destination, DNS, redirect, method, credential, and
+ * streamed-size policy at this actual host-side network boundary.
  */
 
 import { once } from 'node:events';
@@ -143,7 +144,7 @@ export async function readResponseBody(
 export default defineTool({
   name: 'capability:fetch',
   description:
-    'Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.',
+    'Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.',
   guidance: {
     when: 'Fetch a URL — an API, a raw file, a docs page. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). A credential failure on a local ?superuser=1 endpoint arrives as HTTP 200 with the refusal inside the body, so judge those by the body, never by ok/status. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
     notWhen: 'Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).',
