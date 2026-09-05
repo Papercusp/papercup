@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import proposeTool, { rubricsProposeArgs } from './propose';
+import { normalizeRequirementSections } from '../../requirement-contract';
 
 const base = {
   rubricRef: 'release-readiness',
@@ -24,6 +25,17 @@ const lightAcceptanceCriterion = {
 };
 
 describe('rubrics:propose args — releaseGating kind contract', () => {
+  it('accepts unified sections at the real proposal door and refuses conflicting duplicates', () => {
+    const unified = { key: 'export', title: 'Export', barKey: 'R-1',
+      intent: { request: 'Export all rows.' },
+      acceptance: { condition: 'All filtered rows exported.', falsifier: 'A row is missing.', requiredTestLayers: ['e2e'] },
+      verification: { method: 'Compare a full fixture export.', check: { kind: 'instrument', instrumentKey: 'none' } },
+    };
+    const args = { ...base, kind: 'acceptance', subjectPlan: 'export', criteria: [unified] };
+    const parsed = rubricsProposeArgs.parse(args);
+    expect(normalizeRequirementSections(parsed.criteria[0]!)).toMatchObject({ model: 'All filtered rows exported.', method: 'Compare a full fixture export.', requiredTestLayers: ['e2e'] });
+    expect(rubricsProposeArgs.safeParse({ ...args, criteria: [{ ...unified, model: 'First page only.' }] }).success).toBe(false);
+  });
   it('rejects rubric refs that the canonical plan lock cannot store', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,

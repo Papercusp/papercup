@@ -287,6 +287,7 @@ export interface AcceptanceBarWriteGuardResult {
 
 /** Fields that participate in the canonical acceptance BAR meaning/hash. */
 export const ACCEPTANCE_BAR_MEANING_FIELDS = [
+  'intent',
   'model',
   'barKey',
   'barHash',
@@ -295,6 +296,7 @@ export const ACCEPTANCE_BAR_MEANING_FIELDS = [
   'mandatory',
   'requiredScope',
   'evidencePlane',
+  'requiredTestLayers',
   'passRatings',
   'coversBarKeys',
 ] as const;

@@ -17,7 +17,11 @@ import {
   acceptanceCriterionRoleSchema,
   acceptanceBarProvenanceSchema,
   acceptanceEvidencePlaneSchema,
+  requirementIntentSchema,
+  requirementAcceptanceSchema,
+  requirementVerificationSchema,
 } from '../plans/rubric-template';
+import { normalizeRequirementSections } from '../../requirement-contract';
 import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
@@ -25,6 +29,10 @@ import { trackDetached } from '../../detached-imports';
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
   title: z.string().min(1),
+  intent: requirementIntentSchema.optional(),
+  acceptance: requirementAcceptanceSchema.optional(),
+  verification: requirementVerificationSchema.optional(),
+  requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers,
   model: z
     .string()
     .min(1)
@@ -126,6 +134,12 @@ const criterion = z.object({
         "Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); " +
         'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
     ),
+}).superRefine((input, ctx) => {
+  try {
+    normalizeRequirementSections(input);
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
+  }
 });
 
 export const rubricsProposeArgs = z.object({
@@ -241,6 +255,11 @@ export const rubricsProposeArgs = z.object({
 
   args.criteria.forEach((criterion, index) => {
     const barFields = [
+      criterion.intent,
+      criterion.acceptance,
+      criterion.verification,
+      criterion.requiredTestLayers,
+      criterion.evidencePlane,
       criterion.bar,
       criterion.barKey,
       criterion.barHash,
@@ -278,7 +297,7 @@ export const rubricsProposeArgs = z.object({
   // explicitly-manual verification binding before meta-rubric vetting.
   if (args.kind === 'acceptance' && args.criteria.length > 0) {
     args.criteria.forEach((criterion, index) => {
-      if (!criterion.driftMarkers?.trim()) {
+      if (!(criterion.acceptance?.falsifier ?? criterion.driftMarkers)?.trim()) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['criteria', index, 'driftMarkers'],
@@ -288,7 +307,7 @@ export const rubricsProposeArgs = z.object({
         });
       }
     });
-    if (!args.criteria.some((criterion) => criterion.check != null)) {
+    if (!args.criteria.some((criterion) => (criterion.verification?.check ?? criterion.check) != null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['criteria'],
