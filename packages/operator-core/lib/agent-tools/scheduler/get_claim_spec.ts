@@ -71,6 +71,31 @@ export default defineTool({
         note:
           'a claim spec is addressed by WHO runs it (a cup or a fleet), never by the plan it happens to be working — one fleet\'s spec can admit several plans, so a plan slug cannot identify a spec row. Pass `fleet` (or `cupId`). For "who is on plan P" use fleet:assignments { plan }',
       },
+      // EI-21659569223378788 / EI-21825767595982783: a claim RECEIPT surfaces `specId`,
+      // so the natural read-back is to hand that same id straight to this tool. It is
+      // rejected, and the caller is left holding an identifier the read verb cannot
+      // consume. The spec row is addressed by its OWNER, never by its own id — the id
+      // identifies a revision, and revisions are reached through `history`, not selected.
+      specId: {
+        tool: 'scheduler:get_claim_spec',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'a spec is addressed by WHOSE it is, not by its own id — there is no by-id read. A `specId` off a claim receipt cannot be handed back here: translate it to the owner it belongs to (the receipt reports the fleet/cup alongside it) and pass `fleet` or `cupId`. To see PRIOR revisions of that lane rather than the current one, add `history: N` to the same owner-addressed call',
+      },
+      spec: {
+        tool: 'scheduler:get_claim_spec',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'this is the READ verb — it RETURNS the spec, it does not take one. Address the lane you want to read with `fleet` or `cupId`. If you meant to WRITE a spec, that is scheduler:set_claim_spec (which takes `harness`, not `workspace` — the scope args are inverted between the two)',
+      },
+      // EI-21834535376765161: a goal-NAMED fleet makes the goal id look like a selector.
+      // It is not — the fleet slug is, and the two are routinely different strings.
+      goalId: {
+        tool: 'scheduler:get_claim_spec',
+        args: { fleet: '<fleet-slug>' },
+        note:
+          'a goal is not a claim-spec selector, even when the fleet running it is named after the goal — the fleet SLUG is the selector and is often a different string. Resolve the goal to its fleet (fleet:assignments, or the `fleetSlug` your own coord:orient reports) and pass that as `fleet`',
+      },
     },
   },
   capability: 'work_items:read',
@@ -83,8 +108,27 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      cupId: z.string().min(1).optional().describe('the cup to read (its session/owner id) — exactly one of cupId | fleet'),
-      fleet: z.string().min(1).optional().describe('a fleet slug — reads the fleet-level sentinel spec directly (not a member\'s inherited view)'),
+      // EI-21268733197990138 / EI-21297588777075247 / EI-21391324675237501 /
+      // EI-21571638267356829: both selectors are `.optional()` in the projected JSON
+      // schema — which is the only truthful encoding of "exactly one of", since neither
+      // is required on its own — so a caller reading the schema sees two optional fields
+      // and reasonably calls with NEITHER (or both). The exactly-one rule lives in a
+      // .refine() that the schema cannot express, so each field's own describe() is the
+      // only place a caller meets it BEFORE the failure. Say it on both, not just cupId.
+      cupId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'the cup to read (its session/owner id). REQUIRED-EXACTLY-ONE of cupId | fleet — both are marked optional here only because either may be the one you pass; a call with NEITHER, or with BOTH, is rejected',
+        ),
+      fleet: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'a fleet slug — reads the fleet-level sentinel spec directly (not a member\'s inherited view). REQUIRED-EXACTLY-ONE of cupId | fleet (see cupId). A fleet MEMBER reading its own lane passes its own fleet slug here — coord:orient reports it as `fleetSlug`; there is no implicit "my fleet" default, because this read is also how you inspect a fleet you are NOT in',
+        ),
       workspace: z.string().max(120).optional().describe('override the workspace partition (default: resolved from your identity)'),
       history: z
         .number()
@@ -96,8 +140,20 @@ export default defineTool({
           `also return up to N (max ${CLAIM_SPEC_HISTORY_MAX}) PRIOR versions of this lane, newest first — the spec bytes a destructive write superseded, enough to rebuild it; 0 returns the current spec without prior versions`,
         ),
     })
+    // The refusal text is the ONLY surface a caller meets at the moment they are holding
+    // the bad call, and the old message named the rule without naming a remedy — so the
+    // two failing populations (no selector at all, and both at once) both read it as a
+    // restatement of the schema they had just misread. Branch on which mistake was made
+    // and name the concrete next call for each.
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
-      message: 'pass exactly ONE of cupId (read one cup, with fleet inheritance) or fleet (read a fleet\'s own sentinel spec)',
+      // Zod 4: the branch goes in `error` (a function), not in the params position —
+      // `.refine(check, (val) => params)` is a Zod 3 form and does not typecheck here.
+      error: (iss) => {
+        const passedBoth = Boolean((iss.input as { cupId?: unknown } | undefined)?.cupId);
+        return passedBoth
+          ? 'pass exactly ONE of cupId or fleet — you passed BOTH. They are different questions: cupId reads ONE cup (with fleet inheritance applied), fleet reads a fleet\'s OWN sentinel spec. Drop whichever you did not mean; to see what a cup actually runs under, keep cupId'
+          : 'pass exactly ONE of cupId (read one cup, with fleet inheritance) or fleet (read a fleet\'s own sentinel spec) — you passed NEITHER, and there is no implicit "my own lane" default. If you are a fleet member reading your own lane, pass your own fleet slug (coord:orient reports it as `fleetSlug`); to read one cup, pass cupId';
+      },
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
