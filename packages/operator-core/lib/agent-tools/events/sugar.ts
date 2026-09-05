@@ -879,7 +879,11 @@ defineTool({
 });
 
 // ── git-sync:await — "wake when my edit is committed" ────────────────────────
-defineTool({
+// EXPORTED (uniquely among this file's sugar verbs) so its argRedirects can be pinned
+// by a unit test without standing up the projection registry: every other verb here is
+// registered purely for its side effect, and a bare module import populates no registry,
+// so there is otherwise no handle to assert against. See contract-repair-p008-scope-keys.test.ts.
+export const gitSyncAwaitTool = defineTool({
   name: "git-sync:await",
   description:
     'Sleep until git-sync creates a LOCAL commit (git-sync:committed:<sha>) — the "is my edit committed locally yet" wait. Pass sha to target a commit; omit to wake on the next local git-sync commit. Then END YOUR TURN. The default timeout_sec (1800) already accounts for a slow cycle under heavy fleet concurrency (git-sync is a disk-bound op and can legitimately queue behind lock contention or host memory/IO pressure); a caller-set SHORT timeout_sec (e.g. 600 or less) risks firing on ordinary cadence variance, which reads as a false "host is broken" signal — prefer the default, or a longer explicit value, over a short one (EI-21915439526975712).',
@@ -896,6 +900,24 @@ defineTool({
       'deploy:await (the later "live on :3070" stage)',
       "events:await",
     ],
+    // EI-22381504248976138 / EI-21691010640177631 — the same key, filed twice: a caller
+    // reaches this tool from the git-sync ROUTINE (routines:list, whose own selector is
+    // `installSlug`, with `harness` only its compatibility alias) and carries that
+    // spelling across. The rejection lists the accepted keys, and `harness` is in that
+    // list — but the two filings still read the outcome as a schema/doc DRIFT ("discovery
+    // advertises installSlug, live schema accepts harness"), because nothing on the
+    // failure path says the two names are the SAME scope under different verbs.
+    //
+    // D-004 local form: `harness` is a declared key here, so this renders as a same-tool
+    // RENAME rather than sending the caller to another tool.
+    argRedirects: {
+      installSlug:
+        "harness — the same scope, spelled differently by the two verbs: routines:list selects the git-sync ROUTINE by `installSlug` (`harness` is only its alias), while this await selects the git-sync SCOPE by `harness`. RENAME the key rather than dropping it — a scope-less call with no `sha` is refused outright, and with a `sha` it waits on a GLOBAL commit event instead of your tree's",
+      install_slug:
+        "harness — this tool spells the scope `harness`. RENAME the key; snake_case is not accepted here, and dropping it changes what you wait on (no scope + no `sha` is refused; no scope WITH a `sha` waits globally)",
+      workspace:
+        "harness — git-sync commits are per-TREE, so the scope is the harness whose checkout you edited, not a workspace. RENAME the key. If you meant \"my edit reached origin\", that is a different event: await git-sync:egressed:<sha> via events:await",
+    },
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
