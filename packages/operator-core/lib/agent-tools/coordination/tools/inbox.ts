@@ -36,6 +36,7 @@ import {
 // the unread counter can share them (P-005 / D-006 — see the re-export below).
 import {
   isAmbientBroadcast,
+  isDirectedDelivery,
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
   inboxPriorityBucket,
@@ -753,6 +754,116 @@ export default defineTool({
         args: { include_retracted: true },
         note: 'coord:inbox does not accept include_retracted; use coord:feed { include_retracted: true } for the forensic/audit view that includes messages withdrawn via coord:retract.',
       },
+      // P-001 (tool-contract-repair-2026-09-05). The `since` entry above proved the
+      // mechanism: `since` filings ran ~20/day until argRedirects.since landed
+      // 2026-08-24 and ~3/day after. These are the clusters that entry did NOT cover,
+      // measured over all 511 coord:inbox probation filings by rejected key.
+      //
+      // READ/UNREAD (64 filings: unreadOnly 21, includeRead 21, unread 8, unread_only 7,
+      // include_read 6, includeHandled 1) — the largest uncovered cluster. This is a
+      // BETTER-ERROR, not an alias, and the distinction is the point: coord:inbox holds
+      // no per-reader read state at all (D-002 — agents never hand-carry read cursors),
+      // so there is nothing for `unreadOnly` to mean. `unanswered_only` is the real
+      // attention filter but is NOT a synonym — a message you have READ but not answered
+      // is included, and an unread broadcast is not. Aliasing these would silently answer
+      // a different question than the caller asked, which is exactly the fusion the plan's
+      // ALIAS-vs-BETTER-ERROR rule forbids; so each names the real capability AND the
+      // semantic difference, letting the caller decide rather than guessing for them.
+      unreadOnly: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'coord:inbox has no read/unread state — it is a VIEW, not a delta, and re-reading the same window does not empty it (D-002: agents never hand-carry read cursors). The attention filter is `unanswered_only`, which is NOT a synonym for unread: it keeps DIRECTED messages still awaiting your reply (a message you already read but never answered IS included; an unread broadcast is NOT). For "addressed to me, answered or not" use `directed: true`',
+      },
+      unread_only: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'coord:inbox has no read/unread state (D-002: it is a bounded VIEW, not a delta). `unanswered_only` keeps DIRECTED messages still awaiting your reply — read-but-unanswered IS kept, an unread broadcast is not; `directed: true` is the looser "addressed to me" filter',
+      },
+      unread: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'coord:inbox has no read/unread state (D-002: it is a bounded VIEW, not a delta). `unanswered_only` keeps DIRECTED messages still awaiting your reply — read-but-unanswered IS kept, an unread broadcast is not; `directed: true` is the looser "addressed to me" filter',
+      },
+      includeRead: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'there is no read/unread state to include or exclude — coord:inbox always returns the whole bounded VIEW (D-002). You do not need to opt already-read messages back IN; narrow the other way instead, with `unanswered_only: true` (still awaiting your reply) or `directed: true` (addressed to you, answered or not)',
+      },
+      include_read: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'there is no read/unread state to include or exclude — coord:inbox always returns the whole bounded VIEW (D-002). Narrow with `unanswered_only: true` (still awaiting your reply) or `directed: true` (addressed to you, answered or not)',
+      },
+      includeHandled: {
+        tool: 'coord:inbox',
+        args: { unanswered_only: true },
+        note: 'coord:inbox tracks no handled/unhandled state (D-002). `unanswered_only: true` is the closest real filter — DIRECTED messages still awaiting your reply; invert it by simply omitting it, since the unfiltered read already includes everything',
+      },
+      // TIME BOUNDS not spelled `since` (7 filings) — same ratified absence, same remedy;
+      // the exact-key match on `since` above could not reach either spelling.
+      since_ts: {
+        tool: 'coord:feed',
+        args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
+        note: 'coord:inbox has NO time filter under any spelling (D-002: a client-seeded timestamp is the WI-1600 footgun — seed it to wall-clock now and every earlier message is invisible forever); it is a VIEW bounded by `limit`. coord:feed takes an ISO-8601 `since`, not epoch millis',
+      },
+      after: {
+        tool: 'coord:feed',
+        args: { since: '<ISO-timestamp>', owner: '<your ownerId>' },
+        note: 'coord:inbox has NO time filter by ratified decision (D-002); it is a VIEW bounded by `limit`. A time-bounded read of your own traffic is coord:feed { since, owner } — the argument is named `since`, not `after`',
+      },
+      // TRANSPORT SCOPE (23 filings: harness 21, workspace 1, scope 1). Your inbox is
+      // scoped to YOU by the transport that carries the call; there is no scope selector
+      // to pass, so the remedy is to DROP the key rather than relocate it.
+      harness: {
+        tool: 'coord:inbox',
+        args: { limit: 50 },
+        note: 'coord:inbox is scoped to YOU, not to a harness — the outer transport scope already carries workspace/harness, so there is no scope selector to pass and no wider inbox to open. Drop the key. To read a DIFFERENT agent\'s traffic (which is not an inbox operation) use coord:feed { owner }',
+      },
+      workspace: {
+        tool: 'coord:inbox',
+        args: { limit: 50 },
+        note: 'coord:inbox is scoped to YOU by the transport that carries the call; workspace is not a selectable argument. Drop the key',
+      },
+      scope: {
+        tool: 'coord:inbox',
+        args: { limit: 50 },
+        note: 'coord:inbox has no scope selector — it returns YOUR mailbox, bounded by `limit`. Narrow with kinds/from/directed/unanswered_only instead; for another agent\'s traffic use coord:feed { owner }',
+      },
+      // BODY INCLUSION (15 filings: includeBody 6, includeBodies 4, include_body 3,
+      // bodyChars 1, truncateChars 1). Not an alias: these read as booleans and the real
+      // knob is a numeric budget, so accepting them would coerce a boolean into a char cap.
+      includeBody: {
+        tool: 'coord:inbox',
+        args: { max_body_chars: 0 },
+        note: 'bodies are ALWAYS included — there is no boolean to turn them on. They are TRUNCATED to a dynamic ~15KB budget so a default read cannot overflow the result cap; `max_body_chars` is that budget as a number (0 = no truncation). A truncated entry carries *_truncated:true and its full body is at coord:read { msg_id }',
+      },
+      includeBodies: {
+        tool: 'coord:inbox',
+        args: { max_body_chars: 0 },
+        note: 'bodies are ALWAYS included — there is no boolean to turn them on; they are truncated to a dynamic budget. `max_body_chars` is that budget as a number (0 = no truncation); the full body of a truncated entry is at coord:read { msg_id }',
+      },
+      include_body: {
+        tool: 'coord:inbox',
+        args: { max_body_chars: 0 },
+        note: 'bodies are ALWAYS included — there is no boolean to turn them on; they are truncated to a dynamic budget. `max_body_chars` is that budget as a number (0 = no truncation); the full body of a truncated entry is at coord:read { msg_id }',
+      },
+      bodyChars: 'max_body_chars',
+      truncateChars: 'max_body_chars',
+      // ANOTHER AGENT'S TRAFFIC (3 filings). An inbox is first-person by construction.
+      owner: {
+        tool: 'coord:feed',
+        args: { owner: '<agent-id>' },
+        note: 'coord:inbox reads YOUR OWN mailbox and takes no owner selector — reading another agent\'s traffic is a feed operation, not an inbox one. Use `from` to filter YOUR inbox to what a specific peer sent you',
+      },
+      sender: 'from',
+      // AMBIENT/NOTIFY (2 filings). `notify` is both a kind and ambient-categorized, so
+      // narrowing to it needs the ambient opt-in as well — a `kinds` filter alone silently
+      // returns nothing, which reads exactly like "there are no notifications".
+      include_notify: {
+        tool: 'coord:inbox',
+        args: { include_ambient: true, kinds: ['notify'] },
+        note: 'there is no include_notify flag. `notify` is a canonical `kinds` value AND ambient-categorized, so it is excluded by default: pass include_ambient:true to opt ambient back in, and add kinds:["notify"] to narrow to it. kinds alone returns an empty window, which looks like "no notifications" rather than a suppressed one',
+      },
     },
   },
   capability: "coord:read",
@@ -826,6 +937,18 @@ export default defineTool({
       .describe(
         "Compatibility alias for `unanswered_only`; prefer the canonical snake_case key. If both are supplied, `unanswered_only` wins.",
       ),
+    unanswered: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compatibility alias for `unanswered_only`; prefer the canonical snake_case key. If several are supplied, `unanswered_only` wins.",
+      ),
+    directed: z
+      .boolean()
+      .optional()
+      .describe(
+        "Narrow to entries addressed to a SPECIFIC recipient — i.e. drop entries broadcast to everyone (`to:['*']`); mixed `['*', you]` delivery counts as directed. Weaker than `unanswered_only`, which additionally requires that the sender expects a reply you have not sent: use `directed` for \"who wrote to ME\" (including messages you have already answered) and `unanswered_only` for \"what still needs my reply\". Applied after the ambient/intent/sender filters; summary.total reflects it and summary.broadcast_excluded counts what it dropped.",
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -850,7 +973,13 @@ export default defineTool({
     // EI-21374977511049906: older model-facing surfaces used camelCase for this
     // filter. Keep the snake_case spelling canonical while accepting the explicit
     // compatibility alias; an explicitly supplied `unanswered_only` wins.
-    const unansweredOnly = args.unanswered_only ?? args.unansweredOnly ?? false;
+    // P-001: `unanswered` joins `unansweredOnly` as a compatibility alias (16 filings).
+    // Canonical snake_case still wins when several are supplied.
+    const unansweredOnly =
+      args.unanswered_only ?? args.unansweredOnly ?? args.unanswered ?? false;
+    // P-001: hoisted above the derive because it participates in the windowing
+    // decision below, not just the post-read filtering.
+    const directedOnly = args.directed === true;
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -907,7 +1036,7 @@ export default defineTool({
             // These MUST be in the key — without them a cached 15-entry window
             // would be served to a caller asking for 500.
             limit,
-            bounded: !resolvedFrom && !unansweredOnly,
+            bounded: !resolvedFrom && !unansweredOnly && !directedOnly,
             ambient: includeAmbient,
             intents: !!args.include_intents,
           },
@@ -939,9 +1068,14 @@ export default defineTool({
           // a live read here excludes 7,651 ambient rows and coalesces 11,564
           // repeats out of ~20k. A bare LIMIT would be probable, not sound.
           //
-          // `from` / `unanswered_only` keep the FULL read: both are rare and far more
-          // selective than the default pipeline, so windowing them would page to
-          // exhaustion in many small queries instead of one large one.
+          // `from` / `unanswered_only` / `directed` keep the FULL read: all are rare and
+          // far more selective than the default pipeline, so windowing them would page to
+          // exhaustion in many small queries instead of one large one. `directed` must be
+          // in this set for CORRECTNESS as well as cost (P-001): the paging stopping rule
+          // below counts entries the DEFAULT pipeline keeps, and it cannot see a filter
+          // applied after the read — so a bounded directed read would stop as soon as the
+          // window held `limit` mostly-BROADCAST rows and then filter nearly all of them
+          // away, silently under-returning rather than paging on.
           //
           // NOTE: `ambient_excluded` and the resolution scan consequently count over
           // the window read, not all history — the intended trade, and it matches
@@ -952,7 +1086,7 @@ export default defineTool({
           readInbox(
             identity.ownerId,
             { since_ts: deliveryFloorTs, kinds: args.kinds },
-            !resolvedFrom && !unansweredOnly
+            !resolvedFrom && !unansweredOnly && !directedOnly
               ? {
                   enough: (entries) => {
                     const afterAmbient = includeAmbient
@@ -996,6 +1130,21 @@ export default defineTool({
     // resolution scan (annotateResolvedConditions).
     const bySender = filterInboxBySender(intentFiltered, resolvedFrom);
 
+    // P-001 (tool-contract-repair-2026-09-05): `directed` — drop entries broadcast to
+    // everyone, keeping only what was addressed to a specific recipient. The ambient
+    // filter above suppresses only CATEGORIZED system broadcasts, so an ordinary peer
+    // `to:['*']` message still reaches the default window and "who actually wrote to
+    // ME" was previously inexpressible. Applied here, after the ambient/intent/sender
+    // filters and BEFORE the unanswered narrowing, so the two compose in the order the
+    // arg descriptions promise and the summary counts below see the final set.
+    const directedInput = bySender as unknown as Array<Record<string, unknown>>;
+    const broadcastExcluded = directedOnly
+      ? directedInput.filter((e) => !isDirectedDelivery(e)).length
+      : 0;
+    const byDelivery = directedOnly
+      ? (directedInput.filter((e) => isDirectedDelivery(e)) as unknown as typeof bySender)
+      : bySender;
+
     // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'
     // `unanswered_directed` counter / fleet:leader-brief flag, via the SAME shared
     // primitive (unanswered-directed.ts) so coord:inbox can never disagree with what
@@ -1017,7 +1166,7 @@ export default defineTool({
         unansweredLookupFailed = true;
       }
     }
-    const filtered = filterInboxByUnanswered(bySender, unansweredMsgIds);
+    const filtered = filterInboxByUnanswered(byDelivery, unansweredMsgIds);
 
     // EI-6144: fold repeated categorized broadcasts into one ×N row BEFORE the
     // limit slice, so the returned window carries distinct signal instead of a
@@ -1053,6 +1202,10 @@ export default defineTool({
       intent_excluded: intentExcluded,
       // EI-6144: rows folded into a ×N representative (repeat_count on the row).
       coalesced_dupes: coalescedDupes,
+      // P-001: echo what `directed` dropped. Emitted only when the filter RAN, so a
+      // zero here always means "the filter ran and excluded nothing" rather than the
+      // ambiguous "either it excluded nothing or you never asked for it".
+      ...(directedOnly ? { directed: true, broadcast_excluded: broadcastExcluded } : {}),
       // EI-12930: when a `from` filter is passed, echo the FULL ownerId it resolved to
       // (a short prefix/label is rewritten via the same resolver coord:send uses) and flag
       // `from_unmatched` when it matches NO known agent — so an empty result from a mistyped

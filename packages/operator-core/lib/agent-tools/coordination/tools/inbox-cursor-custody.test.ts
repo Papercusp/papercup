@@ -67,7 +67,43 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     expect(tool.args.safeParse({ includeRead: false }).success).toBe(false);
     // The compact guidance intentionally omits the stale key; the strict args
     // schema above remains the enforcement surface for rejecting it.
-    expect(JSON.stringify(tool.guidance ?? {})).not.toMatch(/includeRead/i);
+    //
+    // NARROWED 2026-09-05 (tool-contract-repair-2026-09-05 P-001). This used to ban
+    // the substring /includeRead/i anywhere in the guidance blob. That ban could not
+    // tell two opposite things apart: ADVERTISING the stale key (what it guards) and
+    // REDIRECTING a caller who already sent it (what P-001 added — `includeRead` was
+    // the joint-largest rejected key in this tool's 511 probation filings, 21 of them).
+    // An argRedirects entry is keyed BY the rejected name, so it necessarily contains
+    // it, and is paid only on the failure path. The guard is therefore re-pinned to the
+    // intent rather than the substring — and this is a TIGHTENING, not a loosening: the
+    // prose surfaces a caller actually reads are now checked individually, and the
+    // redirect is additionally required to point AWAY from the stale key.
+    const guidance = tool.guidance as
+      | {
+          when?: string;
+          notWhen?: string;
+          chaining?: string;
+          argRedirects?: Record<string, unknown>;
+        }
+      | undefined;
+    for (const prose of [tool.description, guidance?.when, guidance?.notWhen, guidance?.chaining]) {
+      expect(prose ?? "").not.toMatch(/includeRead/i);
+    }
+    const includeReadRedirect = guidance?.argRedirects?.["includeRead"] as
+      | { tool?: string; args?: Record<string, unknown>; note?: string }
+      | string
+      | undefined;
+    if (includeReadRedirect !== undefined) {
+      // It may exist ONLY as a correction, and it must name the real capability
+      // instead of merely refusing the key (the bare-rejection failure shape).
+      const rendered =
+        typeof includeReadRedirect === "string"
+          ? includeReadRedirect
+          : `${includeReadRedirect.tool ?? ""} ${JSON.stringify(includeReadRedirect.args ?? {})} ${includeReadRedirect.note ?? ""}`;
+      expect(rendered).toMatch(/unanswered_only|directed/);
+      // And it must not resurrect the key as something the caller should send.
+      expect(rendered).not.toMatch(/pass\s+includeRead|use\s+includeRead/i);
+    }
   });
 
   it("documents that free-text q belongs to coord:feed, not coord:inbox", () => {
@@ -120,8 +156,33 @@ describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
   });
 
   it("does not steer callers to a since_ts poll in its guidance", () => {
-    const guidance = JSON.stringify(tool.guidance ?? {});
-    expect(guidance).not.toMatch(/since_ts/);
+    // NARROWED 2026-09-05 (tool-contract-repair-2026-09-05 P-001), same reasoning as the
+    // includeRead guard above: `since_ts` was one of 7 time-bound filings that the
+    // exact-key `since` redirect could not reach, so it now exists as an argRedirects
+    // KEY — a correction for a caller who already sent it, pointing at coord:feed. The
+    // banned thing is STEERING (offering it as a poll knob on this tool), which is what
+    // these assertions now check directly rather than inferring from a substring.
+    const guidance = tool.guidance as
+      | { when?: string; notWhen?: string; chaining?: string; argRedirects?: Record<string, unknown> }
+      | undefined;
+    for (const prose of [tool.description, guidance?.when, guidance?.notWhen, guidance?.chaining]) {
+      expect(prose ?? "").not.toMatch(/since_ts/);
+    }
+    const redirect = guidance?.argRedirects?.["since_ts"] as
+      | { tool?: string; args?: Record<string, unknown>; note?: string }
+      | string
+      | undefined;
+    if (redirect !== undefined) {
+      expect(typeof redirect === "string" ? "" : redirect.tool).toBe("coord:feed");
+      const note = typeof redirect === "string" ? redirect : (redirect.note ?? "");
+      // It must send the caller AWAY, and must not re-offer a cursor on this tool.
+      expect(note).toMatch(/no time filter/i);
+      expect(Object.keys(typeof redirect === "string" ? {} : (redirect.args ?? {}))).not.toContain(
+        "since_ts",
+      );
+    }
+    // Whatever else guidance says, the argument itself stays deleted.
+    expect(Object.keys(tool.args.shape)).not.toContain("since_ts");
   });
 });
 
