@@ -180,6 +180,41 @@ function normalizeStripeEvent(rawBody: string): NormalizeVerdict {
       }
       break;
     }
+    case 'charge.dispute.created':
+    case 'charge.dispute.funds_withdrawn':
+    case 'charge.dispute.updated':
+    case 'charge.dispute.closed': {
+      const disputeId = s(object, 'id');
+      if (!disputeId) {
+        return {
+          ok: false,
+          code: 'malformed-body',
+          detail: `${type} dispute object has no id`,
+          providerEventId: id,
+        };
+      }
+      // Only a funds-withdrawn/open/lost dispute reverses credits. A won or
+      // warning-needs-response update is authenticated and recorded by the
+      // webhook inbox, but does not move money.
+      const status = s(object, 'status');
+      const reverses =
+        type === 'charge.dispute.created' ||
+        type === 'charge.dispute.funds_withdrawn' ||
+        status === 'lost';
+      if (!reverses) break;
+      const orderId = orderRef(object);
+      if (!orderId) return missingOrder();
+      const amount = money(object, 'amount');
+      if (!amount) return invalidAmount();
+      emit('refund.succeeded', {
+        refundId: `dispute:${disputeId}`,
+        orderId,
+        amount,
+        providerRef: disputeId,
+        reversalReason: 'chargeback',
+      });
+      break;
+    }
     case 'payout.created':
     case 'payout.paid':
     case 'payout.failed': {
@@ -222,6 +257,13 @@ export function buildStripeCheckoutSessionParams(input: { order: Order; offer: O
   if (offer.pricingModel === 'free' || offer.pricingModel === 'per-use') return { ok: false, code: 'unsupported-pricing-model', detail: `${offer.pricingModel} offers do not go through Checkout` };
   if (order.amount.amountMinor !== offer.price.amountMinor || order.amount.currency !== offer.price.currency) return { ok: false, code: 'amount-mismatch', detail: 'order amount differs from the offer price' };
   if (order.amount.amountMinor === 0) return { ok: false, code: 'zero-amount', detail: 'Checkout requires a positive amount' };
+  const purchaseMetadata = {
+    orderId: order.orderId,
+    offerId: offer.offerId,
+    productId: product.productId,
+    buyerId: order.buyerId,
+    skuRef: product.skuRef,
+  };
   const priceData: Record<string, unknown> = {
     currency: order.amount.currency.toLowerCase(),
     unit_amount: order.amount.amountMinor,
@@ -236,8 +278,11 @@ export function buildStripeCheckoutSessionParams(input: { order: Order; offer: O
       success_url: input.successUrl,
       cancel_url: input.cancelUrl,
       line_items: [{ quantity: 1, price_data: priceData }],
-      metadata: { orderId: order.orderId, offerId: offer.offerId, productId: product.productId, buyerId: order.buyerId },
-      payment_intent_data: offer.pricingModel === 'one-time' ? { metadata: { orderId: order.orderId } } : undefined,
+      metadata: purchaseMetadata,
+      // Charges/disputes are downstream of the PaymentIntent, not the Checkout
+      // Session. Copy the complete purchase identity so a chargeback can still
+      // resolve the principal and top-up SKU without an address inference.
+      payment_intent_data: offer.pricingModel === 'one-time' ? { metadata: purchaseMetadata } : undefined,
     },
   };
 }

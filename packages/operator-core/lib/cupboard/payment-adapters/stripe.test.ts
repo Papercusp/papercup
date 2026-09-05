@@ -378,6 +378,55 @@ describe('stripe adapter — refund mappings', () => {
   });
 });
 
+describe('stripe adapter — dispute / chargeback mappings', () => {
+  const dispute = (over: Record<string, unknown> = {}) => ({
+    id: 'dp_1',
+    amount: 500,
+    currency: 'usd',
+    status: 'needs_response',
+    metadata: { orderId: 'order-1' },
+    ...over,
+  });
+
+  it('normalizes a dispute withdrawal into one deterministic credit reversal', () => {
+    for (const type of ['charge.dispute.created', 'charge.dispute.funds_withdrawn']) {
+      const [event] = normalizeOk(stripeEvent(type, dispute())).events;
+      expect(event.kind).toBe('refund.succeeded');
+      expect(event.payload).toEqual({
+        refundId: 'dispute:dp_1',
+        orderId: 'order-1',
+        amount: { amountMinor: 500, currency: 'USD' },
+        providerRef: 'dp_1',
+        reversalReason: 'chargeback',
+      });
+    }
+  });
+
+  it('reverses a closed lost dispute but not a won dispute', () => {
+    expect(
+      normalizeOk(stripeEvent('charge.dispute.closed', dispute({ status: 'lost' })))
+        .events[0].payload.refundId,
+    ).toBe('dispute:dp_1');
+    expect(
+      normalizeOk(stripeEvent('charge.dispute.closed', dispute({ status: 'won' })))
+        .events,
+    ).toEqual([]);
+  });
+
+  it('refuses a reversing dispute without order identity or valid money', () => {
+    const noOrder = adapter.normalize(
+      stripeEvent('charge.dispute.created', dispute({ metadata: {} })),
+      0,
+    );
+    expect(noOrder.ok === false && noOrder.code).toBe('missing-order-ref');
+    const badAmount = adapter.normalize(
+      stripeEvent('charge.dispute.created', dispute({ amount: -1 })),
+      0,
+    );
+    expect(badAmount.ok === false && badAmount.code).toBe('invalid-amount');
+  });
+});
+
 describe('stripe adapter — payout mappings', () => {
   const payout = (over: Record<string, unknown> = {}) => ({ id: 'po_1', amount: 9_000, currency: 'usd', metadata: { creatorId: 'creator-1' }, ...over });
 
@@ -441,8 +490,15 @@ describe('buildStripeCheckoutSessionParams', () => {
     const result = build();
     if (!result.ok) throw new Error(`expected a build, got ${result.code}`);
     expect(result.params.client_reference_id).toBe('order-1');
-    expect(result.params.metadata).toEqual({ orderId: 'order-1', offerId: 'offer-1', productId: 'prod-1', buyerId: 'buyer-1' });
-    expect(result.params.payment_intent_data).toEqual({ metadata: { orderId: 'order-1' } });
+    const metadata = {
+      orderId: 'order-1',
+      offerId: 'offer-1',
+      productId: 'prod-1',
+      buyerId: 'buyer-1',
+      skuRef: 'sku-1',
+    };
+    expect(result.params.metadata).toEqual(metadata);
+    expect(result.params.payment_intent_data).toEqual({ metadata });
   });
 
   it('lower-cases the currency and passes integer minor units through unchanged', () => {
