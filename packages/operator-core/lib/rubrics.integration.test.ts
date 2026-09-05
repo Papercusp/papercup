@@ -1264,11 +1264,18 @@ describe('template_data persistence boundary — the set-template-data door', ()
       WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     expect(history.n).toBe(4);
 
-    // Corrupt a projection in this isolated database to trigger a refusal AFTER
-    // the rubric UPDATE. The surrounding transaction must undo that UPDATE.
-    await db.adminSql`UPDATE harness_shared.plan_spec_clause_revisions SET source_bar_key='R-999'
-      WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}
-        AND spec_id='AUTO-BAR-R-1-P-001' AND revision=2`;
+    // Append a divergent projection in this isolated database to trigger a
+    // refusal AFTER the rubric UPDATE, preserving the immutable prior rows.
+    const { setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const divergent = await db.adminSql.begin((tx) => setSpecClause({
+      planSlug: subject, specId: 'AUTO-BAR-R-1-P-001', expectedRevision: 2,
+      planItemId: 'P-001', behavior: after!.criteria[0]!.model,
+      behaviorClass: 'happy-path', lifecycleStatus: 'draft', actorId: 'fixture',
+      sourceBar: { barKey: 'R-999', barHash: after!.criteria[0]!.barHash!,
+        barSetHash: after!.barSetHash!, rubricSlug: seeded.rubricSlug,
+        rubricRevision: after!.revision!, evidencePlane: 'tree' },
+    }, { executor: tx as never, workspaceId, harnessSlug: 'papercusp' }));
+    expect(divergent.status).toBe('revised');
     await expect(setTemplateDataDoor(seeded.rubricSlug, next)).rejects.toThrow(/acceptance_bar_revision_/);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(after!.revision);
   });
