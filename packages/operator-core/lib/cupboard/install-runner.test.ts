@@ -44,7 +44,11 @@ function packageFor(ref: string) {
 }
 
 function manifestFor(ref: string, over: Partial<CupboardReleaseManifest> = {}): CupboardReleaseManifest {
-  const [listingKind, listingRef, releaseVersion] = ref.split(':') as [string, string, string];
+  const [listingKind, listingRef, releaseVersion] = ref.split(':') as [
+    CupboardReleaseManifest['listingKind'],
+    string,
+    string,
+  ];
   return {
     schemaVersion: 1,
     listingKind,
@@ -447,7 +451,10 @@ describe('runInstallPlan — authorization is per step', () => {
       {
         eventId: 'evt-revoke',
         streamId: 'commerce-1',
-        kind: 'revocation',
+        // `refund` and `reversal` are what revoke a grant — there is no
+        // 'revocation' kind, and naming one produces an event the projection
+        // silently ignores.
+        kind: 'refund',
         version: 1,
         issuer: 'seller',
         sequence: 2,

@@ -224,6 +224,9 @@ export function lookupEntitlement(
  */
 // Re-exported, not redefined: the intent selects the yank rule, and that rule
 // lives with the retention window it depends on, in artifact-distribution.
+// A bare `export … from` re-exports without binding the name locally, so the
+// import below is what lets this module's own signatures name DeliveryIntent.
+import type { DeliveryIntent } from '../p2p/artifact-distribution';
 export { DELIVERY_INTENTS, type DeliveryIntent } from '../p2p/artifact-distribution';
 
 export type DeliveryRefusalCode =
