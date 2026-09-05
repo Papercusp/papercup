@@ -74,6 +74,32 @@ export default defineTool({
     when: 'Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource. The fileLocks block measures the FILE plane on this same call — holders[] alone never answers "is a peer on this file".',
     notWhen: 'Full file-lock rows or a release handle — that is locks:queue; this carries a bounded fileLocks summary only.',
     chaining: 'Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? | q?, limit? } → locks:acquire_resource { resource, mode }.',
+    // EI-20206183390542424 (+ its independent re-filing EI-22367587259064593).
+    // Measured in harness_shared.tool_invocations: `paths` 48 calls / 37 distinct
+    // agents, `mine` 18/17, `harness` 12/12, `workspace` 11/10 — all rejected.
+    //
+    // Note what does NOT work: description, `when` AND `chaining` above each already
+    // say "omit workspace/harness", and 22 agents passed them anyway. Always-on prose
+    // is read while CHOOSING a tool, not while repairing a rejected call, so it cannot
+    // reach the caller who has already guessed. argRedirects is the only channel on
+    // the FAILURE path, and it costs nothing against the prompt-weight budget.
+    argRedirects: {
+      // The biggest cluster by far, and a genuine tool-switch: locks:list is the
+      // RESOURCE plane (registered named resources), locks:queue is the FILE plane.
+      // `when` above already warns that holders[] never answers "is a peer on this
+      // file" — this delivers that same sentence where it is actionable.
+      paths: {
+        tool: 'locks:queue',
+        args: { paths: ['<repo-relative path>'] },
+        note: 'locks:list is the RESOURCE plane (registered named resources like git-sync:<slug>); FILE locks are a different plane and live in locks:queue { paths: [...] }. This tool carries only a bounded `fileLocks` SUMMARY, never per-path rows, so there is nothing here for `paths` to filter. Use locks:queue for "who holds this file".',
+      },
+      workspace:
+        'this tool has NO `workspace` arg and needs none — it is a workspace-global diagnostic that already reads your session scope, so the rows are that workspace\'s. DROP the key. Narrow with `resource` (exact registered name) or `q` + `limit` (substring browse); there is no cross-workspace listing.',
+      harness:
+        'the resource-lock registry is workspace-global, NOT harness-scoped, so there is nothing for `harness` to select — DROP the key rather than looking for its correct spelling. Narrow with `resource`, or `q`/`limit` over resource NAMES (the git-sync:<slug> family is per-install, so `q: "<slug>"` is usually the filter you actually wanted).',
+      mine:
+        'there is no self-filter — DROP the key and read `holders[]`, which already names the holder of every resource; match your own ownerId against it. `q`/`limit` narrow resources[] only and never narrow holders[], so a bounded browse still shows every holder of what it returns.',
+    },
     seeAlso: [
       'locks:acquire_resource (acquire a resource you found)',
       'locks:queue (file-lock contention, not named resources)',
