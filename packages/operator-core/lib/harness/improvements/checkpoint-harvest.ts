@@ -261,6 +261,18 @@ export interface HarvestResult {
  * Iterates because the decoration nests in either order (`**1. ` is emphasis-then-ordinal,
  * `1. **` the reverse), then drops any residual emphasis spans: a title is indexed as plain
  * text, so a stray `**` in the middle is noise a reader has to parse around.
+ *
+ * ⛔ THE RESIDUAL STRIP MUST NOT BE A BLANKET `replace(/\*\*|__/g, '')`. It used to be, and
+ * that silently CORRUPTED every identifier containing a double underscore — the harvested
+ * title for a real completion stored `routes/root.tsx:92` for `routes/__root.tsx:92`
+ * (EI-22376201004890886, minted 2026-09-04T23:40Z). That is the worst possible field to
+ * mangle: this title IS the row's whole subject index, so the damage is a path that no
+ * longer resolves and no longer matches a search for the file it names. `__` is markdown
+ * emphasis only at a whitespace/string boundary; inside a token it is part of the name, and
+ * this repo has 1,265 tracked paths that rely on that (`__root.tsx`, `__tests__`,
+ * `__mocks__`). So unwrap BALANCED spans whose opener sits on such a boundary, and leave an
+ * intra-token marker alone — keeping a rare stray `**` is far cheaper than destroying a
+ * subject identifier.
  */
 export function stripTitleDecoration(s: string): string {
   let out = s;
@@ -274,7 +286,19 @@ export function stripTitleDecoration(s: string): string {
       .replace(/^(?:\*\*|__|\*|_)\s*/, ''); // emphasis opener
     if (out === before) break;
   }
-  return out.replace(/\*\*|__/g, '').trim();
+  // Emphasis markers are stripped only where they sit on a whitespace/string BOUNDARY, which
+  // is where markdown puts them; an intra-token marker is part of the name and survives. The
+  // orphan passes are load-bearing, not belt-and-braces: the loop above consumes a LEADING
+  // opener (`**1. x**` → `1. x**`), so its partner is left unbalanced and only the orphan
+  // rule can clear it. Same boundary test also spares a glob like `src/**/*.ts`.
+  return out
+    // balanced span whose opener is on a boundary: `a __bold__ b` → `a bold b`
+    .replace(/(^|\s)(\*\*|__)(?=\S)([\s\S]+?)\2(?!\w)/g, '$1$3')
+    // orphaned opener (partner already eaten by the leading-decoration loop)
+    .replace(/(^|\s)(\*\*|__)(?=\S)/g, '$1')
+    // orphaned closer, e.g. the trailing `**` of `**1. THE THING**`
+    .replace(/(?<=\S)(\*\*|__)(?=\s|$)/g, '')
+    .trim();
 }
 
 /**

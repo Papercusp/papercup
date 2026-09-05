@@ -153,6 +153,38 @@ describe('boundInsight — pure title/body split + bounds', () => {
     expect(out!.title.length).toBeGreaterThan(MAX_TITLE_CHARS / 2);
     expect(out!.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
   });
+
+  it('does NOT eat the double underscore inside an identifier — the subject must survive', () => {
+    // REGRESSION, from a real harvested row: EI-22376201004890886 (minted 2026-09-04T23:40Z
+    // from a work_items:complete coordNotes) stored `routes/root.tsx:92` for a first line
+    // that said `routes/__root.tsx:92`. A blanket /__/g strip treated a path segment as
+    // markdown emphasis, so the title named a file that does not exist — and the title is
+    // the row's ONLY index, for a repo with 1,265 tracked `__` paths.
+    const line =
+      'apps/operator-vite eager CSS: harness.css is 396KB imported at routes/__root.tsx:92';
+    expect(boundInsight(line)?.title).toContain('routes/__root.tsx:92');
+    expect(boundInsight('src/__tests__/typecheck-ratchet.test.ts is the whole-tree leg')?.title)
+      .toContain('src/__tests__/');
+
+    // THE CONTROL, kept permanently: the pre-fix implementation, verbatim. It must MANGLE
+    // the same input — otherwise the assertions above pass vacuously and would keep passing
+    // if the residual strip were reverted to a blanket replace.
+    const naive = (s: string) => s.replace(/\*\*|__/g, '');
+    expect(naive(line)).toContain('routes/root.tsx:92');
+    expect(naive(line)).not.toContain('routes/__root.tsx:92');
+  });
+
+  it('still unwraps a REAL emphasis span, so the identifier fix did not disable stripping', () => {
+    // CALIBRATION for the test above: `__` at a whitespace boundary is genuine markdown and
+    // must still be removed. Without this, "preserve __" could be satisfied by not stripping
+    // anything at all.
+    expect(boundInsight('the guard __fails open__ on a dims mismatch')?.title).toBe(
+      'the guard fails open on a dims mismatch',
+    );
+    expect(boundInsight('a **bold** claim about the digest')?.title).toBe(
+      'a bold claim about the digest',
+    );
+  });
 });
 
 describe('pickLexicalCoalesce — pure verbatim-repeat detection', () => {
