@@ -44,6 +44,39 @@ beforeEach(() => {
   readJournalMock.mockReset().mockResolvedValue(CLEAN);
 });
 
+describe('logs:read — payload-tier shapers are WIRED (EI-20203342112661815)', () => {
+  // read-shape.test.ts proves the shaper's behaviour; this proves the tool
+  // actually reaches it. Without the `shape` seam the shaper is dead code and
+  // the generic result door resumes cutting the array HEAD — handing back the
+  // OLDEST rows while the tool documents "newest kept".
+  const shapeOf = (tier: 'trimmed' | 'standard') =>
+    (logsReadTool as unknown as { shape?: Record<string, (d: unknown) => unknown> }).shape?.[tier];
+
+  it('declares both tier shapers', () => {
+    expect(typeof shapeOf('trimmed')).toBe('function');
+    expect(typeof shapeOf('standard')).toBe('function');
+  });
+
+  it('the wired trimmed shaper bounds an oversized payload and keeps the NEWEST rows', () => {
+    const entries = Array.from({ length: 120 }, (_, i) => ({
+      unit: 'papercusp-dev-api.service',
+      ts: `2026-09-05T07:00:00.${String(i).padStart(3, '0')}Z`,
+      level: 'info',
+      repeat: 1,
+      message: `seq-${i} ${'x'.repeat(500)}`,
+    }));
+    const out = shapeOf('trimmed')!({ entries, matched: 121, truncated: true }) as {
+      entries: Record<string, unknown>[];
+      payloadBounded?: { droppedOldest?: number };
+    };
+    const kept = out.entries.filter((r) => !r._truncated).map((r) => String(r.message));
+    expect(kept.length).toBeLessThan(120);
+    expect(kept.at(-1)).toMatch(/^seq-119 /);
+    expect(kept.some((m) => m.startsWith('seq-0 '))).toBe(false);
+    expect(out.payloadBounded?.droppedOldest).toBeGreaterThan(0);
+  });
+});
+
 describe('logs:read — dispatch transaction boundary', () => {
   it('does not retain an ambient workspace transaction during journalctl host I/O', () => {
     expect((logsReadTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
