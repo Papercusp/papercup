@@ -96,6 +96,25 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     description: 'Full-text search the docs when you do not know the page slug.',
     input: obj({ query: { type: 'string' }, ...HARNESS_ARG }, ['query']),
   },
+  {
+    name: 'docs:author',
+    description:
+      'Create or replace a PG-canonical manual / agent-insights page. This is the only supported durable docs write; never hand-write the projected MDX file.',
+    input: obj({
+      slug: { type: 'string' },
+      title: { type: 'string' },
+      description: { type: 'string' },
+      body: { type: 'string' },
+      documents: { type: 'array', items: { type: 'string' } },
+      tags: { type: 'array', items: { type: 'string' } },
+      plans: { type: 'array', items: { type: 'string' } },
+      section: { type: 'string', description: 'Defaults to agent-insights.' },
+      status: { type: 'string', enum: ['active', 'draft', 'superseded'] },
+      verify: { type: 'boolean' },
+      overwrite: { type: 'boolean' },
+      ...HARNESS_ARG,
+    }, ['slug', 'title', 'body']),
+  },
   // --- plans (PG-canonical project history, harness-scoped) ---
   {
     name: 'plans:list',
@@ -164,6 +183,19 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
         harness: { type: 'string' },
       },
     },
+  },
+  {
+    name: 'work_items:claim',
+    description:
+      'Claim a directed work item and start it. Pass `row` as headerless CSV in column order ' +
+      'id,assignee?,harness?,force?,reason?; the shortest valid row is the exact WI-/EI- id returned ' +
+      'by coord:orient. Prefer this direct claim over rediscovering the backing plan.',
+    input: obj({
+      row: {
+        type: 'string',
+        description: 'Headerless CSV: id,assignee?,harness?,force?,reason?.',
+      },
+    }, ['row']),
   },
   {
     name: 'work_items:complete',

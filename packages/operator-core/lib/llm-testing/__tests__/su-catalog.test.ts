@@ -89,6 +89,19 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     }
   });
 
+  it('exposes the PG-canonical docs:author write required by SU-S12', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'docs:author')!;
+    const input = entry.input as { properties?: Record<string, unknown>; required?: string[] };
+    expect(input.properties).toMatchObject({
+      slug: { type: 'string' },
+      title: { type: 'string' },
+      body: { type: 'string' },
+      harness: { type: 'string' },
+    });
+    expect(input.required).toEqual(['slug', 'title', 'body']);
+    expect(entry.description).toMatch(/PG-canonical/i);
+  });
+
   it('advertises improvements:capture ideation.cheapExperiment as a structured ScoutExperiment', () => {
     const entry = SU_CATALOG.find((e) => e.name === 'improvements:capture')!;
     const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
@@ -130,6 +143,16 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
       maxItems: 100,
     });
     expect(e.input).not.toHaveProperty('anyOf');
+  });
+
+  it('exposes the direct work_items:claim wire contract required by SU-S27', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'work_items:claim')!;
+    const input = entry.input as { properties?: Record<string, unknown>; required?: string[] };
+
+    expect(input.properties).toMatchObject({ row: { type: 'string' } });
+    expect(input.required).toEqual(['row']);
+    expect(entry.description).toMatch(/id,assignee\?,harness\?,force\?,reason\?/);
+    expect(entry.description).toMatch(/direct(ed)? claim/i);
   });
 
   it('locks:acquire exposes the queued wake path required by SU-S11', () => {
