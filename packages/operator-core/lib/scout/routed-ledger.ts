@@ -327,6 +327,42 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
     .catch(() => {});
 }
 
+/**
+ * Propagate a terminal work-item state to the routed-idea outcome cache.
+ *
+ * `refreshScoutOutcomes` remains the authoritative reconciliation path, but waiting
+ * for its next sweep leaves freshly terminalized `wi:` routes looking actionable.
+ * Keep this write in the routed-ledger module so the work-item lifecycle can reach
+ * it through a lazy import without creating a static work-items ↔ scout cycle.
+ */
+export async function propagateWorkItemOutcome(input: {
+  workItemId: string;
+  state: string;
+  workspaceId?: string;
+  harnessSlug?: string | null;
+}): Promise<number> {
+  const normalizedState = input.state.trim().toLowerCase();
+  const winningStates = CHANGE_FEED_COMPLETION_STATUSES as readonly string[];
+  const losingStates = WORK_ITEM_LOSS_STATUSES as readonly string[];
+  if (![...winningStates, ...losingStates].includes(normalizedState)) return 0;
+
+  const outcome = losingStates.includes(normalizedState) ? 'lost' : 'won';
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const routedRef = `wi:${input.workItemId}`;
+  const now = Date.now();
+  const { sql } = getOrgPg();
+  const rows = await sql<{ idea_id: string }[]>`
+    UPDATE harness_shared.scout_routed_ideas
+       SET outcome = ${outcome},
+           outcome_checked_at = ${now}
+     WHERE workspace_id = ${ws}
+       AND routed_ref = ${routedRef}
+       ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
+       AND outcome IS DISTINCT FROM ${outcome}
+    RETURNING idea_id`;
+  return rows.length;
+}
+
 /** Input to {@link gradeRoutedIdea} — one grader's verdict on a routed idea (C-2). */
 export interface GradeRoutedIdeaInput {
   /** The routed idea's id (the ledger PK). */
