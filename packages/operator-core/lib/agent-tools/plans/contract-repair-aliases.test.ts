@@ -226,3 +226,44 @@ describe('plans:new — `goal` aliases `rationale`', () => {
     expect(newTool.args.shape.goal.description).toMatch(/`content`/);
   });
 });
+
+describe('plans:items — `plan` as an alias for `slug` (EI-22387676408573400)', () => {
+  // Filed as invalid_args by a caller narrowing a read to one plan. On a tool
+  // named plans:items there is no second thing `plan` could select, so the
+  // guess was reasonable and the refusal was the defect.
+  it('accepts `plan` and resolves it to slug', () => {
+    const parsed = parseOk(itemsTool.args, { harness: 'papercusp', plan: 'some-plan' });
+    expect(parsed.slug).toBe('some-plan');
+    expect(parsed.plan).toBeUndefined();
+  });
+
+  // The rename must happen BEFORE parse, not in the handler: the cross-plan
+  // `.refine` reads args.slug, so a handler-side alias would still reject an
+  // exact item selection that DID name its plan — and it would fail as
+  // "itemIds requires an exact plan slug", the confusing message the alias
+  // exists to remove. This is the assertion that pins WHERE the fix lives.
+  it('satisfies the itemIds-requires-a-slug refine when the plan came in as `plan`', () => {
+    const parsed = parseOk(itemsTool.args, {
+      harness: 'papercusp',
+      plan: 'some-plan',
+      itemIds: ['P-006'],
+    });
+    expect(parsed.slug).toBe('some-plan');
+  });
+
+  it('lets an explicit `slug` win and drops the duplicate `plan`', () => {
+    const parsed = parseOk(itemsTool.args, {
+      harness: 'papercusp',
+      slug: 'wins',
+      plan: 'loses',
+    });
+    expect(parsed.slug).toBe('wins');
+    expect(parsed.plan).toBeUndefined();
+  });
+
+  // Falsifiability control: an alias must not make the strict surface
+  // permissive. The loudness on a genuinely unknown key is the feature.
+  it('still refuses an unrelated unknown key', () => {
+    expect(itemsTool.args.safeParse({ harness: 'papercusp', planSlug: 'x' }).success).toBe(false);
+  });
+});
