@@ -69,6 +69,23 @@ function fakeDeps(over: Partial<ProbeDeps> = {}): ProbeDeps & { held: Map<string
 }
 
 describe('runProbeCycle + evaluateProbe', () => {
+  // A green verdict over ZERO measurements is the "passing probe that never read
+  // the value" class: on an empty array the reduce yields 0 and the find yields
+  // undefined, so ok would be vacuously true and indistinguishable from a real
+  // all-steps-passed cycle. Pinned because the guard is otherwise unreachable
+  // from the live caller (runProbeCycle always pushes `baseline` first), which is
+  // exactly the condition under which such a guard silently rots.
+  it('a cycle that measured NOTHING is never green, and fails open to file', () => {
+    const verdict = evaluateProbe([], 10_000);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.failedStep).toBe('no-steps');
+    expect(verdict.sloBreached).toBe(false);
+    expect(verdict.totalMs).toBe(0);
+    // 'no-steps' matches no real ProbeStep, so there is no `contended` step to
+    // downgrade on: the disposition must be 'file', never 'ok' or 'note'.
+    expect(breachDisposition(verdict, [])).toBe('file');
+  });
+
   it('happy path: all eight steps (baseline first) pass and the lock ends free', async () => {
     const deps = fakeDeps();
     const steps = await runProbeCycle(deps, idA, idB);

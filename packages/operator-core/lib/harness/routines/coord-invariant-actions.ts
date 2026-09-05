@@ -211,8 +211,28 @@ export interface ProbeVerdict {
   sloBreached: boolean;
 }
 
-/** Pure: judge a completed probe cycle against the total-cycle SLO. */
+/** Pure: judge a completed probe cycle against the total-cycle SLO.
+ *
+ *  A cycle that measured NOTHING is never green. Without this guard
+ *  `evaluateProbe([], slo)` returns ok:true — there is no failed step to find,
+ *  and totalMs 0 is <= any SLO — i.e. a GREEN VERDICT OVER ZERO MEASUREMENTS.
+ *  That is the "passing probe that never read the value" class: the reduce and
+ *  the find are both vacuously satisfied by an empty array, so the verdict is
+ *  indistinguishable from a real all-steps-passed cycle.
+ *
+ *  Not reachable from the live caller today: runProbeCycle always pushes
+ *  `baseline` first, and its `timed()` helper pushes a step on the throw path
+ *  too, so every early return carries >= 1 step. This keeps the failure mode
+ *  unrepresentable for the NEXT caller of this exported pure function rather
+ *  than relying on that invariant holding elsewhere.
+ *
+ *  Fails OPEN by design: 'no-steps' matches no real ProbeStep, so
+ *  breachDisposition() finds no `contended` step to downgrade on and returns
+ *  'file' — a probe that measured nothing raises a bug instead of reporting ok. */
 export function evaluateProbe(steps: ProbeStep[], totalSloMs: number): ProbeVerdict {
+  if (steps.length === 0) {
+    return { ok: false, totalMs: 0, failedStep: 'no-steps', sloBreached: false };
+  }
   const totalMs = steps.reduce((n, s) => n + s.ms, 0);
   const failed = steps.find((s) => !s.ok);
   return {

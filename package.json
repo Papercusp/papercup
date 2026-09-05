@@ -258,7 +258,7 @@
     "lint:narrowing-gated-assertions:census": "node scripts/check-narrowing-gated-assertions.mjs --census",
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
     "lint:no-new-result-door-optout": "node scripts/check-result-door-optouts.mjs",
-    "lint:no-new-result-door-optout:list": "node scripts/check-result-door-optouts.mjs --list",
+    "lint:no-new-result-door-optout:census": "node scripts/check-result-door-optouts.mjs --list",
     "lint:no-capacity-maxima": "node scripts/check-no-capacity-maxima.mjs",
     "lint:no-hand-rolled-cli-entry": "node scripts/check-no-hand-rolled-cli-entry.mjs",
     "lint:no-unhosted-remote-core": "node scripts/check-no-unhosted-remote-core.mjs",
