@@ -8,22 +8,46 @@
 
 import { once } from 'node:events';
 import { createWriteStream, type WriteStream } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { mcpEndpointHint } from './fetch-mcp-hint';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { heuristicScreener, labelExternalContent } from '../../external-content';
+import { resolveOperationBoundaryProfile } from './boundary-profile';
+import {
+  CapabilityFetchPolicyError,
+  DEFAULT_MAX_REDIRECTS,
+  fetchWithCapabilityPolicy,
+} from './fetch-policy';
 
 const DEFAULT_MAX_BYTES = 100_000;
 const HARD_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+const HARD_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024;
 
 type BoundedBody = {
   body: string;
   truncated: boolean;
   logPath?: string;
 };
+
+export class CapabilityFetchSizeLimitError extends Error {
+  readonly code = 'response_size_limit_exceeded';
+
+  constructor(
+    readonly maxDownloadBytes: number,
+    readonly observedBytes: number,
+  ) {
+    super(
+      `response exceeded the ${maxDownloadBytes}-byte capability:fetch download limit ` +
+        `(observed at least ${observedBytes} bytes); the stream was cancelled`,
+    );
+    this.name = 'CapabilityFetchSizeLimitError';
+  }
+}
 
 /**
  * Read a response without materializing an unbounded body in memory. The first
@@ -35,8 +59,15 @@ export async function readResponseBody(
   response: Response,
   maxBytes: number,
   stateDir: string | undefined,
+  maxDownloadBytes: number = DEFAULT_MAX_DOWNLOAD_BYTES,
 ): Promise<BoundedBody> {
   if (!response.body) return { body: '', truncated: false };
+
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxDownloadBytes) {
+    await response.body.cancel('capability:fetch response-size limit');
+    throw new CapabilityFetchSizeLimitError(maxDownloadBytes, declaredLength);
+  }
 
   const reader = response.body.getReader();
   const prefix: Uint8Array[] = [];
@@ -57,6 +88,13 @@ export async function readResponseBody(
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      if (totalBytes + chunk.byteLength > maxDownloadBytes) {
+        const observedBytes = totalBytes + chunk.byteLength;
+        try { await reader.cancel('capability:fetch response-size limit'); } catch { /* best effort */ }
+        stream?.destroy();
+        if (logPath) await rm(logPath, { force: true }).catch(() => undefined);
+        throw new CapabilityFetchSizeLimitError(maxDownloadBytes, observedBytes);
+      }
       totalBytes += chunk.byteLength;
 
       if (!truncated && totalBytes <= maxBytes) {
@@ -121,10 +159,13 @@ export default defineTool({
     headers: z.record(z.string(), z.string()).optional().describe('Request headers.'),
     body: z.string().optional().describe('Request body (string).'),
     max_bytes: z.number().int().positive().max(HARD_MAX_BYTES).optional().describe(`Max body bytes returned inline (default ${DEFAULT_MAX_BYTES}); beyond spills to a file.`),
+    max_download_bytes: z.number().int().positive().max(HARD_MAX_DOWNLOAD_BYTES).optional().describe(`Hard streamed response ceiling (default ${DEFAULT_MAX_DOWNLOAD_BYTES}); the body is cancelled before further buffering or disk growth.`),
+    max_redirects: z.number().int().min(0).max(10).optional().describe(`Maximum manually validated redirects (default ${DEFAULT_MAX_REDIRECTS}).`),
     timeout_ms: z.number().int().positive().max(120_000).optional().describe(`Request timeout in ms (default ${DEFAULT_TIMEOUT_MS}).`),
   }),
   async handler(args, ctx) {
-    const maxBytes = args.max_bytes ?? DEFAULT_MAX_BYTES;
+    const maxDownloadBytes = args.max_download_bytes ?? DEFAULT_MAX_DOWNLOAD_BYTES;
+    const maxBytes = Math.min(args.max_bytes ?? DEFAULT_MAX_BYTES, maxDownloadBytes);
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
     // Combine the dispatch abort signal with our own timeout.
@@ -134,14 +175,21 @@ export default defineTool({
     else ctx.signal.addEventListener('abort', onParentAbort, { once: true });
     const timer = setTimeout(() => ac.abort(), timeoutMs);
 
+    let release: (() => Promise<void>) | undefined;
     try {
-      const res = await fetch(args.url, {
+      const profile = await resolveOperationBoundaryProfile(ctx);
+      const request = await fetchWithCapabilityPolicy({
+        url: args.url,
         method: args.method ?? 'GET',
         headers: args.headers,
         body: args.body,
         signal: ac.signal,
+        profile,
+        maxRedirects: args.max_redirects,
       });
-      const bounded = await readResponseBody(res, maxBytes, ctx.stateDir);
+      release = request.release;
+      const res = request.response;
+      const bounded = await readResponseBody(res, maxBytes, ctx.stateDir, maxDownloadBytes);
       const { body: bodyOut, truncated, logPath } = bounded;
       const headers: Record<string, string> = {};
       res.headers.forEach((v, k) => { headers[k] = v; });
@@ -153,7 +201,7 @@ export default defineTool({
       // (D-004). Provenance is metadata; quarantining is for prose destined for a
       // prompt, which is a different entry point on the same module.
       let host = 'unknown-host';
-      try { host = new URL(args.url).host; } catch { /* keep the fallback */ }
+      try { host = new URL(request.finalUrl).host; } catch { /* keep the fallback */ }
       const provenance = labelExternalContent({ kind: 'fetch', host });
       let screened;
       try {
@@ -174,8 +222,8 @@ export default defineTool({
       // EI-20233057540755917: the correction rides the RESPONSE, not the prompt.
       // Silent for everything that is not an MCP transport rejection.
       const next = mcpEndpointHint({
-        url: args.url,
-        method: args.method ?? 'GET',
+        url: request.finalUrl,
+        method: request.finalMethod,
         status: res.status,
       });
 
@@ -189,6 +237,9 @@ export default defineTool({
               status_text: res.statusText,
               headers,
               truncated,
+              final_url: request.finalUrl,
+              redirects: request.redirectCount,
+              boundary_profile: profile.kind,
               ...(next ? { next } : {}),
               ...(logPath ? { log_path: logPath } : {}),
               provenance: { ...provenance, screened },
@@ -200,11 +251,18 @@ export default defineTool({
       };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      const reason =
+        e instanceof CapabilityFetchPolicyError
+          ? e.code
+          : e instanceof CapabilityFetchSizeLimitError
+            ? e.code
+            : 'fetch_failed';
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason: 'fetch_failed', message: msg }) }],
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason, message: msg }) }],
         isError: true,
       };
     } finally {
+      if (release) await release().catch(() => undefined);
       clearTimeout(timer);
       ctx.signal.removeEventListener('abort', onParentAbort);
     }
