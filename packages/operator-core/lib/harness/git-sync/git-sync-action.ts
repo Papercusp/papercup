@@ -196,6 +196,7 @@ import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
   emitGitSyncLockRetryEvent,
+  isSystemGitSyncHolder,
   snapshotGitSyncLockHolders,
   type GitSyncLockHolderSnapshot,
 } from './git-sync-events';
@@ -216,6 +217,11 @@ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
 // resource row expires mid-run and the next scheduled fire enters the same
 // checkout concurrently (EI-20224276977835463).
 const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
+// Keep the writer-backed activity marker fresh without turning git child output
+// into one metadata UPDATE per line. A stale marker is still useful evidence of
+// a wedged phase; a moving marker proves only that the pipeline is producing
+// progress, not that it has completed.
+const GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS = 30_000;
 
 /**
  * Bound the period for which one fire may hold the git-sync resources without
@@ -2679,7 +2685,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.',
       );
     } else {
-      console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
+      const holderDescription = lock.holders?.some((holder) => isSystemGitSyncHolder(holder, slug))
+        ? 'an in-flight git-sync auto-commit'
+        : 'a peer';
+      console.log(`[git-sync] ${slug}: ${holderDescription} holds ${lock.blockedOn} — skipping this tick`);
     }
     // A held_exclusive refusal means the peer's resource row is still live. The
     // release/grant cascade owns the truthful wake for that row; emitting here
@@ -2786,6 +2795,35 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       await activity;
     },
   });
+  let lastActivityHeartbeatAt = activityStartedAt - GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS;
+  let activityHeartbeatWrite: Promise<void> = Promise.resolve();
+  const enqueueActivityHeartbeat = (): void => {
+    const updatedAt = Date.now();
+    if (updatedAt - lastActivityHeartbeatAt < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS) return;
+    lastActivityHeartbeatAt = updatedAt;
+    activityHeartbeatWrite = activityHeartbeatWrite
+      .catch(() => {})
+      .then(async () => {
+        if (liveness.timedOut) return;
+        await writeGitSyncActivity(slug, workspaceId, {
+          active: true,
+          phase: 'local-sync',
+          started_at: activityStartedAt,
+          updated_at: updatedAt,
+          completed_at: null,
+          outcome_status: null,
+        });
+      })
+      .catch((error) => {
+        if (!liveness.timedOut) {
+          console.warn(
+            `[git-sync] ${slug}: activity heartbeat write failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      });
+  };
   const guarded = <T>(phase: string, operation: () => Promise<T>): Promise<T> => liveness.run(operation, phase);
   let outcome: GitSyncOutcome;
   // These values are consumed by the post-pipeline escalation/recording tail;
@@ -2922,9 +2960,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
       step: runCheckpointedStep,
-      onProgress: () => liveness.touch(),
+      onProgress: () => {
+        liveness.touch();
+        enqueueActivityHeartbeat();
+      },
       signal: liveness.signal,
     }));
+    // Do not let a queued local-sync heartbeat land after the post-legs marker
+    // and regress the durable phase back to local-sync.
+    await guarded('flush-activity-heartbeat', () => activityHeartbeatWrite);
   } catch (error) {
     if (error instanceof GitSyncActionTimeoutError) {
       // The timer callback normally starts this write in the same turn as the
