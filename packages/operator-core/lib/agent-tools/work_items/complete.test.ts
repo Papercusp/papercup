@@ -2075,6 +2075,80 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.stateWarning).toMatch(/NOT closed/);
     });
 
+    // ── EI-15711: the reporter passed `completion: { status:'done' }`, got ok:true with a
+    // full completion record, and moved on — while the row stayed open and CLAIMED. `done`
+    // was excluded above only because the preprocess default made an explicit 'done'
+    // indistinguishable from an omitted one; the provenance marker separates them.
+    it("infers + applies state:'done' when the caller EXPLICITLY writes it (EI-15711)", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'done' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed it', status: 'done', tests: '5 green' } });
+
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-7',
+        'done',
+        expect.objectContaining({ by: expect.any(String) }),
+      );
+      expect(r.ok).toBe(true);
+      expect(r.stateWarning).toBeUndefined(); // it DID close — no "not closed" footgun
+      expect(r.stateInferredFromCompletionStatus).toMatch(/inferred state:'done'/);
+    });
+
+    // The CALIBRATION for the pair above: one status VALUE, two provenances, two outcomes.
+    // Asserted in a single test so it cannot pass vacuously — if the marker stopped flowing,
+    // both halves would collapse to the same behaviour and one of these two expectations
+    // must fail, whichever direction the regression went.
+    it("separates an EXPLICIT 'done' from the DEFAULTED one — same value, opposite outcomes", async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'done' }));
+
+      const explicit = await one({ id: 'WI-7', completion: { summary: 'fixed', status: 'done' } });
+      expect(explicit.stateInferredFromCompletionStatus).toBeTruthy();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(1);
+
+      setWorkItemStateWithAliasInfo.mockClear();
+
+      // Identical call with `status` OMITTED — the preprocess supplies the very same
+      // 'done', so only the provenance marker can tell these two apart.
+      const defaulted = await one({ id: 'WI-7', completion: { summary: 'fixed' } });
+      expect(defaulted.stateInferredFromCompletionStatus).toBeUndefined();
+      expect(defaulted.stateWarning).toMatch(/NOT closed/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('never leaks the internal `__statusDefaulted` marker into the result or the state write', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'done' }));
+      const r = await one({ id: 'WI-7', completion: { summary: 'fixed', status: 'done' } });
+      expect(JSON.stringify(r)).not.toContain('__statusDefaulted');
+      expect(JSON.stringify(setWorkItemStateWithAliasInfo.mock.calls)).not.toContain('__statusDefaulted');
+    });
+
+    // EI-19362441037986499 boundary: the inference must not reach a settled item. Caught by
+    // that block's own record-only tests when explicit-'done' inference was first added —
+    // a terminal→same-terminal write re-fires `work-item:done:<id>` and wakes every awaiter.
+    it("does NOT infer an explicit 'done' for an ALREADY-TERMINAL item — record-only must stay record-only", async () => {
+      getWorkItem.mockResolvedValue({ ...issue, state: 'resolved' });
+      const r = await one({ id: 'WI-7', completion: { summary: 'late evidence', status: 'done' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+    });
+
+    it("does NOT infer 'resolved' for an ALREADY-TERMINAL item either — the guard is per-item, not per-verb", async () => {
+      getWorkItem.mockResolvedValue({ ...issue, state: 'resolved' });
+      const r = await one({ id: 'WI-7', completion: { summary: 'late evidence', status: 'resolved' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+    });
+
+    it("does NOT infer an explicit 'done' for a FEATURE-family item — the family scope is unchanged", async () => {
+      getWorkItem.mockResolvedValue(item); // family: 'feature'
+      const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'done' } });
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(r.stateInferredFromCompletionStatus).toBeUndefined();
+      expect(r.stateWarning).toMatch(/NOT closed/);
+    });
+
     it("does NOT infer on other freeform status verbs ('built+tested', 'shipped', 'landed')", async () => {
       getWorkItem.mockResolvedValue(issue);
       const r = await one({ id: 'WI-7', completion: { summary: 'landed', status: 'built+tested' } });
