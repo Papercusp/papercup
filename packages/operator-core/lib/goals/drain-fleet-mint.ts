@@ -15,10 +15,15 @@
  * D-005 (owner ruling, binding): the lane is STRICTLY goal-scoped — the claim
  * spec is hard-coded to `{field:'goal', op:'=', value:<goalId>}` and is NEVER
  * pot-wide. The POSITIVE form is load-bearing, not stylistic: `goal` is a
- * NULLABLE column (claim-spec.ts `ITEM_FIELDS`, WI-37711 / migration 785), so a
- * `not`/`!=` leaf silently excludes every unstamped row in the SQL compiler —
- * which today is most rows. (This overrules the pot-scoped fallback in Scout
- * proposal EI-20611030815080063; the proposal is otherwise adopted.)
+ * NULLABLE and sparsely-stamped column (claim-spec.ts `ITEM_FIELDS`, WI-37711 /
+ * migration 785), so a positive fence can intentionally match zero while a
+ * newly-created goal has no stamped rows yet. The NULL-safe `not`/`!=` polarity
+ * admits unstamped rows and is not an ownership fence; use it only as a measured
+ * exclusion fence that names every active goal. `scheduler:set_claim_spec` also
+ * refuses a replacement that drops an authored positive fence unless the caller
+ * explicitly confirms that exclusion transition (EI-22389918023611568). (This
+ * overrules the pot-scoped fallback in Scout proposal EI-20611030815080063; the
+ * proposal is otherwise adopted.)
  *
  * Deliberately ROWS-ONLY: fleet row + spec row + metadata stamp. The one
  * headless member the lane needs is spawned by `goals:start` itself AFTER its

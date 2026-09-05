@@ -73,6 +73,15 @@ describe('buildGymOperatorBootSpec', () => {
     expect(env.VITEST).toBe('');
   });
 
+  it('pins the dedicated gym operator to one process so DBOS serves its HTTP requests', () => {
+    // The shared dev shell exports PAPERCUSP_CLUSTER/PAPERCUSP_CLUSTER_WORKERS.
+    // If those leak into the gym child, only the clustered primary launches DBOS
+    // while request workers call DBOS APIs before launch.
+    const { env } = buildGymOperatorBootSpec(base);
+    expect(env.PAPERCUSP_CLUSTER).toBe('0');
+    expect(env.PAPERCUSP_CLUSTER_WORKERS).toBe('0');
+  });
+
   it('defaults the autoloop to manual (none) so runs are started explicitly', () => {
     expect(buildGymOperatorBootSpec(base).env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES).toBe('none');
     expect(buildGymOperatorBootSpec({ ...base, autoloopScope: 'gym-x,gym-y' }).env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES)

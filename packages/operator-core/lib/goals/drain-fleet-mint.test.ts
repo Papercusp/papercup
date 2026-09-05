@@ -4,7 +4,9 @@
  *
  * The load-bearing invariant is D-005: the auto-minted lane is goal-scoped via
  * the POSITIVE `{field:'goal', op:'='}` leaf, never a negation and never
- * pot-wide. Falsifiability is proven the tier-1 way (no tree mutation): the
+ * pot-wide. A positive lane may intentionally match zero during goal setup;
+ * the replacement guard covers dropping that fence later. Falsifiability is
+ * proven the tier-1 way (no tree mutation): the
  * deliberately-WRONG lane shapes live permanently in this file as controls the
  * scope check must reject, beside a calibration case the real minted spec must
  * pass — so a scope check that "accepts everything" and a mint that "scopes
@@ -64,7 +66,7 @@ describe('buildGoalDrainClaimSpec — the D-005 lane', () => {
    * watchdog scope check MUST reject every one, or an unscoped drain fleet
    * would read as healthy (the exact pre-D-005 gap).
    */
-  it('CONTROL: the NEGATIVE form silently drops unstamped rows and must not count as scoped', () => {
+  it('CONTROL: the NEGATIVE form is not an ownership fence and must not count as scoped', () => {
     const negated = {
       ...buildGoalDrainClaimSpec('g-1'),
       view: { filter: { not: { field: 'goal', op: '=', value: 'g-1' } } },

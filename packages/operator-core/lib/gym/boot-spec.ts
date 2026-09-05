@@ -170,6 +170,14 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,
+    // The launcher shell may carry the shared dev host's clustered HTTP settings
+    // (PAPERCUSP_CLUSTER=16, PAPERCUSP_CLUSTER_WORKERS=6). A clustered gym host
+    // serves requests from workers while DBOS launches only in the background
+    // primary, so the pipeline route can call DBOS.listWorkflows() in a process
+    // where DBOS was never launched. Pin both precedence-sensitive knobs off:
+    // resolveClusterWorkers() checks PAPERCUSP_CLUSTER_WORKERS before CLUSTER.
+    PAPERCUSP_CLUSTER: '0',
+    PAPERCUSP_CLUSTER_WORKERS: '0',
     // Boot the durable orchestrator; keep auto-dispatch off by default so the
     // runner owns when each feature pipeline starts (deterministic).
     PAPERCUSP_DBOS_ENABLE: '1',
