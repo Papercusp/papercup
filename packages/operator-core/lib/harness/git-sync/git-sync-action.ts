@@ -88,6 +88,7 @@ import {
 } from '../../sync/pot-git/ref-announce-tick';
 import {
   REF_ANNOUNCE_EVENT_KEY,
+  REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT,
   isSignedRefAnnouncement,
   verifyRefAnnouncement,
   type SignedRefAnnouncement,
@@ -4001,11 +4002,13 @@ async function runConvergenceProbe(input: {
   workspaceId: string;
   potHomeSlug: string;
   repoPath: string;
+  repoKey: string;
   candidateDevicePubkeys: string[];
 }): Promise<ConvergenceProbeVerdict | null> {
-  const { slug, workspaceId, potHomeSlug, repoPath, candidateDevicePubkeys } = input;
+  const { slug, workspaceId, potHomeSlug, repoPath, repoKey, candidateDevicePubkeys } = input;
   try {
     const { sql } = getOrgPg();
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
     // Read announcements INDEPENDENTLY of the ref-announce leg's own cursor:
     // that cursor is a CONSUMPTION watermark and has already moved past exactly
     // the rows we need to judge against. Deliberately NO sql cast on `version`
@@ -4036,9 +4039,11 @@ async function runConvergenceProbe(input: {
       // Same routing as the receive leg: judge THIS install only against
       // announcements addressed to it, or a submodule install reads the
       // superproject's counter as its own and latches NOT CONVERGED forever.
-      if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       const payload = fe?.payload;
       if (!isSignedRefAnnouncement(payload)) continue;
+      if (payload.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT && isSignedProtocolContext(payload)) {
+        if (!signedProtocolContextMatches(payload, protocolScope)) continue;
+      } else if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       // ANYTHING can write a fed-event row, so an unverified one must never be
       // able to pin this device NOT-CONVERGED forever. Verify against the
       // EMBEDDED key; hive membership is gated separately by the candidate set.
@@ -4047,7 +4052,7 @@ async function runConvergenceProbe(input: {
       // unparseable one rather than passing NaN into the recency comparison.
       const seq = typeof row.id === 'number' ? row.id : Number.parseInt(String(row.id), 10);
       const observedAtMs = row.ts instanceof Date ? row.ts.getTime() : Date.parse(String(row.ts));
-      const storeGenerationRaw = (payload as SignedRefAnnouncement & { store_generation?: unknown }).store_generation;
+      const storeGenerationRaw = payload.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT ? payload.store_generation : undefined;
       announced.push({
         devicePubkeyBase64: payload.device_pubkey,
         version: payload.version,
@@ -4292,6 +4297,7 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
       workspaceId,
       potHomeSlug,
       repoPath,
+      repoKey,
       candidateDevicePubkeys,
     });
 
@@ -4785,10 +4791,9 @@ async function runRefAnnounceLeg(
     if (!potHomeSlug) return;
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
-
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -4816,7 +4821,8 @@ async function runRefAnnounceLeg(
     const priorPublishVersion = priorState?.publishGeneration === signedProtocolContext.store_generation && Number.isSafeInteger(priorState?.publishVersion)
       ? Math.max(0, priorState?.publishVersion ?? 0)
       : 0;
-    const replayFloors: Record<string, SignedSnapshotFloor> = { ...priorState?.replayFloors };
+    const replayFloors: Record<string, SignedSnapshotFloor> = Object.fromEntries(Object.entries(priorState?.replayFloors ?? {})
+      .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope)));
     const keychainId = actor.keychainId;
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
 
@@ -4927,7 +4933,9 @@ async function runRefAnnounceLeg(
       if (isSignedProtocolContext(fe?.payload)) {
         if (!signedProtocolContextMatches(fe.payload, protocolScope)) continue;
       } else if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
-      if (fe && isSignedRefAnnouncement(fe.payload)) pending.push({ rowId: row.id, announcement: fe.payload });
+      if (fe && isSignedRefAnnouncement(fe.payload) && verifyRefAnnouncement(fe.payload)) {
+        pending.push({ rowId: row.id, announcement: fe.payload });
+      }
     }
     // Parked announcements are driven at the HEAD of the batch (a parked entry
     // superseded by a newer fresh row from its device is dropped here).
@@ -5231,11 +5239,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if (!potHomeSlug) return void (await decline('no_hive_home'));
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
-
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     // gh unauthenticated — no device identity to sign/integrate as
     if (!actor) return void (await decline('no_device_identity'));
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -5718,7 +5725,6 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // runIntegratorLeg published as `repo_key` on the staging-advance
     // fed-event (below), or this device's own bridge never sees it.
     const repoKey = canonicalRepoKey(entry);
-    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -5853,6 +5859,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
             })
         : undefined;
 
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
     const outcome = await runWorktreeBridgeTick({
       bareRepoPath: repoPath,
       worktreePath,
