@@ -58,10 +58,12 @@ beforeAll(() => {
 const assertSchemaField = (name: string): AssertSchemaField => {
   // EI-22064465906366039: the root union is retired, so `.options` (its branch
   // list) is gone. Unlike the other schema-reading tests, THIS file needs the
-  // real zod field — it calls .safeParse on it below, and it asserts the zod
-  // `.description`, which is NOT the same string the JSON-Schema projection
-  // publishes for `body`. So unwrap the refinement chain to the object shape
-  // rather than reading the projection.
+  // REAL zod field rather than the published JSON Schema, because it calls
+  // .safeParse on the field below and a JSON-Schema node has no such method.
+  // (Descriptions themselves survive the projection verbatim — the sibling
+  // guards read them straight off z.toJSONSchema — so it is safeParse alone
+  // that makes this file the exception.) Unwrap the refinement chain to the
+  // object shape.
   let node = assertTool.args as unknown as {
     shape?: Record<string, unknown>;
     def?: { schema?: unknown; innerType?: unknown };
@@ -487,10 +489,23 @@ describe('facts:assert body schema — declared vs enforced cap must not mislead
     // The real, enforced cap must appear EARLY (before "documents" in the closing
     // clause) — a caller reading only the start of a long description must still
     // see it, not just the bare `maxLength: 4000` in the JSON-schema shape.
-    expect(description).toContain(`HARD-CLIPPED AT ${FACT_BODY_MAX_CHARS} CHARS`);
-    const hardClipIdx = description.indexOf(String(FACT_BODY_MAX_CHARS));
-    expect(hardClipIdx).toBeGreaterThanOrEqual(0);
-    expect(hardClipIdx).toBeLessThan(40); // front-loaded, not buried at the end
+    //
+    // ⚠ This assertion used to pin the literal `HARD-CLIPPED AT <cap> CHARS`.
+    // EI-20352525205864881 then flipped the description to REFUSAL-before-the-write
+    // (the behaviour had moved at EI-18685042986450096 and the prose had not), which
+    // made that literal the HISTORICAL STALE PROSE that its own new guard —
+    // body-cap-prose-matches-behaviour.test.ts — flags via /hard-clipped/i. For 33
+    // minutes on 2026-09-05 the two files in this directory demanded opposite things
+    // of one string, so one of them had to be red whatever the description said.
+    // Enforcement WORDING is that guard's subject; this guard's subject is only
+    // WHICH NUMBER is front-loaded, so assert placement and stop restating a verb
+    // that already has an owner.
+    const capIdx = description.indexOf(String(FACT_BODY_MAX_CHARS));
+    expect(capIdx).toBeGreaterThanOrEqual(0);
+    expect(capIdx).toBeLessThan(40); // front-loaded, not buried at the end
+    // ...and it is the REAL cap that leads, not the 4000 transport ceiling — the
+    // whole point of EI-18670525043445474.
+    expect(description.slice(0, capIdx)).not.toContain('4000');
   });
 
   it('the schema still ACCEPTS a body past FACT_BODY_MAX_CHARS (up to the 4000 transport ceiling) — never hard-rejects a real conclusion (P-007 regression guard)', () => {
