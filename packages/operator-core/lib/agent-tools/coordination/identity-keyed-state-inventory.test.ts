@@ -60,10 +60,17 @@ import { resolve } from 'node:path';
 // but schema.ts is gitignored, so it is ABSENT in a clean checkout (e.g. the
 // release green-checkpoint worktree), where reading it ENOENTs and reds the gate.
 // generated.ts is the TRACKED mirror, so the scan is deterministic everywhere.
-const SCHEMA_PATH = resolve(
-  __dirname,
-  '../../../../../libs/papercusp/libs/db/src/schema/generated.ts',
-);
+// EI-20012634773877104: the subject path is OVERRIDABLE via
+// IDENTITY_KEYED_SCHEMA_PATH so this same assertion can be run against a
+// CANDIDATE schema before it is promoted to generated.ts. That is what lets
+// `scripts/check-identity-keyed-classification.mjs` gate pull-schema.mjs with
+// this exact test rather than a second, drift-prone copy of the predicate —
+// and it is what lets that guard's own falsifiability test point at a temp
+// fixture instead of mutating this shared tree. The default is unchanged, so
+// every ordinary run (and the fleet gate) still reads the tracked mirror.
+const SCHEMA_PATH = process.env.IDENTITY_KEYED_SCHEMA_PATH
+  ? resolve(process.env.IDENTITY_KEYED_SCHEMA_PATH)
+  : resolve(__dirname, '../../../../../libs/papercusp/libs/db/src/schema/generated.ts');
 
 /** table.column keys the scan is allowed to find without failing — see the
  *  module doc above for COVERED vs EXEMPT semantics. */

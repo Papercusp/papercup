@@ -34,6 +34,18 @@ function resolveRepoRoot(): string {
   return existsSync(path.join(up, 'libs', 'testing-shell')) ? up : process.cwd();
 }
 
+/**
+ * The inference gateway ROOT — deliberately NOT `/v1`-suffixed. Stagehand routes an
+ * `anthropic/*` model through @anthropic-ai/sdk, which appends `/v1/messages` itself, so a
+ * `/v1` base would resolve to `/v1/v1/messages` and 404. (agent-loop/provider-router.ts's
+ * private helper DOES append `/v1` because it feeds the OpenAI-compatible AI-SDK path — the
+ * two are not interchangeable.)
+ */
+function gatewayRootUrl(): string {
+  const port = Number(process.env.PAPERCUSP_GATEWAY_PORT);
+  return `http://127.0.0.1:${Number.isFinite(port) && port > 0 ? port : 8788}`;
+}
+
 export default defineTool({
   method: 'POST',
   path: '/admin/testing/ai-explore',
@@ -48,28 +60,24 @@ export default defineTool({
     });
     if (!parsed.ok) return new Response(parsed.msg, { status: 400 });
 
-    // RAW KEY ONLY, deliberately — and this is the one place that still needs one.
-    // inference-rename-and-provider-agnostic-default-2026-08-09 P-005 moved every other
-    // anthropic_api_key consumer onto the default account, but it CANNOT move this one: the
-    // key is piped into the stagehand-runner subprocess, which hands `{ modelName, apiKey }`
-    // to Stagehand's model config with no baseURL seam, so there is nowhere to point at the
-    // gateway. Routing it properly means teaching the runner a baseURL + an OAuth-bearer
-    // header — tracked separately, not smuggled in here.
+    // WI-37573 removed the raw-key requirement this route used to carry. The blocker was real
+    // but narrow: the runner handed Stagehand `{ modelName, apiKey }` with no baseURL seam, so
+    // there was nowhere to point at the gateway. Stagehand's ModelConfiguration is
+    // `ClientOptions & { modelName }` and ClientOptions already carries `baseURL`, so the seam
+    // only had to be threaded — see spawnAiExplore's `baseUrl`.
     //
-    // The env fallback is new: with the settings field gone (P-004), ANTHROPIC_API_KEY is the
-    // supported way to feed this route, so reading only the credential store would have left
-    // it with no reachable configuration path at all.
+    // A configured raw key still WINS (unchanged behavior, and the escape hatch when someone
+    // wants to bypass the pool). Otherwise this routes through the gateway's
+    // Anthropic-compatible surface on the default account, which is what every other former
+    // anthropic_api_key consumer already does.
     const creds = await readCredentials();
-    const apiKey = creds.anthropic_api_key?.trim() || process.env.ANTHROPIC_API_KEY?.trim();
-    if (!apiKey) {
-      return new Response(
-        'No Anthropic API key configured. This browser-exploration runner needs a RAW key — it ' +
-          'cannot use the default account under Settings → Inference, because the Stagehand ' +
-          'subprocess it drives takes no gateway base URL. Set ANTHROPIC_API_KEY in the ' +
-          "operator's environment, or store one via the setup:save_key tool.",
-        { status: 400 },
-      );
-    }
+    const rawKey = creds.anthropic_api_key?.trim() || process.env.ANTHROPIC_API_KEY?.trim();
+    // The gateway strips inbound `authorization`/`x-api-key` (STRIP_REQUEST) and substitutes the
+    // resolved account's own credential plus the `anthropic-beta: oauth-2025-04-20` header an
+    // OAuth-bearer subscription needs — so this placeholder is never sent upstream. It is still
+    // required because the Anthropic SDK throws locally on a missing key before any request.
+    const apiKey = rawKey || 'gateway-routed-placeholder';
+    const baseUrl = rawKey ? undefined : gatewayRootUrl();
 
     const repoRoot = resolveRepoRoot();
 
@@ -78,7 +86,7 @@ export default defineTool({
       heartbeatMs: 15_000,
       initialHeartbeat: true,
       setup: async (sink) => {
-        const child = spawnAiExplore(parsed.cfg, { repoRoot, apiKey });
+        const child = spawnAiExplore(parsed.cfg, { repoRoot, apiKey, baseUrl });
         if (!child) {
           if (!sink.closed) sink.event('error', { message: `stagehand-runner not found under ${repoRoot}` });
           sink.done();

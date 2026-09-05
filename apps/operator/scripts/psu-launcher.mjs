@@ -3590,9 +3590,17 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // list in libs/papercusp/packages/orchestrator/src/invoke.ts.
   "plans:add-decision",
   // MIRROR of the canonical CORE admission (EI-21503656260697108): the shared spine
-  // now holds 45 entries, matching the canonical list and its <=45 ratchet. mode:set remains
-  // the only Claude-only deferred verb (CLAUDE_SEED_EXTRA_TOOL_NAMES below).
+  // now holds 45 entries, matching the canonical list and its <=45 ratchet.
   "work_items:claimable",
+  // MIRROR of the canonical CORE admission (WI-37550, 2026-09-05), ratchet 47->48 — same
+  // position, same order; the lockstep drift guard in psu-launcher.test.ts compares the
+  // arrays EXACTLY. mode:set is no longer a Claude-only extra: OMP/codex reach it directly.
+  // Re-measured 14d demand 656 fallback-reaches/443 callers @3,028 B = 216.6 reach/KB, the
+  // highest admission-time reach/KB in the changelog, and the su playbook MANDATES the call
+  // on every AUTO/DRAIN/IDEATE flip. Full rationale — including the measured finding that
+  // the wire seed is already over D-001's 256 KB ceiling — lives beside the canonical list
+  // in libs/papercusp/packages/orchestrator/src/invoke.ts.
+  "mode:set",
   "tools:find",
   "tools:invoke",
 ];
@@ -3687,19 +3695,14 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   "sessions:search",
   "build:typecheck",
   "coord:presence",
-  // Cross-role verbs whose measured demand is overwhelmingly su/psu traffic. P-003 first
-  // rehomed all THREE here after overshooting the shared spine's ratchet; P-006 (D-006)
-  // promoted plans:add-decision into the shared spine proper, and EI-21503656260697108
-  // (2026-08-26) promoted work_items:claimable the same way (ratchet 44->45) — neither is
-  // listed here any more; OMP/codex reach both directly. ONE remains:
-  //   mode:set             124 reaches/56 callers, 1,732 B, 73.3 reach/KB — an
-  //     unregistered mode is invisible session state that a compaction silently drops.
-  // NARROWED GAP: OMP/codex still cannot reach it directly. The shared spine sits at its
-  // deliberate ratchet (45 entries, canonical <=45), so admitting it means raising a cap in
-  // the change that fills it — the DARK_FLAGS-watermark anti-pattern. That needs a
-  // deliberate budget decision priced in WIRE BYTES per D-001, not another quiet append.
-  // It stays reachable everywhere via tools:find/invoke.
-  "mode:set",
+  // GAP CLOSED 2026-09-05 (WI-37550). This list used to carry the P-003 trio of cross-role
+  // verbs rehomed here after overshooting the shared spine's ratchet. All three have since
+  // been promoted into the shared spine proper and NONE is listed here any more — OMP/codex
+  // reach all of them directly: plans:add-decision by P-006 (D-006), work_items:claimable by
+  // EI-21503656260697108 (ratchet 44->45), and mode:set by WI-37550 (ratchet 47->48), which
+  // is the deliberate wire-byte budget decision D-001 asked for rather than a quiet append.
+  // Do not re-add any of the three here: "every Claude-only extra stays OUT of the
+  // weak-model OMP spine" (psu-launcher.test.ts) fails on a name that is in both lists.
 ];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();
