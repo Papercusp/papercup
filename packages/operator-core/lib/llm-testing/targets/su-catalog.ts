@@ -323,11 +323,16 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   // --- locks (file + resource coordination) ---
   {
     name: 'locks:acquire',
-    description: 'Acquire a multi-file lock held across several edits + the commit.',
+    description:
+      'Acquire a multi-file lock held across several edits + the commit. On a confirmed peer hold, pass wake_on_grant:true to queue a one-shot wake, then end your turn instead of polling.',
     input: obj({
       paths: { type: 'array', items: { type: 'string' } },
       intent: { type: 'string' },
       ttl_sec: { type: 'number' },
+      wake_on_grant: {
+        type: 'boolean',
+        description: 'Queue a one-shot wake when a peer releases a busy path; end the current turn after queueing.',
+      },
     }, ['paths', 'intent']),
   },
   {

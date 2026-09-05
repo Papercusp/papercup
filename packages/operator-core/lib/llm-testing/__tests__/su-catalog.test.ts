@@ -132,6 +132,14 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(e.input).not.toHaveProperty('anyOf');
   });
 
+  it('locks:acquire exposes the queued wake path required by SU-S11', () => {
+    const entry = SU_CATALOG.find((candidate) => candidate.name === 'locks:acquire')!;
+    const properties = (entry.input as { properties?: Record<string, unknown> }).properties ?? {};
+    expect(properties.wake_on_grant).toMatchObject({ type: 'boolean' });
+    expect(entry.description).toMatch(/wake_on_grant:true/);
+    expect(entry.description).toMatch(/end your turn/i);
+  });
+
   it('keeps every Anthropic tool input schema free of unsupported top-level combinators', () => {
     for (const entry of SU_CATALOG) {
       expect(entry.input, entry.name).not.toHaveProperty('oneOf');
