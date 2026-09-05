@@ -409,7 +409,7 @@ export default defineTool({
       'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. ' +
       OBSERVATION_EVIDENCE_RULE,
     notWhen:
-      'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing peer question — coord:send with expects:"answer"; an owner decision — coord:ask-owner. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:"self" to claim and observation.refs for evidence attribution.',
+      'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing peer question — coord:send with expects:"answer"; an owner decision — coord:ask-owner. Never pass createdBy/source/sourceRole/filedByRole: server-derived, and the strict schema rejects them.',
     chaining:
       'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
     // EI-21490971340666010: discovery renders observation's nested fields inline,
@@ -444,6 +444,12 @@ export default defineTool({
     seeAlso: [
       'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing',
       'improvements:digest (triage the backlog this lands in — but NEVER shows lane:"observation" rows; see below)',
+      // Moved out of `notWhen` (P-011 prompt-weight: seeAlso is not counted against
+      // the 1500-char budget, notWhen is). Unchanged in substance — these are the
+      // two args that DO carry what callers reach for the rejected provenance
+      // fields to express, so the rule and its remedy have to travel together.
+      'CLAIM + ATTRIBUTE: assign_to:"self" claims the filing, and observation.refs carries evidence attribution. ' +
+        'Never pass createdBy / source / sourceRole / filedByRole — the server derives filer identity and role, and the strict schema rejects them.',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
       'plans:new (something needing real design — capture kind=feature linking it)',
       // EI-21862468579844520: reported as "no improvements:list to verify whether a
