@@ -66,7 +66,7 @@ export interface IndependenceClaimSubject {
 
 export type IndependenceSubjectLookup = (
   subjects: readonly IndependenceSubject[],
-  opts: { workspaceId: string },
+  opts: { workspaceId: string; harness?: string | null },
 ) => Promise<IndependenceLookupRow[]>;
 
 const MAX_SUBJECTS = 16;
@@ -159,6 +159,16 @@ function addField(
         const planSlug = clean(entryRecord.planSlug ?? entryRecord.plan ?? entryRecord.plan_ref);
         const decisionId = clean(entryRecord.decisionId ?? entryRecord.decision_id ?? entryRecord.ref ?? entryRecord.id);
         if (!planSlug || !decisionId || !addRef(marker.decisions, `${planSlug}#${decisionId}`, 'decision')) valid = false;
+      } else if (kind === 'plan' || kind === 'path') {
+        const ref = clean(entry);
+        const prefix = kind === 'plan' ? 'plan:' : 'path:';
+        if (!ref || !addRef(
+          kind === 'plan' ? marker.plans : marker.paths,
+          ref.startsWith(prefix) ? ref : `${prefix}${ref}`,
+          kind,
+        )) {
+          valid = false;
+        }
       } else if (!addRef(
         kind === 'work-item'
           ? marker.workItems
@@ -306,7 +316,7 @@ export function foldIndependenceContributors(
   const claimant = clean(currentClaimant);
 
   for (const row of rows) {
-    const subject = byKey.get(subjectKey(row));
+    const subject = byKey.get(`${row.subject_kind}:${row.subject_ref}`);
     if (!subject) continue;
     resolved.add(subjectKey(subject));
     for (const entry of contributorRows(row, claimant)) {
@@ -371,10 +381,11 @@ function rowFor(
 
 async function defaultLookup(
   subjects: readonly IndependenceSubject[],
-  opts: { workspaceId: string },
+  opts: { workspaceId: string; harness?: string | null },
 ): Promise<IndependenceLookupRow[]> {
   const { sql } = getOrgPg();
   const rows: IndependenceLookupRow[] = [];
+  const harness = clean(opts.harness);
   const workItems = subjects.filter((subject) => subject.kind === 'work-item');
   if (workItems.length > 0) {
     const refs = workItems.map((subject) => subject.ref);
@@ -392,8 +403,9 @@ async function defaultLookup(
         FROM requested
         JOIN harness_shared.work_items w
           ON w.workspace_id = ${opts.workspaceId}
+         AND (${harness}::text IS NULL OR w.harness_slug = ${harness})
          AND w.feature_id = requested.ref
-      LIMIT ${MAX_LOOKUP_ROWS}`;
+        LIMIT ${MAX_LOOKUP_ROWS}`;
     rows.push(...found);
   }
 
@@ -414,8 +426,9 @@ async function defaultLookup(
         FROM requested
         JOIN harness_shared.work_items w
           ON w.workspace_id = ${opts.workspaceId}
+         AND (${harness}::text IS NULL OR w.harness_slug = ${harness})
          AND w.source_plan_slug = requested.ref
-      LIMIT ${MAX_LOOKUP_ROWS}`;
+        LIMIT ${MAX_LOOKUP_ROWS}`;
     rows.push(...found);
   }
 
@@ -440,13 +453,17 @@ async function defaultLookup(
         FROM requested
         JOIN harness_shared.plan_decisions d
           ON d.workspace_id = ${opts.workspaceId}
+         AND (${harness}::text IS NULL OR d.harness_slug = ${harness})
          AND d.plan_slug = requested.plan_slug
          AND d.decision_id = requested.decision_id
         LEFT JOIN harness_shared.work_items w
           ON w.workspace_id = d.workspace_id
+         AND (${harness}::text IS NULL OR w.harness_slug = ${harness})
          AND w.source_plan_slug = d.plan_slug
-         AND cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) > 0
-         AND w.source_plan_item_ids && d.item_refs
+         AND (
+           cardinality(COALESCE(d.item_refs, ARRAY[]::text[])) = 0
+           OR w.source_plan_item_ids && d.item_refs
+         )
       LIMIT ${MAX_LOOKUP_ROWS}`;
     rows.push(...found);
   }
@@ -474,7 +491,10 @@ export async function getClaimTimeIndependenceAdvisory(ref: {
 
   try {
     const workspaceId = resolveConcreteWorkspaceId(ref.workspaceId);
-    const rows = await (ref.lookup ?? defaultLookup)(subjects, { workspaceId });
+    const rows = await (ref.lookup ?? defaultLookup)(subjects, {
+      workspaceId,
+      harness: clean(ref.workItem.harness),
+    });
     const folded = foldIndependenceContributors(subjects, rows, claimant);
     if (folded.unresolvedSubjects.length > 0) return null;
 
