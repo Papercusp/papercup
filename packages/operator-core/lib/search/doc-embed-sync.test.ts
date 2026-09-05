@@ -199,6 +199,35 @@ describe('syncDocSourceSections', () => {
     expect(calls.some((c) => c.q.includes('INSERT'))).toBe(false);
   });
 
+  it('lets a pending macrotask run during a large unchanged corpus', async () => {
+    const pages = Array.from({ length: 8 }, (_, i) => ({
+      page: page(`guide/${i}`, `Guide ${i}`),
+      body: `unchanged body ${i}, long enough to keep.`,
+    }));
+    const { sql } = fakeSql(
+      pages.map(({ page: pg, body }) => ({ slug: pg.slug, page_sha: pageSha(pg.title, body) })),
+    );
+    const src = fakeSource(pages);
+    const getContent = src.getContent.bind(src);
+    let rendered = 0;
+    src.getContent = async (pg) => {
+      rendered += 1;
+      return getContent(pg);
+    };
+
+    let renderedWhenTickerRan: number | null = null;
+    setImmediate(() => {
+      renderedWhenTickerRan = rendered;
+    });
+
+    const stats = await syncDocSourceSections(sql, src);
+
+    expect(stats).toMatchObject({ pages: 8, changed: 0, sections: 0, errors: 0 });
+    expect(renderedWhenTickerRan).not.toBeNull();
+    expect(renderedWhenTickerRan!).toBeGreaterThan(0);
+    expect(renderedWhenTickerRan!).toBeLessThan(pages.length);
+  });
+
   it('replaces sections when content changed (DELETE then INSERT)', async () => {
     const { calls, sql } = fakeSql([{ slug: 'guide/one', page_sha: 'stale-sha' }]);
     const src = fakeSource([{ page: page('guide/one', 'One'), body: '## A\nnew alpha body long enough.' }]);

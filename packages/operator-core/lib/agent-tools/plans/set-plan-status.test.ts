@@ -9,6 +9,7 @@ import {
   shouldEvaluateAcceptanceGate,
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
+import { ACCEPTANCE_GRADING_SWEEP_ACTOR } from '../../acceptance-grader';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -129,6 +130,17 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     expect(launch).toHaveBeenCalledWith('plan-a', {
       workspaceId: 'ws-test',
       harnessSlug: 'sidestage',
+      uiClientId: null,
+      isSuperuser: false,
+      isPowerUser: false,
+      principal: {
+        kind: 'system',
+        slug: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+        workspaceId: 'ws-test',
+      },
+      ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+      ownerLabel: 'acceptance grading sweep',
+      userId: null,
     });
     expect(result?.state).toBe('launched');
   });

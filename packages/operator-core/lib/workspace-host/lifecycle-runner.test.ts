@@ -8,10 +8,7 @@ import {
   type WorkspaceHostProviderConnection,
   type WorkspaceHostResourceCheckpoint,
 } from '@papercusp/deployment-driver';
-import {
-  runWorkspaceHostLifecycle,
-  type WorkspaceHostLifecycleStore,
-} from './lifecycle-runner';
+import { runWorkspaceHostLifecycle, type WorkspaceHostLifecycleStore } from './lifecycle-runner';
 import { WorkspaceHostProvisioningRequestError } from './provisioning-runner';
 
 const vm = {
@@ -45,15 +42,17 @@ function providerHarness(hostBootstrap = false) {
     target: 'gcp',
     hostId: 'host-1',
     generatedAt: '2026-08-27T00:00:00Z',
-    steps: [{
-      id: 'start-instance',
-      action: 'start',
-      resourceKind: 'vm',
-      dependsOn: [],
-      idempotencyKey: 'start-key',
-      destructive: false,
-      input: { op: 'start-instance', instanceName: vm.providerId },
-    }],
+    steps: [
+      {
+        id: 'start-instance',
+        action: 'start',
+        resourceKind: 'vm',
+        dependsOn: [],
+        idempotencyKey: 'start-key',
+        destructive: false,
+        input: { op: 'start-instance', instanceName: vm.providerId },
+      },
+    ],
     warnings: [],
   };
   const apply = vi.fn<WorkspaceHostProvider['apply']>();
@@ -211,11 +210,13 @@ describe('runWorkspaceHostLifecycle', () => {
       resource: vm,
     });
 
-    await expect(runWorkspaceHostLifecycle({
-      ...input(provider, store),
-      action: 'upgrade',
-      image: { id: 'projects/images/global/images/papercusp-v2' },
-    })).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
+    await expect(
+      runWorkspaceHostLifecycle({
+        ...input(provider, store),
+        action: 'upgrade',
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+      }),
+    ).resolves.toMatchObject({ status: 'succeeded', requiresInitialization: true });
 
     // The ledger row is what an operator actually reads; a flag only the caller sees would
     // leave `succeeded | 100 | "completed"` sitting in the timeline saying the opposite.
@@ -244,8 +245,10 @@ describe('runWorkspaceHostLifecycle', () => {
       resource: vm,
     });
 
-    await expect(runWorkspaceHostLifecycle(input(provider, store)))
-      .resolves.toMatchObject({ status: 'succeeded', requiresInitialization: false });
+    await expect(runWorkspaceHostLifecycle(input(provider, store))).resolves.toMatchObject({
+      status: 'succeeded',
+      requiresInitialization: false,
+    });
     expect(store.updateOperation).toHaveBeenLastCalledWith(
       expect.objectContaining({ message: 'Workspace-host start completed' }),
     );
@@ -254,12 +257,14 @@ describe('runWorkspaceHostLifecycle', () => {
   it('fails closed when restore does not name a distinct desired host', async () => {
     const { store } = storeHarness();
     const { provider } = providerHarness();
-    await expect(runWorkspaceHostLifecycle({
-      ...input(provider, store),
-      action: 'restore',
-      snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
-      desired,
-    })).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    await expect(
+      runWorkspaceHostLifecycle({
+        ...input(provider, store),
+        action: 'restore',
+        snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
+        desired,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
     expect(provider.plan).not.toHaveBeenCalled();
   });
 });

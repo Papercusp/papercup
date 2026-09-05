@@ -55,10 +55,8 @@ const COMPUTE_API = 'https://compute.googleapis.com/compute/v1';
 type GcpHttpError = GcpTransportError;
 
 const SAFE_CONNECTION_VALIDATION_PROBLEMS: Readonly<Record<string, string>> = {
-  gcp_workspace_host_project_id_missing:
-    'GCP connection project is missing; reconnect with an explicit project.',
-  gcp_workspace_host_connection_project_mismatch:
-    'GCP connection project does not match its selected scope.',
+  gcp_workspace_host_project_id_missing: 'GCP connection project is missing; reconnect with an explicit project.',
+  gcp_workspace_host_connection_project_mismatch: 'GCP connection project does not match its selected scope.',
   gcp_workspace_host_scope_must_be_project: 'GCP connection scope must select a project.',
   gcp_workspace_host_cloud_credential_ref_must_use_safe_google_chain:
     'GCP credential reference is not bound to an approved resolver.',
@@ -72,8 +70,7 @@ const SAFE_CONNECTION_VALIDATION_PROBLEMS: Readonly<Record<string, string>> = {
     'GCP active-user credential resolution failed: the active gcloud account must be a human user.',
   gcp_gcloud_active_user_token_unavailable:
     'GCP active-user credential resolution failed: an access token is unavailable.',
-  gcp_gcloud_active_user_token_empty:
-    'GCP active-user credential resolution failed: the access token was empty.',
+  gcp_gcloud_active_user_token_empty: 'GCP active-user credential resolution failed: the access token was empty.',
   gcp_workspace_host_project_unreadable: 'GCP Compute project is unreadable.',
 };
 
@@ -253,10 +250,7 @@ function numberValue(value: string | number | undefined): number | undefined {
   return Number.isFinite(result) ? result : undefined;
 }
 
-function projectFromConnection(
-  connection: WorkspaceHostProviderConnection,
-  boundCredentialRef?: string,
-): string {
+function projectFromConnection(connection: WorkspaceHostProviderConnection, boundCredentialRef?: string): string {
   if (connection.target !== 'gcp') throw new Error(`gcp_workspace_host_target_${connection.target}_invalid`);
   const credentialRef = connection.cloudCredentialRef.ref.trim();
   const local = credentialRef.startsWith('adc://') || credentialRef === GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF;

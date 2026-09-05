@@ -206,8 +206,9 @@ describe('ADC-backed GCP workspace-host API client', () => {
     const acquireAuth = vi.fn(async () => ({ accessToken: TOKEN, projectId: PROJECT, identity: 'delegated' }));
 
     await expect(
-      new GoogleComputeWorkspaceHostApiClient({ acquireAuth, fetch: fetchImpl, now: () => NOW })
-        .validateConnection(hostedConnection),
+      new GoogleComputeWorkspaceHostApiClient({ acquireAuth, fetch: fetchImpl, now: () => NOW }).validateConnection(
+        hostedConnection,
+      ),
     ).resolves.toMatchObject({ ok: false });
 
     await expect(
@@ -296,7 +297,10 @@ describe('ADC-backed GCP workspace-host API client', () => {
               scopes: ['https://www.googleapis.com/auth/cloud-platform'],
             },
           ],
-          metadata: { items: [{ key: 'enable-oslogin', value: 'TRUE' }] },
+          metadata: {
+            fingerprint: 'metadata-fingerprint-1',
+            items: [{ key: 'enable-oslogin', value: 'TRUE' }],
+          },
         });
       }
       if (url.endsWith(`/zones/${ZONE}/disks/pc-host-boot`)) {
@@ -325,6 +329,7 @@ describe('ADC-backed GCP workspace-host API client', () => {
       internalIp: '10.132.12.2',
       externalIp: '203.0.113.42',
       sourceImage: 'projects/ubuntu-os-cloud/global/images/ubuntu-2404-test',
+      metadataFingerprint: 'metadata-fingerprint-1',
       recreateInput: {
         machineType: `zones/${ZONE}/machineTypes/n2-standard-2`,
         disks: [

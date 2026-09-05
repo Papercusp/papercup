@@ -1128,8 +1128,9 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       metadataRefreshes: client.setInstanceMetadataCalls.length,
       snapshots: client.snapshotCalls.length,
     }).toEqual({ start: 2, stop: 2, reset: 2, metadataRefreshes: 1, snapshots: 1 });
-    expect(client.setInstanceMetadataCalls[0]?.input.items.find(({ key }) => key === 'startup-script')?.value)
-      .toContain('echo current-controller-bootstrap');
+    expect(
+      client.setInstanceMetadataCalls[0]?.input.items.find(({ key }) => key === 'startup-script')?.value,
+    ).toContain('echo current-controller-bootstrap');
     expect(client.snapshotCalls[0]?.input.labels).toEqual({
       'papercusp-host-id': 'host-gcp-1',
       'papercusp-managed': 'true',

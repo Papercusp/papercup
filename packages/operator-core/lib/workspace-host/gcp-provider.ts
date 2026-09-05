@@ -1152,10 +1152,7 @@ function metadata(
  * CONTEXT — `readSettings` refuses a caller-supplied `provider.startupScript`, so there is no
  * second producer for this argument.
  */
-function durableFilesystemStartupScript(
-  dataDeviceName: string,
-  hostBootstrapScript?: string,
-): string {
+function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string): string {
   const device = `/dev/disk/by-id/google-${dataDeviceName}`;
   const userScript = hostBootstrapScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
   return [
@@ -1222,10 +1219,7 @@ function refreshedInstanceMetadata(
   };
 }
 
-function sameMetadata(
-  observed: GcpInstanceObservation,
-  expected: GcpInstanceMetadataInput,
-): boolean {
+function sameMetadata(observed: GcpInstanceObservation, expected: GcpInstanceMetadataInput): boolean {
   const actual = observed.recreateInput?.metadata.items ?? [];
   const normalize = (items: readonly { key: string; value: string }[]) =>
     [...items].sort((left, right) => left.key.localeCompare(right.key));

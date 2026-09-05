@@ -21,6 +21,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { createWorkItem, linkWorkItem } from '../../work-items';
+import { IMPROVEMENT_TOPIC } from '../../harness/improvements/read-items';
 import {
   FILING_CLASS_MIN_MEMBERS,
   buildFilingClassItemDraft,
@@ -189,6 +190,12 @@ export default defineTool({
       workspaceId,
       createdBy: id.ownerId,
       payload: draft.payload,
+      // THE topic is what makes this reach triage. `improvements:triage` (and the
+      // digest, and the auto-implement lane) select on `topic: IMPROVEMENT_TOPIC`
+      // — an untagged row is invisible to all three BY CONSTRUCTION, so a class
+      // filed without it would satisfy "aggregate the filings" while failing the
+      // half that matters: the class arriving in triage as ONE item instead of N.
+      topics: [IMPROVEMENT_TOPIC],
       // Born admitted: duplicate screening is what the class row is FOR — it is the
       // aggregate of the duplicates, not another instance of them.
       admission: 'auto',

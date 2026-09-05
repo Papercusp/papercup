@@ -49,6 +49,7 @@ import type { DocSource } from '@papercusp/docs-engine';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { chunkAnchor } from './doc-section-anchor';
+import { cooperativeYield } from '../event-loop-lag-monitor';
 
 /** Per-ROW text cap — mirrors the 2k-char embed-input convention
  *  (session_turns / work_items bodySql `left(…, 2000)`). A section longer than
@@ -329,16 +330,26 @@ export async function syncDocSourceSections(
   );
   const existing = new Map(existingRows.map((r) => [r.slug, r.page_sha]));
 
+  // WI-2146645: a cold engineering adapter renders 600+ MDX pages here. Most
+  // pages are SHA-identical, so their async getContent/upsert continuations
+  // resolve as one uninterrupted microtask chain with no PG await to yield on.
+  // That chain consumed 3.16s of one live bg-host profile and delayed the
+  // routines pool probe past 4s. Reuse the shared pressure-aware yield gate:
+  // quiet hosts pay one macrotask hop per four pages, while an already-elevated
+  // loop yields every page so timers, I/O and pool releases can make progress.
+  let yieldedPages = 0;
   for (const page of pages) {
     try {
       const body = await source.getContent(page);
       const written = await upsertPageSections(sql, source.name, page, body, existing.get(page.slug));
-      if (written === null) continue;
-      stats.sections += written;
-      stats.changed += 1;
+      if (written !== null) {
+        stats.sections += written;
+        stats.changed += 1;
+      }
     } catch {
       stats.errors += 1;
     }
+    yieldedPages = await cooperativeYield(yieldedPages);
   }
 
   if (opts.prune !== false && pages.length > 0) {

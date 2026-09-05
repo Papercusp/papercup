@@ -122,9 +122,7 @@ function knownResources(
 
 function progress(checkpoints: readonly WorkspaceHostResourceCheckpoint[], total: number): number {
   if (total === 0) return 100;
-  const settled = checkpoints.filter((entry) =>
-    ['applied', 'unchanged', 'absent'].includes(entry.state),
-  ).length;
+  const settled = checkpoints.filter((entry) => ['applied', 'unchanged', 'absent'].includes(entry.state)).length;
   return Math.max(0, Math.min(99, Math.floor((settled / total) * 100)));
 }
 
@@ -180,7 +178,8 @@ function planRequest(
       resources: target.resources.map((entry) => entry.resource),
     },
   } as const;
-  if (input.action === 'snapshot') return { ...base, action: input.action, ...(input.name ? { name: input.name } : {}) };
+  if (input.action === 'snapshot')
+    return { ...base, action: input.action, ...(input.name ? { name: input.name } : {}) };
   if (input.action === 'upgrade') {
     if (!input.image) throw new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
     return {
@@ -205,8 +204,9 @@ function matchingExistingResource(
   target: StoredWorkspaceHostDestroyTarget,
   step: WorkspaceHostPlan['steps'][number],
 ): WorkspaceHostResourceRef | undefined {
-  const providerId = [step.input.instanceName, step.input.resourceName]
-    .find((value): value is string => typeof value === 'string');
+  const providerId = [step.input.instanceName, step.input.resourceName].find(
+    (value): value is string => typeof value === 'string',
+  );
   return target.resources
     .map((entry) => entry.resource)
     .find((resource) => resource.kind === step.resourceKind && (!providerId || resource.providerId === providerId));
@@ -262,7 +262,9 @@ export async function runWorkspaceHostLifecycle(
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match hostId']);
   }
   if (input.connection.target !== target.target || input.provider.target !== target.target) {
-    throw new WorkspaceHostProvisioningRequestError(['workspace-host provider and connection must match stored target']);
+    throw new WorkspaceHostProvisioningRequestError([
+      'workspace-host provider and connection must match stored target',
+    ]);
   }
 
   let hostBootstrapScript: string | undefined;
@@ -382,16 +384,17 @@ export async function runWorkspaceHostLifecycle(
       };
       let providerResult: WorkspaceHostApplyResult;
       try {
-        providerResult = action.kind === 'reconcile'
-          ? await input.provider.reconcile(
-              {
-                ...applyRequest,
-                reason: 'resume',
-                ...(prior.providerRequestId ? { previousProviderRequestId: prior.providerRequestId } : {}),
-              },
-              context,
-            )
-          : await input.provider.apply(applyRequest, context);
+        providerResult =
+          action.kind === 'reconcile'
+            ? await input.provider.reconcile(
+                {
+                  ...applyRequest,
+                  reason: 'resume',
+                  ...(prior.providerRequestId ? { previousProviderRequestId: prior.providerRequestId } : {}),
+                },
+                context,
+              )
+            : await input.provider.apply(applyRequest, context);
       } catch (error) {
         // Classify the refusal; do not assume it is uncertain. A deterministic 4xx (an expired
         // credential, a quota denial, a retired image) will be refused identically forever, and
@@ -440,7 +443,14 @@ export async function runWorkspaceHostLifecycle(
           percent: progress(checkpoints, plan.steps.length),
           message: `Provider outcome for '${prior.logicalKey}' is uncertain; reconciliation required`,
         });
-        return { status: 'in-progress', operationId, hostId: resultHostId, plan, checkpoints, retryAfterMs: DEFAULT_RETRY_AFTER_MS };
+        return {
+          status: 'in-progress',
+          operationId,
+          hostId: resultHostId,
+          plan,
+          checkpoints,
+          retryAfterMs: DEFAULT_RETRY_AFTER_MS,
+        };
       }
 
       const afterCall = resultCheckpoint(prior, attempts, providerResult);
@@ -451,9 +461,10 @@ export async function runWorkspaceHostLifecycle(
         operationId,
         status: 'running',
         percent: progress(checkpoints, plan.steps.length),
-        message: providerResult.state === 'in-progress'
-          ? `Provider ${input.action} step '${prior.logicalKey}' is still in progress`
-          : `Provider ${input.action} step '${prior.logicalKey}' ${providerResult.state}`,
+        message:
+          providerResult.state === 'in-progress'
+            ? `Provider ${input.action} step '${prior.logicalKey}' is still in progress`
+            : `Provider ${input.action} step '${prior.logicalKey}' ${providerResult.state}`,
       });
       if (providerResult.state === 'in-progress') {
         return {
