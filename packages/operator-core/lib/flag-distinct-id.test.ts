@@ -36,7 +36,8 @@ describe('flag-distinct-id', () => {
   });
 
   it('degrades to the placeholder when no builtin loader is reachable (a browser graph)', () => {
-    expect(resolveHostHostname(undefined)).toBe(UNKNOWN_HOSTNAME);
+    // `null` models "no loader"; an explicit `undefined` would select the runtime default.
+    expect(resolveHostHostname(null)).toBe(UNKNOWN_HOSTNAME);
     expect(resolveHostHostname(() => undefined)).toBe(UNKNOWN_HOSTNAME);
     expect(resolveHostHostname(() => ({}))).toBe(UNKNOWN_HOSTNAME);
     expect(resolveHostHostname(() => ({ hostname: () => '' }))).toBe(UNKNOWN_HOSTNAME);
@@ -49,5 +50,18 @@ describe('flag-distinct-id', () => {
 
   it('CALIBRATION: an injected loader that yields a hostname is actually used', () => {
     expect(resolveHostHostname(() => ({ hostname: () => 'fixture-host' }))).toBe('fixture-host');
+  });
+});
+
+// Pre-existing coverage (kept verbatim): the machine-stable PostHog distinctId is
+// host-prefixed and request-independent for V1.
+describe('resolveDistinctId', () => {
+  it('returns a host-prefixed id', () => {
+    expect(resolveDistinctId(new Request('http://localhost/'))).toMatch(/^papercusp-host-/);
+  });
+  it('is stable + independent of the request', () => {
+    const a = resolveDistinctId(new Request('http://localhost/a'));
+    const b = resolveDistinctId(new Request('http://localhost/b'));
+    expect(a).toBe(b);
   });
 });

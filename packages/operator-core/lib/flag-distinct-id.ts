@@ -38,11 +38,12 @@ function builtinModuleGetter(): BuiltinModuleGetter | undefined {
  * The machine hostname, resolved through an injectable builtin-module getter so
  * the behaviour is testable in both directions: with the real
  * `process.getBuiltinModule` it returns `os.hostname()`; with no getter (a
- * browser graph), a getter that has no `os`, or one that throws, it returns
+ * browser graph — pass `null` to model it explicitly; `undefined` selects the
+ * runtime default), a getter that has no `os`, or one that throws, it returns
  * {@link UNKNOWN_HOSTNAME}.
  */
 export function resolveHostHostname(
-  getBuiltin: BuiltinModuleGetter | undefined = builtinModuleGetter(),
+  getBuiltin: BuiltinModuleGetter | null | undefined = builtinModuleGetter(),
 ): string {
   if (!getBuiltin) return UNKNOWN_HOSTNAME;
   try {
