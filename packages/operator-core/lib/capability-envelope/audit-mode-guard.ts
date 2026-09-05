@@ -119,8 +119,9 @@ export function auditModeMutationDenyReason(o: { toolName: string; ownerId: stri
     `owner instead of executing it (clause 7/8: "never executes remediation un-routed", ` +
     `"read-only toward the subject"). Filing findings stays allowed ` +
     `(work_items:create / comment / observe). Deliver your verdict, report, and coverage, then ` +
-    `ask which remediation route the owner wants — silence is not approval. Once they have ` +
-    `chosen and you are ready to act, exit AUDIT mode first: ` +
+    `ask which remediation route the owner wants — silence is not approval. Delivering the ` +
+    `report does not clear the durable AUDIT row. Once they have chosen and you are ready to ` +
+    `act, exit AUDIT mode first: ` +
     `mode:set { mode:'audit', enabled:false, reason:'<why>' }.`
   );
 }

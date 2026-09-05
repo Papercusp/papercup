@@ -157,15 +157,26 @@ export default defineTool({
         };
       }
 
-      // Generate guidance based on decision type (P-040: gym re-trigger)
+      // Guidance follows the decision that was actually RECORDED, never the one
+      // requested. A pre-route screen can change it (P-003 deployment staleness), and
+      // echoing the request back as though it had been applied is exactly how a divert
+      // becomes invisible to the caller who asked for the original route.
+      const effectiveDecision = result.decision ?? (args.decision as TriageDecision);
       let note = '';
-      if (args.decision === 'place') {
+      if (result.deploymentStalenessDivert) {
+        note =
+          `DIVERTED by the deployment-staleness screen (P-003 / EI-22450280531836927): requested ` +
+          `${result.deploymentStalenessDivert.requestedDecision}, recorded gate → ` +
+          `${result.deploymentStalenessDivert.target}. The file defining this filing's tool differs between the ` +
+          `serving build and the tree, so the reported condition may already be repaired and merely UNDEPLOYED — ` +
+          `the repair is to LAND THE DEPLOY, not a code change. Confirm with dev:pipeline_position before re-routing.`;
+      } else if (effectiveDecision === 'place') {
         note = 'Decision persisted. Use work_items:create to assign and track the implementation.';
-      } else if (args.decision === 'gate') {
+      } else if (effectiveDecision === 'gate') {
         note = 'Decision persisted. Escalate for human review before proceeding.';
-      } else if (args.decision === 'gym') {
+      } else if (effectiveDecision === 'gym') {
         note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call cup:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
-      } else if (args.decision === 'reject') {
+      } else if (effectiveDecision === 'reject') {
         note = 'Decision persisted: issue CLOSED with decidedReason — the recall matcher surfaces it on the next same-signature capture.';
       }
 
@@ -177,10 +188,15 @@ export default defineTool({
               ok: true,
               mode: 'triage-one',
               ideaId: args.ideaId,
-              decision: args.decision,
+              decision: effectiveDecision,
+              requestedDecision: args.decision,
               reason: args.reason,
               lifecycle: result.lifecycle,
               closed: result.closed ?? false,
+              ...(result.deploymentStaleness ? { deploymentStaleness: result.deploymentStaleness } : {}),
+              ...(result.deploymentStalenessDivert
+                ? { deploymentStalenessDivert: result.deploymentStalenessDivert }
+                : {}),
               note,
             }),
           },
@@ -349,6 +365,11 @@ export default defineTool({
       };
       const failures: Array<{ id: string; error: string }> = [];
       let applied = 0;
+      // P-003: how many filings this pass kept OUT of the code-fix lane because their
+      // subject is already repaired in the tree and merely undeployed. Counted from the
+      // RECORDED decision, so the tally cannot disagree with what was persisted.
+      let deploymentStalenessDiverted = 0;
+      const deploymentStalenessDivertedIds: string[] = [];
       for (const item of all) {
         const triage = triageIdea(item);
         const res = await applyTriageDecision({
@@ -360,7 +381,14 @@ export default defineTool({
         });
         if (res.ok) {
           applied += 1;
-          byDecision[triage.decision] += 1;
+          // The recorded decision, not the recommended one: a pre-route screen or guard
+          // can change it, and counting the recommendation would report a route that was
+          // never persisted (the same under-report triage-one carried until P-003).
+          byDecision[res.decision ?? triage.decision] += 1;
+          if (res.deploymentStalenessDivert) {
+            deploymentStalenessDiverted += 1;
+            if (deploymentStalenessDivertedIds.length < 20) deploymentStalenessDivertedIds.push(item.id);
+          }
           if (item.ideaType) byType[item.ideaType] += 1;
         } else {
           failures.push({ id: item.id, error: res.error ?? 'unknown' });
@@ -395,6 +423,11 @@ export default defineTool({
                   : Math.max(0, coverage.corpusTotal - all.length),
               byDecision,
               byType,
+              // P-003 (EI-22450280531836927): filings whose subject is already repaired
+              // in the tree and merely UNDEPLOYED. These were routed to land-the-deploy
+              // instead of at a code fix — the number this screen exists to move.
+              deploymentStalenessDiverted,
+              deploymentStalenessDivertedIds,
               failures: failures.slice(0, 10),
               failureCount: failures.length,
             }),
@@ -451,15 +484,26 @@ export default defineTool({
         };
       }
 
-      // Generate guidance based on decision type (P-040: gym re-trigger)
+      // Guidance follows the decision that was actually RECORDED, never the one
+      // requested. A pre-route screen can change it (P-003 deployment staleness), and
+      // echoing the request back as though it had been applied is exactly how a divert
+      // becomes invisible to the caller who asked for the original route.
+      const effectiveDecision = result.decision ?? (args.decision as TriageDecision);
       let note = '';
-      if (args.decision === 'place') {
+      if (result.deploymentStalenessDivert) {
+        note =
+          `DIVERTED by the deployment-staleness screen (P-003 / EI-22450280531836927): requested ` +
+          `${result.deploymentStalenessDivert.requestedDecision}, recorded gate → ` +
+          `${result.deploymentStalenessDivert.target}. The file defining this filing's tool differs between the ` +
+          `serving build and the tree, so the reported condition may already be repaired and merely UNDEPLOYED — ` +
+          `the repair is to LAND THE DEPLOY, not a code change. Confirm with dev:pipeline_position before re-routing.`;
+      } else if (effectiveDecision === 'place') {
         note = 'Decision persisted. Use work_items:create to assign and track the implementation.';
-      } else if (args.decision === 'gate') {
+      } else if (effectiveDecision === 'gate') {
         note = 'Decision persisted. Escalate for human review before proceeding.';
-      } else if (args.decision === 'gym') {
+      } else if (effectiveDecision === 'gym') {
         note = 'Decision persisted. Gym A/B dispatch for verification (P-040). Next: call cup:spawn or harness:create to instantiate the gym with the target prompt variant for evaluation.';
-      } else if (args.decision === 'reject') {
+      } else if (effectiveDecision === 'reject') {
         note = 'Decision persisted: issue CLOSED with decidedReason — the recall matcher surfaces it on the next same-signature capture.';
       }
 
@@ -471,10 +515,15 @@ export default defineTool({
               ok: true,
               mode: 'triage-one',
               ideaId: args.ideaId,
-              decision: args.decision,
+              decision: effectiveDecision,
+              requestedDecision: args.decision,
               reason: args.reason,
               lifecycle: result.lifecycle,
               closed: result.closed ?? false,
+              ...(result.deploymentStaleness ? { deploymentStaleness: result.deploymentStaleness } : {}),
+              ...(result.deploymentStalenessDivert
+                ? { deploymentStalenessDivert: result.deploymentStalenessDivert }
+                : {}),
               note,
             }),
           },

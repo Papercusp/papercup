@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 859,
+  "count": 860,
   "tools": [
     {
       "name": "ablation:report",
@@ -14527,6 +14527,44 @@
         "when": "To review the papercusp self-improvement backlog — what is captured, what is auto-eligible vs needs a human, and which items look like duplicates to merge. The human-facing triage view. (P-010) Pass harnessSlug to filter to a specific Pot's ideas. `total` is the TRUE corpus count (never bounded by `limit`); `returned`/`windowed` say how much of it you actually got back — read `likelyDuplicatesScope` before trusting an empty `likelyDuplicates` at a small `limit` (dedup only scans what was returned).",
         "notWhen": "You want one improvement in full — work_items:get { id }. You want to file one — improvements:capture. You want to browse another area — topics:feed { topic }.",
         "chaining": "improvements:digest → work_items:get / work_items:claim on a queued item → fix it self/inline (or improvements:capture to add more)."
+      }
+    },
+    {
+      "name": "improvements:filing-classes",
+      "http": {
+        "path": "/api/agent-tools/improvements/filing-classes",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-surface defect CLASSES over the ungraded filing population: groups structured toolFailure filings by the tool their report names, ranks the concentrated head, and can file ONE class work-item that CITES its members. Read-only unless mode:\"file\"; members are never merged or closed.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "To see whether a surface is drawing repeat tool-contract filings — the aggregate no individual filer can see — and to turn one such surface into a single actionable item instead of N instance nits. Read `classedMembers` vs `totalMembers` for the aggregation's reach.",
+        "notWhen": "You want the captured papercusp-improvement backlog — improvements:digest. You want one filing — work_items:get { id }. You want to file one — improvements:capture. You want to grade one — blender:grade-idea.",
+        "chaining": "improvements:filing-classes → pick a surface from `classes` → improvements:filing-classes { mode:\"file\", toolName } → work_items:claim the class item; its `relates` links reach every member filing."
       }
     },
     {

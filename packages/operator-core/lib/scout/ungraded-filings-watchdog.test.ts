@@ -26,14 +26,21 @@ import { listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds } from
 import {
   selectUngradedFilings,
   shouldNudgeMug,
-  suIdeateUngradedStaleSec,
-  suIdeateUngradedConfig,
-  suIdeateUngradedSweep,
+  ungradedFilingsStaleSec,
+  ungradedFilingsConfig,
+  ungradedFilingsSweep,
+  ungradedFireScopeKey,
   fireGradingNudge,
   SU_IDEATE_UNGRADED_EPOCH_MS,
-  SU_IDEATE_UNGRADED_BATCH_CAP,
-  type SuUngradedCandidate,
+  UNGRADED_BATCH_CAP,
+  UNGRADED_NUDGE_SOURCE,
+  type UngradedCandidate,
 } from './ungraded-filings-watchdog';
+import {
+  DEFAULT_UNGRADED_EPOCH_POLICY,
+  SCOUT_UNGRADED_EPOCH_MS,
+  epochMsForOrigin,
+} from './ungraded-scope';
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
@@ -44,8 +51,8 @@ afterEach(() => {
   vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReset().mockReturnValue([]);
 });
 
-function filing(ideaId: string, ageDays: number): SuUngradedCandidate {
-  return { ideaId, title: null, routedRef: `wi:${ideaId}`, routedAtMs: NOW - ageDays * DAY };
+function filing(ideaId: string, ageDays: number, origin = 'su-ideate'): UngradedCandidate {
+  return { ideaId, origin, title: null, routedRef: `wi:${ideaId}`, routedAtMs: NOW - ageDays * DAY };
 }
 
 describe('selectUngradedFilings', () => {
@@ -107,10 +114,10 @@ describe('D-013 flood guards (the backfilled corpus must not flood triage)', () 
     expect(got.map((f) => f.ideaId)).toEqual(['d30', 'd20']);
   });
 
-  it('defaults the cap to SU_IDEATE_UNGRADED_BATCH_CAP', () => {
-    const many = Array.from({ length: SU_IDEATE_UNGRADED_BATCH_CAP + 5 }, (_, i) => filing(`f${i}`, 8 + i));
+  it('defaults the cap to UNGRADED_BATCH_CAP', () => {
+    const many = Array.from({ length: UNGRADED_BATCH_CAP + 5 }, (_, i) => filing(`f${i}`, 8 + i));
     const got = selectUngradedFilings(many, { now: NOW, thresholdMs: 7 * DAY, epochMs: 0 });
-    expect(got).toHaveLength(SU_IDEATE_UNGRADED_BATCH_CAP);
+    expect(got).toHaveLength(UNGRADED_BATCH_CAP);
   });
 
   it('the default epoch floor is the P-006 enablement date (rows before it stay silent)', () => {
@@ -161,20 +168,20 @@ describe('suIdeateUngradedStaleSec tunable', () => {
 
   it('defaults to a 7d stale threshold', () => {
     delete process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC;
-    expect(suIdeateUngradedStaleSec()).toBe(604_800);
+    expect(ungradedFilingsStaleSec()).toBe(604_800);
   });
 
   it('honors PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC (and <=0 = kill switch)', () => {
     process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = '86400';
-    expect(suIdeateUngradedStaleSec()).toBe(86_400);
+    expect(ungradedFilingsStaleSec()).toBe(86_400);
     process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = '0';
-    expect(suIdeateUngradedStaleSec()).toBe(0);
+    expect(ungradedFilingsStaleSec()).toBe(0);
   });
 
   it('falls back to the default on a non-numeric value (fail-soft)', () => {
     process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = 'nonsense';
-    expect(suIdeateUngradedStaleSec()).toBe(604_800);
-    expect(suIdeateUngradedConfig()).toMatchObject({
+    expect(ungradedFilingsStaleSec()).toBe(604_800);
+    expect(ungradedFilingsConfig()).toMatchObject({
       enabled: true,
       effectiveThresholdSec: 604_800,
       overrideSource: 'invalid-environment-fallback',
@@ -184,24 +191,29 @@ describe('suIdeateUngradedStaleSec tunable', () => {
 
   it('reports the effective source and kill-switch state from the same config reader as the sweep', () => {
     process.env.PAPERCUSP_SU_IDEATE_UNGRADED_STALE_SEC = '0';
-    expect(suIdeateUngradedConfig()).toMatchObject({
+    expect(ungradedFilingsConfig()).toMatchObject({
       enabled: false,
       effectiveThresholdSec: 0,
       overrideSource: 'environment',
-      epochMs: SU_IDEATE_UNGRADED_EPOCH_MS,
-      batchCap: SU_IDEATE_UNGRADED_BATCH_CAP,
+      policy: DEFAULT_UNGRADED_EPOCH_POLICY,
+      batchCap: UNGRADED_BATCH_CAP,
     });
+    // P-001: the readback carries the WHOLE per-origin policy, not one origin's floor.
+    // A single `epochMs` here is what let the rail's diagnostics describe every
+    // producer with su-ideate's line.
+    expect(ungradedFilingsConfig().policy.byOrigin['su-ideate']).toBe(SU_IDEATE_UNGRADED_EPOCH_MS);
+    expect(ungradedFilingsConfig().policy.byOrigin.scout).toBe(SCOUT_UNGRADED_EPOCH_MS);
   });
 });
 
-describe('suIdeateUngradedSweep observability', () => {
+describe('ungradedFilingsSweep observability', () => {
   it('returns a live error invariant when eligible backlog exists but no Blender scope is evaluated', async () => {
     vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce([]);
     vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReturnValueOnce(['ws-1']);
     dbRows.current = [{ c: 3 }];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const result = await suIdeateUngradedSweep({ now: SU_IDEATE_UNGRADED_EPOCH_MS + 30 * DAY });
+    const result = await ungradedFilingsSweep({ now: SU_IDEATE_UNGRADED_EPOCH_MS + 30 * DAY });
 
     expect(result).toEqual([
       expect.objectContaining({
@@ -218,11 +230,12 @@ describe('suIdeateUngradedSweep observability', () => {
   it('returns a synthetic error result when the outer infrastructure read fails', async () => {
     vi.mocked(listBlenderMaintenanceScopes).mockRejectedValueOnce(new Error('scope registry unavailable'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = await suIdeateUngradedSweep();
+    const result = await ungradedFilingsSweep();
     expect(result).toEqual([
       {
         workspaceId: '*',
         installSlug: '*',
+        origin: '*',
         outcome: 'error',
         evaluatedWorkspaceCount: 0,
         evaluatedScopeCount: 0,
@@ -233,5 +246,104 @@ describe('suIdeateUngradedSweep observability', () => {
     ]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('scope registry unavailable'));
     warn.mockRestore();
+  });
+});
+
+/**
+ * P-001 ANTI-REQUIREMENT GUARD (agent-review-filing-rail-and-class-aggregation-2026-09-05).
+ *
+ * The plan states it outright: adding `origin = 'agent-review'` beside the existing
+ * `origin = 'su-ideate'` closes the measured gap and FAILS the requirement, because the
+ * fourth producer strands exactly the same way. These assertions are what make that
+ * distinction mechanical instead of a review opinion — a widening done by enumeration
+ * passes every behavioural test above and only fails here.
+ */
+describe('the rail selects origins by construction, not by enumeration', () => {
+  const source = readFileSync(join(__dirname, 'ungraded-filings-watchdog.ts'), 'utf8');
+  // Strip block + line comments: the header DESCRIBES the origins it used to name, and
+  // a guard that cannot tell prose from a predicate would forbid explaining the bug.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  it('names no producer origin in executable code', () => {
+    // Deliberately checks the QUOTED literal, which is what a SQL predicate or an
+    // `origin === '…'` branch needs. `UNGRADED_NUDGE_SOURCE`'s historical spelling is a
+    // WatchdogSource value, not an origin, and contains no quoted origin token.
+    const named = ["'su-ideate'", "'scout'", "'agent-review'", "'drill'"].filter((lit) =>
+      code.includes(lit),
+    );
+    expect(
+      named,
+      'the sweep must resolve its origins from ungraded-scope.ts, never name one. A literal ' +
+        'here means a fifth producer will strand exactly as agent-review did (EI-22180311569503146).',
+    ).toEqual([]);
+  });
+
+  it('writes no human_grade predicate of its own', () => {
+    // The population decision belongs to ungraded-scope.ts. This is the same property
+    // its recurrence guard asserts from the other side; asserted here too so the rail
+    // fails locally rather than only in the scope module's suite.
+    expect(code).not.toMatch(/human_grade/);
+  });
+
+  it('CALIBRATION: the scan really reads this module (else both assertions are vacuous)', () => {
+    expect(code).toContain('ungradedFilingsSweep');
+    expect(code.length).toBeGreaterThan(2_000);
+  });
+});
+
+describe('per-origin behaviour (P-001)', () => {
+  it('judges each row against ITS OWN origin floor, not one shared line', () => {
+    // A scout row and an su-ideate row with the SAME timestamp bucket differently,
+    // because scout's floor (2026-08-12) is a month later than su-ideate's.
+    const between = SU_IDEATE_UNGRADED_EPOCH_MS + DAY;
+    expect(between).toBeLessThan(SCOUT_UNGRADED_EPOCH_MS);
+    const now = SCOUT_UNGRADED_EPOCH_MS + 90 * DAY;
+    const rows: UngradedCandidate[] = [
+      { ...filing('su-row', 0, 'su-ideate'), routedAtMs: between },
+      { ...filing('scout-row', 0, 'scout'), routedAtMs: between },
+    ];
+    const got = selectUngradedFilings(rows, { now, thresholdMs: 7 * DAY });
+    expect(got.map((r) => r.ideaId)).toEqual(['su-row']);
+  });
+
+  it('includes an origin nobody has named, at the policy fallback floor', () => {
+    // The promise ungraded-scope.ts always made about the COUNT, now true of the RAIL:
+    // agent-review has no entry in byOrigin and is swept anyway.
+    expect(DEFAULT_UNGRADED_EPOCH_POLICY.byOrigin['agent-review']).toBeUndefined();
+    expect(epochMsForOrigin(DEFAULT_UNGRADED_EPOCH_POLICY, 'agent-review')).toBe(
+      DEFAULT_UNGRADED_EPOCH_POLICY.fallbackMs,
+    );
+    const row = {
+      ...filing('ar-1', 0, 'agent-review'),
+      routedAtMs: DEFAULT_UNGRADED_EPOCH_POLICY.fallbackMs + DAY,
+    };
+    const got = selectUngradedFilings([row], {
+      now: DEFAULT_UNGRADED_EPOCH_POLICY.fallbackMs + 30 * DAY,
+      thresholdMs: 7 * DAY,
+    });
+    expect(got.map((r) => r.ideaId)).toEqual(['ar-1']);
+  });
+
+  it('gives each origin its own debounce slot under one shared WatchdogSource', () => {
+    // Per-origin SOURCES would put the enumeration back into pot/watchdog.ts's closed
+    // union; scopeKey is the mechanism that avoids it. The keys must differ, or the
+    // loudest producer silences every other one for the whole debounce window.
+    expect(UNGRADED_NUDGE_SOURCE).toBe('su-ideate-ungraded');
+    expect(ungradedFireScopeKey('agent-review')).not.toBe(ungradedFireScopeKey('su-ideate'));
+    expect(ungradedFireScopeKey('agent-review')).toContain('agent-review');
+  });
+
+  it('names the actual origin in the nudge it fires', async () => {
+    // The old message said "su-ideate grading backstop" unconditionally. Nudging a
+    // recipient to grade 1,397 agent-review filings under an su-ideate headline is how
+    // a widened rail still reads as the narrow one.
+    await fireGradingNudge('ws-1', null, [filing('ar-9', 10, 'agent-review')], 604_800, 'pot-1');
+    expect(wakeMug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: UNGRADED_NUDGE_SOURCE,
+        summary: expect.stringContaining('agent-review grading backstop'),
+        payload: expect.objectContaining({ origin: 'agent-review' }),
+      }),
+    );
   });
 });

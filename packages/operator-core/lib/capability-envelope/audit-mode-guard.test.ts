@@ -78,6 +78,7 @@ describe('checkAuditModeMutationGuard', () => {
     );
     expect(verdict!.reason).toMatch(/read-only toward the audited subject/i);
     expect(verdict!.reason).toMatch(/work_items:create/);
+    expect(verdict!.reason).toMatch(/does not clear the durable AUDIT row/);
     expect(verdict!.reason).toMatch(/mode:set/);
     // Calibration: the wrong control would have allowed this exact case.
     expect(await alwaysAllowControl()).toBeNull();
