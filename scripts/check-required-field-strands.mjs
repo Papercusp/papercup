@@ -11,6 +11,12 @@
  * later, and (because `pushed` is commit-only:bridged) a red gate stops origin egress for
  * everyone. A correct one-line interface change becomes a multi-hour fleet outage.
  *
+ * SIBLING CLASSES, same shape, same trigger (all three share one findings list):
+ *   - an exported CALLABLE's signature changes           → diffSignatureBreaks
+ *   - an exported UNION gains or loses a member          → diffUnionWidenings (EI-20417688643232882:
+ *     `GitSyncFailingLeg` gained `'config-lock'`; a consumer had RE-LISTED the literals, so the
+ *     strand surfaced as a TS2322 in a THIRD file and red-pinned the fleet-wide gate)
+ *
  * WHY THIS GUARD IS A TRIGGER, NOT A SECOND ANALYSER:
  * finding the stranded sites is not the hard part — `tsc` already does it perfectly and
  * precisely. The hard part is KNOWING TO RUN IT. So this guard does the one thing nothing
@@ -332,6 +338,106 @@ export function diffRequiredAdditions(beforeText, afterText, fileName = 'f.ts') 
     else if (prev.optional) added.push({ path, reason: 'optional-to-required' });
   }
   return added;
+}
+
+/**
+ * Collect every EXPORTED union — as a type alias (`export type Leg = 'a' | 'b'`) and as a
+ * property of an exported interface / object-type alias — keyed by the same dotted path the
+ * required-field scan uses, so both detectors speak one vocabulary.
+ *
+ * THE TRAP (EI-20417688643232882, which red-pinned the shared gate on 2026-08-14 and cost
+ * three agents real diagnostic time): `GitSyncFailingLeg` gained a `'config-lock'` member.
+ * A consumer — `DeployHealth.gitSyncFailingLeg` — had RE-LISTED the literals instead of
+ * referencing the type, so widening the source stranded it with NO error at the edit site.
+ * It surfaced later and elsewhere as a TS2322 in a third file (system-health/compute.ts).
+ * That distance is the whole difficulty: the edit is one line and provably correct, the
+ * error is in a file the diff never touched, and `test:affected` cannot select it.
+ *
+ * Members are stored as NORMALISED source text so a reformat or a reordering is not
+ * mistaken for a change — the same reason `typeText` exists for the signature scan.
+ */
+export function collectExportedUnionMembers(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const unions = new Map(); // dotted path -> Set<member text>
+
+  const memberSet = (typeNode) => {
+    if (!typeNode) return null;
+    const parts = ts.isUnionTypeNode(typeNode) ? typeNode.types : [typeNode];
+    const set = new Set();
+    for (const p of parts) set.add(p.getText(sf).replace(/\s+/g, ' ').trim());
+    return set;
+  };
+
+  const walkMembers = (members, path) => {
+    for (const m of members) {
+      if (!ts.isPropertySignature(m) || !m.name) continue;
+      const name = ts.isIdentifier(m.name) || ts.isStringLiteral(m.name) ? m.name.text : null;
+      if (!name || !m.type) continue;
+      const dotted = `${path}.${name}`;
+      const set = memberSet(m.type);
+      if (set) unions.set(dotted, set);
+      // Same recursion as the required-field scan: a union one level down strands just as
+      // hard as a top-level one, and the motivating case lived on a nested property.
+      if (ts.isTypeLiteralNode(m.type)) walkMembers(m.type.members, dotted);
+    }
+  };
+
+  for (const stmt of sf.statements) {
+    if (ts.isInterfaceDeclaration(stmt) && isExported(stmt)) {
+      walkMembers(stmt.members, stmt.name.text);
+    } else if (ts.isTypeAliasDeclaration(stmt) && isExported(stmt)) {
+      if (ts.isTypeLiteralNode(stmt.type)) walkMembers(stmt.type.members, stmt.name.text);
+      else {
+        const set = memberSet(stmt.type);
+        if (set) unions.set(stmt.name.text, set);
+      }
+    }
+  }
+  return unions;
+}
+
+/** At most `max` members, rendered for a one-line report. */
+const renderMembers = (members, max = 3) => {
+  const shown = members.slice(0, max).join(' | ');
+  return members.length > max ? `${shown} | …(+${members.length - max})` : shown;
+};
+
+/**
+ * Unions whose member SET changed at a path that existed at `before`.
+ *
+ * Deliberately reports only a STRICT SUPERSET (widened) or STRICT SUBSET (narrowed) — never
+ * a mixed add-and-remove. That is the precision decision that keeps this advisory worth
+ * reading: a superset/subset relation is unambiguous evidence that consumers which re-list
+ * the members went stale, whereas `foo: string` → `foo: number` is an ordinary type change
+ * with no union involved, and a rename (one added, one removed) would fire twice while
+ * saying nothing a reader can act on. Both reported directions strand real sites — widening
+ * strands every CONSUMER that re-lists the members, narrowing strands every PRODUCER that
+ * still passes the dropped one.
+ *
+ * A single non-union type counts as a one-member set, so the classic nullable widening
+ * (`string` → `string | null`) is caught by the same superset test with no special case.
+ */
+export function diffUnionWidenings(beforeText, afterText, fileName = 'f.ts') {
+  const before = collectExportedUnionMembers(beforeText, fileName);
+  const after = collectExportedUnionMembers(afterText, fileName);
+  // Same suppression as diffRequiredAdditions: no file at `before` can reference a type that
+  // did not exist at `before`, so a type introduced by this very diff cannot have stranded
+  // anything — and a warning that is provably impossible is how a real advisory gets tuned out.
+  const beforeTypes = collectExportedTypeNames(beforeText, fileName);
+  const changes = [];
+  for (const [path, now] of after) {
+    if (!beforeTypes.has(path.split('.')[0])) continue;
+    const prev = before.get(path);
+    if (!prev) continue;
+    const gained = [...now].filter((m) => !prev.has(m));
+    const lost = [...prev].filter((m) => !now.has(m));
+    // Neither side is a union in any meaningful sense, or the change is a mixed rewrite:
+    // out of scope by the precision rule above.
+    if (gained.length && lost.length) continue;
+    if (gained.length) changes.push({ path: `${path} + ${renderMembers(gained)}`, reason: 'union-member-added' });
+    else if (lost.length) changes.push({ path: `${path} - ${renderMembers(lost)}`, reason: 'union-member-removed' });
+  }
+  return changes;
 }
 
 /**
@@ -859,6 +965,73 @@ export function formatScopedTypecheckWarning() {
   ].join('\n');
 }
 
+const REASON_LABELS = {
+  'added-required': 'new required field',
+  'optional-to-required': 'optional → required',
+  'param-added-required': 'new required parameter',
+  'param-optional-to-required': 'parameter optional → required',
+  'param-removed': 'parameter removed',
+  'param-type-changed': 'parameter type changed',
+  'return-type-changed': 'return type changed',
+  'callable-removed': 'exported callable removed',
+  'overload-removed': 'overload removed from an exported set',
+  'type-param-added-required': 'type parameter added without a default',
+  'type-param-removed': 'type parameter removed',
+  'type-param-constraint-changed': 'type-parameter constraint changed',
+  'type-param-default-removed': 'type-parameter default removed',
+  'union-member-added': 'union widened (a consumer that re-lists the members is now stale)',
+  'union-member-removed': 'union narrowed (a producer still passing the dropped member is now stale)',
+};
+// Every signature reason MUST be listed here, not merely labelled above: the FIELD class is
+// computed as the COMPLEMENT of these two sets, so a reason missing from both is silently
+// classified as a required-FIELD finding and the run is announced as a "REQUIRED-FIELD
+// ADDITION" — the wrong-headline failure this set was introduced to fix, which sends a
+// reader hunting for a field that does not exist.
+const SIGNATURE_REASONS = new Set([
+  'param-added-required',
+  'param-optional-to-required',
+  'param-removed',
+  'param-type-changed',
+  'return-type-changed',
+  'callable-removed',
+  'overload-removed',
+  'type-param-added-required',
+  'type-param-removed',
+  'type-param-constraint-changed',
+  'type-param-default-removed',
+]);
+/** Same complement contract as SIGNATURE_REASONS — see the comment above it. */
+const UNION_REASONS = new Set(['union-member-added', 'union-member-removed']);
+
+/**
+ * The headline names what was ACTUALLY found. A run that only changed a signature used to be
+ * announced as a "REQUIRED-FIELD ADDITION", which sends the reader looking for a field that
+ * does not exist and teaches them the guard is unreliable.
+ *
+ * Exported so the classification is directly testable: it is derived by COMPLEMENT, which is
+ * precisely the arrangement where a newly-added reason misclassifies silently rather than
+ * failing, so a unit test is the only thing that can catch the next omission.
+ */
+export function strandHeadline(reasons) {
+  const kinds = new Set(reasons);
+  const hasSig = [...kinds].some((k) => SIGNATURE_REASONS.has(k));
+  const hasUnion = [...kinds].some((k) => UNION_REASONS.has(k));
+  const hasField = [...kinds].some((k) => !SIGNATURE_REASONS.has(k) && !UNION_REASONS.has(k));
+  const parts = [
+    hasField ? 'REQUIRED-FIELD ADDITION' : null,
+    hasSig ? 'EXPORTED-SIGNATURE CHANGE' : null,
+    hasUnion ? 'EXPORTED-UNION CHANGE' : null,
+  ].filter(Boolean);
+  const headline = parts.length > 1
+    ? `${parts.join(' and ')} detected.`
+    : hasSig
+      ? 'EXPORTED-SIGNATURE CHANGE detected on a public callable.'
+      : hasUnion
+        ? 'EXPORTED-UNION CHANGE detected on an exported type.'
+        : 'REQUIRED-FIELD ADDITION detected on an exported type.';
+  return { headline, hasField, hasSig, hasUnion };
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -918,13 +1091,14 @@ function main() {
 
     examinedFiles.push(file);
     if (declaredFiles && beforeText !== null && beforeText === afterText) identicalFiles.push(file);
-    // Both predicates answer the same question — "did this edit strand sites in files the
-    // diff never touched?" — so they share one findings list and one escalation. Keeping
+    // All three predicates answer the same question — "did this edit strand sites in files
+    // the diff never touched?" — so they share one findings list and one escalation. Keeping
     // the shape ({ file, added: [{ path, reason }] }) identical is what lets the whole
     // attribution / JSON / --typecheck spine below stay untouched.
     const added = [
       ...diffRequiredAdditions(before, afterText, file),
       ...diffSignatureBreaks(before, afterText, file),
+      ...diffUnionWidenings(before, afterText, file),
     ];
     if (added.length) findings.push({ file, added });
   }
@@ -1001,52 +1175,11 @@ function main() {
     process.exit(noFindingsExit);
   }
 
-  const REASON_LABELS = {
-    'added-required': 'new required field',
-    'optional-to-required': 'optional → required',
-    'param-added-required': 'new required parameter',
-    'param-optional-to-required': 'parameter optional → required',
-    'param-removed': 'parameter removed',
-    'param-type-changed': 'parameter type changed',
-    'return-type-changed': 'return type changed',
-    'callable-removed': 'exported callable removed',
-    'overload-removed': 'overload removed from an exported set',
-    'type-param-added-required': 'type parameter added without a default',
-    'type-param-removed': 'type parameter removed',
-    'type-param-constraint-changed': 'type-parameter constraint changed',
-    'type-param-default-removed': 'type-parameter default removed',
-  };
-  // Every signature reason MUST be listed here, not merely labelled above: `hasField` is
-  // computed as the COMPLEMENT of this set, so a reason missing from it is silently classified
-  // as a required-FIELD finding and the run is announced as a "REQUIRED-FIELD ADDITION" — the
-  // wrong-headline failure this set was introduced to fix, which sends a reader hunting for a
-  // field that does not exist.
-  const SIGNATURE_REASONS = new Set([
-    'param-added-required',
-    'param-optional-to-required',
-    'param-removed',
-    'param-type-changed',
-    'return-type-changed',
-    'callable-removed',
-    'overload-removed',
-    'type-param-added-required',
-    'type-param-removed',
-    'type-param-constraint-changed',
-    'type-param-default-removed',
-  ]);
-
   if (!json) {
     // The headline names what was ACTUALLY found. A run that only changed a signature used
     // to be announced as a "REQUIRED-FIELD ADDITION", which sends the reader looking for a
     // field that does not exist and teaches them the guard is unreliable.
-    const kinds = new Set(findings.flatMap((f) => f.added.map((a) => a.reason)));
-    const hasSig = [...kinds].some((k) => SIGNATURE_REASONS.has(k));
-    const hasField = [...kinds].some((k) => !SIGNATURE_REASONS.has(k));
-    const headline = hasField && hasSig
-      ? 'REQUIRED-FIELD ADDITION and EXPORTED-SIGNATURE CHANGE detected.'
-      : hasSig
-        ? 'EXPORTED-SIGNATURE CHANGE detected on a public callable.'
-        : 'REQUIRED-FIELD ADDITION detected on an exported type.';
+    const { headline, hasUnion } = strandHeadline(findings.flatMap((f) => f.added.map((a) => a.reason)));
     console.log(`⚠ ${headline}`);
     console.log('  Every call/construction site of this symbol in OTHER files may have gone stale —');
     console.log('  including files test:affected will not select and vitest cannot see.\n');
@@ -1063,6 +1196,10 @@ function main() {
     console.log(formatScopedTypecheckWarning());
     console.log('\n  (Adding a required field is often correct — this is a prompt to verify,');
     console.log('   not a verdict. Do NOT make the field optional just to silence errors.)');
+    if (hasUnion) {
+      console.log('  (A stranded union consumer RE-LISTED the members instead of referencing the');
+      console.log('   type. Fix it by referencing the type — never by re-listing the new member too.)');
+    }
   }
 
   if (!runTypecheck) process.exit(0);

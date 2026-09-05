@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, collectExportedValueNames, diffRequiredAdditions, diffSignatureBreaks, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
+import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSignatures, collectExportedTypeNames, collectExportedUnionMembers, collectExportedValueNames, diffRequiredAdditions, diffSignatureBreaks, diffUnionWidenings, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, strandHeadline, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -1407,5 +1407,113 @@ describe('diffSignatureBreaks — generic type parameters', () => {
     const after = 'export function tag<T>(n: string): void {}';
 
     expect(diffSignatureBreaks(before, after).map((b: { reason: string }) => b.reason)).toEqual(['param-type-changed']);
+  });
+});
+
+/**
+ * EI-20417688643232882 — the union-widening trap. `GitSyncFailingLeg` gained a `'config-lock'`
+ * member; a consumer (`DeployHealth.gitSyncFailingLeg`) had RE-LISTED the literals instead of
+ * referencing the type, so the strand surfaced as a TS2322 in a THIRD file and red-pinned the
+ * fleet-wide gate. Nothing failed at the edit site, which is exactly why a trigger is needed.
+ */
+describe('collectExportedUnionMembers', () => {
+  it('collects an exported type-alias union, and a union on an exported property, under one dotted vocabulary', () => {
+    const src = `
+export type Leg = 'commit' | 'push';
+export interface DeployHealth {
+  leg: 'commit' | 'push' | null;
+  nested: { inner: 'a' | 'b' };
+}
+`;
+    const unions = collectExportedUnionMembers(src) as Map<string, Set<string>>;
+    expect([...(unions.get('Leg') ?? [])]).toEqual(["'commit'", "'push'"]);
+    expect([...(unions.get('DeployHealth.leg') ?? [])]).toEqual(["'commit'", "'push'", 'null']);
+    expect([...(unions.get('DeployHealth.nested.inner') ?? [])]).toEqual(["'a'", "'b'"]);
+  });
+
+  it('ignores a NON-exported union — a private type has no cross-file consumers to strand', () => {
+    const unions = collectExportedUnionMembers("type Leg = 'commit' | 'push';") as Map<string, Set<string>>;
+    expect(unions.has('Leg')).toBe(false);
+  });
+});
+
+describe('diffUnionWidenings', () => {
+  const LEG_BEFORE = "export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'unknown';";
+  const LEG_AFTER = "export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'config-lock' | 'unknown';";
+
+  it('THE MOTIVATING CASE: a member added to an exported union reports union-member-added, naming the new member', () => {
+    const found = diffUnionWidenings(LEG_BEFORE, LEG_AFTER) as { path: string; reason: string }[];
+    expect(found).toEqual([{ path: "GitSyncFailingLeg + 'config-lock'", reason: 'union-member-added' }]);
+  });
+
+  it('reports the reverse direction too — narrowing strands every PRODUCER still passing the dropped member', () => {
+    const found = diffUnionWidenings(LEG_AFTER, LEG_BEFORE) as { path: string; reason: string }[];
+    expect(found).toEqual([{ path: "GitSyncFailingLeg - 'config-lock'", reason: 'union-member-removed' }]);
+  });
+
+  it('catches the classic nullable widening, where neither side is written as a multi-member union', () => {
+    const before = 'export interface DeployHealth { leg: string; }';
+    const after = 'export interface DeployHealth { leg: string | null; }';
+    expect((diffUnionWidenings(before, after) as { path: string; reason: string }[])).toEqual([
+      { path: 'DeployHealth.leg + null', reason: 'union-member-added' },
+    ]);
+  });
+
+  it('catches a union NESTED one level down — the depth the required-field trap also lived at', () => {
+    const before = "export interface Health { git: { leg: 'commit' | 'push' } }";
+    const after = "export interface Health { git: { leg: 'commit' | 'push' | 'conflict' } }";
+    expect((diffUnionWidenings(before, after) as { reason: string }[]).map((f) => f.reason)).toEqual([
+      'union-member-added',
+    ]);
+  });
+
+  it('CALIBRATION: a REFORMAT or a REORDER is not a change — an advisory that fires on prettier gets tuned out', () => {
+    const reformatted = "export type GitSyncFailingLeg =\n  | 'commit'\n  | 'push'\n  | 'conflict'\n  | 'unknown';";
+    const reordered = "export type GitSyncFailingLeg = 'unknown' | 'conflict' | 'push' | 'commit';";
+    expect(diffUnionWidenings(LEG_BEFORE, reformatted)).toEqual([]);
+    expect(diffUnionWidenings(LEG_BEFORE, reordered)).toEqual([]);
+  });
+
+  it('CALIBRATION: a MIXED add-and-remove (a rename) is out of scope — only a strict superset/subset is unambiguous', () => {
+    const renamed = "export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'other';";
+    expect(diffUnionWidenings(LEG_BEFORE, renamed)).toEqual([]);
+  });
+
+  it('CALIBRATION: a union on a type NEW in this diff strands nothing by construction and must stay silent', () => {
+    const before = 'export type Existing = string;';
+    const after = `${before}\nexport type Fresh = 'a' | 'b';`;
+    expect(diffUnionWidenings(before, after)).toEqual([]);
+  });
+});
+
+describe('strandHeadline — the class is derived by COMPLEMENT, so an unlisted reason misclassifies SILENTLY', () => {
+  it('names each class on its own', () => {
+    expect((strandHeadline(['added-required']) as { headline: string }).headline).toBe(
+      'REQUIRED-FIELD ADDITION detected on an exported type.',
+    );
+    expect((strandHeadline(['param-removed']) as { headline: string }).headline).toBe(
+      'EXPORTED-SIGNATURE CHANGE detected on a public callable.',
+    );
+    expect((strandHeadline(['union-member-added']) as { headline: string }).headline).toBe(
+      'EXPORTED-UNION CHANGE detected on an exported type.',
+    );
+  });
+
+  it('a union reason is classified as UNION, never as the field default — the wrong-headline failure', () => {
+    for (const reason of ['union-member-added', 'union-member-removed']) {
+      const c = strandHeadline([reason]) as { hasField: boolean; hasUnion: boolean };
+      expect(c.hasUnion).toBe(true);
+      expect(c.hasField).toBe(false);
+    }
+  });
+
+  it('joins every class actually present, so a mixed run never hides one behind another', () => {
+    expect((strandHeadline(['added-required', 'param-removed', 'union-member-added']) as { headline: string }).headline)
+      .toBe('REQUIRED-FIELD ADDITION and EXPORTED-SIGNATURE CHANGE and EXPORTED-UNION CHANGE detected.');
+  });
+
+  it('CALIBRATION: an UNKNOWN reason still falls back to the field class, so a future omission is loud in this test, not silent in a run', () => {
+    const c = strandHeadline(['some-reason-nobody-classified']) as { hasField: boolean; hasUnion: boolean; hasSig: boolean };
+    expect([c.hasField, c.hasSig, c.hasUnion]).toEqual([true, false, false]);
   });
 });
