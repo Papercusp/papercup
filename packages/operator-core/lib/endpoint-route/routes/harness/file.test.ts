@@ -17,7 +17,7 @@ type Route = {
   handler: (request: Request, ctx: { params: Record<string, string> }) => Promise<Response>;
 };
 
-const routeSet = routes as Route[];
+const routeSet = routes as unknown as Route[];
 const getRoute = routeSet.find((route) => route.method === 'GET')!;
 const putRoute = routeSet.find((route) => route.method === 'PUT')!;
 
