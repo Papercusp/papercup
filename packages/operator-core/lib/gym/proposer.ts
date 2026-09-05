@@ -54,6 +54,29 @@ export interface CandidateProposal {
   overlay: VariantOverlay;
   rationale: string;
   diffFromParent: string;
+  /** Cost of the proposer call, including a response that later fails validation. */
+  costUsd: number;
+}
+
+/** Read a provider-reported cost from a successful value or a thrown error. */
+export function costUsdOf(value: unknown): number {
+  const candidate =
+    typeof value === 'number'
+      ? value
+      : (value as { costUsd?: unknown } | null | undefined)?.costUsd;
+  return typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
+}
+
+/** Preserve already-burned provider spend when a call fails after dispatch. */
+export function throwWithCostUsd(error: unknown, incurredCostUsd: number): never {
+  const costUsd = costUsdOf(error) + costUsdOf(incurredCostUsd);
+  if (error instanceof Error) {
+    Object.assign(error, { costUsd });
+    throw error;
+  }
+  const wrapped = new Error(String(error));
+  Object.assign(wrapped, { costUsd });
+  throw wrapped;
 }
 
 export function buildProposerPrompt(input: ProposeInput): { system: string; user: string } {
@@ -131,20 +154,33 @@ export async function proposeCandidate(
   deps: { llmCall: GymLlmCall },
 ): Promise<CandidateProposal> {
   const { system, user } = buildProposerPrompt(input);
-  const res = await deps.llmCall({
-    model: input.proposerModel,
-    system,
-    messages: [{ role: 'user', content: user }],
-    responseFormat: 'json',
-  });
-  const proposal = parseProposal(res.json ?? tryParseJson(res.text));
+  let res: Awaited<ReturnType<GymLlmCall>>;
+  try {
+    res = await deps.llmCall({
+      model: input.proposerModel,
+      system,
+      messages: [{ role: 'user', content: user }],
+      responseFormat: 'json',
+    });
+  } catch (error) {
+    // A provider can attach costUsd even when the request ultimately throws.
+    // Keep that property intact for the loop's spend ledger.
+    throwWithCostUsd(error, 0);
+  }
 
-  // Candidate overlay = parent overrides ⊕ proposed changes (prompts-only).
-  const merged: Record<string, string> = { ...input.parentOverlay.promptOverrides, ...proposal.promptOverrides };
-  const overlay: VariantOverlay = { promptOverrides: merged };
-  // Validate the merged overlay too.
-  planVariantOverlay(overlay);
+  try {
+    const proposal = parseProposal(res.json ?? tryParseJson(res.text));
 
-  const diffFromParent = Object.keys(proposal.promptOverrides).sort().join(', ');
-  return { overlay, rationale: proposal.rationale, diffFromParent };
+    // Candidate overlay = parent overrides ⊕ proposed changes (prompts-only).
+    const merged: Record<string, string> = { ...input.parentOverlay.promptOverrides, ...proposal.promptOverrides };
+    const overlay: VariantOverlay = { promptOverrides: merged };
+    // Validate the merged overlay too.
+    planVariantOverlay(overlay);
+
+    const diffFromParent = Object.keys(proposal.promptOverrides).sort().join(', ');
+    return { overlay, rationale: proposal.rationale, diffFromParent, costUsd: costUsdOf(res.costUsd) };
+  } catch (error) {
+    // The model response may have been billed even when parsing/validation rejects it.
+    throwWithCostUsd(error, res.costUsd);
+  }
 }

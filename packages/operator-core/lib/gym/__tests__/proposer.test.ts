@@ -77,6 +77,7 @@ describe('proposeCandidate', () => {
     });
     expect(cand.rationale).toBe('stop rubber-stamping');
     expect(cand.diffFromParent).toContain('validator');
+    expect(cand.costUsd).toBeCloseTo(0.02, 6);
   });
 
   it('overrides a role the parent already changed', async () => {
@@ -95,5 +96,19 @@ describe('proposeCandidate', () => {
       },
     });
     expect(model).toBe('claude-sonnet-4-6');
+  });
+
+  it('preserves provider cost when response validation fails after the call', async () => {
+    await expect(
+      proposeCandidate(input, {
+        llmCall: async () => ({
+          text: '',
+          json: { promptOverrides: { nonsense: 'x' }, rationale: 'invalid role' },
+          costUsd: 0.37,
+          inputTokens: 10,
+          outputTokens: 5,
+        }),
+      }),
+    ).rejects.toMatchObject({ costUsd: 0.37 });
   });
 });
