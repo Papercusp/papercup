@@ -38,8 +38,26 @@
  * it just stops doing the teardown on unauthenticated bytes. An `install` failure
  * clears the latch so the supervisor revives the operator.
  *
- * Both analyses are pure functions over file text, so the deliberately-broken controls
- * below run the same code as the real-tree case — CLAUDE.md's fixture tier, no
+ * THE SECOND INVARIANT: ONLY `revert_to` MAY ACCEPT A DOWNGRADE
+ *
+ * The other half of "signed updates / rollback failure cases" is the downgrade offer.
+ * `/api/updates/manifest` only compares versions for EQUALITY
+ * (`latest.version === currentVersion` → 204), so a release host serving a latest.json
+ * that names an OLDER version does get a 200 with a manifest. Nothing bad happens today
+ * because the plugin refuses it: with no override the decision is
+ * `release.version > self.current_version` (updater.rs `should_update`). So the whole
+ * no-downgrade property rests on `check_for_update` / `install_update` continuing to use
+ * the DEFAULT comparator.
+ *
+ * `revert_to` deliberately overrides it with `|_current, _release| true`, because a
+ * revert IS a downgrade and the rollback route has already channel-gated the tag. The
+ * two functions sit a couple of hundred lines apart with near-identical bodies, and
+ * copying that one line into `install_update` would silently turn a signed-but-old
+ * artifact into an accepted update — no error, no test failure, nothing in the tree
+ * would notice. Hence: exactly one function may override the comparator, by name.
+ *
+ * All three analyses are pure functions over file text, so the deliberately-broken
+ * controls below run the same code as the real-tree case — CLAUDE.md's fixture tier, no
  * mutation of the shared checkout to prove falsifiability.
  */
 import { describe, it, expect } from 'vitest';
@@ -55,6 +73,8 @@ const CARGO_LOCK_PATH = path.join(REPO_ROOT, 'papercusp-desktop', 'src-tauri', '
 const INSTALLING_COMMANDS = ['install_update', 'revert_to'] as const;
 /** The one place allowed to sequence download → verify → teardown → install. */
 const HELPER = 'download_verify_then_install';
+/** The ONLY function allowed to switch off the plugin's "must be newer" gate. */
+const MAY_ACCEPT_DOWNGRADE = ['revert_to'] as const;
 
 // ── Pure analysis over main.rs ──────────────────────────────────────────────
 
@@ -123,6 +143,31 @@ function downloadAndInstallArgs(src: string): string[] {
     out.push(src.slice(open + 1, end));
     from = end + 1;
   }
+}
+
+/**
+ * Every function that calls `.version_comparator(`, by the nearest enclosing
+ * `async fn` — i.e. every place the plugin's "remote must be NEWER" gate is
+ * switched off. Sorted + de-duplicated so the assertion reads as a set.
+ */
+export function versionComparatorOverrides(src: string): string[] {
+  const found = new Set<string>();
+  const needle = '.version_comparator(';
+  let from = 0;
+  for (;;) {
+    const at = src.indexOf(needle, from);
+    if (at === -1) break;
+    from = at + needle.length;
+    const before = src.slice(0, at);
+    const fnAt = before.lastIndexOf('async fn ');
+    if (fnAt === -1) {
+      found.add('<top-level>');
+      continue;
+    }
+    const name = before.slice(fnAt + 'async fn '.length).match(/^[A-Za-z0-9_]+/)?.[0];
+    found.add(name ?? '<unparsed>');
+  }
+  return [...found].sort();
 }
 
 export function analyzeTeardown(src: string): TeardownAnalysis {
@@ -231,6 +276,13 @@ describe('desktop updater: teardown happens after signature verification', () =>
     expect(o.unlatchAfterInstall).toBe(true);
   });
 
+  it('only revert_to switches off the plugin "must be newer" gate', () => {
+    // The manifest route only compares versions for EQUALITY, so an older
+    // latest.json IS served as a 200. The default comparator is what refuses it;
+    // a second override here would make that offer installable.
+    expect(versionComparatorOverrides(src)).toEqual([...MAY_ACCEPT_DOWNGRADE]);
+  });
+
   it('the upstream ordering this split exists to work around still holds', () => {
     const plugin = readPluginDownloadFn();
     if (plugin.available) {
@@ -295,6 +347,23 @@ describe('falsifiability controls (fixtures, not the shared tree)', () => {
     const a = analyzeTeardown(readFileSync(MAIN_RS_PATH, 'utf8'));
     expect(a.teardownInPreVerifyHook).toEqual([]);
     expect(a.notDelegating).toEqual([]);
+  });
+
+  it('catches a downgrade gate switched off in install_update too', () => {
+    const OVERRIDE_IN_BOTH = `
+      async fn install_update(app: AppHandle) -> Result<(), String> {
+          let updater = app.updater_builder()
+              .version_comparator(|_current, _release| true)
+              .build().map_err(|e| e.to_string())?;
+      }
+      async fn revert_to(app: AppHandle, tag: String) -> Result<(), String> {
+          let updater = app.updater_builder()
+              .version_comparator(|_current, _release| true)
+              .build().map_err(|e| e.to_string())?;
+      }`;
+    expect(versionComparatorOverrides(OVERRIDE_IN_BOTH)).toEqual(['install_update', 'revert_to']);
+    // Calibration: the real tree yields only the sanctioned one.
+    expect(versionComparatorOverrides(readFileSync(MAIN_RS_PATH, 'utf8'))).toEqual(['revert_to']);
   });
 
   it('catches an upstream ordering claim stated backwards', () => {
