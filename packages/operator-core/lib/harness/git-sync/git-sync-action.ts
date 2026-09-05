@@ -1576,6 +1576,16 @@ async function readEscalationCounters(
  * Query `metadata->'last_resolver'` on the routine to see whether the resolver ran.
  */
 async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[], superprojectBranch: string): Promise<void> {
+  // workspace-work-scope-policy-2026-09-04 P-008: git-sync keeps COMMITTING every
+  // install, but an out-of-scope install gets no agent dispatched for its conflicts.
+  {
+    const { gateWorkScope } = await import('../../work-scope-policy');
+    const scope = await gateWorkScope('git-sync:merge-resolver', { harness: slug });
+    if (!scope.allowed) {
+      console.warn(`[git-sync] ${slug}: merge-resolver dispatch skipped — ${scope.message}`);
+      return;
+    }
+  }
   // unify-agent-launches-as-blueprints D-002/D-004: the launch is now DECLARATIVE.
   // The `merge-resolution` launch blueprint declares `triggers.event:
   // git-sync:conflict` + its role (decider merge-resolver); we resolve the role +
@@ -1705,6 +1715,16 @@ async function recordContentFixerDispatch(slug: string, workspaceId: string, inf
  * extra (the open escalation is for human visibility, not the fixer's read path).
  */
 async function spawnContentFixer(slug: string, workspaceId: string, contentErrors: ScopedContentError[]): Promise<void> {
+  // workspace-work-scope-policy-2026-09-04 P-008: quarantine still happens (staging
+  // stays clean); only the fixer AGENT is withheld for an out-of-scope install.
+  {
+    const { gateWorkScope } = await import('../../work-scope-policy');
+    const scope = await gateWorkScope('git-sync:content-fixer', { harness: slug });
+    if (!scope.allowed) {
+      console.warn(`[git-sync] ${slug}: content-fixer dispatch skipped — ${scope.message}`);
+      return;
+    }
+  }
   const target = await resolveLaunchTargetForEvent(CONTENT_ERROR_EVENT, { installSlug: slug, workspaceId });
   if (!target) {
     console.warn(`[git-sync] no launch blueprint declares "${CONTENT_ERROR_EVENT}" — skipping content-fixer dispatch`);
