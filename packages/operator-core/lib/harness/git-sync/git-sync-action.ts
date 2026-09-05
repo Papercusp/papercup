@@ -74,9 +74,8 @@ import {
   runWorktreeBridgeTick,
   WORKTREE_BRIDGE_RETRY_TTL_MS,
 } from '../../sync/pot-git/worktree-bridge-tick';
-import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from '../../sync/pot-git/authority-epoch';
+import { loadHiveEffectAuthority, nextHivePublicationTerm } from '../../sync/pot-git/hive-effect-authority';
 import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
-import { lockAuthorityForHive } from '../../authority/lock-authority';
 import {
   runRefAnnouncePublishTick,
   runRefAnnounceReceiveTick,
@@ -129,16 +128,6 @@ import {
 } from '../../sync/pot-git/storage';
 import { STAGING_REF } from '../../sync/pot-git/integrator';
 import { reconcileProposedCompletionsAtCommit } from './completion-settlement-reconciler';
-// EI-19442274898324113: the ONLY sanctioned way to build an `integrator_progress`
-// metadata value — same top-level-jsonb-merge hazard as `worktree_bridge` above,
-// one layer more costly because this state GATES A TAKEOVER rather than merely
-// reporting. Read that module's header before adding a field or a writer.
-import {
-  isIntegratorNamespaceBacklogged,
-  nextIntegratorProgressState,
-  shouldPreemptStalledIntegrator,
-  type PriorIntegratorProgressState,
-} from './integrator-progress-state';
 import {
   completeGithubBridgeState,
   completeOwnHeadPublishState,
@@ -3352,6 +3341,14 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // for any two devices whose install slugs differ (nearly always).
     const repoKey = canonicalRepoKey(entry);
     const bareRepoPath = hiveGitRepoPath(potHomeSlug, repoKey);
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
+    const ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
+    const bridgeActor = ownerKey ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey) : null;
+    const effectAuthority = ownerKey && bridgeActor ? { ...ownerKey, sign: async (bytes: Buffer) => {
+      await bridgeActor.assertServing();
+      return ownerKey.sign(bytes);
+    } } : null;
+
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
@@ -3449,6 +3446,8 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     const githubCredentialHelper = await resolveGithubCredentialHelper(entry.path);
 
     const outcome = await runGithubBridgeTick({
+      scope: protocolScope,
+      authority: effectAuthority,
       potHomeSlug,
       workspaceId,
       repoKey,
@@ -5096,23 +5095,10 @@ async function runRefAnnounceLeg(
   }
 }
 
-/**
- * p2p-git-live-activation P-203: the integrator-tick leg of one non-legacy
- * hive's git-sync tick. Best-effort: never throws (the code plane must keep
- * committing even when this pass fails); outcome + the `{epoch, seq}`
- * watermark persist on the routine metadata (the `lastAdmitted` idiom above).
- *
- * EPOCH GRANT (P-505 — closes the former "EPOCH NOTE" gap): the publish epoch
- * comes from `deriveIntegratorGrant` (authority-epoch.ts), which composes the
- * G-0 handoff-token library: adopt the best verified member token
- * (token.epoch + 1, FF-seeded base) on a graceful takeover; the P-038 crash
- * path (bridge watermark ahead of own publish watermark ⇒ epoch + 1, base =
- * max observed staging) when the previous authority died tokenless; standing
- * authorities keep their epoch and bump seq exactly as before. After every
- * announced advance this leg re-publishes its OWN handoff token (a
- * continuously-maintained "will"), so a successor can always adopt — crash or
- * graceful — as long as the namespace replicated.
- */
+/** Canonical integration uses the single owning hive (F6/D-022). The runtime
+ * capability supplies serving/device/generation identity; the existing owner
+ * key authorizes the effect. Publication term and sequence persist under the
+ * git-sync lease. A missing owner stops this leg, never elects a replacement. */
 async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void> {
   // Every decline below used to be a bare `return` that recorded NOTHING, so a
   // hive whose canonical ref never advances looked identical to one with
@@ -5173,238 +5159,24 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       return;
     }
 
-    // WI-5395: capability-gated election. Integration is per (hive, REPO), but
-    // the lease used to be elected per HIVE over raw presence — so a member
-    // with no bare store for THIS repo could win the lease and stall the repo
-    // hive-wide while every capable member correctly declined as non-authority
-    // (the canary's exact failure: the mac held the lease for
-    // hello-world-3-pot with no store or routine for it). Constrain candidacy
-    // to devices this machine can locally judge CAPABLE of integrating this
-    // repo: self iff the local store exists (checked here — a machine without
-    // the store never even runs an election), and a peer iff its device
-    // namespace exists in the local store (a device that has published a head
-    // for this repo demonstrably holds it). The judgment is local-knowledge
-    // only, so two capable members can transiently disagree during replication
-    // lag and both integrate — the FF-only + CAS + epoch fence resolves that
-    // noisily but safely (the documented accepted-risk posture, proven P-308);
-    // views converge with the stores.
+    // D-022: only the owning hive integrates. Presence or a progress timeout
+    // cannot grant another device the right to commit canonical effects.
     const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-    const storeCheck = await defaultRunGit(['rev-parse', '--git-dir'], repoPath);
-    if (storeCheck.code !== 0) {
-      await decline('no_local_store', `no bare store at ${repoPath} — this device cannot integrate this repo`);
-      return;
+    if ((await defaultRunGit(['rev-parse', '--git-dir'], repoPath)).code !== 0) {
+      return void (await decline('no_local_store'));
     }
-    const nsKeys = new Set(await listNamespaces(repoPath));
-    const eligibleDevices = new Set<string>([actor.devicePubkey]);
-    for (const pk of memberDevicePubkeysBase64) {
-      try {
-        if (nsKeys.has(deviceNamespaceKey(pk))) eligibleDevices.add(pk);
-      } catch {
-        /* junk pubkey in an attestation — not a candidate */
-      }
-    }
-
-    // ── Progress-based candidacy (EI-19442274898324113) ──────────────────────
-    // `requiresRoutine` (below) proves the holder's routine is ARMED. It does
-    // NOT prove the holder is ADVANCING this pot's canonical ref — and twice in
-    // two days a device published `git-sync` legitimately, won the lease with a
-    // fresh heartbeat, then integrated nothing for ~5h while origin/staging fell
-    // 70 and 28 commits behind with every health surface reporting green.
-    // Liveness plus claimed capability is not evidence of PROGRESS.
-    //
-    // So measure progress, REMEMBER it across ticks, and drop a holder stuck
-    // past the budget. The measured pair is deliberately the same one the
-    // detector uses — canonical `refs/hive/staging` vs THIS device's published
-    // namespace head — because an integrator stall pins canonical and origin
-    // TOGETHER, which zeroes the ahead-count every other signal keys on.
-    //
-    // Best-effort throughout: ANY failure here leaves `preemptStalled` false,
-    // i.e. exactly the pre-existing behaviour. A takeover must never be
-    // triggered by our own inability to measure.
-    const nowMs = Date.now();
-    let canonicalSha: string | null = null;
-    let integratorBacklogCommits: number | null = null;
-    let preemptStalled = false;
-    let stalledForMs = 0;
-    try {
-      const canonicalRead = await defaultRunGit(
-        ['rev-parse', '--verify', '-q', `${BRIDGE_CANONICAL_REF}^{object}`],
-        repoPath,
-      );
-      canonicalSha = canonicalRead.code === 0 ? canonicalRead.stdout.trim() || null : null;
-      if (canonicalSha) {
-        const selfNamespaceSha = await readNamespaceRef(repoPath, actor.devicePubkey, STAGING_REF);
-        if (selfNamespaceSha === canonicalSha) {
-          integratorBacklogCommits = 0;
-        } else if (selfNamespaceSha) {
-          const counted = await defaultRunGit(['rev-list', '--count', `${canonicalSha}..${selfNamespaceSha}`], repoPath);
-          if (counted.code === 0) {
-            const n = Number.parseInt(counted.stdout.trim(), 10);
-            integratorBacklogCommits = Number.isFinite(n) ? n : null;
-          }
-        }
-
-        // Namespace presence proves only that a peer has participated in this
-        // repo. It does not prove that the peer currently has work to merge.
-        // Exclude a peer whose staging namespace is readable and at canonical;
-        // otherwise the deterministic election can repeatedly choose an idle
-        // authority while another peer holds the unintegrated commits. Keep a
-        // peer on measurement failures so a transient git read cannot make the
-        // election disappear (the helper's fail-open contract).
-        for (const peerDevicePubkey of [...eligibleDevices]) {
-          if (peerDevicePubkey === actor.devicePubkey) continue;
-          try {
-            const peerNamespaceSha = await readNamespaceRef(repoPath, peerDevicePubkey, STAGING_REF);
-            let peerBacklogCommits: number | null = null;
-            if (peerNamespaceSha) {
-              const counted = await defaultRunGit(
-                ['rev-list', '--count', `${canonicalSha}..${peerNamespaceSha}`],
-                repoPath,
-              );
-              if (counted.code === 0) {
-                const n = Number.parseInt(counted.stdout.trim(), 10);
-                peerBacklogCommits = Number.isFinite(n) ? n : null;
-              }
-            }
-            if (!isIntegratorNamespaceBacklogged({
-              namespaceSha: peerNamespaceSha,
-              canonicalSha,
-              aheadCommits: peerBacklogCommits,
-            })) {
-              eligibleDevices.delete(peerDevicePubkey);
-            }
-          } catch {
-            /* retain a capable peer when its backlog measurement is unavailable */
-          }
-        }
-      }
-
-      const { sql: progressSql } = getOrgPg();
-      const progressRows = await progressSql<{ integrator_progress: PriorIntegratorProgressState | null }[]>`
-        SELECT metadata->'integrator_progress' AS integrator_progress
-          FROM harness_shared.routines
-         WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
-         LIMIT 1
-      `;
-      const progress = nextIntegratorProgressState(progressRows[0]?.integrator_progress ?? null, {
-        canonicalSha,
-        backlogCommits: integratorBacklogCommits,
-        nowMs,
-      });
-      await patchRoutineMetadata(slug, workspaceId, { integrator_progress: progress });
-      preemptStalled = shouldPreemptStalledIntegrator({
-        state: progress,
-        backlogCommits: integratorBacklogCommits,
-        nowMs,
-      });
-      stalledForMs = progress.stalledSinceMs == null ? 0 : nowMs - progress.stalledSinceMs;
-    } catch {
-      /* best-effort: never block the tick, never preempt on a measurement failure */
-    }
-
-    // P-505: gate on the lease ONCE here (the tick's own default gate would
-    // re-query presence) — only the current authority derives a grant; grant
-    // derivation on a non-authority could wrongly seed its staging ref.
-    // WI-6996: candidacy is restricted to devices that actually RUN THIS routine.
-    // Without any such restriction the election is argmin/HRW over the live
-    // presence roster with no notion of whether the winner integrates, which is
-    // the EXACT failure EI-18761517980514694 documents for gym-cycle ("the
-    // election succeeded and elected a node that does not run the loop, which is
-    // why it never self-corrected"). It fired here on 2026-08-02: an iMac with a
-    // fresh 10s heartbeat but no papercusp integrator held this lease for ~5h
-    // while the one machine doing the committing declined `not_authority` every
-    // tick. Canonical `refs/hive/staging` froze, so egress saw canonical==origin
-    // and pushed nothing, and origin/staging sat 70 commits behind with every
-    // health surface reporting green (see the watchdog note in
-    // origin-freshness-watchdog.ts — it compares canonical-vs-origin, so this
-    // class of freeze silently disables its own detector).
-    //
-    // EI-19330771435294981: this used to pass `routineHostsOnly: true`, which is
-    // the CADENCE-loop predicate (`gym-cycle`/`scout-cycle`). Papercusp runs no
-    // cadence routine, so that bit is null on EVERY row here — the narrowing
-    // excluded ALL peers rather than the incapable ones, leaving integrator
-    // arbitration OFF rather than tightened. It was a time bomb, not a fix: the
-    // moment one peer armed a cadence routine it would have become the sole
-    // eligible integrator for a routine it does not run. `requiresRoutine` asks
-    // this election's OWN question instead — is `'git-sync'` in the peer's
-    // published `shared_presence.active_routines` (mig 724).
-    //
-    // Matching is EXACT array membership, not substring: `foreign-git-sync` is a
-    // real routine here and must never satisfy this predicate.
-    //
-    // Safe by construction: eligibility constrains PEERS only — both selectors
-    // add SELF unconditionally AFTER the exclusion filter (lock-authority.ts
-    // `selectAuthorityFromRows`), so the degenerate case (no device publishes
-    // the set yet) is "every peer excluded ⇒ self wins ⇒ this node integrates
-    // its own repo", which is strictly better than freezing. Two nodes briefly
-    // both integrating is the already-accepted risk this leg documents above
-    // (FF-only + CAS + epoch fence, proven P-308).
-    let authority: Awaited<ReturnType<typeof lockAuthorityForHive>>;
-    try {
-      authority = await lockAuthorityForHive(potHomeSlug, {
-        eligibleDevices,
-        requiresRoutine: 'git-sync',
-      });
-    } catch {
-      // presence unreadable — the real authority still runs its own tick
-      await decline('presence_unreadable');
-      return;
-    }
-
-    // The takeover. Only a NON-self holder can be preempted, and only past the
-    // budget: dropping it re-runs the election without it, and lock-authority
-    // adds SELF unconditionally AFTER the exclusion filter, so the degenerate
-    // case is "self wins ⇒ this node integrates its own repo" — which this leg
-    // already documents (above) as strictly better than freezing. Two nodes
-    // briefly both integrating is the accepted risk here (FF-only + CAS + epoch
-    // fence, proven P-308), so the worst case of a WRONG preemption is a
-    // redundant integration, never corruption. That asymmetry is what makes
-    // acting on a local, best-effort measurement sound.
-    if (preemptStalled && !authority.isSelf && authority.peer?.devicePubkey) {
-      const stalledHolder = authority.peer.devicePubkey;
-      if (eligibleDevices.delete(stalledHolder)) {
-        console.warn(
-          `[git-sync] ${slug}: PREEMPTING stalled integrator ${stalledHolder.slice(0, 12)} — canonical ${canonicalSha?.slice(0, 8) ?? '?'} frozen ${Math.round(stalledForMs / 60_000)}min with ${integratorBacklogCommits ?? '?'} commit(s) unintegrated`,
-        );
-        try {
-          authority = await lockAuthorityForHive(potHomeSlug, { eligibleDevices, requiresRoutine: 'git-sync' });
-        } catch {
-          /* keep the pre-preemption verdict — the decline below records it */
-        }
-        // Recorded so "why did the lease move" is a one-query answer, exactly as
-        // `integrator_status` made "why is canonical stuck" one.
-        try {
-          await patchRoutineMetadata(slug, workspaceId, {
-            integrator_preempt: {
-              at: nowMs,
-              stalledHolder,
-              stalledForMs,
-              canonicalSha,
-              backlogCommits: integratorBacklogCommits,
-              wonLease: authority.isSelf,
-            },
-          });
-        } catch {
-          /* diagnostics must never break the tick */
-        }
-      }
-    }
-
-    if (!authority.isSelf) {
-      // The COMMON, healthy case (someone else holds the lease) — named so a
-      // stuck canonical is a one-query diagnosis: the holder shown here is
-      // always a CAPABLE device now (eligibility-gated above).
-      await decline(
-        'not_authority',
-        `lease held by ${authority.peer?.machineLabel ?? 'unknown'} (${authority.peer?.devicePubkey?.slice(0, 12) ?? '?'}); liveCount=${authority.liveCount}; eligible=${eligibleDevices.size}/${memberDevicePubkeysBase64.length}`,
-      );
-      return;
-    }
+    const ownerKey = await loadHiveEffectAuthority(workspaceId, potHomeSlug, protocolScope);
+    if (!ownerKey) return void (await decline('not_hive_owner',
+      'Canonical integration stops without the owning hive key; member-head exchange continues.'));
+    const effectAuthority = { ...ownerKey, sign: async (bytes: Buffer) => {
+      await actor.assertServing();
+      return ownerKey.sign(bytes);
+    } };
 
     const { sql } = getOrgPg();
     const rows = await sql<
       {
-        integrator: { epoch: number; seq: number } | null;
+        integrator: { epoch: number; seq: number; authorityDevice?: string; storeGeneration?: string } | null;
         worktree_bridge: { epochSeq: EpochSeq | null; stagingSha?: string | null } | null;
       }[]
     >`
@@ -5415,24 +5187,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     `;
     const prior = rows[0]?.integrator ?? null;
 
-    const grant = await deriveIntegratorGrant({
-      repoPath,
-      selfDevicePubkeyBase64: actor.devicePubkey,
-      memberDevicePubkeysBase64,
-      priorIntegrator: prior,
-      bridgeWatermark: rows[0]?.worktree_bridge?.epochSeq ?? null,
-      bridgeStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
-    });
-    if (!grant.ready) {
-      console.warn(`[git-sync] ${slug}: ${grant.detail}`);
-      await decline(grant.basis, grant.detail);
-      return;
-    }
-    if (grant.basis !== 'standing') {
-      console.info(`[git-sync] ${slug}: ${grant.detail}`);
-    }
-    const { epoch } = grant;
-    const { priorSeq } = grant;
+    const { epoch, priorSeq } = nextHivePublicationTerm(
+      prior, actor.devicePubkey, actor.capability.context.store_generation,
+      rows[0]?.worktree_bridge?.epochSeq?.epoch ?? 0,
+    );
 
     const signedProtocolContext = actor.capability.context;
     const snapshots = await sql<{ state: RefAnnounceRoutineState | null }[]>`
@@ -5454,6 +5212,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       // announce at all. Null (never accepted) ⇒ the first integration announces.
       lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
       context: signedProtocolContext,
+      authority: effectAuthority,
       acceptedSnapshots: snapshots[0]?.state?.replayFloors ?? {},
       sign: actor.sign,
       resolveTier: async (devicePubkeyBase64) =>
@@ -5524,7 +5283,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
            SET metadata = jsonb_set(
              COALESCE(metadata, '{}'::jsonb),
              '{integrator}',
-             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, at: Date.now() })}::text::jsonb
+             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, authorityDevice: actor.devicePubkey, storeGeneration: signedProtocolContext.store_generation, at: Date.now() })}::text::jsonb
            )
          WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
       `;
@@ -5726,15 +5485,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     const worktreePath = await projectDirForSlug(slug, workspaceId);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
 
-    // P-505: the insider-poisoning cap must recognize a LEGITIMATE grant — the
-    // receiver's own publish epoch alone would reject a successor authority's
-    // (epoch + 1) advances as `ungranted-epoch` forever. Verified handoff
-    // tokens are the grant evidence (staging-advance.ts's documented source).
-    const maxGrantedEpoch = await deriveMaxGrantedEpoch({
-      repoPath,
-      memberDevicePubkeysBase64,
-      ownIntegratorEpoch: rows[0]?.integrator?.epoch,
-    });
+    // D-022: only the pinned hive signature grants publication authority.
 
     // EI-14555: fetch-on-demand, closing the last leg of WI-3583. The dial
     // registry (peer-dial-registry.ts) resolves device pubkey -> live swarm
@@ -5774,7 +5525,6 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
         knownStoreGenerations: Object.fromEntries(Object.entries(rows[0]?.ref_announce?.replayFloors ?? {})
           .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope))
           .map(([device, floor]) => [device, floor.store_generation])),
-        ...(typeof maxGrantedEpoch === 'number' ? { maxGrantedEpoch } : {}),
       },
       ...(openDuplex ? { openDuplex } : {}),
     });
