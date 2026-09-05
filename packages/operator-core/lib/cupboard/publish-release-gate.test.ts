@@ -159,13 +159,16 @@ describe('prepareReleaseForPublish — private path', () => {
   });
 
   it('signs the canonical unsigned manifest and carries the signature through', async () => {
-    const sign = vi.fn(() => 'sig-xyz');
+    // Declare the parameter: an untyped `vi.fn(() => ...)` types mock.calls as
+    // an EMPTY tuple, so reading calls[0][0] is a type error even though the
+    // call happens at runtime — vitest would stay green while tsc failed.
+    const sign = vi.fn((_signingBytes: Buffer) => 'sig-xyz');
     const r = await prepareReleaseForPublish({ ...privateInput(), sign });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
 
     expect(sign).toHaveBeenCalledTimes(1);
-    const signed = sign.mock.calls[0]![0] as Buffer;
+    const signed = sign.mock.calls[0]![0];
     expect(Buffer.isBuffer(signed)).toBe(true);
 
     // The manifest being signed must not already carry its OWN signature —

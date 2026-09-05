@@ -10340,13 +10340,16 @@ async function runGreenCheckpointInner(
 
   // Persist C after every candidate-selection preflight, but before setup or suite work. A crash,
   // red verdict, or newer staging tip therefore resumes this exact candidate. The production
-  // writer supplies the complete repair hooks; older/direct callers keep their historical path.
-  if (
-    !diagnosticOnly &&
-    !repairQueue &&
-    deps.writeFrozenRepairQueue &&
-    deps.dispatchFrozenRepairFixer
-  ) {
+  // writer supplies the queue writer; older/direct callers keep their historical path.
+  //
+  // EI-22430783328866306: this used to ALSO require `deps.dispatchFrozenRepairFixer`. The
+  // production wiring stopped supplying a dispatcher when P-005 retired the stable-tip fixer
+  // (sweep c076b0dd95, 2026-09-04T03:00Z) but the guard kept demanding one, so the queue was
+  // never persisted before the suite and — the same guard below — a red on a frozen head was
+  // never written back to the queue: the row sat at `ready-to-verify` with no verdict at its
+  // repairHead while every tick re-judged the same sha (119 reds, 20 verdictless runs). The
+  // dispatcher is optional-chained inside `dispatchFrozenRepair`; only the WRITER is load-bearing.
+  if (!diagnosticOnly && !repairQueue && deps.writeFrozenRepairQueue) {
     repairQueue = createFrozenCandidateQueue({
       candidate,
       qualificationAttemptId: deps.qualificationAttemptId ?? null,
@@ -11257,11 +11260,13 @@ async function runGreenCheckpointInner(
     // D-001 / WI-39944 — a real code red enters (or advances) the ONE frozen repair
     // queue before any stale-tip re-triage, auto-refire, or backward prefix salvage can
     // move the target. Infra reds returned above and never enter this path.
-    if (
-      !diagnosticOnly &&
-      deps.writeFrozenRepairQueue &&
-      deps.dispatchFrozenRepairFixer
-    ) {
+    //
+    // EI-22430783328866306: gated on the queue WRITER only. Requiring a fixer dispatcher here
+    // (removed from the production wiring by c076b0dd95) made this whole block unreachable in
+    // production, so a full-gate red on a frozen repair head never recorded its verdict and the
+    // convergence livelocked at `ready-to-verify`; `retire` is refused from that phase, so the
+    // row could not even be cleared by an owner. Dispatch itself stays optional inside.
+    if (!diagnosticOnly && deps.writeFrozenRepairQueue) {
       let repairQueueRedPersisted = false;
       // P-006: every red below hands the queue the TYPED measurement — the flat failing set
       // union the red post-suite legs, plus which kinds this run measured, so a suite-red run
@@ -11279,6 +11284,15 @@ async function runGreenCheckpointInner(
           ...measuredSignature,
           nowMs: Date.now(),
         });
+        // EI-22430783328866306 (second half): persist the red BEFORE the dispatch attempt,
+        // exactly as the ready-to-test branch below does. `reserveFrozenCandidateRepairFixer`
+        // is a CAS on the row's `updatedAtMs`, and the transition above has already bumped
+        // the in-memory stamp — so a reserve against the un-persisted row always misses
+        // ("could not reserve its dispatch window", observed 2026-09-05T16:43Z run e9cdc8b9),
+        // the run returns terminal from the reservationBlocked arm, and the verdict is lost
+        // again: the queue stays `ready-to-verify` with no round at this repairHead.
+        await deps.writeFrozenRepairQueue(repairQueue);
+        repairQueueRedPersisted = true;
       } else if (
         initialCandidateVerification &&
         repairQueue?.phase === "ready-to-test"

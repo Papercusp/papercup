@@ -47,7 +47,7 @@ const CARD_STYLE: CSSProperties = {
   padding: 14,
   borderRadius: 10,
   border: "1px solid var(--border, rgba(255,255,255,0.12))",
-  background: "var(--card, rgba(255,255,255,0.03))",
+  background: "var(--bg-raised, rgba(255,255,255,0.03))",
 };
 
 const LABEL_STYLE: CSSProperties = { fontSize: 12, opacity: 0.7, textTransform: "uppercase", fontWeight: 600 };
@@ -57,7 +57,7 @@ const CHIP_STYLE: CSSProperties = {
   padding: "2px 8px",
   borderRadius: 999,
   border: "1px solid var(--border, rgba(255,255,255,0.18))",
-  fontFamily: "var(--mono, ui-monospace, monospace)",
+  fontFamily: "var(--font-mono, ui-monospace, monospace)",
   fontSize: 12,
   marginRight: 6,
 };
@@ -68,9 +68,9 @@ const INPUT_STYLE: CSSProperties = {
   padding: "8px 10px",
   borderRadius: 8,
   border: "1px solid var(--border, rgba(255,255,255,0.18))",
-  background: "var(--input, rgba(0,0,0,0.25))",
+  background: "var(--bg-deep, rgba(0,0,0,0.25))",
   color: "inherit",
-  fontFamily: "var(--mono, ui-monospace, monospace)",
+  fontFamily: "var(--font-mono, ui-monospace, monospace)",
   fontSize: 13,
 };
 
@@ -83,7 +83,7 @@ const BUTTON_STYLE: CSSProperties = {
   cursor: "pointer",
 };
 
-const DANGER_BUTTON_STYLE: CSSProperties = { ...BUTTON_STYLE, background: "var(--danger, #b91c1c)" };
+const DANGER_BUTTON_STYLE: CSSProperties = { ...BUTTON_STYLE, background: "var(--bad, #b91c1c)" };
 const GHOST_BUTTON_STYLE: CSSProperties = { ...BUTTON_STYLE, background: "transparent", color: "inherit" };
 
 const ASSESSMENT_TONE: Record<WorkScopeAssessment, { bg: string; text: string }> = {

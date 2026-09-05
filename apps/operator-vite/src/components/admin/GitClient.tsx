@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { Table } from '@/app/harness/Table';
 import { StatusPill } from '../ui';
 import { useLexicon } from '@/lib/useLexicon';
 
@@ -710,51 +711,64 @@ export default function GitClient() {
                     )}
                   </div>
                   <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-                          <th style={{ padding: '4px 6px' }}>leg</th>
-                          <th style={{ padding: '4px 6px' }}>kind</th>
-                          <th style={{ padding: '4px 6px' }}>status</th>
-                          <th style={{ padding: '4px 6px' }}>subject paths</th>
-                          <th style={{ padding: '4px 6px' }}>claim</th>
-                          <th style={{ padding: '4px 6px' }}>admit</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {st.gate.repairQueue.manifest.rows.map((row) => (
-                          <tr key={row.legId} style={{ borderTop: '1px solid rgba(128,128,128,0.25)', verticalAlign: 'top' }}>
-                            <td className="mono" style={{ padding: '4px 6px' }}>
+                    <Table
+                      rows={st.gate.repairQueue.manifest.rows}
+                      getRowKey={(row) => row.legId}
+                      rowStyle={() => ({ verticalAlign: 'top' })}
+                      columns={[
+                        {
+                          key: 'leg',
+                          header: 'leg',
+                          render: (row) => (
+                            <span className="mono">
                               {row.legId}
                               {row.workspace ? <span className="pc-git__muted"> ({row.workspace})</span> : null}
-                            </td>
-                            <td style={{ padding: '4px 6px' }}>{row.kind}</td>
-                            <td style={{ padding: '4px 6px' }}>
-                              <StatusPill tone={manifestStatusTone(row.statusLabel)} label={row.statusLabel} />
-                            </td>
-                            <td className="mono" style={{ padding: '4px 6px' }}>
-                              {row.subjectPaths.length > 0 ? row.subjectPaths.join(', ') : <span className="pc-git__muted">unknown — name paths by hand</span>}
+                            </span>
+                          ),
+                        },
+                        { key: 'kind', header: 'kind', render: (row) => row.kind },
+                        {
+                          key: 'status',
+                          header: 'status',
+                          render: (row) => <StatusPill tone={manifestStatusTone(row.statusLabel)} label={row.statusLabel} />,
+                        },
+                        {
+                          key: 'paths',
+                          header: 'subject paths',
+                          render: (row) => (
+                            <span className="mono">
+                              {row.subjectPaths.length > 0 ? (
+                                row.subjectPaths.join(', ')
+                              ) : (
+                                <span className="pc-git__muted">unknown — name paths by hand</span>
+                              )}
                               {row.subjectPathsTruncated > 0 ? (
                                 <span className="pc-git__muted"> +{row.subjectPathsTruncated} more</span>
                               ) : null}
-                            </td>
-                            <td style={{ padding: '4px 6px' }}>
-                              {row.claim ? (
-                                <>
-                                  <span className="mono">{row.claim.actor}</span>{' '}
-                                  <span className="pc-git__muted">{fmtRel(row.claim.atMs)}</span>
-                                </>
-                              ) : (
-                                <span className="pc-git__muted">unclaimed</span>
-                              )}
-                            </td>
-                            <td className="mono" style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>
-                              {row.admitCommand ?? '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            </span>
+                          ),
+                        },
+                        {
+                          key: 'claim',
+                          header: 'claim',
+                          render: (row) =>
+                            row.claim ? (
+                              <>
+                                <span className="mono">{row.claim.actor}</span>{' '}
+                                <span className="pc-git__muted">{fmtRel(row.claim.atMs)}</span>
+                              </>
+                            ) : (
+                              <span className="pc-git__muted">unclaimed</span>
+                            ),
+                        },
+                        {
+                          key: 'admit',
+                          header: 'admit',
+                          cellStyle: { whiteSpace: 'nowrap' },
+                          render: (row) => <span className="mono">{row.admitCommand ?? '—'}</span>,
+                        },
+                      ]}
+                    />
                     {st.gate.repairQueue.manifest.rowsTruncated > 0 && (
                       <div className="pc-git__muted" style={{ padding: '4px 6px' }}>
                         +{st.gate.repairQueue.manifest.rowsTruncated} more leg(s) not shown — read the gate-red work-item for the full manifest.

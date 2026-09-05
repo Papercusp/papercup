@@ -76,11 +76,18 @@ describe('SPA shell pre-hydration globals', () => {
     const res = await spaRoutes.request('/');
     const body = await res.text();
     // The payload is nested JSON, so slice from the assignment to the end of
-    // the injected <script> and JSON.parse it rather than a brace-counting regex.
+    // THAT global and JSON.parse it rather than a brace-counting regex. The globals
+    // are joined with '' inside one <script>, and the flags payload is not the last
+    // one (EI-15848 appends window.__PAPERCUSP_BUILD_ID__ after it), so the slice
+    // must stop at the next `;window.` assignment, not at `</script>`.
     const marker = 'window.__PAPERCUSP_FLAGS__=';
     const start = body.indexOf(marker);
     expect(start).toBeGreaterThan(-1);
-    const json = body.slice(start + marker.length, body.indexOf('</script>', start)).replace(/;$/, '');
+    const valueStart = start + marker.length;
+    const nextGlobal = body.indexOf(';window.', valueStart);
+    const scriptEnd = body.indexOf('</script>', valueStart);
+    const end = nextGlobal === -1 ? scriptEnd : Math.min(nextGlobal, scriptEnd);
+    const json = body.slice(valueStart, end).replace(/;$/, '');
     const payload = JSON.parse(json);
     expect(payload.flags['papercusp-testing']).toBe(true);
     expect(payload.source).toBe('override');
