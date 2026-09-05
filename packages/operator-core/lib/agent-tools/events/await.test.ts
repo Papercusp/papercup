@@ -17,6 +17,15 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-awaiter', ownerLabel: 'a', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
+// EI-20268841604319803: the service-up EDGE advisory reads live health at arm
+// time. Stub ONLY the probe so the real predicate (./service-up-edge) and the
+// real handler wiring both execute. Defaults to "no probe result" ⇒ no
+// advisory, so every pre-existing test above is unaffected.
+const serviceHealthMock = vi.hoisted(() => ({ probeNamedService: vi.fn(async (_name: string) => null as unknown) }));
+vi.mock('../../service-health', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../service-health')>()),
+  probeNamedService: serviceHealthMock.probeNamedService,
+}));
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
 }));
@@ -1771,6 +1780,73 @@ describe('EI-19928976726540168 — auto-scope a GLOB multi-pipeline gate key to 
     const out = await call({ event: 'work-item:*' });
     expect(out.auto_scoped_payload_filter).toBeUndefined();
     expect(out.unscoped_gate_key_await).toBeUndefined();
+  });
+});
+
+// EI-20268841604319803: a real gateway restart slept through a 6h
+// `service:up:inference-gateway` await because that key fires on an
+// unhealthy→healthy TRANSITION and the restart completed between health ticks.
+// These drive the REAL handler (the pure predicate is covered separately in
+// service-up-edge.test.ts) — the gap that produced the incident was precisely a
+// correct rule that one surface never called, so the wiring is the thing worth
+// asserting here.
+describe('service-up edge advisory (EI-20268841604319803)', () => {
+  it('warns when the service is already healthy, and still REGISTERS the await', async () => {
+    serviceHealthMock.probeNamedService.mockResolvedValueOnce({
+      name: 'inference-gateway',
+      up: true,
+      status: 200,
+      latencyMs: 3,
+    });
+    const out = await call({ event: 'service:up:inference-gateway' });
+    expect(out.service_up_edge_already_healthy).toBe(true);
+    expect(out.service_up_edge_advice).toContain('CANNOT confirm a restart');
+    expect(out.service_up_edge_advice).toContain('service:await-up');
+    // Advisory, NOT a refusal: the await must still exist, or an agent arming it
+    // before deliberately taking the service down would silently lose its wake.
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBeDefined();
+  });
+
+  it('names the structural damping reason for a flap-damped service', async () => {
+    serviceHealthMock.probeNamedService.mockResolvedValueOnce({
+      name: 'staging-api',
+      up: true,
+      status: 200,
+      latencyMs: 3,
+    });
+    const out = await call({ event: 'service:up:staging-api' });
+    expect(out.service_up_edge_advice).toContain('flap-damped');
+  });
+
+  it('stays SILENT when the service is currently down — the await is then correct', async () => {
+    serviceHealthMock.probeNamedService.mockResolvedValueOnce({
+      name: 'inference-gateway',
+      up: false,
+      status: null,
+      latencyMs: 1,
+    });
+    const out = await call({ event: 'service:up:inference-gateway' });
+    expect(out.service_up_edge_already_healthy).toBeUndefined();
+    expect(out.service_up_edge_advice).toBeUndefined();
+  });
+
+  it('stays SILENT when health is unreadable — an unavailable probe must not manufacture a warning', async () => {
+    serviceHealthMock.probeNamedService.mockRejectedValueOnce(new Error('unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await call({ event: 'service:up:inference-gateway' });
+      expect(out.service_up_edge_already_healthy).toBeUndefined();
+      expect(out.ok).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not probe at all for a pattern await or an unrelated key', async () => {
+    await call({ event: 'service:up:*' });
+    await call({ event: 'work-item:done:WI-1' });
+    expect(serviceHealthMock.probeNamedService).not.toHaveBeenCalled();
   });
 });
 
