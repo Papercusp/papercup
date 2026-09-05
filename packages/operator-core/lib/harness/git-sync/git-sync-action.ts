@@ -146,7 +146,9 @@ import {
   type RefAnnounceRoutineState,
 } from './routine-metadata-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
-import { makeSignedProtocolContext } from '../../sync/pot-git/signed-context';
+import { signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolScope, type SignedSnapshotFloor } from '../../sync/pot-git/signed-context';
+import { resolveStoreProtocolContext } from '../../sync/pot-git/signed-context-store';
+import { getHiveBySlug } from '../../hive-store';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {
   armNoSuchRepoBackoff,
@@ -4760,6 +4762,12 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  * only genuine cross-machine reachability (Phase 3's live rig) exercises the
  * happy path end-to-end.
  */
+async function resolveHiveGitProtocolScope(workspaceId: string, potHomeSlug: string, repoKey: string): Promise<SignedProtocolScope> {
+  const hive = await getHiveBySlug(workspaceId, potHomeSlug);
+  if (!hive?.pubkeyBase64) throw new Error('pot-git: stable hive identity unavailable; refusing unscoped protocol');
+  return { hive_id: hive.pubkeyBase64, repo_key: repoKey };
+}
+
 async function runRefAnnounceLeg(
   slug: string,
   workspaceId: string,
@@ -4777,7 +4785,7 @@ async function runRefAnnounceLeg(
     if (!potHomeSlug) return;
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const signedProtocolContext = makeSignedProtocolContext(potHomeSlug, repoKey);
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
@@ -4801,11 +4809,14 @@ async function runRefAnnounceLeg(
        LIMIT 1
     `;
     const priorState = stateRows[0]?.ref_announce ?? null;
-    const priorPublishVersion = Number.isSafeInteger(priorState?.publishVersion)
+    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
+    const signedProtocolContext = await resolveStoreProtocolContext({
+      sql, slug, workspaceId, repoPath, scope: protocolScope, device: actor.devicePubkey,
+    });
+    const priorPublishVersion = priorState?.publishGeneration === signedProtocolContext.store_generation && Number.isSafeInteger(priorState?.publishVersion)
       ? Math.max(0, priorState?.publishVersion ?? 0)
       : 0;
-
-    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
+    const replayFloors: Record<string, SignedSnapshotFloor> = { ...priorState?.replayFloors };
     const keychainId = actor.keychainId;
     const sign = (bytes: Buffer): Promise<Buffer> => signWithDeviceKey(keychainId, bytes);
 
@@ -4825,6 +4836,9 @@ async function runRefAnnounceLeg(
     });
     if (publishOutcome.announcement) {
       const announcement = publishOutcome.announcement;
+      replayFloors[actor.devicePubkey] = {
+        ...signedProtocolContext, version: announcement.version, sigrefs_oid: announcement.sigrefs_oid,
+      };
       await emitAwaitedEvent({
         key: REF_ANNOUNCE_EVENT_KEY,
         summary: `hive-git ref-announce v${announcement.version} from ${actor.devicePubkey.slice(0, 12)}`,
@@ -4861,6 +4875,8 @@ async function runRefAnnounceLeg(
           lastEventId: priorState?.lastEventId ?? 0,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, announcement.version),
+          publishGeneration: signedProtocolContext.store_generation,
+          replayFloors,
           parked: priorState?.parked ?? {},
           at: Date.now(),
         }),
@@ -4908,7 +4924,9 @@ async function runRefAnnounceLeg(
       // A hive with many installs shares ONE announce stream; only rows
       // addressed to THIS install are ours to fetch. A skipped row still
       // advances the cursor above (it is another install's, not a failure).
-      if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
+      if (isSignedProtocolContext(fe?.payload)) {
+        if (!signedProtocolContextMatches(fe.payload, protocolScope)) continue;
+      } else if (!refAnnounceTargetsRepo(fe, { slug, potHomeSlug })) continue;
       if (fe && isSignedRefAnnouncement(fe.payload)) pending.push({ rowId: row.id, announcement: fe.payload });
     }
     // Parked announcements are driven at the HEAD of the batch (a parked entry
@@ -4923,6 +4941,8 @@ async function runRefAnnounceLeg(
           lastEventId: maxRowId,
           budgetStates: priorState?.budgetStates ?? {},
           publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
+          publishGeneration: signedProtocolContext.store_generation,
+          replayFloors,
           parked: {},
           at: Date.now(),
         }),
@@ -5002,7 +5022,9 @@ async function runRefAnnounceLeg(
       // doc for the livelock a 15s ceiling generated against serve-wiring's
       // 30s progress window on the two-machine rig.
       timeoutMs: REF_ANNOUNCE_RECEIVE_IDLE_MS,
-      expectedContext: signedProtocolContext,
+      expectedContext: protocolScope,
+      allowLegacy: false,
+      replayFloors,
     });
 
     // EI-15335 / P-203 Leg A: the receive tick returns one result per driven
@@ -5025,6 +5047,8 @@ async function runRefAnnounceLeg(
         lastEventId: cursorDecision.cursor,
         budgetStates: Object.fromEntries(receiveOutcome.budgetStates),
         publishVersion: Math.max(priorPublishVersion, publishOutcome.announcement?.version ?? 0),
+        publishGeneration: signedProtocolContext.store_generation,
+        replayFloors: receiveOutcome.replayFloors,
         parked: cursorDecision.parked,
         at: Date.now(),
       }),
@@ -5207,7 +5231,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     if (!potHomeSlug) return void (await decline('no_hive_home'));
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const signedProtocolContext = makeSignedProtocolContext(potHomeSlug, repoKey);
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug);
     // gh unauthenticated — no device identity to sign/integrate as
@@ -5501,6 +5525,13 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const { priorSeq } = grant;
 
     const keychainId = actor.keychainId;
+    const signedProtocolContext = await resolveStoreProtocolContext({
+      sql, slug, workspaceId, repoPath, scope: protocolScope, device: actor.devicePubkey,
+    });
+    const snapshots = await sql<{ state: RefAnnounceRoutineState | null }[]>`
+      SELECT metadata->'ref_announce' AS state FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+    `;
     const outcome = await runIntegratorTick({
       potHomeSlug,
       workspaceId,
@@ -5516,6 +5547,7 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       // announce at all. Null (never accepted) ⇒ the first integration announces.
       lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
       context: signedProtocolContext,
+      acceptedSnapshots: snapshots[0]?.state?.replayFloors ?? {},
       sign: (bytes: Buffer) => signWithDeviceKey(keychainId, bytes),
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,
@@ -5686,6 +5718,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // runIntegratorLeg published as `repo_key` on the staging-advance
     // fed-event (below), or this device's own bridge never sees it.
     const repoKey = canonicalRepoKey(entry);
+    const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
     const members = await listHiveMembersForLocalPot(workspaceId, potHomeSlug);
     const memberDevicePubkeysBase64 = [
@@ -5707,9 +5740,11 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
           acceptFreeSince?: number | null;
         } | null;
         integrator: { epoch: number } | null;
+        ref_announce: RefAnnounceRoutineState | null;
       }[]
     >`
-      SELECT metadata->'worktree_bridge' AS worktree_bridge, metadata->'integrator' AS integrator
+      SELECT metadata->'worktree_bridge' AS worktree_bridge, metadata->'integrator' AS integrator,
+             metadata->'ref_announce' AS ref_announce
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
@@ -5825,6 +5860,11 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       prior: priorWatermark,
       accept: {
         allowedDevices: memberDevicePubkeysBase64,
+        expectedContext: protocolScope,
+        allowLegacy: false,
+        knownStoreGenerations: Object.fromEntries(Object.entries(rows[0]?.ref_announce?.replayFloors ?? {})
+          .filter(([, floor]) => signedProtocolContextMatches(floor, protocolScope))
+          .map(([device, floor]) => [device, floor.store_generation])),
         ...(typeof maxGrantedEpoch === 'number' ? { maxGrantedEpoch } : {}),
       },
       ...(openDuplex ? { openDuplex } : {}),
