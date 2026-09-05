@@ -195,12 +195,52 @@ function markCoalesced(record: EscalationRecord): EscalationOpenResult {
  */
 const VOLATILE_DURATION_RE = /(^|\s)\d+(?:\.\d+)?\s?(?:ms|s|m|h|d)\b/g;
 
-function normalizeSubjectSignature(summary: string): string {
+/**
+ * EI-19474857043229377: a FIFTH instance of the class the duration rule above
+ * exists for — a dedup key carrying a rotating token can never dedup — but with
+ * a COMMIT SHA as the volatile value instead of a duration.
+ *
+ * MEASURED (papercusp-workspace, coord_event_log surface='escalations', 7d to
+ * 2026-09-05): one continuous condition minted FIVE keys and 179 un-coalesced
+ * opens, every one at severity `blocker`, every one auto-resolved by its own
+ * emitter with choice "gate green" and ZERO agent involvement:
+ *   green-checkpoint held: 6653fb41 push failed  96
+ *   green-checkpoint held: 0092c7ab push failed  29
+ *   green-checkpoint held: 5384ef26 push failed  23
+ *   green-checkpoint held: 0ac0c3b1 push failed  16
+ *   green-checkpoint held: e5e6747d push failed  15
+ *
+ * Neutralized HERE for the reason the duration rule gives: the class has
+ * recurred repeatedly when fixed only at the call site, so make the key stable
+ * by construction rather than by every caller remembering `meta.subjectSignature`.
+ *
+ * Deliberately NARROW — three independent guards, each killing a distinct
+ * false-positive family, so genuinely-distinct subjects stay distinct:
+ *   1. `(^|\s)` + `\b` — the run must be a WHOLE whitespace-delimited token, so
+ *      suffixed identifiers (`EI-19474857043229377`, `harness-3d`) are untouched.
+ *   2. must contain a DIGIT — spares all-letter hex-alphabet English words
+ *      (`effaced`, `defaced`, `deadbeef`), which is why length alone is not enough.
+ *   3. must contain a HEX LETTER — spares bare decimal runs (`count 12345678`),
+ *      so a large number is never mistaken for a hash.
+ * A run longer than 64 chars is left alone rather than guessed at.
+ *
+ * Ordered AFTER the duration replace so that rule's tested behaviour is unchanged.
+ */
+const VOLATILE_HEX_TOKEN_RE =
+  /(^|\s)(?=[0-9a-f]{7,64}\b)(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b/g;
+
+/**
+ * PURE: the summary-derived dedup key, with volatile tokens neutralized.
+ * Exported for direct unit coverage — this function is the whole defence for a
+ * failure class that has now recurred five times, and it previously had none.
+ */
+export function normalizeSubjectSignature(summary: string): string {
   return summary
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ')
-    .replace(VOLATILE_DURATION_RE, '$1<dur>');
+    .replace(VOLATILE_DURATION_RE, '$1<dur>')
+    .replace(VOLATILE_HEX_TOKEN_RE, '$1<sha>');
 }
 
 /**

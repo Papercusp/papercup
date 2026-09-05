@@ -912,16 +912,44 @@ describe('buildReleaseTrace', () => {
         }),
       );
 
+      // P-008: COMPOSED, not substituted. The composite state is its own value so a
+      // reader can tell "a human/agent holds the item" from "the automated fixer is on
+      // it" — the previous contract asserted 'owned-live' here, which said the second
+      // while meaning the first.
       expect(out.gate.redOwner).toMatchObject({
-        state: 'owned-live',
+        state: 'owned-by-repair-holder',
         covered: true,
-        ownerSignature: 'gate-red-streak:papercusp',
+        // The fixer's OWN verdict and lineage survive the composition. The old
+        // substitution nulled spawnId/ageMs and overwrote ownerSignature with the event
+        // key, which destroyed the actionable half: a dead fixer beside a live holder is
+        // a fixer that needs re-dispatching, and nobody could see it.
+        fixerState: 'owner-gone',
+        spawnId: 'obsolete-fixer',
+        ownerSignature: 'x.test.ts',
+      });
+      expect(out.gate.redOwner?.repairOwner).toMatchObject({
+        eventKey: 'gate-red-streak:papercusp',
+        workItem: 'WI-39450',
+        takenBy: 'su-live-gate-owner',
+        live: true,
       });
       expect(out.gate.redOwner?.label).toContain('WI-39450');
-      expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+      expect(out.gate.redOwner?.label).toMatch(/^OWNED/);
+      // The dead fixer is now REPORTED rather than hidden — but explicitly as something
+      // that does not make the red unowned.
+      expect(out.gate.redOwner?.label).toContain('CONFIRMED GONE');
+      expect(out.gate.redOwner?.label).toMatch(/does NOT mean this red is unowned/);
+      expect(out.gate.redOwner?.label).not.toMatch(/Claim it before investigating/);
       expect(out.nextVerb?.name).toBe('checkpoint:await');
-      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('WI-39450');
-      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).not.toContain('CONFIRMED GONE');
+      // The constraint carries the same composed label, so it names the live holder AND
+      // reports the dead fixer. The old assertion here forbade "CONFIRMED GONE" because
+      // under substitution its only possible meaning was the stale "so claim this red";
+      // composed, it is a second fact beside the owner, and the property that actually
+      // matters is that the summary never invites a second claimant.
+      const gateRed = () => out.constraints.find((c) => c.code === 'gate-red')?.summary ?? '';
+      expect(gateRed()).toContain('WI-39450');
+      expect(gateRed()).toContain('su-live-gate-owner');
+      expect(gateRed()).not.toMatch(/Claim it before investigating/);
     });
 
     it('prefers a measured live run-lock executor even when the singleton projection is absent', () => {
@@ -1046,18 +1074,30 @@ describe('buildReleaseTrace', () => {
         }),
       );
 
+      // P-008: same composition contract as above — the live singleton outranks the
+      // obsolete fixer, and outranks the paused-run serializer too, because naming the
+      // specific owner is more actionable than "a run is up".
       expect(out.gate.redOwner).toMatchObject({
-        state: 'owned-live',
+        state: 'owned-by-repair-holder',
         covered: true,
-        ownerSignature: 'gate-red-streak:papercusp',
+        fixerState: 'owner-gone',
+        spawnId: 'obsolete-fixer',
+        ownerSignature: 'RED-35',
       });
+      expect(out.gate.redOwner?.repairOwner).toMatchObject({ workItem: 'WI-40086', live: true });
       expect(out.gate.redOwner?.label).toContain('WI-40086');
       expect(out.gate.redOwner?.label).toContain('su-c58f545d-f8a4-4afe-b755-1bf613bd8083');
-      expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+      // lastProgressAt is null here and takenAt is parseable, so the lease anchors on the
+      // claim stamp — an OLD claim with no progress must not read as freshly worked.
+      expect(out.gate.redOwner?.repairOwner?.lastProgressAt).toBeNull();
+      expect(out.gate.redOwner?.label).not.toMatch(/Claim it before investigating/);
       expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
       expect(out.nextVerb?.name).not.toBe('testing:flakiness');
-      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('WI-40086');
-      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).not.toContain('CONFIRMED GONE');
+      // Same composed-label contract as the case above.
+      const gateRedSummary = () => out.constraints.find((c) => c.code === 'gate-red')?.summary ?? '';
+      expect(gateRedSummary()).toContain('WI-40086');
+      expect(gateRedSummary()).toContain('su-c58f545d-f8a4-4afe-b755-1bf613bd8083');
+      expect(gateRedSummary()).not.toMatch(/Claim it before investigating/);
     });
 
     it('sends a reader to await the outcome instead of opening a second diagnosis', () => {

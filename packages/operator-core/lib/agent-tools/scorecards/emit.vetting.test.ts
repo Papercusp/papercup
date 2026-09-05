@@ -90,6 +90,7 @@ vi.mock('../../workspace-registry', async (importOriginal) => {
 vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: (...a: unknown[]) => sameAcceptanceAuthor(...a),
   areAcceptanceLineageRelated: (...a: unknown[]) => lineageRelated(...a),
+  resolvePlanImplementerIdentities: async () => [],
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
