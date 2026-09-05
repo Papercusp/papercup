@@ -261,28 +261,8 @@ export const OPERATOR_POT_SCOPE = {
  * own `POT_BAR_TAB_IDS` then decides whether a kind's body gets the pot bar, so
  * this table cannot disagree with the operator about scope.
  */
-export const ADV_TAB_SURFACE_KINDS: Readonly<Record<AdvTabId, OperatorSurfaceKind>> = {
-  overview: 'overview',
-  hud: 'hud',
-  brainstorm: 'brainstorm',
-  harnesses: 'work',
-  health: 'health',
-  prs: 'prs',
-  insights: 'insights',
-  conversations: 'conversations',
-  learning: 'learning',
-  settings: 'adv-settings',
-  docs: 'docs',
-  history: 'history',
-  git: 'git',
-  stats: 'stats',
-  testing: 'testing',
-  plans: 'create',
-  workflows: 'workflows',
-  calendar: 'scheduled',
-  frames: 'frames',
-  evals: 'evals',
-};
+import { ADV_TAB_SURFACE_KINDS as SHARED_ADV_TAB_SURFACE_KINDS } from '../adv-navigation';
+export const ADV_TAB_SURFACE_KINDS: Readonly<Record<AdvTabId, OperatorSurfaceKind>> = SHARED_ADV_TAB_SURFACE_KINDS;
 
 /** The inverse of ADV_TAB_SURFACE_KINDS — derived, so the two cannot drift. */
 const SURFACE_KIND_TO_ADV_TAB: ReadonlyMap<OperatorSurfaceKind, AdvTabId> = new Map(

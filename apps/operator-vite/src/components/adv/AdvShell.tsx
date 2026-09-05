@@ -36,6 +36,7 @@ import {
 } from 'lucide-react';
 import type { SelectEntry, SelectOption } from '@/app/harness/Select';
 import { Popover } from '@/app/harness/Popover';
+import { ADV_MORE_GROUPS, ADV_MORE_LABELS } from '@papercusp/operator-ui/adv-navigation';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
 import { potHomeLabel } from '@/lib/pot-label';
@@ -302,15 +303,7 @@ export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
  * group — the dev-mode assertion below catches a newly-added tab that would
  * otherwise silently vanish (no strip entry, no More-menu entry).
  */
-export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = [
-  { id: 'build', label: 'Create & Build', tabIds: ['brainstorm', 'plans', 'git', 'stats', 'testing', 'docs', 'history'] },
-  // Was "Work" holding ['harnesses','conversations','calendar'] — 'harnesses'
-  // IS the Work tab now (promoted to the strip 2026-07-26), so the group was
-  // relabelled "Activity" to avoid two things called "Work" in the same nav.
-  { id: 'work', label: 'Activity', tabIds: ['conversations', 'calendar'] },
-  { id: 'insights', label: 'Insights', tabIds: ['insights', 'evals', 'health'] },
-  { id: 'system', label: 'System', tabIds: ['frames', 'settings'] },
-];
+export const SECONDARY_TAB_GROUPS: ReadonlyArray<{ id: string; label: string; tabIds: readonly AdvTabId[] }> = ADV_MORE_GROUPS;
 
 // `vite build` pins process.env.NODE_ENV to 'production' regardless of --mode
 // and constant-folds this comparison at BUILD time — under the dev shell
