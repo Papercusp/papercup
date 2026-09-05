@@ -21,7 +21,7 @@ import {
   type ForceReleaseBasis,
 } from './release-force-guard';
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
-import { getWorkItemCheckpointWithMeta } from '../../work-item-checkpoint';
+import { getWorkItemCheckpointWithMeta, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
 import { listEscalations, type EscalationRecord } from '../coordination/escalations';
@@ -37,7 +37,11 @@ const RELEASE_REASON_MAX_CHARS = 500;
 const releaseReasonSchema = () =>
   softText(RELEASE_REASON_MAX_CHARS)
     .optional()
-    .describe('Optional audit/park reason — auto-truncated to 500 chars if longer.');
+    .describe(
+      'Optional audit/park reason — auto-truncated to 500 chars if longer. On a voluntary release of an item that ' +
+        'has NO checkpoint, it is also stored AS that item\'s checkpoint, so one line here becomes the next ' +
+        'claimant\'s starting context instead of stopping at the audit row.',
+    );
 
 const claimHoldReleaseSchema = z
   .object({
@@ -774,6 +778,47 @@ export default defineTool({
                 `is needed.`,
             }
           : {};
+        // EI-21352358541526229: a voluntary release's `reason` was COLLECTED but never
+        // reached the next claimant. Measured on this row's own substrate: work_items carries
+        // only last_released_by/at + worked_by_history (whose entries are {at, owner} — no
+        // reason field), and PriorWorkRow reads exactly those columns, so a disposition typed
+        // into `reason` landed in the audit row and the notifications and STOPPED there. The
+        // claimant got priorWorkWarning with hasCheckpoint:false — "someone worked this and
+        // left nothing" — and had to re-derive what happened: 6–10 tool calls of Postgres
+        // forensics and repo greps per item, measured across three items in one 2026-08-24
+        // drain pass whose deliverables were ALREADY BUILT AND LANDED.
+        //
+        // Route it into the CHECKPOINT rather than inventing a second store: that is the
+        // surface every pickup path (work_items:get, work_items:claim, scheduler:get_next)
+        // already reads, and it flips hasCheckpoint true so priorWorkWarning stops escalating
+        // about an item that does now carry information. This is why the fix is not the
+        // originally-proposed "make `reason` required": a required arg would have collected
+        // text that no claimant could ever see.
+        //
+        // Only when NO checkpoint exists — a real worked checkpoint is richer than a one-line
+        // disposition and must never be clobbered by one. Forced reclaims are excluded: their
+        // mandatory `reason` is the FORCER's audit justification, not the holder's, so storing
+        // it as the holder's resume context would attribute one agent's words to another.
+        // Durable parks (claimHold:true) already persist `parkedReason` and are not
+        // self-selectable, so they need no second copy. Fail-soft: this bookkeeping must never
+        // fail the release itself. The row is already unassigned here, so the checkpoint
+        // write's progress-anchor bump is a deliberate no-op (it credits held rows only).
+        let releaseDisposition: { releaseDispositionRecorded?: true } = {};
+        if (!force && claimHold !== true && wasHeld && reason && !releaseCheckpoint) {
+          const stored = await setWorkItemCheckpoint(
+            {
+              harness: workItem.harness ?? it.harness ?? null,
+              workItemId: it.id,
+              workspaceId: ident.workspaceId ?? undefined,
+            },
+            `## Release disposition — recorded by work_items:release (NOT a worked checkpoint)\n\n` +
+              `${reason}\n\n` +
+              `— released by ${ident.ownerId ?? 'an unrecorded owner'} at ${new Date().toISOString()} without a ` +
+              `checkpoint. This is the releaser's one-line disposition, not a verified resume brief: treat it as a ` +
+              `POINTER to what they were doing and verify it against the repo/ledger before building on it.`,
+          ).catch(() => null);
+          if (stored) releaseDisposition = { releaseDispositionRecorded: true as const };
+        }
         // EI-16289: a checkpoint/reason records WHY a holder put work down, but a plain
         // release does not make that disposition sticky — it applies only the short
         // same-agent cooldown and leaves the row immediately self-selectable by every
@@ -800,6 +845,32 @@ export default defineTool({
                   `works while the item is unassigned. If this is an ordinary handoff, no action is needed.`,
               }
             : {};
+        // EI-21352358541526229: the fully-blind release — no checkpoint AND no reason — was
+        // the one shape that returned NOTHING. claimHoldNudge above requires
+        // (releaseCheckpoint || reason) and strandedCheckpointWarning requires a checkpoint,
+        // so the releaser who left the LEAST behind got the LEAST feedback, exactly inverting
+        // the signal. Measured 2026-09-05 on papercusp: 192 of 1,088 released-and-claimable
+        // non-observation items (17.6%) reach their next claimant in this state.
+        //
+        // Advisory, never a refusal, and deliberately NOT a required `reason` arg: release is
+        // also driven by paths with no disposition to give (stale-claim reaping, handoffs,
+        // a release of work genuinely never started), and refusing those would block the queue
+        // to buy a field that is often honestly empty. Nudge the human-ish path instead, and
+        // make the remedy a call that still works after the fact.
+        const blindReleaseNudge =
+          !force && claimHold === undefined && wasHeld && !releaseCheckpoint && !reason
+            ? {
+                blindReleaseNudge:
+                  `You released '${it.id}' with neither a checkpoint nor a reason, so it returns to the queue looking ` +
+                  `UNSTARTED. The next claimant is told only that somebody held it and left nothing behind ` +
+                  `(priorWork hasCheckpoint:false) and has to re-derive whatever you already know — measured at 6–10 ` +
+                  `tool calls of Postgres forensics and repo greps per item. If you built, landed, or SETTLED ` +
+                  `anything — a migration, a commit, a conclusion, even "this turned out to be already done" — record ` +
+                  `it now with work_items:release { id:'${it.id}', reason:'<one line: what exists, what is left>' }; ` +
+                  `that follow-up works while the item is unassigned and is stored as the next claimant's starting ` +
+                  `context. If you genuinely did nothing to this item, no action is needed.`,
+              }
+            : {};
         if (claimHold === undefined) {
           return {
             ok: true as const,
@@ -811,6 +882,8 @@ export default defineTool({
             ...completion,
             ...escalationPark,
             ...claimHoldNudge,
+            ...blindReleaseNudge,
+            ...releaseDisposition,
             ...reasonDisclosure,
           };
         }
@@ -868,6 +941,7 @@ export default defineTool({
           claimHoldRelease: held?.applicable && claimHold ? releaseContract : undefined,
           ...claimHoldFailure,
           ...freshUnclaimedCheckpoint,
+          ...releaseDisposition,
           ...reasonDisclosure,
         };
       },
