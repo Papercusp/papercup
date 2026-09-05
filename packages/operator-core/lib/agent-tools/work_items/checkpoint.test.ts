@@ -22,12 +22,14 @@ import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, withCarryNoteChecks } from
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
 const getWorkItemCheckpoint = vi.fn();
+const attestWorkItemCheckpointUnchanged = vi.fn();
 const getWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
+  attestWorkItemCheckpointUnchanged: (...a: unknown[]) => attestWorkItemCheckpointUnchanged(...a),
 }));
 vi.mock('../../carry-surface-action-proof', async () => {
   const actual = await vi.importActual<typeof import('../../carry-surface-action-proof')>(
@@ -3496,5 +3498,92 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
 
     expect(result.ok).toBe(true);
     expect(result.provenanceLint?.matches[0]?.kind).toBe('unverified-action-claim');
+  });
+});
+
+describe('work_items:checkpoint — unchanged attestation surface (P-007/R-06)', () => {
+  const HASH = 'abc123def456';
+
+  beforeEach(() => {
+    attestWorkItemCheckpointUnchanged.mockReset();
+    getWorkItem.mockResolvedValue({ id: 'WI-ATT', harness: 'papercup' });
+  });
+
+  it('refuses args that would CHANGE the body — an attestation writes no text', async () => {
+    const result = await one({ id: 'WI-ATT', unchanged: true, contentHash: HASH, checkpoint: 'new prose' });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe('attestation_conflicting_args');
+    expect(result.error).toContain('checkpoint');
+    // The decisive assertion: it refused BEFORE reaching either store path, so a
+    // contradictory call can never half-apply (text written, freshness attested).
+    expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+  });
+
+  it('refuses an attestation with no contentHash — you cannot attest a body you have not read', async () => {
+    const result = await one({ id: 'WI-ATT', unchanged: true });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe('attestation_hash_required');
+    expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
+  });
+
+  it('on success reports the remaining budget and writes NO body', async () => {
+    attestWorkItemCheckpointUnchanged.mockResolvedValue({
+      ok: true,
+      currentHash: HASH,
+      attestedCount: 1,
+      bodyAgeMs: 90 * 60_000,
+      remainingAttestations: 2,
+    });
+
+    const result = await one({ id: 'WI-ATT', unchanged: true, contentHash: HASH });
+
+    expect(result).toMatchObject({
+      ok: true,
+      attested: true,
+      contentHash: HASH,
+      attestedCount: 1,
+      remainingAttestations: 2,
+      bodyAgeMinutes: 90,
+    });
+    // The budget is stated in the response rather than left for the agent to track:
+    // an agent that cannot see the remaining allowance cannot plan the real write.
+    expect(result.note).toContain('2 attestation(s)');
+    expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+  });
+
+  it('turns each refusal into the remedy that clears it, not just a code', async () => {
+    attestWorkItemCheckpointUnchanged.mockResolvedValue({
+      ok: false,
+      refusedReason: 'attestation_state_changed',
+      currentHash: null,
+      attestedCount: 0,
+      bodyAgeMs: null,
+      remainingAttestations: 0,
+      itemUpdatedAtMs: Date.now(),
+    });
+
+    const result = await one({ id: 'WI-ATT', unchanged: true, contentHash: HASH });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe('attestation_state_changed');
+    // This branch exists so an agent does not bounce at a compaction boundary without
+    // knowing the next move; a bare code would reproduce exactly that failure.
+    expect(result.error).toContain('Write a real checkpoint');
+    expect(result.bodyAgeMinutes).toBeNull();
+  });
+
+  it('leaves an ordinary checkpoint write completely untouched', async () => {
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'ordinary progress', priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue('ordinary progress');
+
+    const result = await one({ id: 'WI-ATT', checkpoint: 'ordinary progress' });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('attested');
+    expect(attestWorkItemCheckpointUnchanged).not.toHaveBeenCalled();
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalled();
   });
 });
