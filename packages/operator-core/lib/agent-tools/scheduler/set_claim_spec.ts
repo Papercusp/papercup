@@ -15,12 +15,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
+import type { ClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { claimSpecSchema, positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
+import { evaluateGoalFenceGuard } from '../../scheduler/spec-pool-preview';
 
 /**
  * The coding-FACTORY push-pipeline roles: each is HANDED a FEATURE_ID by the orchestrator
@@ -380,6 +382,12 @@ export default defineTool({
         .describe(
           'WI-5212 pool-collapse override: a dynamic spec is REFUSED at write time when it matches 0 rows of a nonempty claimable pool, or a revision craters the match count vs the stored spec (the two fleet-starvation shapes, EI-13306). Pass true ONLY after reading the refusal’s reported counts and confirming the narrowing is intended (e.g. a pre-staged lane whose items are not promoted yet).',
         ),
+      confirmGoalFenceDrop: z
+        .boolean()
+        .optional()
+        .describe(
+          'EI-22389918023611568 sovereignty override: a replacement is REFUSED when an existing authored claim lane guarantees a positive `goal` filter and the proposed filter drops that guarantee, even if the pool count increases. Pass true ONLY after verifying the replacement is an explicit active-goal exclusion fence (goal_id IS NULL, this goal, or deactivated-goal work); a positive zero-match fence may be an intentional stand-down brake.',
+        ),
       spec: claimSpecSchema
         .optional()
         .describe(
@@ -478,6 +486,48 @@ export default defineTool({
       targetBeeId = fleetSpecBeeKey(fleetSlug);
     }
 
+    // EI-22389918023611568: a replacement can widen a GOAL-scoped lane while
+    // increasing its pool count (so the generic collapse guard is intentionally
+    // silent). Read the incumbent effective row once and protect its positive
+    // goal fence before any pool preview or write. A zero-match positive fence
+    // may be a deliberate stand-down brake; it is not permission to broaden a
+    // live fleet into the whole kind backlog. The explicit acknowledgement is
+    // separate from confirmCollapse so a starvation override cannot accidentally
+    // waive this ownership boundary.
+    let incumbentRecord: ClaimSpecRecord | null = null;
+    let goalFenceWarning: string | undefined;
+    try {
+      const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
+      incumbentRecord = await getClaimSpecRecord({
+        cupId: targetBeeId,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+      });
+      const goalFence = evaluateGoalFenceGuard({
+        previousFilter:
+          incumbentRecord.source === 'default' ? undefined : incumbentRecord.spec.view.filter,
+        candidateFilter: validated.spec.view.filter,
+        previousSource: incumbentRecord.source === 'default' ? 'default' : 'authored',
+        confirm: args.confirmGoalFenceDrop === true,
+      });
+      if (goalFence.refuse) {
+        return {
+          data: {
+            ok: false,
+            errors: goalFence.errors,
+            admissibilityPreview: admission.preview,
+          },
+        };
+      }
+      goalFenceWarning = goalFence.warning;
+    } catch (err) {
+      // This is a diagnostic guard around an already-valid write. If the
+      // incumbent cannot be read, preserve the existing fail-open posture but
+      // say so loudly; the caller must not mistake an uninspected replacement
+      // for a verified sovereignty-safe one.
+      const detail = err instanceof Error ? err.message : String(err);
+      goalFenceWarning = `positive goal-fence guard could not inspect the incumbent spec (write proceeds fail-open): ${detail}`;
+    }
+
     // WI-5212: write-time POOL-EFFECT preview + collapse guard for DYNAMIC specs (the
     // fixed-cohort path already has WI-4429's admission check above). Both 2026-07-16/17
     // fleet starvations were specs that VALIDATED fine and matched (nearly) nothing —
@@ -491,7 +541,6 @@ export default defineTool({
     if (admission.preview.mode === 'dynamic') {
       try {
         const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../../scheduler/spec-pool-preview');
-        const { getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
         const { activeWorkspaceId } = await import('../../workspace-registry');
         const wsForCount = ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
         const countScope = { workspaceId: wsForCount, harness: resolvedHarness ?? null };
@@ -502,18 +551,10 @@ export default defineTool({
         let previousMatched: number | null = null;
         let previousSource: 'authored' | 'default' = 'default';
         let previousFilter: ClaimSpec['view']['filter'] | undefined;
-        try {
-          const rec = await getClaimSpecRecord({
-            cupId: targetBeeId,
-            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-          });
-          if (rec.source !== 'default') {
-            previousSource = 'authored';
-            previousMatched = (await previewSpecPoolEffect(rec.spec, countScope)).matched;
-            previousFilter = rec.spec.view.filter;
-          }
-        } catch {
-          /* previous unmeasurable — guard degrades to fresh-spec rules */
+        if (incumbentRecord && incumbentRecord.source !== 'default') {
+          previousSource = 'authored';
+          previousMatched = (await previewSpecPoolEffect(incumbentRecord.spec, countScope)).matched;
+          previousFilter = incumbentRecord.spec.view.filter;
         }
         poolEffect = { ...current, previousMatched, previousSource };
         const verdict = evaluateCollapseGuard({
@@ -592,6 +633,9 @@ export default defineTool({
       out.warning = out.warning
         ? `${out.warning as string}\n${validated.warnings.join('\n')}`
         : validated.warnings.join('\n');
+    }
+    if (goalFenceWarning) {
+      out.warning = out.warning ? `${out.warning as string}\n${goalFenceWarning}` : goalFenceWarning;
     }
     out.admissibilityPreview = {
       ...admission.preview,

@@ -189,6 +189,103 @@ export interface CollapseGuardVerdict {
   warning?: string;
 }
 
+/**
+ * The GOAL lane's scope guard (EI-22389918023611568).
+ *
+ * A pool-count collapse is not the only unsafe re-steer. A goal-drain spec can
+ * be replaced with a broader, kind-only spec and the count can go UP (the exact
+ * rev2 -> rev3 incident), so {@link evaluateCollapseGuard} quite correctly does
+ * not call that change a collapse. The broader lane nevertheless drops the
+ * ownership boundary and can consume another active goal's work.
+ *
+ * The incumbent positive goal predicate is also a deliberate *stand-down brake*:
+ * a paused/winding-down fleet may intentionally match zero. This guard therefore
+ * protects the replacement operation, not the current zero count: keep a
+ * guaranteed positive goal predicate, or explicitly acknowledge the transition to
+ * an independently verified exclusion fence with `confirmGoalFenceDrop:true`.
+ */
+export interface GoalFenceGuardInput {
+  /** The incumbent effective filter at this target (undefined = no filter). */
+  previousFilter?: FilterNode;
+  /** The proposed replacement filter. */
+  candidateFilter?: FilterNode;
+  /** `authored` means a stored cup/fleet row exists; `default` means no incumbent. */
+  previousSource: 'authored' | 'default';
+  /** Explicit operator acknowledgement of a scope transition. */
+  confirm: boolean;
+}
+
+/**
+ * Return true only when every satisfying branch of a filter requires a positive
+ * goal predicate. Merely mentioning `goal` below an `any`/`not` is not enough:
+ * `{ any:[{field:'goal',op:'=',value:'g'}, {field:'kind',op:'=',value:'bug'}] }`
+ * still admits the whole bug backlog. `all` needs one positive child because
+ * conjunction with that child makes the whole expression goal-scoped.
+ *
+ * This is intentionally structural and conservative. It does not try to prove
+ * that the values equal the caller's own goal (the target may be a fleet sentinel
+ * whose goal provenance is outside the claim-spec JSON); it only prevents the
+ * known unsafe *drop-all-goal-scope* edit. A separate active-goal exclusion fence
+ * can be acknowledged explicitly at the write door.
+ */
+export function hasGuaranteedPositiveGoalFence(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  if ('field' in filter) {
+    if (filter.field !== 'goal' || (filter.op !== '=' && filter.op !== 'in')) return false;
+    // An empty `in` is a vacuous/no-row selector, not a useful ownership fence.
+    return filter.op === '='
+      ? String(filter.value).trim().length > 0
+      : Array.isArray(filter.value) && filter.value.some((value) => String(value).trim().length > 0);
+  }
+  if ('all' in filter) return filter.all.some((child) => hasGuaranteedPositiveGoalFence(child));
+  if ('any' in filter) {
+    return filter.any.length > 0 && filter.any.every((child) => hasGuaranteedPositiveGoalFence(child));
+  }
+  // A negation can exclude a goal, but it cannot guarantee that an admitted row
+  // belongs to one. In particular, `not:{goal != g}` is not a positive fence.
+  return false;
+}
+
+/**
+ * Pure decision for the positive-goal-fence replacement guard.
+ *
+ * The guard is deliberately independent of pool counts: a widening replacement
+ * can increase `matched` while still violating goal ownership. `confirm` is a
+ * separate acknowledgement from `confirmCollapse`; callers must say they have
+ * verified an explicit exclusion-fence transition rather than accidentally
+ * reusing a starvation override.
+ */
+export function evaluateGoalFenceGuard(input: GoalFenceGuardInput): CollapseGuardVerdict {
+  const previousHasFence =
+    input.previousSource === 'authored' && hasGuaranteedPositiveGoalFence(input.previousFilter);
+  if (!previousHasFence || hasGuaranteedPositiveGoalFence(input.candidateFilter)) {
+    return { refuse: false, errors: [] };
+  }
+
+  const message =
+    'the proposed claim-spec revision DROPS the incumbent positive goal fence: the stored lane is ' +
+    'goal-scoped, but the replacement has no filter shape that guarantees a positive `goal` =/in ' +
+    'predicate. A broader kind-only lane can admit another active goal\'s work even when its pool count ' +
+    'increases; a positive fence that matches 0 is also a valid stand-down brake, not proof it should be ' +
+    'removed. Keep the goal predicate, or replace it with a verified active-goal EXCLUSION fence. ';
+  if (input.confirm) {
+    return {
+      refuse: false,
+      errors: [],
+      warning:
+        `${message}The scope transition was explicitly confirmed with confirmGoalFenceDrop:true; ` +
+        'verify that the replacement excludes every other active goal and admits the unowned frontier.',
+    };
+  }
+  return {
+    refuse: true,
+    errors: [
+      `${message}Re-send with confirmGoalFenceDrop:true only after checking that exclusion; ` +
+        'do not widen a live GOAL drain merely to make a zero-match lane look productive (EI-22389918023611568).',
+    ],
+  };
+}
+
 /** Revision-collapse threshold: refuse when a previously ≥MIN_PREVIOUS-row lane drops below max(ABS_FLOOR, RATIO × previous). */
 const MIN_PREVIOUS = 20;
 const ABS_FLOOR = 5;

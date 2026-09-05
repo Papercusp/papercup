@@ -473,8 +473,15 @@ describe('GOAL mode', () => {
     expect(c).toMatch(/field:'goal'/);
     expect(c).not.toMatch(/cannot yet filter on the goal itself/i);
     // The nullable-column hazard (WI-5181) must travel WITH the prescription: a
-    // negative leaf on a mostly-unstamped column silently drops every row.
-    expect(c).toMatch(/POSITIVE form/);
+    // positive leaf on a mostly-unstamped column silently drops every row, while
+    // the NULL-safe negative form admits the unowned frontier.
+    expect(c).toMatch(/POSITIVE\s+form/);
+    expect(c).toMatch(/verify the\s+provenance before fencing/i);
+    expect(c).toMatch(/newly-created or otherwise unpopulated goal it matches\s+ZERO/i);
+    expect(c).toMatch(/NULL-safe negative\s+form/i);
+    expect(c).toMatch(/confirmGoalFenceDrop:true/);
+    expect(c).toMatch(/goal is filter-only, not\s+rankable/i);
+    expect(c).not.toMatch(/negative leaf silently drops them all/i);
     // The field the contract now tells agents to author must actually BE filterable —
     // derived from the grammar rather than hand-asserted, so this test fails if `goal`
     // is ever removed from ITEM_FIELDS while the contract still prescribes it.

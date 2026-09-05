@@ -5,7 +5,13 @@
  * future threshold tweak that would have let either starvation through fails loudly here.
  */
 import { describe, expect, it } from 'vitest';
-import { evaluateCollapseGuard, filterNodesEqual, isProvableSuperset } from './spec-pool-preview';
+import {
+  evaluateCollapseGuard,
+  evaluateGoalFenceGuard,
+  filterNodesEqual,
+  hasGuaranteedPositiveGoalFence,
+  isProvableSuperset,
+} from './spec-pool-preview';
 import type { FilterNode } from './claim-spec';
 
 describe('evaluateCollapseGuard — refusal shapes', () => {
@@ -189,6 +195,73 @@ describe('evaluateCollapseGuard — EI-18653814284166347 (superset blindness + n
       previousFilter: rev6Filter,
     });
     expect(v.refuse).toBe(true); // falls through to the ordinary revision-collapse check
+  });
+});
+
+describe('evaluateGoalFenceGuard — EI-22389918023611568', () => {
+  const goal: FilterNode = { field: 'goal', op: '=', value: 'goal-813959' };
+  const kind: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] };
+
+  it('REFUSES a widening replacement that drops an incumbent positive goal fence', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: { all: [goal, kind] },
+      candidateFilter: kind,
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(true);
+    expect(verdict.errors[0]).toContain('DROPS the incumbent positive goal fence');
+    expect(verdict.errors[0]).toContain('confirmGoalFenceDrop:true');
+  });
+
+  it('allows a replacement that retains the positive goal predicate', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goal,
+      candidateFilter: { all: [goal, kind] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict).toEqual({ refuse: false, errors: [] });
+  });
+
+  it('does not mistake an OR arm for a guaranteed fence', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goal,
+      candidateFilter: { any: [goal, kind] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(true);
+  });
+
+  it('does not guard first authoring from the DEFAULT lane', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: undefined,
+      candidateFilter: kind,
+      previousSource: 'default',
+      confirm: false,
+    });
+    expect(verdict).toEqual({ refuse: false, errors: [] });
+  });
+
+  it('requires a non-empty positive value for a useful goal fence', () => {
+    expect(hasGuaranteedPositiveGoalFence({ field: 'goal', op: '=', value: '' })).toBe(false);
+    expect(hasGuaranteedPositiveGoalFence({ field: 'goal', op: 'in', value: [] })).toBe(false);
+    expect(hasGuaranteedPositiveGoalFence({ field: 'goal', op: 'in', value: ['', '  '] })).toBe(false);
+    expect(hasGuaranteedPositiveGoalFence(goal)).toBe(true);
+    expect(hasGuaranteedPositiveGoalFence({ not: goal })).toBe(false);
+  });
+
+  it('allows an explicitly acknowledged transition and emits the exclusion warning', () => {
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goal,
+      candidateFilter: kind,
+      previousSource: 'authored',
+      confirm: true,
+    });
+    expect(verdict.refuse).toBe(false);
+    expect(verdict.warning).toContain('explicitly confirmed');
+    expect(verdict.warning).toContain('EXCLUSION fence');
   });
 });
 

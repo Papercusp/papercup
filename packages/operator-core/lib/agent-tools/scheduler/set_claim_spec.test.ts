@@ -20,6 +20,8 @@ import type { ClaimSpec } from '../../scheduler/claim-spec';
 
 const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
 const listFleetMembers = vi.hoisted(() => vi.fn());
+const getClaimSpecRecord = vi.hoisted(() => vi.fn());
+const setClaimSpec = vi.hoisted(() => vi.fn());
 
 // The helper is dynamically imported by the tool so its wake-plane dependency can
 // fail soft after the durable spec write. Keep this test focused on the target
@@ -31,6 +33,11 @@ vi.mock('../coordination/audience-host', () => ({
   hostAudienceResolvers: {
     listFleetMembers: (...args: unknown[]) => listFleetMembers(...args),
   },
+}));
+vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/claim-spec-store')>()),
+  getClaimSpecRecord: (...args: unknown[]) => getClaimSpecRecord(...args),
+  setClaimSpec: (...args: unknown[]) => setClaimSpec(...args),
 }));
 
 describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => {
@@ -120,6 +127,53 @@ describe('published claim-spec args — EI-21170624598321316', () => {
       spec: { ...baseSpec, revision: 1 },
     });
     expect(complete.success).toBe(true);
+  });
+});
+
+describe('scheduler:set_claim_spec handler — EI-22389918023611568', () => {
+  const incumbent = {
+    source: 'cup' as const,
+    spec: {
+      specVersion: '1.0',
+      specId: 'goal-lane',
+      revision: 2,
+      view: {
+        filter: {
+          all: [
+            { field: 'goal', op: '=', value: 'goal-813959' },
+            { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+          ],
+        },
+      },
+      rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+    },
+    revision: 2,
+    updatedBy: 'su-leader',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+    harnessSlug: 'papercusp',
+  };
+
+  it('refuses a kind-only replacement before persistence when the incumbent is goal-scoped', async () => {
+    getClaimSpecRecord.mockResolvedValueOnce(incumbent);
+
+    const result = await (setClaimSpecTool as any).handler(
+      {
+        cupId: 'su-target',
+        spec: {
+          specVersion: '1.0',
+          specId: 'broad-lane',
+          revision: 3,
+          view: { filter: { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] } },
+          rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+        },
+      },
+      { isSuperuser: true, uiClientId: 'su-handler-test', workspaceId: 'ws-test', harnessSlug: 'papercusp' },
+    );
+
+    expect(result.data.ok).toBe(false);
+    expect(result.data.errors[0]).toContain('DROPS the incumbent positive goal fence');
+    expect(result.data.errors[0]).toContain('confirmGoalFenceDrop:true');
+    expect(setClaimSpec).not.toHaveBeenCalled();
   });
 });
 

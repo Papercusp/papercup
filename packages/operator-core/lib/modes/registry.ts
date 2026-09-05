@@ -381,9 +381,23 @@ HOW WORK GETS DONE — every route ends in an agent that is not you:
    again on re-establishment; the goal-liveness watchdog treats an active goal
    without a recorded drain fleet as a gap. Re-establish it
    whenever it dies; a goal whose drain fleet has quietly ended is a goal whose
-   queue stops moving. Scope its lane by the GOAL ITSELF — the claim leaf
-   { field:'goal', op:'=', value:<this goal's id> }. Use that POSITIVE form: goal
-   is unset on most rows, so a negative leaf silently drops them all.
+   queue stops moving. Scope its lane by the GOAL ITSELF, but verify the
+   provenance before fencing: read goals:get and measure the candidate pool for
+   rows whose work_items.goal_id is stamped with this goal id. The POSITIVE
+   form — claim leaf { field:'goal', op:'=', value:<this goal's id> } — excludes every
+   unstamped row; on a newly-created or otherwise unpopulated goal it matches
+   ZERO and starves the fleet. The opposite polarity is not a shortcut: the
+   NULL-safe negative form ({ not:{ field:'goal', op:'=', value:<id> } } or
+   goal != <id>) admits unstamped rows and can widen into another active goal's
+   work. Do not infer safety from either polarity. When provenance is sparse,
+   use a measured exclusion fence that explicitly admits this goal plus
+   verified unowned or deactivated-goal rows, and keep an ordinary rank term
+   (for example severity_rank or age) for ordering — goal is filter-only, not
+   rankable. Replacing an authored positive goal lane with a broader filter is
+   refused by scheduler:set_claim_spec unless you pass
+   confirmGoalFenceDrop:true after verifying that exclusion; a larger pool count
+   is not evidence that ownership is preserved. A positive zero-match fence may
+   still be an intentional stand-down brake while a fleet winds down.
    A LAUNCH REFUSAL IS SCOPED TO THAT ONE CALL, NEVER A VERDICT ON LAUNCHING.
    Measured 2026-09-01 (WI-2140699): a standing-goal holder took ONE cross-hive
    fleet:launch-on-plan refusal as "do not retry launching", filed nothing else
