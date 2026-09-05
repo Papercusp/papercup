@@ -146,7 +146,9 @@ interface StaleTurnRow {
   session_id: string;
   turn_idx: number;
   text: string;
-  sha: string;
+  // No `sha` column: detection no longer hashes in SQL (migration 1117). The
+  // turn_sha still STORED on each chunk row is computed in Node via turnSha()
+  // for the rows we actually rewrite — a handful per tick, not all 203k.
 }
 
 /**
@@ -173,37 +175,39 @@ export async function syncTurnChunks(
   const minChars = opts.minChars ?? TURN_CHUNK_MIN_TEXT_CHARS;
   const stats: TurnChunkSyncStats = { turns: 0, chunks: 0, errors: 0, more: false };
 
-  // ⚠ THE `sha` IS COMPUTED ONCE, VIA LATERAL, AND THAT IS A MEASURED CHOICE.
-  // The natural phrasing inlines `encode(sha256(convert_to(st.text,'UTF8')),'hex')`
-  // in BOTH the select list and the NOT EXISTS, and Postgres does not common-
-  // subexpression them — it hashes every candidate turn's text twice. Measured
-  // on the live 409k-row table in the caught-up steady state (the state this
-  // query is in almost always, since it then returns zero work):
-  //   inline twice  1045ms · LATERAL once  810ms · no sha at all  282ms
-  // So hashing is the dominant cost of this query, not the scan and not the
-  // probes, and halving the passes is the cheap half of the fix. The other half
-  // — not hashing at all — needs chunk-sync state on the parent row and is
-  // filed separately rather than smuggled into this item.
+  // ⚠ THIS QUERY MUST NEVER READ `text` TO DECIDE WHETHER THERE IS WORK.
+  // Detection is a partial-index lookup on `chunked_at IS NULL` (migration 1117,
+  // session_turns_unchunked_idx). Caught up — the state this lives in almost
+  // always, since it then returns zero work — the index has ZERO entries, so the
+  // tick touches no turn text at all.
   //
-  // The scan itself is served by session_turns_chunkable_idx (migration 753),
-  // a partial index on exactly this eligibility predicate; without it the same
-  // query costs 2844ms because it walks all 409k rows to find the ~8% that are
-  // long enough to chunk.
+  // It used to ask `NOT EXISTS (... c.turn_sha = sha256(st.text))`, which hashed
+  // every chunk-eligible turn on every tick just to discover nothing. Measured
+  // live 2026-09-05, near-caught-up, before this change:
+  //   shipped LATERAL-sha query 6859ms · same query with no sha 1338ms
+  // i.e. ~5520ms/tick of pure hashing. Migration 753 measured that residual at
+  // 528ms over 33,283 eligible turns (~157MB); it had grown to 203,492 turns
+  // (~1157MB) — ~10.5x — exactly as 753 predicted, since the cost scales with
+  // long-turn text volume. EI-19456024312507672 has the full before/after.
+  //
+  // ⚠ Two traps if you are tempted to reinstate a sha-based predicate:
+  //   * The LATERAL "compute the sha once" trick DOES NOT HOLD at this scale —
+  //     the planner inlines it straight back into the anti-join's inner filter
+  //     and hashes once per probe (Index Searches: 203494).
+  //   * Reading `text` also forfeits a PARALLEL, index-only plan: the executor
+  //     must reach the heap, so the plan goes serial (buffers 839k -> 1.88M).
+  //
+  // CORRECTNESS RESTS ON `session_turns.text` BEING INSERT-ONLY, so a turn never
+  // needs re-chunking once marked. session-ingest.ts inserts ON CONFLICT DO
+  // NOTHING and the only UPDATEs against that table set `owner` and
+  // `turn_origin*`; none touches `text`. Asserted by
+  // session-turns-text-immutable.test.ts so a future writer breaks a test rather
+  // than silently stranding turns unchunked.
   const stale = await sql.unsafe<StaleTurnRow[]>(
-    `SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.text, s.sha
+    `SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.text
        FROM harness_shared.session_turns st
-       CROSS JOIN LATERAL (
-              SELECT encode(sha256(convert_to(st.text, 'UTF8')), 'hex') AS sha
-            ) s
       WHERE length(st.text) > $1
-        AND NOT EXISTS (
-              SELECT 1 FROM harness_shared.session_turn_chunks c
-               WHERE c.workspace_id = st.workspace_id
-                 AND c.source_kind  = st.source_kind
-                 AND c.session_id   = st.session_id
-                 AND c.turn_idx     = st.turn_idx
-                 AND c.turn_sha     = s.sha
-            )
+        AND st.chunked_at IS NULL
       ORDER BY st.ingested_at DESC
       LIMIT $2`,
     [minChars, batch],
@@ -212,6 +216,10 @@ export async function syncTurnChunks(
 
   for (const t of stale) {
     try {
+      // Computed HERE, in Node, only for turns we are actually rewriting.
+      // Hashing moved out of the detection predicate; it did not disappear,
+      // because turn_sha remains the chunk row's change key.
+      const sha = turnSha(t.text);
       const chunks = splitTurnChunks(t.text);
       // Replace wholesale: a shorter re-ingested turn must not leave its old
       // tail chunks behind, and an ON CONFLICT upsert cannot delete them.
@@ -230,7 +238,7 @@ export async function syncTurnChunks(
         const params: Array<string | number> = [];
         const values = chunks
           .map((content, i) => {
-            params.push(t.workspace_id, t.source_kind, t.session_id, t.turn_idx, i, content, t.sha);
+            params.push(t.workspace_id, t.source_kind, t.session_id, t.turn_idx, i, content, sha);
             const b = i * 7;
             return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`;
           })
@@ -249,6 +257,26 @@ export async function syncTurnChunks(
         );
         stats.chunks += chunks.length;
       }
+      // Retire the turn from the detection index.
+      //
+      // AFTER the rewrite, never before: a crash between the two leaves
+      // chunked_at NULL, so the turn is simply re-selected next tick. Marking
+      // first would strand it silently — the failure mode this whole item exists
+      // to make cheap, not to make invisible.
+      //
+      // OUTSIDE the `chunks.length > 0` branch on purpose: a turn that splits
+      // into zero chunks is finished work, and leaving it NULL would put it back
+      // at the head of the freshest-first scan on every future tick forever.
+      //
+      // A throw here lands in the catch below and leaves chunked_at NULL, which
+      // is the safe direction (retry, not strand).
+      await sql.unsafe(
+        `UPDATE harness_shared.session_turns
+            SET chunked_at = now()
+          WHERE workspace_id = $1 AND source_kind = $2
+            AND session_id = $3 AND turn_idx = $4`,
+        [t.workspace_id, t.source_kind, t.session_id, t.turn_idx],
+      );
       stats.turns += 1;
     } catch {
       stats.errors += 1;
