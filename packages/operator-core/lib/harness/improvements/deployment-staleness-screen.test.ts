@@ -7,7 +7,11 @@
  * unknown direction is exactly the false reassurance the three-valued type exists for.
  */
 
+import { fileURLToPath } from 'node:url';
+
 import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
+import { defineTool, projectedToolSourceFile } from '@papercusp/tooldef';
 import {
   deploymentStalenessScreen,
   renderDeploymentStalenessDivert,
@@ -49,7 +53,10 @@ function depsOf(blobs: Record<string, string | null>, over: Record<string, unkno
     git: gitOf(blobs),
     cache: false,
     ...over,
-  } as Parameters<typeof deploymentStalenessScreen>[1];
+    // NonNullable: the screen's own `deps` parameter is optional, so the bare
+    // `Parameters<...>[1]` includes `undefined` and every `deps.git` read below is a
+    // TS18048. A test helper that always RETURNS a deps object should say so in its type.
+  } as NonNullable<Parameters<typeof deploymentStalenessScreen>[1]>;
 }
 
 describe('structuredToolFailureSubject — a FIELD read, never prose', () => {
@@ -177,5 +184,64 @@ describe('renderDeploymentStalenessDivert', () => {
     // Hedged, not asserted-closed: a differing blob proves the file moved, not that it
     // moved for THIS constraint. The reviewer confirms; the screen only makes them look.
     expect(line).toContain('may already be repaired');
+  });
+});
+
+/**
+ * The seam every other test in this file STUBS — and therefore the one that broke.
+ *
+ * Every case above injects `sourceFileFor`, so none of them ever exercised the real
+ * `projectedToolSourceFile`. That function returns whatever the V8 stack frame gave it,
+ * which under ESM is a `file://` URL, while `relativizeToRepo` compares by string prefix
+ * against a filesystem root. The mismatch cannot throw: it returns null, the verdict
+ * becomes `unknown/source-outside-repo`, and the screen answers "not applicable" for
+ * every subject while every unit test stays green.
+ *
+ * Measured 2026-09-05 against the real open population (P-003 / EI-22450280531836927):
+ * 884 of 1,078 open tool-failure filings answered `source-outside-repo` — 100% of those
+ * whose subject resolved at all — so the screen diverted NOTHING in production. After
+ * the fix at the field's source (tooldef `captureDefinitionSite`), the same probe
+ * diverted 811 of 1,077 rows (75.3%).
+ *
+ * This test therefore uses the REAL registry and the REAL resolver, and stubs only what
+ * has no bearing on the defect (git, the build sha). The repo root is derived from
+ * node's own URL converter, never from the value under test.
+ */
+describe('the real sourceFileFor seam (the one the stubs hid)', () => {
+  const HERE = fileURLToPath(import.meta.url);
+  const MARKER = '/packages/operator-core/';
+  const REPO_ROOT = HERE.slice(0, HERE.indexOf(MARKER));
+
+  it('reaches a git-level verdict for a really-registered tool, not source-outside-repo', async () => {
+    resetDeploymentStalenessScreenCache();
+    defineTool({
+      name: 'stalenessscreentest:real-seam',
+      requirePrincipal: false,
+      capability: 'harness:read',
+      description: 'fixture',
+      args: z.object({}),
+      handler: async () => ({ ok: true }),
+    } as never);
+
+    // Sanity: the fixture really registered, so a null verdict below would mean the
+    // screen failed, not that the fixture never existed.
+    expect(REPO_ROOT).not.toBe('');
+    expect(projectedToolSourceFile('stalenessscreentest:real-seam')).toContain(MARKER);
+
+    const verdict = await deploymentStalenessScreen(filingOf('stalenessscreentest:real-seam'), {
+      // sourceFileFor DELIBERATELY omitted — the real resolver is the subject here.
+      deployedSha: () => 'deadbee',
+      repoRoot: REPO_ROOT,
+      git: gitOf({ deadbee: OLD_BLOB, staging: NEW_BLOB }),
+      cache: false,
+    } as NonNullable<Parameters<typeof deploymentStalenessScreen>[1]>);
+
+    // The assertion is about the FAILURE MODE, not the routing outcome: whatever git
+    // says, the screen must have got far enough to ask it.
+    expect(verdict.screened).toBe(true);
+    if (verdict.screened && verdict.state === 'unknown') {
+      expect(verdict.unknownReason).not.toBe('source-outside-repo');
+    }
+    expect(verdict).toMatchObject({ screened: true, state: 'stale', divert: true });
   });
 });
