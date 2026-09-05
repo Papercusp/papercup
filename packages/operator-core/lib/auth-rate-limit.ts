@@ -8,7 +8,7 @@
  * and the auth-specific key shapes, then re-exports the same public surface
  * the login route + tests already use.
  *
- * Bucket model (unchanged):
+ * Bucket model:
  *
  *   (1) SOFT per-IP: 10 attempts / 60s. Refund on successful auth. LOOPBACK
  *       EXEMPT (127.0.0.1, ::1) — the desktop trust boundary lives on
@@ -19,9 +19,18 @@
  *       NOT refunded. Applies on loopback (username-scoped, so it only locks
  *       the targeted account, never the whole install).
  *
+ *   (3) HARD per-account: the same 5-failure lockout keyed only by normalized
+ *       username. This closes the rotating-address bypass without trusting
+ *       caller-supplied X-Forwarded-For.
+ *
+ *   (4) SOFT global login budget: 100 attempts / 60s. Refund on successful
+ *       auth, but never loopback-exempt; it bounds distributed abuse even when
+ *       the source address changes.
+ *
  * Both buckets are PG-backed via `harness_shared.auth_rate_limit` so state
  * survives operator restart. Key shapes: "ip:<addr>" (soft),
- * "user:<addr>:<username>" (hard). Reads GC their own table after 24h.
+ * "user:<addr>:<username>" (hard), "account:<username>" (hard), and
+ * "global:login" (soft). Reads GC their own table after 24h.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -46,6 +55,8 @@ const HARD_WINDOW_MS = DEFAULT_HARD.windowMs;
 const HARD_CAPACITY = DEFAULT_HARD.capacity;
 const HARD_LOCKOUT_MS = DEFAULT_HARD.lockoutMs;
 const STALE_AFTER_MS = DEFAULT_STALE_AFTER_MS;
+const GLOBAL_WINDOW_MS = 60_000;
+const GLOBAL_CAPACITY = 100;
 
 /**
  * PG-backed BucketStore — the verbatim `harness_shared.auth_rate_limit`
@@ -90,6 +101,14 @@ const pgStore: BucketStore = {
 
 const limiter = createRateLimiter({ store: pgStore });
 
+// Keep the global budget on the same generic algorithm/store, but with a
+// deliberately higher capacity than the per-IP bucket so normal multi-user
+// desktop traffic is not treated as abuse.
+const globalLimiter = createRateLimiter({
+  store: pgStore,
+  soft: { windowMs: GLOBAL_WINDOW_MS, capacity: GLOBAL_CAPACITY },
+});
+
 /* ─── Soft per-IP bucket (loopback-exempt) ─── */
 
 export async function checkSoftPerIp(ip: string): Promise<RateLimitResult> {
@@ -119,6 +138,39 @@ export async function resetHardPerUser(ip: string, username: string): Promise<vo
   await limiter.resetHard(`user:${ip}:${username.toLowerCase()}`);
 }
 
+/* ─── Account-wide hard bucket (address-independent) ─── */
+
+function accountKey(username: string): string {
+  return `account:${username.trim().toLowerCase()}`;
+}
+
+export async function checkHardPerAccount(username: string): Promise<RateLimitResult> {
+  if (!username.trim()) return { ok: true };
+  return limiter.checkHard(accountKey(username));
+}
+
+export async function burnHardPerAccount(username: string): Promise<void> {
+  if (!username.trim()) return;
+  await limiter.burnHard(accountKey(username));
+}
+
+export async function resetHardPerAccount(username: string): Promise<void> {
+  if (!username.trim()) return;
+  await limiter.resetHard(accountKey(username));
+}
+
+/* ─── Global soft login budget ─── */
+
+const GLOBAL_LOGIN_KEY = 'global:login';
+
+export async function checkSoftGlobal(): Promise<RateLimitResult> {
+  return globalLimiter.checkSoft(GLOBAL_LOGIN_KEY);
+}
+
+export async function refundSoftGlobal(): Promise<void> {
+  await globalLimiter.refundSoft(GLOBAL_LOGIN_KEY);
+}
+
 /* Test seam — clear all buckets matching a prefix. Used by integration tests. */
 export async function _clearAllForKeyPrefix(prefix: string): Promise<void> {
   await limiter.clearPrefix(prefix);
@@ -132,4 +184,6 @@ export const RATE_LIMIT_CONSTANTS = {
   HARD_CAPACITY,
   HARD_LOCKOUT_MS,
   STALE_AFTER_MS,
+  GLOBAL_WINDOW_MS,
+  GLOBAL_CAPACITY,
 } as const;
