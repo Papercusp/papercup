@@ -48,7 +48,9 @@ function jsonConfigRoutes(opts: {
   const get = defineTool({
     method: 'GET',
     path: opts.routePath,
-    auth: 'public',
+    // These files can contain credentials and execution policy. Keep reads
+    // on the same local-only perimeter as the corresponding writes.
+    auth: 'loopback',
     async handler(req, ctx) {
       const slug = ctx.params.slug as string;
       const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -194,7 +196,8 @@ export function effectiveClaudeSettings(content: string | null | undefined): {
 const getClaudeSettingsEffective = defineTool({
   method: 'GET',
   path: '/harness/:slug/claude-settings/effective',
-  auth: 'public',
+  // Effective settings include the file's environment and permission policy.
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const project = await resolvePhasedProject(slug, phaseFromReq(req));
@@ -217,7 +220,8 @@ const getClaudeSettingsEffective = defineTool({
 const getEnv = defineTool({
   method: 'GET',
   path: '/harness/:slug/env',
-  auth: 'public',
+  // `.env` is secret-bearing and must never be a network-readable surface.
+  auth: 'loopback',
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });

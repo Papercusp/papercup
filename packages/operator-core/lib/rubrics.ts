@@ -28,6 +28,7 @@
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import {
   rubricTemplateDataSchema,
@@ -63,11 +64,22 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import {
+  withAcceptanceBarAmendmentTransaction,
+  acceptanceBarAmendmentKey,
+  type AcceptanceBarAmendmentSql,
+} from './acceptance-bar-amendment';
+import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
+import { setSpecClause, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
+import { appendDecisionToBody, allocateNextDecisionId } from './agent-tools/plans/add-decision';
 import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
+import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
+import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
 import { recordPlanRevision } from './agent-tools/plans/revisions';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import {
   listLocalRubrics,
@@ -2256,6 +2268,21 @@ export interface AmendRubricInput {
   methodRef?: string;
   allowMethodShrink?: boolean;
   shrinkReason?: string;
+  /** Authenticated actor for a BAR amendment; distinct from rubric authorship (`by`). */
+  actorId?: string;
+  /** Human-readable reason recorded in the subject-plan Decision. */
+  reason?: string;
+  /** Optimistic CAS against the two rows touched by a cross-plan amendment. */
+  expectedRubricRevision?: number;
+  expectedSubjectPlanRevision?: number;
+  /** Stable replay token. Omitted ⇒ a deterministic hash of the amendment inputs. */
+  idempotencyKey?: string;
+  /** Outside-lineage approval receipt required for a started BAR meaning change. */
+  approvalRef?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  /** Test-only rollback probe; production callers should omit it. */
+  faultInjection?: 'after-decision' | 'after-rubric' | 'after-projection' | 'after-rebind';
   by?: string;
 }
 
@@ -2343,6 +2370,514 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
   };
 }
 
+interface AcceptanceAmendmentPlanRow {
+  workspace_id: string;
+  harness_slug: string;
+  plan_slug: string;
+  content: string;
+  content_hash: string;
+  version: number | string;
+  title: string | null;
+  status: string | null;
+  created: string | null;
+  updated: string | null;
+  owner: string | null;
+  archived: boolean;
+  template_data: unknown;
+}
+
+interface AcceptanceAmendmentClauseRow {
+  spec_id: string;
+  source_val_id: string | null;
+  current_revision: number | string;
+  source_bar_key: string | null;
+  plan_item_id: string;
+  behavior: string;
+  behavior_class: SpecClauseRevision['behaviorClass'];
+  required_evidence: string[];
+  required_test_layers: string[];
+  mutation_required: boolean;
+  lifecycle_status: SpecClauseRevision['lifecycleStatus'];
+  supersedes_spec_id: string | null;
+  supersedes_revision: number | string | null;
+  exemption: Record<string, unknown> | null;
+}
+
+interface AcceptanceAmendmentResult {
+  rubric: Rubric;
+  decisionId: string;
+  rubricRevision: number;
+  subjectPlanRevision: number;
+  barSetHash: string;
+  changedBars: string[];
+  reboundContracts: number;
+  invalidated: {
+    evidence: number;
+    scorecards: number;
+    vetting: number;
+  };
+  idempotencyKey: string;
+  replayed?: boolean;
+  /** Committed snapshots used by the existing plan-revision audit spine. */
+  rubricBody?: string;
+  subjectBody?: string;
+  templateData?: unknown;
+}
+
+function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
+  return input.faultInjection ?? (process.env.PAPERCUSP_ACCEPTANCE_BAR_AMENDMENT_FAULT as AmendRubricInput['faultInjection']);
+}
+
+function injectAmendmentFault(input: AmendRubricInput, stage: NonNullable<AmendRubricInput['faultInjection']>): void {
+  if (amendmentFaultStage(input) === stage) {
+    throw new Error(`acceptance_bar_amendment_fault_injected:${stage}`);
+  }
+}
+
+function decisionHasAmendmentKey(body: string, key: string): boolean {
+  return parsePlan(body).decisions.some((decision) => decision.body.includes(`Amendment-Id: ${key}`));
+}
+
+function amendmentDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function resolveAcceptanceSubjectScope(
+  workspaceId: string,
+  subjectPlan: string,
+  preferredHarness: string,
+): Promise<{ workspaceId: string; harnessSlug: string }> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ harness_slug: string }[]>`
+    SELECT harness_slug
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId}
+       AND plan_slug = ${subjectPlan}
+     ORDER BY (harness_slug = ${preferredHarness}) DESC, updated_at DESC NULLS LAST
+     LIMIT 2`;
+  if (rows.length === 0) {
+    throw new Error(`invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' was not found`);
+  }
+  if (rows.length > 1 && rows[0]!.harness_slug !== rows[1]!.harness_slug) {
+    throw new Error(`invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' is ambiguous across harnesses`);
+  }
+  return { workspaceId, harnessSlug: rows[0]!.harness_slug };
+}
+
+async function amendAcceptanceBarRubric(
+  input: AmendRubricInput,
+  rubricScope: { workspaceId: string; harnessSlug: string },
+): Promise<AcceptanceAmendmentResult | null> {
+  const subjectPlanHint = (await getRubric(input.rubricId))?.subjectPlan;
+  if (!subjectPlanHint) return null;
+  const subjectScope = await resolveAcceptanceSubjectScope(
+    rubricScope.workspaceId,
+    subjectPlanHint,
+    rubricScope.harnessSlug,
+  );
+  const txResult = await withAcceptanceBarAmendmentTransaction(
+    {
+      plans: [
+        { ...rubricScope, planSlug: input.rubricId },
+        { ...subjectScope, planSlug: subjectPlanHint },
+      ],
+    },
+    async (tx) => {
+      const rubricRows = await tx<AcceptanceAmendmentPlanRow[]>`
+        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+               title, status, created, updated, owner, archived, template_data
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${rubricScope.workspaceId}
+           AND harness_slug = ${rubricScope.harnessSlug}
+           AND plan_slug = ${input.rubricId}
+         FOR UPDATE`;
+      const subjectRows = await tx<AcceptanceAmendmentPlanRow[]>`
+        SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+               title, status, created, updated, owner, archived, template_data
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${subjectScope.workspaceId}
+           AND harness_slug = ${subjectScope.harnessSlug}
+           AND plan_slug = ${subjectPlanHint}
+         FOR UPDATE`;
+      const rubricRow = rubricRows[0];
+      const subjectRow = subjectRows[0];
+      if (!rubricRow || !subjectRow) return null;
+      const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
+      if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint) return null;
+
+      const amended = applyRubricAmendment(stored, input);
+      const built = buildRubricTemplateData(amended);
+      const actorId = (input.actorId ?? input.by ?? stored.createdBy ?? '').trim();
+      const reason = (input.reason ?? `rubrics:amend ${input.rubricId}`).trim();
+      const oldRubricRevision = Number(rubricRow.version);
+      const oldSubjectRevision = Number(subjectRow.version);
+      if (input.expectedRubricRevision !== undefined && input.expectedRubricRevision !== oldRubricRevision) {
+        throw new Error(
+          `acceptance_bar_amendment_revision_conflict: rubric '${input.rubricId}' expected ${input.expectedRubricRevision}, live ${oldRubricRevision}`,
+        );
+      }
+      if (input.expectedSubjectPlanRevision !== undefined && input.expectedSubjectPlanRevision !== oldSubjectRevision) {
+        throw new Error(
+          `acceptance_bar_amendment_revision_conflict: subject plan '${subjectPlanHint}' expected ${input.expectedSubjectPlanRevision}, live ${oldSubjectRevision}`,
+        );
+      }
+
+      const nextRubricRevision = oldRubricRevision + 1;
+      const nextSubjectRevision = oldSubjectRevision + 1;
+      const guard = guardAcceptanceBarTemplateDataWrite({
+        slug: input.rubricId,
+        storedTemplateData: rubricRow.template_data,
+        nextTemplateData: built.data,
+        subjectPlan: {
+          status: subjectRow.status,
+          revision: nextSubjectRevision,
+          adoptionEpoch: undefined,
+          cohort: undefined,
+        },
+        actorId,
+        amendment: {
+          actorId,
+          reason,
+          ...(input.approvalRef ? { approvalRef: input.approvalRef.trim() } : {}),
+          ...(input.approvedBy ? { approvedBy: input.approvedBy.trim() } : {}),
+          ...(input.approvedAt ? { approvedAt: input.approvedAt } : {}),
+        },
+      });
+      const changedBars = guard.changes
+        .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
+        .map((change) => change.barKey);
+      if (changedBars.length === 0) return null;
+
+      if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
+      if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
+      if (!input.approvalRef?.trim() || !input.approvedBy?.trim()) {
+        throw new Error(
+          `invalid_args: acceptance BAR amendment requires approvalRef and approvedBy from an outside-lineage approver`,
+        );
+      }
+      if (input.approvedBy.trim() === actorId) {
+        throw new Error(`invalid_args: acceptance BAR amendment approver must differ from the amendment actor`);
+      }
+      const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
+        sql: tx as never,
+        workspaceId: subjectScope.workspaceId,
+      });
+      for (const implementer of implementers) {
+        if (
+          await areAcceptanceLineageRelated(input.approvedBy, implementer, {
+            sql: tx as never,
+            workspaceId: subjectScope.workspaceId,
+          })
+        ) {
+          throw new Error(
+            `invalid_args: acceptance BAR amendment approver '${input.approvedBy}' is in implementer lineage '${implementer}'`,
+          );
+        }
+      }
+
+      const nextBarHashes = (guard.data.criteria as Array<Record<string, unknown>>)
+        .map((criterion) => String(criterion.barHash ?? ''))
+        .filter(Boolean);
+      const idempotencyKey =
+        input.idempotencyKey?.trim() ||
+        acceptanceBarAmendmentKey({
+          rubricId: input.rubricId,
+          subjectPlan: subjectPlanHint,
+          actorId,
+          reason,
+          priorRubricRevision: oldRubricRevision,
+          nextBarHashes,
+        });
+      if (decisionHasAmendmentKey(subjectRow.content, idempotencyKey)) {
+        return {
+          rubric: stored,
+          decisionId: parsePlan(subjectRow.content).decisions.find((d) => d.body.includes(`Amendment-Id: ${idempotencyKey}`))!.id,
+          rubricRevision: oldRubricRevision,
+          subjectPlanRevision: oldSubjectRevision,
+          barSetHash: stored.barSetHash ?? String(guard.data.barSetHash ?? ''),
+          changedBars,
+          reboundContracts: 0,
+          invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey,
+          replayed: true,
+        };
+      }
+
+      const clauses = await tx<AcceptanceAmendmentClauseRow[]>`
+        SELECT c.spec_id, c.source_val_id, c.current_revision, r.source_bar_key,
+               r.plan_item_id, r.behavior, r.behavior_class, r.required_evidence,
+               r.required_test_layers, r.mutation_required, r.lifecycle_status,
+               r.supersedes_spec_id, r.supersedes_revision, r.exemption
+          FROM harness_shared.plan_spec_clauses c
+          JOIN harness_shared.plan_spec_clause_revisions r
+            ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+           AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id
+           AND r.revision = c.current_revision
+         WHERE c.workspace_id = ${subjectScope.workspaceId}
+           AND c.harness_slug = ${subjectScope.harnessSlug}
+           AND c.plan_slug = ${subjectPlanHint}
+           AND r.source_bar_key = ANY(${changedBars}::text[])
+         ORDER BY c.spec_id`;
+      const itemIds = [...new Set(clauses.map((clause) => clause.plan_item_id))];
+      const itemRows = itemIds.length
+        ? await tx<{ item_id: string; status: string }[]>`
+            SELECT item_id, status FROM harness_shared.plan_items
+             WHERE workspace_id = ${subjectScope.workspaceId}
+               AND harness_slug = ${subjectScope.harnessSlug}
+               AND plan_slug = ${subjectPlanHint}
+               AND item_id = ANY(${itemIds}::text[])`
+        : [];
+      const liveItems = new Set(itemRows.filter((row) => row.status !== 'dropped').map((row) => row.item_id));
+      for (const barKey of changedBars) {
+        const mapped = clauses.filter((clause) => clause.source_bar_key === barKey);
+        if (!mapped.some((clause) => liveItems.has(clause.plan_item_id))) {
+          throw new Error(
+            `acceptance_bar_amendment_no_live_discharge_mapping: BAR '${barKey}' has no live mapped plan item`,
+          );
+        }
+      }
+
+      const decisionId = allocateNextDecisionId(subjectRow.content);
+      const approvedAt = input.approvedAt?.trim() || new Date().toISOString();
+      const decisionBody = [
+        `Amendment-Id: ${idempotencyKey}`,
+        `Actor: ${actorId}`,
+        `Reason: ${reason}`,
+        `Approved-By: ${input.approvedBy.trim()}`,
+        `Approval-Ref: ${input.approvalRef.trim()}`,
+        `Approved-At: ${approvedAt}`,
+        `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
+        `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
+        `Changed BARs: ${changedBars.join(', ')}`,
+        'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
+      ].join('\n');
+      const subjectBody = bumpUpdatedDate(
+        appendDecisionToBody(subjectRow.content, decisionId, 'Acceptance BAR amendment', decisionBody, amendmentDate(), []),
+      );
+      injectAmendmentFault(input, 'after-decision');
+
+      const rubricBody = preserveRubricPlanBody(rubricRow.content, {
+        title: amended.title,
+        planStatus: rubricStatusToPlanStatus(stored.status),
+        owner: amended.by ?? null,
+      });
+      const rubricIdx = deriveIndexFromContent(rubricBody);
+      const rubricForcedPast = summarizeForcedPast(rubricBody);
+      const rubricTemplateJson = JSON.stringify(guard.data);
+      const rubricHash = hashPlanContent(rubricBody);
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET content = ${rubricBody}, content_hash = ${rubricHash}, version = ${nextRubricRevision},
+               title = ${rubricIdx.title}, status = ${rubricIdx.status}, created = ${rubricIdx.created},
+               updated = ${rubricIdx.updated}, owner = ${rubricIdx.owner}, initiative = ${rubricIdx.initiative},
+               template = ${rubricIdx.template}, supersedes = ${rubricIdx.supersedes},
+               superseded_by = ${rubricIdx.supersededBy}, is_legacy = ${rubricIdx.isLegacy},
+               items = ${JSON.stringify(rubricIdx.items)}::text::jsonb,
+               decisions = ${JSON.stringify(rubricIdx.decisions)}::text::jsonb,
+               now_state = ${rubricIdx.nowState}, now_next = ${rubricIdx.nowNext},
+               promote_policy = ${JSON.stringify(rubricIdx.promotePolicy)}::text::jsonb,
+               forced_past = ${rubricForcedPast ? JSON.stringify(rubricForcedPast) : null}::text::jsonb,
+               template_data = ${rubricTemplateJson}::text::jsonb, updated_at = now(), origin = 'local'
+         WHERE workspace_id = ${rubricScope.workspaceId}
+           AND harness_slug = ${rubricScope.harnessSlug}
+           AND plan_slug = ${input.rubricId}`;
+      await writePlanIndexRows(tx as never, { workspaceId: rubricScope.workspaceId, harnessSlug: rubricScope.harnessSlug, planSlug: input.rubricId }, rubricIdx);
+      injectAmendmentFault(input, 'after-rubric');
+
+      const subjectIdx = deriveIndexFromContent(subjectBody);
+      const subjectForcedPast = summarizeForcedPast(subjectBody);
+      const subjectHash = hashPlanContent(subjectBody);
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET content = ${subjectBody}, content_hash = ${subjectHash}, version = ${nextSubjectRevision},
+               title = ${subjectIdx.title}, status = ${subjectIdx.status}, created = ${subjectIdx.created},
+               updated = ${subjectIdx.updated}, owner = ${subjectIdx.owner}, initiative = ${subjectIdx.initiative},
+               template = ${subjectIdx.template}, supersedes = ${subjectIdx.supersedes},
+               superseded_by = ${subjectIdx.supersededBy}, is_legacy = ${subjectIdx.isLegacy},
+               items = ${JSON.stringify(subjectIdx.items)}::text::jsonb,
+               decisions = ${JSON.stringify(subjectIdx.decisions)}::text::jsonb,
+               now_state = ${subjectIdx.nowState}, now_next = ${subjectIdx.nowNext},
+               promote_policy = ${JSON.stringify(subjectIdx.promotePolicy)}::text::jsonb,
+               forced_past = ${subjectForcedPast ? JSON.stringify(subjectForcedPast) : null}::text::jsonb,
+               acceptance_bar_set_hash = ${String(guard.data.barSetHash ?? '')},
+               acceptance_bar_rubric_slug = ${input.rubricId},
+               acceptance_bar_rubric_revision = ${nextRubricRevision},
+               acceptance_bar_seeded_at = now(), acceptance_bar_seeded_by = ${actorId},
+               updated_at = now(), origin = 'local'
+         WHERE workspace_id = ${subjectScope.workspaceId}
+           AND harness_slug = ${subjectScope.harnessSlug}
+           AND plan_slug = ${subjectPlanHint}`;
+      await writePlanIndexRows(tx as never, { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint }, subjectIdx);
+
+      const newClauseRevisions = new Map<string, number>();
+      for (const clause of clauses) {
+        const sourceBarKey = String(clause.source_bar_key ?? '');
+        const resolvedCriterion = (guard.data.criteria as Array<Record<string, unknown>>).find(
+          (candidate) => String(candidate.barKey ?? candidate.key) === sourceBarKey,
+        );
+        if (!resolvedCriterion) continue;
+        const result = await setSpecClause(
+          {
+            planSlug: subjectPlanHint,
+            specId: clause.spec_id,
+            sourceValId: clause.source_val_id,
+            expectedRevision: Number(clause.current_revision),
+            planItemId: clause.plan_item_id,
+            behavior: String(resolvedCriterion.model ?? clause.behavior),
+            behaviorClass: clause.behavior_class,
+            requiredEvidence: clause.required_evidence,
+            requiredTestLayers: clause.required_test_layers,
+            mutationRequired: clause.mutation_required,
+            lifecycleStatus: clause.lifecycle_status,
+            supersedes: clause.supersedes_spec_id && clause.supersedes_revision
+              ? { specId: clause.supersedes_spec_id, revision: Number(clause.supersedes_revision) }
+              : null,
+            exemption: clause.exemption,
+            falsifier: { observation: String(resolvedCriterion.driftMarkers ?? '') },
+            acceptanceRef: `${input.rubricId}@${nextRubricRevision}:${sourceBarKey}`,
+            sourceBar: {
+              barKey: sourceBarKey,
+              barHash: String(resolvedCriterion.barHash),
+              barSetHash: String(guard.data.barSetHash),
+              rubricSlug: input.rubricId,
+              rubricRevision: nextRubricRevision,
+              evidencePlane: String(resolvedCriterion.evidencePlane ?? 'tree') as 'tree' | 'deployed' | 'live',
+            },
+            actorId,
+          },
+          { executor: tx as never, workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug },
+        );
+        if (result.status !== 'created' && result.status !== 'revised' && result.status !== 'unchanged') {
+          throw new Error(`acceptance_bar_amendment_projection_conflict:${clause.spec_id}:${result.status}`);
+        }
+        newClauseRevisions.set(clause.spec_id, result.revision ?? Number(clause.current_revision));
+      }
+      injectAmendmentFault(input, 'after-projection');
+
+      let reboundContracts = 0;
+      for (const clause of clauses) {
+        const revision = newClauseRevisions.get(clause.spec_id);
+        if (!revision || revision === Number(clause.current_revision)) continue;
+        const open = await tx<{ work_item_id: string }[]>`
+          SELECT e.work_item_id
+            FROM harness_shared.work_item_spec_revision_edges e
+            JOIN harness_shared.work_items w
+              ON w.workspace_id = e.workspace_id AND w.harness_slug = e.harness_slug
+             AND w.feature_id = e.work_item_id
+           WHERE e.workspace_id = ${subjectScope.workspaceId}
+             AND e.harness_slug = ${subjectScope.harnessSlug}
+             AND e.plan_slug = ${subjectPlanHint}
+             AND e.spec_id = ${clause.spec_id}
+             AND e.spec_revision = ${Number(clause.current_revision)}
+             AND w.status NOT IN ('done', 'dropped', 'resolved', 'closed', 'passed', 'deprecated')`;
+        const current = await tx<{ content_hash: string }[]>`
+          SELECT content_hash FROM harness_shared.plan_spec_clause_revisions
+           WHERE workspace_id = ${subjectScope.workspaceId} AND harness_slug = ${subjectScope.harnessSlug}
+             AND plan_slug = ${subjectPlanHint} AND spec_id = ${clause.spec_id} AND revision = ${revision}`;
+        const fingerprint = current[0]?.content_hash;
+        if (!fingerprint) continue;
+        for (const row of open) {
+          await tx`
+            INSERT INTO harness_shared.work_item_spec_revision_edges (
+              workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+              spec_revision, spec_fingerprint, created_by
+            ) VALUES (
+              ${subjectScope.workspaceId}, ${subjectScope.harnessSlug}, ${row.work_item_id}, ${subjectPlanHint},
+              ${clause.spec_id}, ${revision}, ${fingerprint}, ${actorId}
+            ) ON CONFLICT DO NOTHING`;
+          reboundContracts += 1;
+        }
+      }
+      injectAmendmentFault(input, 'after-rebind');
+
+      const evidence = await tx<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${subjectScope.workspaceId} AND harness_slug = ${subjectScope.harnessSlug}
+           AND plan_slug = ${subjectPlanHint} AND spec_id = ANY(${clauses.map((c) => c.spec_id)}::text[])
+           AND spec_revision < ${Math.max(...[...newClauseRevisions.values(), oldSubjectRevision])}`;
+      const scorecards = await tx<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM harness_shared.work_items
+         WHERE workspace_id = ${subjectScope.workspaceId}
+           AND payload -> 'observation' ->> 'rubricRef' = ${input.rubricId}
+           AND (payload -> 'observation' ->> 'rubricRevision')::int = ${oldRubricRevision}`;
+      const vetting = await tx<{ count: string }[]>`
+        SELECT count(*)::text AS count FROM harness_shared.work_items
+         WHERE workspace_id = ${subjectScope.workspaceId}
+           AND payload -> 'observation' ->> 'rubricRef' = ${META_ACCEPTANCE_RUBRIC_ID}
+           AND payload -> 'observation' -> 'subject' ->> 'ref' = ${input.rubricId}
+           AND (payload -> 'observation' ->> 'rubricRevision')::int = ${oldRubricRevision}`;
+
+      const projected = planRowToRubric({
+        plan_slug: input.rubricId,
+        workspace_id: rubricScope.workspaceId,
+        harness_slug: rubricScope.harnessSlug,
+        title: rubricIdx.title,
+        status: rubricIdx.status,
+        created: rubricIdx.created,
+        updated: rubricIdx.updated,
+        updated_at: new Date().toISOString(),
+        owner: rubricIdx.owner,
+        archived: false,
+        template_data: guard.data,
+      });
+      if (!projected) throw new Error(`acceptance_bar_amendment: amended rubric failed projection`);
+      return {
+        rubric: projected,
+        decisionId,
+        rubricRevision: nextRubricRevision,
+        subjectPlanRevision: nextSubjectRevision,
+        barSetHash: String(guard.data.barSetHash),
+        changedBars,
+        reboundContracts,
+        invalidated: {
+          evidence: Number(evidence[0]?.count ?? 0),
+          scorecards: Number(scorecards[0]?.count ?? 0),
+          vetting: Number(vetting[0]?.count ?? 0),
+        },
+        idempotencyKey,
+        rubricBody,
+        subjectBody,
+        templateData: guard.data,
+      } satisfies AcceptanceAmendmentResult;
+    },
+  );
+  if (!txResult) return null;
+  if (txResult.replayed) return txResult;
+  // Revision rows are audit history.  The data transaction above remains the
+  // atomic source of truth; these best-effort records make both plans visible
+  // through the existing plan-revisions reader.
+  const identity: AgentIdentity = {
+    ownerId: input.actorId ?? input.by ?? 'rubrics:system',
+    ownerLabel: input.actorId ?? input.by ?? 'rubrics:system',
+    source: 'static-client',
+    workspaceId: null,
+    userId: null,
+  };
+  await Promise.all([
+    txResult.rubricBody && txResult.templateData
+      ? recordPlanRevision({
+          planSlug: input.rubricId,
+          harnessSlug: rubricScope.harnessSlug,
+          workspaceId: rubricScope.workspaceId,
+          content: rubricRevisionSnapshot(txResult.rubricBody, txResult.templateData),
+          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
+          identity,
+        })
+      : Promise.resolve(null),
+    txResult.subjectBody
+      ? recordPlanRevision({
+          planSlug: subjectPlanHint,
+          harnessSlug: subjectScope.harnessSlug,
+          workspaceId: subjectScope.workspaceId,
+          content: txResult.subjectBody,
+          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
+          identity,
+        })
+      : Promise.resolve(null),
+  ]);
+  return txResult;
+}
+
 /**
  * Amend ONE criterion field and/or the rubric's methodRef WITHOUT the whole-document
  * rubrics:propose replace (rubric-system-improvements-2026-07-12 P-003: the replace
@@ -2354,6 +2889,23 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
  */
 export async function amendRubric(input: AmendRubricInput): Promise<Rubric | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
+  // A started acceptance BAR is a cross-plan contract: changing its MODEL or
+  // falsifier must update the subject plan, projection revisions, and open
+  // work-item contracts in the same transaction.  METHOD/title/criterion-class
+  // edits remain on the ordinary single-plan path.
+  const currentForRouting = await getRubric(input.rubricId);
+  if (
+    currentForRouting?.kind === 'acceptance' &&
+    currentForRouting.barContract &&
+    input.criterion &&
+    (input.criterion.field === 'model' || input.criterion.field === 'driftMarkers')
+  ) {
+    const amended = await amendAcceptanceBarRubric(input, scope);
+    // Do not fall back to the single-plan path when the locked reread no longer
+    // matches the preflight snapshot: that would silently bypass the cross-plan
+    // amendment contract after a concurrent subject/rubric change.
+    return amended?.rubric ?? null;
+  }
   const compatibilityAudit: { current?: RubricCompatibilityAudit } = {};
   const result = await withPlanLock<true | null>(
     null,

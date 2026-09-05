@@ -478,3 +478,25 @@ describe('harness SSE stream endpoints are loopback-gated (WI-1388)', () => {
     expect(def!.auth).toBe('loopback');
   });
 });
+
+/**
+ * WI-2144500 (security): harness configuration reads expose local files,
+ * environment values, and execution policy. The matching PUT routes were
+ * already loopback-gated; keep every sensitive GET on that same perimeter so
+ * a network-exposed operator cannot serve those contents to an off-box caller.
+ */
+describe('sensitive harness configuration reads are loopback-gated (WI-2144500)', () => {
+  const SENSITIVE_READS: ReadonlyArray<[string, string]> = [
+    ['GET', '/harness/:slug/file'],
+    ['GET', '/harness/:slug/mcp'],
+    ['GET', '/harness/:slug/claude-settings'],
+    ['GET', '/harness/:slug/claude-settings/effective'],
+    ['GET', '/harness/:slug/env'],
+  ];
+
+  it.each(SENSITIVE_READS)('%s %s is auth: loopback (never public)', (method, path) => {
+    const def = ALL_ROUTES.find((route) => route.method === method && route.path === path);
+    expect(def, `${method} ${path} not registered`).toBeDefined();
+    expect(def!.auth).toBe('loopback');
+  });
+});

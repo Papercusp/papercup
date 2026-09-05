@@ -28,11 +28,16 @@ vi.mock('../../auth-audit', () => ({ recordAuthEvent: vi.fn() }));
 vi.mock('../../auth-setup-token', () => ({ verifySetupToken: vi.fn() }));
 vi.mock('../../auth-rate-limit', () => ({
   // checkSoft/checkHard return a result object — set per-test in beforeEach.
+  checkSoftGlobal: vi.fn(),
+  refundSoftGlobal: vi.fn(async () => {}),
   checkSoftPerIp: vi.fn(),
   checkHardPerUser: vi.fn(),
+  checkHardPerAccount: vi.fn(),
   // refund/burn/reset are fire-and-forget — the handler `.catch()`es them,
   // so they must always return a promise.
   refundSoftPerIp: vi.fn(async () => {}),
+  burnHardPerAccount: vi.fn(async () => {}),
+  resetHardPerAccount: vi.fn(async () => {}),
   burnHardPerUser: vi.fn(async () => {}),
   resetHardPerUser: vi.fn(async () => {}),
 }));
@@ -56,7 +61,11 @@ import {
   login, logout, signup, changePassword,
   getSessionUser, getSessionUserOrDefault, listUsers, updateDisplayName,
 } from '../../auth';
-import { checkSoftPerIp, checkHardPerUser } from '../../auth-rate-limit';
+import {
+  checkSoftGlobal, refundSoftGlobal, checkSoftPerIp,
+  checkHardPerAccount, burnHardPerAccount, resetHardPerAccount,
+  checkHardPerUser, burnHardPerUser, resetHardPerUser,
+} from '../../auth-rate-limit';
 import { getFlag } from '@papercusp/flags/server';
 import { verifySetupToken } from '../../auth-setup-token';
 import { isRemoteRequest, REMOTE_OPERATOR_CAPABILITY } from '../../remote-auth-policy';
@@ -90,7 +99,9 @@ beforeEach(() => {
   vi.mocked(listUsers).mockResolvedValue([]);
   vi.mocked(updateDisplayName).mockResolvedValue(undefined);
   vi.mocked(getFlag).mockResolvedValue(false);
+  vi.mocked(checkSoftGlobal).mockResolvedValue({ ok: true, retryAfterS: undefined });
   vi.mocked(checkSoftPerIp).mockResolvedValue({ ok: true, retryAfterS: undefined });
+  vi.mocked(checkHardPerAccount).mockResolvedValue({ ok: true, retryAfterS: undefined });
   vi.mocked(checkHardPerUser).mockResolvedValue({ ok: true, retryAfterS: undefined });
   // Default USER already has_password:true, so this never gates the existing tests;
   // set explicitly true so a stray call still "passes" unless a test wants it to fail.
@@ -129,6 +140,72 @@ describe('POST /auth/login', () => {
     const res = await app.request('/auth/login', json({ username: 'alice', password: 'pw' }));
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ error: 'rate_limited', retry_after_s: 42 });
+  });
+
+  it('returns 429 when the global abuse budget trips before per-IP checks', async () => {
+    vi.mocked(checkSoftGlobal).mockResolvedValue({ ok: false, retryAfterS: 17 });
+    const res = await app.request('/auth/login', json({ username: 'alice', password: 'pw' }));
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: 'rate_limited', retry_after_s: 17 });
+    expect(checkSoftPerIp).not.toHaveBeenCalled();
+  });
+
+  it('returns 429 when the account-wide failure lock trips', async () => {
+    vi.mocked(checkHardPerAccount).mockResolvedValue({ ok: false, retryAfterS: 123 });
+    const res = await app.request('/auth/login', json({ username: 'alice', password: 'pw' }));
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ error: 'rate_limited', retry_after_s: 123 });
+    expect(checkHardPerUser).not.toHaveBeenCalled();
+  });
+
+  it('uses the transport peer for limiter, session, and audit identity, not X-Forwarded-For', async () => {
+    const route = authLogin as AnyRoute;
+    const req = new Request('http://localhost/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-forwarded-for': '198.51.100.99',
+      },
+      body: JSON.stringify({ username: 'alice', password: 'pw' }),
+    });
+    const ctx = {
+      principal: null,
+      input: undefined,
+      params: {},
+      peerAddress: '203.0.113.10',
+      log: () => {},
+      signal: new AbortController().signal,
+    };
+    const res = await route.handler(req, ctx);
+    expect(res.status).toBe(200);
+    expect(checkSoftPerIp).toHaveBeenCalledWith('203.0.113.10');
+    expect(checkHardPerAccount).toHaveBeenCalledWith('alice');
+    expect(checkHardPerUser).toHaveBeenCalledWith('203.0.113.10', 'alice');
+    expect(login).toHaveBeenCalledWith('alice', 'pw', expect.objectContaining({
+      remote_addr: '203.0.113.10',
+    }));
+    expect(refundSoftGlobal).toHaveBeenCalledTimes(1);
+    expect(resetHardPerAccount).toHaveBeenCalledWith('alice');
+    expect(resetHardPerUser).toHaveBeenCalledWith('203.0.113.10', 'alice');
+  });
+
+  it('burns the account-wide hard bucket as well as the per-peer bucket on failure', async () => {
+    vi.mocked(login).mockRejectedValue(Object.assign(new Error('bad'), { code: 'bad_password' }));
+    const route = authLogin as AnyRoute;
+    const res = await route.handler(
+      new Request('http://localhost/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'alice', password: 'wrong' }),
+      }),
+      {
+        principal: null, input: undefined, params: {}, peerAddress: '203.0.113.10',
+        log: () => {}, signal: new AbortController().signal,
+      },
+    );
+    expect(res.status).toBe(401);
+    expect(burnHardPerAccount).toHaveBeenCalledWith('alice');
+    expect(burnHardPerUser).toHaveBeenCalledWith('203.0.113.10', 'alice');
   });
 
   it('requires password + explicit workspace remotely and mints a Secure scoped session', async () => {

@@ -956,6 +956,9 @@ action is to conclude the job died and re-run it. Use `proc-guard` above, `pgrep
 or `kill -0 <pid>` (EI-19446554284039165).
 
 
+⚠⚠ **The same self-match trap exists in SQL, and the bracket fix does NOT transfer.** A `pg_stat_activity` probe filtered by `query LIKE '%pattern%'` **matches its own backend**: `query` holds the currently-executing statement, and yours contains the pattern in its own `WHERE` clause. So it reports a hit whether or not the process you are hunting exists — measured, a marker string present in no real query anywhere returned exactly one row, the probing backend itself. ⛔ Bracketing (`'%[p]attern%'`) is a **grep** character class, not a SQL one (that is SQL Server); Postgres matches `[p]attern` literally, your statement still contains it verbatim, and it **still self-matches** — so the habit above fails here while looking like it was applied. Exclude yourself explicitly with `AND pid <> pg_backend_pid()`, or use **`dev:pg_active_queries`**, which takes no pattern and already excludes itself.
+
+
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 

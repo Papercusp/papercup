@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 305
-  corpus-blocks: 264
+  corpus-parts: 307
+  corpus-blocks: 265
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -2224,6 +2224,50 @@ the expected transition rather than treated as a bare absence.
 > *"pattern that searches for process name longer than 15 characters will result
 > in zero matches"* and exits 1, rather than silently returning nothing. Match
 > the truncated comm instead (`pgrep -x qemu-system-x86`), or use `-f`.
+
+⚠⚠ **The same self-match trap exists in SQL, and the bracket fix does NOT transfer.** A `pg_stat_activity` probe filtered by `query LIKE '%pattern%'` **matches its own backend**: `query` holds the currently-executing statement, and yours contains the pattern in its own `WHERE` clause. So it reports a hit whether or not the process you are hunting exists — measured, a marker string present in no real query anywhere returned exactly one row, the probing backend itself. ⛔ Bracketing (`'%[p]attern%'`) is a **grep** character class, not a SQL one (that is SQL Server); Postgres matches `[p]attern` literally, your statement still contains it verbatim, and it **still self-matches** — so the habit above fails here while looking like it was applied. Exclude yourself explicitly with `AND pid <> pg_backend_pid()`, or use **`dev:pg_active_queries`**, which takes no pattern and already excludes itself.
+Measured 2026-09-05 against the live operator database (EI-19453654761353908; the
+trap was originally hit 2026-08-03 while identifying which process owned the
+dbos-executor-reaper timer).
+
+Three forms of the same probe, run in ONE statement so they share a backend, using
+a marker string that appears in no real query anywhere on the box:
+
+    SELECT
+      (SELECT count(*) FROM pg_stat_activity
+        WHERE query LIKE '%zzmarker_probe_alpha%')                      AS naive_filter,
+      (SELECT count(*) FROM pg_stat_activity
+        WHERE query LIKE '%[z]zmarker_probe_alpha%')                    AS bracket_fix_attempt,
+      (SELECT count(*) FROM pg_stat_activity
+        WHERE query LIKE '%zzmarker_probe_alpha%'
+          AND pid <> pg_backend_pid())                                  AS with_backend_pid_exclusion;
+
+    -> naive_filter=1  bracket_fix_attempt=1  with_backend_pid_exclusion=0
+
+The first column is the trap: a pattern with ZERO possible true matches still
+returns a row, because `pg_stat_activity.query` holds the statement currently
+executing and that statement contains the pattern. The failure is silent and
+directional — it manufactures a FALSE POSITIVE, so the natural next action is to
+go hunting for a process that does not exist.
+
+The second column is why this needed its own note rather than a pointer to the
+`pgrep` entry above. `[z]` is a character class in grep/POSIX regex, NOT in SQL
+`LIKE` — bracket classes there are a SQL Server extension. Postgres matches the
+literal four characters `[z]z`, which the probing statement also contains
+verbatim, so the bracket "fix" self-matches exactly as the naive form does while
+appearing to have applied the documented remedy. An agent carrying the habit over
+from the process-table rule gets the wrong answer AND believes it is guarded.
+
+The earlier verbatim sighting (2026-08-03 17:26Z) returned only the probing psql
+backend for `query LIKE '%GROUP BY executor_id%'`:
+
+    3829678 | 127.0.0.1 | 46212 | psql | active
+
+`dev:pg_active_queries` is safe by construction on both counts: it exposes no
+pattern argument, and its underlying SQL (`pgActiveQueries` in
+`packages/operator-core/lib/dev-data.ts`) carries
+`AND query NOT ILIKE '%pg_stat_activity%'`, which excludes its own statement.
+
 
 ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every

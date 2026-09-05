@@ -825,6 +825,9 @@ export function assembleSchedulerClaimResult(legs: {
   claimedUnder: unknown;
   freshness?: unknown;
   warning?: unknown;
+  /** EI-22344661292350991: explicit claim-time independence marker and advisory. */
+  requiresIndependenceFrom?: unknown;
+  independenceWarning?: string;
   routingHint?: unknown;
   memory?: unknown;
   checkpoint?: unknown;
@@ -911,6 +914,12 @@ export function assembleSchedulerClaimResult(legs: {
     claimedUnder: legs.claimedUnder,
     ...(legs.freshness ? { freshness: legs.freshness } : {}),
     ...(legs.warning ? { warning: legs.warning } : {}),
+    ...(legs.requiresIndependenceFrom
+      ? {
+          requiresIndependenceFrom: legs.requiresIndependenceFrom,
+          ...(legs.independenceWarning ? { independenceWarning: legs.independenceWarning } : {}),
+        }
+      : {}),
     ...(legs.routingHint ? { routingHint: legs.routingHint } : {}),
     ...(legs.memory ? { memory: legs.memory } : {}),
     ...(legs.checkpoint
@@ -1835,6 +1844,10 @@ export default defineTool({
       sourceCitation: unknown;
       sourceCitationWarning: string;
     } | null;
+    // EI-22344661292350991: explicit, report-only independence enrichment. The claim is
+    // already committed; this advisory must never reject/release it or make the self-pull
+    // path depend on a successful lineage lookup.
+    let independenceHint = null as import('../../independence-claim-port').ClaimTimeIndependenceAdvisory | null;
     // EI-22283949842250645: the measured source axis for the freshness verdict above.
     // Lives in the bounded tail because it costs one `git log` per cited path; a
     // timeout leaves the verdict at its honest "unmeasured" rather than affirming.
@@ -1945,6 +1958,7 @@ export default defineTool({
           planItemLandedHint,
           siblingPathOverlapHint,
           sourceCitationHint,
+          independenceHint,
           sourceGenerationSignal,
         ] = await Promise.all([
           import('../../plan-decisions-claim-port')
@@ -2074,6 +2088,28 @@ export default defineTool({
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
                 })
+                .catch(() => null)
+            : Promise.resolve(null),
+          // EI-22344661292350991: preserve an explicit independence marker on the
+          // successful claim response and add a warning only when the claimant is
+          // actually in the recorded contributor lineage (including descendants /
+          // predecessors). This is intentionally the last row-based advisory leg:
+          // it is fully fail-soft and never participates in claim eligibility.
+          wi?.id
+            ? import('../../independence-claim-port')
+                .then((m) =>
+                  m.getClaimTimeIndependenceAdvisory({
+                    workItem: {
+                      id: wi.id,
+                      payload: wi.payload,
+                      harness: wi.harness,
+                      sourcePlanSlug: wi.sourcePlanSlug,
+                      sourcePlanItemIds: wi.sourcePlanItemIds,
+                    },
+                    claimant: ident.ownerId,
+                    workspaceId: ident.workspaceId ?? undefined,
+                  }),
+                )
                 .catch(() => null)
             : Promise.resolve(null),
           // EI-22283949842250645: measure the freshness verdict's source axis —
@@ -2221,6 +2257,8 @@ export default defineTool({
           claimedUnder: res.claimedUnder,
           freshness,
           warning,
+          requiresIndependenceFrom: independenceHint?.requiresIndependenceFrom,
+          independenceWarning: independenceHint?.independenceWarning,
           routingHint,
           memory,
           checkpoint: checkpointHint?.checkpoint,

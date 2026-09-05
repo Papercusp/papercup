@@ -54,6 +54,8 @@ afterEach(async () => {
   if (mod) {
     await mod._clearAllForKeyPrefix('ip:').catch(() => {});
     await mod._clearAllForKeyPrefix('user:').catch(() => {});
+    await mod._clearAllForKeyPrefix('account:').catch(() => {});
+    await mod._clearAllForKeyPrefix('global:').catch(() => {});
   }
 });
 
@@ -156,6 +158,30 @@ describe('hard per-(IP, username) bucket', () => {
     }
     const r = await mod!.checkHardPerUser('127.0.0.1', user);
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('account-wide hard bucket', () => {
+  itPg('locks the same account across changing source addresses', async () => {
+    const user = `vitest_${randomBytes(3).toString('hex')}`;
+    for (let i = 0; i < mod!.RATE_LIMIT_CONSTANTS.HARD_CAPACITY; i += 1) {
+      await mod!.burnHardPerAccount(user);
+    }
+    expect((await mod!.checkHardPerAccount(user)).ok).toBe(false);
+    expect((await mod!.checkHardPerAccount(user.toUpperCase())).ok).toBe(false);
+    await mod!.resetHardPerAccount(user);
+    expect((await mod!.checkHardPerAccount(user)).ok).toBe(true);
+  });
+});
+
+describe('global soft login budget', () => {
+  itPg('limits distributed attempts and refunds a successful login slot', async () => {
+    for (let i = 0; i < mod!.RATE_LIMIT_CONSTANTS.GLOBAL_CAPACITY; i += 1) {
+      expect((await mod!.checkSoftGlobal()).ok).toBe(true);
+    }
+    expect((await mod!.checkSoftGlobal()).ok).toBe(false);
+    await mod!.refundSoftGlobal();
+    expect((await mod!.checkSoftGlobal()).ok).toBe(true);
   });
 });
 
