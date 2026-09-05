@@ -1853,6 +1853,52 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f === "scripts/reachable-advisories-baseline.json"),
   },
   {
+    // security-boundary-remediation-and-usability-2026-09-04 P-007 / WI-2144851 —
+    // the RUST/NATIVE half of the same advisory clause. The entry above covers the npm
+    // graph; it is npm-only by construction (measured: 0 occurrences of cargo/rust/crate),
+    // while papercusp-desktop/src-tauri/Cargo.lock pins 615 crates into the SHIPPED
+    // desktop app with nothing scanning them at all. The source audit
+    // (docs/audits/security-usability-2026-09-04.md:170) asked for JS *and* Rust and
+    // closed with "Rust dependency and native-binary advisory scans were not run in this
+    // audit"; the work-item text compressed that to "advisory/SBOM checks" and dropped
+    // the word naming the surface.
+    //
+    // WIRED REPO-WIDE for the same reason as the npm entry: the subject is a dependency
+    // GRAPH, not any workspace's source. It is doubly true here — papercusp-desktop is a
+    // SUBMODULE and is deliberately absent from the root npm workspaces, so ordinary
+    // workspace selection can never reach it.
+    //
+    // GATES ON VULNERABILITIES AT ANY SEVERITY, deliberately unlike the npm entry's
+    // high/critical threshold. MEASURED 2026-09-05: every RustSec advisory over this
+    // lockfile carries `severity: []` / `cvss: null`, so a high/critical filter selects
+    // ZERO rows and prints a confident "0 gating" — a gate that reports success because
+    // it measured nothing. The discriminator is `database_specific.informational`
+    // instead: the 17 unmaintained + 1 unsound notices are reported and never gate.
+    //
+    // TRIGGER SCOPE is narrow on the same logic: only a manifest/lockfile change to the
+    // SHIPPED crate can introduce or resolve an advisory here. It deliberately does NOT
+    // fire on the six other Cargo.lock files in this tree (apps/tui, the pui-* helpers,
+    // vendored tao/wry, the libs/papercusp desktop copy) — none of them ships.
+    // COST measured 2026-09-05 via this exact npm script: 3.39s, exit 0.
+    //
+    // Safe to wire NOW on the same precedent as the entry above: measured green over the
+    // whole real lockfile FIRST (21 advisory clusters -> 3 gating vulnerabilities, all 3
+    // baselined with a stated reason, 0 NEW offenders), so registering it cannot red-pin
+    // the fleet on debt that accrued while nothing was looking.
+    //
+    // A network failure is NOT a red: every OSV call retries, and an unmeasurable run
+    // throws a message leading with RUST_ADVISORY_GATE_UNDETERMINED and exits 2, so a
+    // triager can tell "re-run this" from "patch a crate" without reading the source.
+    workspace: "@papercusp/operator-core",
+    script: "lint:rust-advisories",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      (f === "papercusp-desktop/src-tauri/Cargo.lock" ||
+        f === "papercusp-desktop/src-tauri/Cargo.toml" ||
+        f === "scripts/check-rust-advisories.mjs" ||
+        f === "scripts/rust-advisories-baseline.json"),
+  },
+  {
     // design-to-code-coverage-seam-2026-09-02 P-027 / WI-2143001 — the ordinary
     // gate lane is unit-only: it can drive HTTP/MCP observers but deliberately
     // cannot open real PG, while the broad integration lane can persist but may

@@ -2124,3 +2124,61 @@ describe('affected-tests: reachable-advisory gate (WI-2144851)', () => {
     expect(pkg.scripts?.[ADVISORY_SCRIPT]).toContain('--strict');
   });
 });
+
+/**
+ * WI-2144851 / P-007 — the RUST half of the same advisory clause, wired the same way.
+ *
+ * The gate above is npm-only by construction; `scripts/check-rust-advisories.mjs` covers
+ * the 615 crates that papercusp-desktop/src-tauri/Cargo.lock pins into the SHIPPED desktop
+ * app. Workspace selection can never reach that subject: papercusp-desktop is a SUBMODULE
+ * and is deliberately absent from the root npm workspaces, so no workspace suite runs on a
+ * Cargo.lock edit.
+ *
+ * The third case is not ceremony — it is the failure this registration ACTUALLY hit during
+ * development. The npm script was added to the ROOT package.json only, so
+ * `if (!ws?.scripts?.[guard.script]) continue` skipped the entry SILENTLY: the registry
+ * entry was present and correct-looking, the negative controls still "passed" (a guard that
+ * never attaches never over-attaches), and the gate ran on no path at all. A green negative
+ * control cannot distinguish a correctly-scoped guard from an absent one; only the positive
+ * cases below can.
+ */
+describe('affected-tests: rust advisory gate (WI-2144851)', () => {
+  const RUST_SCRIPT = 'lint:rust-advisories';
+  const RUST_GUARD_PREFIX = `AFFECTED_GUARD\t@papercusp/operator-core\t${RUST_SCRIPT}\t`;
+
+  it('attaches for a change to the SHIPPED Cargo.lock', () => {
+    const out = printAffected('papercusp-desktop/src-tauri/Cargo.lock');
+    const guardLine = out
+      .split('\n')
+      .filter(Boolean)
+      .find((line) => line.startsWith(RUST_GUARD_PREFIX));
+    expect(guardLine).toBe(
+      `${RUST_GUARD_PREFIX}npm run --silent --workspace @papercusp/operator-core ${RUST_SCRIPT}`,
+    );
+  });
+
+  it('attaches for a change to its own baseline (the shrink-only file)', () => {
+    expect(printAffected('scripts/rust-advisories-baseline.json')).toContain(RUST_GUARD_PREFIX);
+  });
+
+  it('does NOT attach for an ordinary source change', () => {
+    expect(printAffected('packages/operator-core/lib/tsc-diagnostics.ts')).not.toContain(RUST_GUARD_PREFIX);
+  });
+
+  it('does NOT attach for a Cargo.lock that does not ship', () => {
+    // Six of the seven Cargo.lock files here are dev/vendored surfaces. Widening the
+    // predicate to all of them bills every vendored-crate edit a network advisory scan
+    // for a graph that never reaches a user.
+    expect(printAffected('apps/tui/Cargo.lock')).not.toContain(RUST_GUARD_PREFIX);
+  });
+
+  it('keeps the guard script declared on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[RUST_SCRIPT]).toContain('check-rust-advisories.mjs');
+    // Without --strict the guard exits 0 on a brand-new shipped Rust vulnerability and the
+    // whole registration is decoration.
+    expect(pkg.scripts?.[RUST_SCRIPT]).toContain('--strict');
+  });
+});

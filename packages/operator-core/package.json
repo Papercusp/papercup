@@ -30,6 +30,7 @@
     "lint:guard-reachability": "node ../../scripts/check-lint-guard-reachability.mjs",
     "lint:guidance-returns-schema": "node ../../scripts/check-guidance-returns-schema.mjs",
     "lint:reachable-advisories": "node ../../scripts/check-reachable-advisories.mjs --strict",
+    "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",
     "lint:resource-governor-enforcement": "node ../../scripts/check-resource-governor-enforcement.mjs",
     "lint:recovery-timers-declared": "vitest run lib/system-health/recovery-dependency-audit.test.ts",
     "lint:no-unenrolled-mjs-imports": "node ../../scripts/check-unenrolled-mjs-imports.mjs",
