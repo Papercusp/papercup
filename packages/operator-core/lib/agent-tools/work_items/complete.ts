@@ -224,7 +224,15 @@ function defaultCompletionStatus(value: unknown): unknown {
   // Zod 4 publishes defaulted fields as required in JSON Schema. Supply the same
   // runtime default at the preprocess boundary, so the public override below can
   // honestly advertise status as optional without changing parsed completions.
-  return record.status === undefined ? { ...record, status: 'done' } : value;
+  //
+  // EI-15711: STAMP the fact that we defaulted it. Injecting `'done'` here makes an
+  // omitted status byte-identical to an explicitly-passed `status:'done'` by the time
+  // the handler runs, and the close inference below then has to exclude `'done'`
+  // wholesale — so the one status word a caller is most likely to write by hand is the
+  // one that cannot close their item. The ambiguity is manufactured HERE, one function
+  // before it is felt, so it is cheapest to resolve HERE: record which branch we took
+  // and the handler can honour an explicit `'done'` while still ignoring the default.
+  return record.status === undefined ? { ...record, status: 'done', __statusDefaulted: true } : value;
 }
 
 const completionSpec = z
@@ -250,6 +258,12 @@ const completionSpec = z
       // rebuilt, so the caller can be told the record may be missing a field that
       // never arrived.
       __shapeCoercedFrom: z.literal('truncated-json').optional(),
+      // EI-15711: internal marker set by the preprocess above when it supplied the
+      // `status` default, so the close inference can tell an omitted status from an
+      // explicit `status:'done'`. Stripped before the record is stored or broadcast,
+      // exactly like __shapeCoercedFrom. `z.literal(true)` means a caller can only ever
+      // make this MORE conservative (suppressing their own inference), never less.
+      __statusDefaulted: z.literal(true).optional(),
     }),
   )
   .describe(
@@ -2254,6 +2268,11 @@ async function completeOne(
   // input was cut off because whatever was cut is simply MISSING from the record.
   const shapeCoercedFromTruncatedJson = shapeCoercedFrom === 'truncated-json';
   if (shapeCoercedFrom) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
+  // EI-15711: same discipline for the status-default marker — read it, then strip it so
+  // it never reaches the stored record, the rendering, or the broadcast.
+  const statusWasDefaulted = (it.completion as { __statusDefaulted?: true }).__statusDefaulted === true;
+  if ('__statusDefaulted' in (it.completion as object))
+    delete (it.completion as { __statusDefaulted?: true }).__statusDefaulted;
 
   // EI-18764241942332131: Postgres' jsonb text-input parser rejects a literal NUL
   // byte with the opaque "unsupported Unicode escape sequence" — a caller who quotes
@@ -2411,12 +2430,30 @@ async function completeOne(
     typeof it.completion.status === 'string' ? it.completion.status.trim().toLowerCase() : undefined;
   const inferredCloseState =
     // work-item-status-full-unify: `dropped` (the unified drop-terminal) is equally unambiguous —
-    // it can never arise from the schema default — so it also infers a close. `done` stays
-    // EXCLUDED for the reason above (it IS the schema default; inferring from it would auto-close
-    // every bare completion).
+    // it can never arise from the schema default — so it also infers a close.
+    //
+    // EI-15711: `done` now infers TOO, but ONLY when the caller actually wrote it. The
+    // reason `done` was excluded was never that it is a weaker close signal — it is the
+    // top-level `state` field's own documented terminal alias, and the single most
+    // natural word to reach for — but that the preprocess default made an explicit
+    // `status:'done'` indistinguishable from an omitted one. That marker now survives
+    // (`statusWasDefaulted`), so the two cases are separable and only the DEFAULT is
+    // ignored. D-004's landmine is untouched: a bare completion still never auto-closes.
     !it.state &&
     existing.family === 'issue' &&
-    (rawCompletionStatus === 'resolved' || rawCompletionStatus === 'closed' || rawCompletionStatus === 'dropped')
+    // EI-19362441037986499: an ALREADY-TERMINAL item has nothing to close, and a
+    // record-only completion against one must ATTACH its evidence rather than write
+    // state — a terminal→same-terminal re-assert re-fires `work-item:done:<id>`, whose
+    // emit carries no state-changed guard, waking everything parked on the item. This
+    // guard is deliberately applied to EVERY inferred word, not just 'done': the hazard
+    // is a property of the item's state, not of which verb the caller wrote, so
+    // 'resolved'/'closed'/'dropped' carried the same latent bug and simply had no test
+    // that aimed one at a settled item.
+    !TERMINAL_WORK_ITEM_STATES.has((existing.state ?? '').toLowerCase()) &&
+    (rawCompletionStatus === 'resolved' ||
+      rawCompletionStatus === 'closed' ||
+      rawCompletionStatus === 'dropped' ||
+      (rawCompletionStatus === 'done' && !statusWasDefaulted))
       ? rawCompletionStatus
       : undefined;
   const effectiveState = it.state ?? inferredCloseState;
