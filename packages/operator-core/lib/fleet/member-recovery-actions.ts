@@ -83,7 +83,19 @@ export async function strandWedgedMember(
   let rows: readonly { taskId: string }[] = [];
   let listFailed = false;
   try {
-    rows = await deps.listTasks({ workspaceId: args.workspaceId, coordOwnerId: memberOwnerId });
+    const listed = await deps.listTasks({ workspaceId: args.workspaceId, coordOwnerId: memberOwnerId });
+    // A store that RESOLVES a non-array is an enumeration failure exactly like one that throws —
+    // and it is the more dangerous shape, because it does not reach the catch below. Iterating it
+    // would raise a TypeError from inside the one helper whose contract is that it never adds a
+    // second exception to an already-failing path (this is not hypothetical: it fired from
+    // fleet:respawn-member's kill_failed path the first time the store was stubbed). Treat it as
+    // listFailed so containment is never reported, rather than as "no tasks exist".
+    if (Array.isArray(listed)) {
+      rows = listed;
+    } else {
+      listFailed = true;
+      fail('listTasks', new Error(`listTasks returned a non-array (${typeof listed})`));
+    }
   } catch (error) {
     listFailed = true;
     fail('listTasks', error);

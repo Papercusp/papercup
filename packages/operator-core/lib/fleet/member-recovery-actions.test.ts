@@ -118,6 +118,22 @@ describe('strandWedgedMember', () => {
     expect(onError).toHaveBeenCalledWith('listTasks', expect.any(Error));
   });
 
+  it('treats a listTasks that RESOLVES a non-array as enumeration failure, not as zero tasks', async () => {
+    // The dangerous cousin of the test above, and the one that actually bit: a degraded store that
+    // resolves `undefined` never reaches the catch, so the row loop raised a TypeError from inside
+    // the one helper whose whole contract is that it adds no second exception to an already-failing
+    // path. It must ALSO not be read as "no tasks exist" — that would report a clean containment
+    // verdict about a member we never enumerated.
+    const onError = vi.fn();
+    const r = await strandWedgedMember(
+      { fleetSlug: FLEET, memberOwnerId: MEMBER, decision: strandedDecision() },
+      deps({ listTasks: (async () => undefined) as never, onError }),
+    );
+    expect(r.contained).toBe(false);
+    expect(r.noTasksFound).toBe(false);
+    expect(onError).toHaveBeenCalledWith('listTasks', expect.any(Error));
+  });
+
   it('distinguishes "no task rows exist" from "containment achieved"', async () => {
     // An unmanaged session has no ledger row by construction. That is not containment.
     const r = await strandWedgedMember(
