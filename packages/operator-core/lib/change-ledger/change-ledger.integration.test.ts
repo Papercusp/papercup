@@ -19,6 +19,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 import { recordBehaviorChange, readRecentChanges, gymPromotionRecorder } from './change-ledger';
 import { decideProposal, recordProposal } from '../gym/control-plane';
+// P-002 / D-004(3): accept installs a live prompt and now requires real-anchor
+// evidence. This suite is about the LEDGER ROW an accept produces, not the gate.
+import { passingCandidateVerdict } from '../gym/__tests__/_candidate-verdict';
 
 const WS = 'ws-change-ledger';
 let db: OrgTestDb;
@@ -185,6 +188,7 @@ describe('gym committer hook (decideProposal → ledger row)', () => {
       cycle: 1,
       role: 'worker',
       proposedMd: '# improved worker prompt',
+      candidateVersion: passingCandidateVerdict('v-ledger'),
     });
     const res = await decideProposal(h.sql, {
       id: acceptedId,

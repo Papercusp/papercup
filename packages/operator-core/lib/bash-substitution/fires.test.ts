@@ -24,6 +24,7 @@ import {
   COMPLIANCE_ABANDON_MS,
   COMPLIANCE_SETTLE_MS,
   GATE_TOOL_NAME,
+  HOOK_CALL_ORIGIN,
   recordSubstitutionFires,
   resolveFireCompliance,
 } from './fires';
@@ -180,6 +181,85 @@ describe('resolveFireCompliance', () => {
     const lookup = sql.calls.find((c) => c.text.includes('FROM harness_shared.tool_invocations'))!;
     expect(lookup.text).toContain('tool_name <>');
     expect(lookup.values).toContain(GATE_TOOL_NAME);
+  });
+
+  it('EXCLUDES every hook-emitted invocation, not only the gate tool', async () => {
+    // Naming one hook tool could never have been enough. Filter on the DECLARED
+    // `call_origin` column rather than a list of tool names: the list is a second
+    // copy of what the emitting hook already declares, and it rotted exactly that
+    // way — written when locks:check_command was the only hook tool, never updated
+    // as activity:report and coord:glance joined it.
+    const sql = harness(
+      [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }],
+      [{ tool_name: 'capability:read' }],
+    );
+    await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
+
+    const lookup = sql.calls.find((c) => c.text.includes('FROM harness_shared.tool_invocations'))!;
+    expect(lookup.text).toContain('call_origin IS DISTINCT FROM');
+    expect(lookup.values).toContain(HOOK_CALL_ORIGIN);
+    // The specific exclusion still stands alongside the general one.
+    expect(lookup.values).toContain(GATE_TOOL_NAME);
+  });
+
+  it('does not let a hook-emitted row stand in for the agent\'s next call', async () => {
+    // The regression this pins, and the reason compliance read 5/71,086 (0.007%)
+    // before the predicate existed: the advisory fires at PreToolUse of a shell
+    // command, the command runs, and the PostToolUse activity-report hook calls
+    // `activity:report`. That row sits between the fire and the agent's next move
+    // BY CONSTRUCTION, so a resolver taking the literal next invocation compares
+    // against the hook and records non-compliance for an agent that DID comply.
+    const invocations = [
+      { tool_name: 'activity:report', call_origin: 'hook' },
+      { tool_name: 'capability:read', call_origin: 'agent' },
+    ];
+    const sql = fakeSql((text) => {
+      if (text.includes('FROM harness_shared.bash_tool_substitution_fires')) {
+        return [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }];
+      }
+      if (text.includes('FROM harness_shared.tool_invocations')) {
+        // Stand in for the predicate the query actually declares, so removing it
+        // from fires.ts fails this test rather than silently passing it.
+        const rows = text.includes('call_origin IS DISTINCT FROM')
+          ? invocations.filter((r) => r.call_origin !== 'hook')
+          : invocations;
+        return rows.slice(0, 1);
+      }
+      return [];
+    });
+
+    const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
+
+    expect(out.measured).toBe(1);
+    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))!.values).toContain(true);
+  });
+
+  it('keeps an unclassified row eligible as the next call', async () => {
+    // `IS DISTINCT FROM 'hook'` rather than `= 'agent'`: only 'hook' is declared
+    // by its emitter, so a NULL/'unknown' origin must stay eligible. Skipping it
+    // would advance past a real agent action and bias compliance UPWARD — the
+    // direction that flatters the intervention.
+    const invocations = [
+      { tool_name: 'capability:bash', call_origin: null },
+      { tool_name: 'capability:read', call_origin: 'agent' },
+    ];
+    const sql = fakeSql((text) => {
+      if (text.includes('FROM harness_shared.bash_tool_substitution_fires')) {
+        return [{ id: '1', session_id: 'su-a', tool_name: 'capability:read', fired_at: settled }];
+      }
+      if (text.includes('FROM harness_shared.tool_invocations')) {
+        const rows = invocations.filter((r) => r.call_origin !== 'hook');
+        return rows.slice(0, 1);
+      }
+      return [];
+    });
+
+    const out = await resolveFireCompliance({ workspaceId: 'ws', client: sql as never, now: NOW });
+
+    // The unclassified bash call is the honest next call, and it is not the named
+    // tool — so this is a real `false`, not a skipped row.
+    expect(out.measured).toBe(1);
+    expect(sql.calls.find((c) => c.text.startsWith('UPDATE'))!.values).toContain(false);
   });
 
   it('leaves a settled-but-recent fire alone when no next call exists yet', async () => {

@@ -37,6 +37,36 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 export const GATE_TOOL_NAME = 'locks:check_command';
 
 /**
+ * `call_origin` value marking an invocation a HOOK emitted rather than the agent
+ * chose. Excluded from "the next call" for the same reason as
+ * {@link GATE_TOOL_NAME} — and it is the general form of that rule.
+ *
+ * Naming ONE hook tool was not enough, and could never have been. The advisory
+ * fires at PreToolUse of a shell command; that command then runs; the PostToolUse
+ * activity-report hook then calls `activity:report`. So a hook row is interposed
+ * between the fire and any agent action BY CONSTRUCTION, and the position-1
+ * comparison lands on the hook rather than on whatever the agent did next —
+ * whether or not the agent complied. Measured 2026-09-05, before this predicate
+ * existed: of 71,086 resolved fires exactly 5 recorded `complied = true` (0.007%),
+ * and hook-origin rows were 189,576 of 301,133 invocations (63%) in one day. A
+ * metric whose true value is unreachable reads as damning evidence about agents
+ * when it is really a statement about instrument placement.
+ *
+ * Filter on the COLUMN, not on a list of tool names: `call_origin = 'hook'` is
+ * DECLARED by the emitting hook (`call_origin_source = 'declared'`), whereas
+ * 'agent'/'unknown' are derived. A hand-maintained name list is second-copy
+ * metadata that rots silently — this one was written when `locks:check_command`
+ * was the only hook tool and was never updated as `activity:report` (142,068
+ * calls/day, 100% hook-origin) and `coord:glance` (29,627) joined it.
+ *
+ * `IS DISTINCT FROM` rather than `= 'agent'` on purpose: only 'hook' is
+ * authoritative, so an unclassified row stays eligible. Skipping a NULL/'unknown'
+ * row would silently advance "the next call" past a real agent action, which
+ * biases compliance UPWARD — the direction that flatters the intervention.
+ */
+export const HOOK_CALL_ORIGIN = 'hook';
+
+/**
  * How long a fire waits before the resolver will judge it.
  *
  * The question is "what did this session do NEXT", so resolving immediately
@@ -165,9 +195,17 @@ export interface ComplianceResolution {
  * Resolve `complied` for fires that have settled.
  *
  * Compliance is defined by P-003 as "did that session's next tool call use the
- * named tool". This finds the firing session's chronologically next invocation
- * after the fire — excluding {@link GATE_TOOL_NAME}, which is the hook asking
- * about the very command that fired — and compares its tool name.
+ * named tool". This finds the firing session's chronologically next AGENT-CHOSEN
+ * invocation after the fire and compares its tool name.
+ *
+ * "Agent-chosen" is doing real work here, and both exclusions are load-bearing:
+ * {@link GATE_TOOL_NAME} is the hook asking about the very command that fired,
+ * and {@link HOOK_CALL_ORIGIN} removes every other hook-emitted row — most
+ * importantly the PostToolUse activity-report that necessarily lands between the
+ * fire and the agent's next move. Without the second filter the comparison is
+ * made against a hook's tool name rather than the agent's, so `complied` can
+ * essentially never be true and the metric reads as agent defiance when it is
+ * measuring its own instrumentation.
  *
  * Runs as a sweep rather than inline because the answer does not exist at fire
  * time. Idempotent: it only touches rows with `resolved_at IS NULL`.
@@ -217,6 +255,7 @@ export async function resolveFireCompliance(opts: {
            WHERE coord_owner_id = ${fire.session_id}
              AND invoked_at > ${fire.fired_at}
              AND tool_name <> ${GATE_TOOL_NAME}
+             AND call_origin IS DISTINCT FROM ${HOOK_CALL_ORIGIN}
            ORDER BY invoked_at
            LIMIT 1
         `) as Array<{ tool_name: string }>)

@@ -13,6 +13,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RouteContext } from '../define-route';
+import { passingCandidateVerdict } from '../../gym/__tests__/_candidate-verdict';
+
+/**
+ * P-002 / D-004(3): accept installs a live prompt, so the route now requires the
+ * proposal's verdict to show the real-anchor pool held. Tests whose subject is the
+ * ROUTING carry this; the gate's own behaviour is asserted separately below.
+ */
+const HELD_VERDICT = passingCandidateVerdict('p1');
 
 const getPrompts = vi.fn();
 const setPrompt = vi.fn();
@@ -166,8 +174,62 @@ describe('POST /gym/:slug/accept', () => {
     });
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+    /**
+     * P-002 / D-004(3) on THIS branch. The ruling names harness_prompt_overrides because
+     * that was the only install surface when it was written; commit→reproject arrived
+     * later and installs the same prompt by a different mechanism. Gating only the table
+     * the ruling happened to name would have left the route real blueprint harnesses
+     * actually take completely ungated — which is why these two live here and not only
+     * beside decideProposal.
+     */
+    it('refuses to commit a challenger with no real-anchor evidence', async () => {
+      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'ungated', candidateVersion: null }]);
+      const r = await route('POST', '/gym/:slug/accept');
+      const res = await r.handler(req('/alpha/accept', { method: 'POST', body: JSON.stringify({ id: 'p1' }) }), ctx({ slug: 'alpha' }));
+      const body = await res.json();
+
+      expect(body.ok).toBe(false);
+      expect(body.results[0].reason).toBe('real_anchor_unproven');
+      // Nothing was committed and nothing was written — the refusal is BEFORE the install.
+      expect(acceptProposalViaCommit).not.toHaveBeenCalled();
+      expect(decideProposal).not.toHaveBeenCalled();
+    });
+
+    it('commits an ungated challenger when the caller supplies an explicit override reason', async () => {
+      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'ungated', candidateVersion: null }]);
+      acceptProposalViaCommit.mockResolvedValue({ ok: true, proposalMarked: true, committed: true, commit: 'sha9', contentHash: 'h9' });
+      const r = await route('POST', '/gym/:slug/accept');
+      const res = await r.handler(
+        req('/alpha/accept', { method: 'POST', body: JSON.stringify({ id: 'p1', overrideRealAnchor: 'rolling back a bad champion' }) }),
+        ctx({ slug: 'alpha' }),
+      );
+      const body = await res.json();
+
+      expect(body.ok).toBe(true);
+      expect(acceptProposalViaCommit).toHaveBeenCalled();
+      // The reason rides out on the response, so the override is legible at the call
+      // site and not only afterwards in the git history.
+      expect(body.results[0].realAnchorOverridden).toBe('rolling back a bad champion');
+    });
+
+    it('treats a reasonless override as NO override — a bare truthy flag must not install', async () => {
+      // The escape hatch exists so the ledger can later say why the live prompt is what
+      // it is. `overrideRealAnchor: true` carries nothing to say, so it is not an override.
+      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'ungated', candidateVersion: null }]);
+      const r = await route('POST', '/gym/:slug/accept');
+      const res = await r.handler(
+        req('/alpha/accept', { method: 'POST', body: JSON.stringify({ id: 'p1', overrideRealAnchor: true }) }),
+        ctx({ slug: 'alpha' }),
+      );
+      const body = await res.json();
+
+      expect(body.ok).toBe(false);
+      expect(body.results[0].reason).toBe('real_anchor_unproven');
+      expect(acceptProposalViaCommit).not.toHaveBeenCalled();
+    });
+
     it('routes accept through acceptProposalViaCommit (NOT the legacy promote)', async () => {
-      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'better worker prompt' }]);
+      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'better worker prompt', candidateVersion: HELD_VERDICT }]);
       acceptProposalViaCommit.mockResolvedValue({ ok: true, proposalMarked: true, committed: true, commit: 'sha9', contentHash: 'h9' });
 
       const r = await route('POST', '/gym/:slug/accept');
@@ -185,7 +247,7 @@ describe('POST /gym/:slug/accept', () => {
     });
 
     it('a failed commit→reproject leaves the proposal undecided (ok:false)', async () => {
-      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'x' }]);
+      listProposals.mockResolvedValue([{ id: 'p1', role: 'worker', proposedMd: 'x', candidateVersion: HELD_VERDICT }]);
       acceptProposalViaCommit.mockResolvedValue({ ok: false, proposalMarked: false, committed: false, commit: null, contentHash: null, reason: 'git commit failed' });
       const r = await route('POST', '/gym/:slug/accept');
       const res = await r.handler(req('/alpha/accept', { method: 'POST', body: JSON.stringify({ id: 'p1' }) }), ctx({ slug: 'alpha' }));

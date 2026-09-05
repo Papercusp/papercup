@@ -35,6 +35,10 @@ import {
   summarizeGymStatus,
   GYM_PROMPT_KEYS,
 } from '../../../gym/control-plane';
+// P-002 / D-004(3): the shared promotion gate. Imported here — not just relied on
+// inside decideProposal — because the blueprint accept branch below never touches
+// decideProposal and installs the same prompt by committing it.
+import { realAnchorHeld } from '../../../gym/promotion-gate';
 import { readDurableCycleHistory, readDurableVariants, durableFrontierView } from '../../../gym/read-api';
 import { compareDurableVariants } from '../../../gym/store';
 import { rubricHash, GYM_JUDGE_RUBRIC_V1 } from '../../../gym/judge-scoring';
@@ -168,10 +172,28 @@ function readSelection(body: Record<string, unknown>): ProposalSelection {
   };
 }
 
+/**
+ * P-002 / D-004(3): a deliberate install of a challenger that has NOT been shown to
+ * hold the real-anchor pool. Requires a NON-EMPTY reason — a bare `override: true` is
+ * read as no override at all, because the point of the escape hatch is that the ledger
+ * can later say why the live prompt is what it is. An override with nothing to say is
+ * indistinguishable from the ungated accept D-004 ruled out.
+ */
+function readOverride(body: Record<string, unknown>): { reason: string } | undefined {
+  const raw = body.overrideRealAnchor;
+  const reason = typeof raw === 'string' ? raw.trim() : typeof (raw as { reason?: unknown })?.reason === 'string' ? String((raw as { reason: string }).reason).trim() : '';
+  return reason ? { reason } : undefined;
+}
+
 /** Shared decide path: promote-to-PG (legacy accept) / mark-rejected (reject), by the
     parsed selection. Takes parsed params (NOT the Request) so a caller that already
     read the body — e.g. acceptRoute's fallback — never double-reads the request body. */
-async function decideRoute(slug: string, decision: 'accepted' | 'rejected', sel: ProposalSelection): Promise<Response> {
+async function decideRoute(
+  slug: string,
+  decision: 'accepted' | 'rejected',
+  sel: ProposalSelection,
+  override?: { reason: string },
+): Promise<Response> {
   const ws = activeWorkspaceId();
   if (!sel.id && !sel.variantId) return Response.json({ error: 'id_or_variantId_required' }, { status: 400 });
 
@@ -181,7 +203,9 @@ async function decideRoute(slug: string, decision: 'accepted' | 'rejected', sel:
       : (await listProposals(tx, { workspaceId: ws, harnessSlug: slug, status: 'pending', variantId: sel.variantId! })).map((p) => p.id);
     const results = [];
     for (const pid of ids) {
-      results.push(await decideProposal(tx, { id: pid, workspaceId: ws, harnessSlug: slug, decision }));
+      // `override` is spread conditionally so an ordinary decide sends the exact same
+      // argument object it always did — the real-anchor gate is opt-OUT, never opt-in.
+      results.push(await decideProposal(tx, { id: pid, workspaceId: ws, harnessSlug: slug, decision, ...(override ? { override } : {}) }));
     }
     return results;
   });
@@ -200,7 +224,9 @@ async function decideRoute(slug: string, decision: 'accepted' | 'rejected', sel:
  */
 async function acceptRoute(req: Request, slug: string): Promise<Response> {
   const ws = activeWorkspaceId();
-  const sel = readSelection(await readJson(req));
+  const body = await readJson(req);
+  const sel = readSelection(body);
+  const override = readOverride(body);
   if (!sel.id && !sel.variantId) return Response.json({ error: 'id_or_variantId_required' }, { status: 400 });
 
   // Is the target a blueprint-harness? (git-canonical `.papercusp/blueprint.yaml` at the repo root.)
@@ -208,7 +234,8 @@ async function acceptRoute(req: Request, slug: string): Promise<Response> {
   const blueprintPath = project ? join(project.path, '.papercusp', 'blueprint.yaml') : null;
   if (!project || !blueprintPath || !existsSync(blueprintPath)) {
     // Legacy / un-migrated target: keep the original promote-to-PG accept (no re-read of req).
-    return decideRoute(slug, 'accepted', sel);
+    // decideProposal applies the real-anchor gate on that path.
+    return decideRoute(slug, 'accepted', sel, override);
   }
 
   // Resolve the pending proposals to accept (by id, or every pending of a variant).
@@ -223,6 +250,17 @@ async function acceptRoute(req: Request, slug: string): Promise<Response> {
   // one failure doesn't abort the rest; a retry is idempotent (no-op commit + re-project).
   const results: Array<Record<string, unknown>> = [];
   for (const p of proposals) {
+    // P-002 / D-004(3) — the SAME gate decideProposal applies on the legacy path. This
+    // branch post-dates the ruling and installs the identical prompt by a different
+    // mechanism (git commit + reproject rather than a harness_prompt_overrides write),
+    // so gating only the table named in D-004 would leave the route real harnesses
+    // actually take wide open. Refusing leaves the proposal PENDING, exactly as a
+    // failed commit does.
+    const hold = realAnchorHeld(p.candidateVersion);
+    if (!hold.held && !override) {
+      results.push({ ok: false, id: p.id, role: p.role, committed: false, reason: hold.reason, detail: hold.detail });
+      continue;
+    }
     try {
       const res = await routeWithWorkspace((tx) =>
         acceptProposalViaCommit(tx, {
@@ -234,7 +272,19 @@ async function acceptRoute(req: Request, slug: string): Promise<Response> {
           proposedMd: p.proposedMd,
         }),
       );
-      results.push({ ok: res.ok && res.proposalMarked, id: p.id, role: p.role, committed: res.committed, commit: res.commit, contentHash: res.contentHash, reason: res.reason });
+      results.push({
+        ok: res.ok && res.proposalMarked,
+        id: p.id,
+        role: p.role,
+        committed: res.committed,
+        commit: res.commit,
+        contentHash: res.contentHash,
+        reason: res.reason,
+        // Surfaced per-proposal so an override is legible in the accept response, not
+        // only later in the git history — the same reason decideProposal stamps it into
+        // the change-ledger line.
+        ...(override && !hold.held ? { realAnchorOverridden: override.reason } : {}),
+      });
     } catch (e) {
       results.push({ ok: false, id: p.id, role: p.role, reason: e instanceof Error ? e.message : String(e) });
     }

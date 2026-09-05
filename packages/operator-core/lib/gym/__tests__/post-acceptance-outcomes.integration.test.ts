@@ -12,6 +12,9 @@ import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../gym-db-init';
 import { decideProposal, recordProposal } from '../control-plane';
+// P-002 / D-004(3): accept now requires real-anchor evidence. These tests are about the
+// outcome WINDOW, not the gate, so they carry a passing verdict.
+import { passingCandidateVerdict } from './_candidate-verdict';
 import {
   POST_ACCEPTANCE_WINDOW_MS,
   finalizePendingChampionOutcomes,
@@ -89,6 +92,7 @@ describe('accept → baseline → window elapses → finalize → priming', () =
       workspaceId: WS, harnessSlug: HARNESS, cycle: 3, variantId: 'v-1', role: 'worker',
       originalMd: 'old', proposedMd: 'new', rationale: 'tighter checks',
       devAnchorDelta: 0.31, costDelta: -0.02, probeStatus: 'pass',
+      candidateVersion: passingCandidateVerdict('v-1'),
     });
     const res = await decideProposal(sql, { id, workspaceId: WS, harnessSlug: HARNESS, decision: 'accepted', now: T });
     expect(res.ok).toBe(true);
@@ -140,6 +144,7 @@ describe('accept → baseline → window elapses → finalize → priming', () =
   it('a judge-role acceptance settles as insufficient-data (no spawned runs by design)', async () => {
     const id = await recordProposal(sql, {
       workspaceId: WS, harnessSlug: HARNESS, cycle: 4, variantId: 'v-2', role: 'judge', proposedMd: 'rubric v2',
+      candidateVersion: passingCandidateVerdict('v-2'),
     });
     await decideProposal(sql, { id, workspaceId: WS, harnessSlug: HARNESS, decision: 'accepted', now: T });
     expect(await finalizePendingChampionOutcomes(sql, { workspaceId: WS, now: T + POST_ACCEPTANCE_WINDOW_MS + 1 })).toBe(1);

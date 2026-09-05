@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 853,
+  "count": 854,
   "tools": [
     {
       "name": "ablation:report",
@@ -3109,6 +3109,82 @@
         "when": "GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.",
         "notWhen": "To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children."
+      }
+    },
+    {
+      "name": "capability:list",
+      "http": {
+        "path": "/api/agent-tools/capability/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a directory — the `ls` / `ls -la` / `ls -t` answer as structured rows, with modification times in ISO-8601 UTC and symlinks reported with their targets. Filter with `contains`, order with `sort:\"mtime\"` for newest-first, include dot-entries with `all:true`.",
+      "capabilities": [
+        "capability:fs-read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You want to know what is in a directory, when entries were last modified, or how big they are — and especially when you will COMPARE an mtime against a papercusp timestamp, because those are UTC and `ls`/`stat` render local time.",
+        "notWhen": "To read a file's contents use capability:read. To search file CONTENT, or to walk a tree recursively, use capability:bash with grep/rg/find — this lists exactly one directory and does not recurse.",
+        "chaining": "capability:list → capability:read (open a file it named) or capability:edit."
       }
     },
     {

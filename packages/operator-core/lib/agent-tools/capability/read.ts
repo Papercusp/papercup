@@ -297,7 +297,7 @@ export default defineTool({
     let bytes: Buffer;
     try {
       const st = statSync(abs);
-      if (st.isDirectory()) return err('is_a_directory', `${abs} is a directory.`);
+      if (st.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
       if (st.size > MAX_FILE_BYTES) return err('too_large', `${abs} is ${st.size} bytes (> ${MAX_FILE_BYTES}). Read a slice with capability:bash (sed/head).`);
       bytes = readFileSync(abs);
     } catch (e: unknown) {
