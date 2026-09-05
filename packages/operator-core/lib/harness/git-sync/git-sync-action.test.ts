@@ -55,6 +55,17 @@ import {
 import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools/locks/coordination-domain';
 
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
+// These tests exercise routine orchestration, with no real hive or bare store.
+// The real PG + Git generation seam is covered by signed-context-store.integration.test.ts.
+vi.mock('../../hive-store', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getHiveBySlug: async () => ({ pubkeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }),
+}));
+vi.mock('../../sync/pot-git/signed-context-store', () => ({
+  resolveStoreProtocolContext: async ({ scope }: { scope: { hive_id: string; repo_key: string } }) => ({
+    ...scope, store_generation: 'sg2-1-' + 'a'.repeat(40),
+  }),
+}));
 const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
 const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }));
 const releaseAllResourcesForOwnerMock = vi.fn(
