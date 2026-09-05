@@ -5,6 +5,7 @@ import type { CreatorProfile, Installation, Organization, SeatPolicy } from './c
 import {
   auditExport,
   checkoutDashboard,
+  commerceCatalogDashboard,
   refundDashboard,
   sumMoney,
   supportDashboard,
@@ -152,11 +153,64 @@ describe('checkoutDashboard', () => {
     expect(line.orderState).toBe('paid');
     expect(line.productTitle).toBe('Widget');
     expect(line.pricingModel).toBe('one-time');
+    expect(line.perUse).toBeNull();
     expect(line.entitlementId).toBe('ent:ord-1');
     expect(line.entitlementState).toBe('active');
     expect(line.seats).toEqual({ granted: 2, used: 1, available: 1 });
     expect(view.grossMinor).toBe(5000);
     expect(view.netMinor).toBe(5000);
+  });
+
+  it('keeps exact per-use terms on catalog and checkout projections', () => {
+    const splitManifestHash = `sha256:${'a'.repeat(64)}`;
+    const ledger = ledgerOf([
+      ev('product.defined', {
+        productId: 'prod-use',
+        skuRef: 'sku-use',
+        creatorId: 'creator-1',
+        title: 'Metered tool',
+      }),
+      ev('offer.defined', {
+        offerId: 'offer-use',
+        productId: 'prod-use',
+        pricingModel: 'per-use',
+        price: USD(0),
+        perUse: {
+          unitPriceMicros: 25,
+          meterUnit: 'tool-call',
+          priceVersion: 'price-v1',
+          splitManifestHash,
+        },
+      }),
+      ev('order.created', {
+        orderId: 'ord-use',
+        offerId: 'offer-use',
+        buyerId: 'org-acme',
+      }),
+    ]);
+
+    expect(commerceCatalogDashboard(ledger)).toEqual([
+      expect.objectContaining({
+        offerId: 'offer-use',
+        pricingModel: 'per-use',
+        perUse: {
+          unitPriceMicros: 25,
+          meterUnit: 'tool-call',
+          priceVersion: 'price-v1',
+          splitManifestHash,
+        },
+      }),
+    ]);
+
+    const checkout = checkoutDashboard({
+      buyerId: 'org-acme',
+      ledger,
+      orgs: ORGS,
+      seatPolicies: new Map(),
+      installations: [],
+      currency: 'USD',
+    });
+    expect(checkout.lines[0].perUse?.priceVersion).toBe('price-v1');
   });
 
   it('an offer with no seat policy is single-seat', () => {
@@ -526,6 +580,8 @@ describe('auditExport', () => {
     });
 
     expect(out.schema).toBe('cupboard.audit.v1');
+    expect(out.products.map((p) => p.productId)).toEqual(['prod-1']);
+    expect(out.offers.map((o) => o.offerId)).toEqual(['offer-1']);
     expect(out.orders.map((o) => o.orderId)).toEqual(['ord-0', 'ord-1']);
     expect(out.entitlements.map((e) => e.entitlementId)).toEqual(['ent:ord-0', 'ent:ord-1']);
     expect(out.installations.map((i) => i.installationId)).toEqual(['inst-a', 'inst-z']);
