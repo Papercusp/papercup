@@ -539,12 +539,35 @@ export default defineTool({
     // (EI-21988514956470475) and `path` on locks:queue (EI-20206554322712742), and
     // argRedirects is the family's ratified remedy: it reaches the caller on the
     // FAILURE path and costs nothing against the prompt-weight budget.
+    // ⚠ D-004 (tool-contract-repair-2026-09-05). Every target below is authored
+    // `declaredKey — explanation`, or as an explicit corrective CALL. The three RENAME
+    // entries were previously written the other way round — prose first, the key inside
+    // it ("this tool spells that `installSlug` (camelCase) — RENAME…") — and that is not
+    // a style difference: `splitLocalSchemaTarget` tests only the text BEFORE the first
+    // ` — ` against the path regex, so a prose head fails it, the redirect classifies
+    // CROSS-TOOL, and it rendered "`install_slug` is not an arg of this tool — it is
+    // written by <the whole sentence>". That tells a caller who used the wrong key on
+    // the RIGHT tool that some other tool owns their data, which is the exact
+    // misattribution EI-21119949290826530 fixed for bare targets. Keep the declared key
+    // first; put the teaching after the separator, where it renders outside the
+    // backticks. Pinned by list-arg-redirect.test.ts.
     argRedirects: {
-      workspace:
-        'this tool has NO `workspace` arg and needs none — it already reads the workspace AMBIENTLY from your session scope, so the rows you get back are that workspace\'s. DROP the key. To narrow WITHIN it use `installSlug` (one install), `group` (one routine group), `name`/`q` (one routine or a substring), or `limit`. There is no cross-workspace listing: to read another workspace, run in a session scoped to it.',
-      install_slug: 'this tool spells that `installSlug` (camelCase) — RENAME the key rather than dropping it, or the filter is silently lost and you read every install. `harness` is its accepted compatibility alias.',
-      slug: 'ambiguous here — RENAME to `installSlug` for the install that owns the routine (its compatibility alias is `harness`), or to `name` for the routine itself. Dropping it widens the read to every routine in the workspace.',
-      routine: 'this tool spells that `name` (the exact routine name, e.g. "git-sync") — RENAME the key. Use `q` instead for a case-insensitive substring match over name OR install slug.',
+      // No local destination exists for a workspace VALUE (the scope is ambient), so a
+      // `key — …` string would render "pass it as `key` instead" over an id that would
+      // then be rejected again. The self-referential corrective call says the true
+      // remedy — the same tool, with the key gone.
+      workspace: {
+        tool: 'routines:list',
+        args: {},
+        note:
+          'this tool has NO `workspace` arg and needs none — it already reads the workspace AMBIENTLY from your session scope, so the rows you get back are that workspace\'s. DROP the key. To narrow WITHIN it use `installSlug` (one install), `group` (one routine group), `name`/`q` (one routine or a substring), or `limit`. There is no cross-workspace listing: to read another workspace, run in a session scoped to it',
+      },
+      install_slug:
+        'installSlug — RENAME the key rather than dropping it (this tool spells it camelCase and does not accept the snake_case form), or the filter is silently lost and you read every install. `harness` is its accepted compatibility alias.',
+      slug:
+        'installSlug — `slug` is ambiguous here: RENAME to `installSlug` for the install that owns the routine (its compatibility alias is `harness`), or to `name` for the routine itself. Dropping it widens the read to every routine in the workspace.',
+      routine:
+        'name — RENAME the key: `name` is the exact routine name, e.g. "git-sync". Use `q` instead for a case-insensitive substring match over name OR install slug.',
     },
     // P-002: response documentation lives HERE, not in `when`/`description` —
     // those are prompt-weight budgeted and this tool is already near the cap
