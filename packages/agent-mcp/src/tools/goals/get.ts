@@ -29,10 +29,12 @@ export default defineTool({
   name: 'goals:get',
   needsWorkspaceTx: true,
   capability: 'goals:read',
+  description:
+    'Get one goal from the active workspace. This is a workspace-global read, not a harness-scoped read: the transport supplies the workspace transaction, so pass only the goal id and optional detail; do not pass `harness`.',
   guidance: {
-    when: 'User names a specific goal and wants the rationale / acceptance criteria.',
-    notWhen: 'For a list of goals, use `goals:list` first.',
-    chaining: 'Follow `goals:list` to find the id.',
+    when: 'Workspace-global read: user names a specific goal and wants the rationale / acceptance criteria. The active workspace comes from the transport; do not pass `harness`.',
+    notWhen: 'For a list of goals, use `goals:list` first; do not pass `harness` to route this read.',
+    chaining: 'Follow `goals:list` to find the id, then call this with only the id and optional detail.',
   },
   args: z.object({
     id: z.string().min(1),

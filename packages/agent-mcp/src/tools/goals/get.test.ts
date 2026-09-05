@@ -457,6 +457,18 @@ describe('goals:get — registration smoke (Gap 15)', () => {
   });
 });
 
+describe('goals:get — workspace-global call-scope contract', () => {
+  it('advertises the transport-scoped workspace and tells callers to omit harness', () => {
+    const registered = lookupByMcpName('goals:get');
+    expect(registered).toBeDefined();
+    expect(registered!.description).toMatch(/workspace-global/i);
+    expect(registered!.description).toMatch(/do not pass [`"]?harness/i);
+    expect(registered!.guidance?.when).toMatch(/workspace-global/i);
+    expect(registered!.guidance?.when).toMatch(/do not pass [`"]?harness/i);
+    expect(registered!.guidance?.chaining).toMatch(/only the id and optional detail/i);
+  });
+});
+
 /**
  * EI-22084485266424071 — "who holds this goal RIGHT NOW" must be answerable
  * from the DEFAULT read.
