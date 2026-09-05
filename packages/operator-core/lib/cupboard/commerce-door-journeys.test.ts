@@ -592,6 +592,12 @@ const PAID_LISTING: DoorListingFacts = {
  */
 function chainedGateDeps(): InstallDoorGateDeps {
   const releaseRef = 'plugin:tools:1.0.0';
+  // Borrow the REAL collaborators, built once for this install's recipient.
+  // `installDoorGateDeps` takes an InstallDoorContext because the decrypt seam is
+  // addressed to a buyer (D-045 §3b) — a key wrapped for one recipient must not
+  // open under another's install — so the subject is the buyer this journey pays
+  // as, not a placeholder.
+  const production = installDoorGateDeps({ subject: ORG_ID });
   return {
     loadReleaseChain: () => ({
       releaseRef,
@@ -617,8 +623,8 @@ function chainedGateDeps(): InstallDoorGateDeps {
         expected: { listingKind: 'plugin', listingRef: 'tools', releaseVersion: '1.0.0' },
       },
     }),
-    runner: installDoorGateDeps().runner,
-    verify: installDoorGateDeps().verify,
+    runner: production.runner,
+    verify: production.verify,
   };
 }
 
