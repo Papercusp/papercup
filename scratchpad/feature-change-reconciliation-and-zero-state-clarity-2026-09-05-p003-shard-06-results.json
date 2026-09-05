@@ -1596,8 +1596,11 @@
         "frozen tool failure: release:trace | invalid_args | path expected string; unrecognized key harness; release:trace requires path or sha"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21115552289743119 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21115552289743119"
     },
@@ -1634,8 +1637,11 @@
         "frozen tool failure: work_items:get | invalid_args | includeComments | invalid_args: Unrecognized key includeComments; live schema accepts id, ids, harness, detail, threadLimit"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21211743595510530 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21211743595510530"
     },
@@ -1702,8 +1708,11 @@
         "frozen tool failure: release:trace | invalid_args | path required unless sha supplied; harness is unrecognized"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21115552289743119 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21115552289743119"
     },
@@ -2091,8 +2100,11 @@
         "frozen tool failure: release:trace | invalid_args | path | Launch/runtime guidance lists work_item as an accepted release:trace selector, but the live schema requires path or sha; release:trace {work_item:'WI-40086'} failed because path was undefined."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21247659032345997 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21247659032345997"
     },
@@ -2231,8 +2243,11 @@
         "frozen tool failure: work_items:get | invalid_args | Unrecognized keys includeComments and includeCheckpoints; live schema accepts id, ids, harness, detail, priorAttemptRefs, threadLimit."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21211743595510530 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21211743595510530"
     },
@@ -2302,8 +2317,11 @@
         "frozen tool failure: release:trace | invalid_args | Two independent SHA trace probes followed carried usage with field `commit`, but the live schema accepts only `sha` or `path`; retry requires changing the argument name."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21138078064158988 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21138078064158988"
     },
@@ -2323,8 +2341,11 @@
         "frozen tool failure: release:trace | invalid_args | harness | Caller supplied harness in release:trace args while the live schema accepts only path/sha/work_item/after_generation. Outer ptool scope already carries the harness. Retry omits the inner harness field."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21115552289743119 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21115552289743119"
     },
@@ -2359,8 +2380,11 @@
         "frozen tool failure: release:trace | invalid_args | path | Invalid input: expected string, received undefined; release:trace requires path unless sha is supplied."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21168069426591575 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21168069426591575"
     },
@@ -2379,8 +2403,11 @@
         "frozen tool failure: work_items:complete | invalid_input | terminal close requires assumptions; pass fact keys or literal none"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21225933344296984 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21225933344296984"
     },
@@ -2400,8 +2427,11 @@
         "frozen tool failure: work_items:get | invalid_args | Attempted threadLimit:0 to suppress thread payload while reading only checkpoint tail; live schema requires threadLimit >= 1."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21101796643276797 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21101796643276797"
     },
@@ -2438,8 +2468,11 @@
         "frozen tool failure: sessions:search | invalid_args | limit too big: expected number <=20"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21158589445256007 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21158589445256007"
     },
@@ -2490,8 +2523,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit | Too small: expected number to be >=1"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21101796643276797 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21101796643276797"
     },
@@ -2510,8 +2546,11 @@
         "frozen tool failure: work_items:get | invalid_args | detail: expected boolean, received string"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21178994968738424 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21178994968738424"
     },
@@ -2650,8 +2689,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit | A bounded work-item read with threadLimit: 0 was rejected; live schema requires threadLimit >= 1."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21101796643276797 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21101796643276797"
     },
@@ -2742,8 +2784,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit=20 was refused by the live schema; maximum is 10."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21106739150296290 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21106739150296290"
     },
@@ -2915,8 +2960,11 @@
         "frozen tool failure: capability:launch-agent | invalid_args | restoreVisible | restoreVisible:true requires exact resume.sessionId; agentId/latest lookup is not a safe destructive target."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21556360284747067 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21556360284747067"
     },
@@ -2935,8 +2983,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit: Too big: expected number <=10"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21106739150296290 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21106739150296290"
     },
@@ -3008,8 +3059,11 @@
         "frozen tool failure: work_items:get | invalid_args | A direct work_items:get with payloadTier:'full' and threadLimit:20 was rejected because the live server enforces threadLimit <=10; the published/deferred schema did not make this cap obvious in the caller path. Retried with threadLimit:10."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21106739150296290 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21106739150296290"
     },
@@ -3029,8 +3083,11 @@
         "frozen tool failure: sessions:search | invalid_args | Hybrid search rejected limit=50; live server enforces maximum limit 20."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21158589445256007 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21158589445256007"
     },
@@ -3097,8 +3154,11 @@
         "frozen tool failure: work_items:get | invalid_args | includeComments,includeCheckpoints | Unrecognized keys includeComments/includeCheckpoints; accepted full-history argument is detail:true."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21211743595510530 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21211743595510530"
     },
@@ -3261,8 +3321,11 @@
         "frozen tool failure: sessions:search | invalid_args | limit | Projected caller attempted limit 50; serving build enforces limit <=20 while recovering session 01a05135-7ec9-7412-a294-cb75ddf2c7d5"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21158589445256007 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21158589445256007"
     },
@@ -3281,8 +3344,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit | tools:invoke work_items:get rejected threadLimit:20; running server requires <=10"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21106739150296290 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21106739150296290"
     },
@@ -3349,8 +3415,11 @@
         "frozen tool failure: work_items:get | invalid_args | threadLimit too big: expected number <=10; caller supplied 20."
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21106739150296290 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21106739150296290"
     },
@@ -3418,8 +3487,11 @@
         "frozen tool failure: sessions:search | invalid_args | limit too big; serving build caps at 20"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21158589445256007 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21158589445256007"
     },
@@ -3560,8 +3632,11 @@
         "frozen tool failure: sessions:search | invalid_args | limit: too big — 30 over the 20 limit; use 20"
       ],
       "requiredBeforeMutation": [
-        "P-004 must re-read this row and EI-21158589445256007 in current state, compare full bodies, claims, origin and holds, and inspect references in both directions.",
-        "Preserve every distinct watchdog/admission signal key, repeat/occurrence history, review state, and unique evidence through the canonical mechanism; otherwise preserve both rows."
+        "P-004 must re-read the current full row and full body for this item and its proposed canonical before any mutation.",
+        "P-004 must inspect current code for the reported surface and verify whether the defect or capability remains implemented, fixed, or distinct.",
+        "P-004 must resolve current plan lineage for this item and its proposed canonical, including governing plan-item status and dependencies.",
+        "P-004 must resolve current completion lineage and terminal evidence for this item, its proposed canonical, and any linked implementation work.",
+        "P-004 must enumerate and inspect inbound references to and outbound references from both this item and its proposed canonical; preserve or redirect every reference, stable producer/watchdog/admission identity, occurrence history, review state, and unique evidence through the canonical mechanism, otherwise preserve both."
       ],
       "proposedCanonical": "EI-21158589445256007"
     },
