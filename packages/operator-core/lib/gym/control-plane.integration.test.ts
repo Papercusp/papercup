@@ -229,6 +229,16 @@ describe('autoDecideRunProposals — autonomous promotion (owner mandate 2026-07
                status: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? ('pass' as const) : ('fail' as const),
                detail: 'fixture',
              },
+             // P-002 / D-004(3): promotion now also requires the real-anchor pool to
+             // have held. Tracks the fixture gate so a seeded "winner" still wins and a
+             // seeded "loser" still loses — the point of THESE tests is the sweep's
+             // accept/reject bookkeeping, not the gate, which has its own coverage.
+             {
+               gate: 'real-anchor-no-regress',
+               pass: over.devAnchorDelta != null && over.devAnchorDelta > 0,
+               status: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? ('pass' as const) : ('fail' as const),
+               detail: 'fixture',
+             },
            ],
            verdict: over.devAnchorDelta != null && over.devAnchorDelta > 0 ? 'accept' : 'reject',
            recordedAt: over.createdAt,

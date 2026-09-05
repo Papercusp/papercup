@@ -23,6 +23,7 @@ import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { recordBehaviorChange } from '../change-ledger/change-ledger';
 import type { CandidateVersionVerdict, LoopProposalRecord } from './loop';
 import { recordChampionAcceptance } from './post-acceptance-outcomes';
+import { realAnchorHeld } from './promotion-gate';
 import type { GymJudgedCorpus } from './task-corpus';
 import { trackDetached } from '../detached-imports';
 
@@ -574,12 +575,24 @@ export async function autoDecideRunProposals(
     const delta = row.dev_anchor_delta == null ? null : Number(row.dev_anchor_delta);
     // P-002: positive dev-anchor movement is only a proposal signal. Promotion
     // requires the same complete, hash-pinned gate verdict produced by the loop.
-    // A legacy database has no candidate-verdict column; retain its historical
-    // manual-compatible behavior until migration 1115 lands. The live schema
-    // always takes the fail-closed branch above.
-    const wins = (hasVerdictColumn
-      ? isPromotableCandidate(candidate, row.variant_id)
-      : true) && delta != null && Number.isFinite(delta) && delta > 0;
+    //
+    // The real-anchor check is folded in HERE as well as in decideProposal, and the
+    // duplication is deliberate: decideProposal REFUSES (leaving the row pending, so a
+    // human can still run the pool and come back), but the auto sweep has no human to
+    // come back — its contract is that every row this run recorded ends decided. So the
+    // auto path must reach a REJECT verdict itself rather than bounce off the writer's
+    // refusal and silently leave the row pending until it ages out of the window.
+    //
+    // A legacy database with no candidate-verdict column can no longer prove the
+    // real-anchor holds, so it is fail-closed too (D-004(3)): un-migrated is not
+    // grounds to install a prompt on evidence nobody has.
+    const wins =
+      hasVerdictColumn &&
+      isPromotableCandidate(candidate, row.variant_id) &&
+      realAnchorHeld(candidate).held &&
+      delta != null &&
+      Number.isFinite(delta) &&
+      delta > 0;
     const res = await decideProposal(sql, {
       id: row.id,
       workspaceId: q.workspaceId,
@@ -624,7 +637,21 @@ function isPromotableCandidate(candidate: CandidateVersionVerdict | null, varian
 
 export async function decideProposal(
   sql: Sql,
-  q: { id: string; workspaceId: string; harnessSlug: string; decision: 'accepted' | 'rejected'; now?: number },
+  q: {
+    id: string;
+    workspaceId: string;
+    harnessSlug: string;
+    decision: 'accepted' | 'rejected';
+    now?: number;
+    /**
+     * P-002 / D-004(3): deliberately install a challenger that has NOT been shown to
+     * hold the real-anchor pool. The reason is not decoration — it is stamped into the
+     * behaviour-change ledger, because this is the one way a prompt reaches real agents
+     * without the evidence D-004 requires, and an unattributable one would be exactly
+     * the ungated install the ruling was about.
+     */
+    override?: { reason: string },
+  },
 ): Promise<DecideResult> {
   const now = q.now ?? Date.now();
   const run = async (tx: Sql): Promise<DecideResult> => {
@@ -637,6 +664,16 @@ export async function decideProposal(
     if (row.status !== 'pending') return { ok: false, reason: 'already_decided', proposal: row };
 
     const promoted = q.decision === 'accepted';
+    // P-002 / D-004(3) — the last check before this accept becomes a live prompt every
+    // real agent spawn reads. Placed HERE, not in the callers, because both the
+    // auto-decide loop and the human gym:accept route end up on this write and the
+    // human one carried no gate at all. Refusing leaves the row PENDING (not rejected):
+    // "not shown to hold the real-anchor" is a gap in evidence, not a verdict on the
+    // candidate, and a run of the pool can still settle it.
+    if (promoted && !q.override) {
+      const hold = realAnchorHeld(row.candidateVersion);
+      if (!hold.held) return { ok: false, reason: hold.reason!, proposal: row };
+    }
     if (promoted) {
       await tx`
         INSERT INTO harness_shared.harness_prompt_overrides (workspace_id, harness_slug, role, prompt_md, updated_at)
@@ -691,7 +728,13 @@ export async function decideProposal(
       role: result.proposal.role,
       diffRef: q.id,
       actor: 'gym:accept',
-      summary: `gym proposal accepted → ${result.proposal.role}@${q.harnessSlug}`,
+      // P-002 / D-004(3): an override installed a prompt WITHOUT the real-anchor
+      // evidence the ruling requires. That is legitimate but exceptional, so it is
+      // named in the ledger line itself rather than left to be inferred from its
+      // absence — the ledger is where "why is the live prompt this?" gets answered.
+      summary: q.override
+        ? `gym proposal accepted → ${result.proposal.role}@${q.harnessSlug} [REAL-ANCHOR GATE OVERRIDDEN: ${q.override.reason}]`
+        : `gym proposal accepted → ${result.proposal.role}@${q.harnessSlug}`,
     });
     // NOV-4 champion escalation (autonomous-loop-prod-audit-2026-07-02 P-016 /
     // WI-4636): "gym champions auto-file improvement work items into the queen
