@@ -1353,6 +1353,7 @@ import './plans/disarm-schedule';
 // PG-canonical (plans-pg-canonical-migration-2026-06-03 D-003).
 import './plans/revisions-list';
 import './plans/revisions-backfill';
+import './plans/acceptance-bar-migration';
 import './plans/backfill-dependency-edges';
 import './plans/revision-transcript';
 import './plans/revision-summary';
