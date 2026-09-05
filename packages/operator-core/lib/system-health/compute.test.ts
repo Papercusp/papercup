@@ -228,6 +228,15 @@ describe('readDiskPressure — process temp filesystem coverage (EI-210485648732
 describe('resolveSystemHealth — reader cold-cache guard (EI-203357)', () => {
   beforeEach(() => {
     _resetSystemHealthCache();
+    // The two assertions below are CALL-COUNT assertions, and nothing in this
+    // file or the vitest config clears mocks between tests. Without an explicit
+    // clear they count every call since module load — including any made at
+    // import time elsewhere in the module graph — so an unrelated new caller
+    // turns "the guard consults host role once" into a spurious 2. Clear (not
+    // reset: the return values below are the mock's whole behaviour) so the
+    // counts measure THIS test only, which is what they were written to assert.
+    backgroundWorkersEnabledMock.mockClear();
+    readSharedSnapshotMock.mockClear();
     backgroundWorkersEnabledMock.mockReturnValue(false);
     getFlagMock.mockResolvedValue(true);
     readSharedSnapshotMock.mockResolvedValue(null);
