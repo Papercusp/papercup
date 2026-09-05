@@ -1937,6 +1937,36 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f === "scripts/check-lockfile-census.mjs"),
   },
   {
+    // restore-papercusp-main-green-2026-08-20 / WI-212675 — the tight-wall-clock-budget
+    // guard (EI-20290625014691548). A test asserting `elapsed < 80ms` is green for its
+    // author and red under the shared gate's load, so the defect class it catches is
+    // exactly the one that lands on a stranger's candidate hours later; the guard
+    // existed, was unit-tested, and ran over NOTHING until this entry (surfaced by
+    // lint:guard-reachability as an unwired gate red).
+    //
+    // WIRED REPO-WIDE rather than left to workspace selection because its subject is
+    // the SET of *.test.ts files under packages/, libs/ and apps/ (SCAN_ROOTS in the
+    // script) — a tight budget lands with a test edit in whichever workspace, and that
+    // workspace's own suite passes it by construction (the failure needs load).
+    //
+    // TRIGGER SCOPE is the guard's own scan set: any *.test.ts under its three roots,
+    // plus the guard itself (its BASELINE lives inline, so a baseline edit IS a guard
+    // edit). It does NOT fire on non-test source edits.
+    //
+    // COST measured 2026-09-05 via this exact script over the whole real tree: 0.64s,
+    // exit 0 (floor 500ms, 8 files baselined, 0 offenders) — so registering it cannot
+    // red-pin the fleet on debt that accrued while nothing ran it.
+    workspace: "@papercusp/operator-core",
+    script: "lint:test-timing-budgets",
+    appliesTo: (f) =>
+      f === "scripts/check-test-timing-budgets.mjs" ||
+      (!f.includes("node_modules/") &&
+        f.endsWith(".test.ts") &&
+        (f.startsWith("packages/") ||
+          f.startsWith("libs/") ||
+          f.startsWith("apps/"))),
+  },
+  {
     // design-to-code-coverage-seam-2026-09-02 P-027 / WI-2143001 — the ordinary
     // gate lane is unit-only: it can drive HTTP/MCP observers but deliberately
     // cannot open real PG, while the broad integration lane can persist but may

@@ -35,6 +35,7 @@
     "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",
     "lint:no-new-result-door-optout": "node ../../scripts/check-result-door-optouts.mjs",
     "lint:lockfile-census": "node ../../scripts/check-lockfile-census.mjs --strict",
+    "lint:test-timing-budgets": "node ../../scripts/check-test-timing-budgets.mjs",
     "lint:resource-governor-enforcement": "node ../../scripts/check-resource-governor-enforcement.mjs",
     "lint:recovery-timers-declared": "vitest run lib/system-health/recovery-dependency-audit.test.ts",
     "lint:no-unenrolled-mjs-imports": "node ../../scripts/check-unenrolled-mjs-imports.mjs",
