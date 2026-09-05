@@ -13,7 +13,8 @@
  *   2. this module's own ROOT resolving to `scripts/` instead of the repo root,
  *      which silently reduced the default enumeration to ~33 files.
  */
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -233,6 +234,69 @@ describe('tracked-files helper (WI-6730)', () => {
     // Non-vacuity: with NO files supplied, every checked-out submodule must land in
     // `present` — an always-empty `present` would silence the alarm this exists to raise.
     expect(cov.unscannedPresent.length).toBeGreaterThan(30);
+  });
+
+  it('returns REAL paths for filenames git would C-quote — not the quoted literal (WI-2145427)', () => {
+    // THE REGRESSION, measured: `git ls-files` C-QUOTES any path containing a quote,
+    // backslash, control char, or non-ASCII byte. A newline-splitting caller receives
+    // `"\"$LOG\""` — an 11-character literal — where the real filename is `"$LOG"`.
+    // lstat cannot resolve it, so a real, readable, TRACKED file is indistinguishable
+    // from a missing one.
+    //
+    // Why that is severe rather than cosmetic: the passing-task verdict cache binds a
+    // repo-wide guard task to EVERY tracked file, and a single unreadable entry fails
+    // the whole closure with `provenance-incomplete` — which short-circuits BEFORE any
+    // identity component is compared. On 2026-09-05, one such junk file (accidental
+    // captured stderr from an unexpanded `> "$LOG"` redirect, swept in by git-sync)
+    // drove 82% of all cache decisions to that reason and the hit rate to ZERO across
+    // 2,229 run logs, while the cache itself was entirely healthy. Deleting the file
+    // fixed the instance; `-z` is what makes the CLASS impossible.
+    //
+    // This test is deliberately not "does the repo contain a quoted path" — that would
+    // pass vacuously the moment the tree is clean, which is exactly the state the repo
+    // is in now. It CONSTRUCTS the adversarial filename, so it keeps failing on a revert.
+    const root = mkdtempSync(join(tmpdir(), 'tracked-files-quoted-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+      git('init', '-q');
+      git('config', 'user.email', 'test@example.invalid');
+      git('config', 'user.name', 'test');
+      // Every character class git quotes: an embedded double quote, a backslash, and a
+      // non-ASCII byte. Any ONE of them reproduces the bug on its own.
+      const hostile = ['"$LOG"', 'back\\slash.txt', 'café.txt'];
+      for (const name of hostile) writeFileSync(join(root, name), 'x\n');
+      git('add', '-A');
+      git('commit', '-qm', 'hostile filenames');
+
+      // Non-vacuity: prove git really would quote these, or the assertion below is empty.
+      const quoted = git('ls-files').split('\n').filter(Boolean);
+      expect(quoted.some((p) => p.startsWith('"'))).toBe(true);
+
+      const scan = listTrackedFiles(root) as { files: string[] };
+      for (const name of hostile) {
+        expect(scan.files).toContain(name);
+        // The property that actually matters downstream: every enumerated path resolves.
+        expect(() => lstatSync(join(root, name))).not.toThrow();
+      }
+      // NOTE: there is deliberately no "path must not start/end with a quote" check.
+      // That shape test looks like it detects git's quoting and does not: the REAL
+      // filename `"$LOG"` also starts and ends with a quote character, so the assertion
+      // rejects a correctly-decoded path. (It did, on first run.) No purely lexical test
+      // separates a quoted wrapper from a filename containing those bytes — a backslash
+      // is likewise legitimate, as `back\slash.txt` above shows. RESOLVABILITY is the
+      // only sound discriminator, and it is also the exact property callers depend on.
+      const unreadable = scan.files.filter((p) => {
+        try {
+          lstatSync(join(root, p));
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      expect(unreadable).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

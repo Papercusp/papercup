@@ -1,4 +1,0 @@
-VERIFY_TAURI_ASSERTION_INVALID bash -c: invalid shell syntax
-bash: -c: line 21: unexpected EOF while looking for matching `"'
-VERIFY_TAURI_ASSERTION_INVALID bash -c: invalid shell syntax
-bash: -c: line 21: unexpected EOF while looking for matching `"'

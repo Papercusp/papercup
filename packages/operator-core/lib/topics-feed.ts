@@ -15,12 +15,46 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { PgTaggableStore, type ObjectRef } from '@papercusp/coordination/capabilities';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { coordScopeWorkspace } from './agent-tools/coordination/log';
 
 export const TAGGABLE_KINDS = ['issue', 'conversation', 'feature', 'plan'] as const;
 export type TaggableKind = (typeof TAGGABLE_KINDS)[number];
 
-const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: DEFAULT_COORD_WORKSPACE };
+/**
+ * ⚠ THE WORKSPACE SEAM MUST BE DYNAMIC — a static `workspaceId` here reads a
+ * different tenant than the one the tag WRITERS use, and fails silently.
+ *
+ * This module used to pass `workspaceId: DEFAULT_COORD_WORKSPACE` (= the literal
+ * `'default'`). Every producer of these edges had already moved to the live coord
+ * scope — `work-items.ts` (`getWorkspaceId: () => activeWorkspaceId()`) and
+ * `issues-engineer.ts` (`getWorkspaceId: () => coordScopeWorkspace()`, whose own
+ * comment records the `'default'` residue as legacy: EI-2760 / WI-4308) — but this
+ * READER was left behind by that cutover, so it resolved `'default'` forever.
+ *
+ * Measured on the live box 2026-09-05 (`coord_links` where rel='tagged',
+ * dst_kind='topic'), that split the table almost perfectly in half by correctness:
+ *
+ *   workspace_id='papercusp-workspace'   159,351 edges   newest: minutes old
+ *   workspace_id='default'                 1,487 edges   newest: 2026-08-22
+ *
+ * So `topicFeed()` — and therefore `topics:feed { topic }`, `topics:feed
+ * { coupled: true }` via `coupledTopicSourcesFor().feedForTopic`, and the
+ * `topics:tag` read/write helpers below — were addressing 0.92% of the data and
+ * nothing written in the last two weeks. The failure mode is an EMPTY FEED, which
+ * is indistinguishable from "this topic has nothing tagged", which is why it went
+ * unnoticed long enough for the surface to look dead (EI-20212219297008492).
+ *
+ * `coordScopeWorkspace()` is the same flag-aware seam `issues-engineer.ts` uses,
+ * so reader and writer now resolve the same tenant by construction. Note that
+ * `coupled-topic-sources.ts` already scoped its OWN query correctly
+ * (`fetchItemTopics` fences on `coordWorkspaceId()`) while delegating
+ * `feedForTopic` here — the two halves of one read disagreed.
+ */
+const coordOpts = {
+  getSql: () => getOrgPg().sql,
+  ensureSchema: async () => {},
+  getWorkspaceId: () => coordScopeWorkspace(),
+};
 const tags = new PgTaggableStore(coordOpts);
 
 const nowIso = (): string => new Date().toISOString();

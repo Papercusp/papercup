@@ -66,6 +66,45 @@ function gitLines(args, cwd) {
   }
 }
 
+/**
+ * `gitLines`, but NUL-delimited — the only form that returns REAL paths.
+ *
+ * WI-2145427. Without `-z`, `git ls-files` C-QUOTES any path containing a quote,
+ * backslash, control char, or non-ASCII byte: a file literally named `"$LOG"` is
+ * emitted as the 11-character string `"\"$LOG\""`. A newline-splitting caller then
+ * hands that literal to `lstat`, which cannot resolve it — so a real, readable,
+ * tracked file becomes a PHANTOM UNREADABLE PATH.
+ *
+ * That is not a cosmetic difference. The passing-task verdict cache binds a
+ * repo-wide guard task to EVERY tracked file, and one unreadable entry fails the
+ * whole closure with `provenance-incomplete`, which short-circuits BEFORE any
+ * identity component is compared. Measured 2026-09-05 over 2,229 run logs: one
+ * such file drove 82% of all cache decisions (45/55) to that reason and the hit
+ * rate to zero, while the cache itself was perfectly healthy. The failure is
+ * silent and total, and it looks exactly like a cache that is merely cold.
+ *
+ * `-z` also removes the ambiguity a newline IN a filename would otherwise create,
+ * so the fix is strictly a widening of what can be enumerated correctly.
+ * `listFilesIncludingUntracked` below already enumerates this way; this exists so
+ * `listTrackedFiles` cannot drift back to the quoting form.
+ */
+function gitLinesNul(args, cwd) {
+  try {
+    return execSync(`git ${args}`, {
+      cwd,
+      encoding: 'utf8',
+      // Same quiet-probe contract as `gitLines`: an archive/checkpoint snapshot
+      // with no .git is an expected shape, not a diagnostic worth surfacing.
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 256 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /** Maximum number of filesystem entries the non-git fallback will inspect. */
 const FALLBACK_MAX_ENTRIES = 100_000;
 
@@ -176,7 +215,10 @@ export function listTrackedFiles(cwd = ROOT) {
   // needed (git >= 2.11; this repo is on 2.43). It exits 0 and simply omits an
   // uninitialized submodule, which is why coverage is computed separately below
   // rather than inferred from the exit code.
-  const files = gitLines('ls-files --recurse-submodules', cwd);
+  // `-z` is load-bearing, not a style choice: without it git C-quotes any path
+  // needing it and every one of the 37 guards on this helper receives an
+  // unresolvable literal instead of the real filename. See `gitLinesNul`.
+  const files = gitLinesNul('ls-files -z --recurse-submodules', cwd);
   return { files, ...coverageOf(files, cwd) };
 }
 
