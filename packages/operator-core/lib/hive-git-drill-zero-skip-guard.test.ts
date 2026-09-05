@@ -899,10 +899,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       physicalScenario.indexOf('destructive physical run requires HIVE_GIT_PHYSICAL_EXECUTE'),
     ).toBeLessThan(physicalScenario.indexOf('HIVE_GIT_PHYSICAL_VM_SOURCE is unset'));
 
-    // The refusal must name a mode that exists, or it reproduces the very
-    // misdirection it was added to remove.
-    expect(physicalScenario).toContain('--observe-phase-a');
-    expect(physicalProbe).toContain("--observe-phase-a");
+    // The refusal must name a mode that actually exists, or it reproduces the
+    // very misdirection it was added to remove.
+    expect(physicalScenario).toContain('--source-preflight');
+    expect(physicalProbe).toContain("if [ \"${1:-}\" = '--source-preflight' ]");
   });
 
   it('refuses a resumed physical scenario with no staged VM source root', () => {
@@ -912,8 +912,17 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     try {
       const towerIdentity = join(fixtureRoot, 'tower-identity.json');
       const vmIdentity = join(fixtureRoot, 'vm-identity.json');
-      writeFileSync(towerIdentity, '{}');
-      writeFileSync(vmIdentity, '{}');
+      // Well-formed, DISTINCT host identities: identity validation runs before
+      // the VM_SOURCE gate, so a placeholder would refuse there instead and the
+      // test would never exercise the gate it exists to pin.
+      const identity = (hostId: string, byte: number) => ({
+        schemaVersion: 'hive-git-physical-host-identity/v1',
+        hostId,
+        deviceKey: Buffer.alloc(32, byte).toString('base64'),
+        machineFingerprint: byte.toString(16).repeat(64),
+      });
+      writeFileSync(towerIdentity, JSON.stringify(identity('tower', 1)));
+      writeFileSync(vmIdentity, JSON.stringify(identity('vm', 2)));
 
       const result = spawnSync(
         physicalScenarioPath,
