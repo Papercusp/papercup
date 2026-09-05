@@ -1162,8 +1162,8 @@ export async function emitScorecard(
           card.gradingAudit?.state === 'pending' &&
           card.subject?.ref === args.subject?.ref &&
           (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
-          card.createdBy != null &&
-          card.createdBy !== input.createdBy,
+          card.supersededBy == null &&
+          card.issueId !== args.supersedes,
       );
       if (pendingSubject) {
         return {
