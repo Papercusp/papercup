@@ -286,6 +286,122 @@ export function evaluateGoalFenceGuard(input: GoalFenceGuardInput): CollapseGuar
   };
 }
 
+/**
+ * A `not:` predicate the STORED lane guaranteed, which the candidate revision no longer
+ * carries. `describe` is for the caller-facing warning; `node` is the operand of the
+ * dropped `not` (i.e. what it was excluding), kept so a caller can re-apply it verbatim.
+ */
+export interface DroppedExclusion {
+  describe: string;
+  node: FilterNode;
+}
+
+/**
+ * Every exclusion the filter GUARANTEES — a `not:` reachable from the root through `all`
+ * chains only. A `not:` inside an `any` arm is deliberately NOT collected: the sibling arm
+ * can admit the very rows it excludes, so dropping it is not provably a widening and
+ * reporting it would cry wolf on ordinary lane re-authoring.
+ *
+ * Mirrors {@link hasGuaranteedPositiveGoalFence}'s conjunctive-position rule, one polarity over.
+ */
+export function collectGuaranteedExclusions(filter: FilterNode | undefined): FilterNode[] {
+  if (!filter) return [];
+  if ('not' in filter) return [filter.not];
+  if ('all' in filter) return filter.all.flatMap((child) => collectGuaranteedExclusions(child));
+  // A leaf excludes nothing, and an `any` guarantees nothing (see doc above).
+  return [];
+}
+
+/** Compact, bounded human rendering of a filter node for a warning string. */
+export function describeFilterNode(node: FilterNode, depth = 0): string {
+  if (depth > 3) return '…';
+  if ('not' in node) return `not:{ ${describeFilterNode(node.not, depth + 1)} }`;
+  if ('all' in node) return `all:[ ${node.all.map((c) => describeFilterNode(c, depth + 1)).join(', ')} ]`;
+  if ('any' in node) return `any:[ ${node.any.map((c) => describeFilterNode(c, depth + 1)).join(', ')} ]`;
+  const value = Array.isArray(node.value) ? `[${node.value.join(', ')}]` : String(node.value);
+  return `${node.field} ${node.op} ${JSON.stringify(value).slice(0, 80)}`;
+}
+
+export interface WideningDisclosureInput {
+  matched: number;
+  previousMatched: number | null;
+  previousSource: 'authored' | 'default';
+  filter?: FilterNode;
+  previousFilter?: FilterNode;
+  /** How to address this exact lane on the READ side, for the undo pointer. */
+  target?: { kind: 'cup' | 'fleet'; id: string };
+}
+
+export interface WideningDisclosure {
+  /** Measured pool widening vs the incumbent (null previousMatched ⇒ not measurable ⇒ false). */
+  widened: boolean;
+  droppedExclusions: DroppedExclusion[];
+  warning?: string;
+}
+
+/**
+ * WI-38283 — the direction {@link evaluateCollapseGuard} does not cover.
+ *
+ * `confirmCollapse` fires only on pool COLLAPSE. The 2026-07-26 incident went the opposite
+ * way: a 31 → 1185 WIDENING that deleted a `not`-clause keeping one fleet off another's
+ * lane. Nothing reported it, so the lane was destroyed silently and the writer never learned
+ * the retained prior revision existed.
+ *
+ * This is deliberately a DISCLOSURE, not a refusal, and deliberately NOT a second confirm
+ * flag. The evidence says another confirmation would not have helped: EI-18655873409999215
+ * records `confirmCollapse` being passed TRUE on the very write that caused the incident,
+ * and EI-18653814284166347 recorded the collapse guard over-refusing SAFE edits — which is
+ * what trains callers to pass an override reflexively. A guard routinely overridden is a
+ * guard already gone. What actually recovers the lane is the retained revision
+ * (EI-18677010014746233 gap 2 / migration 810), so the job here is to REPORT the drop and
+ * name the undo — retention the writer does not know about is only half a fix.
+ */
+export function evaluateWideningDisclosure(input: WideningDisclosureInput): WideningDisclosure {
+  const { matched, previousMatched, previousSource, filter, previousFilter, target } = input;
+  const none: WideningDisclosure = { widened: false, droppedExclusions: [] };
+  // Only an AUTHORED lane can be destroyed — first authoring from the default lane has no
+  // prior exclusions to drop and no prior revision worth pointing at.
+  if (previousSource !== 'authored' || !previousFilter) return none;
+
+  const widened = previousMatched !== null && matched > previousMatched;
+  const kept = collectGuaranteedExclusions(filter);
+  const droppedExclusions = collectGuaranteedExclusions(previousFilter)
+    .filter((prev) => !kept.some((k) => filterNodesEqual(k, prev)))
+    .map((node) => ({ node, describe: `not:{ ${describeFilterNode(node)} }` }));
+
+  if (droppedExclusions.length === 0) return { widened, droppedExclusions };
+
+  const list = droppedExclusions.map((d) => d.describe).join(', ');
+  const counts =
+    previousMatched !== null
+      ? `the lane went from ${previousMatched} to ${matched} matched row(s)`
+      : `the lane now matches ${matched} row(s) (the incumbent count was not measurable)`;
+  // The count is the WEAKER half of this signal: an exclusion whose rows are not in the pool
+  // right now drops with no visible movement, and the fence is gone either way.
+  const effect = widened
+    ? `${counts} — the rows those predicates fenced off are claimable by this lane now.`
+    : `${counts}, so nothing moved yet — but the fence is gone, and rows matching it will be ` +
+      `admitted as soon as they exist. A dropped exclusion with no count delta is the QUIETER shape, not the safer one.`;
+
+  // The undo pointer. NOTE the scope-arg asymmetry (EI-20185841251188914): the READ takes
+  // `workspace` and no `harness`, the write takes `harness` and no `workspace` — so this
+  // names only the lane selector and lets the read resolve workspace from identity, rather
+  // than echoing back a `harness` key that get_claim_spec would reject.
+  const selector = target
+    ? `{ ${target.kind === 'fleet' ? 'fleet' : 'cupId'}: ${JSON.stringify(target.id)}, history: 1 }`
+    : '{ <cupId|fleet>, history: 1 }';
+
+  return {
+    widened,
+    droppedExclusions,
+    warning:
+      `this revision DROPS ${droppedExclusions.length} exclusion predicate(s) the stored lane guaranteed: ` +
+      `${list}. ${effect} If that was not intended, the superseded spec is RETAINED — read its exact bytes back ` +
+      `with scheduler:get_claim_spec ${selector} and re-apply them (this is a report, not a refusal: the write ` +
+      `has already been stored).`,
+  };
+}
+
 /** Revision-collapse threshold: refuse when a previously ≥MIN_PREVIOUS-row lane drops below max(ABS_FLOOR, RATIO × previous). */
 const MIN_PREVIOUS = 20;
 const ABS_FLOOR = 5;

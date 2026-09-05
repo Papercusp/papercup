@@ -6,8 +6,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  collectGuaranteedExclusions,
   evaluateCollapseGuard,
   evaluateGoalFenceGuard,
+  evaluateWideningDisclosure,
   filterNodesEqual,
   hasGuaranteedPositiveGoalFence,
   isProvableSuperset,
@@ -291,5 +293,119 @@ describe('isProvableSuperset / filterNodesEqual', () => {
 
   it('isProvableSuperset: recurses into a nested any', () => {
     expect(isProvableSuperset({ any: [{ any: [leaf] }, other] }, leaf)).toBe(true);
+  });
+});
+
+describe('evaluateWideningDisclosure — WI-38283 (destructive widening drops an exclusion)', () => {
+  const kindLeaf: FilterNode = { field: 'kind', op: 'in', value: ['bug', 'change'] };
+  const p2pFence: FilterNode = { not: { field: 'title', op: 'word', value: 'p2p' } };
+  const fenced: FilterNode = { all: [kindLeaf, p2pFence] };
+
+  it('REPRO 2026-07-26: a 31 → 1185 widening that deleted the not:{title p2p} fence is reported', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 1185,
+      previousMatched: 31,
+      previousSource: 'authored',
+      filter: kindLeaf,
+      previousFilter: fenced,
+      target: { kind: 'fleet', id: 'nonp2p-drain' },
+    });
+    expect(d.widened).toBe(true);
+    expect(d.droppedExclusions).toHaveLength(1);
+    expect(d.warning).toContain('title');
+    expect(d.warning).toContain('31 to 1185');
+    // The undo half — retention nobody is told about is only half a fix.
+    expect(d.warning).toContain('scheduler:get_claim_spec');
+    expect(d.warning).toContain('history: 1');
+  });
+
+  it('names the FLEET SLUG in the undo pointer, never the fleet sentinel bee key', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 9,
+      previousMatched: 1,
+      previousSource: 'authored',
+      filter: kindLeaf,
+      previousFilter: fenced,
+      target: { kind: 'fleet', id: 'nonp2p-drain' },
+    });
+    expect(d.warning).toContain('fleet: "nonp2p-drain"');
+    expect(d.warning).not.toContain('cupId');
+  });
+
+  it('uses cupId for a per-cup lane, and never echoes a `harness` key (the read takes workspace)', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 9,
+      previousMatched: 1,
+      previousSource: 'authored',
+      filter: kindLeaf,
+      previousFilter: fenced,
+      target: { kind: 'cup', id: 'su-abc' },
+    });
+    expect(d.warning).toContain('cupId: "su-abc"');
+    expect(d.warning).not.toContain('harness');
+  });
+
+  it('stays SILENT when the exclusion is retained (no cry-wolf on an ordinary widening)', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 900,
+      previousMatched: 31,
+      previousSource: 'authored',
+      filter: { all: [{ field: 'kind', op: 'in', value: ['bug', 'change', 'task'] }, p2pFence] },
+      previousFilter: fenced,
+    });
+    expect(d.widened).toBe(true);
+    expect(d.droppedExclusions).toEqual([]);
+    expect(d.warning).toBeUndefined();
+  });
+
+  it('does NOT fire on first authoring from the DEFAULT lane (no incumbent to destroy)', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 1185,
+      previousMatched: null,
+      previousSource: 'default',
+      filter: kindLeaf,
+      previousFilter: undefined,
+    });
+    expect(d.droppedExclusions).toEqual([]);
+    expect(d.warning).toBeUndefined();
+  });
+
+  it('THE QUIETER SHAPE: a dropped fence with NO count movement still discloses', () => {
+    const d = evaluateWideningDisclosure({
+      matched: 31,
+      previousMatched: 31,
+      previousSource: 'authored',
+      filter: kindLeaf,
+      previousFilter: fenced,
+    });
+    expect(d.widened).toBe(false);
+    expect(d.droppedExclusions).toHaveLength(1);
+    expect(d.warning).toContain('nothing moved yet');
+  });
+});
+
+describe('collectGuaranteedExclusions — conjunctive position only', () => {
+  const excl: FilterNode = { not: { field: 'title', op: 'word', value: 'p2p' } };
+
+  it('collects a root not:', () => {
+    expect(collectGuaranteedExclusions(excl)).toHaveLength(1);
+  });
+
+  it('collects a not: nested through all chains', () => {
+    expect(
+      collectGuaranteedExclusions({ all: [{ field: 'kind', op: '=', value: 'bug' }, { all: [excl] }] }),
+    ).toHaveLength(1);
+  });
+
+  it('does NOT collect a not: inside an any arm — a sibling arm can admit the same rows', () => {
+    expect(collectGuaranteedExclusions({ any: [excl, { field: 'kind', op: '=', value: 'bug' }] })).toEqual([]);
+  });
+
+  it('a bare leaf guarantees no exclusion', () => {
+    expect(collectGuaranteedExclusions({ field: 'kind', op: '=', value: 'bug' })).toEqual([]);
+  });
+
+  it('undefined filter is empty, not a crash', () => {
+    expect(collectGuaranteedExclusions(undefined)).toEqual([]);
   });
 });
