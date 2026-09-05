@@ -37,7 +37,13 @@ import {
   type PriorLoopFacts,
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
-import { claimWorkItem, classifyClaimFailure, getWorkItem, isClaimHoldParked } from '../../work-items';
+import {
+  claimWorkItem,
+  classifyClaimFailure,
+  getWorkItem,
+  isClaimHoldParked,
+  isSelfOwnerRecord,
+} from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { hasLiveExactAwaitForSubscriberKey, listWakeAwaitsForSubscriber } from '../../events/await/store';
@@ -1219,6 +1225,40 @@ export default defineTool({
               claimed: false,
               reason: 'claim_hold',
               hint: 'work-item is claim-held for an existing system/governor lease; loop binding was skipped',
+            };
+          } else if (
+            beforeClaim &&
+            String(beforeClaim.state) === 'blocked' &&
+            !isSelfOwnerRecord(beforeClaim.assignee ?? null, ownerId)
+          ) {
+            // EI-20304485841686120: the THIRD member of this guard chain, and it fails the
+            // same way as the two above — a row that is non-terminal but that this member
+            // cannot advance. `blocked` is a resolver-owned floor: scheduler:get_next
+            // refuses to hand it out (it is not a requestable `states` value; blocked items
+            // are leader-triage-only), so the member can neither progress it nor re-pull it.
+            // It is still non-terminal, so getActiveClaimsForBee counts it against
+            // maxConcurrentClaims — and under the default cap of 1 the member is then
+            // starved from ALL work until it manually releases. That refusal is correct and
+            // deliberately fires BEFORE lane evaluation (EI-12095), so the starvation reads
+            // as "claim cap reached" with no hint that an unworkable auto-binding caused it.
+            //
+            // An EXPLICIT pin is the reachable path: enforceSchedulerSpec is
+            // `!explicitWorkItem`, and admitWorkItemForLoopTarget returns early when it is
+            // false ("an explicit solo pin is intentionally not narrowed"), so the spec's
+            // `states` floor never screens a hand-passed blocked id.
+            //
+            // Scoped to items NOT already ours on purpose: if the member already holds it
+            // the slot is spent either way, and skipping would drop a legitimate
+            // death-resilience anchor for someone looping precisely to UNBLOCK it. As with
+            // the branches above, only the binding is skipped — the loop still arms.
+            workItemClaim = {
+              id: drivenCandidate,
+              claimed: false,
+              reason: 'blocked',
+              hint:
+                'work-item is in `blocked` (a leader-triage-only floor the scheduler will not re-offer); ' +
+                'binding it would consume this member’s concurrent-claim slot with work it cannot advance, so ' +
+                'the loop armed without it. Claim it explicitly with work_items:claim if that is genuinely intended.',
             };
           } else {
             const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });

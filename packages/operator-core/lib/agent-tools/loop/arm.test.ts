@@ -85,6 +85,15 @@ vi.mock('../../work-items', () => ({
     if (!payload || typeof payload !== 'object') return false;
     return String((payload as Record<string, unknown>)._claimHold) === 'true';
   }),
+  // EI-20304485841686120: the blocked-pin guard asks whether the row is ALREADY ours.
+  // This mock factory replaces the whole module, so an omitted export is `undefined` and
+  // calling it throws INSIDE the auto-claim try/catch — which surfaces as a generic
+  // claim-refused reason rather than a missing-export error, i.e. every blocked-guard
+  // assertion fails for a reason that looks like the guard misbehaving.
+  isSelfOwnerRecord: vi.fn(
+    (recorded: string | null | undefined, caller: string) =>
+      !!recorded && String(recorded).trim() === String(caller ?? '').trim(),
+  ),
 }));
 // EI-20123870155538062: loop:arm shares the by-id fleet-scope admission seam with
 // work_items:claim. Keep the arm tests DB-free while pinning the ordering contract.
@@ -822,6 +831,65 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       workItemClaim: { id: 'WI-333195', claimed: false, reason: 'claim_hold' },
     });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
+  // EI-20304485841686120 — the THIRD member of the terminal / claim_hold guard chain.
+  // `blocked` is a resolver-owned floor: scheduler:get_next will not re-offer it (it is not
+  // a requestable `states` value), yet it is non-terminal so it counts against
+  // maxConcurrentClaims. Auto-binding one under the default cap of 1 starves the member from
+  // ALL work, and the resulting refusal fires before lane evaluation (EI-12095) so it reads
+  // as a bare "claim cap reached" with nothing pointing back at the binding that caused it.
+  it('EI-20304485841686120: refuses an explicit BLOCKED pin so it cannot consume the sole claim slot', async () => {
+    mockResolvedTyped(getWiM, asWorkItem({ id: 'WI-3746', state: 'blocked', assignee: null }));
+    mockResolvedTyped(claimM, claimedRow);
+
+    const b = body(await call({ workItem: 'WI-3746' }));
+
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      // The loop still ARMS; only the optional death-resilience binding is skipped.
+      loop: { workItem: null },
+      workItemClaim: { id: 'WI-3746', claimed: false, reason: 'blocked' },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
+  it('EI-20304485841686120: refuses a BLOCKED item auto-detected from a COLD goal', async () => {
+    detectM.mockReturnValue('WI-3746');
+    mockResolvedTyped(getWiM, asWorkItem({ id: 'WI-3746', state: 'blocked', assignee: null }));
+    mockResolvedTyped(claimM, claimedRow);
+
+    const b = body(await call({ carry: 'cold', goal: 'drive WI-3746 to a close' }));
+
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: { id: 'WI-3746', claimed: false, reason: 'blocked' },
+    });
+  });
+
+  // NEGATIVE CONTROL — the load-bearing half. A guard that only ever refuses would pass
+  // every assertion above while breaking the legitimate case, and this is the one the
+  // narrow scoping exists for: when the member ALREADY holds the blocked item its slot is
+  // spent either way, so skipping would gratuitously drop the death-resilience anchor of
+  // someone looping precisely to UNBLOCK it. Binding must still happen here.
+  it('EI-20304485841686120: still binds a BLOCKED item the caller ALREADY holds (guard must not over-fire)', async () => {
+    mockResolvedTyped(
+      getWiM,
+      asWorkItem({ id: 'WI-3746', state: 'blocked', assignee: 'su-caller-own-id' }),
+    );
+    mockResolvedTyped(claimM, claimedRow);
+
+    const b = body(await call({ workItem: 'WI-3746' }));
+
+    expect(claimM).toHaveBeenCalledWith('WI-3746', 'su-caller-own-id', { harness: 'papercusp' });
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: 'WI-3746' },
+      workItemClaim: { id: 'WI-3746', claimed: true },
+    });
   });
 
   it('does NOT auto-detect from the goal on a WARM loop — warm behaviour stays byte-identical', async () => {
