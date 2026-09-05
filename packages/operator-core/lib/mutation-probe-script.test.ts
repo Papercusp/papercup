@@ -1109,3 +1109,114 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
     expect(read()).toBe(ORIGINAL);
   });
 });
+
+/**
+ * Recurrence guard for EI-20451290782193791 — a baseline that ran ZERO tests
+ * must never be scored, because scoring it produces a FALSE `MUTANT SURVIVED`.
+ *
+ * The trap: the probe infers CAUGHT vs SURVIVED from the guard's EXIT CODE
+ * alone. That inference is sound only while a passing exit means assertions
+ * actually ran. A test filter that selects nothing breaks it — vitest reports
+ * zero-selection as a PASS (`Tests  2 skipped (2)`, exit 0), so the baseline
+ * looks healthy, the mutant run also exits 0, and the probe declares SURVIVED
+ * about a mutation no assertion ever examined. Wrong in the expensive
+ * direction: it says a guard you just wrote is worthless.
+ *
+ * The discriminator is the runner's own count summary, NOT the exit code: a
+ * healthy baseline must report at least one PASSED test. These cases are a
+ * CONTROL SET so that none can pass on dead code — the first two differ only
+ * in the word "passed", so a detector that merely refused every exit-0
+ * baseline would fail the second, and one that never fired would fail the
+ * first. The third pins the deliberate BASELINE-ONLY scoping: a fully caught
+ * mutant also prints no "passed" (`Tests  2 failed (2)`, measured), so reusing
+ * this detector on the mutant log would false-flag every real catch.
+ */
+describe('mutation-probe.sh — a baseline that ran zero tests is never scored', () => {
+  /** Write a guard whose output/exit may differ by phase; returns the --test command. */
+  function phaseGuard(body: string): string {
+    const guard = join(dir, 'guard.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash\n${body}\n`);
+    return `bash ${guard} {}`;
+  }
+
+  it('REFUSES (exit 2, harness-error) when the baseline summary reports no PASSED test', () => {
+    // The measured shape of a vitest run whose -t filter matched nothing.
+    // Pre-fix this reached `VERDICT: MUTANT SURVIVED` and exit 1.
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      phaseGuard(`printf '  Tests  2 skipped (2)\\n'; exit 0`),
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/BASELINE RAN ZERO TESTS/);
+    expect(out).toMatch(/verdict=harness-error/);
+    // The refusal quotes the runner's own summary, so a reader sees WHY rather
+    // than just being told the harness is broken.
+    expect(out).toMatch(/zero_selection=Tests__2_skipped_\(2\)/);
+    expect(out).not.toMatch(/MUTANT SURVIVED/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('CALIBRATION: the same exit-0 baseline still reaches a genuine SURVIVED once the summary says "passed"', () => {
+    // Differs from the case above by ONE WORD. If the detector were "refuse any
+    // baseline that exits 0", this would refuse too — and the probe could no
+    // longer report a real weakness at all, which is its whole job.
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      phaseGuard(`printf '  Tests  1 passed | 1 skipped (2)\\n'; exit 0`),
+    ]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/MUTANT SURVIVED/);
+    expect(out).not.toMatch(/ZERO TESTS/);
+    expect(out).not.toMatch(/verdict=harness-error/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('is BASELINE-ONLY: a caught mutant printing "Tests 2 failed (2)" is still CAUGHT, never a harness error', () => {
+    // A fully-caught mutant's summary also contains no "passed" (measured).
+    // Reusing the detector on the mutant log would therefore convert every
+    // successful catch into a harness error — the regression this pins.
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      phaseGuard(
+        `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf '  Tests  2 failed (2)\\n'; exit 1; fi\n` +
+          `printf '  Tests  1 passed | 1 skipped (2)\\n'; exit 0`,
+      ),
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(out).not.toMatch(/ZERO TESTS/);
+    expect(out).not.toMatch(/verdict=harness-error/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('sees through ANSI colour — vitest colourises the summary, and a naive line anchor would miss it', () => {
+    // Not cosmetic: the detector anchors on `^\s*Tests`, and vitest wraps that
+    // line in escapes. Without the strip the anchor never matches, the detector
+    // emits nothing, and the false SURVIVED returns silently — a failure mode
+    // that looks exactly like "no bug here".
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      phaseGuard(`printf '\\033[2m  Tests\\033[22m  \\033[33m2 skipped\\033[39m (2)\\n'; exit 0`),
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/BASELINE RAN ZERO TESTS/);
+    expect(out).not.toMatch(/MUTANT SURVIVED/);
+    expect(read()).toBe(ORIGINAL);
+  });
+});
