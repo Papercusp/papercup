@@ -1483,7 +1483,11 @@
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-1), transparent 8%), color-mix(in srgb, var(--bg-deeper), transparent 2%)),
     var(--pc-dev-bg);
-  color: #e6edf5;
+  /* The semantic foreground, not a hardcoded near-white: the console is mounted
+     natively by hosts that run the light theme (the cloud portal, EI-22432712291442636),
+     where #e6edf5 on the light --bg-1 is unreadable. The literal stays only as the
+     no-token fallback. */
+  color: var(--fg, #e6edf5);
   font-size: 12px;
   line-height: 1.45;
   font-variant-numeric: tabular-nums;

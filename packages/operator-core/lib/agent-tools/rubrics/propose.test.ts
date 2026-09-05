@@ -155,6 +155,7 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
           role: 'outcome',
           mandatory: true,
           requiredScope: ['cohort:post-epoch'],
+          evidencePlane: 'tree',
           passRatings: ['pass'],
           barProvenance: {
             lifecycle: 'pre-implementation',
@@ -172,8 +173,16 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
         barKey: 'R-1',
         role: 'outcome',
         mandatory: true,
+        evidencePlane: 'tree',
       });
     }
+
+    expect(rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectPlan: 'release-plan',
+      criteria: [{ ...lightAcceptanceCriterion, evidencePlane: 'production-ish' }],
+    }).success).toBe(false);
 
     expect(
       rubricsProposeArgs.safeParse({

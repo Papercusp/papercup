@@ -4657,13 +4657,97 @@ export async function readFrozenCandidateRepairQueue(
   );
 }
 
+/**
+ * P-021 (D-007 #1): the per-leg output tails the gate's last repair tick persisted
+ * (`gate_health.repairTickLegs[].outputTail`) — the only evidence of WHICH files a lint /
+ * post-suite leg reported, and therefore of that leg's subject paths. Read raw on purpose:
+ * `parseRepairTickLegs` deliberately drops `outputTail`. Any fault reads as "no evidence",
+ * which the manifest renders as pathless — never as a fabricated path.
+ */
+async function readRepairTickLegOutputs(
+  sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
+  target: GateVerdictTarget,
+): Promise<Record<string, string>> {
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs
+         FROM harness_shared.routines
+        WHERE workspace_id = $1 AND install_slug = $2 AND target_role = 'system:green-checkpoint'
+        LIMIT 1`,
+      [target.workspaceId, target.installSlug],
+    )) as unknown as Array<{ legs?: unknown }> | undefined;
+    const raw = Array.isArray(rows) ? rows[0]?.legs : undefined;
+    const legs = raw && typeof raw === 'object' && Array.isArray((raw as { legs?: unknown }).legs)
+      ? ((raw as { legs: unknown[] }).legs as Array<Record<string, unknown>>)
+      : [];
+    const out: Record<string, string> = {};
+    for (const leg of legs) {
+      if (leg && typeof leg.id === 'string' && typeof leg.outputTail === 'string') out[leg.id] = leg.outputTail;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * P-021 (D-007 #1): push the manifest onto the gate-red work-item — the `gate-red-streak:` /
+ * `frozen-repair-convergence:` condition singleton(s) open for this install — as a structured
+ * payload on every status move and as a rendered comment when the LEG SET changes (a freeze,
+ * a new red leg). Never fatal: a queue that could not be described is still correctly frozen.
+ */
+async function publishRepairManifestToGateWorkItem(
+  sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
+  target: GateVerdictTarget,
+  outcome: { manifest: import('../../release/repair-manifest').RepairManifest; signatureChanged: boolean; statusChanged: boolean },
+): Promise<void> {
+  if (!outcome.signatureChanged && !outcome.statusChanged) return;
+  const { ANY_FAMILY_TERMINAL_STATES } = await import('../../work-item-dispatch-states');
+  const rows = (await sql.unsafe(
+    `SELECT feature_id, harness_slug
+       FROM harness_shared.work_items
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND (condition_key LIKE 'gate-red-streak:%' OR condition_key LIKE 'frozen-repair-convergence:%')
+        AND NOT (status = ANY($3::text[]))
+      ORDER BY created_ts DESC
+      LIMIT 4`,
+    [target.workspaceId, target.installSlug, [...ANY_FAMILY_TERMINAL_STATES]],
+  )) as unknown as Array<{ feature_id: string; harness_slug: string }> | undefined;
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const { renderRepairManifest, summarizeRepairManifest } = await import('../../release/repair-manifest');
+  const { commentWorkItem, mergeWorkItemPayload } = await import('../../work-items');
+  const summary = summarizeRepairManifest(outcome.manifest);
+  for (const row of rows) {
+    await mergeWorkItemPayload(
+      row.feature_id,
+      { repairManifest: outcome.manifest, repairManifestSummary: summary },
+      { harness: row.harness_slug },
+    );
+    if (outcome.signatureChanged) {
+      await commentWorkItem(row.feature_id, renderRepairManifest(outcome.manifest), 'system:green-checkpoint', {
+        harness: row.harness_slug,
+      });
+    }
+  }
+}
+
 export async function writeFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
   queue: FrozenCandidateRepairQueue | null,
 ): Promise<void> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // P-021 (D-007 #1): the repair manifest is DERIVED HERE, in the one production write path, so
+  // it cannot describe a different row than the one persisted beside it. `withRepairManifest`
+  // carries leg claims from the row's previous manifest and reports whether the leg set moved.
+  let manifested: import('../../release/repair-manifest').WithRepairManifestResult<FrozenCandidateRepairQueue> | null = null;
   if (queue) {
+    const { withRepairManifest } = await import('../../release/repair-manifest');
+    manifested = withRepairManifest(queue, Date.now(), {
+      legOutputs: await readRepairTickLegOutputs(sql, target),
+    });
+    queue = manifested.queue;
     // P-013 / D-007: project the convergence summary into `gate_health.convergence` in the
     // SAME statement that persists the queue.
     //
@@ -4726,6 +4810,15 @@ export async function writeFrozenCandidateRepairQueue(
   // simply leaves the hook silent (today's behaviour).
   const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
   projectFrozenRepairMarker(queue);
+  if (manifested) {
+    try {
+      await publishRepairManifestToGateWorkItem(sql, target, manifested);
+    } catch (e) {
+      console.warn(
+        `[release-actions] P-021 repair manifest not published to the gate-red work-item (non-fatal): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
 }
 
 /**

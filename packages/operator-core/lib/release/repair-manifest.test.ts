@@ -1,0 +1,274 @@
+/**
+ * P-021 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #1): the repair
+ * manifest is a pure derivation of the queue row — one row per signature leg, subject paths from
+ * EVIDENCE only, status red / admitted / green in that priority, the exact admit command, and
+ * leg claims that survive a rebuild.
+ */
+import { describe, expect, it } from 'vitest';
+import type { FrozenCandidateRepairQueue, FrozenRepairAdmission } from './frozen-candidate-repair-queue';
+import {
+  buildRepairManifest,
+  claimRepairManifestLeg,
+  extractSubjectPathsFromLegOutput,
+  parseRepairManifest,
+  renderAdmitCommand,
+  renderRepairManifest,
+  repairSignatureFingerprint,
+  summarizeRepairManifest,
+  withRepairManifest,
+} from './repair-manifest';
+
+const CANDIDATE = 'a'.repeat(40);
+const HEAD1 = 'b'.repeat(40);
+const HEAD2 = 'c'.repeat(40);
+
+function queue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
+  return {
+    schemaVersion: 4,
+    phase: 'awaiting-fixer',
+    candidate: CANDIDATE,
+    base: null,
+    repairHead: CANDIDATE,
+    attempts: 0,
+    openedAtMs: 1_000,
+    updatedAtMs: 2_000,
+    fixerSpawnId: null,
+    failingTests: ['packages/web/lib/broken.test.ts', 'lint:tsc', 'full-gate'],
+    signature: [
+      { kind: 'test-file', id: 'packages/web/lib/broken.test.ts', recipe: 'npm run test:file -- packages/web/lib/broken.test.ts', workspace: '@papercusp/web', admittedRound: 1, measuredHead: CANDIDATE },
+      { kind: 'lint-leg', id: 'lint:tsc', recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: CANDIDATE },
+      { kind: 'seed', id: 'full-gate', recipe: 'the full canonical gate', admittedRound: 1, measuredHead: CANDIDATE },
+    ],
+    ...over,
+  };
+}
+
+function admission(over: Partial<FrozenRepairAdmission> = {}): FrozenRepairAdmission {
+  return {
+    atMs: 3_000,
+    actor: 'su-fixer',
+    source: { ref: 'staging', sha: 'd'.repeat(40) },
+    fromRepairHead: CANDIDATE,
+    toRepairHead: HEAD1,
+    paths: ['packages/web/lib/broken.test.ts'],
+    unchanged: [],
+    blobs: { 'packages/web/lib/broken.test.ts': 'e'.repeat(40) },
+    ...over,
+  };
+}
+
+const TSC_OUTPUT = [
+  'packages/operator-core/lib/release/x.ts:12:3 - error TS2322: Type A is not assignable',
+  "apps/operator/lib/release/green-checkpoint.ts(44,1): error TS1005: ';' expected.",
+  'node_modules/foo/index.d.ts:1:1 - error TS2300 (vendored, must be ignored)',
+  '../escape/outside.ts:1:1 - error (must be ignored)',
+  'LINT_TSC_RESULT label=operator-core scope=files exit=2 status=failed',
+].join('\n');
+
+describe('repair manifest — subject paths are evidence, never a guess', () => {
+  it('a test-file leg names its own path and gets the exact admit command', () => {
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10 });
+    const row = m.rows.find((r) => r.legId === 'packages/web/lib/broken.test.ts')!;
+    expect(row.kind).toBe('test-file');
+    expect(row.subjectPaths).toEqual(['packages/web/lib/broken.test.ts']);
+    expect(row.subjectSource).toBe('leg-id');
+    expect(row.statusLabel).toBe('red-at-candidate');
+    expect(row.admitCommand).toBe(renderAdmitCommand(['packages/web/lib/broken.test.ts']));
+    expect(row.admitCommand).toBe("release:repair-queue { op: 'admit', paths: [\"packages/web/lib/broken.test.ts\"] }");
+    expect(row.workspace).toBe('@papercusp/web');
+  });
+
+  it('a lint leg with NO reported output is pathless: no fabricated command', () => {
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10 });
+    const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
+    expect(row.subjectPaths).toEqual([]);
+    expect(row.subjectSource).toBe('none');
+    expect(row.admitCommand).toBeNull();
+    const seed = m.rows.find((r) => r.legId === 'full-gate')!;
+    expect(seed.subjectSource).toBe('none');
+    expect(seed.admitCommand).toBeNull();
+    expect(summarizeRepairManifest(m).pathless).toBe(2);
+  });
+
+  it('a lint leg mines the paths it REPORTED from its output tail (vendored / escaping tokens dropped)', () => {
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10, legOutputs: { 'lint:tsc': TSC_OUTPUT } });
+    const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
+    expect(row.subjectPaths).toEqual([
+      'packages/operator-core/lib/release/x.ts',
+      'apps/operator/lib/release/green-checkpoint.ts',
+    ]);
+    expect(row.subjectSource).toBe('leg-output');
+    expect(row.admitCommand).toContain('apps/operator/lib/release/green-checkpoint.ts');
+  });
+
+  it('POSITIVE CONTROL: the extractor really does match the tsc / vitest / eslint shapes it is meant to', () => {
+    expect(extractSubjectPathsFromLegOutput('FAIL  libs/generic/search/src/index.test.ts > x')).toEqual([
+      'libs/generic/search/src/index.test.ts',
+    ]);
+    expect(extractSubjectPathsFromLegOutput('/abs/path/file.ts:1:1 error')).toEqual([]);
+    expect(extractSubjectPathsFromLegOutput('')).toEqual([]);
+    expect(extractSubjectPathsFromLegOutput(undefined)).toEqual([]);
+  });
+
+  it('caller-supplied subject paths win over every other source', () => {
+    const m = buildRepairManifest({
+      queue: queue(),
+      nowMs: 10,
+      legOutputs: { 'lint:tsc': TSC_OUTPUT },
+      subjectPaths: { 'lint:tsc': ['libs/flags/src/types.ts'] },
+    });
+    const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
+    expect(row.subjectPaths).toEqual(['libs/flags/src/types.ts']);
+    expect(row.subjectSource).toBe('supplied');
+  });
+});
+
+describe('repair manifest — status priority: green > admitted > red', () => {
+  it('an admission carrying a leg path reads admitted-in-#N@sha (newest admission wins)', () => {
+    const q = queue({
+      repairHead: HEAD2,
+      admissions: [
+        admission(),
+        admission({ atMs: 4_000, fromRepairHead: HEAD1, toRepairHead: HEAD2, paths: ['packages/web/lib/other.ts'] }),
+        admission({ atMs: 5_000, fromRepairHead: HEAD2, toRepairHead: HEAD2, paths: ['packages/web/lib/other.ts', 'packages/web/lib/broken.test.ts'] }),
+      ],
+    });
+    const m = buildRepairManifest({ queue: q, nowMs: 10 });
+    const row = m.rows.find((r) => r.legId === 'packages/web/lib/broken.test.ts')!;
+    expect(row.status.kind).toBe('admitted');
+    expect(row.statusLabel).toBe(`admitted-in-#3@${HEAD2.slice(0, 8)}`);
+  });
+
+  it('a leg the lifecycle measured FIXED reads green-at-<sha> even when an admission also covers it', () => {
+    const q = queue({
+      repairHead: HEAD1,
+      admissions: [admission()],
+      legs: [
+        {
+          id: 'packages/web/lib/broken.test.ts',
+          state: 'fixed',
+          admittedRound: 1,
+          admittedHead: CANDIDATE,
+          admittedAtMs: 1_000,
+          lastMeasuredHead: HEAD1,
+          lastMeasuredAtMs: 6_000,
+          lastMeasuredRound: 2,
+          failingRounds: 1,
+          resolvedHead: HEAD1,
+          resolvedAtMs: 6_000,
+        },
+      ],
+    });
+    const m = buildRepairManifest({ queue: q, nowMs: 10 });
+    const row = m.rows.find((r) => r.legId === 'packages/web/lib/broken.test.ts')!;
+    expect(row.statusLabel).toBe(`green-at-${HEAD1.slice(0, 8)}`);
+    expect(summarizeRepairManifest(m)).toMatchObject({ legs: 3, green: 1, admitted: 0, red: 2 });
+  });
+
+  it('an admission that names OTHER paths leaves the leg red', () => {
+    const q = queue({ repairHead: HEAD1, admissions: [admission({ paths: ['packages/web/lib/other.ts'] })] });
+    const m = buildRepairManifest({ queue: q, nowMs: 10 });
+    expect(m.rows.find((r) => r.legId === 'packages/web/lib/broken.test.ts')!.statusLabel).toBe('red-at-candidate');
+  });
+});
+
+describe('repair manifest — claims, rebuilds and the signature-change trigger', () => {
+  it('claiming a leg claims its paths; a second actor is refused; the holder may release', () => {
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10 });
+    const claimed = claimRepairManifestLeg(m, { legId: 'packages/web/lib/broken.test.ts', actor: 'su-a', atMs: 20 });
+    expect(claimed.ok).toBe(true);
+    if (!claimed.ok) throw new Error('unreachable');
+    expect(claimed.paths).toEqual(['packages/web/lib/broken.test.ts']);
+    expect(claimed.row.claim).toEqual({ actor: 'su-a', atMs: 20 });
+    // idempotent for the same actor — the original claim stamp is kept
+    const again = claimRepairManifestLeg(claimed.manifest, { legId: 'packages/web/lib/broken.test.ts', actor: 'su-a', atMs: 30 });
+    expect(again.ok && again.row.claim?.atMs).toBe(20);
+    const other = claimRepairManifestLeg(claimed.manifest, { legId: 'packages/web/lib/broken.test.ts', actor: 'su-b', atMs: 30 });
+    expect(other).toMatchObject({ ok: false, reason: 'held-by-other', holder: { actor: 'su-a' } });
+    const stranger = claimRepairManifestLeg(claimed.manifest, { legId: 'packages/web/lib/broken.test.ts', actor: 'su-b', atMs: 30, release: true });
+    expect(stranger).toMatchObject({ ok: false, reason: 'held-by-other' });
+    const released = claimRepairManifestLeg(claimed.manifest, { legId: 'packages/web/lib/broken.test.ts', actor: 'su-a', atMs: 40, release: true });
+    expect(released.ok && released.released).toBe(true);
+    expect(released.ok && released.row.claim).toBeNull();
+    expect(claimRepairManifestLeg(m, { legId: 'nope', actor: 'su-a', atMs: 1 })).toMatchObject({ ok: false, reason: 'no-such-leg' });
+  });
+
+  it('withRepairManifest: first build changes the signature, an identical rebuild does not, a new leg does; claims survive', () => {
+    const first = withRepairManifest(queue(), 10);
+    expect(first.signatureChanged).toBe(true);
+    expect(first.statusChanged).toBe(true);
+    const claimed = claimRepairManifestLeg(first.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
+    if (!claimed.ok) throw new Error('unreachable');
+    const stable = withRepairManifest({ ...first.queue, manifest: claimed.manifest }, 12);
+    expect(stable.signatureChanged).toBe(false);
+    expect(stable.statusChanged).toBe(false);
+    expect(stable.manifest.rows.find((r) => r.legId === 'lint:tsc')!.claim).toEqual({ actor: 'su-a', atMs: 11 });
+    // an admission moves a status without changing the signature
+    const admitted = withRepairManifest({ ...stable.queue, repairHead: HEAD1, admissions: [admission()] }, 13);
+    expect(admitted.signatureChanged).toBe(false);
+    expect(admitted.statusChanged).toBe(true);
+    // a new leg changes the signature
+    const grown = withRepairManifest(
+      {
+        ...admitted.queue,
+        signature: [...admitted.queue.signature, { kind: 'lint-leg', id: 'lint:migrations', recipe: 'npm run lint:migrations', admittedRound: 2, measuredHead: HEAD1 }],
+      },
+      14,
+    );
+    expect(grown.signatureChanged).toBe(true);
+    expect(grown.manifest.rows.map((r) => r.legId)).toContain('lint:migrations');
+  });
+
+  it('a manifest built for a DIFFERENT candidate does not carry claims across', () => {
+    const first = withRepairManifest(queue(), 10);
+    const claimed = claimRepairManifestLeg(first.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
+    if (!claimed.ok) throw new Error('unreachable');
+    const swapped = buildRepairManifest({ queue: queue({ candidate: HEAD2, repairHead: HEAD2 }), nowMs: 12, previous: claimed.manifest });
+    expect(swapped.rows.find((r) => r.legId === 'lint:tsc')!.claim).toBeNull();
+  });
+
+  it('the fingerprint is order-independent over (kind,id)', () => {
+    const a = repairSignatureFingerprint([{ kind: 'test-file', id: 'x' }, { kind: 'lint-leg', id: 'lint:tsc' }]);
+    const b = repairSignatureFingerprint([{ kind: 'lint-leg', id: 'lint:tsc' }, { kind: 'test-file', id: 'x' }]);
+    expect(a).toBe(b);
+    expect(repairSignatureFingerprint([{ kind: 'lint-leg', id: 'x' }])).not.toBe(repairSignatureFingerprint([{ kind: 'test-file', id: 'x' }]));
+  });
+});
+
+describe('repair manifest — persistence and rendering', () => {
+  it('parse round-trips a built manifest and rejects a malformed blob as ABSENT', () => {
+    const q = queue({ repairHead: HEAD1, admissions: [admission()] });
+    const m = withRepairManifest(q, 10).manifest;
+    const claimed = claimRepairManifestLeg(m, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
+    if (!claimed.ok) throw new Error('unreachable');
+    const back = parseRepairManifest(JSON.parse(JSON.stringify(claimed.manifest)));
+    expect(back).toEqual(claimed.manifest);
+    expect(parseRepairManifest(null)).toBeNull();
+    expect(parseRepairManifest({ schemaVersion: 1 })).toBeNull();
+    expect(parseRepairManifest({ ...claimed.manifest, rows: [{ legId: 'x' }] })).toBeNull();
+    expect(parseRepairManifest({ ...claimed.manifest, schemaVersion: 2 })).toBeNull();
+  });
+
+  it('renders every leg, its status, its admit command and the legend on ONE surface', () => {
+    const q = queue({ repairHead: HEAD1, admissions: [admission()] });
+    const m = withRepairManifest(q, 10, { legOutputs: { 'lint:tsc': TSC_OUTPUT } }).manifest;
+    const text = renderRepairManifest(m);
+    expect(text).toContain(`REPAIR MANIFEST — frozen candidate ${CANDIDATE.slice(0, 8)} @ repairHead ${HEAD1.slice(0, 8)}`);
+    expect(text).toContain('| packages/web/lib/broken.test.ts | test-file | admitted-in-#1@');
+    expect(text).toContain('| lint:tsc | lint-leg | red-at-candidate | packages/operator-core/lib/release/x.ts<br>apps/operator/lib/release/green-checkpoint.ts');
+    expect(text).toContain('| full-gate | seed | red-at-candidate | (whole gate — no path) | — | — |');
+    expect(text).toContain("`release:repair-queue { op: 'admit', paths: [\"packages/web/lib/broken.test.ts\"] }`");
+    expect(text).toContain('claim-leg');
+    expect(renderRepairManifest(m, { heading: false })).not.toContain('REPAIR MANIFEST');
+  });
+
+  it('caps subject paths per leg and reports the hidden count', () => {
+    const many = Array.from({ length: 45 }, (_, i) => `packages/x/f${i}.ts`);
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10, subjectPaths: { 'lint:tsc': many } });
+    const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
+    expect(row.subjectPaths).toHaveLength(40);
+    expect(row.subjectPathsTruncated).toBe(5);
+    // the admit command still names EVERY path — the cap is a display cap, never an allowlist cap
+    expect(row.admitCommand).toContain('packages/x/f44.ts');
+  });
+});

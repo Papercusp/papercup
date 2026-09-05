@@ -128,6 +128,15 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     tarball_r2_key: null, tarball_content_hash: null, tarball_bytes: null,
     review_status: 'approved', reviewed_at: null, review_reason: null,
     delivery_type: null, latest_json_url: null, release_repo: null, icon_url: null, platforms: null,
+    // Catalog fields (migration 018 / P-008). `visibility` mirrors the
+    // migration's NOT NULL DEFAULT 'public' backfill — every pre-018 row is in
+    // the public catalog — and every other axis defaults to unset.
+    visibility: 'public', tenant_id: null,
+    sku_ref: null, pricing_model: null, price_amount_micros: null, price_currency: null,
+    compatibility_json: null, required_permissions: null,
+    release_version: null, release_content_hash: null, release_manifest_digest: null,
+    release_signature: null, release_published_at: null,
+    yanked_at: null, yanked_reason: null, revoked_at: null, revoked_reason: null,
     ...over,
   };
 }

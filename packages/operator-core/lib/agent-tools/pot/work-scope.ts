@@ -6,46 +6,29 @@
  * It is enforced at the chokepoints (agent launches, scheduler pulls / claims,
  * admission promotion, git-sync fixer dispatch, grading sweeps) — never at filing.
  * Absent ⇒ every harness allowed, byte-identical to before. set/clear are audited
- * + one-call-revertible through the control harness, exactly like pot:control_policy.
+ * + one-call-revertible through the control harness, exactly like pot:control_policy —
+ * via the SHARED helpers in work-scope-control.ts, which the /admin/work-scope pane's
+ * HTTP route calls too (WI-2145092): one mutation path, two doors.
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
-import { runControlMutation } from '../../gateway-control/control-harness';
-import {
-  readWorkScopePolicy,
-  setWorkScopePolicy,
-  clearWorkScopePolicy,
-  evaluateWorkScope,
-  type WorkScopePolicy,
-} from '../../work-scope-policy';
-import { writePotControlPolicy } from '../../pot-control-policy';
+import { readWorkScopePolicy, evaluateWorkScope } from '../../work-scope-policy';
+import { applyWorkScopeClear, applyWorkScopeSet, workScopeSetSchema } from '../../work-scope-control';
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
 }
 
-const exceptionSchema = z
-  .object({
-    harness: z.string().min(1).max(120).optional(),
-    plan: z.string().min(1).max(200).optional(),
-    goal: z.string().min(1).max(200).optional(),
-    workItem: z.string().min(1).max(120).optional(),
-    reason: z.string().min(3).max(500),
-  })
-  .refine((e) => !!(e.harness || e.plan || e.goal || e.workItem), {
-    message: 'an exception needs at least one of harness / plan / goal / workItem',
-  });
-
 export default defineTool({
   name: 'workspace:work_scope',
   profile: 'engineer',
   description:
-    "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at the chokepoints — launches, scheduler pulls/claims, admission promotion, git-sync fixer dispatch, grading sweeps — never at filing; out-of-scope work is parked, never deleted. Absent ⇒ everything allowed. set/clear are audited + one-call-revertible.",
+    "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
   capability: 'operator:write',
   guidance: {
-    when: "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/item would be admitted.",
+    when: "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/goal/work-item is in scope. `get` shows the policy + the ledger of recent denials/holds/re-homes.",
     notWhen: 'To steer WHICH items inside an allowed harness a fleet pulls, use scheduler:set_claim_spec. To pause one pot entirely use pot:pause.',
-    chaining: "config:list-overrides shows the active policy; the ledger on { op:'get' } shows the last denials.",
+    chaining: "config:list-overrides shows the active policy; the ledger on { op:'get' } shows the last denials. state:read { cell:'workspace.workScope' } is the read-only lens.",
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -59,14 +42,7 @@ export default defineTool({
       goal: z.string().min(1).max(200).optional(),
       workItem: z.string().min(1).max(120).optional(),
     }),
-    z.object({
-      op: z.literal('set'),
-      mode: z.enum(['enforce', 'off']).default('enforce'),
-      allowHarnesses: z.array(z.string().min(1).max(120)).min(1).max(200),
-      exceptions: z.array(exceptionSchema).max(200).optional(),
-      reason: z.string().min(3).max(1000),
-      dryRun: z.boolean().optional(),
-    }),
+    workScopeSetSchema.extend({ op: z.literal('set') }),
     z.object({ op: z.literal('clear'), dryRun: z.boolean().optional() }),
   ]),
   async handler(args, ctx) {
@@ -95,57 +71,13 @@ export default defineTool({
     }
     const actor = `role:${ctx.role}`;
     if (args.op === 'clear') {
-      const outcome = await runControlMutation<WorkScopePolicy | null>(
-        {
-          action: 'workspace:work_scope',
-          subject: 'work-scope',
-          actor,
-          capturePrev: () => readWorkScopePolicy(),
-          apply: async () => {
-            await clearWorkScopePolicy();
-            return null;
-          },
-          revertTo: async (prev) => {
-            await writePotControlPolicy({ workScope: prev ?? undefined });
-          },
-          verify: async () => {
-            const now = await readWorkScopePolicy();
-            return { ok: now === null, detail: now === null ? undefined : 'policy still present after clear' };
-          },
-          describe: (prev) => ({ current: prev, patch: null }),
-        },
-        { dryRun: args.dryRun },
-      );
+      const outcome = await applyWorkScopeClear(actor, { dryRun: args.dryRun });
       return json({ ok: true, op: 'clear', dryRun: outcome.dryRun, applied: outcome.applied, reverted: outcome.reverted, preview: outcome.preview, verify: outcome.verify, auditId: outcome.auditId });
     }
 
-    const next = {
-      mode: args.mode,
-      allowHarnesses: args.allowHarnesses,
-      exceptions: args.exceptions?.map((e) => ({ ...e, setBy: actor })),
-      setBy: actor,
-      reason: args.reason,
-    };
-    const outcome = await runControlMutation<WorkScopePolicy | null>(
-      {
-        action: 'workspace:work_scope',
-        subject: 'work-scope',
-        actor,
-        capturePrev: () => readWorkScopePolicy(),
-        apply: () => setWorkScopePolicy(next),
-        revertTo: async (prev) => {
-          await writePotControlPolicy({ workScope: prev ?? undefined });
-        },
-        verify: async (stored) => {
-          const ok =
-            !!stored &&
-            stored.mode === next.mode &&
-            stored.allowHarnesses.length === next.allowHarnesses.length &&
-            stored.allowHarnesses.every((h, i) => h === next.allowHarnesses[i]!.trim());
-          return { ok, detail: ok ? undefined : 'policy did not persist as written' };
-        },
-        describe: (prev) => ({ current: prev, patch: next }),
-      },
+    const outcome = await applyWorkScopeSet(
+      { mode: args.mode, allowHarnesses: args.allowHarnesses, exceptions: args.exceptions, reason: args.reason },
+      actor,
       { dryRun: args.dryRun },
     );
     return json({

@@ -974,6 +974,7 @@ import './coordination/session-reaper-config';
 // live-configurability-audit-2026-06-20 P-015 — hive placement-watchdog control policy:
 import './pot/control-policy';
 import './pot/work-scope';
+import './pot/work-scope-status';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
 // EI-21433366079878122 — guarded inspection/exact-CAS retirement of the persisted repair queue:

@@ -44,6 +44,7 @@ import {
   type EscalationPredicateValidation,
 } from '../agent-tools/coordination/tools/escalate';
 import { getFleet } from '../agent-fleets-store';
+import { listLoopStanddownOwners } from '../harness/routines/release-pause-ttl';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { classifyItemActivity, isActivelyWorked } from '../item-activity';
 import { getWorkItem, TERMINAL_WORK_ITEM_STATES } from '../work-items';
@@ -564,6 +565,14 @@ export interface EscalationRerouteDriver {
   currentPlanSlug: string | null;
   potSlug: string | null;
   fleetSlug: string | null;
+  /**
+   * Is this driver's engine loop held under an active `loop:standdown-all`?
+   * REQUIRED rather than optional on purpose (EI-21451978219397190): an omitted
+   * flag reads as falsy, i.e. "safe to wake", which is the exact wrong default
+   * for a guard whose whole job is to NOT wake someone. Every construction site
+   * must state it.
+   */
+  standdownHeld: boolean;
 }
 
 export type EscalationRerouteReason = 'author-fleet-leader' | 'author-fleet-member' | 'same-plan' | 'same-harness';
@@ -626,7 +635,20 @@ export function selectEscalationSlaReroutes(
 
     const ranked = roster
       .filter(
-        (candidate) => candidate.ownerId !== from && candidate.sessionState === 'live' && candidate.agentRole === 'su',
+        (candidate) =>
+          candidate.ownerId !== from &&
+          candidate.sessionState === 'live' &&
+          candidate.agentRole === 'su' &&
+          // EI-21451978219397190: never hand an unacked escalation to an agent
+          // held under a global stand-down. During a stand-down "unacknowledged
+          // by the human" is the EXPECTED state — the owner is deliberately
+          // away — so treating it as a fault and hunting for a driver walks the
+          // roster waking exactly the agents the pause told to stay idle. With
+          // this filter the reroute lands only on whoever the owner
+          // deliberately left running (the de-facto stand-down driver), and
+          // when nobody is left running it does not fire at all: the escalation
+          // stays open and reroutes normally once the hold lapses.
+          !candidate.standdownHeld,
       )
       .map(
         (candidate): { candidate: EscalationRerouteDriver; rank: number; reason: EscalationRerouteReason } | null => {
@@ -729,9 +751,17 @@ export interface EscalationRerouteResult {
    * (EI-21834041480805949). See {@link subjectAlreadyActivelyWorked}.
    */
   subjectActivelyWorkedSkipped: number;
+  /**
+   * Reroutes that WOULD have fired but were suppressed because every otherwise-
+   * eligible driver is held under an active `loop:standdown-all`
+   * (EI-21451978219397190). Non-zero means the stand-down is doing its job; the
+   * escalations stay open and reroute normally once the hold lapses.
+   */
+  standdownSuppressed: number;
 }
 
 export interface EscalationRerouteDeps {
+  listLoopStanddownOwnersFn?: (nowMs: number) => Promise<Set<string>>;
   listEscalationsFn?: typeof listEscalations;
   listPresenceFn?: typeof listPresence;
   resolveSessionStatesFn?: typeof resolveSessionStates;
@@ -919,6 +949,26 @@ export async function rerouteUnackedEscalationsOnce(
   const validateArtifactRefFn = opts.validateArtifactRefFn ?? validateEscalationArtifactRef;
   const sendFn = opts.sendMessageFn ?? sendMessage;
   const wakeFn = opts.wakeRecipientsFn ?? wakeRecipients;
+  // Fails OPEN, at the CALL boundary as well as inside the reader: acquiring the
+  // handle can throw before the reader's own try/catch is reached. This guard
+  // only ever SUPPRESSES a delivery, so an unreadable stand-down must degrade to
+  // "nobody is held" (reroute as before) rather than silently stranding every
+  // escalation the moment the routines read is unavailable.
+  const standdownFn =
+    opts.listLoopStanddownOwnersFn ??
+    (async (at: number) => {
+      try {
+        return await listLoopStanddownOwners(coordSql(), {
+          workspaceId: opts.workspaceId ?? coordWorkspaceId(),
+          nowMs: at,
+        });
+      } catch (e) {
+        console.warn(
+          `[escalation-sla-reroute] stand-down read failed (non-fatal, failing open): ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return new Set<string>();
+      }
+    });
   const nowMs = opts.nowMs ?? Date.now();
   const slaMs = opts.slaMs ?? ESCALATION_REROUTE_SLA_MS;
   const limit = opts.limit ?? ESCALATION_REROUTE_BATCH_LIMIT;
@@ -939,12 +989,13 @@ export async function rerouteUnackedEscalationsOnce(
       artifactUnknownSkipped: 0,
       artifactMissingWarnings: 0,
       subjectActivelyWorkedSkipped: 0,
+      standdownSuppressed: 0,
     };
   }
 
   const presence = await listPresenceFn({ workspaceId });
   const ownerIds = presence.map((p) => p.ownerId);
-  const [verdicts, membership] = await Promise.all([
+  const [verdicts, membership, standdownOwners] = await Promise.all([
     resolveFn(
       presence.map((p) => ({
         ownerId: p.ownerId,
@@ -956,6 +1007,7 @@ export async function rerouteUnackedEscalationsOnce(
       })),
     ),
     fetchFleetFn(ownerIds),
+    standdownFn(nowMs),
   ]);
   const roster: EscalationRerouteDriver[] = presence.map((p) => ({
     ownerId: p.ownerId,
@@ -964,6 +1016,7 @@ export async function rerouteUnackedEscalationsOnce(
     currentPlanSlug: p.currentPlanSlug,
     potSlug: p.potSlug,
     fleetSlug: membership.get(p.ownerId)?.fleetSlug ?? null,
+    standdownHeld: standdownOwners.has(p.ownerId),
   }));
   const authorIds = new Set(unmarked.map((e) => concrete(e.from)).filter((id): id is string => id !== null));
   const authorFleets = [
@@ -1067,12 +1120,23 @@ export async function rerouteUnackedEscalationsOnce(
     }),
   );
 
-  const selected = selectEscalationSlaReroutes(validatedRows, roster, {
-    nowMs,
-    slaMs,
-    responseMarkers: markers,
-    leaderByFleet,
-  });
+  const selectorCtx = { nowMs, slaMs, responseMarkers: markers, leaderByFleet };
+  const selected = selectEscalationSlaReroutes(validatedRows, roster, selectorCtx);
+  // How many reroutes the stand-down actually suppressed. Counted by re-running
+  // the PURE selector against the same roster with the hold lifted, rather than
+  // inferring it from "selected fewer than validated" — plenty of rows select
+  // nothing for unrelated reasons (no same-fleet/plan/harness candidate at all),
+  // and attributing those to the stand-down would report a guard that did
+  // nothing as if it were working. Skipped entirely when nothing is held.
+  let standdownSuppressed = 0;
+  if (standdownOwners.size > 0) {
+    const selectedIds = new Set(selected.map((s) => s.escalation.msg_id));
+    standdownSuppressed = selectEscalationSlaReroutes(
+      validatedRows,
+      roster.map((r) => ({ ...r, standdownHeld: false })),
+      selectorCtx,
+    ).filter((s) => !selectedIds.has(s.escalation.msg_id)).length;
+  }
   const batch = selected.slice(0, limit);
   let rerouted = 0;
   let failed = 0;
@@ -1164,5 +1228,6 @@ export async function rerouteUnackedEscalationsOnce(
     artifactUnknownSkipped,
     artifactMissingWarnings,
     subjectActivelyWorkedSkipped,
+    standdownSuppressed,
   };
 }

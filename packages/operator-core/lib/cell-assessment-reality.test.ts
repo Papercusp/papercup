@@ -78,6 +78,7 @@ import { deriveCapacityVerdict, type AdmissionTerms } from './fleet/capacity-ver
 import type { ProviderPoolVerdict } from './deployment/account-pool-store';
 import { roleLaunchVerdict } from './agent-tools/config/role-launch';
 import type { RoleLaunch } from './fleet/role-launch';
+import { assessWorkScope } from './work-scope-policy';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
 import governorStateTool from './agent-tools/state/governor-state';
@@ -160,6 +161,9 @@ const CAPACITY_CELLS = BUILTIN_CELLS.filter(
 );
 const ROLE_LAUNCH_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'config:role-launch',
+);
+const WORK_SCOPE_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'workspace:work_scope_status',
 );
 
 async function livePipelinePayload(path?: string) {
@@ -936,6 +940,15 @@ const CONTROLS: Record<string, readonly Control[]> = {
     },
     { label: 'a role has no determinable backend', expect: ROLE_LAUNCH([{ backend: null, backendSource: 'inherit' }]) },
   ],
+  // WI-2145092. The third row is the one that matters: an ENFORCE row with an EMPTY allow-list
+  // confines nothing (isWorkScopeEnforced is false, every gate is inert), so it must read `off`
+  // — a reader who saw `enforce` there would believe a fence that is not standing.
+  'workspace.workScope': [
+    { label: 'no policy row is stored', expect: assessWorkScope(null) },
+    { label: 'a row with mode off', expect: assessWorkScope({ mode: 'off', allowHarnesses: ['papercusp'] }) },
+    { label: 'an enforce row whose allow-list is empty confines nothing', expect: assessWorkScope({ mode: 'enforce', allowHarnesses: [] }) },
+    { label: 'an enforce row with an allow-list', expect: assessWorkScope({ mode: 'enforce', allowHarnesses: ['papercusp', 'papercusp/*'] }) },
+  ],
 };
 
 /**
@@ -1096,6 +1109,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
   'capacity.verdict': ['usage-wall', 'admission-concurrency', 'pacing-policy', 'none'],
   'agent.roleLaunch': ['consistent', 'conflicted', 'undetermined'],
+  'workspace.workScope': ['absent', 'off', 'off', 'enforce'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -1111,7 +1125,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
   // they must stay hardcoded so adding a cell forces an author through this file — but the
   // TITLE must not carry a second copy of them.
   it('registers every built-in cell and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(25);
+    expect(BUILTIN_CELLS).toHaveLength(26);
     expect(
       PIPELINE_CELLS.length +
         GOAL_CELLS.length +
@@ -1120,7 +1134,8 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         COVERAGE_CELLS.length +
         GOVERNOR_CELLS.length +
         CAPACITY_CELLS.length +
-        ROLE_LAUNCH_CELLS.length,
+        ROLE_LAUNCH_CELLS.length +
+        WORK_SCOPE_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
     expect(PIPELINE_CELLS).toHaveLength(12);
     expect(GOAL_CELLS).toHaveLength(1);
@@ -1130,6 +1145,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(GOVERNOR_CELLS).toHaveLength(5);
     expect(CAPACITY_CELLS).toHaveLength(1);
     expect(ROLE_LAUNCH_CELLS).toHaveLength(1);
+    expect(WORK_SCOPE_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1551,6 +1567,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       ROLE_LAUNCH([{}]) ?? '',
       'a role in conflict must not read as consistent',
     ],
+    [
+      'workspace.workScope',
+      'mode',
+      assessWorkScope({ mode: 'enforce', allowHarnesses: ['papercusp'] }),
+      assessWorkScope({ mode: 'off', allowHarnesses: ['papercusp'] }),
+      'an enforced confinement must not read as off',
+    ],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
@@ -1859,7 +1882,7 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...HOST_MEMORY_CELLS.map((c) => [c.cell, c, liveHostMemoryPayload] as const),
     ...GOVERNOR_CELLS.map((c) => [c.cell, c, liveGovernorPayload] as const),
   ];
-  const PAYLOADLESS = [...GOAL_CELLS, ...PORTFOLIO_CELLS, ...CAPACITY_CELLS, ...ROLE_LAUNCH_CELLS];
+  const PAYLOADLESS = [...GOAL_CELLS, ...PORTFOLIO_CELLS, ...CAPACITY_CELLS, ...ROLE_LAUNCH_CELLS, ...WORK_SCOPE_CELLS];
 
   /**
    * THE TRIPWIRE. A cell the sweep cannot obtain a payload for is checked structurally
@@ -1874,6 +1897,9 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
       'agent.roleLaunch',
       'capacity.verdict',
       'goal.portfolioThroughput',
+      // WI-2145092: its payload builder is pure (buildWorkScopeStatusPayload) and needs no
+      // live store, and its hoisted list (`allowHarnesses`) is a plain projection of the row.
+      'workspace.workScope',
     ]);
   });
 

@@ -69,6 +69,7 @@ import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 import { unownedCell } from './coord/gate-ownership';
+import { certifyCheckpointProgress, DEFAULT_STALL_THRESHOLD_MS } from './release-trace-progress';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -3261,6 +3262,8 @@ describe('computeStages: position x health', () => {
             dispatchReservation: null,
             // This fixture supplies no shared-tree edit set, so the collision probe is
             // explicitly UNMEASURED rather than a false all-clear (measured:false ≠ zero paths).
+            manifest: null,
+            manifestSummary: null,
             sharedTreeCollision: {
               measured: false,
               repairInFlight: false,
@@ -8374,5 +8377,119 @@ describe('WI-36259: judgingSha prefers the re-triage marker over the probe', () 
     expect(res.changeInCandidate.judgingSha).toBe(MARKER.refiringCandidate);
     expect(res.changeInCandidate.judgingShaSource).toBe('retriage-marker');
     expect(res.changeInCandidate.judgingSha).toBe(res.gate.checkpointRunInFlight?.candidate);
+  });
+});
+
+/**
+ * D-014 (plan `progress-certified-release-trace-2026-09-05`). P-004 sampled the live gate for
+ * 83 minutes and the certifier's `stalled` branch NEVER EXECUTED: on every active sample the
+ * cache did not describe the live run, so `progressAtMs` arrived null and the reading landed on
+ * `progress-unmeasured`. Its `falseStalls=0` is therefore a statement about REACHABILITY, not
+ * about correctness, and D-014 forbids reading it as a clean bill.
+ *
+ * Why the existing coverage did not already close this. `release-trace-progress.test.ts` tests
+ * the verdict thoroughly — `stalled` included — but it constructs `ProgressCertificateInput` BY
+ * HAND, which that module's own doc-comment names as the point of keeping the verdict pure. A
+ * hand-built input proves the branch is CORRECT; it cannot prove the producer can ever emit one.
+ * The gate that decides that lives here, in `mapCheckpointRunInFlight`, not in the certifier —
+ * so no amount of testing on either side of the seam covers the seam itself.
+ *
+ * This is the experiment D-014 names as the only thing that would exercise the branch — "a
+ * deliberate test that ages the cache against a synthetic live lock" — run deterministically
+ * instead of waiting for a gate run that outlives the snapshot cache (papercusp runs currently
+ * finish in ~17s, so the sampled route cannot get there; D-013 separately closed the backfill).
+ */
+describe('D-014: the producer reaches the certifier stall branch, and the identity gate suppresses it', () => {
+  const NOW = 1_800_000_000_000;
+  const STARTED = NOW - 90 * 60_000;
+
+  /** A run-lock reading that positively answers "a run is live NOW", as the real probe does. */
+  const heldLock = (startedAtMs: number, elapsedSec: number) => ({
+    held: true,
+    elapsedSec,
+    source: 'run-lock' as const,
+    startedAtMs,
+  });
+
+  it('REACHABILITY: a cache that describes the live run carries an ageable heartbeat through to `stalled`', () => {
+    const reading = mapCheckpointRunInFlight(
+      {
+        activeRun: {
+          active: true,
+          candidate: 'abcdef1234567890',
+          startedAtMs: STARTED,
+          // 15 minutes since the last advancing heartbeat — past the 10-minute default.
+          progressAtMs: NOW - 15 * 60_000,
+          currentPhase: 'suite',
+          elapsedSec: 5400,
+        },
+        computedAtMs: NOW - 4_000,
+      },
+      NOW,
+      null,
+      heldLock(STARTED, 5400),
+    );
+
+    // The producer-side preconditions, asserted explicitly: without BOTH of these the certifier
+    // cannot reach the branch however the verdict itself is written. This is the half P-004
+    // could not observe, and the half that makes the assertion below mean anything.
+    expect(reading?.progressAtMs).toBe(NOW - 15 * 60_000);
+    expect(reading?.activeSource).toBe('run-lock');
+    expect(NOW - reading!.progressAtMs!).toBeGreaterThan(DEFAULT_STALL_THRESHOLD_MS);
+
+    const cert = certifyCheckpointProgress(reading, NOW);
+    expect(cert.verdict).toBe('stalled');
+    expect(cert.basis).toBe('heartbeat-stale');
+    expect(cert.liveAuthority).toBe(true);
+  });
+
+  /**
+   * The same aged heartbeat, withheld. This is the shape P-004 actually measured on all 164
+   * samples, and it is the reason the branch was unreachable there — so it belongs beside the
+   * reachability case rather than in a separate suite: together they show the identity gate is
+   * load-bearing, not incidental. Raw, the cache here would produce a stall; joined, it cannot.
+   */
+  it('SUPPRESSION: an aged heartbeat belonging to a DIFFERENT run is withheld, never certified `stalled`', () => {
+    const liveStarted = NOW - 17_000;
+    const reading = mapCheckpointRunInFlight(
+      {
+        // The previous hour-long run, still in the snapshot, carrying a 30-minute-old heartbeat.
+        activeRun: {
+          active: true,
+          candidate: 'stale00000000000',
+          startedAtMs: NOW - 60 * 60_000,
+          progressAtMs: NOW - 30 * 60_000,
+          currentPhase: 'suite',
+          elapsedSec: 3600,
+        },
+        computedAtMs: NOW - 4_000,
+      },
+      NOW,
+      null,
+      // ...while the lock says the live run started 17s ago. Unjoinable, so the detail is dropped.
+      heldLock(liveStarted, 17),
+    );
+
+    expect(reading?.active).toBe(true);
+    expect(reading?.progressAtMs).toBeUndefined();
+    expect(reading?.currentPhase).toBeUndefined();
+    expect(reading?.candidate ?? null).toBeNull();
+    // Liveness and elapsed still come from the lock — exactly the P-004 sample shape.
+    expect(reading?.elapsedSec).toBe(17);
+
+    const cert = certifyCheckpointProgress(reading, NOW);
+    expect(cert.verdict).toBe('unknown');
+    expect(cert.basis).toBe('progress-unmeasured');
+  });
+
+  it('SUPPRESSION: a lock-only reading with no snapshot at all is unknown, however long the run has been up', () => {
+    const reading = mapCheckpointRunInFlight(null, NOW, null, heldLock(STARTED, 5400));
+
+    expect(reading?.active).toBe(true);
+    expect(reading?.progressAtMs).toBeUndefined();
+
+    const cert = certifyCheckpointProgress(reading, NOW);
+    expect(cert.verdict).toBe('unknown');
+    expect(cert.basis).toBe('progress-unmeasured');
   });
 });

@@ -922,7 +922,15 @@ export const gitSyncAwaitTool = defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    harness: harnessArg,
+    // EI-22377735399722977 — the scope is REQUIRED here for a sha-less wait, and
+    // nothing said so before the refusal: the shared harnessArg text reads as
+    // "a harness-scoped session supplies this automatically", which is true of
+    // ordinary reads and false of this one. An operator-scope session carries the
+    // `*` sentinel, which is not a concrete tree, so gitSyncAwaitScope() returns
+    // null and the call is refused `harness_required` at the handler.
+    harness: harnessArg.describe(
+      "The harness whose CHECKOUT you edited — which tree's commit wakes you. REQUIRED unless you pass `sha`: an operator/workspace-scope session carries the `*` sentinel, not a concrete tree, so a sha-less wait with no harness is refused `harness_required` (pass the concrete slug, e.g. 'papercusp'). With a `sha` it is optional — the commit identity already scopes the wait — but omitting it there waits on the GLOBAL commit event, so keep it to stay bound to your own tree.",
+    ),
     sha: z
       .string()
       .min(4)

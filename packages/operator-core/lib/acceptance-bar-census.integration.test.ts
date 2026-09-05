@@ -87,10 +87,17 @@ describe('runAcceptanceBarCensus (real Postgres)', () => {
     });
     expect(second).toEqual(first);
     expect(first).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       requirementsAdoption: { numerator: 1, denominator: 1, percent: 100 },
-      barCoverage: { numerator: 0, denominator: 1, percent: 0 },
-      residuals: [{ planSlug: 'census-target', reasons: expect.arrayContaining(['bar_set_hash_missing', 'rubric_missing_or_unreadable']) }],
+      barCoverage: { numerator: 0, denominator: 0, percent: 0 },
+      migrationCoverage: { numerator: 0, denominator: 1, percent: 0 },
+      residuals: [],
+      migrationResiduals: [{ planSlug: 'census-target', reasons: expect.arrayContaining(['bar_set_hash_missing', 'rubric_missing_or_unreadable']) }],
     });
+    await db.sql`UPDATE harness_shared.harness_plans SET acceptance_bar_cohort = 'post-epoch'
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = 'census-target'`;
+    const postEpoch = await runAcceptanceBarCensus(censusSql, { workspaceId: WORKSPACE, harnessSlug: HARNESS });
+    expect(postEpoch.barCoverage).toEqual({ numerator: 0, denominator: 1, percent: 0 });
+    expect(postEpoch.residuals).toEqual(first.migrationResiduals);
   });
 });

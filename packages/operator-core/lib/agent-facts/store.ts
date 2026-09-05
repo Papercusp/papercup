@@ -1061,10 +1061,30 @@ export function resolveFactLifetime(
   if (input.subjectVolatile) return { permanent: false, ttlSec: FACT_VOLATILE_MAX_TTL_SEC };
 
   if (input.permanent === true) return { permanent: true, ttlSec: 0 };
-  if (input.kind === 'convention') return { permanent: true, ttlSec: 0 };
+
+  // A TYPED SLOT OUTRANKS `kind` — and these three branches must stay ABOVE the
+  // `kind:'convention'` one below. A slot is a declaration about THIS fact's epistemic
+  // status ("a tried-and-failed approach", "an owner-gated blocker"); `kind` only names
+  // its modality. D-002 reasoned each slot's lifetime explicitly, so a `kind` passed
+  // alongside must not silently overwrite it.
+  //
+  // Ordered the other way round — as they were until 2026-09-05 — `kind:'convention'`
+  // short-circuited and granted permanence to the two slots D-002 deliberately kept
+  // FINITE ("a dead-end is a claim about CURRENT code ... re-affirmed rather than
+  // standing forever"). Measured live at the time of the fix: 57/57 `dead-end:` and 4/4
+  // `wall:` facts carrying kind:'convention' had expires_at = infinity, and NOT ONE of
+  // the 61 carried a recheck — every one a permanent, never-re-verified claim about code
+  // that had moved on. For `wall:` it also disabled the slot's entire purpose: the
+  // wall-lapse watchdog fires on the LAPSE, so an infinite wall can never escalate.
+  //
+  // Nothing is lost for a caller who genuinely wants an unbounded slot fact: the
+  // explicit `permanent:true` branch above still wins, and `isFactCapExempt` accepts it
+  // for exactly these three prefixes (13 live rows already take that deliberate route).
   if (key.startsWith(GUARD_RAIL_KEY_PREFIX)) return { permanent: true, ttlSec: 0 }; // D-002
   if (key.startsWith(DEAD_END_KEY_PREFIX)) return { permanent: false, ttlSec: DEAD_END_DEFAULT_TTL_SEC }; // D-002
   if (key.startsWith(WALL_KEY_PREFIX)) return { permanent: false, ttlSec: WALL_DEFAULT_TTL_SEC };
+
+  if (input.kind === 'convention') return { permanent: true, ttlSec: 0 };
 
   const byConfidence = defaultTtlSecForConfidence(input.confidence);
   if (byConfidence != null) return { permanent: false, ttlSec: byConfidence };

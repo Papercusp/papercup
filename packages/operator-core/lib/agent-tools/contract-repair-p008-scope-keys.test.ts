@@ -440,3 +440,37 @@ describe('P-008 already-remediated rows stay remediated', () => {
     ).toBe(true);
   });
 });
+
+describe('P-008 residue: the last three scope-key filings', () => {
+  it('facts:list sends a text-search `q`/`query` to the exact-key read (EI-21377394191283993)', () => {
+    const label = 'facts:list';
+    expectRedirectsStayRedirects(factsListTool as ToolLike, label, ['q', 'query']);
+    for (const key of ['q', 'query']) {
+      const split = expectLocalRename(factsListTool as ToolLike, label, key, 'key');
+      // The rename ALONE would mislead: `key` is EXACT, so a caller hunting by wording
+      // retries under a new spelling unless the other two routes are named outright.
+      expect(split.note, `${label}.${key} must say the destination is an EXACT match`).toMatch(/exact/i);
+      expect(split.note, `${label}.${key} must name the semantic-recall route`).toContain('memory:search');
+    }
+  });
+
+  it('git-sync:await says its scope is REQUIRED without a sha, before the refusal (EI-22377735399722977)', () => {
+    const shape = declaredShape(gitSyncAwaitTool as unknown as ToolLike, 'git-sync:await');
+    const described = (shape.harness as { description?: string } | undefined)?.description ?? '';
+    // The SHARED harnessArg text says a scoped session supplies this automatically —
+    // true of ordinary reads, false of this wait, which is the whole reason the filing
+    // learned the requirement only from `harness_required` at the handler.
+    expect(described, 'git-sync:await must override the shared harnessArg describe').not.toBe('');
+    expect(described).toMatch(/REQUIRED/);
+    expect(described).toMatch(/sha/);
+    expect(described).toMatch(/harness_required/);
+  });
+
+  it('loop:end names acknowledgeWakeLessAutonomy in `when`, not only in the refusal (EI-22082350413439190, EI-22392577287713499)', () => {
+    const when = (loopEndTool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
+    // Both filings landed AFTER the description already carried it. `when` is what is
+    // read while AUTHORING the call; the description is read after the round-trip.
+    expect(when).toContain('acknowledgeWakeLessAutonomy');
+    expect(when).toMatch(/FIRST call/);
+  });
+});

@@ -26,6 +26,7 @@
 import { rubricTemplateDataSchema } from './rubric-template';
 import type { AcceptanceBarContract, AcceptanceBarProvenance } from './rubric-template';
 import { hashPlanContent } from './content-hash';
+import { pgTimestampToIso } from '../../pg-timestamp';
 
 /** The marker string that tags an embedded replication drill in method/replication
  *  prose. Losing it from a criterion's combined procedure text is a guard violation. */
@@ -347,7 +348,7 @@ function deriveContract(
       : {}),
     ...(subject?.cohort ? { cohort: subject.cohort } : {}),
     ...(subject?.revision != null && subject.revision > 0 ? { subjectPlanRevision: subject.revision } : {}),
-    ...(subject?.seededAt ? { seededAt: subject.seededAt } : {}),
+    ...(subject?.seededAt ? { seededAt: pgTimestampToIso(subject.seededAt) } : {}),
     ...(subject?.seededBy ? { seededBy: subject.seededBy } : {}),
   };
 }
@@ -479,7 +480,10 @@ export function guardAcceptanceBarTemplateDataWrite(
     ...(stored.ratifiedBy !== undefined ? { ratifiedBy: stored.ratifiedBy } : {}),
   };
   return {
-    data: canonicalData,
+    // Canonicalization adds server-owned values AFTER the incoming validation.
+    // Validate that final shape too, so a DB representation cannot persist a
+    // rubric that the next reader silently treats as absent.
+    data: rubricTemplateDataSchema.parse(canonicalData) as unknown as Record<string, unknown>,
     started: true,
     changed: changes.length > 0,
     changes,

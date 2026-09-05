@@ -287,4 +287,18 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
       barProvenance: criterion().barProvenance,
     });
   });
+
+  it('keeps METHOD updates readable when the subject timestamp is PostgreSQL text', () => {
+    const input = {
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started(),
+      nextTemplateData: started({ method: 'Run the new check.' }),
+      subjectPlan: { seededAt: '2026-09-04 16:00:00-04' },
+    };
+    const result = guardAcceptanceBarTemplateDataWrite(input);
+    expect(result.data.barContract).toMatchObject({ seededAt: contract.seededAt });
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      ...input, subjectPlan: { seededAt: 'not-a-timestamp' },
+    })).toThrow();
+  });
 });

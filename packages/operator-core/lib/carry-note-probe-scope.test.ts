@@ -321,3 +321,103 @@ describe('detectScopeOverreach — the advisory lint', () => {
     expect(detectScopeOverreach([prescriptiveRow])).toHaveLength(0);
   });
 });
+
+/**
+ * EI-20317240969858799 — an UNEXPANDED PLACEHOLDER in a recheck.
+ *
+ * Measured before wiring, per this module's own D-001 rule: 308 of 3,315 stored
+ * notes with a `## Checks` section carry one (9.29%), ~11x the 0.8% that earned
+ * `detectScopeOverreach` its place.
+ *
+ * The FALSE-POSITIVE controls below are the load-bearing half. A pattern that
+ * hunts `<...>` inside shell text is one careless widening away from badging
+ * every `Promise<void>` in the corpus, and the badge it would add is rendered
+ * into every cold wake. They are written as standing controls rather than
+ * one-off assertions so that widening fails HERE.
+ */
+describe('placeholder rechecks — a probe a successor cannot run', () => {
+  it("flags the item's own named pattern, and reports it as a placeholder", () => {
+    const scope = describeProbeScope('npm run lint:tsc -- --files=<all 11 edited TS files>');
+    expect(scope?.kind).toBe('placeholder');
+    expect(scope?.label).toBe('placeholder <all 11 edited TS files>');
+  });
+
+  it('flags the shapes actually measured in the corpus', () => {
+    for (const recheck of ['cd <repo root>', 'git show <candidate>', 'npx tsx <scratch>', 'kill -0 <pid>']) {
+      expect(describeProbeScope(recheck)?.kind).toBe('placeholder');
+    }
+  });
+
+  /**
+   * CALIBRATION CONTROL. Each of these contains a `<`, and a naive matcher
+   * badges all of them. A generic is ATTACHED to the identifier it
+   * parameterises, which is exactly what the negative lookbehind keys on; a
+   * redirect never closes with `>`.
+   */
+  it('does NOT fire on generics, tags, or shell redirects', () => {
+    for (const recheck of [
+      "grep -n 'Promise<void>' src/x.ts",
+      'rg "Array<string>" packages',
+      'tsc --noEmit 2>&1 | tail -5',
+      'psql -f - <<EOF',
+      'sort < input.txt',
+      'test $a -lt 5',
+    ]) {
+      expect(describeProbeScope(recheck)?.kind).not.toBe('placeholder');
+    }
+  });
+
+  it('outranks a bound in the same string — an unreachable bound is not a bound', () => {
+    // Contains BOTH a placeholder and a real `tail -3` line cut.
+    const scope = describeProbeScope('grep ERROR <the failing log> | tail -3');
+    expect(scope?.kind).toBe('placeholder');
+  });
+
+  /**
+   * The consumer regression. `detectScopeOverreach` calls `describeProbeScope`
+   * and reports any scope beside a quantified claim, so adding a kind silently
+   * recruited placeholders into a lint that means something else. The
+   * calibration half proves the lint is still LIVE rather than switched off.
+   */
+  it('is excluded from the scope-overreach lint, which still fires on real overreach', () => {
+    const placeholderRow: CheckEntry = {
+      claim: 'every scheduler test passes on the current tree.',
+      recheck: 'npm run test:file -- <the changed files>',
+      verified: 'ran them',
+    };
+    const realOverreach: CheckEntry = {
+      claim: 'no gate run produced a verdict today.',
+      recheck: "journalctl --since '60 min ago' | grep GATE:",
+      verified: 'checked',
+    };
+
+    // Calibration: the lint is live and still catches the shape it was built for.
+    expect(detectScopeOverreach([realOverreach])).toHaveLength(1);
+    // Discrimination: the placeholder row is left to its own advisory.
+    expect(detectScopeOverreach([placeholderRow])).toHaveLength(0);
+  });
+
+  /**
+   * The dangerous half, per this file's header: the marker is DERIVED at render
+   * time and must be stripped on parse. If it is not, every cold wake re-renders
+   * the row and the claim grows by one marker, forever.
+   */
+  it('round-trips: the derived marker never accretes into the claim', () => {
+    const row: CheckEntry = {
+      claim: 'the six edited files typecheck clean.',
+      recheck: 'npm run lint:tsc -- --files=<your files>',
+      verified: 'status=clean',
+    };
+
+    const line = renderCheckLine(row);
+    expect(line).toContain('[scope: placeholder <your files>]');
+
+    const parsed = parseCheckLine(line);
+    expect(parsed?.claim).toBe('the six edited files typecheck clean.');
+    expect(parsed?.claim).not.toContain('[scope:');
+
+    // Re-rendering the parsed row is byte-stable — the accretion regression.
+    expect(renderCheckLine({ ...row, ...parsed })).toBe(line);
+    expect(stripProbeScopeMarker(renderProbeScopeMarker({ label: 'placeholder <x>', kind: 'placeholder' }))).toBe('');
+  });
+});

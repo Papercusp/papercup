@@ -472,3 +472,69 @@ export function classifyForRehome(
   if (signals.length === 0) return { action: 'hold', reason: 'no-platform-signal' };
   return { action: 'rehome', to: cls.platformHarness, signals };
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Status lens — WI-2145092 (the D-003 residue: a `state:read` cell + /admin pane).
+ *
+ * ONE derivation, three doors: `workspace:work_scope_status` (the cell's read-only
+ * resolver), the `workScope.policy` sync query (the /admin/work-scope pane) and the
+ * `workspace:work_scope { op:'get' }` control tool all project THIS payload, so a
+ * reader on any door sees exactly what the gates enforce.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The one code the `workspace.workScope` cell answers with. */
+export type WorkScopeAssessment = 'enforce' | 'off' | 'absent';
+
+/**
+ * Pure assessor behind the cell, derived from the SAME predicate every dispatch gate
+ * uses (isWorkScopeEnforced) — so `enforce` means "gates refuse out-of-scope work",
+ * not "a row says enforce". An enforce row with an EMPTY allow-list confines nothing
+ * (fail-open) and therefore reads `off`; no row at all reads `absent` (D-001:
+ * byte-identical to before the policy shipped).
+ */
+export function assessWorkScope(policy: WorkScopePolicy | null): WorkScopeAssessment {
+  if (isWorkScopeEnforced(policy)) return 'enforce';
+  return policy ? 'off' : 'absent';
+}
+
+export interface WorkScopeStatusPayload {
+  ok: true;
+  /** headline of the `workspace.workScope` cell — the stored mode; null when no policy row exists */
+  mode: WorkScopePolicy['mode'] | null;
+  /** the gates' own verdict (isWorkScopeEnforced) — evidence for the assessment, independent of `mode` */
+  enforced: boolean;
+  allowHarnesses: string[];
+  exceptions: number;
+  setBy: string | null;
+  reason: string | null;
+  updatedAt: string | null;
+  /** running counts plus the last `recent` decisions of the bounded ledger ring */
+  ledger: { counts: Record<WorkScopeVerdictKind, number>; recent: WorkScopeDecision[] };
+  assessments: { policy: WorkScopeAssessment };
+}
+
+export const WORK_SCOPE_STATUS_DEFAULT_RECENT = 10;
+
+/** Build the status payload from a (possibly absent) policy. Pure: no I/O, no cache. */
+export function buildWorkScopeStatusPayload(
+  policy: WorkScopePolicy | null,
+  opts: { recent?: number } = {},
+): WorkScopeStatusPayload {
+  const recent = Math.max(0, Math.min(WORK_SCOPE_LEDGER_CAP, opts.recent ?? WORK_SCOPE_STATUS_DEFAULT_RECENT));
+  const entries = policy?.ledger?.entries ?? [];
+  return {
+    ok: true,
+    mode: policy?.mode ?? null,
+    enforced: isWorkScopeEnforced(policy),
+    allowHarnesses: policy?.allowHarnesses ?? [],
+    exceptions: policy?.exceptions?.length ?? 0,
+    setBy: policy?.setBy ?? null,
+    reason: policy?.reason ?? null,
+    updatedAt: policy?.updatedAt ?? null,
+    ledger: {
+      counts: { ...EMPTY_COUNTS, ...(policy?.ledger?.counts ?? {}) },
+      recent: recent > 0 ? entries.slice(-recent) : [],
+    },
+    assessments: { policy: assessWorkScope(policy) },
+  };
+}

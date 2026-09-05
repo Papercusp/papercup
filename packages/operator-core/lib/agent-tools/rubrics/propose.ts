@@ -16,6 +16,7 @@ import {
   rubricCriterionCheckSchema,
   acceptanceCriterionRoleSchema,
   acceptanceBarProvenanceSchema,
+  acceptanceEvidencePlaneSchema,
 } from '../plans/rubric-template';
 import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
@@ -63,6 +64,9 @@ const criterion = z.object({
     .max(200)
     .optional()
     .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
+  evidencePlane: acceptanceEvidencePlaneSchema
+    .optional()
+    .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
   passRatings: z
     .array(z.string().min(1))
     .min(1)

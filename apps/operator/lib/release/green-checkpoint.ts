@@ -10217,7 +10217,28 @@ async function runGreenCheckpointInner(
   // verdict, so every failure here falls through to the normal path.
   try {
     const judgedRed = await deps.lastJudgedRed?.(cfg.integrationRoot);
-    if (judgedRed && judgedRed === candidate) {
+    // EI-22430783328866306 — the marker and the frozen queue can disagree. The marker is
+    // stamped by a terminal red; the queue learns that red only if the SAME run also reaches
+    // `markFrozenRepairVerificationRed`. A run killed between the two (observed 2026-09-05
+    // 02:31Z: marker = 2e2c105b, queue signature still measured at 1f43e05a) leaves a repair
+    // head that the marker calls judged and the queue calls unjudged. Skipping here then
+    // starves the convergence forever: every tick resumes that head, the signature is
+    // gate-level so nothing is selectively re-runnable, the full gate is asked to decide, and
+    // this block declines — 20 verdictless runs in one day. The one authority on whether a
+    // frozen head has been judged is the queue; when it says "not yet", judge it.
+    const frozenHeadUnjudged =
+      repairVerification &&
+      repairQueue !== null &&
+      repairQueue.repairHead === candidate &&
+      frozenRepairHeadAwaitsVerification(repairQueue);
+    if (judgedRed && judgedRed === candidate && frozenHeadUnjudged) {
+      deps.log(
+        `unchanged-since-verdict: ${candidate.slice(0, 8)} carries a judged-red marker but the frozen ` +
+          `repair queue has NO verdict at this repair head (its signature was measured at an earlier ` +
+          `head) — the run that stamped the marker never reached the queue (EI-22430783328866306). ` +
+          `Judging it so the convergence can record a verdict and advance instead of livelocking.`,
+      );
+    } else if (judgedRed && judgedRed === candidate) {
       deps.log(
         `unchanged-since-verdict: ${candidate.slice(0, 8)} already reached a RED verdict and the tree is ` +
           `byte-identical — skipping materialization and the suite (WI-42350). This is NOT a new red: it is ` +

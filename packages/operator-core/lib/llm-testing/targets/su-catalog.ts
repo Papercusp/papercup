@@ -163,7 +163,6 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
         },
         harness: { type: 'string' },
       },
-      anyOf: [{ required: ['id'] }, { required: ['ids'] }],
     },
   },
   {
@@ -213,11 +212,6 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
         assumptions: { oneOf: [{ type: 'array', items: { type: 'string' } }, { const: 'none' }] },
         force: { type: 'boolean' },
       },
-      anyOf: [
-        { required: ['id', 'state'] },
-        { required: ['ids', 'state'] },
-        { required: ['items'] },
-      ],
     },
   },
   // --- harness / status ---

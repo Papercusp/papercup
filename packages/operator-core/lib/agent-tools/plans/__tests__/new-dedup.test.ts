@@ -144,6 +144,77 @@ describe('findSimilarPlans', () => {
       expect(similar.map((s) => s.slug)).not.toContain('agent-platform-shell-2026-03-01');
     });
 
+    // EI-20316169827703913 — the absolute `GENERIC_DF_FRACTION = 0.25` cut was
+    // INERT on the real corpus: measured 2026-09-05, the most common non-stopword
+    // token across 1,726 plans was `acceptance` at 0.184, so NOTHING ever reached
+    // a quarter of the corpus, `isGeneric` was false for every token, and P-003's
+    // suppression did nothing. These rows reproduce that shape — a pronounced head
+    // that still sits BELOW 25% of the corpus — which the old constant could not
+    // suppress and the corpus-relative cut does.
+    describe('corpus-relative cut (head below any absolute quarter-of-corpus fraction)', () => {
+      // 19/100 = 0.19 for `acceptance`/`gate` — under the old >0.25 rule both were
+      // "distinctive", so an overlap on them alone flagged. 81 filler plans carry
+      // only unique tokens, so the head is genuinely the corpus head.
+      const liveShaped = [
+        ...Array.from({ length: 18 }, (_, i) => ({
+          planSlug: `acceptance-gate-run-${i}-2026-01-01`,
+          title: `Acceptance gate run ${i}`,
+          status: 'active',
+          archived: false,
+        })),
+        {
+          planSlug: 'quietbox-acceptance-gate-2026-08-13',
+          title: 'Quietbox acceptance gate',
+          status: 'active',
+          archived: false,
+        },
+        ...Array.from({ length: 81 }, (_, i) => ({
+          planSlug: `alpha${i}-beta${i}-2026-02-01`,
+          title: `Alpha${i} beta${i}`,
+          status: 'active',
+          archived: false,
+        })),
+      ];
+
+      it('suppresses a head token at 19% of the corpus (the old 0.25 fraction could not)', () => {
+        // Exactly the filed refusal: overlap is ONLY generic gate vocabulary.
+        expect(findSimilarPlans(['acceptance', 'gate'], liveShaped)).toEqual([]);
+      });
+
+      it('STILL flags when a DISTINCTIVE token is also shared (EI-134 preserved)', () => {
+        const similar = findSimilarPlans(['acceptance', 'gate', 'quietbox'], liveShaped);
+        expect(similar.map((s) => s.slug)).toContain('quietbox-acceptance-gate-2026-08-13');
+      });
+
+      // THE ANTI-VACUITY INVARIANT. The cut is a fraction (<1) of the corpus's own
+      // observed maximum, so the most common token ALWAYS clears it — the mechanism
+      // cannot go silently inert the way an absolute constant did. This asserts the
+      // property directly at several head heights, including ones far below any
+      // plausible hand-picked fraction; it fails if the cut ever stops being
+      // corpus-relative.
+      it.each([50, 25, 12])(
+        'head token in %i/100 plans is still suppressed — the cut is never unreachable',
+        (headCount) => {
+          const rows = [
+            ...Array.from({ length: headCount }, (_, i) => ({
+              planSlug: `ubiquitous-token-${i}-2026-01-01`,
+              title: `Ubiquitous token ${i}`,
+              status: 'active',
+              archived: false,
+            })),
+            ...Array.from({ length: 100 - headCount }, (_, i) => ({
+              planSlug: `zeta${i}-eta${i}-2026-02-01`,
+              title: `Zeta${i} eta${i}`,
+              status: 'active',
+              archived: false,
+            })),
+          ];
+          // `ubiquitous` + `token` are the corpus head → no distinctive overlap.
+          expect(findSimilarPlans(['ubiquitous', 'token'], rows)).toEqual([]);
+        },
+      );
+    });
+
     it('below the large-corpus threshold, generic suppression is OFF (small index keeps old behavior)', () => {
       // Same two rows only (2 < 25) → `agent`+`platform` are NOT treated as generic,
       // so an agent-platform overlap DOES flag (no DF data to trust on a tiny corpus).

@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import assertTool from './agent-tools/facts/assert';
 import {
+  detectFactAbsenceClaims,
   detectFactMeasurements,
+  factAbsenceHint,
   factMeasurementHint,
+  formatFactAbsenceHint,
   formatFactMeasurementHint,
   MEASUREMENT_CONTEXT_WINDOW,
 } from './fact-measurement-detector';
@@ -72,5 +75,62 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     expect(notWhen).toMatch(/historical/i);
     expect(assertSchemaField('subjectVolatile').description).toMatch(/SNAPSHOT|15 minutes/);
     expect(assertSchemaField('measuredAt').description).toMatch(/ISO timestamp|subjectVolatile/);
+  });
+});
+
+describe('fact absence detector — a worded absence gets its own advisory (EI-20307375669832848)', () => {
+  // CALIBRATION. This is the measured gap the absence scan exists to close: the
+  // measurement scan is driven by NUMBER matches, so a worded absence never
+  // reaches its context check. If this ever starts firing, the absence detector
+  // is duplicating the measurement one and this pair should be reconciled.
+  it('confirms the measurement scan is structurally blind to a worded absence', () => {
+    expect(detectFactMeasurements('no membership exists for this agent')).toEqual([]);
+    expect(detectFactMeasurements('EI-20307375669832848 was never touched by any routine')).toEqual([]);
+    expect(detectFactMeasurements('the census found nothing in that relation')).toEqual([]);
+    // ...while it still catches an absence that happens to be written numerically.
+    expect(detectFactMeasurements('observed surfacedAsPattern of 0')).not.toEqual([]);
+  });
+
+  it('flags the absence shapes the measurement scan cannot see', () => {
+    for (const body of [
+      'no membership exists for this agent',
+      'EI-20307375669832848 was never touched by any routine',
+      'the census found nothing in that relation',
+      'there are no emitters for this event key',
+      'the callers query returned no rows',
+      'that migration does not exist in the candidate',
+    ]) {
+      expect(detectFactAbsenceClaims(body), body).not.toEqual([]);
+    }
+  });
+
+  // WI-2145990 class: a domain term that merely CONTAINS a negation is not an
+  // absence claim. The anchors reject hyphen adjacency so these cannot trip it.
+  it('does not fire on hyphenated domain terms that contain a negation', () => {
+    expect(detectFactAbsenceClaims('the deliberate-no-pair decision is recorded and the no-op path exists')).toEqual(
+      [],
+    );
+    expect(detectFactAbsenceClaims('no-fall routing is implemented for this lane')).toEqual([]);
+  });
+
+  it('does not fire on ordinary prose negation with no existence claim near it', () => {
+    expect(detectFactAbsenceClaims('This is not the preferred approach for new plans.')).toEqual([]);
+    expect(detectFactAbsenceClaims('Prefer a library over rolling your own; none of that is urgent work.')).toEqual([]);
+  });
+
+  it('is fail-soft on non-string and empty input, like the measurement scan', () => {
+    expect(detectFactAbsenceClaims(undefined)).toEqual([]);
+    expect(detectFactAbsenceClaims(null)).toEqual([]);
+    expect(detectFactAbsenceClaims(42)).toEqual([]);
+    expect(detectFactAbsenceClaims('')).toEqual([]);
+  });
+
+  it('renders a null clean case and an advisory naming the instrument risk', () => {
+    expect(formatFactAbsenceHint([])).toBeNull();
+    const hint = factAbsenceHint('no membership exists for this agent')!;
+    expect(hint).toContain('ttlSec');
+    expect(hint).toContain('falsifier');
+    expect(hint).toMatch(/instrument/i);
+    expect(hint).toMatch(/write succeeded|nothing was blocked/i);
   });
 });

@@ -885,6 +885,71 @@ describe('renderLoopWakeText — the goal-staleness verdict rides both forms', (
   });
 });
 
+/**
+ * EI-21459285533379701 — the goal-vs-corrected-fact verdict rides the same slots, for
+ * the same placement reason. It is COMPLEMENTARY to the staleness verdict above, not a
+ * replacement: that one judges the work-item ids the goal names, this one judges a
+ * claim the goal makes that its author has since withdrawn via facts:assert. A
+ * retracted claim names no id, so both can be live on the same wake.
+ */
+describe('renderLoopWakeText — the goal↔fact divergence verdict rides both forms', () => {
+  const note = '## Next action\ncontinue the edit';
+  const DIVERGED =
+    '⚠⚠ THIS GOAL MAY ECHO A CLAIM YOU HAVE SINCE WITHDRAWN — a standing fact covering ' +
+    'the same subject was CORRECTED after this loop was armed: guard-rail:poll.';
+  const STALE = '⚠⚠ THIS GOAL IS STALE — every work-item it names is already TERMINAL: EI-1 (done).';
+
+  it('SHORT form: the verdict lands directly beneath the arm-time goal line', () => {
+    const out = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 2,
+      checkpoint: note,
+      goalFactDivergenceNote: DIVERGED,
+    });
+    const goalAt = out.indexOf('Arm-time goal');
+    expect(goalAt).toBeGreaterThan(-1);
+    expect(out.indexOf(DIVERGED)).toBeGreaterThan(goalAt);
+    expect(out.slice(goalAt, out.indexOf(DIVERGED))).not.toContain('\n\n');
+  });
+
+  it('FULL form: the verdict follows the kickoff immediately, because there the goal LEADS', () => {
+    const out = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 1,
+      checkpoint: note,
+      goalFactDivergenceNote: DIVERGED,
+    });
+    expect(out).toContain(DIVERGED);
+    expect(out.indexOf(DIVERGED)).toBeLessThan(out.indexOf('## Next action'));
+  });
+
+  it('renders NOTHING when there is no verdict — a healthy wake is byte-identical', () => {
+    const withOut = renderLoopWakeText({ kickoff: FULL_KICKOFF, fireNumber: 2, checkpoint: note });
+    const withNull = renderLoopWakeText({
+      kickoff: FULL_KICKOFF,
+      fireNumber: 2,
+      checkpoint: note,
+      goalFactDivergenceNote: null,
+    });
+    expect(withNull).toBe(withOut);
+    expect(withOut).not.toContain('WITHDRAWN');
+  });
+
+  it('both verdicts render together when both fire — neither displaces the other', () => {
+    for (const fireNumber of [1, 2]) {
+      const out = renderLoopWakeText({
+        kickoff: FULL_KICKOFF,
+        fireNumber,
+        checkpoint: note,
+        goalStalenessNote: STALE,
+        goalFactDivergenceNote: DIVERGED,
+      });
+      expect(out, `fire #${fireNumber}`).toContain(STALE);
+      expect(out, `fire #${fireNumber}`).toContain(DIVERGED);
+    }
+  });
+});
+
 describe('renderLoopWakeText — the full/short wake cadence (P-001b)', () => {
   const note = '## Next action\ncontinue the edit';
 

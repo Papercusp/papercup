@@ -88,8 +88,10 @@ export interface ProbeScope {
   /** Short label rendered inline next to the badge, e.g. `last 60 min`. Never
    *  contains `]`, so it can never break the rendered row's round-trip. */
   label: string;
-  /** What kind of bound it is — a time window, a line cut, or a row cap. */
-  kind: 'time' | 'lines' | 'rows';
+  /** What kind of bound it is — a time window, a line cut, a row cap, or an
+   *  unexpanded PLACEHOLDER, which bounds the probe to nothing at all because a
+   *  successor cannot run it. */
+  kind: 'time' | 'lines' | 'rows' | 'placeholder';
 }
 
 /**
@@ -176,6 +178,58 @@ const ROW_PATTERNS: ReadonlyArray<{ re: RegExp; label: (m: RegExpMatchArray) => 
 ];
 
 /**
+ * An UNEXPANDED PLACEHOLDER left in a recheck — `--files=<your files>`,
+ * `cd <repo root>`, `git show <candidate>` (EI-20317240969858799).
+ *
+ * ── WHY THIS IS A SCOPE ─────────────────────────────────────────────────────
+ *
+ * The other three patterns say what a probe CAN see. This one says it can see
+ * nothing: a successor cannot run the command at all, because the one thing
+ * that made it concrete — the file list, the sha, the scratch path — lived in
+ * the writer's head and did not survive the carry. It is the strongest possible
+ * bound, so it is checked FIRST: a placeholder outranks any `--since`/`tail`
+ * bound in the same string, since the reader can never reach that bound.
+ *
+ * ── MEASURED BEFORE WIRING, per this file's own D-001 rule ──────────────────
+ *
+ * Measured against `harness_shared.carry_notes` on 2026-09-05, cross-tenant,
+ * with a passing positive control: 3,315 notes carry a `## Checks` section and
+ * 308 of them contain a placeholder recheck — 9.29%. That is ~11x the 0.8% at
+ * which {@link detectScopeOverreach} was judged "a real signal, not noise", and
+ * ~2x the sibling absence detector's 4.6%.
+ *
+ * The token vocabulary is DERIVED from that corpus, not invented: the top 30
+ * distinct tokens are all genuine metavariables (`<path>` 23, `<pid>` 17,
+ * `<file>` 13, `<portal>` 13, `<candidate>` 13, `<your files>` 4, …).
+ *
+ * ── THE FALSE-POSITIVE CLASS, AND WHY THE LOOKBEHIND IS LOAD-BEARING ────────
+ *
+ * The obvious hazard is a TypeScript generic or an HTML tag inside a recheck —
+ * `Promise<void>`, `Array<string>`, `grep '<div>'`. The negative lookbehind
+ * excludes generics structurally: a generic is always ATTACHED to the identifier
+ * it parameterises, while a placeholder is preceded by a space, `=`, `:` or `[`.
+ * A shell redirect cannot match at all — `2>&1` has no `<`, and `<<EOF` / `< in`
+ * never close with `>`.
+ *
+ * ⚠ Do NOT overstate that lookbehind, as an earlier draft of this comment did.
+ * Measured 2026-09-05 on the same corpus (120-char prefix window): a naive
+ * matcher without it hits 267 notes, with it 265 — it excludes TWO. It is cheap
+ * structural insurance against a class that is currently near-absent, NOT a
+ * filter carrying real volume, and the honest reading is that the corpus simply
+ * does not put generics in rechecks today. What keeps it honest as the corpus
+ * grows is `carry-note-probe-scope.test.ts`, which holds the generics and
+ * redirects as standing CALIBRATION controls so a widened pattern fails THERE
+ * rather than silently badging honest rechecks.
+ *
+ * (Counts differ slightly by prefix window: the headline 308/3,315 = 9.29% uses
+ * an unbounded `re-check:[^\n]*` prefix and so reaches placeholders further into
+ * the line. Both are floors on the same phenomenon, not competing measurements.)
+ */
+const PLACEHOLDER_PATTERNS: ReadonlyArray<{ re: RegExp; label: (m: RegExpMatchArray) => string }> = [
+  { re: /(?<![A-Za-z0-9_])<[A-Za-z][^>\n]{0,50}>/, label: (m) => `placeholder ${m[0]}` },
+];
+
+/**
  * Extract the bound a probe declares about itself, or null when it declares
  * none (an unbounded read, or a prose re-check like "re-read the file").
  *
@@ -187,6 +241,8 @@ export function describeProbeScope(recheck: string | null | undefined): ProbeSco
   const text = (recheck ?? '').trim();
   if (!text) return null;
   for (const [kind, patterns] of [
+    // Placeholder first: a probe nobody can RUN outruns every bound it declares.
+    ['placeholder', PLACEHOLDER_PATTERNS],
     ['time', TIME_PATTERNS],
     ['lines', LINE_PATTERNS],
     ['rows', ROW_PATTERNS],
@@ -380,6 +436,12 @@ export function detectScopeOverreach(
     if (!q) continue;
     const scope = describeProbeScope(row?.recheck);
     if (!scope) continue;
+    // A placeholder recheck is a DIFFERENT defect: not "the probe saw less than
+    // the claim covers" but "the probe cannot be run at all". Reporting it here
+    // would file it under the wrong advisory and, worse, put a metavariable in
+    // `probeScope` where a reader expects an observed bound — so this lint stays
+    // exactly as narrow as it was before placeholders became a ProbeScope kind.
+    if (scope.kind === 'placeholder') continue;
     out.push({
       claim: claim.length > 160 ? `${claim.slice(0, 157)}…` : claim,
       quantifier: q[1],

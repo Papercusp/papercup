@@ -1511,10 +1511,17 @@ export default function SessionChatModal({
   // the pre-fix client filter would have found them. The feed is importance-
   // sorted, not recency-sorted; the 97 came from a SQL recency ordering that
   // does not describe feed position. Driven live with this fix provably in the
-  // bundle, the shelf still rendered empty (modal=true, shelf=false, cards=0),
-  // and no reading of this shelf has ever shown cards > 0 in the live app, so
-  // there is no positive control and every `shelf=false` is uninformative
-  // about which hypothesis is right. The real cause is still unknown.
+  // bundle, the shelf at first STILL read empty (modal=true, shelf=false,
+  // cards=0) — but that reading was an instrument false negative, not the
+  // shelf. WI-7323's close (2026-09-05T04:19Z) established the positive
+  // control this comment used to say did not exist: a self-calibrating
+  // headless-rig drive (.papercusp/scratch/wi7323-selfcal.sh) rendered exactly
+  // 2 cards for each of two real owners and 0 for a bogus owner. Every earlier
+  // `shelf=false` was uninformative for two instrument reasons recorded there:
+  // tauri-agent-tools aborts an eval at ~2-5s (so a polling eval never ran),
+  // and expected counts were taken from :3170 while the rig had booted a
+  // different pot. The shelf itself was never broken; the one real defect is
+  // the server-rejection case described two paragraphs down.
   //
   // Scoped here rather than by paging to the item: paging pulls the whole ~1MB
   // feed to find a handful of rows, and still has no bound that guarantees

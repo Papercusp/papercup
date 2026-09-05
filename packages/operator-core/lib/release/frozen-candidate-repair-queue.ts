@@ -17,6 +17,14 @@ import {
   type RepairLegMeasurement,
   type RepairLegShrinkSummary,
 } from './repair-leg-lifecycle';
+// P-021: a runtime cycle by design (repair-manifest.ts imports `normalizeRepoPath` from here);
+// neither side touches the other at module-evaluation time, so ESM resolves it cleanly.
+import {
+  parseRepairManifest,
+  summarizeRepairManifest,
+  type RepairManifest,
+  type RepairManifestSummary,
+} from './repair-manifest';
 
 /**
  * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
@@ -494,6 +502,14 @@ export interface FrozenCandidateRepairQueue {
    * a legacy queue parses with it absent, which reads as "no admission recorded".
    */
   admissions?: readonly FrozenRepairAdmission[];
+  /**
+   * P-021 (D-007 #1): the per-leg REPAIR MANIFEST derived from this row — subject paths, red /
+   * admitted / green status, the exact admit command, leg claims. Rebuilt by
+   * `withRepairManifest` inside the ONE production write path (`writeFrozenCandidateRepairQueue`),
+   * so it cannot describe a different row than the one it sits on. Optional so a pre-P-021 row
+   * still parses; a malformed blob reads as absent, never as a partial manifest.
+   */
+  manifest?: RepairManifest;
 }
 
 /**
@@ -906,6 +922,13 @@ export interface FrozenRepairQueueDiagnostic {
    * signal can be trusted before anything is allowed to block on it.
    */
   sharedTreeCollision: FrozenRepairSharedTreeCollision;
+  /**
+   * P-021 (D-007 #1): the per-leg repair manifest persisted on the row, carried onto the ONE
+   * read model so release:repair-queue, dev:pipeline_position, the owner brief and /admin/git
+   * render the same rows. `null` for a row written before P-021 (never a fabricated manifest).
+   */
+  manifest: RepairManifest | null;
+  manifestSummary: RepairManifestSummary | null;
 }
 
 export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueue): {
@@ -1263,6 +1286,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   // P-002 legs are observability on the same terms as rounds above: malformed entries are
   // dropped individually, never failing the parse of a live queue.
   const legs = parseRepairLegStates(row.legs);
+  const manifest = parseRepairManifest(row.manifest);
   // P-010: a row PERSISTED as blocked by the deleted 8h wall-clock hold is returned to
   // verification on read. The hold no longer exists, so no decision could ever un-wedge such a
   // row; leaving it blocked behind a reason nothing produces any more is the fossil P-010 removed.
@@ -1317,6 +1341,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(convergenceRounds.length > 0 ? { convergenceRounds } : {}),
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
+    ...(manifest ? { manifest } : {}),
     failingTests: boundedFailures(typed.failingTests),
     signature: typed.signature,
   };
@@ -1675,6 +1700,9 @@ export function diagnoseFrozenCandidateRepairQueue(
     // gitPipelineSnapshot and the owner brief. Dropping these two fields here forced each
     // surface to re-parse the raw persisted row (or, in practice, omit the answer entirely).
     admissions: queue.admissions ?? [],
+    // P-021: the manifest rides the same read model — see the field's doc above.
+    manifest: queue.manifest ?? null,
+    manifestSummary: queue.manifest ? summarizeRepairManifest(queue.manifest) : null,
     blockedReason: queue.blockedReason ?? null,
     attempts: queue.attempts,
     openedAtMs: queue.openedAtMs,

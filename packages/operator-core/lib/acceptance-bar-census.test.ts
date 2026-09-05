@@ -54,12 +54,38 @@ describe('P-009 acceptance BAR census', () => {
     ], { workspaceId: 'ws', harnessSlug: 'harness', measuredAt: new Date('2026-09-05T00:00:00.000Z') });
 
     expect(report).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       measuredAt: '2026-09-05T00:00:00.000Z',
       requirementsAdoption: { numerator: 2, denominator: 3, percent: 66.67 },
-      barCoverage: { numerator: 1, denominator: 2, percent: 50 },
-      exclusions: { archived: 1, legacy: 1, rubricOrInstance: 1, investigation: 1 },
-      residuals: [{ planSlug: 'ready-unseeded', reasons: expect.arrayContaining(['bar_epoch_missing', 'rubric_missing_or_unreadable']) }],
+      barCoverage: { numerator: 0, denominator: 0, percent: 0 },
+      migrationCoverage: { numerator: 1, denominator: 2, percent: 50 },
+      exclusions: { archived: 1, legacy: 1, rubricOrInstance: 1, investigation: 1, preEpochExecutable: 2 },
+      residuals: [],
+      migrationResiduals: [{ planSlug: 'ready-unseeded', reasons: expect.arrayContaining(['bar_epoch_missing', 'rubric_missing_or_unreadable']) }],
+    });
+  });
+
+  it('measures post-epoch adoption without hiding malformed markers or including legacy backlog', () => {
+    const rows = [
+      row({ plan_slug: 'covered', acceptance_bar_cohort: 'post-epoch' }),
+      row({ plan_slug: 'missing-epoch', acceptance_bar_cohort: 'post-epoch', acceptance_bar_epoch: null }),
+      row({ plan_slug: 'missing-cohort', acceptance_bar_cohort: null }),
+      row({ plan_slug: 'legacy-covered' }),
+      row({ plan_slug: 'unmarked', acceptance_bar_epoch: null, acceptance_bar_cohort: null, rubric_template_data: null }),
+      row({ plan_slug: 'draft', status: 'draft', acceptance_bar_cohort: 'post-epoch' }),
+      row({ plan_slug: 'shipped', status: 'shipped', acceptance_bar_cohort: 'post-epoch' }),
+    ];
+    const options = { workspaceId: 'ws', harnessSlug: 'harness', measuredAt: new Date('2026-09-05T00:00:00.000Z'), residualLimit: 1 };
+    const report = buildAcceptanceBarCensusReport(rows, options);
+    expect(buildAcceptanceBarCensusReport([...rows].reverse(), options)).toEqual(report);
+    expect(report).toMatchObject({
+      barCoverage: { numerator: 1, denominator: 3, percent: 33.33 },
+      migrationCoverage: { numerator: 2, denominator: 5, percent: 40 },
+      exclusions: { preEpochExecutable: 2 },
+      residuals: [{ planSlug: 'missing-cohort', reasons: ['bar_cohort_missing'] }],
+      residualsTruncated: true,
+      migrationResidualsTruncated: true,
+      parameters: { barCoveragePopulation: 'post-epoch-executable', migrationCoveragePopulation: 'all-executable' },
     });
   });
 

@@ -8,7 +8,7 @@
  */
 import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 
-export const ACCEPTANCE_BAR_CENSUS_SCHEMA_VERSION = 1;
+export const ACCEPTANCE_BAR_CENSUS_SCHEMA_VERSION = 2;
 export const ACCEPTANCE_BAR_CENSUS_LIVE_STATUSES = ['ready', 'active', 'awaiting-acceptance'] as const;
 
 export interface AcceptanceBarCensusOptions {
@@ -54,12 +54,15 @@ export interface AcceptanceBarCensusReport {
     harnessSlug: string;
     liveStatuses: readonly string[];
     residualLimit: number;
+    barCoveragePopulation: 'post-epoch-executable';
+    migrationCoveragePopulation: 'all-executable';
   };
   exclusions: {
     archived: number;
     legacy: number;
     rubricOrInstance: number;
     investigation: number;
+    preEpochExecutable: number;
   };
   cohorts: Record<string, number>;
   requirementsAdoption: {
@@ -72,8 +75,12 @@ export interface AcceptanceBarCensusReport {
     denominator: number;
     percent: number;
   };
+  /** The v1 all-executable metric, retained separately from the adoption target. */
+  migrationCoverage: { numerator: number; denominator: number; percent: number };
   residuals: AcceptanceBarCensusResidual[];
   residualsTruncated: boolean;
+  migrationResiduals: AcceptanceBarCensusResidual[];
+  migrationResidualsTruncated: boolean;
   query: string;
 }
 
@@ -128,6 +135,13 @@ function isInvestigation(row: AcceptanceBarCensusRow): boolean {
   return /(?:^|\n)##\s+Investigation(?:\s|$)/i.test(row.content);
 }
 
+function isPostEpoch(row: AcceptanceBarCensusRow): boolean {
+  // Either durable marker admits a row. Missing one marker is a coverage
+  // failure, never a way to disappear from the adoption denominator.
+  return row.acceptance_bar_cohort === 'post-epoch' ||
+    (row.acceptance_bar_epoch != null && row.acceptance_bar_cohort !== 'legacy-backfilled');
+}
+
 function percent(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : Number(((numerator / denominator) * 100).toFixed(2));
 }
@@ -164,12 +178,14 @@ export function buildAcceptanceBarCensusReport(
   );
   const executable = requirementsCorpus.filter(
     (row) => ACCEPTANCE_BAR_CENSUS_LIVE_STATUSES.includes(row.status as (typeof ACCEPTANCE_BAR_CENSUS_LIVE_STATUSES)[number]) && !isInvestigation(row),
-  );
+  ).sort((a, b) => a.plan_slug.localeCompare(b.plan_slug));
+  const postEpoch = executable.filter(isPostEpoch);
   const exclusions = {
     archived: rows.filter((row) => row.archived).length,
     legacy: rows.filter((row) => row.is_legacy).length,
     rubricOrInstance: rows.filter((row) => row.template === 'rubric' || row.template_slug != null).length,
     investigation: requirementsCorpus.filter(isInvestigation).length,
+    preEpochExecutable: executable.length - postEpoch.length,
   };
   const cohorts: Record<string, number> = {};
   for (const row of rows) {
@@ -177,9 +193,14 @@ export function buildAcceptanceBarCensusReport(
     cohorts[cohort] = (cohorts[cohort] ?? 0) + 1;
   }
   const residuals: AcceptanceBarCensusResidual[] = [];
+  const migrationResiduals: AcceptanceBarCensusResidual[] = [];
   let covered = 0;
+  let migrationCovered = 0;
   for (const row of executable) {
     const reasons = classifyCoverage(row);
+    if (reasons.length === 0) migrationCovered++;
+    else if (migrationResiduals.length < residualLimit) migrationResiduals.push({ planSlug: row.plan_slug, status: row.status, reasons });
+    if (!isPostEpoch(row)) continue;
     if (reasons.length === 0) covered++;
     else if (residuals.length < residualLimit) residuals.push({ planSlug: row.plan_slug, status: row.status, reasons });
   }
@@ -194,6 +215,8 @@ export function buildAcceptanceBarCensusReport(
       harnessSlug: options.harnessSlug,
       liveStatuses: [...ACCEPTANCE_BAR_CENSUS_LIVE_STATUSES],
       residualLimit,
+      barCoveragePopulation: 'post-epoch-executable',
+      migrationCoveragePopulation: 'all-executable',
     },
     exclusions,
     cohorts,
@@ -204,11 +227,18 @@ export function buildAcceptanceBarCensusReport(
     },
     barCoverage: {
       numerator: covered,
+      denominator: postEpoch.length,
+      percent: percent(covered, postEpoch.length),
+    },
+    migrationCoverage: {
+      numerator: migrationCovered,
       denominator: executable.length,
-      percent: percent(covered, executable.length),
+      percent: percent(migrationCovered, executable.length),
     },
     residuals,
-    residualsTruncated: executable.length - covered > residuals.length,
+    residualsTruncated: postEpoch.length - covered > residuals.length,
+    migrationResiduals,
+    migrationResidualsTruncated: executable.length - migrationCovered > migrationResiduals.length,
     query: ACCEPTANCE_BAR_CENSUS_QUERY,
   };
 }

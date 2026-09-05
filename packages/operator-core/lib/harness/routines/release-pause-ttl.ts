@@ -493,6 +493,63 @@ interface LoopStanddownRow {
 }
 
 /**
+ * Which owners are CURRENTLY held under an active `loop:standdown-all` — the
+ * READ side of {@link LOOP_STANDDOWN_MARKER}, for automation that must not act
+ * on a stood-down agent.
+ *
+ * WHY (EI-21451978219397190): during an owner-directed global stand-down,
+ * "unacknowledged by the human" is the EXPECTED steady state — the owner is
+ * deliberately away, which is the whole point of the pause. Any automation that
+ * reads unacknowledged-by-human as a fault and goes hunting for a live agent to
+ * drive it finds PAUSED agents and wakes them, so the pause itself manufactures
+ * the wakes that defeat the pause. Consult this instead of re-deriving the
+ * marker predicate, so the stand-down primitive stays the single source of
+ * truth for "who is held".
+ *
+ * An EXPIRED stand-down is deliberately NOT reported: `sweepExpiredLoopStanddowns`
+ * auto-resumes those, and reusing `classifyFinitePauseExpiry` here makes the hold
+ * release at exactly the moment the loop does — one expiry notion, not two that
+ * can disagree during the window between lapse and sweep.
+ *
+ * Fails OPEN (empty set) on a read error. This guard SUPPRESSES delivery, so a
+ * scan failure must never silently strand escalations that nothing is pausing.
+ */
+export async function listLoopStanddownOwners(
+  sql: Sql,
+  opts: { workspaceId?: string | null; nowMs?: number; limit?: number } = {},
+): Promise<Set<string>> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const limit = opts.limit ?? SWEEP_ROW_CAP;
+  const workspaceId = opts.workspaceId ?? null;
+  const held = new Set<string>();
+
+  type HoldRow = Pick<LoopStanddownRow, 'target_owner_id' | 'pause'>;
+  let rows: HoldRow[];
+  try {
+    rows = await sql<HoldRow[]>`
+      SELECT target_owner_id, metadata->'pause' AS pause
+        FROM harness_shared.routines
+       WHERE reschedule_interval_sec IS NOT NULL
+         AND active = false
+         AND metadata->'pause'->>${LOOP_STANDDOWN_MARKER} = 'true'
+         AND (${workspaceId}::text IS NULL OR workspace_id = ${workspaceId})
+       LIMIT ${limit}`;
+  } catch (e) {
+    console.warn(
+      `[loop-standdown] hold scan failed (non-fatal, failing open): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return held;
+  }
+
+  for (const row of rows) {
+    if (!row.target_owner_id) continue;
+    if (classifyFinitePauseExpiry(readRoutinePause(row.pause), nowMs).expired) continue;
+    held.add(row.target_owner_id);
+  }
+  return held;
+}
+
+/**
  * One bounded sweep pass: auto-resume every loop-su-% routine whose
  * loop:standdown-all pause has outlived its TTL, and record a notice for each.
  * Sibling of `sweepExpiredReleasePauses` — same row-scan/re-arm shape, scoped to

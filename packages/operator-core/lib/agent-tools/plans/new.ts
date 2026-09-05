@@ -241,10 +241,10 @@ export interface SimilarPlan {
 }
 
 /**
- * A token is "corpus-generic" only on a LARGE index — it appears in more than
- * GENERIC_DF_FRACTION of all plans. On a small corpus, document-frequency is
- * noise, so DF suppression is skipped entirely (nothing is generic) and the
- * matcher behaves exactly like the pre-P-003 absolute-count version.
+ * A token is "corpus-generic" only on a LARGE index. On a small corpus,
+ * document-frequency is noise, so DF suppression is skipped entirely (nothing is
+ * generic) and the matcher behaves exactly like the pre-P-003 absolute-count
+ * version.
  *
  * WHY (cross-platform-hardening-and-agent-ergonomics-2026-07-05 P-003): the old
  * matcher flagged `similar_exists` on any two shared tokens, so a plan like
@@ -254,9 +254,53 @@ export interface SimilarPlan {
  * tokens (self-tuning, no stopword maintenance) fixes the class without regressing
  * EI-134 dup detection: a GENUINE duplicate always shares a *distinctive* topic
  * word (by definition not ubiquitous), so it still flags.
+ *
+ * ─── WHY THE CUT IS CORPUS-RELATIVE, NOT AN ABSOLUTE DF FRACTION (EI-20316169827703913) ───
+ * It used to be an absolute constant, `GENERIC_DF_FRACTION = 0.25` — a token had
+ * to appear in more than a QUARTER of all plans. Measured 2026-09-05 over the
+ * live corpus in this function's own units (slug+title tokenized by `dedupTokens`
+ * over `harness_shared.harness_plans`, the same scope `listPlanIndexRows` reads:
+ * workspace-scoped, `template_slug IS NULL`, n=1,726), that constant was INERT:
+ *
+ *   - the MOST common non-stopword token in the entire corpus is `acceptance`
+ *     at 318/1,726 = 0.184 — below the 0.25 cut;
+ *   - so `isGeneric` returned false for EVERY token, the `distinctive` filter
+ *     rejected nothing, and P-003's suppression did nothing at all;
+ *   - the tokens the filed report actually collided on sit far below it:
+ *     `gate` 0.042, `green` 0.021, `integration` 0.011, `red` 0.008.
+ *
+ * That is why a refusal on generic gate vocabulary was still reachable AFTER
+ * P-003 shipped. Replacing 0.25 with another hand-picked fraction reproduces the
+ * same fragility on a timer — the corpus keeps growing and diversifying, so any
+ * absolute DF cut drifts upward out of reach. The cut is instead taken from the
+ * corpus's OWN head: a token is generic when it appears in at least
+ * GENERIC_DF_RELATIVE of the MOST common token's document count.
+ *
+ * That is scale-free, and it is structurally non-vacuous: because the cut is a
+ * fraction (<1) of the observed maximum, the corpus's most common token ALWAYS
+ * clears it, so this mechanism can never silently go inert the way the constant
+ * did. `new-dedup.test.ts` asserts that invariant directly.
+ *
+ * VALIDATED on the live corpus: 0.2 puts the cut at 63.6 docs and selects 21 of
+ * the 2,055 shareable (df>=2) tokens — `acceptance, agent, papercusp, 2026,
+ * fleet, work, sidestage, audit, release, desktop, hive, live, test, loop, gate,
+ * shared, per, owner, one, system, make`. That is recognizably platform
+ * vocabulary and no distinctive topic word, and it touches ~1% of the
+ * vocabulary, so EI-134 duplicate detection is preserved: a genuine duplicate
+ * shares a distinctive topic word by definition. Override via
+ * PAPERCUSP_PLAN_GENERIC_DF_RELATIVE.
  */
 const GENERIC_MIN_CORPUS = 25;
-const GENERIC_DF_FRACTION = 0.25;
+const GENERIC_DF_RELATIVE =
+  Number(process.env.PAPERCUSP_PLAN_GENERIC_DF_RELATIVE ?? '') || 0.2;
+/**
+ * Below this many documents for the corpus's most common token, the head is too
+ * flat for a relative cut to mean anything, so suppression stays OFF and the
+ * pre-P-003 behavior stands. Guards the degenerate direction (under-blocking,
+ * which is the EI-134 harm) rather than the over-blocking one, which `force:true`
+ * can already escape.
+ */
+const GENERIC_MIN_MAX_DF = 10;
 
 /**
  * Search-first dedup for plans:new (audit P-049 / EI-134) — like
@@ -283,9 +327,18 @@ export function findSimilarPlans(
   for (const set of rowTokenSets) {
     for (const t of set) df.set(t, (df.get(t) ?? 0) + 1);
   }
-  const bigCorpus = rows.length >= GENERIC_MIN_CORPUS;
+  // Corpus-RELATIVE genericness cut (see GENERIC_DF_RELATIVE): scale-free, so it
+  // cannot drift out of reach as the corpus grows the way the old absolute
+  // fraction did. `maxDf` is taken over tokens appearing in >=2 plans — a token
+  // in exactly one plan carries no genericness signal.
+  let maxDf = 0;
+  for (const n of df.values()) if (n >= 2 && n > maxDf) maxDf = n;
+  const suppressionActive = rows.length >= GENERIC_MIN_CORPUS && maxDf >= GENERIC_MIN_MAX_DF;
+  // Floor at 2: a token in a single plan is never "corpus-generic", whatever the
+  // relative cut works out to.
+  const genericCut = Math.max(2, maxDf * GENERIC_DF_RELATIVE);
   const isGeneric = (t: string): boolean =>
-    bigCorpus && (df.get(t) ?? 0) / rows.length > GENERIC_DF_FRACTION;
+    suppressionActive && (df.get(t) ?? 0) >= genericCut;
 
   const threshold = Math.min(2, tokens.length);
   const scored: Array<SimilarPlan & { n: number; d: number }> = [];

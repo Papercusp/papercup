@@ -3386,6 +3386,16 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     );
 
     await writeFrozenCandidateRepairQueue(target, queue);
+    // P-021 (D-007 #1): the write path derives the repair manifest FIRST, and the only evidence
+    // of a lint leg's subject paths is the last repair tick's per-leg output — read raw from the
+    // same routine row, scoped exactly like the queue read above.
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(
+        /SELECT metadata->'gate_health'->'repairTickLegs'[\s\S]*WHERE workspace_id = \$1 AND install_slug = \$2 AND target_role = 'system:green-checkpoint'/,
+      ),
+      ['ws-42', 'my-harness'],
+    );
     // P-013 / D-007: the queue write and the `gate_health.convergence` projection are ONE
     // statement, so the stored shrink figures can never describe a previous round. That is why
     // this asserts a 4-arg `jsonb_set(... || $3, '{gate_health}', ... || $4)` shape rather than
@@ -3397,23 +3407,40 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     // make the projection describe THIS cycle, and a projection carrying another candidate's
     // identity is the failure the assertion exists to catch.
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
-      2,
+      3,
       expect.stringMatching(
         /metadata = jsonb_set\(\s*COALESCE\(metadata, '\{\}'::jsonb\) \|\| \$3::jsonb,\s*'\{gate_health\}',\s*COALESCE\(metadata->'gate_health', '\{\}'::jsonb\) \|\| \$4::jsonb,\s*true\s*\)[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
       ),
       [
         'ws-42',
         'my-harness',
-        JSON.stringify({ repair_queue: queue }),
+        // P-021: the persisted row is the caller's queue PLUS the manifest derived from it in this
+        // same call — every queue field byte-for-byte, then `manifest` describing THIS candidate.
+        expect.stringMatching(
+          new RegExp(
+            '^' +
+              `\\{"repair_queue":${JSON.stringify(queue).slice(0, -1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` +
+              `,"manifest":\\{"schemaVersion":1,"candidate":"a{40}","repairHead":"c{40}"`,
+          ),
+        ),
         expect.stringMatching(
           /^\{"convergence":\{[\s\S]*"candidate":"a{40}","repairHead":"c{40}","phase":"ready-to-verify","observedAtMs":\d+\}\}$/,
         ),
       ],
     );
+    // P-021: a first write is a signature change, so the manifest is published to the gate-red
+    // condition work-item(s) — looked up by condition key on the SAME workspace + install.
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      4,
+      expect.stringMatching(
+        /FROM harness_shared\.work_items[\s\S]*condition_key LIKE 'gate-red-streak:%'[\s\S]*condition_key LIKE 'frozen-repair-convergence:%'/,
+      ),
+      ['ws-42', 'my-harness', expect.any(Array)],
+    );
 
     await writeFrozenCandidateRepairQueue(target, null);
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
-      3,
+      5,
       // Retiring the cycle must ALSO clear the convergence projection (D-007). Leaving it
       // behind strands shrink figures for a candidate that no longer exists next to a gate that
       // has moved on, and every field stays individually plausible — so a reader cannot tell it

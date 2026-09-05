@@ -255,6 +255,10 @@ export const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly stri
   // mapping; the pool never did.
   operator_account_pool: ['accounts.pool'],
   operator_standing_candidates: ['operatorStandingApprovals.byWorkspace'],
+  // WI-2145092: the workspace work-scope policy lives under this row's `workScope` key.
+  // The /admin/work-scope pane reads workScope.policy and must learn a set/clear
+  // (workspace:work_scope or POST /api/work-scope/*) without a remount.
+  operator_pot_control_policy: ['workScope.policy'],
 };
 
 async function notifyOperatorStateSync(table: StateTable): Promise<void> {

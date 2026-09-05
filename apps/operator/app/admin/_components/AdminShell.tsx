@@ -14,6 +14,8 @@ const BASE_TABS = [
   { href: "/admin/run", label: "Run" },
   { href: "/admin/features", label: "Features" },
   { href: "/admin/admission", label: "Admission" },
+  // WI-2145092: the workspace work-scope policy (which harnesses agents may work).
+  { href: "/admin/work-scope", label: "Work scope" },
   { href: "/admin/dbos", label: "DBOS" },
 ] as const;
 
@@ -31,8 +33,9 @@ export default function AdminShell({
         BASE_TABS[0],
         BASE_TABS[1],
         BASE_TABS[2],
-        { href: "/admin/triggers", label: "Triggers" },
         BASE_TABS[3],
+        { href: "/admin/triggers", label: "Triggers" },
+        BASE_TABS[4],
       ]
     : [...BASE_TABS];
   const activeTab = tabs.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? tabs[0];

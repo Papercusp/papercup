@@ -92,3 +92,107 @@ export function formatFactMeasurementHint(signals: FactMeasurementSignal[]): str
 export function factMeasurementHint(text: unknown): string | null {
   return formatFactMeasurementHint(detectFactMeasurements(text));
 }
+
+/**
+ * Detect ABSENCE claims in a durable fact.
+ *
+ * EI-20307375669832848. The measurement scan above is driven by NUMBER
+ * matches, so it can only ever see an absence that was written numerically
+ * ("observed ... of 0"). An absence stated in words — "no membership exists",
+ * "was never touched", "the census found nothing" — carries no digit, so the
+ * loop never reaches the context check and the advisory is structurally
+ * silent for exactly the phrasing absence claims usually take. Measured on
+ * this detector before the fix: 5 of 6 representative absence bodies silent,
+ * both numeric controls firing.
+ *
+ * An absence is the claim most worth expiring. A positive observation that
+ * ages is merely stale; an absence that ages actively PREVENTS action — it is
+ * read as "already checked, nothing there" and the next reader skips the
+ * check. The repo already treats this as a first-class hazard everywhere it
+ * SEARCHES (the false-absence search-path guard, `positiveControlSql` on
+ * dev:pg_query); this closes the same gap where it REMEMBERS.
+ *
+ * Deliberately anchored + windowed, mirroring the measurement scan, and the
+ * anchors reject hyphen adjacency so domain terms that merely CONTAIN a
+ * negation ("no-op", "deliberate-no-pair", "no-fall") cannot trip it.
+ */
+export const ABSENCE_CONTEXT_WINDOW = 80;
+
+/** Negation anchors. Hyphen-adjacency is excluded so `no-op` is not a claim. */
+const ABSENCE_ANCHOR =
+  /(?<![A-Za-z0-9_-])(?:no|none|never|nothing|nowhere|neither|not)(?![A-Za-z0-9_-])/gi;
+
+/**
+ * Words that make a nearby negation an EXISTENCE claim about state rather
+ * than ordinary prose. A bare "not" is far too common to warn on alone.
+ */
+const EXISTENCE_CONTEXT =
+  /\b(?:exists?|existed|existence|found|present|remain(?:s|ed|ing)?|match(?:es|ed|ing)?|return(?:s|ed)?|fired?|emit(?:s|ted|ter|ters)?|touch(?:es|ed)?|appear(?:s|ed)?|surfaced?|occur(?:s|red)?|register(?:ed|s)?|record(?:ed|s)?|configured?|implement(?:ed|s)?|wired|reachable|referenc(?:e|es|ed)|cit(?:e|es|ed)|membership|rows?|results?|callers?|instances?|entr(?:y|ies)|hits?)\b/i;
+
+export interface FactAbsenceSignal {
+  /** The negation token that triggered the advisory. */
+  token: string;
+  /** The existence-claim phrase found near it. */
+  context: string;
+}
+
+/**
+ * PURE. Find negation tokens stated alongside existence-claim language.
+ *
+ * Bounded and fail-soft for the same reason as the measurement scan: this
+ * runs on the facts:assert write path and must never turn an advisory into a
+ * failed write.
+ */
+export function detectFactAbsenceClaims(text: unknown): FactAbsenceSignal[] {
+  if (typeof text !== 'string' || text.length === 0) return [];
+  const haystack = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  const out: FactAbsenceSignal[] = [];
+  const seen = new Set<string>();
+  const anchors = new RegExp(ABSENCE_ANCHOR.source, ABSENCE_ANCHOR.flags);
+  let match: RegExpExecArray | null;
+
+  while ((match = anchors.exec(haystack)) !== null) {
+    if (match[0].length === 0) {
+      anchors.lastIndex += 1;
+      continue;
+    }
+    const start = Math.max(0, match.index - ABSENCE_CONTEXT_WINDOW);
+    const end = Math.min(haystack.length, match.index + match[0].length + ABSENCE_CONTEXT_WINDOW);
+    const contextMatch = EXISTENCE_CONTEXT.exec(haystack.slice(start, end));
+    if (!contextMatch) continue;
+
+    const signal: FactAbsenceSignal = {
+      token: match[0].toLowerCase(),
+      context: contextMatch[0].toLowerCase(),
+    };
+    const key = `${signal.token}::${signal.context}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(signal);
+  }
+  return out;
+}
+
+/** Render the absence advisory, or null when the body claims no absence. */
+export function formatFactAbsenceHint(signals: FactAbsenceSignal[]): string | null {
+  if (signals.length === 0) return null;
+  const listed = signals
+    .slice(0, 3)
+    .map((signal) => `"${signal.token}" near "${signal.context}"`)
+    .join('; ');
+  const more = signals.length > 3 ? ` …and ${signals.length - 3} more` : '';
+  return (
+    `⚠ this fact body states ${signals.length} absence claim(s): ${listed}${more}. ` +
+    'An absence is a time-bound observation, not an invariant: it was true of the state you searched, at the ' +
+    'moment you searched it, THROUGH THE INSTRUMENT YOU USED. Absence ages worse than a positive claim, because ' +
+    'a reader takes it as "already checked" and skips the check. Give it a ttlSec (not kind:\'convention\'), and a ' +
+    'recheck:{ probe, falsifier } naming the search you ran and what result would disprove it — a search that was ' +
+    'scoped to the wrong path, relation, or case answers empty exactly like a true absence. Advisory only — the ' +
+    'write succeeded and nothing was blocked.'
+  );
+}
+
+/** Convenience: detect + format in one call. */
+export function factAbsenceHint(text: unknown): string | null {
+  return formatFactAbsenceHint(detectFactAbsenceClaims(text));
+}

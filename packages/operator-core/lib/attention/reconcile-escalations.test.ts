@@ -549,6 +549,7 @@ function driver(ownerId: string, over: Partial<EscalationRerouteDriver> = {}): E
     currentPlanSlug: null,
     potSlug: null,
     fleetSlug: null,
+    standdownHeld: false,
     ...over,
   };
 }
@@ -609,6 +610,56 @@ describe('selectEscalationSlaReroutes (EI-7024)', () => {
       responseMarkers: new Set(['acked']),
     });
     expect(selected).toEqual([]);
+  });
+
+  // EI-21451978219397190: during an owner-directed global stand-down,
+  // "unacknowledged by the human" is the EXPECTED state — so the SLA must not
+  // read it as a fault and go wake the agents the stand-down told to stay idle.
+  describe('global stand-down guard (EI-21451978219397190)', () => {
+    it('skips a stood-down driver and lands on whoever the owner left running', () => {
+      const roster = [
+        driver('su-author', { currentPlanSlug: 'plan-a' }),
+        // Sorts first, so it wins on every tie-break EXCEPT the stand-down.
+        driver('su-a-plan', { currentPlanSlug: 'plan-a', standdownHeld: true }),
+        driver('su-z-plan', { currentPlanSlug: 'plan-a' }),
+      ];
+      const selected = selectEscalationSlaReroutes([rerouteRow({})], roster, {
+        nowMs: NOW,
+        slaMs: 30 * 60 * 1000,
+      });
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({ targetOwnerId: 'su-z-plan', reason: 'same-plan' });
+
+      // Control: with the hold lifted, the SAME roster picks the stood-down one
+      // back up — so the assertion above is the guard firing, not the ranking.
+      const lifted = selectEscalationSlaReroutes(
+        [rerouteRow({})],
+        roster.map((r) => ({ ...r, standdownHeld: false })),
+        { nowMs: NOW, slaMs: 30 * 60 * 1000 },
+      );
+      expect(lifted[0]).toMatchObject({ targetOwnerId: 'su-a-plan' });
+    });
+
+    it('selects nobody when every eligible driver is stood down, rather than walking the roster', () => {
+      const roster = [
+        driver('su-author', { fleetSlug: 'alpha', currentPlanSlug: 'plan-a', potSlug: 'pot-a' }),
+        driver('su-leader', { fleetSlug: 'alpha', standdownHeld: true }),
+        driver('su-member', { fleetSlug: 'alpha', standdownHeld: true }),
+        driver('su-plan', { currentPlanSlug: 'plan-a', standdownHeld: true }),
+        driver('su-harness', { potSlug: 'pot-a', standdownHeld: true }),
+      ];
+      const ctx = {
+        nowMs: NOW,
+        slaMs: 30 * 60 * 1000,
+        leaderByFleet: new Map([['alpha', 'su-leader']]),
+      };
+      expect(selectEscalationSlaReroutes([rerouteRow({})], roster, ctx)).toEqual([]);
+      // Control: the fixture DOES reroute once the stand-down lapses, so the
+      // empty result above cannot be an inert fixture that selects nothing.
+      expect(
+        selectEscalationSlaReroutes([rerouteRow({})], roster.map((r) => ({ ...r, standdownHeld: false })), ctx),
+      ).toHaveLength(1);
+    });
   });
 });
 
@@ -679,6 +730,76 @@ describe('rerouteUnackedEscalationsOnce (EI-7024)', () => {
       ['su-driver'],
       expect.objectContaining({ source: 'system:escalation-sla-reroute', workspaceId: 'ws-a' }),
     );
+  });
+
+  // EI-21451978219397190: the pause must not manufacture the wakes that break it.
+  it('sends and wakes NOTHING when the only driver is stood down, and reports it as standdownSuppressed', async () => {
+    const runWith = async (standdown: string[]) => {
+      const send = vi.fn(async (_identity, opts) => ({ msg_id: opts.msgId }));
+      const wake = vi.fn(async () => ({ woken: 1 }));
+      const result = await rerouteUnackedEscalationsOnce({
+        nowMs: NOW,
+        slaMs: 30 * 60 * 1000,
+        workspaceId: 'ws-a',
+        listEscalationsFn: vi.fn(async () => [rerouteRow({})]) as typeof listMock,
+        readResponseMarkersFn: vi.fn(async () => new Set<string>()),
+        listLoopStanddownOwnersFn: vi.fn(async () => new Set(standdown)),
+        listPresenceFn: vi.fn(async () => [
+          {
+            ownerId: 'su-author',
+            agentRole: 'su',
+            currentPlanSlug: 'plan-a',
+            potSlug: 'pot-a',
+            heartbeatAt: iso(0),
+            stale: false,
+            host: '',
+            pid: null,
+            source: 'omp-hook-session',
+          },
+          {
+            ownerId: 'su-driver',
+            agentRole: 'su',
+            currentPlanSlug: 'plan-a',
+            potSlug: 'pot-a',
+            heartbeatAt: iso(0),
+            stale: false,
+            host: '',
+            pid: null,
+            source: 'omp-hook-session',
+          },
+        ]) as never,
+        resolveSessionStatesFn: vi.fn(
+          async () =>
+            new Map([
+              ['su-author', { sessionState: 'parked' }],
+              ['su-driver', { sessionState: 'live' }],
+            ]),
+        ) as never,
+        fetchPresenceFleetFn: vi.fn(async () => new Map()) as never,
+        getFleetFn: vi.fn(async () => null) as never,
+        sendMessageFn: send as never,
+        wakeRecipientsFn: wake as never,
+      });
+      return { result, send, wake };
+    };
+
+    const held = await runWith(['su-driver']);
+    expect(held.result).toMatchObject({
+      scanned: 1,
+      selected: 0,
+      rerouted: 0,
+      failed: 0,
+      standdownSuppressed: 1,
+    });
+    expect(held.send).not.toHaveBeenCalled();
+    expect(held.wake).not.toHaveBeenCalled();
+
+    // Both-ways control on the IDENTICAL fixture: with no stand-down held it
+    // reroutes and wakes as before. Without this, an inert fixture that never
+    // selected anything would pass the assertions above and look like a guard.
+    const free = await runWith([]);
+    expect(free.result).toMatchObject({ selected: 1, rerouted: 1, standdownSuppressed: 0 });
+    expect(free.wake).toHaveBeenCalledTimes(1);
   });
 
   // EI-21834041480805949: never wake a second member when the escalation's own

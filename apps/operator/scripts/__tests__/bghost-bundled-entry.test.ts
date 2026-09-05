@@ -105,7 +105,6 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
       'PAPERCUSP_DBOS_ROUTINES=1',
       'PAPERCUSP_DBOS_TIMERS=1',
       'PAPERCUSP_DBOS_AUTOLOOP=0',
-      'PAPERCUSP_DB_POOL_MAX=24',
       'DB_IDLE_TIMEOUT=10',
       'PAPERCUSP_EXPECTED_OPERATOR_PROCS=6',
       'DBOS__VMID=bg-host-3270',
@@ -113,6 +112,9 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     ]) {
       expect(dropIn).toContain(`  ${assignment} \\`);
     }
+    // PgBouncer bounds real backends. Keeping a per-process org-pool pin here
+    // instead starves bg-host's client queue before the pooler reaches capacity.
+    expect(dropIn).not.toContain('PAPERCUSP_DB_POOL_MAX=');
   });
 
   it('raises TimeoutStartSec, because ExecStartPre spends the start budget (D-003)', () => {

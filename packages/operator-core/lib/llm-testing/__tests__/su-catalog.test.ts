@@ -117,13 +117,7 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(props).toHaveProperty('assumptions');
     expect(props).not.toHaveProperty('row');
     expect((props.ids as { maxItems?: number }).maxItems).toBe(200);
-    expect((e.input as { anyOf?: unknown[] }).anyOf).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ required: ['id', 'state'] }),
-        expect.objectContaining({ required: ['ids', 'state'] }),
-        expect.objectContaining({ required: ['items'] }),
-      ]),
-    );
+    expect(e.input).not.toHaveProperty('anyOf');
   });
 
   it('work_items:get advertises the real scalar-or-bulk id contract', () => {
@@ -135,12 +129,15 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
       minItems: 1,
       maxItems: 100,
     });
-    expect((e.input as { anyOf?: unknown[] }).anyOf).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ required: ['id'] }),
-        expect.objectContaining({ required: ['ids'] }),
-      ]),
-    );
+    expect(e.input).not.toHaveProperty('anyOf');
+  });
+
+  it('keeps every Anthropic tool input schema free of unsupported top-level combinators', () => {
+    for (const entry of SU_CATALOG) {
+      expect(entry.input, entry.name).not.toHaveProperty('oneOf');
+      expect(entry.input, entry.name).not.toHaveProperty('anyOf');
+      expect(entry.input, entry.name).not.toHaveProperty('allOf');
+    }
   });
 
   it('audit:list documents its self-describing TOON read contract (EI-136)', () => {

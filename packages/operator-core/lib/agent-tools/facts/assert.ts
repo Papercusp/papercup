@@ -51,7 +51,7 @@ import {
 } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
-import { factMeasurementHint } from '../../fact-measurement-detector';
+import { factAbsenceHint, factMeasurementHint } from '../../fact-measurement-detector';
 import { getCell, type CellReader } from '../../cell-registry';
 import { cellReaderFromCtx } from '../cell-reader-ctx';
 import {
@@ -939,6 +939,12 @@ export default defineTool({
     // age into a confident lie. Detect the shape at the write boundary so the
     // author can tighten it immediately; this is advisory and fail-soft.
     const measurementWarning = factMeasurementHint(slotted.body);
+    // EI-20307375669832848: the measurement scan above is number-anchored, so an
+    // absence written in words ("no membership exists", "was never touched") is
+    // structurally invisible to it. Absence is the claim most worth expiring —
+    // it is read as "already checked" and suppresses the next check — so it gets
+    // its own advisory on the same fail-soft write-boundary channel.
+    const absenceWarning = factAbsenceHint(slotted.body);
     // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
@@ -1276,6 +1282,7 @@ export default defineTool({
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
             ...recheckReceiptField(fact),
             ...(measurementWarning ? { measurementWarning } : {}),
+            ...(absenceWarning ? { absenceWarning } : {}),
             ...(fact.measurement?.subjectVolatile
               ? {
                   snapshotWarning: {

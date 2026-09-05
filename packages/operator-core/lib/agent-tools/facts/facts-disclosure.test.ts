@@ -235,11 +235,19 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     });
   });
 
-  it('provides an explicit complete-population escape hatch independent of body projection', () => {
+  it('provides a wider page escape hatch independent of body projection, without promising completeness', () => {
     expect(factsListEffectiveLimit(1, true)).toBe(FACTS_LIST_ALL_LIMIT);
     expect(factsListEffectiveLimit(100, true)).toBe(FACTS_LIST_ALL_LIMIT);
     expect(factsListEffectiveLimit(100, false)).toBe(FACTS_LIST_MAX_LIMIT);
-    expect(factsListTool.args.shape.all.description).toMatch(/complete live population/i);
+    // RETARGETED (was /complete live population/i, stranded by d7e86d7d4f on
+    // 2026-09-05). `all:true` is a PAGE ceiling, not the per-scope cap, so the
+    // old wording promised a completeness this argument never delivered — the
+    // file's own header records that "population" was false for the busiest
+    // scope on the box. Assert the CORRECTED, stronger contract rather than
+    // dropping the doc-claim: the description must still disclaim completeness
+    // and must still point the reader at the response fields that settle it.
+    expect(factsListTool.args.shape.all.description).toMatch(/not a guarantee of completeness/i);
+    expect(factsListTool.args.shape.all.description).toMatch(/truncatedByLimit/);
     expect(factsListTool.args.shape.all.description).toMatch(/Orthogonal to full:true/);
   });
 

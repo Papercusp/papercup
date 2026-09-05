@@ -42,6 +42,7 @@ import {
   type CarryBrief,
 } from './carry-brief';
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import { overlappingFacts } from './facts/fact-text-overlap';
 import { modeImpliesAutonomy } from './modes/registry';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
 import {
@@ -312,30 +313,10 @@ async function defaultGetAsks(ownerId: string, workspaceId: string): Promise<Car
   }
 }
 
-/** WI-5682: significant-token set for the ask↔fact overlap check — lowercased
- *  words ≥4 chars (hyphen/underscore kept, so `papercusp-workspace` stays one
- *  token) minus common filler. Deterministic (no LLM/embeddings — the carry doc
- *  is assembled LLM-free by design). */
-const ASK_FACT_STOPWORDS = new Set([
-  'that', 'this', 'with', 'from', 'into', 'your', 'have', 'been', 'will', 'would',
-  'should', 'could', 'than', 'then', 'them', 'some', 'more', 'most', 'only', 'just',
-  'over', 'under', 'about', 'still', 'like', 'also', 'each', 'does', 'they', 'their',
-  'what', 'when', 'which', 'were', 'where', 'here', 'there', 'these', 'those', 'being',
-  'want', 'need', 'needs', 'make', 'made', 'used', 'using', 'onto', 'them', 'else',
-]);
-
-function significantTokens(s: string): Set<string> {
-  const out = new Set<string>();
-  for (const t of s.toLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/g) ?? []) {
-    if (!ASK_FACT_STOPWORDS.has(t)) out.add(t);
-  }
-  return out;
-}
-
-/** Minimum distinct significant tokens an ask must share with a fact before the
- *  ask is flagged as "may already be decided" — conservative to avoid crying
- *  wolf on a genuinely-open question. */
-const MIN_ASK_FACT_OVERLAP = 4;
+/** WI-5682's ask↔fact overlap check. The tokenizer and threshold moved to
+ *  `facts/fact-text-overlap` (EI-21459285533379701) when a SECOND surface — the
+ *  frozen loop goal — needed the identical judgement; see that module for why
+ *  there is exactly one definition rather than a copy per surface. */
 
 /**
  * WI-5682: flag any carried open owner-ask that RE-LITIGATES an already-decided
@@ -351,18 +332,9 @@ export function flagAsksAgainstFacts(
   facts: Array<{ key: string; body: string }>,
 ): CarryDocAsk[] {
   if (!facts.length || !asks.length) return asks;
-  const factTokens = facts.map((f) => ({ key: f.key, toks: significantTokens(f.body) }));
   return asks.map((a) => {
-    const qToks = significantTokens(a.question);
-    if (qToks.size === 0) return a;
-    const hits: Array<{ key: string; shared: number }> = [];
-    for (const f of factTokens) {
-      let shared = 0;
-      for (const t of qToks) if (f.toks.has(t)) shared += 1;
-      if (shared >= MIN_ASK_FACT_OVERLAP) hits.push({ key: f.key, shared });
-    }
+    const hits = overlappingFacts(a.question, facts);
     if (!hits.length) return a;
-    hits.sort((x, y) => y.shared - x.shared);
     return { ...a, possiblyDecidedBy: hits.slice(0, 2).map((h) => h.key) };
   });
 }

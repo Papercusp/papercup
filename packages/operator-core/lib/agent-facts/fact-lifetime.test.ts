@@ -171,6 +171,107 @@ describe('resolveFactLifetime — what actually gets stored', () => {
   });
 });
 
+/**
+ * A TYPED SLOT OUTRANKS `kind` (EI-20307375669832848).
+ *
+ * The cases above each pass a slot key with a NULL kind, so none of them could see the
+ * precedence bug: `kind:'convention'` returned PERMANENT before the slot branches were
+ * ever reached, silently overriding the two lifetimes D-002 deliberately kept finite.
+ * Measured live when this was fixed: 57/57 `dead-end:` and 4/4 `wall:` facts carrying
+ * kind:'convention' had expires_at = infinity, none with a recheck.
+ *
+ * Both orderings satisfy every pre-existing test, which is exactly why this block has to
+ * name the combination.
+ */
+describe('a typed slot outranks kind — the slot lifetime is not overridable by kind', () => {
+  const base = { subjectVolatile: false, effectiveTtlSec: null } as const;
+
+  it("dead-end: + kind:'convention' stays FINITE — a claim about current code (D-002)", () => {
+    const got = resolveFactLifetime({ ...base, key: 'dead-end:x', kind: 'convention' });
+    expect(got).toEqual({ permanent: false, ttlSec: DEAD_END_DEFAULT_TTL_SEC });
+  });
+
+  it("wall: + kind:'convention' stays FINITE — an infinite wall can never lapse, so its watchdog could never fire", () => {
+    const got = resolveFactLifetime({ ...base, key: 'wall:x', kind: 'convention' });
+    expect(got).toEqual({ permanent: false, ttlSec: WALL_DEFAULT_TTL_SEC });
+  });
+
+  it("guard-rail: + kind:'convention' is STILL permanent — reordering must not flip the one slot D-002 makes permanent", () => {
+    expect(resolveFactLifetime({ ...base, key: 'guard-rail:x', kind: 'convention' })).toEqual({
+      permanent: true,
+      ttlSec: 0,
+    });
+  });
+
+  it('explicit permanent:true still wins over a slot — the deliberate, cap-exempt escape hatch survives', () => {
+    expect(
+      resolveFactLifetime({ ...base, key: 'dead-end:x', kind: 'convention', permanent: true }),
+    ).toEqual({ permanent: true, ttlSec: 0 });
+  });
+
+  it('an explicit ttlSec still wins over both slot and kind', () => {
+    expect(
+      resolveFactLifetime({ ...base, key: 'wall:x', kind: 'convention', effectiveTtlSec: 60 }),
+    ).toEqual({ permanent: false, ttlSec: 60 });
+  });
+
+  // CALIBRATION / negative control. If the fix had been "stop honouring kind:'convention'"
+  // rather than "order the slot above it", every assertion above would still pass while
+  // ordinary conventions silently lost their permanence. This is the case that fails if
+  // the change was scoped too widely, and it must keep passing.
+  it("CONTROL: kind:'convention' on a NON-slot key is still PERMANENT", () => {
+    expect(resolveFactLifetime({ ...base, key: 'ordinary-key', kind: 'convention' })).toEqual({
+      permanent: true,
+      ttlSec: 0,
+    });
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL, kept permanently in-file.
+   *
+   * CLAUDE.md § "Proving a guard is falsifiable" routes a MODULE-you-import subject to a
+   * deliberately-wrong implementation held in the test file — never a mutation of
+   * production code, which on this swept tree can be committed by git-sync while the
+   * probe legitimately holds it dirty.
+   *
+   * This is the exact branch order that shipped before the fix. Assertions that pass
+   * under BOTH orderings would be worthless, so the control shows the old order
+   * producing a DIFFERENT answer for the same inputs.
+   */
+  const preFixOrdering = (input: { key: string; kind: string | null }) => {
+    if (input.kind === 'convention') return { permanent: true, ttlSec: 0 };
+    if (input.key.startsWith('guard-rail:')) return { permanent: true, ttlSec: 0 };
+    if (input.key.startsWith('dead-end:'))
+      return { permanent: false, ttlSec: DEAD_END_DEFAULT_TTL_SEC };
+    if (input.key.startsWith('wall:')) return { permanent: false, ttlSec: WALL_DEFAULT_TTL_SEC };
+    return { permanent: false, ttlSec: FACT_DEFAULT_TTL_SEC };
+  };
+
+  it('CONTROL: the pre-fix ordering DISAGREES on exactly these inputs, so the cases above can fail', () => {
+    // What the bug did: permanence, for a claim about current code.
+    expect(preFixOrdering({ key: 'dead-end:x', kind: 'convention' }).permanent).toBe(true);
+    expect(preFixOrdering({ key: 'wall:x', kind: 'convention' }).permanent).toBe(true);
+    // What the live function must do instead.
+    expect(resolveFactLifetime({ ...base, key: 'dead-end:x', kind: 'convention' }).permanent).toBe(
+      false,
+    );
+    expect(resolveFactLifetime({ ...base, key: 'wall:x', kind: 'convention' }).permanent).toBe(
+      false,
+    );
+  });
+
+  it('CALIBRATION: the two orderings AGREE wherever a finite slot is not involved', () => {
+    // Without this, the control would only be showing that the two functions differ
+    // SOMEWHERE, which any unrelated edit to either would also satisfy. Agreement here
+    // is what isolates the disagreement above to the precedence itself.
+    for (const key of ['ordinary-key', 'guard-rail:x']) {
+      expect(preFixOrdering({ key, kind: 'convention' })).toEqual(
+        resolveFactLifetime({ ...base, key, kind: 'convention' }),
+      );
+    }
+  });
+});
+
 describe('the two functions AGREE — resolve is only ever reached past validate', () => {
   /**
    * resolveFactLifetime keeps a final `FACT_DEFAULT_TTL_SEC` fallback so it is a total

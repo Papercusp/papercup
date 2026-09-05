@@ -144,6 +144,8 @@ describe('computeDeployStatus — decision tree', () => {
       // UNMEASURED rather than a false all-clear. `collidingPaths` carries an explicit
       // `string[]` because the enclosing `as const` would otherwise infer `readonly []`,
       // which is not assignable to the interface's mutable `string[]`.
+      manifest: null,
+      manifestSummary: null,
       sharedTreeCollision: {
         measured: false,
         repairInFlight: false,

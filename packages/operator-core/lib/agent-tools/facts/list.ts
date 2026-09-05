@@ -270,6 +270,16 @@ export default defineTool({
     chaining:
       'facts:list → facts:assert (refresh) / facts:retract (stale). Pass key to verify ONE live fact directly when list projection could make absence ambiguous; add versions:true + key to read what that fact said BEFORE it was corrected.',
     seeAlso: ['facts:assert', 'facts:retract'],
+    // EI-21377394191283993 — a caller reached for `q` expecting a text search over
+    // facts and got a bare unrecognized-key rejection. This store has no text index:
+    // reads are exact-key or bounded-scope. Say that, and name BOTH substitutes.
+    // D-004 local form: `key` is a declared key here, so this renders as a same-tool
+    // rename rather than sending the caller to another tool.
+    argRedirects: {
+      q: 'key — this store has NO text search: `key` is an EXACT match, not a substring. Know the key? RENAME the arg. Hunting by wording instead? List the scope (`scope` + optional `scopeRef`) and read the returned keys, or use memory:search for semantic recall over background knowledge',
+      query:
+        'key — facts are addressed by exact key, never by query text. RENAME the arg if you know the key; otherwise list the scope and scan the keys, or use memory:search for meaning-based recall',
+    },
   },
   requirePrincipal: false,
   // EI-20244379119118480: this handler uses the fact store's dedicated org-pool

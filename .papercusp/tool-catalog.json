@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 854,
+  "count": 855,
   "tools": [
     {
       "name": "ablation:report",
@@ -16673,7 +16673,7 @@
           "POST"
         ]
       },
-      "description": "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. If an autonomy-implying mode remains active with no deliberate event await, the stop refuses unless `acknowledgeWakeLessAutonomy:true` consciously overrides the safety guard. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
+      "description": "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. Loops are keyed by owner, not by harness; a `harness` arg is accepted for compatibility but has no effect. Re-arm anytime with loop:arm.",
       "capabilities": [
         "routines:write"
       ],
@@ -16698,7 +16698,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool ignores `harness` if passed (loops are keyed by owner). Better to loop:end than burn empty wakes spinning.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). AUTO still on with no event await? The stop REFUSES until `acknowledgeWakeLessAutonomy:true` — pass it in the FIRST call (still required for a finished goal). Better to loop:end than burn empty wakes spinning.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop."
       }
@@ -32214,7 +32214,7 @@
           "POST"
         ]
       },
-      "description": "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at the chokepoints — launches, scheduler pulls/claims, admission promotion, git-sync fixer dispatch, grading sweeps — never at filing; out-of-scope work is parked, never deleted. Absent ⇒ everything allowed. set/clear are audited + one-call-revertible.",
+      "description": "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
       "capabilities": [
         "operator:write"
       ],
@@ -32232,9 +32232,40 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/item would be admitted.",
+        "when": "The owner wants agents confined to one project (\"only papercusp work right now\"): set { mode:'enforce', allowHarnesses:['papercusp','papercusp/*'] }. `check` answers whether one harness/plan/goal/work-item is in scope. `get` shows the policy + the ledger of recent denials/holds/re-homes.",
         "notWhen": "To steer WHICH items inside an allowed harness a fleet pulls, use scheduler:set_claim_spec. To pause one pot entirely use pot:pause.",
-        "chaining": "config:list-overrides shows the active policy; the ledger on { op:'get' } shows the last denials."
+        "chaining": "config:list-overrides shows the active policy; the ledger on { op:'get' } shows the last denials. state:read { cell:'workspace.workScope' } is the read-only lens."
+      }
+    },
+    {
+      "name": "workspace:work_scope_status",
+      "http": {
+        "path": "/api/agent-tools/workspace/work_scope_status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the workspace work-scope policy as a status lens: mode, allow-list, ledger counts and the enforce/off/absent assessment behind state:read workspace.workScope.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "As the resolver behind state:read { cell:\"workspace.workScope\" }, or when you only need to READ whether the workspace is confined to an allow-list of harnesses.",
+        "notWhen": "To set or clear the policy — that is workspace:work_scope { op:\"set\"|\"clear\" }.",
+        "chaining": "state:read { cell:\"workspace.workScope\" } is the ordinary entry point; workspace:work_scope { op:\"get\" } returns the same policy with the full ledger ring."
       }
     }
   ]

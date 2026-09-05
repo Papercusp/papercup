@@ -43,6 +43,7 @@ import {
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
+import { assessGoalFactDivergence, type CorrectedFact } from './loop-goal-fact-divergence';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   renderWallNagLine,
@@ -122,6 +123,12 @@ export interface LoopFireDeps {
    *  might be. Fail-soft: a failed read must yield an EMPTY map (⇒ every id unresolved
    *  ⇒ no staleness claim at all), never a partial one that could read as "finished". */
   readGoalItemStates?: typeof defaultReadGoalItemStates;
+  /** EI-21459285533379701: read this loop's arm time plus the owner's standing facts
+   *  whose CURRENT version superseded an earlier one, so the wake can say the goal
+   *  echoes a claim its author has since withdrawn. Fail-soft the same way
+   *  `readGoalItemStates` is: a failed read yields a null arm time and an EMPTY list
+   *  (⇒ no claim at all), never a partial one that could read as an all-clear. */
+  readGoalFactCorrections?: typeof defaultReadGoalFactCorrections;
   /** EI-11484: fetch + render the OPEN OWNER DIRECTIVES block for the wake's
    *  workspace (defaults to renderOpenOwnerDirectivesBlock). Best-effort. */
   renderOwnerDirectives?: (
@@ -583,6 +590,17 @@ export function renderLoopWakeText(opts: {
    * would recreate the ordering defect P-017 fixed, one level up.
    */
   goalStalenessNote?: string | null;
+  /**
+   * EI-21459285533379701: the MEASURED divergence between the arm-time goal and a
+   * standing fact CORRECTED since arming (`assessGoalFactDivergence`), or null.
+   *
+   * ⚠ Rendered in the same slots as `goalStalenessNote`, for the same reason — it is a
+   * verdict on that exact line. The two are complementary, not redundant: staleness
+   * judges the WORK-ITEM IDS the goal names, this judges a CLAIM the goal makes that
+   * its own author has since withdrawn. A retracted claim names no id, so the
+   * staleness check is structurally blind to it.
+   */
+  goalFactDivergenceNote?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
@@ -612,6 +630,7 @@ export function renderLoopWakeText(opts: {
     return [
       opts.kickoff,
       ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
+      ...(opts.goalFactDivergenceNote ? [opts.goalFactDivergenceNote] : []),
       ...priority,
       ...(block ? [block] : []),
       ...(noNoteMandate ? [noNoteMandate] : []),
@@ -645,6 +664,7 @@ export function renderLoopWakeText(opts: {
     // Directly beneath the goal, never elsewhere: this is the measured verdict ON that
     // exact line, and a reader must not be able to accept the goal before meeting it.
     ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
+    ...(opts.goalFactDivergenceNote ? [opts.goalFactDivergenceNote] : []),
     '',
     'On settle: refresh loop:checkpoint { did, left, insight, next }; END YOUR TURN. `loop:end` stops; `loop:status` inspects.',
   ].join('\n');
@@ -683,6 +703,67 @@ export async function defaultReadGoalItemStates(
     return new Map();
   }
   return out;
+}
+
+/**
+ * EI-21459285533379701: this loop's arm time + the owner's CORRECTED standing facts.
+ *
+ * ONE round-trip, and the corrected-fact population is the ~6.5% tail of live facts
+ * (260 of 4004 measured), reached through `agent_facts_fold` with the supersede EXISTS
+ * probe served by `agent_facts_version_chain` — measured 0.06ms / 3 buffer hits for an
+ * owner with no corrections, where the EXISTS leg is never executed at all. The time
+ * comparison is deliberately NOT pushed into SQL: it is the gate that makes this
+ * detector selective (1 of 39 live loops vs 69% ungated), so it lives in
+ * `assessGoalFactDivergence` where it is exhaustively tested, not in a query string.
+ *
+ * Fail-soft to `{ armedAtMs: null, corrected: [] }` — a wake must never be delayed, nor
+ * decorated with a claim this read could not support.
+ */
+export async function defaultReadGoalFactCorrections(
+  routineId: string,
+  ownerId: string,
+  opts: { sql?: Sql; workspaceId?: string | null } = {},
+): Promise<{ armedAtMs: number | null; corrected: CorrectedFact[] }> {
+  const empty = { armedAtMs: null, corrected: [] as CorrectedFact[] };
+  if (!routineId || !ownerId) return empty;
+  try {
+    const sql = opts.sql ?? getOrgPg().sql;
+    const rows = await sql<
+      { armed_at: string | null; key: string | null; body: string | null; updated_at: string | null }[]
+    >`
+      SELECT r.metadata->>'armed_at' AS armed_at, f.key, f.body, f.updated_at
+        FROM harness_shared.routines r
+        LEFT JOIN harness_shared.agent_facts f
+          ON f.workspace_id = r.workspace_id
+         AND f.scope = 'owner'
+         AND f.scope_ref = ${ownerId}
+         AND f.retracted_at IS NULL
+         AND f.superseded_at IS NULL
+         AND f.expires_at > now()
+         AND EXISTS (
+               SELECT 1
+                 FROM harness_shared.agent_facts p
+                WHERE p.workspace_id = f.workspace_id
+                  AND p.scope = f.scope
+                  AND COALESCE(p.scope_ref, '') = COALESCE(f.scope_ref, '')
+                  AND p.key = f.key
+                  AND p.superseded_at IS NOT NULL
+             )
+       WHERE r.id = ${routineId}`;
+    if (!rows.length) return empty;
+    const armedRaw = rows[0].armed_at;
+    const armedMs = armedRaw ? Date.parse(armedRaw) : Number.NaN;
+    const corrected: CorrectedFact[] = [];
+    for (const r of rows) {
+      if (!r.key || !r.body || !r.updated_at) continue; // LEFT JOIN miss ⇒ no corrections
+      const correctedAtMs = Date.parse(r.updated_at);
+      if (!Number.isFinite(correctedAtMs)) continue;
+      corrected.push({ key: r.key, body: r.body, correctedAtMs });
+    }
+    return { armedAtMs: Number.isFinite(armedMs) ? armedMs : null, corrected };
+  } catch {
+    return empty;
+  }
 }
 
 /** Read the loop's carry MODE from payload_template (su-cold-auto-mode-2026-07-03 P-003).
@@ -924,9 +1005,26 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       )
     : new Map<string, string>();
   const goalStalenessNote = assessGoalStaleness(goalTextForCheck, goalItemStates).note;
+  // EI-21459285533379701 — the OTHER way a frozen goal goes wrong: it keeps asserting a
+  // CLAIM its own author has since corrected via facts:assert. A retracted claim names no
+  // work-item id, so the staleness check above is structurally blind to it.
+  // Skipped entirely for a goal with no text, exactly as the id check is for a prose goal.
+  const readGoalFactCorrections = deps.readGoalFactCorrections ?? defaultReadGoalFactCorrections;
+  const factCorrections = goalTextForCheck.trim()
+    ? await readGoalFactCorrections(input.routineId, input.targetOwnerId, {
+        sql: input.sql,
+        workspaceId: input.workspaceId,
+      }).catch(() => ({ armedAtMs: null, corrected: [] as CorrectedFact[] }))
+    : { armedAtMs: null, corrected: [] as CorrectedFact[] };
+  const goalFactDivergenceNote = assessGoalFactDivergence(
+    goalTextForCheck,
+    factCorrections.corrected,
+    factCorrections.armedAtMs,
+  ).note;
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
     goalStalenessNote,
+    goalFactDivergenceNote,
     fireNumber,
     checkpoint: checkpointBody,
     checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,

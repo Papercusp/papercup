@@ -2862,6 +2862,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   } as QueryEntry<unknown>,
 
+  // workScope.policy — the /admin/work-scope pane's read (WI-2145092, the D-003 residue of
+  // workspace-work-scope-policy-2026-09-04). ONE row: the same status lens the
+  // `workspace.workScope` cell answers with (buildWorkScopeStatusPayload), so the pane, the
+  // cell and the MCP tool cannot disagree. Backed by the operator_pot_control_policy row (its
+  // `workScope` key); OPERATOR_STATE_SYNC_NAMES bridges every set/clear to this name so a
+  // left-open pane learns the flip without a remount.
+  'workScope.policy': {
+    argsSchema: z.object({ recent: z.number().int().min(0).max(100).optional() }).optional(),
+    backingTables: ['harness_shared.operator_pot_control_policy'],
+    resolve: async (args) => {
+      const { readWorkScopePolicy, buildWorkScopeStatusPayload } = await import('../work-scope-policy');
+      const a = (args ?? {}) as { recent?: number };
+      return [buildWorkScopeStatusPayload(await readWorkScopePolicy(), { recent: a.recent ?? 20 })];
+    },
+  } as QueryEntry<unknown>,
+
   // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
   // pane fetches ONE enriched row (with the full `summary` + payload/completion
   // blobs the list strips) when a WI is selected, instead of the whole harness

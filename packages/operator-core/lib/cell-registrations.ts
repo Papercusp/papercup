@@ -2611,6 +2611,73 @@ export const GATE_RETRIAGE_CELL: CellSpec = {
     '{ gate: { retriage: { code, unmeasured, inFlight, runActive, standDown, fromCandidate, refiringCandidate, abandonedFailingFiles, budgetLabel, atCap, refireAttempt, maxRefires, totalRefires, absoluteCeiling, observedAtMs, ageMs, asOfAgeMs, summary } } }',
 };
 
+/**
+ * workspace.workScope — WI-2145092 (plan workspace-work-scope-policy-2026-09-04, the D-003
+ * residue). "Is this workspace confined to an allow-list of harnesses right now, and which?"
+ * The headline is the stored MODE; the assessment folds mode + allow-list through the SAME
+ * predicate every dispatch gate uses (isWorkScopeEnforced), so a reader branches on exactly
+ * what the gates enforce: `enforce` (out-of-scope work is refused with scope_denied), `off` (a
+ * row exists but confines nothing — mode 'off', or an enforce row with an empty allow-list),
+ * `absent` (no row: byte-identical to before the policy shipped, D-001).
+ *
+ * Resolved through the READ-ONLY lens `workspace:work_scope_status`, not the control tool
+ * `workspace:work_scope` — the cell dispatcher refuses a write-capable resolver by contract.
+ */
+export const WORK_SCOPE_CELL: CellSpec = {
+  cell: 'workspace.workScope',
+  registeredOn: '2026-09-05',
+  owner: 'workspace-work-scope-policy-2026-09-04',
+  headline: 'mode',
+
+  assessment: {
+    path: 'assessments.policy',
+    codes: {
+      enforce: {
+        meaning:
+          'A policy row is stored with mode enforce and a non-empty allow-list: every dispatch seam (claim, claim_next, plan-item claim, scheduler pull, launch-agent, launch-on-plan, goals:attach-pot, git-sync fixer dispatch, release-fixer) refuses a harness outside it with scope_denied and ledgers the refusal; the admission promoter and drain sweeps hold out-of-scope rows.',
+        safeAction:
+          'Work only the listed harnesses — an out-of-scope claim or launch is refused, never queued. If the confinement is wrong, widen it with workspace:work_scope { op:"set" } (audited) or lift it with { op:"clear" }.',
+      },
+      off: {
+        meaning:
+          'A policy row exists but confines nothing — mode off, or an enforce row whose allow-list is empty — so every gate is inert (fail-open, byte-identical to no policy).',
+        safeAction:
+          'Nothing is being refused. If confinement was intended, re-set the policy with mode enforce and a non-empty allow-list.',
+      },
+      absent: {
+        meaning:
+          'No policy row is stored: every gate is one cached read returning allowed — byte-identical to before the policy shipped (D-001).',
+        safeAction:
+          'Nothing to do unless the owner wants agents confined — then workspace:work_scope { op:"set", mode:"enforce", allowHarnesses:[…], reason }.',
+      },
+    },
+    evidence: ['enforced', 'allowHarnesses'],
+  },
+
+  nullable: false,
+  whyTotal:
+    'readWorkScopePolicy() returns a value or throws: a missing or malformed row is coerced to null by the same coercePolicy every gate uses and read as `absent` — a MEASURED state, never a default standing in for a failed read — while a thrown read surfaces on the dispatch as resolver-failed, not as a code.',
+
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      "readWorkScopePolicy() — the operator_pot_control_policy row's `workScope` key, the one store every dispatch gate reads through the pot-control cache — projected by buildWorkScopeStatusPayload()",
+    liveExercised: true,
+    evidence:
+      "workspace:work_scope { op:'get' } on :3170 at 2026-09-05T02:41Z returned mode enforce / allowHarnesses ['papercusp'] / ledger denied≥1 rehomed 5, and the independent acceptance grade EI-22392650507748189 re-read the same row live (ledger denied 3); the status lens is exercised through state:read on :3170 in WI-2145092's verification.",
+  },
+
+  resolver:
+    'buildWorkScopeStatusPayload(readWorkScopePolicy()) @ packages/operator-core/lib/work-scope-policy.ts — via workspace:work_scope_status (agent-tools/pot/work-scope-status.ts)',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'workspace:work_scope_status', path: 'mode' },
+  shape:
+    '{ mode, enforced, allowHarnesses[], exceptions, setBy, reason, updatedAt, ledger: { counts: { denied, held, rehomed }, recent[] }, assessments: { policy } }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2637,6 +2704,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_RECOVERY_CELL,
   CAPACITY_VERDICT_CELL,
   ROLE_LAUNCH_CELL,
+  WORK_SCOPE_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry
