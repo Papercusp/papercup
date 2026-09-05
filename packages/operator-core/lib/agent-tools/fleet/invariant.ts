@@ -26,7 +26,7 @@ export default defineTool({
     'Register a CUSTOM invariant your fleet:leader-brief evaluates on every read, so an ad-hoc ' +
     'check outlives the turn that wrote it. The check is read-only SQL and the contract is ' +
     'ROWS RETURNED == VIOLATED (zero rows == satisfied); the rows come back as the evidence. ' +
-    'REGISTER: { name, sql, description?, severity? } — re-registering a name replaces it. ' +
+    'REGISTER: { name, sql, falsifier?, description?, severity? } — re-registering a name replaces it. ' +
     'LIST: { list: true }. REMOVE: { remove: name }. Use {{fleet}} / {{workspace}} in the SQL ' +
     'rather than hardcoding a slug, so a copied invariant checks the fleet it now belongs to — ' +
     'they substitute ALREADY-QUOTED, so write `= {{fleet}}`, never `= \'{{fleet}}\'`. ' +
@@ -63,6 +63,15 @@ export default defineTool({
       .optional()
       .describe(
         '(register) A single read-only SELECT. Rows returned == VIOLATED. May reference {{fleet}} and {{workspace}}.',
+      ),
+    falsifier: z
+      .string()
+      .max(4000)
+      .optional()
+      .describe(
+        '(register) Proof this check CAN fire: a single read-only SELECT — usually `sql` with its pin ' +
+          'negated — that MUST return >=1 row. Zero rows refuses registration, because zero rows is ' +
+          'this contract\'s SAFE reading, so a dead check reports "satisfied" forever. Not persisted.',
       ),
     description: z
       .string()
@@ -151,6 +160,7 @@ export default defineTool({
       name: args.name,
       description: args.description ?? null,
       querySql: args.sql,
+      falsifierSql: args.falsifier ?? null,
       severity: args.severity ?? 'warn',
       active: args.active ?? true,
       createdBy: ownerId ?? null,
@@ -164,7 +174,14 @@ export default defineTool({
         fleet,
         registered: args.name,
         id: result.id,
-        note: 'evaluated on every fleet:leader-brief for this fleet — rows returned means VIOLATED',
+        ...(result.falsifierRows === undefined
+          ? {}
+          : { falsifierRows: result.falsifierRows, provenAbleToFire: true }),
+        note:
+          'evaluated on every fleet:leader-brief for this fleet — rows returned means VIOLATED' +
+          (result.falsifierRows === undefined
+            ? '. No falsifier was supplied, so this check is NOT proven able to fire: zero rows will read as satisfied whether the fleet is healthy or the check is dead.'
+            : ''),
       },
     };
   },

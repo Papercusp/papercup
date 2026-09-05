@@ -16,6 +16,7 @@ import {
   computeCustomInvariantAlert,
   evaluateFleetInvariants,
   readFleetInvariantEvaluations,
+  registerFleetInvariant,
   substituteInvariantPlaceholders,
   summarizeInvariantEvaluations,
   type FleetInvariant,
@@ -282,5 +283,103 @@ describe('readFleetInvariantEvaluations', () => {
       status: 'error',
     });
     expect(out?.[0]?.error).toContain('evaluation orchestration failed');
+  });
+});
+
+/**
+ * EI-20025951137999772 — registration must PROVE the check, not just store it.
+ *
+ * The gap these pin: `registerFleetInvariant` used to assert only that the SQL
+ * was a single read STATEMENT, which is a claim about shape. Two failures got
+ * through it. A statement that cannot EXECUTE registered clean and then errored
+ * on every future brief. Worse, a statement that executes but can never MATCH
+ * registered clean and reported "satisfied" forever — because this registry's
+ * contract is rows == violated, so zero rows is the SAFE reading, and a dead
+ * guard is therefore indistinguishable from a healthy fleet.
+ *
+ * The falsifier is the adversarial fixture: a deliberately-wrong input that
+ * MUST return rows. These tests are also that fixture applied to the guard
+ * itself — each asserts the new refusal actually fires, so the guard is not
+ * merely registered here but shown to transition.
+ */
+describe('registerFleetInvariant proves the check can run and fire', () => {
+  /** A sql tag that answers list-reads with [] and INSERT with one row. */
+  function fakeSql() {
+    const calls: string[] = [];
+    const tag = ((strings: TemplateStringsArray | string, ...vals: unknown[]) => {
+      const text = Array.isArray(strings) ? (strings as readonly string[]).join('?') : String(strings);
+      if (text.trim() !== '') calls.push(text);
+      void vals;
+      return Promise.resolve(/INSERT INTO/i.test(text) ? [{ id: 'new-id' }] : []);
+    }) as unknown as Parameters<typeof registerFleetInvariant>[1];
+    return { tag, calls };
+  }
+
+  /** A sql tag that FAILS the test if the registration ever reaches the database. */
+  function forbiddenSql() {
+    return ((..._a: unknown[]) => {
+      throw new Error('registration reached the database despite failing its proof');
+    }) as unknown as Parameters<typeof registerFleetInvariant>[1];
+  }
+
+  const base = {
+    workspaceId: 'papercusp-workspace',
+    fleetSlug: 'push-not-poll',
+    name: 'spec-drift',
+    querySql: 'SELECT 1 FROM harness_shared.cup_claim_specs WHERE revision <> 7',
+  };
+
+  it('refuses a single-read statement that does not actually RUN, before touching the db', async () => {
+    const result = await registerFleetInvariant(base, forbiddenSql(), {
+      runQuery: async () => {
+        throw new Error('column "revsion" does not exist');
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal');
+    expect(result.error).toContain('did not RUN');
+    expect(result.error).toContain('column "revsion" does not exist');
+  });
+
+  it('refuses when the falsifier returns ZERO rows — the dead-guard case', async () => {
+    const result = await registerFleetInvariant(
+      { ...base, falsifierSql: 'SELECT 1 FROM harness_shared.cup_claim_specs WHERE revision <> -1' },
+      forbiddenSql(),
+      // Invariant runs clean (0 rows == satisfied); the falsifier ALSO returns
+      // nothing, which is the tell that the instrument cannot fire at all.
+      { runQuery: async () => ({ rows: [], truncated: false }) as never },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal');
+    expect(result.error).toContain('ZERO rows');
+    expect(result.error).toContain('not proven able to fire');
+  });
+
+  it('registers when the falsifier DOES fire, and reports how many rows proved it', async () => {
+    const { tag, calls } = fakeSql();
+    let call = 0;
+    const result = await registerFleetInvariant(
+      { ...base, falsifierSql: 'SELECT 1 FROM harness_shared.cup_claim_specs WHERE revision <> -1' },
+      tag,
+      {
+        // 1st = the invariant (satisfied), 2nd = the falsifier (fires).
+        runQuery: async () =>
+          (++call === 1 ? { rows: [], truncated: false } : { rows: [{ n: 1 }, { n: 2 }], truncated: false }) as never,
+      },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.falsifierRows).toBe(2);
+    expect(calls.some((c) => /INSERT INTO/i.test(c))).toBe(true);
+  });
+
+  it('still registers without a falsifier, but reports no fire-proof', async () => {
+    const { tag } = fakeSql();
+    const result = await registerFleetInvariant(base, tag, {
+      runQuery: async () => ({ rows: [], truncated: false }) as never,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(result.falsifierRows).toBeUndefined();
   });
 });
