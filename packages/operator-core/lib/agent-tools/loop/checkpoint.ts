@@ -77,6 +77,8 @@ import { CONTEXT_GAUGE_CRITICAL_PCT, contextUsagePct } from '../coordination/too
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import {
   carryProvenanceFields,
+  expandCurrentTurnSentinel,
+  hasCurrentTurnSentinel,
   markUnverifiedOwnerAttribution,
   ownerAttributionEnforcement,
   retainedProvenanceText,
@@ -1204,8 +1206,20 @@ export default defineTool({
     // P-014: lint only what this call supplied as current provenance. Rows and
     // narrative inherited by mergeCarryRows remain in the stored note, but are
     // reported separately as retainedProvenance rather than as fresh activity.
+    // EI-19425644478222007: resolve `[turn:self]` / `[turn:current]` into this write's
+    // REAL anchor before anything reads the text. Order is load-bearing: expanding
+    // BEFORE stampCarrySurfaceProvenance means the lint sees a verifiable ref (rather
+    // than flagging the sentinel as an unanchored action claim) and verifyTurnRefs
+    // resolves it against the transcript, so the note is STORED with an anchor that
+    // actually resolves. Gated on a cheap substring test — a write carrying no sentinel
+    // pays no extra transcript read. Fail-soft: an unresolvable current turn leaves the
+    // sentinel verbatim, which the lint still flags (an honest miss, never a fake ref).
+    const sentinelTurn = hasCurrentTurnSentinel(baseNote)
+      ? await resolveCurrentTurnStamp(ownerId).catch(() => null)
+      : null;
+    const anchoredBaseNote = expandCurrentTurnSentinel(baseNote, sentinelTurn);
     let currentProvenanceText = (() => {
-      let text = baseNote ?? '';
+      let text = anchoredBaseNote ?? '';
       if (effectiveChecks !== undefined) {
         text = withCarryNoteChecks(splitCarryNoteChecks(text).body, effectiveChecks);
       }
@@ -1219,8 +1233,8 @@ export default defineTool({
     const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId);
     const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
     const enforcedBaseNote = ownerEnforcement.unverified
-      ? markUnverifiedOwnerAttribution(baseNote)
-      : baseNote;
+      ? markUnverifiedOwnerAttribution(anchoredBaseNote)
+      : anchoredBaseNote;
     if (ownerEnforcement.unverified) {
       currentProvenanceText = markUnverifiedOwnerAttribution(currentProvenanceText) ?? currentProvenanceText;
     }
