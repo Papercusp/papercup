@@ -123,6 +123,13 @@ export default defineTool({
     argRedirects: {
       limit:
         'max_lines — this tool budgets ITEMIZED LINES rather than rows (default 40, 5-200), and older successes decay out first, so it is a display budget and not a row count. RENAME the key rather than dropping it, or you silently get the default 40 lines. `limit` is the spelling used by the sibling raw-row read, activity:recent. Use `top_k` to size the touched-set on the decay line.',
+      // EI-21149038705756492 — filed alongside `limit` by the SAME rejection: a cold-wake
+      // monitor arrived with the remembered `ownerId` + `limit` pair and got one bare
+      // unrecognized-key list naming neither remedy. `limit` above was repaired and this
+      // half was not, which is why the filing stayed open against a tool that looked fixed.
+      // Pure rename, unlike `limit`: the scope is identical, only the spelling differs.
+      ownerId:
+        "owner — same scope, different spelling. This tool's key is `owner`, and it takes the literal 'self' to resolve you, a full coordination ownerId, or a unique prefix matched against the live roster (an unknown or ambiguous prefix is refused BY NAME rather than silently returning an empty log). RENAME the key; dropping it instead leaves the call unscoped, which is refused with scope_required unless you pass `session_id`. `ownerId` is the spelling coord and presence surfaces use, which is why callers arrive holding it.",
       // OBJECT form deliberately, not a plain string. The remedy here is "there is no
       // such filter — go to the sibling", and the renderer has exactly two shapes: a
       // local relocation, or "`tool` is not an arg of this tool — it is written by

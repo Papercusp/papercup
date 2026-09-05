@@ -128,6 +128,25 @@ describe('activity:tool-log guidance.argRedirects (EI-21837773431817305)', () =>
     expect(split?.note).toMatch(/default 40/i);
   });
 
+  it('relocates `ownerId` to owner as a pure rename, and says dropping it is refused', () => {
+    // EI-21149038705756492. `ownerId` and `limit` arrived in ONE rejection; only `limit`
+    // was repaired, so the filing stayed open against a tool that already looked fixed.
+    // This pins the half that was missed.
+    const split = splitLocalSchemaTarget(redirects.ownerId as string, toolLogKeys);
+    expect(split, '`ownerId` must be authored as `owner — explanation`').not.toBeNull();
+    expect(split?.path).toBe('owner');
+    expect(split?.note).toMatch(/rename/i);
+
+    // The asymmetry with `limit` is the load-bearing part: dropping `limit` silently
+    // succeeds on the default budget, whereas dropping `ownerId` is REFUSED outright.
+    // A caller told only "rename it" may reasonably just omit it instead.
+    expect(split?.note).toMatch(/scope_required/i);
+    expect(split?.note).toContain('session_id');
+
+    // 'self' is the affordance a caller holding a coord-shaped `ownerId` least expects.
+    expect(split?.note).toContain("'self'");
+  });
+
   it('sends `tool` cross-tool rather than authoring a prose "drop the key" string', () => {
     // A plain string here would carry its own em-dash, split on it, fail the path regex,
     // and render "…it is written by <the tail of the sentence>". The object form makes
@@ -143,5 +162,11 @@ describe('activity:tool-log guidance.argRedirects (EI-21837773431817305)', () =>
   it('does not accept the redirected keys as real args', () => {
     expect(toolLogTool.args.safeParse({ limit: 20 }).success).toBe(false);
     expect(toolLogTool.args.safeParse({ tool: 'work_items:get' }).success).toBe(false);
+    // Guards the "fix" where someone silences the rejection by declaring `ownerId`
+    // alongside `owner`, giving the tool two spellings for one scope.
+    expect(toolLogTool.args.safeParse({ ownerId: 'su-9f0de' }).success).toBe(false);
+    // Calibration: the key it redirects TO must actually parse, or the assertions above
+    // would pass just as well against a tool whose whole schema rejects everything.
+    expect(toolLogTool.args.safeParse({ owner: 'self' }).success).toBe(true);
   });
 });
