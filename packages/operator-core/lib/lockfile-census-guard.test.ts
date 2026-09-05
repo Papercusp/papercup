@@ -518,13 +518,24 @@ describe('the repository itself (real-tree assertion)', () => {
     expect(result.stale.map((s) => `${s.source}:${s.path}`)).toEqual([]);
   });
 
-  // Pins the finding this guard was built from, so a later "cleanup" that quietly drops
-  // the row has to argue with a test instead of a comment.
-  it('still records the measured advisory blind spot', () => {
-    const uncovered = result.rows.filter((r) => r.bucket === 'uncovered-baselined');
-    expect(uncovered.map((r) => r.path)).toEqual([
-      'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
-    ]);
+  // The blind spot this guard was built from is RESOLVED, not dropped — and this test is
+  // why that distinction survived: it forced the removal to arrive with evidence instead of
+  // a comment. docs-viewer was reclassified NOT_SHIPPED on 2026-09-05 (WI-2144851) because
+  // the Tauri bundle declares resources ["sidecar/spa/**/*"] with externalBin null,
+  // apps/operator/bin/bundle-host.sh copies ONLY packages/harness/blueprints (never the
+  // packages/harness tree), and the viewer's deps are npm-installed lazily on first run by
+  // bin/docs-viewer.sh rather than vendored. The row must still be CLASSIFIED AND EXPLAINED:
+  // a lockfile may leave the debt list by being accounted for, never by disappearing, so
+  // both halves are asserted here.
+  it('records no uncovered advisory blind spot, and still accounts for the row that left', () => {
+    expect(result.rows.filter((r) => r.bucket === 'uncovered-baselined').map((r) => r.path)).toEqual(
+      [],
+    );
+    const viewer = result.rows.find(
+      (r) => r.path === 'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
+    );
+    expect(viewer?.bucket).toBe('not-shipped');
+    expect(viewer?.note ?? '').toMatch(/bundle-host\.sh/);
   });
 
   // THE CORRECTION. This row was baselined as "12 deps ... SHIPPED ... the highest-
@@ -539,13 +550,16 @@ describe('the repository itself (real-tree assertion)', () => {
     expect(row?.measured?.devOnly).toBeGreaterThan(0);
   });
 
-  // The other half of the same correction: the surviving baselined row is uncovered
-  // because it genuinely resolves runtime dependencies, not because nobody measured it.
-  it('measures the surviving uncovered row as genuinely shipped', () => {
+  // The other half of the same correction, KEPT across the reclassification. docs-viewer is
+  // not-shipped because of how it is built and bundled, NOT because its graph is small — it
+  // still resolves a large runtime graph. Retaining the measurement means a future change
+  // that shrinks this lockfile has to fail here rather than quietly agree with the
+  // not-shipped verdict for the wrong reason.
+  it('measures the reclassified docs-viewer row as still resolving a large runtime graph', () => {
     const row = result.rows.find(
       (r) => r.path === 'libs/papercusp/packages/harness/docs-viewer/package-lock.json',
     );
-    expect(row?.bucket).toBe('uncovered-baselined');
+    expect(row?.bucket).toBe('not-shipped');
     expect(row?.measured?.shipped).toBeGreaterThan(400);
   });
 
@@ -567,9 +581,14 @@ describe('the repository itself (real-tree assertion)', () => {
 
   it('keeps the uncovered baseline shrink-only and reason-carrying', () => {
     // Ratcheted 2 -> 1 when papercusp-desktop/package-lock.json left the baseline for the
-    // DERIVED build-only bucket. Shrink-only means this number goes down or an entry earns
-    // its way out with a measurement; it is never raised to make room for a new blind spot.
-    expect(UNCOVERED_BASELINE.size).toBeLessThanOrEqual(1);
+    // DERIVED build-only bucket, then 1 -> 0 on 2026-09-05 (WI-2144851) when the last entry,
+    // libs/papercusp/packages/harness/docs-viewer/package-lock.json, earned its way out to
+    // NOT_SHIPPED_LOCKFILES with the bundling evidence its baseline reason asked for.
+    // Shrink-only means this number goes down or an entry earns its way out with a
+    // measurement; it is never raised to make room for a new blind spot. At 0 the loop below
+    // is vacuous ON PURPOSE — the ceiling is now the whole guard, and it fails the moment
+    // anything is appended, which is exactly when a new blind spot would otherwise be quiet.
+    expect(UNCOVERED_BASELINE.size).toBeLessThanOrEqual(0);
     for (const [path, entry] of UNCOVERED_BASELINE) {
       expect(entry.reason.length, `${path} needs a real reason`).toBeGreaterThan(40);
       expect(entry.deps, `${path} needs its measured graph size`).toBeGreaterThan(0);
