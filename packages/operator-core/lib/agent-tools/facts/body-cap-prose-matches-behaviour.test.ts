@@ -35,6 +35,7 @@
  * description to rot for weeks the way it just did.
  */
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import assertTool from './assert';
 import { FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 
@@ -42,10 +43,14 @@ type AssertSchemaField = { description?: string };
 
 /** Read a field's description off the REAL schema agents are served, not the source text. */
 const assertSchemaField = (name: string): AssertSchemaField => {
-  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-  const field = options.map((option) => option.shape[name]).find(Boolean);
+  // EI-22064465906366039: read the PUBLISHED JSON Schema, not zod internals (the
+  // old form reached into the root union's branch list, which no longer exists).
+  const json = z.toJSONSchema(assertTool.args as never) as {
+    properties?: Record<string, AssertSchemaField>;
+  };
+  const field = json.properties?.[name];
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
-  return field as AssertSchemaField;
+  return field;
 };
 
 /**
