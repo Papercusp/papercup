@@ -22,6 +22,7 @@ import {
   createInvalidationBus,
   type SyncEvent as LibSyncEvent,
   type SubscribeHandle as LibSubscribeHandle,
+  type SubscribeOptions as LibSubscribeOptions,
   type NotifyInvalidateOpts,
 } from '@papercusp/sync/server';
 import { createPgListenSource, createPgNotifySink, type PgSqlLike } from '@papercusp/sync/server/pg';
@@ -34,6 +35,7 @@ import { hubListen, listenHubEnabled } from './pg-listen-hub';
 
 export type SyncEvent = LibSyncEvent;
 export type SubscribeHandle = LibSubscribeHandle;
+export type SubscribeOptions = LibSubscribeOptions;
 export interface Subscriber {
   send: (e: SyncEvent) => void;
 }
@@ -232,9 +234,21 @@ const bus = createInvalidationBus({
   },
 });
 
-/** Register an SSE subscriber; lazily starts the LISTEN connection. */
-export const subscribe: (send: (e: SyncEvent) => void) => Promise<SubscribeHandle> =
-  bus.subscribe;
+/**
+ * Register an SSE subscriber; lazily starts the LISTEN connection.
+ *
+ * The optional second argument narrows delivery to THIS subscriber (used by the
+ * SSE route to honour a client's declared query-name interest set). It fails
+ * open in every ambiguous case — no predicate, a throwing predicate, or any
+ * return other than a literal `false` all deliver the event. The annotation
+ * MUST keep the `opts` parameter: an explicit narrower type here silently
+ * strips it from every caller of this re-export, and the resulting filter would
+ * simply never be applied.
+ */
+export const subscribe: (
+  send: (e: SyncEvent) => void,
+  opts?: SubscribeOptions,
+) => Promise<SubscribeHandle> = bus.subscribe;
 
 /** Replay events newer than `lastEventId` from the 60s ring buffer. */
 export const backfillSince: (lastEventId: number) => SyncEvent[] = bus.backfillSince;
