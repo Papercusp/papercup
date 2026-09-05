@@ -15,10 +15,27 @@
     "Seeded 2026-09-05 from a measured run: 99 total advisories, 9 gating, 22 non-shipping",
     "only, 12 unattributed (failed closed as shipping).",
     "",
-    "Dispositions are 3 patch-eligible / 6 deferred-semver-major. The split was corrected",
-    "on 2026-09-05: `npm audit --omit=dev` is OPTIMISTIC about fixes and called",
-    "style-dictionary patch-compatible when the installed tree requires a major bump, so the",
-    "analyzer now reads fix feasibility from both lenses and takes the pessimistic one."
+    "Dispositions are 1 patch-eligible / 8 deferred-semver-major. The split was corrected",
+    "TWICE on 2026-09-05, by two different failures of the same optimism:",
+    "",
+    "  (1) `npm audit --omit=dev` is OPTIMISTIC about fixes and called style-dictionary",
+    "      patch-compatible when the installed tree required a major bump, so the analyzer",
+    "      now reads fix feasibility from both lenses and takes the pessimistic one.",
+    "",
+    "  (2) That two-lens reconciliation only bites when npm returns fixAvailable as an",
+    "      OBJECT carrying isSemVerMajor. When npm returns the BARE BOOLEAN `true` there is",
+    "      no version to compare and BOTH lenses read patch-compatible — so the optimism",
+    "      came straight back through a different door. Re-measured against the published",
+    "      registry the same day: of the four then marked patch-eligible, only lodash-es",
+    "      (4.17.21 -> 4.18.1) is genuinely semver-compatible. The other three each require",
+    "      a breaking bump, which the ADVISORY RANGE alone proves without any manifest read:",
+    "      `^<installed>` is a semver SUBSET of the vulnerable range, so no compatible",
+    "      version escapes it. See each entry's reason for its measurement.",
+    "",
+    "      That derivation is NOT yet implemented in the analyzer — these three entries are",
+    "      corrected BY HAND from the measurement below, which is exactly the hand-maintained",
+    "      state CLAUDE.md's derived-truth ladder says to replace. Deriving it (semver.subset",
+    "      over each advisory's via[].range) is the named next step on WI-2144851."
   ],
   "seededAt": "2026-09-05",
   "seededFrom": "npm audit --omit=dev --json (reachability/severity) + npm audit --json (fix feasibility, tree as installed) + npm ls --omit=dev --all --json, attributed by workspace",
@@ -36,26 +53,26 @@
   "entries": {
     "@browserbasehq/stagehand": {
       "severity": "high",
-      "disposition": "patch-eligible",
-      "reason": "npm reports a patch-compatible fix. Queued for the P-007 patch pass; no semver-major upgrade required.",
+      "disposition": "deferred-semver-major",
+      "reason": "Deferring the semver-major upgrade @browserbasehq/stagehand@3.4.0 -> 4.0.2 (latest published). CORRECTED 2026-09-05 from patch-eligible: npm returns the bare boolean fixAvailable:true, which the analyzer reads as patch-compatible, but the advisory range is `3.0.0 - 4.0.0-alpha-49bc5b68e4fbeb28a120b301b51c31a36db7d922` and apps/operator declares \"^3.4.0\" — `^3.4.0` is a semver SUBSET of that range (prereleases sort below 4.0.0), so no compatible 3.x escapes it. The bare `true` is npm saying it could fix the deps this package is vulnerable THROUGH (@langchain/core, puppeteer-core), not that stagehand itself has a compatible fix.",
       "owners": ["@papercusp/testing-shell", "@papercusp/web"]
     },
     "langsmith": {
       "severity": "high",
-      "disposition": "patch-eligible",
-      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "disposition": "deferred-semver-major",
+      "reason": "Deferring the breaking upgrade langsmith@0.3.87 -> 0.6.0+ (0.10.1 is latest published). CORRECTED 2026-09-05 from patch-eligible: the hoisted copy at node_modules/langsmith is 0.8.7 and is NOT vulnerable — the vulnerable copy is the one nested under @browserbasehq/stagehand at 0.3.87. The worst advisory (GHSA-3644-q5cj-c5c7, high) is fixed only at >=0.6.0, and `^0.3.87` is a semver SUBSET of `<0.6.0`; under 0.x semver a minor bump is breaking, so no compatible version escapes. Also blocked behind the stagehand entry: the vulnerable copy is stagehand's own pinned dependency, so a root override would force it inside a package that was never tested against it.",
       "owners": ["@papercusp/testing-shell", "@papercusp/web"]
     },
     "lodash-es": {
       "severity": "high",
       "disposition": "patch-eligible",
-      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "reason": "THE ONE GENUINELY PATCH-COMPATIBLE ENTRY, re-measured 2026-09-05 against the published registry: installed 4.17.21, latest 4.18.1, advisories cover <=4.17.23 — so 4.18.1 escapes them and `^4.17.21` is NOT a subset of the vulnerable range. No direct declaration anywhere in the tree; it arrives transitively (effects: chevrotain and friends), so the fix is a root `overrides` entry pinning lodash-es to ^4.18.1. STILL OPEN because applying it needs an install: `npm audit fix --legacy-peer-deps` was dry-run and makes 204 changes (reifies the whole tree: ai -> 5.0.253, @tiptap/core 3.22.5 -> 3.31.3, adds @ai-sdk/gateway), which is a fleet-breaking blast radius on a shared tree ~100 agents test against. The override route still needs `npm run install:safe` (never a bare npm install) and a quiet window.",
       "owners": ["@papercusp/web"]
     },
     "style-dictionary": {
       "severity": "high",
       "disposition": "deferred-semver-major",
-      "reason": "Only fix is style-dictionary@5.5.2, semver-major. CORRECTED 2026-09-05: `npm audit --omit=dev` reported this as fixAvailable:true (patch-compatible) and it was first filed here as patch-eligible on that reading. The tree as actually installed reports isSemVerMajor:true — installed is 4.4.0 and the root declares \"^4.4.0\", which cannot reach 5.5.2, so the prod-only lens was wrong. The analyzer now reconciles both lenses pessimistically (see analyze()'s fullAuditJson).",
+      "reason": "Deferring the semver-major upgrade style-dictionary@4.4.0 -> 5.5.2 (latest published; the advisory's own fix floor is 5.4.4). Root declares \"^4.4.0\", which cannot reach either. RE-MEASURED 2026-09-05, later the same day: BOTH lenses now return the bare boolean fixAvailable:true — npm's advisory record moved from an isSemVerMajor object naming 5.5.2 to `>=4.3.0 <5.4.4` with no version attached — so the two-lens reconciliation that first corrected this entry no longer fires on it, and the analyzer currently reports it as patch-compatible. The disposition here is still right and is now derivable from the range alone: `^4.4.0` is a semver SUBSET of `>=4.3.0 <5.4.4`, so NO compatible version escapes. Do not re-file this as patch-eligible on the analyzer's say-so until that subset check is implemented.",
       "owners": ["@papercusp/token-kit"]
     },
     "d3": {
