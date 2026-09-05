@@ -42,6 +42,7 @@ import {
   buildSafetySlotIntentWarning,
   detectSafetySlotKeyIntent,
 } from './safety-slot-key-intent';
+import { detectUndeliverableGuardRail } from './undeliverable-guard-rail';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
   carryProvenanceFields,
@@ -906,6 +907,18 @@ export default defineTool({
     // caller's next re-assert would fork a second fact and orphan this one.
     const slotIntent = detectSafetySlotKeyIntent(args.key, args.slot ?? null);
     const slotIntentWarning = slotIntent ? buildSafetySlotIntentWarning(slotIntent) : null;
+    // EI-21228381584914967: a never-drop fact ABOUT the agent-mcp response transport
+    // cannot reach a session whose transport is failing — both fact-delivery paths
+    // (the coord:orient fold and the turn-start orientation fold) ride that same
+    // response envelope. The write still succeeds (it reaches every healthy session
+    // and is the durable record); the author is told that the operative instruction
+    // also has to go in the launch context, which is assembled before any tool call.
+    // Advisory and fail-soft, like every other lint on this receipt.
+    const undeliverableGuardRail = detectUndeliverableGuardRail(
+      args.slot ?? null,
+      slotted.key,
+      slotted.body,
+    );
     // P-016 / EI-212678: classify BEFORE persistence. A response-only lint can
     // be dropped by the caller while the fact is then folded as clean authority.
     // A verified owner-turn source is the sole exception; all other owner prose
@@ -1258,6 +1271,7 @@ export default defineTool({
             ...(truncation ? { truncated: truncation } : {}),
             ...(sourceQuoteRedacted ? { sourceQuoteRedacted } : {}),
             ...(slotIntentWarning ? { slotIntentWarning } : {}),
+            ...(undeliverableGuardRail ? { undeliverableGuardRail } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
             ...recheckReceiptField(fact),
