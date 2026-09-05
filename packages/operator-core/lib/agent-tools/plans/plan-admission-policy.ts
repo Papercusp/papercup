@@ -100,6 +100,15 @@ export function validatePlanAdmissionPolicy(raw: unknown): { ok: true; policy: P
     const error = boundedInt(materiality[key], `governance.planAdmission.materiality.${key}`, min, max);
     if (error) return { ok: false, error };
   }
+  // An unrecognised mode is a MALFORMED policy, never a silent fallback to the
+  // default. The caller (plan-admission-gate) turns a validation failure into a
+  // present-and-unsatisfiable policy that refuses every certificate — so a typo'd
+  // or hostile `mode` fails CLOSED, where defaulting it to `enforce` would have
+  // been the same outcome by accident and defaulting to `shadow` would silently
+  // disable the gate. Absent is the only permitted omission.
+  if (value.mode !== undefined && !PLAN_ADMISSION_MODES.includes(value.mode as PlanAdmissionMode)) {
+    return { ok: false, error: `governance.planAdmission.mode must be one of ${PLAN_ADMISSION_MODES.join(', ')}` };
+  }
   return {
     ok: true,
     policy: {
@@ -111,11 +120,25 @@ export function validatePlanAdmissionPolicy(raw: unknown): { ok: true; policy: P
         maxChangedLines: materiality.maxChangedLines as number,
         maxChangedItems: materiality.maxChangedItems as number,
       },
+      ...(value.mode === undefined ? {} : { mode: value.mode as PlanAdmissionMode }),
     },
   };
 }
 
-/** Canonical, deterministic JSON bytes for signing or hashing a policy payload. */
+/**
+ * Canonical, deterministic JSON bytes for signing or hashing a policy payload.
+ *
+ * ⚠ `mode` IS COVERED, and must stay covered. It is the switch between "this gate
+ * refuses" and "this gate only watches", so leaving it out of the signed bytes
+ * would let anyone who can edit the policy document flip enforcement off without
+ * invalidating the owner's signature — a silent disable of the whole gate, which
+ * is exactly what signing the policy exists to prevent.
+ *
+ * The EFFECTIVE mode is canonicalized, not the raw optional field: an omitted mode
+ * and an explicit `enforce` mean the same thing and must therefore hash the same,
+ * or the identical policy would produce two different signatures depending on how
+ * it happened to be written.
+ */
 export function canonicalizePlanAdmissionPolicy(policy: PlanAdmissionPolicy): string {
   return JSON.stringify({
     approvalBps: policy.approvalBps,
@@ -123,6 +146,7 @@ export function canonicalizePlanAdmissionPolicy(policy: PlanAdmissionPolicy): st
       maxChangedItems: policy.materiality.maxChangedItems,
       maxChangedLines: policy.materiality.maxChangedLines,
     },
+    mode: resolvePlanAdmissionMode(policy),
     policyVersion: policy.policyVersion,
     quorumBps: policy.quorumBps,
     ratificationWindowSec: policy.ratificationWindowSec,

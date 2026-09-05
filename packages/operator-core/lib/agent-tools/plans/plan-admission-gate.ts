@@ -29,7 +29,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { PlanGovernanceControls } from './governance-federation';
 import { assertPlanAdmission, type AdmissionCertificate, type AdmissionRefusalCode, type PlanAdmissionDoor } from './plan-admission-enforcement';
 import type { PlanAdmissionPolicy } from './plan-admission-policy';
-import { validatePlanAdmissionPolicy } from './plan-admission-policy';
+import { resolvePlanAdmissionMode, validatePlanAdmissionPolicy } from './plan-admission-policy';
 import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
 
 /** What a door needs to identify the plan it is about to act on. */
@@ -77,9 +77,36 @@ export interface PlanAdmissionCertificateSource {
   }): Promise<{ certificate: AdmissionCertificate | null; governance?: PlanGovernanceControls | null }>;
 }
 
+/**
+ * One observed-but-not-applied admission verdict (P-013).
+ *
+ * This is the EVIDENCE the plan's activation model asks for: what the gate would
+ * have done to this door, on this revision, had the policy been enforcing. Both
+ * outcomes are emitted — a `wouldAdmit: true` observation is not noise, it is the
+ * denominator, and without it "how often would this policy refuse?" has no answer.
+ */
+export interface PlanAdmissionShadowObservation {
+  readonly slug: string;
+  readonly door: PlanAdmissionDoor;
+  readonly planRevisionHash: string;
+  readonly policyVersion: number;
+  readonly nowMs: number;
+  /** What the door WOULD have received under `enforce`. */
+  readonly wouldAdmit: boolean;
+  /** Present only when `wouldAdmit` is false. */
+  readonly code?: AdmissionRefusalCode;
+  readonly detail: string;
+}
+
+/** Where shadow observations go. Unset means the verdict is computed and discarded. */
+export interface PlanAdmissionShadowSink {
+  record(observation: PlanAdmissionShadowObservation): void | Promise<void>;
+}
+
 interface AdmissionGateState {
   policySource: PlanAdmissionPolicySource | null;
   certificateSource: PlanAdmissionCertificateSource | null;
+  shadowSink: PlanAdmissionShadowSink | null;
 }
 
 // Pinned: operator-core is reached both as a bare specifier and by relative path, and
@@ -88,6 +115,7 @@ interface AdmissionGateState {
 const state = pinModuleState<AdmissionGateState>('@papercusp/operator-core.plan-admission-gate', () => ({
   policySource: null,
   certificateSource: null,
+  shadowSink: null,
 }));
 
 /** Install the certificate provider. Pass null to restore the un-provisioned (refusing) state. */
@@ -98,6 +126,37 @@ export function configurePlanAdmissionCertificateSource(source: PlanAdmissionCer
 /** Override policy resolution. Pass null to restore the default hive-policy reader. */
 export function configurePlanAdmissionPolicySource(source: PlanAdmissionPolicySource | null): void {
   state.policySource = source;
+}
+
+/**
+ * Install the shadow-observation sink. Pass null to compute-and-discard.
+ *
+ * Absent a sink, `mode: 'shadow'` still admits everything — the mode governs
+ * ENFORCEMENT, and recording is a separate concern with a separate owner, which is
+ * the same argument the module header makes for keeping policy and certificate
+ * resolution apart.
+ */
+export function configurePlanAdmissionShadowSink(sink: PlanAdmissionShadowSink | null): void {
+  state.shadowSink = sink;
+}
+
+/**
+ * Hand one observation to the sink. NEVER throws.
+ *
+ * Deliberately fail-OPEN, which is the opposite of everything else in this file and
+ * is correct here: recording is not authorization. A sink that is misconfigured,
+ * slow, or throwing must not turn into a refusal — that would make the
+ * evidence-gathering mode more dangerous to switch on than enforcement itself, and
+ * nobody would ever gather the evidence.
+ */
+async function emitShadowObservation(observation: PlanAdmissionShadowObservation): Promise<void> {
+  const sink = state.shadowSink;
+  if (!sink) return;
+  try {
+    await sink.record(observation);
+  } catch {
+    // Swallowed on purpose. See above.
+  }
 }
 
 /**
@@ -138,7 +197,16 @@ export const PLAN_ADMISSION_DOOR_SITES = [
 export const PLAN_ADMISSION_GATE_ENTRYPOINTS = ['checkPlanAdmission', 'checkPlanStartable'] as const;
 
 /** Why a door did not evaluate admission at all. Both are PASSES, and both say so out loud. */
-export type PlanAdmissionSkipReason = 'no-admission-policy' | 'plan-not-found';
+/**
+ * Why a door was admitted without an applied verdict.
+ *
+ * `shadow-mode` is NOT the same as `no-admission-policy`, and the distinction is
+ * the whole point of P-013: the first means a policy exists and was fully
+ * evaluated but is only watching, the second means nothing was evaluated at all.
+ * Collapsing them would make "we gathered evidence" indistinguishable from "we
+ * never looked" — which is precisely the state this mode was added to escape.
+ */
+export type PlanAdmissionSkipReason = 'no-admission-policy' | 'plan-not-found' | 'shadow-mode';
 
 export interface PlanAdmissionRefusal {
   error: 'plan_admission_refused';
@@ -154,7 +222,7 @@ export interface PlanAdmissionRefusal {
 }
 
 export type PlanAdmissionVerdict =
-  | { admitted: true; skipped: PlanAdmissionSkipReason }
+  | { admitted: true; skipped: PlanAdmissionSkipReason; shadow?: PlanAdmissionShadowObservation }
   | { admitted: true; skipped?: undefined; certificate: AdmissionCertificate; planRevisionHash: string; policyVersion: number }
   | { admitted: false; refusal: PlanAdmissionRefusal };
 
@@ -201,6 +269,11 @@ const FAILING_POLICY: PlanAdmissionPolicy = Object.freeze({
   approvalBps: 10_000,
   ratificationWindowSec: 1,
   materiality: Object.freeze({ maxChangedLines: 0, maxChangedItems: 0 }),
+  // Stated explicitly rather than left to the default. This policy stands in for a
+  // section nobody could parse, so it must REFUSE; were it ever to resolve to
+  // `shadow`, a corrupted policy document would silently switch the gate off
+  // instead of failing closed — the exact inversion this stand-in exists to block.
+  mode: 'enforce' as const,
 });
 
 /**
@@ -241,6 +314,27 @@ export async function checkPlanAdmission(subject: PlanAdmissionSubject): Promise
     governance: resolved.governance ?? null,
     nowMs,
   });
+  // SHADOW (P-013): the verdict above was computed exactly as it would be under
+  // `enforce` — same policy, same certificate, same governance controls, same
+  // instant. Only its APPLICATION changes. Diverting here rather than earlier is
+  // what makes the evidence trustworthy: an observation produced by a cheaper or
+  // short-circuited path would measure something other than the enforcement it is
+  // supposed to predict.
+  if (resolvePlanAdmissionMode(policy) === 'shadow') {
+    const observation: PlanAdmissionShadowObservation = {
+      slug: subject.slug,
+      door: subject.door,
+      planRevisionHash,
+      policyVersion: policy.policyVersion,
+      nowMs,
+      wouldAdmit: result.ok,
+      ...(result.ok ? {} : { code: result.code }),
+      detail: result.ok ? 'would admit' : result.detail,
+    };
+    await emitShadowObservation(observation);
+    return { admitted: true, skipped: 'shadow-mode', shadow: observation };
+  }
+
   if (result.ok) return { admitted: true, certificate: result.certificate, planRevisionHash, policyVersion: policy.policyVersion };
   return {
     admitted: false,
