@@ -167,6 +167,8 @@ const turnStartMemory = defineTool({
         try {
           const {
             preparePendingControlTransition,
+            markControlTransitionPrepared,
+            failControlTransitionActivation,
             acknowledgeControlTransition,
             renderControlTransitionContext,
           } = await import(
@@ -175,6 +177,7 @@ const turnStartMemory = defineTool({
           const transition = await preparePendingControlTransition(owner, workspaceId);
           if (!transition) return '';
           const ctrl = renderControlTransitionContext(transition);
+          const activationRevision = transition.state?.activation?.desired;
           // identities-v1 P-012: a stack mutation (a fleet posture attached / swapped /
           // detached; mode-axis layers once P-021 lands) rides THIS transition. The
           // layer text is a SEPARATE block after the `⟦CTRL⟧` line — outside the
@@ -185,7 +188,18 @@ const turnStartMemory = defineTool({
           let stackRendered = true;
           try {
             const { renderStackTransitionContextResult } = await import('../../../stack-binding-channel');
-            const rendered = await renderStackTransitionContextResult(transition);
+            const rendered = await renderStackTransitionContextResult(
+              transition,
+              activationRevision
+                ? {
+                    activation: {
+                      specificationRevision: activationRevision.specificationRevision,
+                      stateRevision: activationRevision.stateRevision,
+                      idempotencyKey: `session-activation:${owner}:${activationRevision.specificationRevision}:${activationRevision.stateRevision}`,
+                    },
+                  }
+                : undefined,
+            );
             stack = rendered.text;
             stackRendered = rendered.rendered;
           } catch {
@@ -193,9 +207,31 @@ const turnStartMemory = defineTool({
             stackRendered = false;
           }
           const text = stack ? `${ctrl}\n\n${stack}` : ctrl;
-          if (stackRendered && Number.isSafeInteger(transition.generation)) {
+          if (!stackRendered && activationRevision) {
+            await failControlTransitionActivation(
+              owner,
+              workspaceId,
+              transition.generation,
+              activationRevision,
+              'stack transition render failed',
+            ).catch(() => undefined);
+          }
+          let activationPrepared = true;
+          if (stackRendered && activationRevision) {
+            activationPrepared = await markControlTransitionPrepared(
+              owner,
+              workspaceId,
+              transition.generation,
+              activationRevision,
+            ).catch(() => false);
+          }
+          if (stackRendered && activationPrepared && Number.isSafeInteger(transition.generation)) {
             try {
-              await acknowledgeControlTransition(owner, workspaceId, transition.generation);
+              if (activationRevision) {
+                await acknowledgeControlTransition(owner, workspaceId, transition.generation, undefined, activationRevision);
+              } else {
+                await acknowledgeControlTransition(owner, workspaceId, transition.generation);
+              }
             } catch {
               // Preserve the assembled prompt even if the watermark write fails.
               // The pending generation will be retried on the next turn.
