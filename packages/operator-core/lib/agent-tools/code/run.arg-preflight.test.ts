@@ -78,6 +78,10 @@ vi.mock('../recipes/recipe-schema-validation', () => ({
 }));
 
 import './run'; // registers code:run (after the mocks are hoisted)
+// Registers improvements:capture so the end-to-end predicate at the bottom can read its REAL
+// published schema. Imported directly rather than via the registry barrel: the barrel drags in
+// the whole catalog (and its mock surface) for one schema.
+import '../improvements/capture';
 
 const orchestration = (over: Record<string, unknown> = {}) => ({
   ok: true,
@@ -220,13 +224,31 @@ describe('code:run static arg preflight (EI-19449316000499177)', () => {
   // `additionalProperties:false`, which is the single fact the fail-closed branch rests on. A tool
   // that switched to .passthrough() would silently stop being covered with every test above still
   // green, so assert the predicate itself here.
-  it('the reported case is really covered: improvements:capture publishes additionalProperties:false and has no `harness` key', () => {
-    const schema = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'improvements:capture')
-      ?.inputSchema as { additionalProperties?: unknown; properties?: Record<string, unknown> } | undefined;
-    expect(schema, 'improvements:capture is not registered — the reported case cannot be checked').toBeDefined();
-    expect(schema?.additionalProperties).toBe(false);
-    const keys = Object.keys(schema?.properties ?? {});
-    expect(keys).not.toContain('harness'); // the arg the item passed
-    expect(keys).toContain('scope'); // the arg the dispatcher suggested instead
+  it('the tools in the reported cases still publish additionalProperties:false — the predicate fail-closed rests on', () => {
+    const schemaOf = (name: string) =>
+      listAllProjectedTools().find((t) => t.expose.mcp?.name === name)?.inputSchema as
+        | { additionalProperties?: unknown; properties?: Record<string, unknown> }
+        | undefined;
+
+    for (const name of ['improvements:capture', 'plans:set-status']) {
+      const schema = schemaOf(name);
+      expect(schema, `${name} is not registered — its coverage cannot be checked`).toBeDefined();
+      // The whole fail-closed branch is valid only while this is false. A tool that moved to
+      // .passthrough() would silently drop out of coverage with every mocked test above still green.
+      expect(schema?.additionalProperties, `${name} no longer rejects unknown keys`).toBe(false);
+    }
+
+    // The item's SECOND measured case (2026-08-03): `plans.setStatus({ itemId })` was rejected with
+    // "Did you mean `item`", stranding the plans:set-now call behind it. Still live — so this is a
+    // real end-to-end example of what now gets caught before dispatch instead of mid-script.
+    const setStatusKeys = Object.keys(schemaOf('plans:set-status')?.properties ?? {});
+    expect(setStatusKeys).not.toContain('itemId');
+    expect(setStatusKeys).toContain('item');
+
+    // The item's FIRST measured case is deliberately NOT asserted: `improvements:capture` has since
+    // gained a real `harness` argument, so that exact call no longer fails at all. Recorded here so
+    // a later reader does not re-derive it — the CLASS is what this change addresses, and it stays
+    // live via the additionalProperties predicate above.
+    expect(Object.keys(schemaOf('improvements:capture')?.properties ?? {})).toContain('harness');
   });
 });

@@ -356,10 +356,11 @@ export default defineTool({
     // `SearchSource` requires a ranked list, not a query.
     //
     // The floor needs NO new calibration on this corpus: `EMBEDDING_FLOOR_GEMMA`
-    // (0.45) was measured ON doc_sections (in-domain top-1 min .5536 vs
-    // off-domain max .5224 — see search/prose-min-score.ts). This is the
-    // corpus it was calibrated against, not a corpus inheriting a threshold
-    // measured somewhere else.
+    // was measured ON doc_sections (in-domain top-1 min .5536 vs off-domain max
+    // .5224 — see search/prose-min-score.ts). This is the corpus it was
+    // calibrated against, not a corpus inheriting a threshold measured
+    // somewhere else. (The value itself is deliberately not restated here — it
+    // has moved once already, and a second copy of a constant is a drift site.)
 
     // searchDocs's own ctx.metadata call reports non_searchable_excluded
     // (not part of its return value) — capture it via a local sink instead of

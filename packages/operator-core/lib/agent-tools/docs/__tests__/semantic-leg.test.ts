@@ -144,7 +144,8 @@ describe('docSectionsRanker', () => {
   it('scores on raw cosine so the engine can floor it', async () => {
     // The P-017 floor runs on the ranker's NATIVE score before fusion. Emitting
     // anything else here (a normalised or rank-derived value) would silently
-    // make the 0.45 gemma floor mean nothing.
+    // make the gemma floor mean nothing. (Value deliberately not restated —
+    // it lives in search/prose-min-score.ts and has moved once already.)
     const listing = await docSectionsRanker('src', 'gemma', () => {}, deps())(params(4));
     expect(listing.map((l) => l.score)).toEqual([0.9, 0.8, 0.7]);
   });
