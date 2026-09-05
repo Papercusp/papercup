@@ -302,4 +302,72 @@ describe('composed threshold-tree awaits — store+engine end-to-end (real PG)',
     expect(root[0].fired_at).not.toBeNull();
     expect(await liveLeafCount(r.rootId)).toBe(0);
   });
+
+  // ── 6. EI-14793: idempotent re-arm of an identical composed spec ──────────────
+  //
+  // The single-key path got this in EI-14225; the `spec` branch returns to the caller
+  // before reaching that supersede, so an idle-park loop re-arming the SAME tree each
+  // wake left every earlier root live and ONE matching event then woke it N times.
+  // These drive the real registration entry point, so they fail against the pre-fix
+  // compose.ts rather than merely restating the new code.
+
+  it('re-arming the SAME spec supersedes the prior tree, so one event wakes ONCE not N times', async () => {
+    const subscriberId = uid();
+    // The reporter's actual idle-park spec.
+    const spec: ComposedSpec = { any: [{ event: 'rearm:created' }, { event: 'rearm:unblocked' }] };
+
+    const first = await compose.registerComposedAwait({ subscriberId, spec });
+    if (!first.registered) throw new Error('expected registration');
+    expect(first.superseded).toBe(0); // nothing to retire on a first arm
+
+    // Three more park cycles, exactly as the loop does.
+    const second = await compose.registerComposedAwait({ subscriberId, spec });
+    const third = await compose.registerComposedAwait({ subscriberId, spec });
+    const fourth = await compose.registerComposedAwait({ subscriberId, spec });
+    if (!second.registered || !third.registered || !fourth.registered) throw new Error('expected registration');
+    expect([second.superseded, third.superseded, fourth.superseded]).toEqual([1, 1, 1]);
+
+    // Every earlier root is cancelled; only the newest is live.
+    const live = await sql`
+      SELECT id FROM harness_shared.event_await_nodes
+       WHERE subscriber_id = ${subscriberId} AND parent_id IS NULL
+         AND fired_at IS NULL AND cancelled_at IS NULL
+    `;
+    expect(live.map((r: any) => Number(r.id))).toEqual([fourth.rootId]);
+
+    // THE REPORTED SYMPTOM: one underlying event, one wake — not four.
+    await emit('rearm:created');
+    expect(await anchorDeliveries(fourth.anchorAwaitId)).toHaveLength(1);
+    for (const stale of [first, second, third]) {
+      expect(await anchorDeliveries(stale.anchorAwaitId)).toHaveLength(0);
+    }
+  });
+
+  it('does NOT supersede a different spec, or another subscriber holding the same one', async () => {
+    // The dangerous direction: over-eager superseding silently cancels a wait the caller
+    // still needs, losing a wake. Both of these must survive a re-arm.
+    const subscriberId = uid();
+    const other = uid();
+    const mine: ComposedSpec = { any: [{ event: 'keep:a' }, { event: 'keep:b' }] };
+    const different: ComposedSpec = { all: [{ event: 'keep:a' }, { event: 'keep:b' }] }; // same leaves, different op
+    const peers = await compose.registerComposedAwait({ subscriberId: other, spec: mine });
+    const unrelated = await compose.registerComposedAwait({ subscriberId, spec: different });
+    const before = await compose.registerComposedAwait({ subscriberId, spec: mine });
+    if (!peers.registered || !unrelated.registered || !before.registered) throw new Error('expected registration');
+
+    const after = await compose.registerComposedAwait({ subscriberId, spec: mine });
+    if (!after.registered) throw new Error('expected registration');
+    expect(after.superseded).toBe(1); // only my own identical tree
+
+    const stillLive = async (rootId: number) =>
+      Number(
+        (
+          await sql`SELECT count(*)::int AS n FROM harness_shared.event_await_nodes
+                     WHERE id = ${rootId} AND fired_at IS NULL AND cancelled_at IS NULL`
+        )[0].n,
+      );
+    expect(await stillLive(peers.rootId)).toBe(1); // another subscriber's tree is untouched
+    expect(await stillLive(unrelated.rootId)).toBe(1); // my differently-shaped tree survives
+    expect(await stillLive(before.rootId)).toBe(0); // …and only the identical one was retired
+  });
 });

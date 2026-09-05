@@ -78,6 +78,7 @@ import { registerAwait, listActiveAwaits, listRecentDeliveries } from '../../eve
 import * as storeMock from '../../events/await/store';
 import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { registerComposedAwait } from '../../events/await/compose';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { cancelComposedTree, listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { ComposedSpecError } from '../../events/await/compose-spec';
@@ -111,7 +112,7 @@ describe('events:await spec (composed threshold tree)', () => {
   });
 
   it('registers via registerComposedAwait (NOT the plain registerAwait) with the wake handle + defaults', async () => {
-    vi.mocked(registerComposedAwait).mockResolvedValue({ registered: true, rootId: 55, anchorAwaitId: 777, leafCount: 3, depth: 2 } as never);
+    mockResolvedTyped(vi.mocked(registerComposedAwait), { registered: true, rootId: 55, anchorAwaitId: 777, leafCount: 3, depth: 2, superseded: 0 });
     const out = await callAwait({ spec: ANY_SPEC });
     expect(startAwaitSweeper).toHaveBeenCalledTimes(1);
     expect(registerAwait).not.toHaveBeenCalled();
@@ -136,8 +137,23 @@ describe('events:await spec (composed threshold tree)', () => {
     expect(out.advice).toMatch(/consumes and voids every sibling/i);
   });
 
+  // EI-14793: the caller only learns a stale tree was retired if the RESPONSE says so.
+  // The integration suite proves the count is computed; this proves it reaches the agent,
+  // and that a first arm stays quiet instead of reporting a meaningless `superseded: 0`.
+  it('surfaces `superseded` + advice when a re-arm retired prior trees, and omits it on a first arm', async () => {
+    mockResolvedTyped(vi.mocked(registerComposedAwait), { registered: true, rootId: 9, anchorAwaitId: 8, leafCount: 2, depth: 1, superseded: 2 });
+    const rearmed = await callAwait({ spec: ANY_SPEC });
+    expect(rearmed.superseded).toBe(2);
+    expect(rearmed.superseded_advice).toMatch(/prior pending composed tree/i);
+
+    mockResolvedTyped(vi.mocked(registerComposedAwait), { registered: true, rootId: 9, anchorAwaitId: 8, leafCount: 2, depth: 1, superseded: 0 });
+    const first = await callAwait({ spec: ANY_SPEC });
+    expect(first).not.toHaveProperty('superseded');
+    expect(first).not.toHaveProperty('superseded_advice');
+  });
+
   it('timeout_sec / on_timeout flow through to registerComposedAwait and the response', async () => {
-    vi.mocked(registerComposedAwait).mockResolvedValue({ registered: true, rootId: 1, anchorAwaitId: 2, leafCount: 2, depth: 1 } as never);
+    mockResolvedTyped(vi.mocked(registerComposedAwait), { registered: true, rootId: 1, anchorAwaitId: 2, leafCount: 2, depth: 1, superseded: 0 });
     const out = await callAwait({ spec: ANY_SPEC, timeout_sec: 900, on_timeout: 'expire', note: 'why' });
     expect(vi.mocked(registerComposedAwait).mock.calls[0][0]).toMatchObject({ timeoutSec: 900, timeoutBehavior: 'expire', note: 'why' });
     expect(out.on_timeout).toBe('expire');
