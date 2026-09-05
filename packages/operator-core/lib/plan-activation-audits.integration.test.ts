@@ -46,6 +46,7 @@ import {
 } from './agent-tools/plans/activation-audit-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
+import { rubricTemplateDataSchema } from './agent-tools/plans/rubric-template';
 
 let db: FreshPgDb;
 
@@ -467,13 +468,13 @@ describe('migration 938 activation-audit ledger', () => {
         planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
     };
     expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true });
-    const [stored] = await db.sql<Array<{ template_data: any }>>`
+    const [stored] = await db.sql<Array<{ template_data: unknown }>>`
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
     // Persist the post-amendment state as a fixture; amendment authorization has
     // its own real-PG suite. The old Requirements text deliberately stays intact.
-    const amended = { ...stored!.template_data };
-    amended.criteria = amended.criteria.map((criterion: any) => criterion.barKey !== 'R-1' ? criterion :
+    const amended = rubricTemplateDataSchema.parse(stored!.template_data);
+    amended.criteria = amended.criteria.map((criterion) => criterion.barKey !== 'R-1' ? criterion :
       normalizeAcceptanceBarCriterion({ ...criterion, barHash: undefined,
         driftMarkers: 'The runtime returns a different committed BAR revision.',
         evidencePlane: 'live', requiredScope: ['live'],
@@ -482,13 +483,14 @@ describe('migration 938 activation-audit ledger', () => {
       }));
     amended.barSetHash = computeAcceptanceBarSetHash(amended.criteria);
     await db.sql`UPDATE harness_shared.harness_plans SET
-      template_data = ${JSON.stringify(amended)}::jsonb, version = 2
+      template_data = ${JSON.stringify(amended)}::text::jsonb, version = 2
       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
     await db.sql`UPDATE harness_shared.harness_plans SET status = 'active',
       acceptance_bar_set_hash = ${amended.barSetHash}, acceptance_bar_rubric_revision = 2
       WHERE plan_slug = 'post-epoch-seed-target'`;
 
-    expect(await recordCurrentActivationAudit({ ...input, createdBy: 'su-reauditor' }))
+    const reaudit = await recordCurrentActivationAudit({ ...input, createdBy: 'su-reauditor' });
+    expect(reaudit, JSON.stringify(reaudit))
       .toMatchObject({ ok: true, barSeed: { rubricRevision: 2, rubricChanged: false } });
     const [after] = await db.sql<Array<{ template_data: unknown; version: number }>>`
       SELECT template_data, version::int FROM harness_shared.harness_plans
