@@ -189,6 +189,29 @@ function postgresRegexRepetitionHint(
   );
 }
 
+/**
+ * EI-22394295144242470: PostgreSQL's 42601 diagnostic for a UNION arity
+ * mismatch names the structural failure but not the correction. This is a
+ * caller-written query error, so point directly at the SELECT-list contract
+ * instead of sending the caller through another trial-and-error query.
+ */
+function unionColumnCountHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '42601' || !/\bunion\b/i.test(sql)) return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  if (!/each\s+union\s+query\s+must\s+have\s+the\s+same\s+number\s+of\s+columns/i.test(errorText)) {
+    return undefined;
+  }
+  return (
+    'PostgreSQL UNION branches must project the same number of columns. Count every expression in ' +
+    'each SELECT list (including `NULL` placeholders and function expressions), then add or remove ' +
+    'the extra expression—or add a matching placeholder—so every branch has the same arity; keep ' +
+    'corresponding positions type-compatible.'
+  );
+}
+
 export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
@@ -670,6 +693,8 @@ export default defineTool({
       if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
       const regexRepetitionHint = postgresRegexRepetitionHint(sql, info);
       if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
+      const unionColumnCountCorrection = unionColumnCountHint(sql, info);
+      if (unionColumnCountCorrection && !payload.hint) payload.hint = unionColumnCountCorrection;
       // The SAME sql-derived advisories the success payload composes, in the
       // same order — a query's SHAPE is no less true for having failed to run.
       // Placed AFTER the precise correction (PG's own hint names the column)

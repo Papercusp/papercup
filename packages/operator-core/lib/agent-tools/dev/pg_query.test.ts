@@ -781,6 +781,33 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(String(payloadOf(res as never).hint)).toContain('{0,1800}');
   });
 
+  it('adds a targeted hint for a UNION column-count mismatch', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('each UNION query must have the same number of columns'), {
+        code: '42601',
+        position: '255',
+      }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql:
+          'SELECT kind, occurred_at, phase, status, level, source, message, details ' +
+          'FROM harness_shared.coord_event_log ' +
+          'UNION ALL ' +
+          "SELECT kind, updated_at, NULL, NULL, NULL, logical_key, state, NULL, jsonb_build_object('resource', true) " +
+          'FROM harness_shared.workspace_host_resources',
+      } as never,
+      {} as never,
+    );
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42601',
+      hint: expect.stringContaining('same number of columns'),
+    });
+    expect(String(payloadOf(res as never).hint)).toContain('NULL');
+    expect(String(payloadOf(res as never).hint)).toContain('type-compatible');
+  });
+
   it('does not attach the oversized-bound hint to another repetition error shape', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('invalid regular expression: invalid repetition count(s)'), { code: '2201B' }),
