@@ -1372,9 +1372,19 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /** Pure semantic diff used by seed/amend/migration dry-runs. */
+export type AcceptanceBarContractDiffView = Pick<AcceptanceBarContractSnapshot, 'contentHash'> & {
+  plan: Pick<AcceptanceBarSubjectPlanSource, 'cohort' | 'adoptionEpoch'> | null;
+  bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'barHash' | 'model' | 'method' | 'falsifier' |
+    'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'passRatings' | 'coversBarKeys' | 'provenance'> & {
+      mappings: Array<{ planItemId: string; specId: string }>;
+    }>;
+};
+
+// The comparable subset also admits the canonical seed compiler's pre-write
+// view, before execution proof exists. It is never a separate gate authority.
 export function diffAcceptanceBarContractSnapshots(
-  before: AcceptanceBarContractSnapshot | null,
-  after: AcceptanceBarContractSnapshot,
+  before: AcceptanceBarContractDiffView | null,
+  after: AcceptanceBarContractDiffView,
   operation: AcceptanceBarContractDiff['operation'] = 'compare',
 ): AcceptanceBarContractDiff {
   const prior = new Map((before?.bars ?? []).map((bar) => [bar.barKey, bar]));
@@ -1416,7 +1426,7 @@ export function diffAcceptanceBarContractSnapshots(
       kinds.push('method-only');
       fields.push('method');
     }
-    const mappingOf = (bar: AcceptanceBarTrace) =>
+    const mappingOf = (bar: AcceptanceBarContractDiffView['bars'][number]) =>
       bar.mappings.map((mapping) => `${mapping.planItemId}\0${mapping.specId}`).sort();
     if (!sameValue(mappingOf(a), mappingOf(b))) {
       kinds.push('mapping');
