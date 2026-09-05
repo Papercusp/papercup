@@ -30,6 +30,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { collectChildOutput } from '../child-output';
 
 /**
  * Shell-metacharacter guard for the verify step (audit P-030): test commands
@@ -357,8 +358,10 @@ function verifyTestCommandAsync(
       cwd: repoPath,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '';
-    let stderr = '';
+    // Chunk-safe accumulation (WI-6728): a multi-byte UTF-8 character split across two
+    // 'data' events must not decode to replacement chars. `text()` is read once, at
+    // the terminal finish, which is the flushing read the collector is designed for.
+    const output = collectChildOutput(child);
     let timedOut = false;
     let settled = false;
     const timeout = setTimeout(() => {
@@ -373,20 +376,14 @@ function verifyTestCommandAsync(
       applyTestVerification(verification.testCommand, notes, verification.timeoutMs, {
         status,
         error,
-        stdout,
-        stderr,
+        stdout: output.stdout.text(),
+        stderr: output.stderr.text(),
         timedOut,
         durationMs: Date.now() - startedAt,
       });
       resolve();
     };
 
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
     child.once('error', (error) => finish(null, error as NodeJS.ErrnoException));
     child.once('close', (status) => finish(status, null));
   });
