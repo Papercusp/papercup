@@ -2,11 +2,23 @@
  * Accept gates (P-009) — the pure predicates the loop's accept/reject engine
  * (P-018) combines. A candidate is accepted iff ALL gates hold:
  *
- *   improvement · dev-anchor-no-regress · no-new-regressions · probe-caught · cost
+ *   improvement · dev-anchor-no-regress · real-anchor-no-regress ·
+ *   no-new-regressions · probe-caught · cost
  *
  * The judge composite is the reward; deterministic `regressions` + `planted_bug_caught`
  * are un-gameable guardrails. Pass-count is deliberately NOT a gate — the validator
  * is mutable and pass-count is gameable, so it stays observability only (D-011).
+ *
+ * `real-anchor-no-regress` (gym-real-fitness-signal-2026-07-27 P-002, owner ruling
+ * D-004 condition 3: "a challenger may not be installed into harness_prompt_overrides
+ * unless it holds the real-anchor pool"). The real-anchor pool is a set of REAL shipped
+ * features replayed at their pre-implementation commit; before this gate existed it was
+ * scored every cycle and then excluded from every aggregate, so a candidate could clear
+ * every gate — win on train, hold the dev-anchor — while getting measurably WORSE at
+ * real work, and be installed into the live prompt table on that basis. It is deliberately
+ * fail-closed: an unmeasured real-anchor is `not-measured`, so a run that never exercised
+ * the pool yields an INCONCLUSIVE verdict and promotes nothing. D-004 states the same
+ * consequence in words — "until then promotion stays OFF even if cycles run in shadow".
  *
  * Thresholds (ε, δ, cost ceiling) are NOT guessed: ε/δ are derived from measured
  * judge variance at P-014; they are passed in here.
@@ -76,6 +88,31 @@ export function rollUpEvidenceStatus(perTask: readonly GateStatus[]): GateStatus
   return 'pass';
 }
 
+/**
+ * Fold the two sides of an anchor COMPARISON into one evidence record (P-002).
+ *
+ * A no-regression claim needs BOTH sides: a candidate's real-anchor aggregate says
+ * nothing unless the incumbent it is compared against was measured on the same pool.
+ * So a gap on EITHER side makes the comparison `not-measured` — never a pass (the
+ * vacuous-pass hole P-003 closed for probes), and never a reject the candidate did
+ * not earn. Coverage and artifacts are summed because the comparison genuinely owes
+ * both sides' tasks; `rollUpEvidenceStatus` keeps a measured FAIL decisive.
+ */
+export function comparisonEvidence(
+  candidate: DeterministicEvidence,
+  incumbent: DeterministicEvidence,
+): DeterministicEvidence {
+  return {
+    status: rollUpEvidenceStatus([candidate.status, incumbent.status]),
+    coverage: {
+      measured: candidate.coverage.measured + incumbent.coverage.measured,
+      required: candidate.coverage.required + incumbent.coverage.required,
+      unmeasuredTaskIds: [...candidate.coverage.unmeasuredTaskIds, ...incumbent.coverage.unmeasuredTaskIds],
+    },
+    artifacts: [...candidate.artifacts, ...incumbent.artifacts],
+  };
+}
+
 /** Evidence for a signal nothing reported — the honest default when collection did not happen. */
 export function unmeasuredEvidence(unmeasuredTaskIds: readonly string[] = []): DeterministicEvidence {
   return {
@@ -96,8 +133,24 @@ export interface GateInputs {
   candidateDevAnchorAgg: number;
   /** Champion's aggregate on the frozen dev-anchor. */
   championDevAnchorAgg: number;
-  /** Allowed dev-anchor regression slack (variance-derived, P-014). */
+  /**
+   * Allowed anchor regression slack (variance-derived, P-014). Shared by BOTH anchor
+   * gates: dev-anchor and real-anchor are the same judge scoring the same rubric on a
+   * held-out pool, so the same measured judge variance bounds both. A separate
+   * real-anchor slack would be a second threshold asserting a variance nobody measured.
+   */
   delta: number;
+  /** Candidate's aggregate judge composite on the `real-anchor` pool (real shipped features). */
+  candidateRealAnchorAgg: number;
+  /** Champion's aggregate on the same real-anchor pool — the incumbent this is compared against. */
+  championRealAnchorAgg: number;
+  /**
+   * Was the real-anchor comparison actually measured, on BOTH sides? Coverage-only
+   * evidence (P-002): it never reports `fail` — a real regression is the margin's job —
+   * it reports whether there is anything to compare at all. A run with no real-anchor
+   * tasks is `not-measured`, exactly as a run with no probes is, and promotes nothing.
+   */
+  realAnchorEvidence: DeterministicEvidence;
   /** Did any candidate run break the repo's pre-existing tests? Three-state (P-003). */
   regressionEvidence: DeterministicEvidence;
   /** Were all planted bugs (probe runs) caught? Three-state (P-003). */
@@ -144,6 +197,8 @@ interface GateFacts {
   improvementMargin: number;
   /** candidateDevAnchorAgg − (championDevAnchorAgg − δ); ≥ 0 ⇔ no dev-anchor regression. */
   devAnchorMargin: number;
+  /** candidateRealAnchorAgg − (championRealAnchorAgg − δ); ≥ 0 ⇔ no real-anchor regression. */
+  realAnchorMargin: number;
   regressionStatus: GateStatus;
   probeStatus: GateStatus;
   /** baselineMeanCost × ceiling − candidateMeanCost; ≥ 0 ⇔ within the cost ceiling. */
@@ -179,6 +234,16 @@ const GATE_RULES: {
     gate: 'dev-anchor-no-regress',
     cond: { devAnchorMargin: { gte: 0 } },
     detail: (g) => `dev-anchor ${g.candidateDevAnchorAgg.toFixed(3)} vs champion ${g.championDevAnchorAgg.toFixed(3)} − δ ${g.delta}`,
+  },
+  {
+    // P-002 / D-004(3). Coverage evidence gates the comparison; the margin decides it.
+    gate: 'real-anchor-no-regress',
+    cond: { realAnchorMargin: { gte: 0 } },
+    evidence: (g) => g.realAnchorEvidence,
+    detail: (g) =>
+      g.realAnchorEvidence.status === 'pass'
+        ? `real-anchor ${g.candidateRealAnchorAgg.toFixed(3)} vs champion ${g.championRealAnchorAgg.toFixed(3)} − δ ${g.delta} (${coverageDetail(g.realAnchorEvidence)})`
+        : `real-anchor NOT MEASURED — no comparable real-anchor score for this candidate and the champion, so a real-work regression could not be ruled out (${coverageDetail(g.realAnchorEvidence)})`,
   },
   {
     gate: 'no-new-regressions',
@@ -221,6 +286,7 @@ function gateFacts(g: GateInputs): GateFacts {
   return {
     improvementMargin: g.candidateJudgeAgg - (g.parentJudgeAgg + g.epsilon),
     devAnchorMargin: g.candidateDevAnchorAgg - (g.championDevAnchorAgg - g.delta),
+    realAnchorMargin: g.candidateRealAnchorAgg - (g.championRealAnchorAgg - g.delta),
     regressionStatus: g.regressionEvidence.status,
     probeStatus: g.probeEvidence.status,
     costMargin: g.baselineMeanCost * g.costCeiling - g.candidateMeanCost,
@@ -231,10 +297,21 @@ export function evaluateGates(g: GateInputs): GatesVerdict {
   const facts = gateFacts(g);
   const results: GateResult[] = GATE_RULES.map((r) => {
     const evidence = r.evidence?.(g);
-    // An evidence-backed gate reports its evidence's own status, so `not-measured`
-    // reaches the verdict intact. A threshold gate is computed from values that are
-    // always present, so its condition IS its status.
-    const status: GateStatus = evidence ? evidence.status : evaluateDataCondition(r.cond, facts) ? 'pass' : 'fail';
+    // An evidence-backed gate reports a GAP (or a measured failure) straight from its
+    // evidence, so `not-measured` reaches the verdict intact. Once the evidence says the
+    // signal WAS collected, the gate's own condition decides pass/fail — which is what
+    // lets coverage-only evidence ("was the real-anchor pool comparable at all?") sit in
+    // front of a threshold comparison. For the two signal gates whose condition merely
+    // re-reads their own evidence status (`regressionStatus`/`probeStatus` ARE that
+    // status in `GateFacts`), evaluating the condition after a `pass` returns `pass`, so
+    // this is byte-for-byte the previous behaviour — pinned by a test.
+    // A threshold gate declares no evidence, so its condition IS its status.
+    const status: GateStatus =
+      evidence && evidence.status !== 'pass'
+        ? evidence.status
+        : evaluateDataCondition(r.cond, facts)
+          ? 'pass'
+          : 'fail';
     return {
       gate: r.gate,
       pass: status === 'pass',

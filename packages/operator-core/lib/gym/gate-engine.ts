@@ -6,7 +6,7 @@
  * The frontier prune + champion update live in the loop driver (P-022) using
  * frontier.ts; this module is the per-candidate decision + parent pick.
  */
-import { evaluateGates, type DeterministicEvidence, type GatesVerdict } from './gates';
+import { comparisonEvidence, evaluateGates, type DeterministicEvidence, type GatesVerdict } from './gates';
 
 export interface VariantEval {
   variantId: string;
@@ -16,6 +16,19 @@ export interface VariantEval {
   trainVector: number[];
   /** Aggregate on the frozen dev-anchor. */
   devAnchorAgg: number;
+  /**
+   * Aggregate on the `real-anchor` pool — real shipped features replayed at their
+   * pre-implementation commit (P-028/D-014). Scored every cycle and, before P-002,
+   * excluded from every aggregate; it now GATES promotion (D-004 condition 3).
+   */
+  realAnchorAgg: number;
+  /**
+   * Was this variant's real-anchor aggregate actually measured? Coverage-only
+   * evidence (P-002) — `not-measured` when the variant ran against no real-anchor
+   * task, or a real-anchor task produced no score. Never a `fail`: a real regression
+   * is the margin's verdict, not the coverage's.
+   */
+  realAnchorEvidence: DeterministicEvidence;
   /** Mean cost per run. */
   meanCost: number;
   /**
@@ -50,6 +63,12 @@ export function decideAccept(
     candidateDevAnchorAgg: candidate.devAnchorAgg,
     championDevAnchorAgg: champion.devAnchorAgg,
     delta: t.delta,
+    candidateRealAnchorAgg: candidate.realAnchorAgg,
+    championRealAnchorAgg: champion.realAnchorAgg,
+    // P-002: the comparison is only measured when BOTH sides are. A champion that was
+    // never scored on the real-anchor gives the candidate nothing to be no-worse-than,
+    // so the gate reports a gap rather than a pass on one side's number alone.
+    realAnchorEvidence: comparisonEvidence(candidate.realAnchorEvidence, champion.realAnchorEvidence),
     regressionEvidence: candidate.regressionEvidence,
     probeEvidence: candidate.probeEvidence,
     candidateMeanCost: candidate.meanCost,
