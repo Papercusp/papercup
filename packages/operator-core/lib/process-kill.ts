@@ -147,7 +147,22 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
         pid: input.pid,
         kind: probe.kind,
         error: 'unsupported_kind',
-        detail: `pid ${input.pid} exists but is not a managed agent kind (run.sh|omp|claude|codex|paperclip|pty|next) — this tool only manages those`,
+        // WI-37516: this refusal recurs in practice (43 audited rejections in
+        // the 60 days to 2026-09-05, all through the agent tool path) because
+        // the caller reached for pid mode on a job that HAS a durable handle —
+        // typically a capability:bash-launched build/test job. Widening
+        // KILLABLE is deliberately NOT the answer (EI-20581852992216186 Fix #2
+        // is superseded: "capability:bash already returns a taskId/scope_unit
+        // and taskId-mode is now truthful, the recommended path is taskId, not
+        // pid"), so the refusal must NAME that path instead of dead-ending.
+        detail:
+          `pid ${input.pid} exists but is not a managed agent kind ` +
+          `(run.sh|omp|claude|codex|paperclip|pty|next) — this tool only manages those. ` +
+          `It was NOT killed and is STILL RUNNING (never read this as gone — EI-18698120633403217). ` +
+          `Do not retry in pid mode: stop it by its DURABLE handle instead. ` +
+          `processes:list gives the owning taskId (processes:kill { taskId } kills the whole cgroup ` +
+          `subtree and cannot hit a recycled pid); a capability:bash background job is stopped with ` +
+          `capability:bash_kill { task_id }.`,
       };
     } else {
       await writeAudit(input.workspaceId, input.actorSlug, {

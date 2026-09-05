@@ -130,6 +130,26 @@ describe('killProcess — kind allowlist', () => {
     expect(killSpy).not.toHaveBeenCalled();
   });
 
+  it('WI-37516: the unsupported_kind refusal NAMES the durable-handle recovery path instead of dead-ending', async () => {
+    // This refusal recurs in practice (43 audited rejections in the 60 days to
+    // 2026-09-05, every one through the agent tool path) because the caller
+    // reached for pid mode on a job that HAS a durable handle. Widening
+    // KILLABLE is explicitly superseded (EI-20581852992216186 Fix #2), so the
+    // remaining defect is that the message never says what to do instead: an
+    // agent reads "this tool only manages those" and has nowhere to go.
+    withProcs(proc(1, 'run.sh'));
+    withProbeHit('other', '/usr/bin/node /repo/node_modules/.bin/vitest run');
+    const r = await killProcess({ pid: 8123, ...BASE });
+
+    expect(r).toMatchObject({ ok: false, pid: 8123, kind: 'other', error: 'unsupported_kind' });
+    // The two durable handles that DO work, so the caller can act on the refusal.
+    expect(r.detail).toContain('taskId');
+    expect(r.detail).toContain('capability:bash_kill');
+    // And it must not leave the caller thinking the process is gone.
+    expect(r.detail).toMatch(/STILL RUNNING/i);
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
   it('keeps the canonical Hono host outside the bare-PID kill allowlist', async () => {
     // The desktop :3270 hono-host has a dedicated identity-guarded dev:restart
     // path. A raw PID must remain refused so an unrelated node host cannot be
