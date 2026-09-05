@@ -62,16 +62,67 @@ import { trackDetached } from './detached-imports';
 /** The owner-mandated built-in rubric whose prompt/backstop contract is fixed. */
 export const HIVE_COORDINATION_HEALTH_RUBRIC = 'pot-coordination-health';
 
-/** One deterministic measurement attached to a scorecard evaluation/emission. */
+/**
+ * One measurement attached to a scorecard evaluation/emission.
+ *
+ * EI-20270994401737114 — READ `provenance` BEFORE TREATING THIS AS EVIDENCE. Every
+ * snapshot on both scorecard paths is SUPPLIED BY THE CALLER: `instrumentSnapshots`
+ * is a caller zod record on `scorecards:evaluate` and `scorecards:emit` alike, and
+ * this type is constructed ZERO times outside that caller path (no instrument
+ * registry or resolver exists). So the default case is a number the GRADER derived
+ * and typed, sitting in a field named `evidenceRef` next to a rating the same grader
+ * wrote.
+ *
+ * Do not confuse it with `checkRuns`. Five of the six criterion-check arms —
+ * tests / cargo / probe / coverage / requirements — ARE executed by the platform at
+ * grading time, and their verdicts land in `observation.checkRuns` as
+ * `CriterionCheckRun`, a different type entirely. `kind:'instrument'` is the one arm
+ * that executes nothing, and this is the channel it reads from. The asymmetry is in
+ * WHO MEASURES, and it is invisible at the criterion level, where all six arms sit in
+ * one union and read as peers (independently measured in EI-22201156528923669).
+ *
+ * That matters because `evaluateScorecardInstrumentContract` compares the rating to
+ * THIS snapshot: for a self-reported snapshot that is an INTERNAL-CONSISTENCY check,
+ * not a measurement. A grader who derives the wrong number files a `fail` rating
+ * beside a `fail` snapshot — coherent, and wrong. That is the exact shape that
+ * produced the retracted grade in EI-20266169712430445.
+ */
 export interface ScorecardInstrumentSnapshot {
   verdict: 'pass' | 'fail' | 'unknown';
   measuredAt: string;
-  /** Concrete evidence window/provenance, kept JSON-shaped for instrument diversity. */
+  /** Concrete evidence window, kept JSON-shaped for instrument diversity. */
   window?: Record<string, unknown>;
-  /** Bounded deterministic measurement (count/rate/status payload). */
+  /** Bounded measurement (count/rate/status payload). */
   value?: unknown;
   /** Stable ledger/query/run reference supporting the snapshot. */
   evidenceRef?: string;
+  /**
+   * WHO produced this measurement — the field that separates evidence from assertion.
+   *
+   * `'self-reported'` (and ABSENT, which means the same thing) = the grader computed
+   * and supplied it themselves. `'platform-computed'` = a deterministic platform
+   * instrument produced it independently of the grader.
+   *
+   * ABSENT is deliberately read as self-reported rather than unknown: every snapshot
+   * ever stored predates any computed path, so self-reported is the honest reading,
+   * and a default that flattered the record would defeat the point of the field.
+   *
+   * Do NOT materialize that default INTO a stored snapshot — derive it at read time
+   * via `scorecardInstrumentProvenance()`. `scorecardEvidenceFingerprint()` hashes
+   * these objects, so writing a default in would shift every historical hash (the
+   * same add-only-when-supplied constraint as `testedSha`, EI-18706603928993591).
+   */
+  provenance?: 'self-reported' | 'platform-computed';
+}
+
+/**
+ * The honest provenance reading for one snapshot: absent ⇒ 'self-reported'.
+ * Read-only by contract — never write the result back onto the snapshot.
+ */
+export function scorecardInstrumentProvenance(
+  snapshot: ScorecardInstrumentSnapshot,
+): 'self-reported' | 'platform-computed' {
+  return snapshot.provenance === 'platform-computed' ? 'platform-computed' : 'self-reported';
 }
 
 function canonicalJson(value: unknown): string {
@@ -126,6 +177,19 @@ export interface ScorecardInstrumentContractEvaluation {
   staleSnapshots: string[];
   windowMismatches: string[];
   verdictMismatches: string[];
+  /**
+   * EI-20270994401737114 — bound instrument keys whose supplied snapshot is
+   * SELF-REPORTED (see `ScorecardInstrumentSnapshot.provenance`). For these keys the
+   * `verdictMismatches` check above is an INTERNAL-CONSISTENCY test of the grader's
+   * two claims, not an independent measurement: a grader who derived the wrong number
+   * agrees with themselves and passes it cleanly.
+   *
+   * Deliberately does NOT affect `valid`. Today every stored snapshot is self-reported,
+   * so failing on it would refuse every existing grading path; the honest move is to
+   * make the epistemic class VISIBLE to the caller (and to `scorecards:evaluate`, which
+   * returns this whole contract to the grader) rather than to pretend it away.
+   */
+  selfReportedInstruments: string[];
 }
 
 function expectedInstrumentVerdict(rating: string): ScorecardInstrumentSnapshot['verdict'] | null {
@@ -329,6 +393,7 @@ export function evaluateScorecardInstrumentContract(input: {
   const staleSnapshots: string[] = [];
   const windowMismatches: string[] = [];
   const verdictMismatches: string[] = [];
+  const selfReportedInstruments: string[] = [];
   const nowMs = input.nowMs ?? Date.now();
 
   for (const criterion of input.rubric.criteria) {
@@ -336,6 +401,13 @@ export function evaluateScorecardInstrumentContract(input: {
     if (!instrumentKey || instrumentKey === 'none') continue;
     const snapshot = snapshots[instrumentKey];
     if (!snapshot) continue;
+    // EI-20270994401737114 — record the epistemic class BEFORE the freshness/window
+    // `continue`s below. A stale or window-mismatched snapshot is still self-reported,
+    // and that is exactly when a reader most needs to know the number came from the
+    // grader rather than from a measurement.
+    if (scorecardInstrumentProvenance(snapshot) === 'self-reported') {
+      selfReportedInstruments.push(instrumentKey);
+    }
     const measuredAtMs = Date.parse(snapshot.measuredAt);
     if (!Number.isFinite(measuredAtMs) || measuredAtMs > nowMs + 60_000) {
       staleSnapshots.push(instrumentKey);
@@ -381,6 +453,7 @@ export function evaluateScorecardInstrumentContract(input: {
     staleSnapshots: [...new Set(staleSnapshots)],
     windowMismatches: [...new Set(windowMismatches)],
     verdictMismatches: [...new Set(verdictMismatches)],
+    selfReportedInstruments: [...new Set(selfReportedInstruments)],
   };
 }
 
