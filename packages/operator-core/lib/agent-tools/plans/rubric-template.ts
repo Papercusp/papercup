@@ -18,6 +18,7 @@
  * for side-effect (belt-and-suspenders + discoverability).
  */
 import { z } from 'zod';
+import { normalizeRequirementSections } from '../../requirement-contract';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
@@ -357,6 +358,7 @@ export const requirementAcceptanceSchema = z.object({
   falsifier: z.string().trim().min(1),
   requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
   evidencePlane: acceptanceEvidencePlaneSchema.optional(),
+  requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
   passRatings: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
   mandatory: z.boolean().optional(),
   role: acceptanceCriterionRoleSchema.optional(),
@@ -367,6 +369,12 @@ export const requirementVerificationSchema = z.object({
   method: z.string().trim().min(1),
   check: rubricCriterionCheckSchema.optional(),
   replication: z.string().trim().min(1).optional(),
+}).strict();
+
+export const requirementSectionsSchema = z.object({
+  intent: requirementIntentSchema,
+  acceptance: requirementAcceptanceSchema,
+  verification: requirementVerificationSchema,
 }).strict();
 
 /**
@@ -413,6 +421,8 @@ export const rubricCriterionSchema = z
     evidencePlane: acceptanceEvidencePlaneSchema
       .optional()
       .describe('acceptance-kind only: where this BAR must be evidenced (tree, deployed, or live)'),
+    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers
+      .describe('acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change'),
     passRatings: z
       .array(z.string().trim().min(1))
       .min(1)
@@ -493,6 +503,29 @@ export const acceptanceRubricCriterionSchema = rubricCriterionSchema.partial({
   method: true,
   driftMarkers: true,
 });
+
+/** Authoring aliases resolve before canonical template validation. */
+export const requirementCriterionInputSchema = acceptanceRubricCriterionSchema.extend({
+  bar: z.string().trim().min(1).optional(),
+  acceptance: requirementAcceptanceSchema.optional(),
+  verification: requirementVerificationSchema.optional(),
+}).superRefine((input, ctx) => {
+  try {
+    normalizeRequirementSections(input);
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
+  }
+});
+
+export const requirementAmendmentSchema = z.object({
+  key: z.string().trim().min(1),
+  intent: requirementIntentSchema.optional(),
+  acceptance: requirementAcceptanceSchema.partial().optional(),
+  verification: requirementVerificationSchema.partial().optional(),
+}).strict().refine((input) =>
+  [input.intent, input.acceptance, input.verification].some((section) => section && Object.keys(section).length > 0),
+  'provide an Intent, Acceptance or Verification amendment',
+);
 
 /**
  * The `rubric` template's structured data (the `template_data` jsonb). EXACTLY the
@@ -722,6 +755,7 @@ export const rubricTemplateDataSchema = z
           'mandatory',
           'requiredScope',
           'evidencePlane',
+          'requiredTestLayers',
           'passRatings',
           'coversBarKeys',
           'barProvenance',
@@ -845,7 +879,7 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  * each bespoke criterion names a non-empty `driftMarkers` falsifier, and the rubric
  * scale has a label for evidence that cannot produce a verdict.
  */
-export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
+const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
   if (rubricKindOf(d) !== 'acceptance') return;
 
   if (!d.ratingScale.some(isUnknownRatingEquivalent)) {
@@ -877,6 +911,7 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
       criterion.mandatory !== undefined ||
       criterion.requiredScope !== undefined ||
       criterion.evidencePlane !== undefined ||
+      criterion.requiredTestLayers !== undefined ||
       criterion.passRatings !== undefined ||
       criterion.coversBarKeys !== undefined ||
       criterion.barProvenance !== undefined;
@@ -942,6 +977,23 @@ export const rubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superR
     }
   });
 });
+
+export const rubricTemplateDataAuthoringSchema = z.preprocess((input, ctx) => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const data = input as Record<string, unknown>;
+  if (data.kind !== 'acceptance' || !Array.isArray(data.criteria)) return input;
+  return { ...data, criteria: data.criteria.map((criterion, index) => {
+    if (!criterion || typeof criterion !== 'object' ||
+        (!('acceptance' in criterion) && !('verification' in criterion))) return criterion;
+    const parsed = requirementCriterionInputSchema.safeParse(criterion);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) ctx.addIssue({ ...issue, path: ['criteria', index, ...issue.path] });
+      return criterion;
+    }
+    const { bar: _readAlias, ...canonical } = normalizeRequirementSections(parsed.data);
+    return canonical;
+  }) };
+}, canonicalRubricTemplateDataAuthoringSchema);
 
 /** The validated structured-data type for a `rubric` template instance. */
 export type RubricTemplateData = z.infer<typeof rubricTemplateDataSchema>;

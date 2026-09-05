@@ -13,6 +13,8 @@ export interface RequirementAcceptance {
   falsifier: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  /** Required depth of outcome proof; changing this changes the promise. */
+  requiredTestLayers?: string[];
   passRatings?: string[];
   mandatory?: boolean;
   role?: 'outcome' | 'disclosure';
@@ -35,6 +37,7 @@ export interface RequirementSectionInput {
   driftMarkers?: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
+  requiredTestLayers?: string[];
   passRatings?: string[];
   mandatory?: boolean;
   role?: 'outcome' | 'disclosure';
@@ -73,7 +76,7 @@ export function normalizeRequirementSections<T extends RequirementSectionInput>(
     }
     assign('model', acceptance.condition);
     assign('driftMarkers', acceptance.falsifier);
-    for (const key of ['requiredScope', 'evidencePlane', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
+    for (const key of ['requiredScope', 'evidencePlane', 'requiredTestLayers', 'passRatings', 'mandatory', 'role', 'coversBarKeys'] as const) {
       assign(key, acceptance[key]);
     }
   }
@@ -94,8 +97,11 @@ export function requirementSections(input: RequirementSectionInput) {
       falsifier: input.driftMarkers ?? '',
       requiredScope: input.requiredScope ?? [],
       evidencePlane: input.evidencePlane ?? null,
+      requiredTestLayers: input.requiredTestLayers ?? [],
       passRatings: input.passRatings ?? [],
       mandatory: input.mandatory ?? null,
+      role: input.role ?? null,
+      coversBarKeys: input.coversBarKeys ?? [],
     },
     verification: {
       method: input.method ?? '',

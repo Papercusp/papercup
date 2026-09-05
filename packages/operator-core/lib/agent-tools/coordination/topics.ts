@@ -13,7 +13,7 @@ import {
   type SubscriptionRow,
   type TopicRow,
 } from '@papercusp/coordination/capabilities';
-import { coordLog } from './log';
+import { coordLog, coordScopeReady, coordScopeWorkspace } from './log';
 import type { AgentIdentity } from './identity';
 import {
   type CreateTopicResult,
@@ -29,6 +29,10 @@ const storeOpts = {
   getSql: () => getOrgPg().sql,
   // Schema is defined by migration 123; the host seam is a no-op.
   ensureSchema: async () => {},
+  // Keep the registry on the same active coordination workspace as tagged
+  // edges. A construction-time `workspaceId` would strand topics in `default`
+  // after the per-workspace cutover.
+  getWorkspaceId: () => coordScopeWorkspace(),
 };
 const topicStore = new PgTopicStore(storeOpts);
 const subStore = new PgEntitySubscriptionStore(storeOpts);
@@ -40,9 +44,71 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+const DERIVED_TOPIC_TITLE = 'Live tagged topic';
+const DERIVED_TOPIC_DESCRIPTION =
+  'Auto-discovered from live tagged coordination content; use topics:create to curate its title and description.';
+
+interface TaggedTopicRow {
+  slug: string;
+  created_at: unknown;
+}
+
+function taggedTopicCreatedTs(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  // `created_at` is NOT NULL in coord_links. Keep the projection total if a
+  // test double or a future backend violates that contract.
+  return nowIso();
+}
+
+/**
+ * Topic tags are written as coord_links edges by work-item/issue creation,
+ * while coord_topics is a curated registry written only by topics:create.
+ * Include the live edge vocabulary so topics:list can actually discover feeds
+ * whose tags have never received a registry row.
+ */
+async function listLiveTaggedTopics(includeMerged = false): Promise<TopicRow[]> {
+  const sql = getOrgPg().sql;
+  const rows = await sql<TaggedTopicRow[]>`
+    SELECT cl.dst_ref AS slug, MIN(cl.created_at) AS created_at
+      FROM harness_shared.coord_links cl
+      LEFT JOIN harness_shared.coord_topics t
+        ON t.workspace_id = cl.workspace_id AND t.slug = cl.dst_ref
+     WHERE cl.workspace_id = ${coordScopeWorkspace()}
+       AND cl.dst_kind = 'topic'
+       AND cl.rel = 'tagged'
+       AND ${includeMerged ? sql`TRUE` : sql`t.merged_into IS NULL`}
+     GROUP BY cl.dst_ref
+     ORDER BY MIN(cl.created_at) ASC, cl.dst_ref ASC`;
+
+  return rows.map((row) => ({
+    slug: row.slug,
+    title: DERIVED_TOPIC_TITLE,
+    description: DERIVED_TOPIC_DESCRIPTION,
+    created_by: null,
+    merged_into: null,
+    created_ts: taggedTopicCreatedTs(row.created_at),
+  }));
+}
+
 export async function listTopics(opts: { includeMerged?: boolean } = {}): Promise<TopicRow[]> {
+  // coordScopeWorkspace() is synchronous by contract, but this targeted query
+  // must wait for the flag-backed scope to resolve before reading either table.
+  await coordScopeReady();
   await ensureBuiltinTopics(stores, nowIso());
-  return topicStore.list(opts);
+  const [registered, tagged] = await Promise.all([topicStore.list(opts), listLiveTaggedTopics(opts.includeMerged)]);
+  const bySlug = new Map(registered.map((topic) => [topic.slug, topic]));
+  for (const topic of tagged) {
+    // Registered metadata wins over the derived fallback, including for
+    // includeMerged=true rows.
+    if (!bySlug.has(topic.slug)) bySlug.set(topic.slug, topic);
+  }
+  return [...bySlug.values()].sort(
+    (a, b) => a.created_ts.localeCompare(b.created_ts) || a.slug.localeCompare(b.slug),
+  );
 }
 
 export async function createTopic(

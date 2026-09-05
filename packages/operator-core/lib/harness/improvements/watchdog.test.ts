@@ -9,6 +9,8 @@ import {
   runWatchdogTick,
   isImprovementLoopTool,
   toolErrorSignalsFromRows,
+  sharedToolStallSignalsFromRows,
+  analyzeSharedToolStallsFromRows,
   softFailureSignalsFromRows,
   softFailureSignalKey,
   classifyToolError,
@@ -293,6 +295,62 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
       { tool_name: 'docs:get', class: 'structural' as const, n: 7, total: 7, sample: 'boom' },
     ]);
     expect(signals.map((s) => s.key)).toEqual(['docs:get:structural']);
+  });
+
+  it('coalesces a multi-tool, multi-session timeout burst into one shared-resource signal', () => {
+    const signals = sharedToolStallSignalsFromRows([
+      { tool_name: 'coord:inbox', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:00Z', class: 'transient', status: 'timeout' },
+      { tool_name: 'sessions:search', coord_owner_id: 'owner-b', invoked_at: '2026-09-05T12:00:20Z', class: 'transient', status: 'error', duration_ms: 48_000 },
+      { tool_name: 'work_items:get', coord_owner_id: 'owner-c', invoked_at: '2026-09-05T12:01:00Z', class: 'transient', status: 'timeout' },
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      key: 'shared-resource-stall',
+      title: 'Multiple tools timing out together (shared-resource stall)',
+      severity: 'major',
+      kind: 'bug',
+      findingClass: 'shared-resource-stall',
+    });
+    expect(signals[0]!.body).toContain('3 distinct tools');
+    expect(signals[0]!.body).toContain('3 distinct sessions');
+  });
+
+  it('does not coalesce a same-tool timeout or a single-session burst', () => {
+    expect(sharedToolStallSignalsFromRows([
+      { tool_name: 'coord:inbox', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:00Z', class: 'transient', status: 'timeout' },
+      { tool_name: 'coord:inbox', coord_owner_id: 'owner-b', invoked_at: '2026-09-05T12:00:20Z', class: 'transient', status: 'timeout' },
+      { tool_name: 'coord:inbox', coord_owner_id: 'owner-c', invoked_at: '2026-09-05T12:00:40Z', class: 'transient', status: 'timeout' },
+    ])).toEqual([]);
+    expect(sharedToolStallSignalsFromRows([
+      { tool_name: 'coord:inbox', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:00Z', class: 'transient', status: 'timeout' },
+      { tool_name: 'sessions:search', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:20Z', class: 'transient', status: 'timeout' },
+      { tool_name: 'work_items:get', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:40Z', class: 'transient', status: 'timeout' },
+    ])).toEqual([]);
+  });
+
+  it('suppresses only correlated transient per-tool signals; structural/caller/rate-limit stay independent', () => {
+    const rows = [
+      { tool_name: 'coord:inbox', class: 'transient' as const, n: 15, total: 20, sample: 'timeout' },
+      { tool_name: 'docs:get', class: 'structural' as const, n: 2, total: 2, sample: 'missing table' },
+      { tool_name: 'plans:new', class: 'caller' as const, n: 10, total: 10, sample: 'invalid_args: status' },
+      { tool_name: 'memory:search', class: 'rate-limit' as const, n: 8, total: 8, sample: 'rate limit reached' },
+    ];
+    const signals = toolErrorSignalsFromRows(rows, {}, new Set(['coord:inbox']));
+    expect(signals.map((signal) => signal.key)).toEqual([
+      'docs:get:structural',
+      'plans:new:caller',
+      'memory:search:rate-limit',
+    ]);
+  });
+
+  it('reports the tool suppression set alongside the shared signal for the collector', () => {
+    const analysis = analyzeSharedToolStallsFromRows([
+      { tool_name: 'a:tool', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:00Z', class: 'transient' },
+      { tool_name: 'b:tool', coord_owner_id: 'owner-b', invoked_at: '2026-09-05T12:00:10Z', class: 'transient' },
+      { tool_name: 'c:tool', coord_owner_id: 'owner-c', invoked_at: '2026-09-05T12:00:20Z', class: 'transient' },
+    ]);
+    expect(analysis.signals).toHaveLength(1);
+    expect([...analysis.correlatedToolNames]).toEqual(['a:tool', 'b:tool', 'c:tool']);
   });
 });
 

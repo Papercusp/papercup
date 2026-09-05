@@ -11,6 +11,7 @@ import { parsePlan } from '@papercusp/plan-parser';
 import {
   acceptanceRubricCriterionSchema,
   rubricTemplateDataAuthoringSchema,
+  requirementSectionsSchema,
   type AcceptanceEvidencePlane,
 } from './agent-tools/plans/rubric-template';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
@@ -68,12 +69,15 @@ export interface ParsedRequirementBar {
   barKey: string;
   title: string;
   model: string;
+  /** Present only for explicit three-section authoring; legacy prose stays legacy. */
+  criterion?: ProposeRubricCriterion;
 }
 
 export interface ParsedBarMapping {
   barKey: string;
   planItemIds: string[];
   evidencePlane: AcceptanceEvidencePlane;
+  evidencePlaneExplicit?: boolean;
 }
 
 export interface AcceptanceBarSeedBuildInput {
@@ -147,6 +151,21 @@ export function parseRequirementBars(planContent: string):
   const flush = () => {
     if (!current) return;
     const outcome = current.lines.join('\n').trim();
+    if (outcome.includes('```requirement')) {
+      const fenced = /^```requirement\s*\n([\s\S]*?)\n```$/.exec(outcome);
+      try {
+        if (!fenced) throw new Error('use one requirement JSON block with no competing prose');
+        const sections = requirementSectionsSchema.parse(JSON.parse(fenced[1]!));
+        const criterion = normalizeAcceptanceBarCriterion({
+          key: current.barKey.toLowerCase(), title: current.title, barKey: current.barKey, ...sections,
+        });
+        bars.push({ barKey: current.barKey, title: current.title, model: criterion.model!, criterion });
+      } catch (error) {
+        problems.push({ code: 'bar_requirement_parse_failed', barKey: current.barKey,
+          detail: `${current.barKey}: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      return;
+    }
     if (!outcome) {
       problems.push({
         code: 'bar_requirement_parse_failed',
@@ -286,7 +305,8 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
         detail: `${barKey} maps only to dropped plan items`,
       });
     }
-    mappings.push({ barKey, planItemIds: itemIds, evidencePlane });
+    mappings.push({ barKey, planItemIds: itemIds, evidencePlane,
+      ...(cells[2]?.replace(/`/g, '').trim() ? { evidencePlaneExplicit: true } : {}) });
   }
 
   for (const barKey of requirementKeys) {
@@ -331,6 +351,9 @@ function seededCriterion(
     requiredScope: [mapping.evidencePlane],
     evidencePlane: mapping.evidencePlane,
     passRatings: ['healthy'],
+    // Unified input already names the exact promise, falsifier and method.
+    // Never concatenate its title or manufacture an alternative promise.
+    ...(bar.criterion ?? {}),
     barProvenance: {
       lifecycle: input.cohort === 'post-epoch' && !input.backfilled ? 'pre-implementation' : 'legacy-backfilled',
       declaredAt: input.declaredAt,
@@ -358,6 +381,13 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   );
   if (!mappings.ok) return refusal(mappings.problems);
   const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
+  const conflicts = requirements.bars.filter((bar) => {
+    const mapping = mappingByKey.get(bar.barKey)!;
+    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
+      mapping.evidencePlane !== bar.criterion.evidencePlane;
+  });
+  if (conflicts.length) return refusal(conflicts.map((bar) => ({ code: 'bar_evidence_plane_invalid',
+    barKey: bar.barKey, detail: `${bar.barKey} has conflicting Acceptance and map evidence planes` })));
 
   const existingParsed = input.existingTemplateData === undefined
     ? null
@@ -427,6 +457,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     return {
       ...seeded,
       ...methodProjection(prior as unknown as Record<string, unknown>),
+      ...methodProjection((bar.criterion ?? {}) as Record<string, unknown>),
       barProvenance: prior.barProvenance ?? seeded.barProvenance,
     } as ProposeRubricCriterion;
   });
@@ -472,6 +503,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         behavior: criterion.model ?? '',
         behaviorClass: 'happy-path',
         requiredEvidence: [evidencePlane],
+        ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
         lifecycleStatus: 'draft',
         falsifier: { observation: criterion.driftMarkers ?? '' },
         acceptanceRef: `${input.rubricSlug}@${input.rubricRevision}:${criterion.barKey}`,

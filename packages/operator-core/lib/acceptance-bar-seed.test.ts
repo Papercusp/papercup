@@ -90,6 +90,29 @@ describe('Requirements BAR parser', () => {
 });
 
 describe('acceptance BAR seed builder', () => {
+  it('authors one unified requirement and derives all mapped proof contracts without rewriting its promise', () => {
+    const sections = {
+      intent: { request: 'Export every matching customer.', sourceRefs: ['session_turn:export'] },
+      acceptance: { condition: 'Every matching ID appears exactly once with correct values.',
+        falsifier: 'Any ID is missing or duplicated.', evidencePlane: 'tree',
+        requiredScope: ['filters', 'pagination'], requiredTestLayers: ['e2e'] },
+      verification: { method: 'Export a multi-page fixture and compare all expected rows.',
+        check: { kind: 'instrument', instrumentKey: 'none' } },
+    };
+    const content = plan({ requirements: '**R-1 — Complete export.**\n```requirement\n' + JSON.stringify(sections) + '\n```',
+      map: '| R-1 | P-001, P-002 | tree |' });
+    const built = buildAcceptanceBarSeed({ ...input, planContent: content });
+    expect(built.ok).toBe(true);
+    if (!built.ok) throw new Error(built.message);
+    expect(built.criteria[0]).toMatchObject({ model: sections.acceptance.condition,
+      driftMarkers: sections.acceptance.falsifier, intent: sections.intent,
+      method: sections.verification.method, requiredTestLayers: ['e2e'] });
+    expect(built.projections).toHaveLength(2);
+    expect(built.projections.every((clause) => clause.requiredTestLayers?.[0] === 'e2e')).toBe(true);
+    expect(buildAcceptanceBarSeed({ ...input, planContent: content.replace('| tree |', '| live |') }))
+      .toMatchObject({ ok: false, error: 'bar_evidence_plane_invalid' });
+    expect(parseRequirementBars(content.replace('\n```\n', '\n```\nA different promise.\n')).ok).toBe(false);
+  });
   it('adopts explicitly mapped legacy criteria without losing their identity, stronger outcomes or METHODS', () => {
     const existing = { kind: 'acceptance', subjectPlan: input.planSlug, characteristic: 'plan-acceptance',
       ratingScale: ['pass', 'partial', 'fail', 'unknown'], criteria: [

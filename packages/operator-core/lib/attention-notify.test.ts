@@ -171,6 +171,17 @@ describe('notifyAttention', () => {
       );
     });
 
+    it('returns mobileDelivered:false when notifyWorkspace resolves with no successful targets', async () => {
+      notifyWorkspace.mockImplementationOnce(async () => []);
+      const result = await notifyAttentionOnce({
+        kind: 'intervention',
+        title: 'T',
+        body: 'B',
+        dedupeKey: 'return-no-targets',
+      });
+      expect(result).toMatchObject({ mobileDelivered: false, desktopDelivered: true });
+    });
+
     it('records mobile succeeded:true when at least one PushSendResult is ok', async () => {
       notifyWorkspace.mockImplementationOnce(async () => [
         { platform: 'fcm', ok: true, status: 200 },
@@ -183,6 +194,37 @@ describe('notifyAttention', () => {
         'mobile',
         expect.objectContaining({ attempted: true, succeeded: true }),
       );
+    });
+
+    it('returns mobileDelivered:true when at least one PushSendResult is ok', async () => {
+      notifyWorkspace.mockImplementationOnce(async () => [
+        { platform: 'fcm', ok: true, status: 200 },
+      ]);
+      const result = await notifyAttentionOnce({
+        kind: 'intervention',
+        title: 'T',
+        body: 'B',
+        dedupeKey: 'return-success',
+      });
+      expect(result).toMatchObject({ mobileDelivered: true, desktopDelivered: true });
+    });
+
+    it('returns false for a channel whose delivery attempt throws instead of its claim result', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      notifyWorkspace.mockImplementationOnce(async () => {
+        throw new Error('apns down');
+      });
+      notifySyncInvalidate.mockImplementationOnce(async () => {
+        throw new Error('sse bus down');
+      });
+      const result = await notifyAttentionOnce({
+        kind: 'intervention',
+        title: 'T',
+        body: 'B',
+        dedupeKey: 'return-failure',
+      });
+      expect(result).toMatchObject({ mobileDelivered: false, desktopDelivered: false });
+      vi.restoreAllMocks();
     });
 
     it('records mobile succeeded:false with a per-target detail when every target failed (not a throw)', async () => {

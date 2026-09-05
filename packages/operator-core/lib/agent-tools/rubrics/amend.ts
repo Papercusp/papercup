@@ -13,19 +13,16 @@ import { COORD_ROLES } from '../coordination/roles';
 import { amendRubric, previewAcceptanceBarAmendment, rubricCompleteness, AMENDABLE_CRITERION_FIELDS, type AmendRubricInput } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
-import { rubricCriterionSchema } from '../plans/rubric-template';
+import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 
-const amendmentCriterionSchema = rubricCriterionSchema.extend({
-  // rubrics:get exposes the canonical model again as the read-friendly `bar`
-  // alias. Accept that exact round-trip shape here; buildRubricTemplateData
-  // already verifies model/bar equivalence and persists only model.
-  bar: z.string().min(1).optional(),
-});
+const amendmentCriterionSchema = requirementCriterionInputSchema;
 
 export const rubricsAmendArgs = z
   .object({
     rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
+    requirement: requirementAmendmentSchema.optional()
+      .describe('patch one requirement Intent, Acceptance or Verification; promise changes use the BAR amendment transaction'),
     dryRun: z
       .boolean()
       .optional()
@@ -137,6 +134,10 @@ export const rubricsAmendArgs = z
       .describe('test-only rollback probe'),
   })
   .superRefine((args, ctx) => {
+    if (args.requirement && (args.criteria || args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['requirement'],
+        message: 'requirement amendment cannot be combined with other criterion patches' });
+    }
     if (args.criteria && (args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -187,6 +188,7 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx); // authz/identity side-effects + a clear failure if unidentified
     const input: AmendRubricInput = {
       rubricId: args.rubricRef,
+      ...(args.requirement ? { requirement: args.requirement } : {}),
       ...(args.criteria ? { criteria: args.criteria } : {}),
       ...(args.criterion ? { criterion: args.criterion } : {}),
       ...(args.criterionClass ? { criterionClass: args.criterionClass } : {}),

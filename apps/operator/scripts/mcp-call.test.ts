@@ -7,6 +7,7 @@ import {
   jsonSourceKind,
   readJsonArgs,
   resolveMcpClientId,
+  resolveMcpWorkspace,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -97,6 +98,20 @@ describe('mcp-call argument parsing', () => {
   it('rejects a value flag with no value instead of storing undefined', () => {
     expect(() => parseArgs(['work_items:get', '--json-file'])).toThrow('--json-file requires a value');
   });
+
+  it('accepts --all-workspaces as the explicit unscoped transport flag', () => {
+    const parsed = parseArgs(['knowledge_packs:list', '--all-workspaces']);
+    expect(parsed.flags.allWorkspaces).toBe(true);
+    expect(resolveMcpWorkspace(parsed.flags, { PAPERCUSP_WORKSPACE: 'papercusp-workspace' }))
+      .toBe('*');
+  });
+
+  it('rejects contradictory scoped and unscoped workspace flags', () => {
+    expect(() => resolveMcpWorkspace(
+      { allWorkspaces: true, workspace: 'papercusp-workspace' },
+      {},
+    )).toThrow('--all-workspaces cannot be combined with --workspace');
+  });
 });
 
 describe('mcp-call result-format contract', () => {
@@ -114,6 +129,16 @@ describe('mcp-call result-format contract', () => {
       format: 'json',
       harness: 'papercusp',
     });
+  });
+
+  it('maps --all-workspaces to the unscoped workspace wildcard', () => {
+    const query = buildMcpSessionQuery({
+      client: 'vm-rig-probe',
+      workspace: 'papercusp-workspace',
+      allWorkspaces: true,
+    });
+
+    expect(query.get('workspace')).toBe('*');
   });
 
   it('runs when macOS canonicalizes /tmp to /private/tmp', () => {

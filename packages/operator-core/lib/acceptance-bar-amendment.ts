@@ -242,6 +242,7 @@ export async function synchronizeAcceptanceBarRevision(
             behavior: criterion.model!,
             behaviorClass: 'happy-path',
             requiredEvidence: [criterion.evidencePlane],
+            ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
             lifecycleStatus: 'draft',
             falsifier: { observation: criterion.driftMarkers! },
             acceptanceRef: `${args.rubricSlug}@${args.rubricRevision}:${barKey}`,
@@ -293,7 +294,7 @@ export async function synchronizeAcceptanceBarRevision(
       expectedRevision: Number(clause.current_revision), planItemId: clause.plan_item_id,
       behavior: criterion.model!, behaviorClass: clause.behavior_class,
       requiredEvidence: clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
-      requiredTestLayers: clause.required_test_layers, mutationRequired: clause.mutation_required,
+      requiredTestLayers: criterion.requiredTestLayers ?? clause.required_test_layers, mutationRequired: clause.mutation_required,
       lifecycleStatus: clause.lifecycle_status, exemption: clause.exemption,
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,

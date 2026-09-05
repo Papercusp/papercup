@@ -11,13 +11,14 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
  *   printf '%s\n' '{"id":"EI-1750","summary":"it's safe"}' | node scripts/mcp-call.mjs work_items:complete --json - --harness papercup
  *   node scripts/mcp-call.mjs work_items:complete --json-file payload.json --harness papercup
  *   node scripts/mcp-call.mjs plans:search '{"query":"infra","harness":"papercup"}' --client su-1234
+ *   node scripts/mcp-call.mjs knowledge_packs:list --json-file payload.json --all-workspaces --client su-1234
  *
  * Prefer `--json -` or `--json-file <path>` for payloads containing apostrophes
  * or other shell-hostile text; the positional JSON form remains for compact,
@@ -109,8 +110,12 @@ export async function fetchWithConnectionRecovery(
  * allowlist means a mistyped or renamed flag fails loudly instead of
  * degrading into a silently-empty payload — the same contract the operator
  * tools enforce on undeclared args (EI-10883).
+ *
+ * `--all-workspaces` is a boolean transport flag, not a tool argument. It
+ * explicitly selects the unscoped superuser session (`workspace=*`), which is
+ * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
-export const BOOLEAN_FLAGS = new Set(['raw']);
+export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces']);
 export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
@@ -258,15 +263,29 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
  * default; otherwise a successful tool call becomes non-JSON output that the
  * maintained VM-rig driver correctly rejects.
  */
-export function buildMcpSessionQuery({ client, workspace, harness }) {
+export function buildMcpSessionQuery({ client, workspace, harness, allWorkspaces = false }) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
-    workspace,
+    workspace: allWorkspaces ? '*' : workspace,
     format: 'json',
   });
   if (harness) qs.set('harness', harness);
   return qs;
+}
+
+/**
+ * Resolve the session workspace. Ordinary calls remain scoped by default so
+ * first-party tenant tools keep their workspace transaction. The explicit
+ * `--all-workspaces` escape is the only CLI path that selects the unscoped
+ * superuser session required by cross-workspace tools.
+ */
+export function resolveMcpWorkspace(flags = {}, env = process.env) {
+  if (flags.allWorkspaces && flags.workspace !== undefined) {
+    throw new Error('--all-workspaces cannot be combined with --workspace');
+  }
+  if (flags.allWorkspaces) return '*';
+  return flags.workspace ?? env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace';
 }
 
 /**
@@ -317,7 +336,7 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (!tool || tool === '--help' || tool === '-h') {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
     process.exit(tool ? 0 : 2);
   }
   let tok;
@@ -337,13 +356,22 @@ async function main() {
   // EI-6631: blank explicit clients still fall through; EI-22014303182044906:
   // launched helpers reuse their stable session/spawn identity across processes.
   const client = resolveMcpClientId(flags);
-  // The scoped-superuser session requires a resolved workspace (else
-  // `scoped_superuser_workspace_unresolved`). Default to the standard one; override
-  // with --workspace or PAPERCUSP_WORKSPACE.
+  let workspace;
+  try {
+    // The scoped-superuser session requires a resolved workspace (else
+    // `scoped_superuser_workspace_unresolved`). Default to the standard one;
+    // override with --workspace or PAPERCUSP_WORKSPACE. Cross-workspace calls
+    // must opt in explicitly with --all-workspaces.
+    workspace = resolveMcpWorkspace(flags);
+  } catch (error) {
+    console.error(`mcp-call: ${error?.message ?? error}`);
+    process.exit(2);
+  }
   const qs = buildMcpSessionQuery({
     client,
-    workspace: flags.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace',
+    workspace,
     harness: flags.harness,
+    allWorkspaces: flags.allWorkspaces,
   });
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described
   // (e.g. a per-session operator that has since died), and a bare fetch at a port with

@@ -102,6 +102,7 @@ async function deliverAttention(
   const mobileClaimed = recordId == null
     ? true
     : await claimAttentionNotifyChannel(recordId, ws, 'mobile');
+  let mobileDelivered = false;
 
   // 1. Mobile (APNs/FCM) — no-op when no device is paired. `data` must be
   // string-valued (APNs/FCM constraint); coerce extras and drop nullish.
@@ -125,6 +126,7 @@ async function deliverAttention(
       // outcome from those results, not from "didn't throw", or this audit trail would just
       // relocate the original "reads as covered" bug one file down.
       const succeeded = results.some((r) => r.ok);
+      mobileDelivered = succeeded;
       const error = succeeded
         ? undefined
         : results.length === 0
@@ -134,6 +136,7 @@ async function deliverAttention(
     } catch (e) {
       const message = (e as Error)?.message ?? String(e);
       console.warn('[attention-notify] mobile push failed:', message);
+      mobileDelivered = false;
       await recordAttentionNotifyOutcome(recordId, ws, 'mobile', { attempted: true, succeeded: false, error: message });
     }
   }
@@ -142,6 +145,7 @@ async function deliverAttention(
   const desktopClaimed = recordId == null
     ? true
     : await claimAttentionNotifyChannel(recordId, ws, 'desktop');
+  let desktopDelivered = false;
   if (desktopClaimed) {
     try {
       await notifySyncInvalidate(ATTENTION_NOTIFY_EVENT, {
@@ -152,10 +156,12 @@ async function deliverAttention(
         importance: input.importance ?? null,
         ...channelData,
       });
+      desktopDelivered = true;
       await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: true });
     } catch (e) {
       const message = (e as Error)?.message ?? String(e);
       console.warn('[attention-notify] desktop notify failed:', message);
+      desktopDelivered = false;
       await recordAttentionNotifyOutcome(recordId, ws, 'desktop', { attempted: true, succeeded: false, error: message });
     }
   }
@@ -163,8 +169,8 @@ async function deliverAttention(
   return {
     recordId,
     deduped: Boolean(input.dedupeKey && !reservation?.created && !mobileClaimed && !desktopClaimed),
-    mobileDelivered: mobileClaimed,
-    desktopDelivered: desktopClaimed,
+    mobileDelivered,
+    desktopDelivered,
   };
 }
 

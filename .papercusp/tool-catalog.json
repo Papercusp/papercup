@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 861,
+  "count": 862,
   "tools": [
     {
       "name": "ablation:report",
@@ -7438,7 +7438,7 @@
           "POST"
         ]
       },
-      "description": "Start a Cupboard checkout session for a buying organization: authorizes the acting user against that org, then creates a hosted payment session and returns its orderId, providerSessionId and url for the buyer to open. Repeating the same idempotencyKey returns the SAME order rather than charging twice (reported as idempotentReplay). Refuses before any provider call when the org is unknown, the acting user is not a member, or quantity is not 1.",
+      "description": "Start a Cupboard checkout for a buying organization. One-time/subscription offers return a hosted provider session. Per-use offers bypass Stripe and return a deterministic P2P microcharge preflight with the signed price terms and an escrow-capped channel descriptor. Refuses before transport when the org is unknown, the acting user is not a member, quantity is not 1, or maxSpendMicros is invalid.",
       "capabilities": [
         "harness:write"
       ],
@@ -7456,7 +7456,7 @@
           "POST"
         ]
       },
-      "description": "Read a buying organization's Cupboard commerce state: `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
+      "description": "Read a buying organization's Cupboard commerce state: `catalog` (offers, exact pricing and per-use microcharge terms), `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of products, offers, orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
       "capabilities": [
         "harness:read"
       ],
@@ -7644,6 +7644,24 @@
         "when": "Sharing a goal you run as a reusable package — its duties, rails and IO contract — so other workspaces can install it as an inactive stub and start it deliberately.",
         "notWhen": "Creating or editing a goal here (goals:create / goals:update). Publishing a plan template (cupboard:publish-plan) or a rubric (cupboard:publish-rubric).",
         "chaining": "cupboard:publish-goal { goalId, exportOnly: true } → push the returned dir to a public mirror repo → cupboard:publish-goal { goalId, githubUrl } to create the listing. Read `stripped` in the response to confirm the live state came out."
+      }
+    },
+    {
+      "name": "cupboard:publish-offer",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-offer",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Publish or update a Cupboard commerce offer through the hosted append-only ledger. Per-use offers require unitPriceMicros, meterUnit, priceVersion and splitManifestHash; those exact terms are persisted in D1, exposed by the commerce catalog/dashboard, and returned by cupboard:checkout as a P2P microcharge preflight. The authenticated GitHub principal becomes the product creator.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A creator needs to define an executable Cupboard offer, especially a metered per-use offer.",
+        "notWhen": "Publishing a distributable listing/repository (use the relevant cupboard:publish-* listing tool) or buying an existing offer (cupboard:checkout).",
+        "chaining": "Read it back with cupboard:commerce-dashboards dashboards:[\"catalog\"], then use cupboard:checkout with maxSpendMicros for a per-use offer."
       }
     },
     {
