@@ -5174,7 +5174,7 @@ export function codexAutoPoolWarning({
  *   timeoutMs?: number
  * }} input
  */
-async function warnIfCodexAutoPoolWalled({
+export async function warnIfCodexAutoPoolWalled({
   agent,
   model,
   account,
@@ -7301,12 +7301,11 @@ const NO_FEATURE = "<no-feature>";
  *  harness pipeline actually uses), not for a human to pick by hand. That flag
  *  path is untouched — it resolves `role` BEFORE this function is ever called
  *  (see the `args.role || null` check at the call site) and still reaches
- *  `roleFlow` exactly as before. `roles: known` is still returned (now always
- *  `[]` from the picker path) so the caller's destructuring shape is unchanged.
- *  Returns { role, roles } so the caller reuses the consumes map. */
-async function pickRole() {
-  const { roles } = await api("/api/agent-mcp/console/bootstrap-su/options");
-  const known = Array.isArray(roles) ? roles : [];
+ *  `roleFlow` exactly as before. The fixed SU choice needs no server metadata:
+ *  fetching aggregate options here silently blocks the first local prompt on
+ *  harness/account/model/fleet discovery (WI-2146951). Keep the caller's return
+ *  shape with an empty roles list; scripted roles resolve their own metadata. */
+export async function pickRole() {
   const { select } = await import("@inquirer/prompts");
   const role = await select({
     message: "Role",
@@ -7314,7 +7313,7 @@ async function pickRole() {
       { name: "su  — engineer collaborator (full SU catalog)", value: "su" },
     ],
   });
-  return { role, roles: known };
+  return { role, roles: [] };
 }
 
 /** Role sessions support claude, omp, and codex interactively. codex

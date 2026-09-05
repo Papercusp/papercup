@@ -38,6 +38,20 @@ const specWriteSchema = z
       .optional()
       .describe('What you would SEE if this clause were violated, and how to produce it.'),
     acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
+    sourceBar: z
+      .object({
+        barKey: z.string().trim().min(1).max(200),
+        barHash: z.string().regex(/^[a-f0-9]{64}$/),
+        barSetHash: z.string().regex(/^[a-f0-9]{64}$/),
+        rubricSlug: z.string().trim().min(1).max(200),
+        rubricRevision: z.number().int().positive(),
+        evidencePlane: z.enum(['tree', 'deployed', 'live']),
+      })
+      .nullable()
+      .optional()
+      .describe(
+        'Acceptance-BAR provenance pin. Preserve this object when promoting an AUTO-BAR draft so the current revision remains mapped to its rubric BAR.',
+      ),
   })
   .superRefine((spec, ctx) => {
     if (spec.lifecycleStatus === 'exempt' && !spec.exemption) {

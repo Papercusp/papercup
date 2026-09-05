@@ -210,6 +210,60 @@ describe('first-class plan spec clauses', () => {
     });
   });
 
+  it('promotes an AUTO-BAR draft without dropping its acceptance provenance pin', async () => {
+    const sourceBar = {
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricSlug: 'acceptance-reconnect-plan',
+      rubricRevision: 4,
+      evidencePlane: 'tree' as const,
+    };
+    const acceptanceRef = 'acceptance-reconnect-plan@4:R-1';
+    expect(
+      await store.setSpecClause(
+        clause({ lifecycleStatus: 'draft', acceptanceRef, sourceBar }),
+      ),
+    ).toMatchObject({ status: 'created', revision: 1 });
+
+    const parsed = setSpecsTool.args.parse({
+      harness: HARNESS,
+      slug: 'reconnect-plan',
+      spec: {
+        specId: 'SPEC-003-01',
+        expectedRevision: 1,
+        sourceValId: 'VAL-003-01',
+        planItemId: 'P-003',
+        behavior: 'Acknowledged event 42 is not replayed after reconnect.',
+        behaviorClass: 'concurrency',
+        requiredEvidence: ['integration replay trace', 'boundary counterexample'],
+        requiredTestLayers: ['integration'],
+        mutationRequired: true,
+        lifecycleStatus: 'active',
+        acceptanceRef,
+        sourceBar,
+      },
+    });
+    const promoted = (await setSpecsTool.handler(parsed as never, CTX)) as {
+      data: { results: Array<Record<string, unknown>> };
+    };
+    expect(promoted.data.results[0]).toMatchObject({ ok: true, status: 'revised', revision: 2 });
+
+    const [current] = await store.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-01'],
+    });
+    expect(current).toMatchObject({
+      revision: 2,
+      currentRevision: 2,
+      lifecycleStatus: 'active',
+      acceptedBy: 'su-spec-integration',
+      acceptanceRef,
+      sourceBar,
+    });
+  });
+
   it('normalizes production-shaped Postgres text timestamps at the spec-store boundary', async () => {
     const priorSql = h.sql;
     const fakeTx = vi.fn(async () => [

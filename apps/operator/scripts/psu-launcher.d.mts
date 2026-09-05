@@ -1486,6 +1486,32 @@ export function codexAutoPoolWarning({ agent, model, account, stats, now, }?: {
     now?: number;
 }): string | null;
 /**
+ * Best-effort launch preflight. A down or older gateway never blocks psu; only a live,
+ * self-describing all-walled snapshot emits a warning.
+ *
+ * @param {{
+ *   agent?: string | null,
+ *   model?: string | null,
+ *   account?: string | null | { mode?: string, provider?: string },
+ *   fetchImpl?: typeof fetch,
+ *   log?: (message: string) => void,
+ *   port?: number,
+ *   timeoutMs?: number
+ * }} input
+ */
+export function warnIfCodexAutoPoolWalled({ agent, model, account, fetchImpl, log, port, timeoutMs, }?: {
+    agent?: string | null;
+    model?: string | null;
+    account?: string | null | {
+        mode?: string;
+        provider?: string;
+    };
+    fetchImpl?: typeof fetch;
+    log?: (message: string) => void;
+    port?: number;
+    timeoutMs?: number;
+}): Promise<string | null>;
+/**
  * Strip ONLY the managed ROOT block (`model_provider = "papercusp-codex-gateway"`),
  * leaving the `[model_providers.papercusp-codex-gateway]` TABLE in place. With no
  * root key codex falls back to its built-in `openai` provider — the same state a
@@ -2062,6 +2088,21 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
     notice: string;
     forward?: undefined;
     auto?: undefined;
+}>;
+/** Pick the role. Interactively, 'su' (plain engineer) is the ONLY selectable
+ *  choice — the pipeline roles (planner/worker/etc.) are deliberately NOT
+ *  offered here (psu-su-only-interactive-picker-2026-06-30): they're meant for
+ *  automated/scripted spawning (`psu --role=<role> --no-picker`, what the
+ *  harness pipeline actually uses), not for a human to pick by hand. That flag
+ *  path is untouched — it resolves `role` BEFORE this function is ever called
+ *  (see the `args.role || null` check at the call site) and still reaches
+ *  `roleFlow` exactly as before. The fixed SU choice needs no server metadata:
+ *  fetching aggregate options here silently blocks the first local prompt on
+ *  harness/account/model/fleet discovery (WI-2146951). Keep the caller's return
+ *  shape with an empty roles list; scripted roles resolve their own metadata. */
+export function pickRole(): Promise<{
+    role: string;
+    roles: never[];
 }>;
 export function usePtyHost({ env, stdin, stdout, }?: {
     env?: NodeJS.ProcessEnv | undefined;

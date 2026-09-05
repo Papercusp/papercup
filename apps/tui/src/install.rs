@@ -728,12 +728,8 @@ mod tests {
         );
         assert!(!same_prefix_but_different.is_ok());
 
-        let unknown = operator_install_freshness(
-            "build-a",
-            None,
-            "https://operator.example:9443",
-            None,
-        );
+        let unknown =
+            operator_install_freshness("build-a", None, "https://operator.example:9443", None);
         assert_eq!(unknown.status.label(), "ERROR");
         assert!(!unknown.is_ok());
         assert!(unknown.repair.is_some());
@@ -775,12 +771,8 @@ mod tests {
 
         // Unknown (git unavailable, no recorded source_root, ...) must fall back
         // to today's verdict rather than silently going quiet.
-        let unknown_ancestry = operator_install_freshness(
-            "build-a",
-            Some("build-b"),
-            "http://127.0.0.1:9071",
-            None,
-        );
+        let unknown_ancestry =
+            operator_install_freshness("build-a", Some("build-b"), "http://127.0.0.1:9071", None);
         assert_eq!(unknown_ancestry.status.label(), "STALE");
         assert!(unknown_ancestry.repair.is_some());
     }

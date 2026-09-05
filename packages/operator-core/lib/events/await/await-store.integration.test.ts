@@ -270,6 +270,45 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     await store.markDeliveryDropped(old.id, 'test cleanup');
   });
 
+  it('reserves one slot for an aged parked retry without letting retries monopolize the batch', async () => {
+    const prefix = 'su-fair-aged';
+    const oldAwait = await store.registerAwait({ subscriberId: `${prefix}-old`, eventKey: 'fair:aged:old' });
+    await store.insertDeliveries({ awaits: [oldAwait], summary: 'aged parked retry' });
+    const old = (await store.claimDueDeliveries({ limit: 10 })).find((d) => d.subscriberId === `${prefix}-old`)!;
+    await store.markDeliveryParked(old.id, 'subscriber is currently uninjectable', 0);
+    // Make the retry old enough to enter the bounded starvation reserve. The
+    // current query's attempts tier would leave it behind every fresh row.
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET created_at = now() - interval '2 minutes',
+             next_attempt_at = now()
+       WHERE id = ${old.id}
+    `;
+
+    for (let i = 0; i < 5; i += 1) {
+      const freshAwait = await store.registerAwait({
+        subscriberId: `${prefix}-fresh-${i}`,
+        eventKey: `fair:aged:fresh:${i}`,
+      });
+      await store.insertDeliveries({ awaits: [freshAwait], summary: `fresh ${i}` });
+    }
+
+    const claimed = await store.claimDueDeliveries({ limit: 5 });
+    const ours = claimed.filter((d) => d.subscriberId.startsWith(`${prefix}-`));
+    expect(ours).toHaveLength(5);
+    expect(ours.find((d) => d.subscriberId === `${prefix}-old`)).toMatchObject({
+      attempts: 2,
+      status: 'delivering',
+    });
+    expect(ours.filter((d) => d.subscriberId.startsWith(`${prefix}-fresh-`))).toHaveLength(4);
+
+    for (const delivery of ours) await store.markDeliveryDropped(delivery.id, 'test cleanup');
+    await db.adminSql`
+      DELETE FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+  });
+
   it('drops queued and claimed deliveries for any cancelled await before wake execution', async () => {
     const key = `${store.INBOX_WAKE_KEY_PREFIX}su-cancelled-wake`;
     await store.upsertInboxWakeAwait({ subscriberId: 'su-cancelled-wake', eventKey: key, note: 'standing wake' });

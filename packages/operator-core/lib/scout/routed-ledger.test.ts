@@ -33,7 +33,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { gradeRoutedIdea, hiveFromPatternRefs } = await import('./routed-ledger');
+const { gradeRoutedIdea, hiveFromPatternRefs, propagateWorkItemOutcome } = await import('./routed-ledger');
 const sse = await import('../sync-sse');
 const invalidate = vi.mocked(sse.notifySyncInvalidate);
 
@@ -101,5 +101,47 @@ describe('hiveFromPatternRefs (D-003 target-hive derivation, P-002)', () => {
   it('undefined / empty inputs', () => {
     expect(hiveFromPatternRefs(undefined)).toBeUndefined();
     expect(hiveFromPatternRefs([])).toBeUndefined();
+  });
+});
+
+describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
+  it('writes a winning outcome for a terminal success and scopes the routed ref', async () => {
+    h.updateRows = [{ idea_id: 'idea-1' }];
+
+    await expect(
+      propagateWorkItemOutcome({
+        workItemId: 'WI-1',
+        state: 'done',
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+      }),
+    ).resolves.toBe(1);
+
+    expect(h.queries.join(' ')).toContain('UPDATE harness_shared.scout_routed_ideas');
+    expect(h.queries.join(' ')).toContain('outcome_checked_at');
+    expect(h.queries.join(' ')).toContain('routed_ref');
+    expect(h.queries.join(' ')).toContain('harness_slug');
+  });
+
+  it('writes a losing outcome for dropped/deprecated terminals and ignores live states', async () => {
+    h.updateRows = [{ idea_id: 'idea-2' }];
+
+    await expect(
+      propagateWorkItemOutcome({
+        workItemId: 'WI-2',
+        state: 'dropped',
+        workspaceId: 'ws-1',
+      }),
+    ).resolves.toBe(1);
+
+    h.queries = [];
+    await expect(
+      propagateWorkItemOutcome({
+        workItemId: 'WI-3',
+        state: 'open',
+        workspaceId: 'ws-1',
+      }),
+    ).resolves.toBe(0);
+    expect(h.queries).toHaveLength(0);
   });
 });
