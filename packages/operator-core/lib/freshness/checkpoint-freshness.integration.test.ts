@@ -36,10 +36,20 @@ vi.mock('../harness-registry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../harness-registry')>();
   return { ...actual, loadHarnessRegistry: h.loadHarnessRegistry };
 });
+// The loop write path pushes a derived Orders-panel invalidation. It is fail-soft in
+// production; stubbing it keeps the suite off the sync bus entirely.
+vi.mock('../agent-orders-notify', () => ({ notifyAgentOrdersChanged: vi.fn(async () => {}) }));
 
 const { setWorkItemCheckpointWithPrior, getWorkItemCheckpointFreshness, getWorkItemCheckpointDeps } = await import(
   '../work-item-checkpoint'
 );
+const {
+  setLoopCarryNote,
+  setLoopCarryNoteWithPrior,
+  getLoopCarryNoteDeps,
+  getLoopCarryNoteFreshness,
+  loopScope,
+} = await import('../carry-note');
 const { resolveCurrentTokens } = await import('./resolvers');
 
 const HARNESS = 'h1';
