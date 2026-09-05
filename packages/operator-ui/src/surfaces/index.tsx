@@ -48,6 +48,16 @@ import '../../../../apps/operator/app/harness/harness.css';
 // loading it once here — like harness.css above — costs nothing on the other
 // surfaces and keeps the `dev` entry a zero-prop mount (portal-parity D-007).
 import '../../../../apps/operator/app/dev/dev.css';
+// The shared primitives (.pc-card/.pc-input/.pc-btn* and the element baselines) and
+// the Settings/Support surface stylesheets, on the same reasoning: the operator
+// loads them through globals.css / its route layouts, which a host never renders,
+// so this index — the one mount contract every host goes through — carries them
+// (portal-parity P-005/P-003, EI-22432328055190066). The
+// apps/operator/app/_lints/mounted-surface-css guard fails when a mounted
+// surface's class slides back into globals.css only.
+import '../../../../apps/operator/app/_primitives.css';
+import '../../../../apps/operator/app/settings/settings.css';
+import '../../../../apps/operator/app/support/support.css';
 // The token → grid palette bridge. Every grid-bearing surface below paints
 // from grid-core's live palette, which is a neutral DARK set until this runs
 // (portal-parity D-008 / P-012). The operator's main.tsx imports the same
