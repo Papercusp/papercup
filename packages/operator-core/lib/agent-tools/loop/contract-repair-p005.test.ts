@@ -20,6 +20,23 @@ import loopCheckpoint from './checkpoint';
 import loopEnd from './end';
 import loopStatus from './status';
 
+/**
+ * Render a tool's arg schema the way defineTool registration does.
+ *
+ * The cast goes through `unknown` deliberately: `z.toJSONSchema` is overloaded, so
+ * `Parameters<typeof z.toJSONSchema>[0]` resolves to the `$ZodRegistry` overload and TS2352
+ * rejects a ZodObject against it — a type-only break that a green vitest run cannot see,
+ * because vitest transforms via esbuild and never typechecks.
+ */
+function renderToJSONSchema(schema: unknown): { properties?: Record<string, unknown>; required?: string[] } {
+  // Cast the FUNCTION, not the argument — the argument cast is what picks the wrong overload.
+  const render = z.toJSONSchema as unknown as (s: unknown) => {
+    properties?: Record<string, unknown>;
+    required?: string[];
+  };
+  return render(schema);
+}
+
 /** Parse through the tool's own declared arg schema, as the dispatcher does. */
 function parseArgs(tool: { args: { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: unknown } } }, value: unknown) {
   return tool.args.safeParse(value);
@@ -279,7 +296,7 @@ describe('P-005 loop family — argument contract repairs', () => {
 
     for (const [name, tool] of tools) {
       it(`${name} renders without throwing`, () => {
-        expect(() => z.toJSONSchema(tool.args as Parameters<typeof z.toJSONSchema>[0])).not.toThrow();
+        expect(() => renderToJSONSchema(tool.args)).not.toThrow();
       });
     }
 
@@ -287,11 +304,8 @@ describe('P-005 loop family — argument contract repairs', () => {
       // A client validates the published schema before the server ever sees the call, so a
       // repair that lives only in the parser still reports invalid_args to the caller —
       // the EI-21575304064818009 precedent that put `description`/`key` in the walls row.
-      const rendered = z.toJSONSchema(loopArm.args as Parameters<typeof z.toJSONSchema>[0]) as {
-        properties?: { workItem?: { anyOf?: Array<{ type?: string }> } };
-        required?: string[];
-      };
-      const workItem = rendered.properties?.workItem;
+      const rendered = renderToJSONSchema(loopArm.args);
+      const workItem = rendered.properties?.workItem as { anyOf?: Array<{ type?: string }> } | undefined;
       expect(workItem).toBeDefined();
       // The assertion has to be this specific to mean anything: `.optional()` renders a
       // bare `{ type: 'string' }` and is ALSO absent from `required`, so a
