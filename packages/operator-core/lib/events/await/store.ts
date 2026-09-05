@@ -1784,24 +1784,61 @@ export async function compactSupersededLoopDeliveries(): Promise<number> {
 export async function claimDueDeliveries(input: { limit?: number }): Promise<DeliveryWork[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const limit = input.limit ?? 10;
+  // Fresh first-attempt work should usually win, but a permanently uninjectable
+  // subscriber can otherwise keep a retried row behind an unbounded stream of new
+  // deliveries. Reserve one slot for the oldest retry once it has waited past this
+  // bound; the remaining slots preserve the fresh-first policy and keep a bad
+  // subscriber from monopolizing the batch.
+  const retryStarvationAgeSec = 60;
+  const retryReserveSlots = limit > 0 ? 1 : 0;
   const rows = await sql`
-    WITH due AS (
-      SELECT id FROM harness_shared.event_wake_deliveries
+    WITH ranked AS (
+      SELECT id,
+             (
+               attempts > 0
+               AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+             ) AS aged_retry,
+             row_number() OVER (
+               PARTITION BY (
+                 attempts > 0
+                 AND created_at <= now() - make_interval(secs => ${retryStarvationAgeSec})
+               )
+               ORDER BY created_at ASC, id ASC
+             ) AS retry_rank
+        FROM harness_shared.event_wake_deliveries
        WHERE workspace_id = ${ws}
          AND status IN ('pending', 'parked')
          AND next_attempt_at <= now()
+    ),
+    due AS (
+      SELECT d.id
+        FROM harness_shared.event_wake_deliveries d
+        JOIN ranked r ON r.id = d.id
+       WHERE d.workspace_id = ${ws}
+         AND d.status IN ('pending', 'parked')
+         AND d.next_attempt_at <= now()
        -- A permanently uninjectable subscriber can legitimately PARK for a long
        -- time, but its retries must never monopolize this bounded batch. Give an
-       -- untouched/no-error row its first delivery attempt before retrying old
-       -- failures, then preserve FIFO within each attempt tier. Loop-source
-       -- compaction above keeps repeated fires from becoming an unbounded fresh
-       -- tier of their own (EI-21303383797798186).
-       ORDER BY (attempts = 0 AND last_error IS NULL) DESC,
-                attempts ASC,
-                next_attempt_at ASC,
-                created_at ASC
-       LIMIT ${input.limit ?? 10}
-       FOR UPDATE SKIP LOCKED
+       -- untouched/no-error row its first delivery attempt before retrying recent
+       -- failures, while reserving one slot for the oldest retry after it has waited
+       -- long enough to prove that fresh-first ordering is starving it. The final
+       -- FIFO keys keep each tier deterministic. Loop-source compaction above keeps
+       -- repeated fires from becoming an unbounded fresh tier of their own
+       -- (EI-21303383797798186).
+       ORDER BY CASE
+                  WHEN r.aged_retry AND r.retry_rank <= ${retryReserveSlots} THEN 0
+                  WHEN d.attempts = 0 AND d.last_error IS NULL THEN 1
+                  WHEN r.aged_retry THEN 2
+                  ELSE 3
+                END,
+                CASE WHEN r.aged_retry THEN r.retry_rank END ASC NULLS LAST,
+                d.attempts ASC,
+                d.next_attempt_at ASC,
+                d.created_at ASC,
+                d.id ASC
+       LIMIT ${limit}
+       FOR UPDATE OF d SKIP LOCKED
     )
     UPDATE harness_shared.event_wake_deliveries d
        SET status = 'delivering', attempts = d.attempts + 1
