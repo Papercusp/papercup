@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import assertTool from './agent-tools/facts/assert';
 import {
   detectFactAbsenceClaims,
@@ -13,10 +14,17 @@ import {
 type AssertSchemaField = { description?: string };
 
 const assertSchemaField = (name: string): AssertSchemaField => {
-  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-  const field = options.map((option) => option.shape[name]).find(Boolean);
+  // EI-22064465906366039: read the PUBLISHED JSON Schema, not zod internals.
+  // The old form reached into `.options` — the root union's BRANCH LIST — so
+  // retiring that union broke four identical copies of this helper at once, in
+  // files that have nothing to do with the union. The projection is what callers
+  // actually see, and it is shape-agnostic.
+  const json = z.toJSONSchema(assertTool.args as never) as {
+    properties?: Record<string, AssertSchemaField>;
+  };
+  const field = json.properties?.[name];
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
-  return field as AssertSchemaField;
+  return field;
 };
 
 describe('fact measurement detector — moving numbers get an advisory', () => {

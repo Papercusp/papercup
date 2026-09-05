@@ -7,6 +7,7 @@
  * (your write was lossy / this read is huge) and said nothing.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import assertTool, { truncationField, dependsOnSuggestionField } from './assert';
 import { __resetCellRegistryForTests, registerCell } from '../../cell-registry';
 import factsListTool, {
@@ -55,8 +56,23 @@ beforeAll(() => {
 });
 
 const assertSchemaField = (name: string): AssertSchemaField => {
-  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-  const field = options.map((option) => option.shape[name]).find(Boolean);
+  // EI-22064465906366039: the root union is retired, so `.options` (its branch
+  // list) is gone. Unlike the other schema-reading tests, THIS file needs the
+  // real zod field — it calls .safeParse on it below, and it asserts the zod
+  // `.description`, which is NOT the same string the JSON-Schema projection
+  // publishes for `body`. So unwrap the refinement chain to the object shape
+  // rather than reading the projection.
+  let node = assertTool.args as unknown as {
+    shape?: Record<string, unknown>;
+    def?: { schema?: unknown; innerType?: unknown };
+    _def?: { schema?: unknown; innerType?: unknown };
+  };
+  for (let hop = 0; hop < 8 && !node.shape; hop += 1) {
+    const inner = node.def?.schema ?? node.def?.innerType ?? node._def?.schema ?? node._def?.innerType;
+    if (!inner) break;
+    node = inner as typeof node;
+  }
+  const field = node.shape?.[name];
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
   return field as AssertSchemaField;
 };
