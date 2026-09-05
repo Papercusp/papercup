@@ -5286,3 +5286,21 @@
 .pc-plan-dialog__warn {
   color: var(--warn);
 }
+
+.pc-requirements { margin-top: 18px; overflow-wrap: anywhere; }
+.pc-requirements__flow { display: flex; flex-wrap: wrap; gap: 8px 24px; padding-left: 24px; }
+.pc-requirement { margin-block: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
+.pc-requirement > summary { padding: 12px; cursor: pointer; color: var(--fg); }
+.pc-requirement summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pc-requirement__state { display: inline-block; margin-left: 12px; color: var(--fg-dim); }
+.pc-requirement__body { padding: 0 14px 14px; }
+.pc-requirement__sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 20px; }
+.pc-requirement__sections > section { min-width: 0; }
+.pc-requirement h4 { margin: 16px 0 8px; color: var(--fg); }
+.pc-requirement p { margin-block: 8px; }
+.pc-requirement__prose, .pc-requirement pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pc-requirement pre { max-height: 280px; overflow: auto; padding: 10px; background: var(--bg-deeper); }
+.pc-requirement dt { font-weight: 600; margin-top: 8px; }
+.pc-requirement dd { margin: 2px 0 0; }
+.pc-requirement__history { padding-left: 20px; }
+.pc-requirement__history > li { padding-block: 8px; border-bottom: 1px solid var(--border); }

@@ -21,7 +21,7 @@
  * Each has a test named for the rule, so collapsing one into "passed" has to be deliberate.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
@@ -65,6 +65,48 @@ function renderSection(searchParams: string) {
 
 const gateCalls = () => syncCalls.filter((c) => c.queryName === 'plans.acceptanceGate');
 
+function requirementSnapshot() {
+  return {
+    planSlug: SLUG, applicable: true, plan: { harnessSlug: 'papercusp' },
+    completeness: { complete: true, truncated: false, problems: [] },
+    readiness: { state: 'ready', nextRepair: null },
+    grading: { vetting: { state: 'current' }, authorVerdict: { state: 'accepted' } },
+    bars: [{
+      barKey: 'R-1', criterionKey: 'complete-export', title: 'Complete export',
+      model: 'Every selected record and attachment is exported.', method: 'Run the export fixture.',
+      falsifier: 'An attachment is absent.', check: { kind: 'tests', files: ['export.integration.test.ts'] },
+      replication: null, role: 'outcome', mandatory: true, requiredScope: ['tree'], evidencePlane: 'tree',
+      requiredTestLayers: ['integration'], passRatings: ['healthy'], coversBarKeys: [],
+      requirement: {
+        intent: { request: 'Export all my work.', rationale: 'Keep a complete backup.',
+          constraints: ['Include attachments.'], sourceRefs: ['request:original-export'] },
+        acceptance: { condition: 'Every selected record and attachment is exported.', falsifier: 'An attachment is absent.',
+          requiredScope: ['tree'], evidencePlane: 'tree', requiredTestLayers: ['integration'], passRatings: ['healthy'] },
+        verification: { method: 'Run the export fixture.', check: { kind: 'tests', files: ['export.integration.test.ts'] }, replication: null },
+      },
+      readiness: { state: 'ready' },
+      mappings: [{ planItemId: 'P-001', planItemStatus: 'done', specId: 'SPEC-EXPORT', specRevision: 2, sourceValId: 'VAL-EXPORT' }],
+      workContracts: [{ workItemId: 'WI-1', specId: 'SPEC-EXPORT', specRevision: 2, current: true }],
+      proof: { state: 'current', adequacy: { state: 'pass' }, evidenceRefs: ['run:failed', 'run:passed'],
+        history: [
+          { id: 1, evidenceRef: 'run:failed', workItemId: 'WI-1', specId: 'SPEC-EXPORT', specRevision: 1,
+            matchesCurrentSpec: false, observedAt: '2026-09-04', currentness: { comparisonSupplied: true, overall: 'stale' },
+            details: { adequacy: { outcome: 'failed' } } },
+          { id: 2, evidenceRef: 'run:passed', workItemId: 'WI-1', specId: 'SPEC-EXPORT', specRevision: 2,
+            matchesCurrentSpec: true, observedAt: '2026-09-05', currentness: { comparisonSupplied: true, overall: 'current' },
+            details: { adequacy: { outcome: 'passed' } } },
+        ] },
+      grading: { state: 'pass', rating: 'healthy', history: [
+        { scorecardId: 'EI-10', role: 'independent', createdBy: 'peer-grader', rubricRevision: 3,
+          currentRevision: true, complete: true, rating: 'healthy', evidence: 'All export records matched.', createdAt: '2026-09-05' },
+        { scorecardId: 'EI-11', role: 'author', createdBy: 'requirement-author', rubricRevision: 3,
+          currentRevision: true, complete: true, authorVerdict: 'accept', reasoning: 'The independent evidence meets the promise.',
+          supersedes: 'EI-10', createdAt: '2026-09-05' },
+      ] },
+    }],
+  };
+}
+
 function row(over: Record<string, unknown> = {}) {
   return {
     planSlug: SLUG,
@@ -87,6 +129,61 @@ afterEach(() => {
   cleanup();
   syncCalls.length = 0;
   gateRow.current = null;
+});
+
+describe('unified requirement inspection', () => {
+  it('opens one requirement with its sections, failed history, independent grade, author verdict and scoped work links', () => {
+    gateRow.current = row({ acceptanceBarContractSnapshot: requirementSnapshot() });
+    renderSection(OPEN);
+    const detail = screen.getByTestId('requirement-R-1') as HTMLDetailsElement;
+    fireEvent.click(detail.querySelector('summary')!);
+    expect(detail.open).toBe(true);
+    for (const name of ['Intent', 'Acceptance (BAR)', 'Verification', 'Linked work and validation', 'Evidence history', 'Review history']) {
+      expect(within(detail).getByRole('heading', { name })).toBeTruthy();
+    }
+    expect(within(detail).getByText('request:original-export')).toBeTruthy();
+    expect(within(detail).getByText('run:failed')).toBeTruthy();
+    expect(within(detail).getByText('run:passed')).toBeTruthy();
+    expect(within(detail).getByText('independent')).toBeTruthy();
+    expect(within(detail).getByText('author')).toBeTruthy();
+    const work = within(detail).getAllByRole('link', { name: 'WI-1' })[0]!;
+    expect(work.getAttribute('href')).toContain('wpop=papercusp%3A%3AWI-1');
+    expect(screen.getByText('All requirements accepted.')).toBeTruthy();
+    expect(screen.getByText(/release checks and deployment follow acceptance/)).toBeTruthy();
+  });
+
+  it('does not turn passing proof and independent grading into author acceptance', () => {
+    const snapshot = requirementSnapshot();
+    snapshot.grading.authorVerdict.state = 'missing';
+    gateRow.current = row({ acceptanceBarContractSnapshot: snapshot });
+    renderSection(OPEN);
+    expect(screen.getByText('Acceptance incomplete.')).toBeTruthy();
+    expect(screen.getByText('Not accepted')).toBeTruthy();
+    expect(screen.queryByText('All requirements accepted.')).toBeNull();
+  });
+
+  it('keeps stale, partial and legacy data visibly unaccepted even when the process gate passes', () => {
+    const snapshot = requirementSnapshot();
+    snapshot.completeness.truncated = true;
+    snapshot.applicable = false;
+    snapshot.bars[0]!.proof.state = 'stale';
+    snapshot.bars[0]!.readiness.state = 'blocked';
+    delete (snapshot.bars[0] as { requirement?: unknown }).requirement;
+    gateRow.current = row({ acceptanceBarContractSnapshot: snapshot });
+    renderSection(OPEN);
+    fireEvent.click(screen.getByTestId('requirement-R-1').querySelector('summary')!);
+    expect(screen.getByText('Original intent was not recorded.')).toBeTruthy();
+    expect(screen.getByTestId('requirements-incomplete').textContent).toContain('partial history');
+    expect(screen.getByText('Not accepted')).toBeTruthy();
+    expect(screen.queryByText('All requirements accepted.')).toBeNull();
+  });
+
+  it('shows an unavailable snapshot without presenting requirement acceptance', () => {
+    gateRow.current = row({ acceptanceBarContractSnapshot: null, acceptanceBarContractSnapshotUnavailableReason: 'read failed' });
+    renderSection(OPEN);
+    expect(screen.getByTestId('requirement-details-unavailable').textContent).toContain('unverified');
+    expect(screen.queryByText('All requirements accepted.')).toBeNull();
+  });
 });
 
 describe('PlanAcceptanceGateSection subscription (P-011)', () => {
