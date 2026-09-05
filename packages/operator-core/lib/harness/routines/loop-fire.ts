@@ -44,6 +44,12 @@ import {
 import { getOrgPg } from '@papercusp/db-org';
 import { assessGoalStaleness, extractGoalWorkItemIds } from './loop-goal-staleness';
 import { assessGoalFactDivergence, type CorrectedFact } from './loop-goal-fact-divergence';
+import {
+  assessBlockerLiveness,
+  type BlockerLiveness,
+  type LoopBlockedOnRecord,
+} from './loop-blocker-liveness';
+import { resolveSessionStates } from '../../agent-tools/coordination/liveness-oracle';
 import { checkLoopCostCap as defaultCheckLoopCostCap } from './loop-cost-cap';
 import {
   renderWallNagLine,
@@ -129,6 +135,8 @@ export interface LoopFireDeps {
    *  `readGoalItemStates` is: a failed read yields a null arm time and an EMPTY list
    *  (⇒ no claim at all), never a partial one that could read as an all-clear. */
   readGoalFactCorrections?: typeof defaultReadGoalFactCorrections;
+  /** EI-21526226279199560: injected in tests so the blocker-liveness stamp needs no PG. */
+  readBlockerLiveness?: typeof defaultReadBlockerLiveness;
   /** EI-11484: fetch + render the OPEN OWNER DIRECTIVES block for the wake's
    *  workspace (defaults to renderOpenOwnerDirectivesBlock). Best-effort. */
   renderOwnerDirectives?: (
@@ -601,6 +609,19 @@ export function renderLoopWakeText(opts: {
    * staleness check is structurally blind to it.
    */
   goalFactDivergenceNote?: string | null;
+  /**
+   * EI-21526226279199560: the MEASURED liveness of the blocker this loop declared
+   * (`assessBlockerLiveness`), or null when there is nothing honest to say.
+   *
+   * ⚠ Rendered in the same slots as the two notes above, and for the same reason — but
+   * note what it judges is DIFFERENT in kind. Those two judge the GOAL. This judges the
+   * WAIT, which has no other representation in the wake at all: a blocked loop's frozen
+   * premise asserts "I am waiting on X" every single wake with nothing ever re-checking
+   * whether waiting on X is still a sane thing to do. Silent unless the blocker is dead,
+   * suspect, or the wait has outrun its clock, because a reassurance on every healthy
+   * wake becomes scenery — which is exactly how the generic prose caution failed.
+   */
+  blockerLivenessNote?: string | null;
 }): string {
   const block = renderLoopCheckpointBlock(opts.checkpoint, {
     updatedAtMs: opts.checkpointUpdatedAtMs,
@@ -631,6 +652,7 @@ export function renderLoopWakeText(opts: {
       opts.kickoff,
       ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
       ...(opts.goalFactDivergenceNote ? [opts.goalFactDivergenceNote] : []),
+      ...(opts.blockerLivenessNote ? [opts.blockerLivenessNote] : []),
       ...priority,
       ...(block ? [block] : []),
       ...(noNoteMandate ? [noNoteMandate] : []),
@@ -665,6 +687,7 @@ export function renderLoopWakeText(opts: {
     // exact line, and a reader must not be able to accept the goal before meeting it.
     ...(opts.goalStalenessNote ? [opts.goalStalenessNote] : []),
     ...(opts.goalFactDivergenceNote ? [opts.goalFactDivergenceNote] : []),
+    ...(opts.blockerLivenessNote ? [opts.blockerLivenessNote] : []),
     '',
     'On settle: refresh loop:checkpoint { did, left, insight, next }; END YOUR TURN. `loop:end` stops; `loop:status` inspects.',
   ].join('\n');
@@ -1067,10 +1090,35 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     factCorrections.corrected,
     factCorrections.armedAtMs,
   ).note;
+  // EI-21526226279199560 — the THIRD way a frozen premise goes wrong: the thing it names
+  // DIED. `blockedOn` already reached this wake as prose prepended to the kickoff, so the
+  // fire could re-DELIVER the premise but never re-EVALUATE it — and a premise that only
+  // repeats is what let an agent wait 2.5h on a peer that had ended.
+  const blockedOnRecord =
+    input.payloadTemplate?.blockedOn && typeof input.payloadTemplate.blockedOn === 'object'
+      ? (input.payloadTemplate.blockedOn as LoopBlockedOnRecord)
+      : null;
+  const readBlockerLiveness = deps.readBlockerLiveness ?? defaultReadBlockerLiveness;
+  // Only kind:'agent' has a subject the oracle can resolve, so only it costs a read. Every
+  // other kind falls through to the elapsed-clock branch, which needs none — and a loop
+  // that declared no blocker at all (the overwhelming majority) touches neither.
+  const blockerLiveness: BlockerLiveness | null =
+    blockedOnRecord && blockedOnRecord.kind === 'agent' && blockedOnRecord.ref
+      ? await readBlockerLiveness(blockedOnRecord.ref, {
+          sql: input.sql,
+          workspaceId: input.workspaceId,
+        }).catch(() => null)
+      : null;
+  const blockerLivenessNote = assessBlockerLiveness(
+    blockedOnRecord,
+    blockerLiveness,
+    Date.now(),
+  ).note;
   const kickoff = renderLoopWakeText({
     kickoff: armTimeKickoff,
     goalStalenessNote,
     goalFactDivergenceNote,
+    blockerLivenessNote,
     fireNumber,
     checkpoint: checkpointBody,
     checkpointUpdatedAtMs: checkpointMeta.updatedAtMs,
