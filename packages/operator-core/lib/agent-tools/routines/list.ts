@@ -526,6 +526,26 @@ export default defineTool({
     when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Before calling a routine stalled, read `paused` and `health` — see returns.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
     chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status.',
+    // EI-20206183390542424 (+ its independent re-filing EI-22367587259064593 three
+    // weeks later). Measured in harness_shared.tool_invocations: 13 calls from 11
+    // DISTINCT agents passed `workspace` and got a bare unrecognized-key rejection.
+    //
+    // The rejection message is already good — it names the accepted keys verbatim —
+    // and agents re-offend anyway, because the key was never a typo: this tool reads
+    // its workspace AMBIENTLY (activeWorkspaceId()), so a caller reasoning from the
+    // catalog's workspace-scoped tools guesses a parameter that has no counterpart
+    // here. Naming the accepted keys cannot teach that; only saying where the scope
+    // actually comes from can. Same borrowed-shape family as `mode` on locks:acquire
+    // (EI-21988514956470475) and `path` on locks:queue (EI-20206554322712742), and
+    // argRedirects is the family's ratified remedy: it reaches the caller on the
+    // FAILURE path and costs nothing against the prompt-weight budget.
+    argRedirects: {
+      workspace:
+        'this tool has NO `workspace` arg and needs none — it already reads the workspace AMBIENTLY from your session scope, so the rows you get back are that workspace\'s. DROP the key. To narrow WITHIN it use `installSlug` (one install), `group` (one routine group), `name`/`q` (one routine or a substring), or `limit`. There is no cross-workspace listing: to read another workspace, run in a session scoped to it.',
+      install_slug: 'this tool spells that `installSlug` (camelCase) — RENAME the key rather than dropping it, or the filter is silently lost and you read every install. `harness` is its accepted compatibility alias.',
+      slug: 'ambiguous here — RENAME to `installSlug` for the install that owns the routine (its compatibility alias is `harness`), or to `name` for the routine itself. Dropping it widens the read to every routine in the workspace.',
+      routine: 'this tool spells that `name` (the exact routine name, e.g. "git-sync") — RENAME the key. Use `q` instead for a case-insensitive substring match over name OR install slug.',
+    },
     // P-002: response documentation lives HERE, not in `when`/`description` —
     // those are prompt-weight budgeted and this tool is already near the cap
     // (the budget guard refused the first attempt to put it in `when`).
