@@ -28,6 +28,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
+import { dependsOnSpec } from '../../freshness/tool-schema';
 import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
@@ -38,6 +39,7 @@ import {
   renderWallLine,
   setLoopCarryNoteWithPrior,
   getLoopCarryNoteWithMeta,
+  getLoopCarryNoteFreshness,
   listLoopCarryNoteHarnesses,
   listLoopCarryNoteScopes,
   shortCarryHash,
@@ -703,6 +705,7 @@ export default defineTool({
             "evicts EVERY unmatched carried row; pass rowsMode:'replace' + confirmRetire:true to retire them " +
             'explicitly instead; [] clears under replace.',
         ),
+      dependsOn: dependsOnSpec('carry-note'),
       rowsMode: z
         .enum(['replace', 'merge'])
         .optional()
@@ -1004,6 +1007,19 @@ export default defineTool({
             (current.updatedAtMs == null || row.updatedAtMs > current.updatedAtMs),
         )
         .map((row) => ({ harness: row.harness, updatedAtMs: row.updatedAtMs }));
+      // EI-19470389781357111: the DECLARED-dependency verdict. `updatedAtMs` above is
+      // the only staleness signal this read had, and age is a proxy for the question
+      // that actually matters — has anything the note depends on CHANGED? — which it
+      // answers wrongly in both directions: it calls an untouched 3h-old note stale,
+      // and it cannot see a peer's edit at all. That blind spot is worst precisely
+      // here, because a cold wake's carry-note is its ONLY continuity surface.
+      //
+      // Fail-soft to undefined: a freshness read that errors must be indistinguishable
+      // from "nothing declared" at the call site (both fall back to the age heuristic),
+      // and must never cost the caller the note itself.
+      const freshness = note
+        ? await getLoopCarryNoteFreshness({ harness, ownerId, workspaceId }, workspaceId).catch(() => undefined)
+        : undefined;
       return {
         content: [
           {
@@ -1046,6 +1062,10 @@ export default defineTool({
               contentHash: note === null ? null : shortCarryHash(note),
               updatedAtMs: current.updatedAtMs,
               length: note?.length ?? 0,
+              // Present only when the note DECLARED dependencies. Absent ⇒ undeclared
+              // ⇒ `updatedAtMs` is all you have, so judge the note by its age and know
+              // that a peer's edit is invisible to that judgement.
+              ...(freshness ? { freshness } : {}),
             }),
           },
         ],
@@ -1265,6 +1285,13 @@ export default defineTool({
         enforcedBaseNote,
         {
           ...(args.expectedHash !== undefined ? { expectedHash: args.expectedHash } : {}),
+          // EI-19470389781357111: tri-state, so the key is present ONLY when the
+          // caller actually passed it — omitting it preserves the prior declaration
+          // rather than clearing it, which is what keeps a plain narrative re-write
+          // from silently discarding the note's only non-guessed freshness signal.
+          ...(args.dependsOn !== undefined
+            ? { dependsOn: args.dependsOn, depsResolveWorkspaceId: workspaceId }
+            : {}),
           transform: (priorNote) => {
             const priorNarrative = parseCarryNote(priorNote ?? '');
             const hasOmittedPriorNarrativeField = (['did', 'left', 'insight', 'next'] as const).some(

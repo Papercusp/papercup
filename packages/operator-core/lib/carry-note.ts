@@ -44,6 +44,14 @@ import {
 } from './carry-note-probe-scope';
 import { notifyAgentOrdersChanged } from './agent-orders-notify';
 import { decodeContinuityProbe, encodeContinuityProbe, type ContinuityProbe } from './continuity-probes';
+import {
+  computeFreshness,
+  parseDeclaredDeps,
+  type DeclaredDeps,
+  type FreshnessResult,
+} from './freshness';
+import { resolveCurrentTokens } from './freshness/resolvers';
+import { stampDeclaredDeps } from './freshness/stamp';
 
 /**
  * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -2255,6 +2263,17 @@ export interface SetCarryNoteResult {
    *  what the previous note declared without a second read. `null` when the prior
    *  note declared nothing. */
   priorDeps?: unknown;
+  /**
+   * EI-19470389781357111: per-dependency complaints from stamping `dependsOn` —
+   * invalid tags, and refs that would not resolve and were therefore DROPPED rather
+   * than stamped. Present only when a stamping adapter ran and had something to say.
+   *
+   * Surfacing these matters more than it looks: a dropped dep is invisible in the
+   * stored payload, so a note whose whole declaration failed stores `null` and reads
+   * back as `undeclared` — indistinguishable from never having declared anything.
+   * This is the only channel that tells the author their refs were wrong.
+   */
+  depsWarnings?: string[];
   /** Optimistic-CAS details when an expected content hash did not match the
    *  row locked by this write. The row is unchanged. */
   conflict?: {
@@ -2667,13 +2686,58 @@ export async function setLoopCarryNote(ref: LoopCarryNoteRef, note: string | nul
 export async function setLoopCarryNoteWithPrior(
   ref: LoopCarryNoteRef,
   note: string | null | undefined,
-  opts?: Parameters<typeof setCarryNoteWithPrior>[2],
+  opts?: Parameters<typeof setCarryNoteWithPrior>[2] & {
+    /**
+     * EI-19470389781357111: P-007/D-013 declared dependencies as `kind:ref` tags.
+     * Tri-state, matching the substrate: `undefined` ⇒ preserve the existing
+     * declaration, `[]`/`null` ⇒ clear it, a non-empty list ⇒ resolve each to a
+     * version token and stamp it. This adapter does the stamping (the same shared
+     * {@link stampDeclaredDeps} contract the work-item checkpoint uses) and hands
+     * the substrate the resolved `deps` payload it persists verbatim.
+     */
+    dependsOn?: readonly string[] | null;
+    /**
+     * The workspace to RESOLVE `work-item:`/`plan:` refs against — the caller's real
+     * workspace, NOT the pinned {@link loopCarryWs} the row lives in. See
+     * {@link getLoopCarryNoteFreshness} for why conflating the two silently reduces
+     * the loop note to `file:`-only dependencies.
+     */
+    depsResolveWorkspaceId?: string | null;
+  },
 ): Promise<SetCarryNoteResult> {
+  const { dependsOn, depsResolveWorkspaceId, ...substrateOpts } = opts ?? {};
+  const depsSpecified = opts !== undefined && 'dependsOn' in opts;
+  let stampWarnings: string[] | undefined;
+  let depsOpt: { deps?: unknown } = {};
+  if (depsSpecified) {
+    const ws = resolveConcreteWorkspaceId(depsResolveWorkspaceId);
+    // Without a concrete resolution workspace nothing but `file:` could resolve, and
+    // silently stamping a partial set would read as a complete declaration. Refuse to
+    // stamp instead: `undeclared` routes the reader to the age heuristics honestly.
+    const stamped = ws
+      ? await stampDeclaredDeps({
+          declared: dependsOn ?? [],
+          priorDeps: () => getLoopCarryNoteDeps(ref),
+          workspaceId: ws,
+          harness: ref.harness,
+        })
+      : {
+          payload: null,
+          recomputed: false,
+          warnings:
+            (dependsOn ?? []).length > 0
+              ? ['dependsOn could not be stamped — no concrete workspace was resolvable for this session']
+              : [],
+        };
+    depsOpt = { deps: stamped.payload };
+    if (stamped.warnings.length > 0) stampWarnings = stamped.warnings;
+  }
   const result = await setCarryNoteWithPrior(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
-    { ...opts, bounded: true },
+    { ...substrateOpts, ...depsOpt, bounded: true },
   );
+  if (stampWarnings) result.depsWarnings = stampWarnings;
   // WI-6974: the loop carry-note (note + walls + checks) is Orders-panel content,
   // and this ref carries the ownerId the panel is keyed by — so the push is exact.
   // A `guard`-BLOCKED write wrote nothing, so it must not push: `blockedReason` is
@@ -2746,6 +2810,67 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
     // (or prompting an overwrite) when the row may simply be unreadable.
     return { note: null, updatedAtMs: null, readFailed: true };
   }
+}
+
+/**
+ * EI-19470389781357111: the loop carry-note's DECLARED dependencies, or null when
+ * it declared none.
+ *
+ * Mirrors {@link getWorkItemCheckpointDeps} in contract, but NOT in its row lookup,
+ * and the difference is load-bearing: the loop note resolves the NEWEST row for the
+ * scope across ALL workspaces with the pinned coord workspace as a tie-break only
+ * (host-version skew is real — see {@link getLoopCarryNote}). Reading deps from the
+ * pinned row alone could return the stamps of a row that is NOT the note the reader
+ * was just handed, i.e. a freshness verdict about a different note.
+ *
+ * A BLANK note is treated as undeclared even when the row survives: with the journal
+ * ring on, clearing a note keeps its row, and the surviving row still carries the
+ * cleared note's `deps`. Reporting those would hand a verdict for a note that no
+ * longer exists — strictly worse than falling back to the time heuristics.
+ */
+export async function getLoopCarryNoteDeps(ref: LoopCarryNoteRef): Promise<DeclaredDeps | null> {
+  const scope = loopScope(ref.harness, ref.ownerId);
+  try {
+    const rows = await boundedPgReadTxn<{ deps: unknown; note: string | null }[]>(
+      (tx) => tx`
+      SELECT deps, note FROM harness_shared.carry_notes
+       WHERE scope = ${scope} AND note IS NOT NULL
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
+    if (!(rows[0]?.note ?? '').trim()) return null;
+    return parseDeclaredDeps(rows[0]?.deps);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The READ side of the loop note's freshness axis: resolve its declared
+ * dependencies against the world NOW and return the verdict. `undefined` ⇒ nothing
+ * was declared, and the caller falls back to the age heuristics (D-013's precedence
+ * rule: a declared verdict OVERRIDES them; they remain the fallback).
+ *
+ * ⚠ `resolveWorkspaceId` is the CALLER's real workspace and is NOT
+ * {@link loopCarryWs}. The loop ROW is pinned to the coord workspace, but
+ * `work-item:` and `plan:` refs resolve under a strict `workspace_id` filter, so
+ * resolving them against the pinned 'default' namespace would find nothing and drop
+ * every such dep as unresolvable — leaving a loop note able to declare only `file:`
+ * deps, silently. Row workspace and resolution workspace are different questions
+ * here; only the work-item surface gets to conflate them.
+ */
+export async function getLoopCarryNoteFreshness(
+  ref: LoopCarryNoteRef,
+  resolveWorkspaceId: string | null | undefined,
+): Promise<FreshnessResult | undefined> {
+  const deps = await getLoopCarryNoteDeps(ref);
+  if (!deps) return undefined;
+  const ws = resolveConcreteWorkspaceId(resolveWorkspaceId);
+  if (!ws) return undefined;
+  const tokens = await resolveCurrentTokens(
+    deps.stamps.map((s) => s.dep),
+    { workspaceId: ws, harness: ref.harness },
+  );
+  return computeFreshness({ deps, currentTokens: tokens });
 }
 
 /** Every harness under which this owner ALREADY holds a non-empty loop carry-note,

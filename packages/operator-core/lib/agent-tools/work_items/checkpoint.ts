@@ -148,7 +148,7 @@ import {
   attestWorkItemCheckpointUnchanged,
 } from '../../work-item-checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
-import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
+import { dependsOnSpec } from '../../freshness/tool-schema';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
 import { carryRowTextSchema, CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
@@ -534,27 +534,10 @@ function joinCheckpointNewestFirst(freshBody: string, priorBody: string | null):
   return priorBody && priorBody.length > 0 ? `${freshBody}\n\n---\n${priorBody}` : freshBody;
 }
 
-/**
- * P-007/D-013: the declared-dependency arg, shared by the single shorthand and
- * `items[]`. Tri-state — OMITTED preserves the existing declaration (so an append
- * or a plain re-write never silently drops it), `[]` clears it, a list re-stamps.
- */
-function dependsOnSpec() {
-  return z
-    .array(z.string().min(1).max(300))
-    .max(24)
-    .optional()
-    .describe(
-      'P-007 freshness: what this checkpoint is derived FROM, as `kind:ref` tags — ' +
-        `supported kinds: ${SUPPORTED_DEP_KINDS.join(', ')} ` +
-        '(e.g. "file:packages/operator-core/lib/x.ts", "work-item:WI-6198", "plan:my-plan-slug"). ' +
-        'Each is resolved to a version token and stamped NOW, so a later reader is told WHICH dependency ' +
-        "moved instead of guessing from the checkpoint's age. Declaring them makes an OLD checkpoint " +
-        'readable as fresh when nothing moved, and — the case no age threshold can catch — a SECONDS-OLD ' +
-        'one as stale when a PEER changed a file it depends on. Omit to keep the previous declaration; ' +
-        'pass [] to clear it.',
-    );
-}
+// P-007/D-013: the declared-dependency arg, shared by the single shorthand and
+// `items[]` — and, since EI-19470389781357111, by `loop:checkpoint` too. The spec
+// lives in `freshness/tool-schema` so the supported-kinds list has ONE author (the
+// resolver registry) rather than a prose copy per tool.
 
 /**
  * EI-19298690705878336: the verified-vs-asserted marking, reused from the SAME
