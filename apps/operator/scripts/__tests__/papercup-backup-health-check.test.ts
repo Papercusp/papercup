@@ -23,6 +23,8 @@ describe('papercup-backup-health-check.sh', () => {
       maxBuffer: 1024 * 1024,
     });
     expect(output).toContain('post disk-headroom block');
+    expect(output).toContain('stale stats do not create a false TOAST-bloat alarm');
+    expect(output).toContain('persisted row estimate still flags genuine TOAST bloat');
     // WI-2145430: the self-test asserts that no probe path it exercised made
     // the SHELL itself complain. Anchored here so deleting that block from the
     // script fails this test instead of silently removing the only coverage of
