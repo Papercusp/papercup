@@ -208,10 +208,7 @@ function perUseTerms(value: unknown): PerUseOfferTerms | null {
   if (!Number.isSafeInteger(terms.unitPriceMicros) || (terms.unitPriceMicros as number) <= 0) return null;
   if (typeof terms.meterUnit !== 'string' || !terms.meterUnit.trim()) return null;
   if (typeof terms.priceVersion !== 'string' || !terms.priceVersion.trim()) return null;
-  if (
-    typeof terms.splitManifestHash !== 'string' ||
-    !SPLIT_MANIFEST_HASH_RE.test(terms.splitManifestHash)
-  ) {
+  if (typeof terms.splitManifestHash !== 'string' || !SPLIT_MANIFEST_HASH_RE.test(terms.splitManifestHash)) {
     return null;
   }
   return {
@@ -300,7 +297,8 @@ function applyEvent(state: LedgerState, event: LedgerEvent): ApplyResult {
         return {
           ok: false,
           code: 'invalid-event',
-          detail: 'a per-use offer needs positive unitPriceMicros, meterUnit, priceVersion, and a sha256 splitManifestHash',
+          detail:
+            'a per-use offer needs positive unitPriceMicros, meterUnit, priceVersion, and a sha256 splitManifestHash',
         };
       }
       if (pricingModel !== 'per-use' && p.perUse != null) {
