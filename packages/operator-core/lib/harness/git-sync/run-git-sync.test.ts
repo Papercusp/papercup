@@ -57,6 +57,8 @@ import {
 } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import { requireHiveEffectAuthority } from '../../sync/pot-git/hive-effect-authority';
 
 /** A test content detector that quarantines any matched file whose text contains BROKEN. */
 const brokenDetector: ContentDetector = {
@@ -1022,7 +1024,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
-  it('EI-20349517520985072: retries GitHub SSH publickey failures once through configured HTTPS credentials', async () => {
+  it.each([false, true])('F6/EI-20349517520985072: HTTPS fallback reauthorizes its push (revoked=%s)', async (revoked) => {
     writeFileSync(join(repo, 'https-fallback.txt'), 'credential-plane fallback\n');
     const rewrite = 'url.https://github.com/.insteadOf=git@github.com:';
     const calls: string[][] = [];
@@ -1045,16 +1047,29 @@ describe('runGitSync (real git, no submodule)', () => {
       return realRunGit(args, cwd);
     };
 
-    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+    const beforePush = vi.fn(async (args: readonly string[]) => {
+      if (revoked && args[0] === '-c') throw new Error('owner key no longer available');
+    });
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg, beforePush });
 
-    expect(out.status).toBe('synced');
-    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(beforePush.mock.calls.map(([args]) => args)).toEqual([
+      ['push', 'origin', 'HEAD:main'],
+      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+    ]);
     expect(failedOnce).toEqual(new Set(['fetch', 'push']));
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'fetch', 'origin', 'main'],
-      ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
+      ...(!revoked ? [['-c', rewrite, 'push', 'origin', 'HEAD:main']] : []),
     ]);
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('https-fallback.txt');
+    if (revoked) {
+      expect(out.status).toBe('error');
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('https-fallback.txt');
+      expect(git(repo, 'ls-tree', '-r', '--name-only', 'HEAD')).toContain('https-fallback.txt');
+    } else {
+      expect(out.status).toBe('synced');
+      if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+      expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('https-fallback.txt');
+    }
   });
 
   it('WI-2144358: retries an unresolved GitHub SSH account alias through configured HTTPS credentials', async () => {
@@ -2238,6 +2253,65 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // the local superproject DOES have the pointer bump + local commit (commit-only, not skipped)
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
     });
+  });
+
+  it.each(['missing', 'device', 'owner'] as const)('F6: independent submodule publication requires the owner key (%s)', async (signer) => {
+    const subRepo = join(repo, 'libs/sub');
+    const remoteBefore = git(subOrigin, 'rev-parse', 'main');
+    const owner = generateEd25519KeypairDer();
+    const device = generateEd25519KeypairDer();
+    const scope = { hive_id: owner.pubkeyBase64, repo_key: 'parent-repo' };
+    const beforePush = vi.fn(async (args: readonly string[], cwd: string) => {
+      await requireHiveEffectAuthority(signer === 'missing' ? null : {
+        ...scope,
+        sign: async bytes => signWithPrivateKeyDer(signer === 'owner' ? owner.privateKeyDer : device.privateKeyDer, bytes),
+      }, scope, ['git-sync-push', cwd, ...args]);
+    });
+    writeFileSync(join(subRepo, 'owner-fenced.txt'), 'local work survives refusal\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo, runGit: directRunGit,
+      config: { push: false, pushSubmoduleOrigins: true }, beforePush,
+    });
+
+    expect(beforePush).toHaveBeenCalledWith(['push', 'origin', 'HEAD:main'], subRepo);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).not.toBe(remoteBefore);
+    expect(git(subRepo, 'status', '--porcelain')).toBe('');
+    if (signer === 'owner') {
+      expect(out.status).toBe('synced');
+      expect(git(subOrigin, 'rev-parse', 'main')).toBe(git(subRepo, 'rev-parse', 'HEAD'));
+    } else {
+      expect(out.status).toBe('error');
+      if (out.status === 'error') expect(out.errors.map(e => e.message).join('\n')).toContain('owning hive key');
+      expect(git(subOrigin, 'rev-parse', 'main')).toBe(remoteBefore);
+    }
+    expect(git(superOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
+  });
+
+  it('F6: submodule non-fast-forward retry reauthorizes before another push', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    const remoteBefore = git(subOrigin, 'rev-parse', 'main');
+    let pushes = 0;
+    const beforePush = vi.fn(async () => {
+      if (beforePush.mock.calls.length > 1) throw new Error('owner key no longer available');
+    });
+    const runGit: RunGit = async (args, cwd) => {
+      if (args[0] === 'push') {
+        pushes++;
+        return { code: 1, stdout: '', stderr: '! [rejected] main -> main (non-fast-forward)' };
+      }
+      return directRunGit(args, cwd);
+    };
+    writeFileSync(join(subRepo, 'retry-fenced.txt'), 'preserved\n');
+    const out = await runGitSync('test', {
+      repoPath: repo, runGit, beforePush,
+      config: { push: false, pushSubmoduleOrigins: true },
+    });
+    expect(out.status).toBe('error');
+    expect(beforePush).toHaveBeenCalledTimes(2);
+    expect(pushes).toBe(1);
+    expect(git(subOrigin, 'rev-parse', 'main')).toBe(remoteBefore);
+    expect(git(subRepo, 'rev-parse', 'HEAD')).not.toBe(remoteBefore);
   });
 
   it('EI-18689553108460319: `pushSubmoduleOrigins: false` opts a submodule back OUT of pushing too (explicit override still honored)', () => {
