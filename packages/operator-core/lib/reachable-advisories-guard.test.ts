@@ -390,6 +390,76 @@ describe('reachable-advisory gate: derived fix feasibility', () => {
       expect(got.get('langsmith')).toEqual(['0.3.87', '0.8.7']);
     });
 
+    it('walks a workspace that npm ls ALSO emits as a bare dedupe stub elsewhere', () => {
+      // MEASURED IN THIS REPO 2026-09-05. `npm ls --omit=dev --all --json` emits a
+      // workspace in TWO forms: a bare dedupe STUB ({ version } only — no `resolved`,
+      // no `dependencies`) under every workspace that depends on it, and ONCE in full
+      // ({ version, resolved, dependencies }). Object key order decides which is met
+      // first, and here the stub is.
+      //
+      // A cycle guard keyed on name@version therefore marks `@papercusp/testing-shell
+      // @0.0.1` seen on a stub that contributes NOTHING, then skips the POPULATED
+      // occurrence and drops that workspace's whole production subtree. That is not a
+      // pathological cycle — it is the ordinary shape of a monorepo whose workspaces
+      // depend on each other.
+      //
+      // It fails OPEN: langsmith 0.3.87 (vulnerable, nested under stagehand) lived in
+      // exactly that dropped subtree, so the gate collected only the hoisted 0.8.7 and
+      // reported "no installed copy satisfies the vulnerable range" — which reads as
+      // reassurance. The pre-existing nested-copy test above does NOT catch this,
+      // because its nested copy sits on a path with no previously-seen ancestor.
+      const ls = {
+        dependencies: {
+          '@papercusp/operator-vite': {
+            version: '0.0.1',
+            resolved: 'file:apps/operator-vite',
+            // The dedupe stub — met first, carries no dependencies of its own.
+            dependencies: { '@papercusp/testing-shell': { version: '0.0.1' } },
+          },
+          '@papercusp/testing-shell': {
+            version: '0.0.1',
+            resolved: 'file:libs/testing-shell',
+            dependencies: {
+              stagehand: { version: '3.4.0', dependencies: { langsmith: { version: '0.3.87' } } },
+            },
+          },
+          '@papercusp/web': {
+            version: '0.0.1',
+            resolved: 'file:apps/web',
+            dependencies: { langsmith: { version: '0.8.7' } },
+          },
+        },
+      };
+      expect(collectInstalledVersions(ls, ['langsmith']).get('langsmith')).toEqual([
+        '0.3.87',
+        '0.8.7',
+      ]);
+    });
+
+    it('still collects from a stub-shadowed subtree when the stub is met LAST', () => {
+      // Calibration control for the case above: same graph, opposite key order, so the
+      // populated node is met first. This one passes even with the defective guard —
+      // it is here so a future reader can tell that the failing case above is about
+      // ENCOUNTER ORDER, not about stubs existing at all.
+      const ls = {
+        dependencies: {
+          '@papercusp/testing-shell': {
+            version: '0.0.1',
+            resolved: 'file:libs/testing-shell',
+            dependencies: {
+              stagehand: { version: '3.4.0', dependencies: { langsmith: { version: '0.3.87' } } },
+            },
+          },
+          '@papercusp/operator-vite': {
+            version: '0.0.1',
+            resolved: 'file:apps/operator-vite',
+            dependencies: { '@papercusp/testing-shell': { version: '0.0.1' } },
+          },
+        },
+      };
+      expect(collectInstalledVersions(ls, ['langsmith']).get('langsmith')).toEqual(['0.3.87']);
+    });
+
     it('terminates on a cyclic dependency graph', () => {
       const a: Record<string, unknown> = { version: '1.0.0' };
       const b = { version: '2.0.0', dependencies: { a } };
