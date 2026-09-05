@@ -106,8 +106,11 @@ describe('GET/PUT /harness/:slug/file', () => {
   });
 
   it('rejects a final symlink whose target escapes the project root', async () => {
-    const project = await makeProject([{ path: 'config.json' }], { 'outside/config.json': 'secret' });
-    await symlink(join(project, 'outside', 'config.json'), join(project, 'config.json'));
+    const project = await makeProject([{ path: 'config.json' }]);
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'papercusp-outside-'));
+    roots.push(outsideRoot);
+    await writeFile(join(outsideRoot, 'config.json'), 'secret');
+    await symlink(join(outsideRoot, 'config.json'), join(project, 'config.json'));
 
     await expect(get('config.json')).resolves.toMatchObject({
       status: 403,
@@ -117,12 +120,15 @@ describe('GET/PUT /harness/:slug/file', () => {
       status: 403,
       body: { error: 'path_escape' },
     });
-    await expect(readFile(join(project, 'outside', 'config.json'), 'utf8')).resolves.toBe('secret');
+    await expect(readFile(join(outsideRoot, 'config.json'), 'utf8')).resolves.toBe('secret');
   });
 
   it('rejects a parent symlink whose target escapes the project root', async () => {
-    const project = await makeProject([{ path: 'nested/config.json' }], { 'outside/config.json': 'secret' });
-    await symlink(join(project, 'outside'), join(project, 'nested'));
+    const project = await makeProject([{ path: 'nested/config.json' }]);
+    const outsideRoot = await mkdtemp(join(tmpdir(), 'papercusp-outside-'));
+    roots.push(outsideRoot);
+    await writeFile(join(outsideRoot, 'config.json'), 'secret');
+    await symlink(outsideRoot, join(project, 'nested'));
 
     await expect(get('nested/config.json')).resolves.toMatchObject({
       status: 403,
@@ -132,7 +138,7 @@ describe('GET/PUT /harness/:slug/file', () => {
       status: 403,
       body: { error: 'path_escape' },
     });
-    await expect(readFile(join(project, 'outside', 'config.json'), 'utf8')).resolves.toBe('secret');
+    await expect(readFile(join(outsideRoot, 'config.json'), 'utf8')).resolves.toBe('secret');
   });
 
   it('allows a parent symlink that resolves inside the project root', async () => {
