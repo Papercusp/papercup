@@ -144,6 +144,36 @@ EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template)
 mkdir -p "$DUMP" "$(dirname "$LOCK")"
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
 
+# ── The dump directory OWNS its .kopiaignore ────────────────────────────────
+# This script writes each dump to <db>.tmp (mode 0700 postgres) and renames it
+# into place only after chown+validate. A kopia sweep that walks a .tmp catches
+# a half-written dump — never the backup of record, and on a ~90G database that
+# is a large pointless upload into a repo living on a 96%-full volume.
+#
+# The rule existed. It lived ONLY as an untracked .kopiaignore sitting in the
+# dump directory, owned by nobody — so when WI-2145150 relocated the dumps to
+# /mnt/backup/db-dumps the file did not travel, and the protection silently
+# ceased to exist. That is the SAME failure shape as this work-item's other two
+# defects: state kept outside the tree does not survive a move, and its absence
+# raises no error anywhere. The durable answer is not to re-place the file by
+# hand at the new path — it is to make the producer provision it, so the rule
+# arrives wherever the dumps do, including the next relocation.
+#
+# Idempotent and non-clobbering: create it when absent, otherwise only ensure
+# the *.tmp rule is present. Operators legitimately add their own exclusions
+# here (the tier-dump exclusions, for one), and this must never eat them.
+if [ ! -f "$DUMP/.kopiaignore" ]; then
+  printf '%s\n' \
+    '# In-progress dumps: <db>.tmp is mode 0700 postgres and is renamed into' \
+    '# place only after validation. Never the backup of record. Provisioned by' \
+    '# papercusp-db-backup.sh (WI-2146225) so it travels with the dump dir.' \
+    '*.tmp' > "$DUMP/.kopiaignore"
+  log ".kopiaignore provisioned at $DUMP (was missing)"
+elif ! grep -qxF '*.tmp' "$DUMP/.kopiaignore"; then
+  printf '%s\n' '*.tmp' >> "$DUMP/.kopiaignore"
+  log ".kopiaignore at $DUMP was missing the *.tmp rule — appended"
+fi
+
 # Single instance. A backup still running when the next timer fires must not be
 # joined by a second one (that is WI-3550's overlap failure, on a bigger job).
 exec 9>"$LOCK"

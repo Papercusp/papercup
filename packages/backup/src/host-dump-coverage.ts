@@ -50,7 +50,12 @@ import { join } from 'node:path';
  * the pair cannot drift into a silent no-skip.
  */
 export const HOST_PG_DUMP_DIR_ENV = 'PAPERCUSP_HOST_PG_DUMP_DIR';
-export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/data/Backup/db-dumps';
+// Moved off /mnt/data/Backup/db-dumps on 2026-09-05 (WI-2146225) in lockstep
+// with the shell default — see the note in papercusp-db-backup.sh. The old
+// value pointed at a directory the 2026-09-05 relocation abandoned, so a reader
+// that fell back to it found a STATUS.json frozen at the relocation instant and
+// concluded coverage from a receipt that had stopped being written.
+export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/backup/db-dumps';
 
 /**
  * How recent the host dump must be for the hook to stand down.
