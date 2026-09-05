@@ -77,6 +77,16 @@ describe('buildRespawnLaunchSpec — assembly', () => {
     expect(spec.systemPromptAddendum).toContain('Self-recall');
   });
 
+  it('carries same-session retracted continuation refs into the launch spec', () => {
+    const spec = buildRespawnLaunchSpec({
+      doc: doc(NO_OWNER, { retractedContinuationRefs: ['EI-20191442676357637'] }),
+      effectiveWindowTokens: 400_000,
+      now: NOW,
+    });
+    expect(spec.retractedContinuationRefs).toEqual(['EI-20191442676357637']);
+    expect(spec.systemPromptAddendum).toContain('Retraction guard');
+  });
+
   it('holds the addendum within the constant budget B (aging ladder fit)', () => {
     // A tail-heavy doc against the smallest budget still fits.
     const bigTail = doc(NO_OWNER, {

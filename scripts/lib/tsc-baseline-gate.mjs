@@ -2543,6 +2543,19 @@ export function formatLintTscRunStamp({ label, runStartIso, headSha, scope, file
 /** Where the standing-verdict marker lives, relative to the repo root. */
 export const LINT_TSC_RUN_MARKER_REL = '.papercusp/scratch/lint-tsc-last-run.json';
 
+const LINT_TSC_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * Return the session-owned marker path, or null when this process has no safe
+ * Papercusp session identity. Never fall back to the historical repo-wide
+ * marker: that would let one agent overwrite another agent's standing verdict.
+ */
+function lintTscRunMarkerRelForSession(sessionId) {
+  const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!LINT_TSC_SESSION_ID_PATTERN.test(normalized)) return null;
+  return `.papercusp/scratch/lint-tsc-last-run.${normalized}.json`;
+}
+
 /**
  * Persist the same run stamp to disk (EI-19421388108187854).
  *
@@ -2564,12 +2577,23 @@ export const LINT_TSC_RUN_MARKER_REL = '.papercusp/scratch/lint-tsc-last-run.jso
  * quoted as clean. Best-effort by construction: a marker is an advisory input
  * to a nudge, so failing to write one must never fail the typecheck itself.
  *
- * @param {{ root: string, label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null }} input
+ * @param {{ root: string, label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null, sessionId?: string|null }} input
  * @returns {boolean} true iff the marker was written
  */
-export function writeLintTscRunMarker({ root, label, runStartIso, headSha, scope, files }) {
+export function writeLintTscRunMarker({
+  root,
+  label,
+  runStartIso,
+  headSha,
+  scope,
+  files,
+  sessionId = process.env.PAPERCUSP_SID,
+}) {
+  const markerRel = lintTscRunMarkerRelForSession(sessionId);
+  if (!markerRel) return false;
+
   try {
-    const target = resolve(root, LINT_TSC_RUN_MARKER_REL);
+    const target = resolve(root, markerRel);
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(
       target,

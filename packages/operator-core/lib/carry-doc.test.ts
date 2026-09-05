@@ -21,6 +21,8 @@ import {
   CARRY_DOC_MAX_TAIL_TURNS,
   CARRY_DOC_MAX_PLAN_ITEMS,
   flagAsksAgainstFacts,
+  detectRetractedContinuationRefs,
+  renderRetractionGuard,
   renderBuiltAtStamp,
   type CarryDoc,
   type CarryDocPlanItem,
@@ -357,6 +359,53 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('same-session retracted continuation guard (EI-22416629442936687)', () => {
+  const machineContinuation: CarryDocTailTurn = {
+    speaker: 'user',
+    text: 'Continue the ship path for EI-20191442676357637.',
+    ts: '2026-09-05T10:15:31.000Z',
+    provenance: { verdict: 'agent-injected', origin: 'self-compaction' },
+  };
+  const withdrawal: CarryDocTailTurn = {
+    speaker: 'assistant',
+    text: 'Stop — the carry handed me another agents live work. I will not take over covered work.',
+    ts: '2026-09-05T10:16:53.000Z',
+    provenance: null,
+  };
+
+  it('records ids from a withdrawn machine continuation, including prose-only withdrawals', () => {
+    expect(detectRetractedContinuationRefs([machineContinuation, withdrawal])).toEqual([
+      'EI-20191442676357637',
+    ]);
+    expect(detectRetractedContinuationRefs([{ speaker: 'assistant', text: 'I corrected EI-7', ts: null }])).toEqual([
+      'EI-7',
+    ]);
+  });
+
+  it('renders a high-priority guard that makes the tail non-operative', () => {
+    const guard = renderRetractionGuard(['EI-20191442676357637']);
+    expect(guard).toContain('RETRACTED CONTINUATION DIRECTIVE');
+    expect(guard).toContain('Do NOT reissue, claim, or act');
+    expect(renderRetractionGuard([])).toBe('');
+  });
+
+  it('carries the guard into the deterministic addendum before the verbatim tail', async () => {
+    const built = await buildCarryDoc('su-1', {
+      workspaceId: 'ws-1',
+      harness: 'papercusp',
+      ownerLabel: 'su · su-1',
+      buildCarryBriefFn: async () => brief(),
+      buildAutomaticRecoveryFn: async () => automaticRecovery(),
+      getModesFn: async () => [],
+      getPlanItemsFn: async () => [],
+      getTailFn: async () => [machineContinuation, withdrawal],
+    });
+    expect(built.retractedContinuationRefs).toEqual(['EI-20191442676357637']);
+    const text = renderCarryDoc(built, NOW);
+    expect(text.indexOf('Retraction guard')).toBeLessThan(text.indexOf('Verbatim tail'));
   });
 });
 

@@ -59,12 +59,21 @@ describe('acquireSessionTaskLock', () => {
     const sql = vi.fn();
     await acquireSessionTaskLock(sql as never, 'ws-1', 'session-1');
     expect(sql).toHaveBeenCalledTimes(1);
-    expect(sql.mock.calls[0]?.[1]).toBe('ws-1\u0000session-1');
+    expect(sql.mock.calls[0]?.[1]).toBe(JSON.stringify(['ws-1', 'session-1']));
+    expect(sql.mock.calls[0]?.[1]).not.toContain('\u0000');
     expect((sql.mock.calls[0]?.[0] as unknown as string[]).join('')).toContain('981');
 
     await expect(acquireSessionTaskLock(sql as never, ' ', 'session-1')).rejects.toMatchObject({
       code: 'workspace_id_required',
     });
+  });
+
+  it('escapes control characters in the composite lock key instead of sending NUL to PostgreSQL', async () => {
+    const sql = vi.fn();
+    await acquireSessionTaskLock(sql as never, 'ws-\u0000-1', 'session-1');
+
+    expect(sql.mock.calls[0]?.[1]).toBe(JSON.stringify(['ws-\u0000-1', 'session-1']));
+    expect(sql.mock.calls[0]?.[1]).not.toContain('\u0000');
   });
 });
 

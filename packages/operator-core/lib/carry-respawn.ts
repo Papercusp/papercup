@@ -72,6 +72,8 @@ export interface RespawnLaunchSpec {
    * net is exactly `firstPrompt` above — the message is carried, not lost).
    */
   openOwnerQuestion: OpenOwnerQuestionGate;
+  /** Work-item ids withdrawn from a preceding machine continuation in the tail. */
+  retractedContinuationRefs?: string[];
   /**
    * Number of still-open questions asked by this session. This is deliberately
    * separate from `openOwnerQuestion.crossesOpenOwnerMessage`: the P-010 gate
@@ -135,7 +137,14 @@ export function buildRespawnLaunchSpec(input: BuildRespawnLaunchSpecInput): Resp
 
   const firstPrompt = deriveRespawnFirstPrompt(doc, autoMode, plan);
 
-  return { systemPromptAddendum, firstPrompt, budgetChars, openOwnerQuestion, openOwnerAskCount };
+  return {
+    systemPromptAddendum,
+    firstPrompt,
+    budgetChars,
+    openOwnerQuestion,
+    openOwnerAskCount,
+    retractedContinuationRefs: doc.retractedContinuationRefs ?? [],
+  };
 }
 
 /**

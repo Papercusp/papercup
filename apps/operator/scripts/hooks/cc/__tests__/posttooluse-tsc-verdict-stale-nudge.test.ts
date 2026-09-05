@@ -33,11 +33,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = resolve(HERE, '..', 'posttooluse-tsc-verdict-stale-nudge.mjs');
 
 /** Run the hook with a PostToolUse payload; returns its stdout (empty === silent). */
-function runHook(filePath: string, cwd: string): string {
+function runHook(filePath: string, cwd: string, sessionId: string | null = 'session-a'): string {
   return execFileSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: filePath } }),
     encoding: 'utf-8',
     cwd,
+    env: { ...process.env, PAPERCUSP_SID: sessionId ?? '' },
   });
 }
 
@@ -60,13 +61,16 @@ describe('posttooluse-tsc-verdict-stale-nudge', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
-  const writeMarker = (atMs: number, files: string[] | null) =>
+  const markerPath = (sessionId: string) =>
+    join(repo, '.papercusp', 'scratch', `lint-tsc-last-run.${sessionId}.json`);
+  const ledgerPath = (sessionId: string) =>
+    join(repo, '.papercusp', 'scratch', `lint-tsc-stale-nudge.${sessionId}.json`);
+  const writeMarker = (sessionId: string, atMs: number, files: string[] | null) =>
     writeFileSync(
-      join(repo, '.papercusp', 'scratch', 'lint-tsc-last-run.json'),
+      markerPath(sessionId),
       JSON.stringify({ label: 'operator-core', at: new Date(atMs).toISOString(), atMs, scope: 'files', files }),
     );
-  const clearLedger = () =>
-    rmSync(join(repo, '.papercusp', 'scratch', 'lint-tsc-stale-nudge.json'), { force: true });
+  const clearLedger = (sessionId: string) => rmSync(ledgerPath(sessionId), { force: true });
 
   it('1. --self-test passes', () => {
     const out = execFileSync(process.execPath, [HOOK, '--self-test'], { encoding: 'utf-8' });
@@ -102,9 +106,9 @@ describe('posttooluse-tsc-verdict-stale-nudge', () => {
   });
 
   it('3. FIRES on a TS file edited after a standing verdict, naming the union re-run set', () => {
-    clearLedger();
-    writeMarker(Date.now() - 60_000, ['src/other.ts']);
-    const out = runHook(srcFile, repo);
+    clearLedger('session-a');
+    writeMarker('session-a', Date.now() - 60_000, ['src/other.ts']);
+    const out = runHook(srcFile, repo, 'session-a');
     expect(out).toContain('STALE TYPECHECK VERDICT');
     // The re-run command must name BOTH the previously-covered file and the new
     // one — naming only the new file would bank the same partial verdict again.
@@ -112,29 +116,56 @@ describe('posttooluse-tsc-verdict-stale-nudge', () => {
   });
 
   it('4. fires at most ONCE per file per verdict', () => {
-    clearLedger();
-    writeMarker(Date.now() - 60_000, ['src/other.ts']);
-    expect(runHook(srcFile, repo)).toContain('STALE TYPECHECK VERDICT');
-    expect(runHook(srcFile, repo)).toBe('');
+    clearLedger('session-a');
+    writeMarker('session-a', Date.now() - 60_000, ['src/other.ts']);
+    expect(runHook(srcFile, repo, 'session-a')).toContain('STALE TYPECHECK VERDICT');
+    expect(runHook(srcFile, repo, 'session-a')).toBe('');
   });
 
   it('5. SILENT when no verdict is standing (the common case must not nag)', () => {
-    clearLedger();
-    rmSync(join(repo, '.papercusp', 'scratch', 'lint-tsc-last-run.json'), { force: true });
-    expect(runHook(srcFile, repo)).toBe('');
+    clearLedger('session-a');
+    rmSync(markerPath('session-a'), { force: true });
+    // A legacy repo-wide marker must not become a cross-session fallback.
+    writeFileSync(
+      join(repo, '.papercusp', 'scratch', 'lint-tsc-last-run.json'),
+      JSON.stringify({ atMs: Date.now() - 60_000, scope: 'files', files: ['src/peer.ts'] }),
+    );
+    expect(runHook(srcFile, repo, 'session-a')).toBe('');
   });
 
   it('6. SILENT on a non-typechecked file', () => {
-    clearLedger();
-    writeMarker(Date.now() - 60_000, ['src/other.ts']);
+    clearLedger('session-a');
+    writeMarker('session-a', Date.now() - 60_000, ['src/other.ts']);
     const md = join(repo, 'src', 'notes.md');
     writeFileSync(md, '# notes\n');
-    expect(runHook(md, repo)).toBe('');
+    expect(runHook(md, repo, 'session-a')).toBe('');
   });
 
   it('7. SILENT when the standing verdict is older than the live window', () => {
-    clearLedger();
-    writeMarker(Date.now() - 13 * 60 * 60 * 1000, ['src/other.ts']);
-    expect(runHook(srcFile, repo)).toBe('');
+    clearLedger('session-a');
+    writeMarker('session-a', Date.now() - 13 * 60 * 60 * 1000, ['src/other.ts']);
+    expect(runHook(srcFile, repo, 'session-a')).toBe('');
+  });
+
+  it('8. isolates the marker and ledger from a peer session', () => {
+    clearLedger('session-a');
+    clearLedger('session-b');
+    writeMarker('session-a', Date.now() - 60_000, ['src/own.ts']);
+    writeMarker('session-b', Date.now() - 1_000, ['src/peer.ts']);
+
+    const own = runHook(srcFile, repo, 'session-a');
+    expect(own).toContain('--files=src/own.ts,src/a.test.ts');
+    expect(own).not.toContain('src/peer.ts');
+
+    const peer = runHook(srcFile, repo, 'session-b');
+    expect(peer).toContain('--files=src/peer.ts,src/a.test.ts');
+  });
+
+  it('9. SILENT without PAPERCUSP_SID even when an unscoped marker exists', () => {
+    writeFileSync(
+      join(repo, '.papercusp', 'scratch', 'lint-tsc-last-run.json'),
+      JSON.stringify({ atMs: Date.now() - 60_000, scope: 'files', files: ['src/peer.ts'] }),
+    );
+    expect(runHook(srcFile, repo, null)).toBe('');
   });
 });

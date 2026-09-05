@@ -1186,16 +1186,17 @@ export function formatLintTscRunStamp({ label, runStartIso, headSha, scope, file
  * quoted as clean. Best-effort by construction: a marker is an advisory input
  * to a nudge, so failing to write one must never fail the typecheck itself.
  *
- * @param {{ root: string, label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null }} input
+ * @param {{ root: string, label: string, runStartIso: string, headSha: string|null, scope: string, files: string[]|null, sessionId?: string|null }} input
  * @returns {boolean} true iff the marker was written
  */
-export function writeLintTscRunMarker({ root, label, runStartIso, headSha, scope, files }: {
+export function writeLintTscRunMarker({ root, label, runStartIso, headSha, scope, files, sessionId, }: {
     root: string;
     label: string;
     runStartIso: string;
     headSha: string | null;
     scope: string;
     files: string[] | null;
+    sessionId?: string | null;
 }): boolean;
 /** Short HEAD sha at call time, or null when git cannot answer (never a fabricated value). */
 export function gitHeadShaForLintTsc(root: any): string | null;

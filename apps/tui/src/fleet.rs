@@ -184,6 +184,10 @@ pub struct FleetControlIntent {
     pub fleet: String,
     pub member: String,
     pub member_label: String,
+    /// The selected member's current CLI backend. A same-backend value is the
+    /// explicit boot-setting delta `fleet:respawn-member` requires while still
+    /// preserving model/account/carry and every other saved launch field.
+    pub agent: Option<String>,
     pub gate: Option<String>,
 }
 
@@ -550,7 +554,11 @@ fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
     }
     if let Some(intent) = app.fleet.control_running.as_ref() {
         let line = Line::from(Span::styled(
-            format!(" … running {} via {} ", intent.describe(), intent.kind.verb()),
+            format!(
+                " … running {} via {} ",
+                intent.describe(),
+                intent.kind.verb()
+            ),
             Theme::warn(),
         ));
         f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
@@ -2814,6 +2822,69 @@ mod tests {
         app.bee.set_selection(Some("su-leader".into()), None);
         let leader_view = render_fleet(&app, 120, 24);
         assert!(leader_view.contains("leader members"));
+    }
+
+    #[test]
+    fn cockpit_controls_follow_roster_target_and_render_confirmation_and_outcome() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+
+        let mut leader = roster_entry("su-leader", false);
+        leader.fleet_slug = Some("cockpit".into());
+        leader.fleet_role = Some("leader".into());
+        leader.session_state = Some("live".into());
+        let mut member = roster_entry("su-member", false);
+        member.fleet_slug = Some("cockpit".into());
+        member.fleet_role = Some("member".into());
+        member.session_state = Some("parked".into());
+        app.set_roster(vec![leader, member]);
+        app.fleet.leader_brief = Some(crate::models::FleetLeaderBrief {
+            ok: true,
+            summary: crate::models::FleetLeaderSummary {
+                fleet: "cockpit".into(),
+                ..Default::default()
+            },
+            announced_gates: Some(vec![crate::models::FleetLeaderGate {
+                event: "fleet:cockpit:ready".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        app.fleet.agent_sel = app
+            .visible_roster()
+            .iter()
+            .position(|row| row.owner_id == "su-member")
+            .unwrap();
+
+        let (_, brief) = control_target(&app).expect("same-fleet member is actionable");
+        assert_eq!(
+            first_unfired_gate(brief).unwrap().event,
+            "fleet:cockpit:ready"
+        );
+        let controls = render_fleet(&app, 220, 32);
+        assert!(controls.contains("[b] bench"));
+        assert!(controls.contains("[s] bump spec"));
+
+        app.fleet.control_pending = Some(FleetControlIntent {
+            kind: FleetControlKind::Bench,
+            fleet: "cockpit".into(),
+            member: "su-member".into(),
+            member_label: "worker lane".into(),
+            agent: Some("codex".into()),
+            gate: Some("fleet:cockpit:ready".into()),
+        });
+        let confirmation = render_fleet(&app, 220, 32);
+        assert!(confirmation.contains("CONFIRM bench worker lane until fleet:cockpit:ready"));
+        assert!(confirmation.contains("[y] execute · [n/Esc] cancel"));
+
+        app.fleet.control_pending = None;
+        app.fleet.control_outcome = Some(FleetControlOutcome {
+            ok: true,
+            message: "fleet:bench audited · registered true · lane gated".into(),
+        });
+        let outcome = render_fleet(&app, 220, 32);
+        assert!(outcome.contains("fleet:bench audited"));
     }
 
     #[test]

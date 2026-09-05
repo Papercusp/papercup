@@ -55,8 +55,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 
-const MARKER_REL = join('.papercusp', 'scratch', 'lint-tsc-last-run.json');
-const LEDGER_REL = join('.papercusp', 'scratch', 'lint-tsc-stale-nudge.json');
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function sessionScopedScratchRel(baseName, sessionId = process.env.PAPERCUSP_SID) {
+  const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!SESSION_ID_PATTERN.test(normalized)) return null;
+  return join('.papercusp', 'scratch', `${baseName}.${normalized}.json`);
+}
 
 /** Extensions `tsc` actually compiles. A .js/.mjs edit cannot break a type. */
 const TS_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts'];
@@ -212,8 +217,15 @@ async function main() {
     const root = repoRootFor(filePath);
     if (!root) process.exit(0);
 
-    const markerPath = resolve(root, MARKER_REL);
-    const ledgerPath = resolve(root, LEDGER_REL);
+    const markerRel = sessionScopedScratchRel('lint-tsc-last-run');
+    const ledgerRel = sessionScopedScratchRel('lint-tsc-stale-nudge');
+    // A plain/non-Papercusp process has no session-owned verdict. Never fall
+    // back to the old repo-wide files: doing so reintroduces cross-agent
+    // overwrites and lets a peer's run silence this session's warning.
+    if (!markerRel || !ledgerRel) process.exit(0);
+
+    const markerPath = resolve(root, markerRel);
+    const ledgerPath = resolve(root, ledgerRel);
 
     const msg = staleVerdictNudge({
       filePath,
@@ -325,6 +337,15 @@ async function selfTest() {
     'handles a whole-project verdict with no explicit file list',
     staleVerdictNudge({ ...base, readMarker: () => ({ atMs: NOW - 60_000, scope: 'all', files: null }) }) !==
       null,
+  );
+  check(
+    'uses a session-owned marker path',
+    sessionScopedScratchRel('lint-tsc-last-run', 'agent-a') ===
+      join('.papercusp', 'scratch', 'lint-tsc-last-run.agent-a.json'),
+  );
+  check(
+    'does not fall back to an unscoped marker without a session id',
+    sessionScopedScratchRel('lint-tsc-last-run', '') === null,
   );
   check(
     'a malformed marker is treated as no verdict, not as a stale one',

@@ -446,6 +446,20 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(payload.replace(ADDRESS_PREFIX, '')).toBe('resume: do the thing');
   });
 
+  it('replaces a first-prompt hint that repeats a same-session retracted continuation', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      retractedContinuationRefs: ['EI-20191442676357637'],
+    });
+    await call({ focus: 'Resume the ship path for EI-20191442676357637 and execute it now.' });
+    const payload = injected().data.replace(ENVELOPE_LINE, '');
+    expect(payload).toContain('RETRACTED CONTINUATION DIRECTIVE');
+    expect(payload).toContain('EI-20191442676357637');
+    expect(payload).toContain('Re-orient from the automatically delivered carry document');
+    expect(payload).not.toContain('execute it now');
+  });
+
   it('autoContinue is a wire-compat no-op: passing false still respawns (a carry-respawn always resumes)', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'x', autoContinue: false }));

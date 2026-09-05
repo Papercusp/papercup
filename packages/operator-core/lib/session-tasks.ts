@@ -158,6 +158,13 @@ function present(value: string | undefined, field: string, max: number): string 
   return trimmed;
 }
 
+function sessionTaskLockKey(workspaceId: string, sessionId: string): string {
+  // PostgreSQL text parameters cannot contain NUL bytes. JSON string escaping
+  // gives the pair an unambiguous composite representation without embedding
+  // the NUL separator that this lock key previously used.
+  return JSON.stringify([workspaceId, sessionId]);
+}
+
 function optionalText(value: string | undefined, field: string, max: number): string | null {
   if (value === undefined) return null;
   return present(value, field, max);
@@ -615,7 +622,7 @@ export async function acquireSessionTaskLock(
 ): Promise<void> {
   const workspaceId = present(workspaceIdValue, 'workspace_id', 240);
   const sessionId = present(sessionIdValue, 'session_id', 240);
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${workspaceId + '\u0000' + sessionId}, 981))`;
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${sessionTaskLockKey(workspaceId, sessionId)}, 981))`;
 }
 
 export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArgs): Promise<SessionTaskResult> {
