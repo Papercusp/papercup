@@ -34,6 +34,11 @@ import {
   GITNEXUS_LBUG_MAX_DB_BYTES,
   GITNEXUS_LBUG_BUFFER_POOL_BYTES,
   GITNEXUS_LBUG_DB_ALERT_RATIO,
+  GITNEXUS_EMBEDDINGS_NODE_CAP,
+  GITNEXUS_EMBEDDING_DEVICE,
+  GITNEXUS_EMBEDDING_THREADS,
+  analyzeEmbeddingsExpected,
+  vectorSearchProbe,
   readIncompleteIndexMarker,
   describeStrandedIncompleteIndex,
   readStrandedIncompleteIndex,
@@ -127,6 +132,38 @@ describe('buildAnalyzeArgs', () => {
 
   it('does not pass --force (that would defeat any staleness short-circuit analyze does)', () => {
     expect(buildAnalyzeArgs('/repo', 'x')).not.toContain('--force');
+  });
+
+  // -------------------------------------------------------------------------
+  // EMBEDDINGS (plan gitnexus-embeddings-enablement-2026-09-05, D-002). Without the flag
+  // gitnexus PRESERVES existing embeddings and never embeds a new node — so dropping it
+  // freezes the vector leg silently rather than disabling it. Pinned like --skip-agents-md.
+  // -------------------------------------------------------------------------
+  it('ALWAYS asks for embeddings, UNCAPPED, as the LAST argv pair (--embeddings takes an optional value)', () => {
+    const args = buildAnalyzeArgs('/repo', 'papercusp');
+    expect(args.slice(-2)).toEqual(['--embeddings', '0']);
+  });
+
+  it('the cap is 0 — any positive cap below the graph size re-arms gitnexus\'s node-count skip', () => {
+    // gitnexus's DEFAULT_EMBEDDING_NODE_LIMIT is 50,000 and this graph measured 246,622 nodes
+    // on 2026-09-05; `--embeddings 50000` produced 0 embeddings on 2026-09-04. Only 0 disables
+    // the cap (core/embedding-mode.js deriveEmbeddingCap).
+    expect(GITNEXUS_EMBEDDINGS_NODE_CAP).toBe(0);
+    const MEASURED_GRAPH_NODES = 246_622;
+    const GITNEXUS_DEFAULT_NODE_LIMIT = 50_000;
+    expect(MEASURED_GRAPH_NODES).toBeGreaterThan(GITNEXUS_DEFAULT_NODE_LIMIT);
+  });
+
+  it('passes a caller-supplied cap through verbatim (the measurement scripts use this)', () => {
+    expect(buildAnalyzeArgs('/repo', 'x', 50_000).slice(-2)).toEqual(['--embeddings', '50000']);
+  });
+
+  it('analyzeEmbeddingsExpected reads the flag off the argv it is handed — and off the default argv', () => {
+    expect(analyzeEmbeddingsExpected(buildAnalyzeArgs('/repo', 'x'))).toBe(true);
+    expect(analyzeEmbeddingsExpected(['analyze', '/repo', '--skip-agents-md', '--name', 'x'])).toBe(false);
+    // No-arg form derives from buildAnalyzeArgs itself, so the canary expectation cannot
+    // drift from the spawn.
+    expect(analyzeEmbeddingsExpected()).toBe(true);
   });
 });
 
@@ -281,6 +318,8 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
     'NODE_OPTIONS',
     'GITNEXUS_LBUG_MAX_DB_SIZE',
     'GITNEXUS_LBUG_BUFFER_POOL_SIZE',
+    'GITNEXUS_EMBEDDING_DEVICE',
+    'GITNEXUS_EMBEDDING_THREADS',
   ] as const;
   let savedRunnerEnv: Array<[string, string | undefined]> = [];
   beforeEach(() => {
@@ -332,6 +371,8 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
       env: expect.objectContaining({
         NODE_OPTIONS: expect.stringContaining(`--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB}`),
         GITNEXUS_LBUG_MAX_DB_SIZE: String(GITNEXUS_LBUG_MAX_DB_BYTES),
+        GITNEXUS_EMBEDDING_DEVICE: GITNEXUS_EMBEDDING_DEVICE,
+        GITNEXUS_EMBEDDING_THREADS: String(GITNEXUS_EMBEDDING_THREADS),
       }),
       detached: true,
     });
@@ -433,6 +474,35 @@ describe('analyzeEnv — the LadybugDB BUFFER POOL pin (EI-22172147268902766)', 
     // one being fixed. This asserts we chose a bounded number, not the unbounded one.
     expect(GITNEXUS_LBUG_BUFFER_POOL_BYTES).not.toBe(0);
     expect(GITNEXUS_LBUG_BUFFER_POOL_BYTES).toBeLessThanOrEqual(32 * 1024 ** 3);
+  });
+});
+
+describe('analyzeEnv — the embedding device/threads pins (D-002)', () => {
+  it('pins the embedding device rather than inheriting gitnexus\'s `auto`', () => {
+    expect(analyzeEnv({}).GITNEXUS_EMBEDDING_DEVICE).toBe(GITNEXUS_EMBEDDING_DEVICE);
+    expect(GITNEXUS_EMBEDDING_DEVICE).toBe('cuda');
+  });
+
+  it('pins a device gitnexus 1.6.9 actually accepts (resolveEmbeddingConfig throws on anything else)', () => {
+    expect(['auto', 'cpu', 'dml', 'cuda', 'wasm']).toContain(GITNEXUS_EMBEDDING_DEVICE);
+  });
+
+  it('pins the embedder thread count as a positive-integer string (parsePositiveInt)', () => {
+    expect(analyzeEnv({}).GITNEXUS_EMBEDDING_THREADS).toBe(String(GITNEXUS_EMBEDDING_THREADS));
+    expect(Number.isInteger(GITNEXUS_EMBEDDING_THREADS) && GITNEXUS_EMBEDDING_THREADS > 0).toBe(true);
+  });
+
+  it('STILL pins both when an operator overrides the heap (the early-return branch)', () => {
+    const env = analyzeEnv({ NODE_OPTIONS: '--max-old-space-size=4096' });
+    expect(env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+    expect(env.GITNEXUS_EMBEDDING_DEVICE).toBe(GITNEXUS_EMBEDDING_DEVICE);
+    expect(env.GITNEXUS_EMBEDDING_THREADS).toBe(String(GITNEXUS_EMBEDDING_THREADS));
+  });
+
+  it('honours explicit caller-supplied values (a cpu-only measurement run must be expressible)', () => {
+    const env = analyzeEnv({ GITNEXUS_EMBEDDING_DEVICE: 'cpu', GITNEXUS_EMBEDDING_THREADS: '8' });
+    expect(env.GITNEXUS_EMBEDDING_DEVICE).toBe('cpu');
+    expect(env.GITNEXUS_EMBEDDING_THREADS).toBe('8');
   });
 });
 
@@ -737,13 +807,29 @@ describe('CONTROLS — the two cap guards are falsifiable (P-004)', () => {
 });
 
 describe('the cap VALUE is defensible against what was measured (P-004)', () => {
-  // Measured live 2026-08-21 by external /proc sampling of a full analyze over
-  // 19,479 files: peak worker RSS 10.42 GiB, peak whole-tree RSS 10.59 GiB.
-  const MEASURED_PEAK_GIB = 10.59;
+  // Measured live 2026-08-21 by external /proc sampling of a full analyze over 19,479
+  // files: peak whole-tree RSS 10.59 GiB (no embeddings, 2 GiB LadybugDB pool). Re-measured
+  // 2026-09-05 over 246,622 nodes WITH embeddings and the 8 GiB pool pin
+  // (/tmp/wi39394/run1-embed-run.log, /usr/bin/time "Maximum resident set size"):
+  // 15,633,516 kB = 14.9 GiB, peaking in the LadybugDB bulk-load phase — the embedding phase
+  // itself ran at 2.3–3.2 GiB. The pool is native memory outside the V8 heap, so the two
+  // caps are checked against the two shares of that peak they actually govern.
+  const MEASURED_PEAK_GIB = 14.9;
+  const POOL_GIB = GITNEXUS_LBUG_BUFFER_POOL_BYTES / 1024 ** 3;
   const BG_HOST_CGROUP_GIB = 40;
 
-  it('clears the measured peak with real headroom', () => {
-    expect(GITNEXUS_ANALYZE_HEAP_MB / 1024).toBeGreaterThan(MEASURED_PEAK_GIB * 1.25);
+  it('the cgroup ceiling clears the measured whole-process peak with real headroom', () => {
+    expect(GITNEXUS_ANALYZE_MEMORY_MAX_BYTES / 1024 ** 3).toBeGreaterThan(MEASURED_PEAK_GIB * 1.25);
+  });
+
+  it('the heap cap clears the heap-attributable share of that peak (RSS minus the native pool)', () => {
+    expect(GITNEXUS_ANALYZE_HEAP_MB / 1024).toBeGreaterThan((MEASURED_PEAK_GIB - POOL_GIB) * 1.25);
+  });
+
+  it('the cgroup ceiling holds BOTH pinned budgets at once — heap cap plus pool pin', () => {
+    // Otherwise a run that legitimately fills both is OOM-killed by our own ceiling, and a
+    // mid-analyze kill is the D-016 residue, not a cheap retry.
+    expect(GITNEXUS_ANALYZE_MEMORY_MAX_BYTES / 1024 ** 3).toBeGreaterThanOrEqual(GITNEXUS_ANALYZE_HEAP_MB / 1024 + POOL_GIB);
   });
 
   it('is genuinely a CAP — below what gitnexus would self-grant (0.75x the cgroup)', () => {
@@ -754,10 +840,10 @@ describe('the cap VALUE is defensible against what was measured (P-004)', () => 
   });
 
   it('leaves room for the co-tenants sharing the cgroup', () => {
-    // The hazard is not analyze dying, it is the cgroup OOM killer reaping bg-host.
-    // Worst-case analyze (heap + native overhead) plus observed co-tenant usage must
-    // stay under the cap.
-    const worstCaseAnalyzeGib = GITNEXUS_ANALYZE_HEAP_MB / 1024 + 4;
+    // The hazard is not analyze dying, it is the cgroup OOM killer reaping bg-host. The
+    // worst case IS the child's own ceiling, by construction (managedSpawn memoryMaxBytes);
+    // that plus observed co-tenant usage must stay under bg-host's cap.
+    const worstCaseAnalyzeGib = GITNEXUS_ANALYZE_MEMORY_MAX_BYTES / 1024 ** 3;
     const observedCoTenantsGib = 11.6;
     expect(worstCaseAnalyzeGib + observedCoTenantsGib).toBeLessThan(BG_HOST_CGROUP_GIB);
   });

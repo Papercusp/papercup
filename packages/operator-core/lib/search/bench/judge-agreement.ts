@@ -413,6 +413,7 @@ export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSu
           docText: pair.docText,
         }),
         toolCalls: [],
+        toolResults: [],
         cards: [],
         controlTags: [],
         costUsd: JUDGE_INSTRUCTION_CONTRACT.turnCostUsd,

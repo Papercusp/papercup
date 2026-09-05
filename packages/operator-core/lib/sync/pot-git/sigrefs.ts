@@ -44,6 +44,9 @@ import {
   SIGNED_PROTOCOL_SCHEMA_VERSION,
   isSignedProtocolContext,
   signedProtocolContextMatches,
+  compareGenerationVersion,
+  type ExpectedSignedProtocolContext,
+  type SignedSnapshotFloor,
   type SignedProtocolContext,
 } from './signed-context';
 
@@ -147,12 +150,13 @@ export function sigrefsSigningBytes(payload: SigrefsPayload): Buffer {
     ordered.repo_key = payload.repo_key;
     ordered.store_generation = payload.store_generation;
   }
-  return Buffer.from(JSON.stringify(ordered), 'utf8');
+  const domain = payload.v === SIGREFS_SCHEMA_VERSION_CONTEXT ? 'papercusp-pot-git-sigrefs-v3\n' : '';
+  return Buffer.from(domain + JSON.stringify(ordered), 'utf8');
 }
 
 /** hash-object a UTF-8 blob into `repoPath`'s ODB (via a temp file, so the
  *  stdin-free RunGit seam still works) → the blob sha. */
-async function hashBlob(repoPath: string, content: string, runGit: RunGit): Promise<string> {
+export async function hashBlob(repoPath: string, content: string, runGit: RunGit): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'sigrefs-'));
   try {
     const f = join(dir, 'blob');
@@ -195,7 +199,7 @@ function isSignedSigrefs(x: unknown): x is SignedSigrefs {
     typeof s.v === 'number' &&
     typeof s.device_pubkey === 'string' &&
     typeof s.version === 'number' &&
-    Number.isFinite(s.version) &&
+    Number.isSafeInteger(s.version) && s.version >= 0 &&
     typeof s.ts === 'number' &&
     Array.isArray(s.refs) &&
     s.refs.every((e) => {
@@ -253,7 +257,11 @@ export async function buildSigrefs(
     // peer can still hold a later version and will (correctly) reject a reset to
     // v1 as rollback. The runtime persists the last locally-published version in
     // the existing git-sync routine metadata and supplies it as this floor.
-    version = Math.max(prior?.version ?? 0, opts.versionFloor ?? 0) + 1;
+    const sameGeneration = !opts.context || signedProtocolContextMatches(prior, opts.context);
+    version = Math.max(sameGeneration ? prior?.version ?? 0 : 0, opts.versionFloor ?? 0) + 1;
+  }
+  if (!Number.isSafeInteger(version) || version < 0 || (opts.context && !isSignedProtocolContext(opts.context))) {
+    throw new Error('sigrefs: invalid signed context or sequence');
   }
   const payload: SigrefsPayload = {
     v: opts.context ? SIGREFS_SCHEMA_VERSION_CONTEXT : SIGREFS_SCHEMA_VERSION,
@@ -361,7 +369,8 @@ export type SigrefsAcceptance =
         | 'malformed'
         | 'origin-claim-outside-scope'
         | 'legacy-version'
-        | 'context-mismatch';
+        | 'context-mismatch'
+        | 'stale-generation';
     };
 
 /** Does any entry carry a (v2, scope-repo-only) origin claim? */
@@ -384,20 +393,22 @@ export function acceptFetchedSigrefs(
   signed: SignedSigrefs,
   expectedDevicePubkeyBase64: string,
   priorVersion: number | null,
-  opts: { allowOriginClaims?: boolean; expectedContext?: SignedProtocolContext; allowLegacy?: boolean } = {},
+  opts: { allowOriginClaims?: boolean; expectedContext?: ExpectedSignedProtocolContext; allowLegacy?: boolean; replayFloor?: SignedSnapshotFloor | null } = {},
 ): SigrefsAcceptance {
   if (!isSignedSigrefs(signed)) return { ok: false, reason: 'malformed' };
-  if (opts.expectedContext) {
-    if (signed.v === SIGREFS_SCHEMA_VERSION && opts.allowLegacy === false) {
-      return { ok: false, reason: 'legacy-version' };
-    }
-    if (signed.v === SIGREFS_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(signed, opts.expectedContext)) {
-      return { ok: false, reason: 'context-mismatch' };
-    }
+  if (signed.v !== SIGREFS_SCHEMA_VERSION_CONTEXT && (opts.allowLegacy !== true || opts.replayFloor)) {
+    return { ok: false, reason: 'legacy-version' };
+  }
+  if (signed.v === SIGREFS_SCHEMA_VERSION_CONTEXT &&
+      (!opts.expectedContext || !signedProtocolContextMatches(signed, opts.expectedContext))) {
+    return { ok: false, reason: 'context-mismatch' };
   }
   if (signed.device_pubkey !== expectedDevicePubkeyBase64) return { ok: false, reason: 'wrong-device' };
   if (!verifySigrefs(signed, expectedDevicePubkeyBase64)) return { ok: false, reason: 'bad-signature' };
-  if (priorVersion !== null && signed.version <= priorVersion) return { ok: false, reason: 'rollback' };
+  if (opts.replayFloor) {
+    const order = compareGenerationVersion(signed, opts.replayFloor);
+    if (order !== 1) return { ok: false, reason: signed.store_generation === opts.replayFloor.store_generation ? 'rollback' : 'stale-generation' };
+  } else if (priorVersion !== null && signed.version <= priorVersion) return { ok: false, reason: 'rollback' };
   if (!opts.allowOriginClaims && sigrefsCarryOriginClaims(signed)) {
     return { ok: false, reason: 'origin-claim-outside-scope' };
   }

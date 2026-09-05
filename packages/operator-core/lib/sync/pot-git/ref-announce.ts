@@ -51,6 +51,9 @@ import {
   SIGNED_PROTOCOL_SCHEMA_VERSION,
   isSignedProtocolContext,
   signedProtocolContextMatches,
+  compareGenerationVersion,
+  type ExpectedSignedProtocolContext,
+  type SignedSnapshotFloor,
   type SignedProtocolContext,
 } from './signed-context';
 
@@ -102,7 +105,7 @@ function isRefAnnouncePayload(x: unknown): x is RefAnnouncePayload {
     typeof s.sigrefs_oid === 'string' &&
     OID_RE.test(s.sigrefs_oid) &&
     typeof s.version === 'number' &&
-    Number.isInteger(s.version) &&
+    Number.isSafeInteger(s.version) &&
     s.version >= 0 &&
     typeof s.ts === 'number' &&
     (s.v === REF_ANNOUNCE_SCHEMA_VERSION || s.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT)
@@ -149,6 +152,12 @@ export async function buildRefAnnouncement(
   const stored = await readSigrefs(repoPath, devicePubkeyBase64, runGit);
   if (!sigrefsOid || !stored) {
     throw new Error('pot-git: buildRefAnnouncement requires a stored sigrefs (run buildSigrefs first)');
+  }
+  if (opts.context && !signedProtocolContextMatches(stored, opts.context)) {
+    throw new Error('pot-git: announcement context differs from the stored signed snapshot');
+  }
+  if (!opts.context && isSignedProtocolContext(stored)) {
+    throw new Error('pot-git: refusing to downgrade a scoped snapshot announcement');
   }
   const payload: RefAnnouncePayload = {
     v: opts.context ? REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT : REF_ANNOUNCE_SCHEMA_VERSION,
@@ -233,7 +242,7 @@ export type RefAnnounceBaseRejectReason =
   | 'over-budget';
 // Context/version failures are intentionally separate from bad signatures so
 // operators can distinguish mixed-version peers from tampering.
-export type RefAnnounceContextRejectReason = 'legacy-version' | 'context-mismatch';
+export type RefAnnounceContextRejectReason = 'legacy-version' | 'context-mismatch' | 'stale-generation';
 export type RefAnnounceRejectReason = RefAnnounceBaseRejectReason | RefAnnounceContextRejectReason;
 
 export type RefAnnounceAcceptance =
@@ -253,8 +262,9 @@ export interface AcceptRefAnnouncementOpts {
    */
   priorVersion: number | null;
   /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
-  expectedContext?: SignedProtocolContext;
+  expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
+  replayFloor?: SignedSnapshotFloor | null;
   /** Budget leg (omit to skip capping — e.g. the anti-entropy sweep path). */
   budget?: {
     state: AnnounceBudgetState | null;
@@ -275,13 +285,12 @@ export function acceptRefAnnouncement(
 ): RefAnnounceAcceptance {
   const currentBudget = opts.budget?.state ?? null;
   if (!isSignedRefAnnouncement(incoming)) return { ok: false, reason: 'malformed', budgetState: currentBudget };
-  if (opts.expectedContext) {
-    if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION && opts.allowLegacy === false) {
-      return { ok: false, reason: 'legacy-version', budgetState: currentBudget };
-    }
-    if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT && !signedProtocolContextMatches(incoming, opts.expectedContext)) {
-      return { ok: false, reason: 'context-mismatch', budgetState: currentBudget };
-    }
+  if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION && (opts.allowLegacy !== true || opts.replayFloor)) {
+    return { ok: false, reason: 'legacy-version', budgetState: currentBudget };
+  }
+  if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT &&
+      (!opts.expectedContext || !signedProtocolContextMatches(incoming, opts.expectedContext))) {
+    return { ok: false, reason: 'context-mismatch', budgetState: currentBudget };
   }
   if (opts.selfDevice !== undefined && incoming.device_pubkey === opts.selfDevice) {
     return { ok: false, reason: 'self', budgetState: currentBudget };
@@ -290,7 +299,10 @@ export function acceptRefAnnouncement(
     return { ok: false, reason: 'wrong-device', budgetState: currentBudget };
   }
   if (!verifyRefAnnouncement(incoming)) return { ok: false, reason: 'bad-signature', budgetState: currentBudget };
-  if (opts.priorVersion !== null && incoming.version <= opts.priorVersion) {
+  if (opts.replayFloor) {
+    const order = compareGenerationVersion(incoming, opts.replayFloor);
+    if (order !== 1) return { ok: false, reason: incoming.store_generation === opts.replayFloor.store_generation ? 'stale-version' : 'stale-generation', budgetState: currentBudget };
+  } else if (opts.priorVersion !== null && incoming.version <= opts.priorVersion) {
     return { ok: false, reason: 'stale-version', budgetState: currentBudget };
   }
   if (opts.budget) {
@@ -378,7 +390,9 @@ export type RefAnnounceHandleResult =
               | 'missing'
               | 'origin-claim-outside-scope'
               | 'legacy-version'
-              | 'context-mismatch';
+              | 'context-mismatch'
+              | 'stale-generation'
+              | 'snapshot-mismatch';
           };
       /** Heads whose fetched sha diverges from the signed snapshot (empty ⇒
        *  every head is exactly what the device signed). */
@@ -399,8 +413,9 @@ export interface HandleRefAnnouncementOpts {
   openStream: () => Promise<Duplex> | Duplex;
   timeoutMs?: number;
   runGit?: RunGit;
-  expectedContext?: SignedProtocolContext;
+  expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
+  replayFloor?: SignedSnapshotFloor | null;
 }
 
 /** Ceiling applied to the `openStream` seam when the caller passes no
@@ -498,7 +513,8 @@ export async function handleRefAnnouncement(
   const runGit = opts.runGit ?? defaultRunGit;
   const device = incoming.device_pubkey;
   const prior = isSignedRefAnnouncement(incoming) ? await readSigrefs(repoPath, device, runGit) : null;
-  const priorVersion = prior?.version ?? null;
+  // Explicit null is a durable first-contact floor, never a mirror-derived one.
+  const priorVersion = opts.replayFloor !== undefined ? opts.replayFloor?.version ?? null : prior?.version ?? null;
   const localOid = isSignedRefAnnouncement(incoming)
     ? await readNamespaceRef(repoPath, device, SIGREFS_REF, runGit)
     : null;
@@ -509,10 +525,12 @@ export async function handleRefAnnouncement(
     priorVersion,
     expectedContext: opts.expectedContext,
     allowLegacy: opts.allowLegacy,
+    replayFloor: opts.replayFloor,
     budget: opts.budget ? { state: opts.budget.state, nowMs: opts.nowMs, config: opts.budget.config } : undefined,
   });
   if (!acceptance.ok) return { action: 'rejected', reason: acceptance.reason, budgetState: acceptance.budgetState };
-  if (!shouldFetchOnAnnouncement(incoming, localOid)) {
+  const needsFetch = shouldFetchOnAnnouncement(incoming, localOid);
+  if (!needsFetch && incoming.v === REF_ANNOUNCE_SCHEMA_VERSION) {
     return { action: 'noop', budgetState: acceptance.budgetState };
   }
 
@@ -523,6 +541,7 @@ export async function handleRefAnnouncement(
   // transfer in progress. Keyed on (repoPath, device) so genuinely different
   // peers still sync in parallel — only same-peer, same-repo duplicates collapse.
   const coalesced = await withFetchCoalescing(fetchCoalescerKey(repoPath, device), async () => {
+    if (!needsFetch) return { code: 0, stdout: '', stderr: '', timedOut: false };
     const duplex = await openStreamWithinCeiling(opts.openStream, opts.timeoutMs);
     if (!duplex) {
       return {
@@ -570,7 +589,14 @@ export async function handleRefAnnouncement(
   const verdict = acceptFetchedSigrefs(fetched, device, priorVersion, {
     expectedContext: opts.expectedContext,
     allowLegacy: opts.allowLegacy,
+    replayFloor: opts.replayFloor,
   });
+  const fetchedOid = await readNamespaceRef(repoPath, device, SIGREFS_REF, runGit);
+  if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT &&
+      (fetchedOid !== incoming.sigrefs_oid || fetched.version !== incoming.version ||
+       !signedProtocolContextMatches(fetched, incoming as SignedProtocolContext))) {
+    return { action: 'fetched', sigrefs: { accepted: false, reason: 'snapshot-mismatch' }, mismatches: [], budgetState: acceptance.budgetState };
+  }
   const mismatches = await reconcileFetchedHeads(repoPath, device, fetched, runGit);
   return {
     action: 'fetched',

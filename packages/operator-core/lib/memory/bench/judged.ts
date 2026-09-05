@@ -238,6 +238,7 @@ export function synthesizeRun(
       {
         assistantText,
         toolCalls: [],
+        toolResults: [],
         cards: [],
         controlTags: [],
         costUsd: JUDGED_INSTRUCTION_CONTRACT.turnCostUsd,

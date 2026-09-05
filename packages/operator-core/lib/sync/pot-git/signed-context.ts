@@ -6,18 +6,52 @@
  * key, and store lineage to the device signature; receivers can therefore
  * reject a valid signature that belongs to another hive/repository/lineage.
  */
-import { createHash } from 'node:crypto';
-
 export const SIGNED_PROTOCOL_SCHEMA_VERSION = 2;
 
-/** Stable identity covered by every v2 pot-git signature. */
-export interface SignedProtocolContext {
+export interface SignedProtocolScope {
   /** Federated hive identity (never a local install slug). */
   hive_id: string;
   /** Federated repository key (`canonicalRepoKey`). */
   repo_key: string;
+}
+
+/** Generation belongs to the signing device, not to the receiving store. */
+export interface SignedProtocolContext extends SignedProtocolScope {
   /** Stable identity for the current bare-store lineage. */
   store_generation: string;
+}
+
+export type ExpectedSignedProtocolContext = SignedProtocolScope & Partial<Pick<SignedProtocolContext, 'store_generation'>>;
+
+/** Accepted materialization watermark; persist outside fetch-overwritten refs. */
+export interface SignedSnapshotFloor extends SignedProtocolContext {
+  version: number;
+  sigrefs_oid: string;
+}
+
+/** The ordinal survives store deletion; the nonce identifies the physical store. */
+export function storeGenerationOrdinal(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const match = /^sg2-([1-9][0-9]*)-([0-9a-f]{40}|[0-9a-f]{64})$/.exec(value);
+  if (!match) return null;
+  const ordinal = Number(match[1]);
+  return Number.isSafeInteger(ordinal) ? ordinal : null;
+}
+
+/** null means an invalid or equivocating generation, never an ordering tie. */
+export function compareGenerationVersion(
+  incoming: { version: number; store_generation?: string },
+  prior: { version: number; store_generation?: string },
+): -1 | 0 | 1 | null {
+  if (incoming.store_generation !== prior.store_generation) {
+    if (!incoming.store_generation) return -1;
+    if (!prior.store_generation) return storeGenerationOrdinal(incoming.store_generation) === null ? null : 1;
+    const next = storeGenerationOrdinal(incoming.store_generation);
+    const old = storeGenerationOrdinal(prior.store_generation);
+    if (next === null || old === null || next === old) return null;
+    return next > old ? 1 : -1;
+  }
+  return incoming.version === prior.version ? 0 : incoming.version > prior.version ? 1 : -1;
 }
 
 function validPart(value: unknown): value is string {
@@ -27,39 +61,23 @@ function validPart(value: unknown): value is string {
 export function isSignedProtocolContext(value: unknown): value is SignedProtocolContext {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  return validPart(v.hive_id) && validPart(v.repo_key) && validPart(v.store_generation);
+  return validPart(v.hive_id) && validPart(v.repo_key) && storeGenerationOrdinal(v.store_generation) !== null;
 }
 
 /** Compare only the signed identity tuple; callers decide whether v1 is allowed. */
 export function signedProtocolContextMatches(
   value: Partial<SignedProtocolContext> | null | undefined,
-  expected: SignedProtocolContext,
+  expected: ExpectedSignedProtocolContext,
 ): boolean {
   return (
     value?.hive_id === expected.hive_id &&
     value?.repo_key === expected.repo_key &&
-    value?.store_generation === expected.store_generation
+    (expected.store_generation === undefined || value?.store_generation === expected.store_generation)
   );
 }
 
-/**
- * Deterministic lineage id used by the runtime until a store has an explicit
- * persisted generation record.  It is derived from the federated identity,
- * never a local slug or device, so every member signs the same context.  A
- * future store-rotation record can replace this value without changing the
- * envelope or receiver contract.
- */
-export function deriveStoreGeneration(hiveId: string, repoKey: string): string {
-  return `sg1-${createHash('sha256')
-    .update('papercusp-pot-git-store-generation-v1\n')
-    .update(hiveId)
-    .update('\n')
-    .update(repoKey)
-    .digest('hex')}`;
-}
-
-export function makeSignedProtocolContext(hiveId: string, repoKey: string): SignedProtocolContext {
-  const context = { hive_id: hiveId, repo_key: repoKey, store_generation: deriveStoreGeneration(hiveId, repoKey) };
+export function makeSignedProtocolContext(hiveId: string, repoKey: string, generation: string): SignedProtocolContext {
+  const context = { hive_id: hiveId, repo_key: repoKey, store_generation: generation };
   if (!isSignedProtocolContext(context)) throw new Error('pot-git: invalid signed protocol context');
   return context;
 }

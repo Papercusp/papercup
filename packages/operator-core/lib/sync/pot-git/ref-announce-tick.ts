@@ -50,7 +50,7 @@ import { Duplex } from 'node:stream';
 import { defaultRunGit, type RunGit, listNamespaceRefs, type NamespaceRef, deviceNamespaceKey } from './storage';
 import { DEFAULT_FETCH_TIMEOUT_MS } from './fetch-transport';
 import { deriveNamespaceGenesisBaseline } from './namespace-genesis-baseline';
-import { SIGREFS_REF, buildSigrefs, readSigrefs } from './sigrefs';
+import { SIGREFS_REF, buildSigrefs, readSigrefs, type SignedSigrefs } from './sigrefs';
 import {
   buildRefAnnouncement,
   handleRefAnnouncement,
@@ -60,7 +60,7 @@ import {
   type RefAnnounceHandleResult,
   type SignedRefAnnouncement,
 } from './ref-announce';
-import type { SignedProtocolContext } from './signed-context';
+import { signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolContext, type ExpectedSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 import {
   checkPublishGuard,
   describePublishRefusal,
@@ -173,7 +173,7 @@ export async function runRefAnnouncePublishTick(
     return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
-  let prior: { version: number; refs: readonly NamespaceRef[] } | null = null;
+  let prior: SignedSigrefs | null = null;
   try {
     prior = await readSigrefs(input.repoPath, input.devicePubkeyBase64, runGit);
   } catch (e) {
@@ -183,7 +183,8 @@ export async function runRefAnnouncePublishTick(
       `reading prior sigrefs failed (proceeding as if first-ever snapshot): ${e instanceof Error ? e.message : e}`,
     );
   }
-  if (prior && sameRefs(prior.refs, currentRefs) && prior.version >= (input.versionFloor ?? 0)) {
+  if (prior && (!input.context || signedProtocolContextMatches(prior, input.context)) &&
+      sameRefs(prior.refs, currentRefs) && prior.version >= (input.versionFloor ?? 0)) {
     return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
@@ -285,9 +286,10 @@ export interface RefAnnounceReceiveTickInput {
   openStream: (peerDevicePubkeyBase64: string) => Promise<Duplex> | Duplex;
   timeoutMs?: number;
   runGit?: RunGit;
-  /** Expected v2 context; legacy v1 remains accepted unless allowLegacy=false. */
-  expectedContext?: SignedProtocolContext;
+  /** Stable receiver scope; legacy requires an explicit negotiated opt-in. */
+  expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
+  replayFloors?: Readonly<Record<string, SignedSnapshotFloor>>;
 }
 
 export interface RefAnnounceReceiveResult {
@@ -326,6 +328,7 @@ export interface RefAnnounceReceiveTickOutcome {
   /** Updated per-device budget state — the caller MUST persist this as the
    *  new map for the next tick. */
   budgetStates: Map<string, AnnounceBudgetState | null>;
+  replayFloors: Record<string, SignedSnapshotFloor>;
   errors: string[];
 }
 
@@ -341,8 +344,9 @@ export async function runRefAnnounceReceiveTick(
   const errors: string[] = [];
   const nowMs = input.nowMs ?? Date.now();
   const budgetStates = new Map(input.budgetStates ?? []);
+  const replayFloors = { ...input.replayFloors };
   const results: RefAnnounceReceiveResult[] = [];
-  if (input.pending.length === 0) return { ran: false, results, budgetStates, errors };
+  if (input.pending.length === 0) return { ran: false, results, budgetStates, replayFloors, errors };
 
   // WI-2039873 / P-203 Leg A: ONE dial per device per tick once its fetch has
   // failed. A device's fetch mirrors its WHOLE namespace, so after one success
@@ -381,9 +385,20 @@ export async function runRefAnnounceReceiveTick(
       runGit: input.runGit,
       expectedContext: input.expectedContext,
       allowLegacy: input.allowLegacy,
+      ...(input.replayFloors !== undefined ? { replayFloor: replayFloors[device] ?? null } : {}),
     };
     try {
       const result = await handleRefAnnouncement(input.repoPath, incoming, opts);
+      if (result.action === 'fetched' && result.sigrefs.accepted && result.mismatches.length === 0 &&
+          isSignedProtocolContext(result.sigrefs.snapshot)) {
+        replayFloors[device] = {
+          hive_id: result.sigrefs.snapshot.hive_id,
+          repo_key: result.sigrefs.snapshot.repo_key,
+          store_generation: result.sigrefs.snapshot.store_generation,
+          version: result.sigrefs.snapshot.version,
+          sigrefs_oid: incoming.sigrefs_oid,
+        };
+      }
       budgetStates.set(device, result.budgetState);
       if (result.action === 'fetch-failed') fetchFailedDevices.add(device);
       results.push({ device, version: incoming.version, result });
@@ -414,7 +429,7 @@ export async function runRefAnnounceReceiveTick(
       });
     }
   }
-  return { ran: true, results, budgetStates, errors };
+  return { ran: true, results, budgetStates, replayFloors, errors };
 }
 
 // ── Receive fed-event cursor decision ─────────────────────────────────────
