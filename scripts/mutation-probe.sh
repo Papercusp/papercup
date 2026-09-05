@@ -194,7 +194,9 @@
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
 #      whitespace-only mutation, a mutant that no longer PARSES, a guard run
 #      whose own output shows a known runner-MISUSE marker — e.g. "no test
-#      files found" — instead of an assertion failure, a failing baseline, a
+#      files found" — instead of an assertion failure, a BASELINE that exits 0
+#      having selected ZERO tests (a --test name filter that matches nothing:
+#      it would otherwise make every mutant "survive"), a failing baseline, a
 #      copy-out RELOCATION that breaks the subject before any mutation is
 #      applied (the guard fails against an UNMUTATED relocated copy), or a
 #      harness error while running the mutant)
@@ -784,6 +786,41 @@ detect_runner_misuse() {
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
 }
 
+# EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
+# sibling hole in the detector above. That one only ever runs where the guard
+# exited NONZERO, because a runner that cannot COLLECT fails. A runner that
+# collects fine but SELECTS NOTHING does the opposite — it exits ZERO, because
+# a zero-selection run is a PASS. Nothing about the exit code distinguishes
+# "ran 1 test, it passed" from "ran 0 tests", so the baseline looks healthy,
+# the mutant run also exits 0, and the probe reports MUTANT SURVIVED about a
+# mutation no assertion ever examined. That verdict is wrong in the expensive
+# direction: it says a guard you just wrote is worthless, inviting you to
+# rewrite a guard that was fine.
+#
+# Reproduced on vitest 4.1.8 (`-t` selecting nothing, including the natural
+# 'describe > test' path form vitest does not accept):
+#     Tests  2 skipped (2)      exit 0     <- zero-selection
+#     Tests  1 passed | 1 skipped (2)      <- a real run
+# So the discriminator is the runner's own count summary, NOT the exit code:
+# a healthy baseline must report at least one PASSED test.
+#
+# Scoped to the BASELINE phase on purpose — do not reuse this on a mutant log.
+# A fully-caught mutant prints `Tests  2 failed (2)`, which also has no
+# "passed" (measured), so scoring a mutant with it would false-flag every
+# successful catch as a harness error. The baseline is the one phase where a
+# passing test is already required, which is what makes the check sound.
+#
+# Emits nothing when the guard prints no count summary at all (a `grep -q` or
+# plain-node guard), so a non-test guard can never trip it.
+detect_zero_selection() {
+  local line
+  line="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
+          | grep -E '^[[:space:]]*Tests[[:space:]]+[^[:space:]]' | tail -1)"
+  [ -n "$line" ] || return 0
+  case "$line" in *passed*) return 0 ;; esac
+  printf '%s' "$(printf '%s' "$line" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+}
+
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
   # Hand each child a fresh copy of a frozen snapshot. A guard/calibration
   # suite that writes its subject must not rewrite the reference used by the
@@ -1073,6 +1110,35 @@ else
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
+fi
+
+# A baseline that exits 0 having run NO tests is not a healthy guard — it is a
+# command that selects nothing, and every verdict downstream of it is void.
+# See detect_zero_selection above for the measured discriminator and for why
+# this is checked here (baseline) and nowhere else.
+BASELINE_ZERO_SELECTION="$(detect_zero_selection "$BASELINE_LOG")"
+if [ -n "$BASELINE_ZERO_SELECTION" ]; then
+  log "BASELINE RAN ZERO TESTS ($BASELINE_ZERO_SELECTION) — refusing to score the mutant"
+  printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 zero_selection=%s\n' \
+    "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "${BASELINE_ZERO_SELECTION// /_}"
+  die "the baseline guard exited 0 without running a single test — its own summary says: $BASELINE_ZERO_SELECTION
+
+      The guard COMMAND selects nothing, so no falsifiability verdict is
+      possible. This is a MISUSE of the probe, not a weak guard: had it been
+      scored, every mutant would have \"survived\" and the probe would have
+      told you a guard you just wrote is worthless.
+
+      The usual cause is a --test command whose NAME filter matches no test.
+      With vitest, \`-t\` matches against the test name only and does NOT
+      accept the 'describe > test' path form — the very form that looks
+      natural when two describe blocks hold identically-named tests, which is
+      exactly when you reach for a qualified filter. Check the filter by
+      running your --test command by hand first: it must report at least one
+      PASSED test against the unmutated file.
+
+      Note this is NOT the same as \"No test files found\" (that exits 1 and
+      is caught by the runner-misuse leg); here the file was found and the
+      tests inside it were all deselected."
 fi
 
 # --- copy-baseline: prove the RELOCATION survives before scoring anything --
