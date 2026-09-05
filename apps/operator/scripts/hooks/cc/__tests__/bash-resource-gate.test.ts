@@ -853,6 +853,66 @@ describe('native-scheduler lockout: systemd-run blocks timers, not transient uni
 });
 
 /**
+ * EI-20235141119412683 — `systemd-run` waits for the START JOB unless `--no-block`
+ * is passed, and a `Type=oneshot` start job is not complete until the payload EXITS.
+ * So a oneshot without `--no-block` holds the caller for the unit's whole runtime.
+ *
+ * Verified against real systemd before the guard was written: a 4s oneshot returned
+ * the client after 4s without the flag and after 0s with it, while the SAME sleep
+ * under the default service type returned after 0s either way. That control is why
+ * this guard is scoped to `Type=oneshot` alone — the cause is the TYPE, not
+ * systemd-run, so a blanket "always pass --no-block" would be noise on the ~40
+ * non-oneshot call sites in this repo.
+ *
+ * ADVISORY, never a deny: waiting on a oneshot is a legitimate thing to WANT, so an
+ * explicit `--wait` suppresses it too.
+ */
+describe('systemd-run oneshot detach advisory (EI-20235141119412683)', () => {
+  function advisoryFor(command: string): string {
+    const out = runGate(bashCmd(command), AGENT);
+    expect(out.status, describeGateExit(out)).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // teaches, never blocks
+    return hso.additionalContext as string;
+  }
+
+  it.each([
+    ['--property= long form', 'systemd-run --user --collect --unit=gate --property=Type=oneshot ./gate.sh'],
+    ['-p short form', 'systemd-run --user -p Type=oneshot ./gate.sh'],
+    ['--property with a space', 'systemd-run --user --property Type=oneshot ./gate.sh'],
+    // The shared _strip_quotes_and_comments normalizer replaces a quoted span with a
+    // space, which would render this `--property=` and silently match nothing. This
+    // case is the whole reason the scanner unquotes instead of using that normalizer.
+    ['a QUOTED property value', 'systemd-run --user --property="Type=oneshot" ./gate.sh'],
+  ])('warns when a oneshot omits --no-block (%s)', (_label, command) => {
+    const ctx = advisoryFor(command);
+    expect(ctx).toContain('systemd-run oneshot advisory');
+    expect(ctx).toContain('--no-block');
+  });
+
+  it.each([
+    ['--no-block is already present', 'systemd-run --user --no-block --property=Type=oneshot ./gate.sh'],
+    ['--wait means the caller INTENDS to block', 'systemd-run --user --wait --property=Type=oneshot ./gate.sh'],
+    ['--pipe --wait, the synchronous seam this repo uses on purpose',
+      'systemd-run --pipe --wait --property=Type=oneshot ./probe.sh'],
+    // The default service type's start job completes at fork, so the client already
+    // returns immediately — advising --no-block here would be false.
+    ['the default service type does not block', 'systemd-run --user --collect --unit=x ./gate.sh'],
+    ['a transient scope', 'systemd-run --scope --property=MemoryMax=4G ./heavy.sh'],
+    ['Type=oneshot only in the PAYLOAD after `--`', 'systemd-run --scope -- echo --property=Type=oneshot'],
+    ['prose merely naming the property', 'echo "pass --property=Type=oneshot next time"'],
+  ])('stays silent when %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), AGENT));
+  });
+
+  it('is switchable off for test isolation, like its sibling advisories', () => {
+    const command = 'systemd-run --user --property=Type=oneshot ./gate.sh';
+    expect(advisoryFor(command)).toContain('systemd-run oneshot advisory');
+    expectAllow(runGate(bashCmd(command), { ...AGENT, PAPERCUSP_SYSTEMD_ONESHOT_ADVISORY: 'off' }));
+  });
+});
+
+/**
  * EI-10939 — tauri-agent-tools target guard (SAFETY).
  *
  * `tauri-agent-tools` resolves its target by scanning /tmp for

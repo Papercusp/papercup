@@ -2503,6 +2503,84 @@ try:
 except Exception:
     pass  # a teaching advisory must never wedge a command
 
+# EI-20235141119412683: `systemd-run` waits for the START JOB to finish unless
+# `--no-block` is passed. Under the DEFAULT service type that job is complete as
+# soon as the payload forks, so the client returns immediately — which is why
+# nearly every systemd-run in this repo needs no flag at all. `Type=oneshot` is the
+# exception: its start job is not complete until the payload EXITS, so the client
+# stays attached for the unit's WHOLE runtime.
+#
+# Measured on this box before writing this guard: a 4s oneshot returned the client
+# after 4s without `--no-block` and after 0s with it, while the same sleep under the
+# default type returned after 0s EITHER WAY. So the cause is the TYPE, not
+# systemd-run — a blanket "always pass --no-block" would be advice-shaped noise on
+# the ~40 non-oneshot call sites here, which is why this is scoped to oneshot alone.
+#
+# Filed after a hand-rolled launch of a multi-hour gate (a `Type=oneshot` unit with
+# TimeoutStartSec=14400) held its caller attached for the entire run. The unit is
+# owned by the user manager and survives the client detaching, so the fix is one flag.
+#
+# ADVISORY, never a deny: blocking on a oneshot is a legitimate thing to WANT — it is
+# how you run something confined and wait for its verdict. This can only say "if you
+# meant to detach, here is the flag", so it suppresses on an explicit `--wait` too.
+_SYSTEMD_ONESHOT_TYPE_RE = re.compile(
+    r'(?:--property=|--property\s+|-p\s+)Type=oneshot\b', re.I)
+_SYSTEMD_ONESHOT_DETACHED_RE = re.compile(r'--no-block\b|--wait\b', re.I)
+
+
+def _systemd_run_own_options(cmd):
+    """systemd-run's OWN option span, with quote CHARACTERS removed.
+
+    The shared `_strip_quotes_and_comments` normalizer replaces a quoted span with
+    a single space. That is correct for every flag-NAME scanner in this file, but it
+    BLINDS a scanner that has to read a property VALUE: `--property="Type=oneshot"`
+    arrives as `--property=` and can never match. So drop the quote characters and
+    keep the content, then cut `#`-to-end-of-line — after unquoting, every `#` reads
+    as a comment, so this can only over-strip, which is the safe direction for an
+    advisory that must never fire spuriously.
+    """
+    c = re.sub(r'[\'"]', '', cmd)
+    c = re.sub(r'(?m)(?:^|\s)#.*$', ' ', c)
+    marker = re.search(r'\bsystemd-run\b', c)
+    if not marker:
+        return None
+    # `--` terminates systemd-run's own options; a payload argument is not ours.
+    return re.split(r'\s+--(?:\s|$)', c[marker.end():], maxsplit=1)[0]
+
+
+def _is_blocking_oneshot_systemd_run(cmd):
+    """True when a systemd-run creates a `Type=oneshot` transient that will hold the
+    caller for the unit's entire runtime because `--no-block` is absent."""
+    options = _systemd_run_own_options(cmd)
+    if options is None or not _SYSTEMD_ONESHOT_TYPE_RE.search(options):
+        return False
+    return not _SYSTEMD_ONESHOT_DETACHED_RE.search(options)
+
+
+try:
+    if (tool_name.lower() == 'bash'
+            and not ADVISORY
+            and os.environ.get(
+                'PAPERCUSP_SYSTEMD_ONESHOT_ADVISORY', 'on').strip().lower() not in ('off', '0', 'false', 'no')
+            and _is_blocking_oneshot_systemd_run(command)
+            and _claim_advisory('systemd-run-oneshot-blocks-without-no-block')):
+        ADVISORY = (
+            'systemd-run oneshot advisory (EI-20235141119412683): this creates a '
+            '`Type=oneshot` transient unit WITHOUT `--no-block`, so systemd-run waits for '
+            "the start job — and a oneshot's start job is not complete until your payload "
+            'EXITS. The client therefore stays attached for the unit\'s whole runtime '
+            '(measured: a 4s oneshot returned the client after 4s; with `--no-block`, 0s; '
+            'the same sleep under the default service type returned after 0s either way). '
+            'That is correct when you MEANT to wait. If you meant to launch and detach — a '
+            'multi-hour gate, a long suite — add `--no-block`: systemd owns the unit, so it '
+            'keeps running and you get your turn back immediately. Follow it with '
+            '`systemctl --user status <unit>` / `journalctl --user -u <unit>` rather than by '
+            'staying attached. Advisory only; this command is proceeding as issued.'
+        )
+        _record_delivery('systemd-run-oneshot-blocks-without-no-block')
+except Exception:
+    pass  # a teaching advisory must never wedge a command
+
 # EI-21924747520941481: `systemd-run` is also the cgroup-isolation mechanism
 # used by the execution guards. Only its timer-backed forms create a persistent
 # OS schedule; transient services/scopes, `--pipe --wait`, and resource-control
