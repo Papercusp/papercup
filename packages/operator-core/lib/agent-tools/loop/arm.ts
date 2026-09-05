@@ -520,7 +520,15 @@ export default defineTool({
         'Seconds AFTER each turn settles before the next wake (≥60). IN AUTO MODE the DEFAULT is 60 (a 1-minute cadence) unless the owner specifies otherwise — only lengthen it when the loop is genuinely blocked on a slower-moving dependency (a deploy, a long gate suite), and restore 1m the moment it clears, because a multi-minute loop is indistinguishable from a dead one to an owner watching for progress. The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported. OMITTED on a retune of an ACTIVE loop: the live interval is inherited, so `loop:arm { carry }` retunes without re-stating it. Required when arming a loop with no active prior.',
       ),
     blockedOn: z
-      .object({
+      .preprocess(
+        // tool-contract-repair-2026-09-05 P-005 / EI-21266013579763384: callers pass the
+        // blocker as a bare string ("blockedOn expected object, received string"). A
+        // string can only BE the reason here — `event` is a catalog key the caller would
+        // have had to name deliberately — so this is a lossless 1:1 map, the same
+        // bare-string shorthand `coerceCarryRowShape` already blesses on carry rows.
+        // Empty/whitespace still routes through so `reason.min(1)` names the real problem.
+        (v) => (typeof v === 'string' ? { reason: v } : v),
+        z.object({
         reason: z
           .string()
           .min(1)
@@ -533,10 +541,11 @@ export default defineTool({
           .describe(
             "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. Omit it and the interval is CAPPED to 15min.",
           ),
-      })
+        }),
+      )
       .optional()
       .describe(
-        'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval whose clearing event is not proven reachable, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
+        'A bare string is accepted as the `reason`. Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval whose clearing event is not proven reachable, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
       ),
     goal: softText(4000, { min: 1 })
       .optional()

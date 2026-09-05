@@ -52,6 +52,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
   coerceCarryRowShape,
+  coerceWallRowShape,
   normalizeFlattenedContinuityProbeRow,
   findVerificationConflict,
   sanitizeCarryRowId,
@@ -246,7 +247,14 @@ function normalizeCompactRowInput(value: unknown): unknown {
 }
 
 function normalizeWallInput(value: unknown): unknown {
-  return normalizeCompactRowInput(value);
+  const rows = normalizeCompactRowInput(value);
+  // tool-contract-repair-2026-09-05 P-005: run the claim/id ALIAS half of the row
+  // coercion on walls too, so `{description, …}` / `{key, …}` are the same lossless
+  // renames here that they already are on a checks row (EI-20256358119840421,
+  // EI-21123164129476823, EI-22387774231617463). `coerceWallRowShape` deliberately
+  // omits the `{status, evidence}` coercion WI-7264 excluded from walls, so an
+  // unmappable wall shape still fails loudly rather than silently dropping data.
+  return Array.isArray(rows) ? rows.map((row, i) => coerceWallRowShape(row, `walls[${i}]`, [])) : rows;
 }
 
 // Keep already-schema-valid boolean-result rows intact through the Zod boundary.
@@ -542,6 +550,16 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'A concrete command a successor runs to re-check it.',
                 ).optional(),
+                // tool-contract-repair-2026-09-05 P-005, mirroring EI-21575304064818009
+                // on the checks row: `normalizeWallInput` maps these losslessly, but a
+                // client that validates this published row schema BEFORE the server-side
+                // preprocessor runs would still report invalid_args — which is what turns
+                // a working compatibility path back into the filed rejection.
+                description: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.claim,
+                  'Compatibility alias for `claim`; prefer `claim`.',
+                ).optional(),
+                key: CARRY_ROW_ID_SCHEMA,
               }),
             )
             .max(CARRY_NOTE_MAX_WALLS * CARRY_CAP_HARD_MULTIPLE),
@@ -639,6 +657,14 @@ export default defineTool({
                 command: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'Compatibility alias for `recheck` in structured verification rows; prefer `recheck`.',
+                ).optional(),
+                // Same manifest-validation reason as `kind`/`command`/`result` above:
+                // `description` is a CARRY_CLAIM_ALIASES entry the preprocessor maps to
+                // `claim`, so it must be published or a client-side validator rejects
+                // the payload the server would have accepted.
+                description: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.claim,
+                  'Compatibility alias for `claim`; prefer `claim`.',
                 ).optional(),
                 result: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,

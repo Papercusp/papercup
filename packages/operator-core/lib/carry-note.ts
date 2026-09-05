@@ -596,8 +596,14 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
  * and `name` (2). Every one of them is STRIPPED by the row schema, so without
  * this list the caller's claim text is destroyed and the row then fails
  * validation for the missing field it just lost.
+ *
+ * `description` joins them for tool-contract-repair-2026-09-05 P-005: it is the
+ * same lossless 1:1 synonym for the row's prose as the five above, and it was
+ * the key two separate loop:checkpoint filings reached for on a WALLS row
+ * (EI-20256358119840421, EI-21123164129476823). Adding it here fixes the
+ * checks-row case; `coerceWallRowShape` below is what carries it to walls.
  */
-const CARRY_CLAIM_ALIASES = ['label', 'name', 'text', 'body', 'summary'] as const;
+const CARRY_CLAIM_ALIASES = ['label', 'name', 'text', 'body', 'summary', 'description'] as const;
 
 /**
  * Keys callers reach for instead of the canonical row `id`. `key` appeared on 15
@@ -879,6 +885,76 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
       });
     }
   }
+  return r;
+}
+
+/**
+ * Repair one incoming `walls` row IN THE ARGUMENT SHAPE — the claim/id ALIAS half
+ * of `coerceCarryRowShape`, and deliberately nothing else.
+ *
+ * tool-contract-repair-2026-09-05 P-005. `walls` rows accept only
+ * `{claim, id, recheck}`, and loop:checkpoint's walls preprocessor is
+ * `normalizeCompactRowInput` alone — so a wall written as `{description, …}` or
+ * `{key, …}` is `invalid_args`, while the byte-identical key on a CHECKS row is
+ * accepted losslessly. Three filings hit exactly that asymmetry
+ * (EI-20256358119840421, EI-21123164129476823, EI-22387774231617463); the claim
+ * text is then STRIPPED by the row schema and the row fails validation for the
+ * very field it just lost, which is the same destruction CARRY_CLAIM_ALIASES
+ * exists to prevent one field over.
+ *
+ * WHY NOT just call `coerceCarryRowShape` here: WI-7264 decided, on measured
+ * volume, that walls must NOT get the `{status, evidence}` coercion, because a
+ * wall has no `verified` field and there is nowhere lossless to put `evidence` —
+ * mapping it would DROP the caller's data (EI-18723223344390510). That decision
+ * stands untouched: this function maps ONLY the two lossless 1:1 renames, so a
+ * wall carrying `status`/`evidence`/`kind` keeps failing loudly exactly as before.
+ * `kind` in particular is excluded on purpose — `coerceCarryRowShape` already
+ * documents that `kind` is not a claim alias for owner-gated walls.
+ */
+export function coerceWallRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
+  if (typeof row === 'string' || !row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const r = { ...(row as Record<string, unknown>) };
+  const claimAliases = CARRY_CLAIM_ALIASES.filter((k) => k in r);
+  const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
+  if (!claimAliases.length && !idAliases.length) return row;
+
+  if (claimAliases.length) {
+    const alias = claimAliases[0];
+    const aliasValue = r[alias];
+    const hadCanonicalClaim = 'claim' in r;
+    for (const k of claimAliases) delete r[k];
+    if (!hadCanonicalClaim) r.claim = aliasValue;
+    repairs.push({
+      field: `${path}.${alias}`,
+      kind: 'renamed',
+      detail:
+        `the descriptive \`${alias}\` key is accepted as an alias for \`claim\`; ` +
+        (hadCanonicalClaim ? 'the canonical claim value was kept' : 'the alias value was mapped to claim'),
+    });
+    for (const dropped of claimAliases.slice(1)) {
+      repairs.push({
+        field: `${path}.${dropped}`,
+        kind: 'renamed',
+        detail: `the undeclared \`${dropped}\` alias was removed; \`${alias}\` was selected when no canonical claim was supplied`,
+      });
+    }
+  }
+
+  if (idAliases.length) {
+    const alias = idAliases[0];
+    const aliasValue = r[alias];
+    const hadCanonicalId = 'id' in r;
+    for (const k of idAliases) delete r[k];
+    if (!hadCanonicalId) r.id = aliasValue;
+    repairs.push({
+      field: `${path}.${alias}`,
+      kind: 'renamed',
+      detail:
+        `the \`${alias}\` key is accepted as an alias for the row \`id\`; ` +
+        (hadCanonicalId ? 'the canonical id was kept' : 'the alias value was mapped to id'),
+    });
+  }
+
   return r;
 }
 

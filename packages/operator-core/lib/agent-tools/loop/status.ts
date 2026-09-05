@@ -81,6 +81,17 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Inspect the loop for this owner id (default: yourself). Mirrors loop:arm/end/checkpoint.'),
+    // tool-contract-repair-2026-09-05 P-005 / EI-21206535634211412. `owner` is an
+    // unambiguous synonym here: this tool has exactly one selector, so there is no
+    // second meaning `owner` could collide with (the ALIAS-vs-BETTER-ERROR test the
+    // plan sets — contrast work_items:get's `limit`, where the caller's word plausibly
+    // means a DIFFERENT count than the declared arg and aliasing would answer the
+    // wrong question). Explicit `ownerId` wins when both are supplied.
+    owner: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Compatibility alias for `ownerId`; explicit `ownerId` wins when both are supplied.'),
   }),
   result: z
     .object({
@@ -96,7 +107,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const ownerId = args.ownerId ?? identity.ownerId;
+    const ownerId = args.ownerId ?? args.owner ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
 
     // EI-21869094231635430: these four probes are each independent of the OTHERS
