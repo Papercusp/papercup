@@ -11,6 +11,7 @@ import { createWriteStream, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { mcpEndpointHint } from './fetch-mcp-hint';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
 import { heuristicScreener, labelExternalContent } from '../../external-content';
 
@@ -104,9 +105,9 @@ export async function readResponseBody(
 export default defineTool({
   name: 'capability:fetch',
   description:
-    'Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406.',
+    'Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.',
   guidance: {
-    when: 'Fetch a URL — an API, a raw file, a docs page. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
+    when: 'Fetch a URL — an API, a raw file, a docs page. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). A credential failure on a local ?superuser=1 endpoint arrives as HTTP 200 with the refusal inside the body, so judge those by the body, never by ok/status. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
     notWhen: 'Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).',
     chaining: 'Standalone. Large bodies spill to a log path you can capability:read.',
   },
@@ -170,6 +171,14 @@ export default defineTool({
         };
       }
 
+      // EI-20233057540755917: the correction rides the RESPONSE, not the prompt.
+      // Silent for everything that is not an MCP transport rejection.
+      const next = mcpEndpointHint({
+        url: args.url,
+        method: args.method ?? 'GET',
+        status: res.status,
+      });
+
       return {
         content: [
           {
@@ -180,6 +189,7 @@ export default defineTool({
               status_text: res.statusText,
               headers,
               truncated,
+              ...(next ? { next } : {}),
               ...(logPath ? { log_path: logPath } : {}),
               provenance: { ...provenance, screened },
               body: bodyOut,
