@@ -79,6 +79,30 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => {
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: (...a: unknown[]) => findLiveHost(...a),
 }));
+// P-009: the recovery IO the two REFUSAL paths now perform. These are mocked so the call site
+// can be ASSERTED rather than merely not-throwing: without them the real store/control modules
+// run against no database, `strandWedgedMember` swallows the failure by design (it is fail-soft
+// on a path where something has already gone wrong), and a test would pass whether or not the
+// containment was wired at all.
+const listTasks = vi.fn();
+const markStranded = vi.fn();
+const freezeTask = vi.fn();
+const emitFleetTransitionEdge = vi.fn();
+
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listTasks: (...a: unknown[]) => listTasks(...a),
+  markStranded: (...a: unknown[]) => markStranded(...a),
+}));
+vi.mock('../../task-manager/control', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  freezeTask: (...a: unknown[]) => freezeTask(...a),
+}));
+vi.mock('../../fleet-transition-events', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  emitFleetTransitionEdge: (...a: unknown[]) => emitFleetTransitionEdge(...a),
+}));
+
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
   json: (payload: Record<string, unknown>, isError = false) => ({
@@ -185,6 +209,11 @@ beforeEach(() => {
   // WI-2141730: no colliding live host by default — the ordinary respawn path never sees this
   // guard fire. Individual tests override this to exercise the refusal.
   findLiveHost.mockReturnValue(null);
+  // P-009: an EMPTY enrolled-task list is the honest default for a member with no tracked
+  // processes. The containment tests below override it with real rows.
+  listTasks.mockResolvedValue([]);
+  freezeTask.mockResolvedValue({ ok: true });
+  markStranded.mockResolvedValue(0);
   // Roster: the old member before the kill, a NEW live owner once the replacement has booted.
   // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
   // poll instead of the snapshot, and the test would then really wait out the 90s window.
@@ -1234,5 +1263,98 @@ describe('awaitMemberDrain', () => {
       sleep: async (ms: number) => { t += ms; state = 'ended'; },
     });
     expect(res).toMatchObject({ verified: true, terminal: 'ended', sessionState: 'ended' });
+  });
+});
+
+/**
+ * P-009 acceptance at the CALL SITE.
+ *
+ * The six acceptance scenarios are unit-tested against the pure decision core in
+ * `fleet/member-recovery.test.ts`, and the IO half against `fleet/member-recovery-actions.test.ts`.
+ * Neither proves this tool INVOKES them. That gap is not hypothetical: the two refusal paths below
+ * shipped for a long time as bare `return json({ ok:false })`, and a decision core that is never
+ * called produces exactly the same observable result as one that does not exist — the refusal is
+ * identical, and `strandWedgedMember` is fail-soft, so nothing raises either way.
+ *
+ * So these tests assert the SIDE EFFECT, not the refusal: freeze happened, the row was marked with
+ * the cause, and the transition edge carries that same cause. The third test is the control that
+ * makes the first two mean something — a SUCCESSFUL respawn must contain nothing.
+ */
+describe('fleet:respawn-member — P-009 containment at the refusal paths', () => {
+  beforeEach(() => {
+    listTasks.mockResolvedValue([{ taskId: 'task-1' }, { taskId: 'task-2' }]);
+    freezeTask.mockResolvedValue({ ok: true });
+    markStranded.mockResolvedValue(2);
+    emitFleetTransitionEdge.mockReturnValue(undefined);
+  });
+
+  it('acceptance "injected kill failure": freezes, marks the cause, and emits — not just a refusal', async () => {
+    killHandler.mockResolvedValue({
+      data: { ok: true, results: [{ ok: false, target: MEMBER, error: 'no host' }], counts: { ok: 0, failed: 1 } },
+    });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never));
+
+    expect(p).toMatchObject({ ok: false, error: 'kill_failed' });
+    expect(launchHandler).not.toHaveBeenCalled();
+
+    // FREEZE BEFORE MARK is the load-bearing order: marking a row stranded while its process still
+    // runs records a stop that did not happen.
+    expect(freezeTask).toHaveBeenCalledWith('task-1');
+    expect(freezeTask).toHaveBeenCalledWith('task-2');
+    expect(freezeTask.mock.invocationCallOrder[0]).toBeLessThan(markStranded.mock.invocationCallOrder[0]);
+
+    // The mark carries the CAUSE, not just the state — that is what makes the ledger row readable
+    // by someone who was not holding this tool call.
+    const verdicts = markStranded.mock.calls[0][0] as { taskId: string; reason: string }[];
+    expect(verdicts.map((v) => v.taskId)).toEqual(['task-1', 'task-2']);
+    expect(verdicts[0].reason).toMatch(/frozen/i);
+
+    expect(emitFleetTransitionEdge).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: MEMBER, fleetSlug: SLUG, from: 'live', to: expect.stringMatching(/^stranded: /) }),
+    );
+
+    // Claims are PRESERVED, never released: a process that ignored its kill may still be writing.
+    expect(p).toMatchObject({ disposition: 'stranded', claims: 'preserved-frozen' });
+    expect(p.recovery).toMatchObject({ contained: true, markedStranded: 2, transitionEmitted: true });
+  });
+
+  it('acceptance "ignored wake": an unverified cooperative drain is contained, not just refused', async () => {
+    killHandler.mockResolvedValue({
+      data: {
+        ok: true,
+        results: [{ ok: false, target: MEMBER, kind: 'unmanaged', code: 'live_unmanaged' }],
+        counts: { ok: 0, failed: 1 },
+      },
+    });
+    listFleetPresence.mockReset().mockResolvedValue([row(LEADER), row(MEMBER)]);
+    resolveSessionStates.mockResolvedValue(new Map([[MEMBER, { sessionState: 'parked' }]]));
+
+    const p = parse(
+      await tool.handler({ member: MEMBER, model: 'sonnet:high', drainVerifySec: 1 } as never, {} as never),
+    );
+
+    expect(p).toMatchObject({ ok: false, error: 'cooperative_drain_unverified' });
+    expect(launchHandler).not.toHaveBeenCalled();
+
+    // This is the scenario whose ONLY prior trace was a failed tool call: the member ignored its
+    // wake, stayed live, and nothing anywhere recorded that it was wedged.
+    expect(freezeTask).toHaveBeenCalledWith('task-1');
+    expect(markStranded).toHaveBeenCalled();
+    expect(emitFleetTransitionEdge).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: MEMBER, to: expect.stringMatching(/^stranded: /) }),
+    );
+    expect(p).toMatchObject({ disposition: 'stranded', claims: 'preserved-frozen' });
+  });
+
+  it('CONTROL: a SUCCESSFUL respawn contains nothing — containment is bound to the refusal paths', async () => {
+    // Without this, the two assertions above would pass just as well against a version that froze
+    // every member on every respawn, which is the opposite of the intended behaviour.
+    const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never));
+
+    expect(p).toMatchObject({ ok: true });
+    expect(freezeTask).not.toHaveBeenCalled();
+    expect(markStranded).not.toHaveBeenCalled();
+    expect(emitFleetTransitionEdge).not.toHaveBeenCalled();
   });
 });
