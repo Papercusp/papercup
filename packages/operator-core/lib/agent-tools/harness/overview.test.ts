@@ -8,7 +8,7 @@ vi.mock('../../issues-engineer', () => ({
   countIssues: vi.fn(async () => 0),
 }));
 
-import { composeHarnessOverview, type IssuesSnapshotReader } from './overview';
+import overviewTool, { composeHarnessOverview, type IssuesSnapshotReader } from './overview';
 import { listIssues, countIssues } from '../../issues-engineer';
 import type { InnerCall } from '../_compound-dispatch';
 import type { ListIssuesFilter } from '../../issues-engineer';
@@ -41,6 +41,18 @@ function fakeReadIssues(
 }
 
 const okIssues = () => ({ count: 2, recent: [{ id: 'EI-1' }, { id: 'EI-2' }] });
+
+describe('harness:overview routing guidance', () => {
+  it('reserves the compound read for multi-part requests and routes one status fact directly', () => {
+    expect(overviewTool.description).toContain("COMPOUND 'state of X'");
+    expect(overviewTool.description).toContain('multi-part/full-picture');
+    expect(overviewTool.description).toContain('single fact such as active/current phase');
+    expect(overviewTool.description).toContain('direct harness:status call');
+    expect(overviewTool.guidance?.when).toContain('status PLUS escalations and open issues');
+    expect(overviewTool.guidance?.notWhen).toContain('single harness status fact');
+    expect(overviewTool.guidance?.notWhen).toContain('call harness:status directly');
+  });
+});
 
 describe('composeHarnessOverview (P-006 compound)', () => {
   it('with harness: folds status + escalations + open-issues snapshot (no harness:list)', async () => {

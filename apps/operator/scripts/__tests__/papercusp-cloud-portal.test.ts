@@ -99,16 +99,35 @@ function gitCommitAll(portalRoot: string, message: string) {
   spawnSync("git", ["commit", "-q", "-m", message, "--allow-empty"], { cwd: portalRoot, env });
 }
 
-function writeReleaseManifest(runtimeRoot: string, publishedAt: string) {
+function writeReleaseManifest(runtimeRoot: string, publishedAt: string, sourceRootDigest?: string) {
   writeFileSync(
     join(runtimeRoot, "current", ".papercusp-release.json"),
     JSON.stringify(
-      { schemaVersion: 2, buildId: "build-one", release: "build-one", sourceRoot: "/x", publishedAt },
+      {
+        schemaVersion: 2,
+        buildId: "build-one",
+        release: "build-one",
+        sourceRoot: "/x",
+        publishedAt,
+        ...(sourceRootDigest ? { sourceRootDigest } : {}),
+      },
       null,
       2,
     ) + "\n",
   );
 }
+
+// Stands in for the portal checkout's scripts/release-source-digest.mjs: the deploy
+// script runs `$NODE_BIN <portalRoot>/scripts/release-source-digest.mjs <portalRoot>`
+// and reads one hex line from stdout.
+function writeDigestCli(portalRoot: string, digest: string) {
+  writeFileSync(
+    join(portalRoot, "scripts", "release-source-digest.mjs"),
+    `process.stdout.write(${JSON.stringify(`${digest}\n`)});\n`,
+  );
+}
+
+const RELEASE_DIGEST = "c0ffee".repeat(10) + "abcd";
 
 function staleTestSystemctl(files: Fixture): string {
   const systemctl = join(files.binDir, "systemctl");
@@ -425,6 +444,67 @@ exit 7
       });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("WARNING: current release looks STALE");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("judges freshness by CONTENT digest: a byte-identical checkout deploys even when git-sync left it dirty with an older publishedAt (EI-22388584299827941)", () => {
+    const files = fixture();
+    const systemctl = staleTestSystemctl(files);
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      // Both legacy stale signals are present: an old publishedAt AND uncommitted changes.
+      writeReleaseManifest(files.runtimeRoot, "2000-01-01T00:00:00.000Z", RELEASE_DIGEST);
+      writeDigestCli(files.portalRoot, RELEASE_DIGEST);
+      writeFileSync(join(files.portalRoot, "package.json"), '{"name":"portal-fixture","dirty":true}\n');
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        PAPERCUSP_CLOUD_PORTAL_NODE: process.execPath,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("STALE");
+      expect(result.stdout).toContain("source digest matches");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses handoff when the checkout's content digest differs from the release's, naming both digests", () => {
+    const files = fixture();
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      // A future-dated, clean-looking release: the git heuristic alone would pass it.
+      writeReleaseManifest(files.runtimeRoot, "2099-01-01T00:00:00.000Z", RELEASE_DIGEST);
+      writeDigestCli(files.portalRoot, "d".repeat(64));
+      gitCommitAll(files.portalRoot, "add digest cli");
+      const result = run(files, ["--handoff"], { PAPERCUSP_CLOUD_PORTAL_NODE: process.execPath });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("portal current release looks STALE");
+      expect(result.stderr).toContain("source digest");
+      expect(result.stderr).toContain("differs from the release's");
+      expect(result.stderr).toContain(RELEASE_DIGEST.slice(0, 12));
+      expect(result.stderr).toContain("PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE=1");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the git heuristic when the manifest carries a digest but the checkout has no digest CLI", () => {
+    const files = fixture();
+    const systemctl = staleTestSystemctl(files);
+    try {
+      gitCommitAll(files.portalRoot, "initial");
+      writeReleaseManifest(files.runtimeRoot, "2099-01-01T00:00:00.000Z", RELEASE_DIGEST);
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        PAPERCUSP_CLOUD_PORTAL_NODE: process.execPath,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain("STALE");
+      expect(result.stdout).not.toContain("source digest matches");
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
     }

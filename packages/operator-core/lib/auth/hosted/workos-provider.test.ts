@@ -243,6 +243,25 @@ describe('WorkOSHostedIdentityProvider', () => {
     });
   });
 
+  it('accepts WorkOS sealed sessions that omit nonce after the route-bound PKCE exchange', async () => {
+    const absentNonce = makeProvider({
+      authenticated: authenticatedSession({ accessToken: accessToken({ nonce: undefined }) }),
+    });
+
+    await expect(
+      absentNonce.provider.exchangeCallback({
+        code: 'authorization-code-test-value',
+        redirectUri: 'https://app.papercusp.com/auth/callback',
+        pkceCodeVerifier: 'pkce-verifier-test-value',
+        expectedNonce: 'nonce_test_001',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { externalSessionId: 'session_test_001' },
+    });
+    expect(absentNonce.vault.records.has('session_test_001')).toBe(true);
+  });
+
   it('fails closed on nonce mismatch and unverified email without persisting a session', async () => {
     const nonceMismatch = makeProvider({
       authenticated: authenticatedSession({ accessToken: accessToken({ nonce: 'wrong-nonce' }) }),

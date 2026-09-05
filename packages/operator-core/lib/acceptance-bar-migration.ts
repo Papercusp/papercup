@@ -255,12 +255,7 @@ export async function runAcceptanceBarMigrationInDatabase(
     });
   };
 
-  const run = await runAcceptanceBarMigration({
-    cursor: options.cursor,
-    batchSize: options.batchSize,
-    dryRun: options.dryRun,
-    readPage,
-    applyPlan: async ({ plan, decision }) => {
+  const executePlan = async ({ plan, decision }: { plan: AcceptanceBarMigrationPlan; decision: AcceptanceBarMigrationDecision }, dryRun = false) => {
       return withWorkspace(options.workspaceId, async (tx) => {
         const currentRows = await tx<AcceptanceBarMigrationDbRow[]>`
           SELECT plan_slug, status, content, title, version,
@@ -278,7 +273,7 @@ export async function runAcceptanceBarMigrationInDatabase(
           throw new Error(`plan_changed_retry:${plan.planSlug}`);
         }
         const cohort = decision.cohort ?? (decision.action === 'seed-strict' ? 'post-epoch' : 'legacy-backfilled');
-        await tx`
+        if (!dryRun) await tx`
           UPDATE harness_shared.harness_plans
              SET acceptance_bar_epoch = COALESCE(acceptance_bar_epoch, 1),
                  acceptance_bar_cohort = ${cohort}
@@ -309,15 +304,18 @@ export async function runAcceptanceBarMigrationInDatabase(
           legacyCriterionMap: options.legacyCriterionMap,
           actorId: options.actorId,
           now,
+          dryRun,
         });
         if (!seeded.ok) {
           throw new Error(`${seeded.error}:${seeded.message}`);
         }
-        return `seeded ${seeded.bars} BAR(s), ${seeded.projectionEdges} projection edge(s), rubric ${seeded.rubricSlug}@${seeded.rubricRevision}`;
+        return dryRun ? JSON.stringify(seeded.preview) : `seeded ${seeded.bars} BAR(s), ${seeded.projectionEdges} projection edge(s), rubric ${seeded.rubricSlug}@${seeded.rubricRevision}`;
       });
-    },
+    };
+  return runAcceptanceBarMigration({
+    cursor: options.cursor, batchSize: options.batchSize, dryRun: options.dryRun, readPage,
+    applyPlan: (input) => executePlan(input), previewPlan: (input) => executePlan(input, true),
   });
-  return run;
 }
 
 export interface AcceptanceBarMigrationOutcome {
@@ -342,6 +340,7 @@ export interface AcceptanceBarMigrationRunnerOptions {
   readPage: (input: { cursor: string | null; limit: number }) => Promise<AcceptanceBarMigrationPage>;
   /** Apply one plan in its own transaction. Throwing marks only that plan failed. */
   applyPlan: (input: { plan: AcceptanceBarMigrationPlan; decision: AcceptanceBarMigrationDecision }) => Promise<string>;
+  previewPlan?: AcceptanceBarMigrationRunnerOptions['applyPlan'];
 }
 
 /** Run one bounded page. Repeating with `nextCursor` is safe and resumable. */
@@ -368,7 +367,13 @@ export async function runAcceptanceBarMigration(
       continue;
     }
     if (dryRun) {
-      outcomes.push({ planSlug: plan.planSlug, decision, status: 'dry-run', detail: decision.reason });
+      try {
+        const detail = options.previewPlan ? await options.previewPlan({ plan, decision }) : decision.reason;
+        outcomes.push({ planSlug: plan.planSlug, decision, status: 'dry-run', detail });
+      } catch (error) {
+        outcomes.push({ planSlug: plan.planSlug, decision, status: 'refused',
+          detail: error instanceof Error ? error.message : String(error) });
+      }
       continue;
     }
     try {

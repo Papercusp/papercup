@@ -406,7 +406,9 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       return normalizeAcceptanceBarCriterion({ ...legacy,
         barKey: bar.barKey, role: 'outcome', mandatory: true,
         requiredScope: seeded.requiredScope, evidencePlane: seeded.evidencePlane,
-        passRatings: seeded.passRatings, barProvenance: seeded.barProvenance,
+        passRatings: legacy.passRatings ?? (legacy.ratingScale ?? existing!.ratingScale ?? DEFAULT_RATING_SCALE)
+          .filter((rating) => ['healthy', 'pass'].includes(rating.trim().toLowerCase())),
+        barProvenance: seeded.barProvenance,
       });
     }
     const prior = existingByBar.get(bar.barKey);
@@ -519,6 +521,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   legacyCriterionMap?: Record<string, string>;
   actorId: string;
   now: Date;
+  /** Validate and describe the same canonical write without mutating any rows. */
+  dryRun?: boolean;
 }
 
 export interface TransactionalAcceptanceBarSeedSuccess {
@@ -529,6 +533,9 @@ export interface TransactionalAcceptanceBarSeedSuccess {
   bars: number;
   projectionEdges: number;
   rubricChanged: boolean;
+  preview?: { priorRubricRevision: number; nextRubricRevision: number; priorBarSetHash: string | null;
+    nextBarSetHash: string; mappings: ParsedBarMapping[]; changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
+    cohort: AcceptanceBarCohort; provenance: 'pre-implementation' | 'legacy-backfilled'; invalidatesPriorProof: boolean };
 }
 
 export type TransactionalAcceptanceBarSeedResult =
@@ -705,7 +712,7 @@ export async function seedAcceptanceBarsInTransaction(
     date,
     description: `Predeclared acceptance BARs seeded from ${input.planSlug}.`,
   });
-  if (rubricChanged) {
+  if (rubricChanged && !input.dryRun) {
     const templateJson = JSON.stringify(built.templateData);
     const bodyHash = hashPlanContent(body);
     await sql`
@@ -743,8 +750,9 @@ export async function seedAcceptanceBarsInTransaction(
     spec_id: string;
     current_revision: number | string;
     source_bar_key: string | null;
+    plan_item_id: string;
   }>>`
-    SELECT c.spec_id, c.current_revision, r.source_bar_key
+    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id
       FROM harness_shared.plan_spec_clauses c
       JOIN harness_shared.plan_spec_clause_revisions r
         ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
@@ -775,6 +783,35 @@ export async function seedAcceptanceBarsInTransaction(
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
   const revisionBySpec = new Map(identities.map((row) => [row.spec_id, Number(row.current_revision)]));
+  if (input.dryRun) {
+    const { diffAcceptanceBarContractSnapshots } = await import('./acceptance-bar-contract-snapshot');
+    const view = (criteria: ProposeRubricCriterion[], prior = false) => ({
+      contentHash: hashPlanContent(stableJson(criteria)),
+      plan: { cohort: input.cohort, adoptionEpoch: input.adoptionEpoch },
+      bars: criteria.map((criterion) => ({
+        barKey: criterion.barKey ?? criterion.key, barHash: criterion.barHash ?? null,
+        model: criterion.model ?? '', method: criterion.method ?? '', falsifier: criterion.driftMarkers ?? '',
+        role: criterion.role ?? null, mandatory: criterion.mandatory ?? null,
+        requiredScope: criterion.requiredScope ?? [], evidencePlane: criterion.evidencePlane ?? null,
+        passRatings: criterion.passRatings ?? [], coversBarKeys: criterion.coversBarKeys ?? [],
+        provenance: criterion.barProvenance ?? null,
+        mappings: prior ? identities.filter((row) => row.source_bar_key === criterion.barKey)
+          .map((row) => ({ specId: row.spec_id, planItemId: row.plan_item_id }))
+          : built.ok ? built.projections.filter((projection) => projection.sourceBar?.barKey === criterion.barKey)
+            .map((projection) => ({ specId: projection.specId, planItemId: projection.planItemId })) : [],
+      })),
+    });
+    return { ok: true, rubricSlug, rubricRevision, barSetHash: built.barSetHash,
+      bars: built.criteria.length, projectionEdges: built.projections.length, rubricChanged,
+      preview: { priorRubricRevision: existingRevision, nextRubricRevision: rubricRevision,
+        priorBarSetHash: existingTemplate?.success ? existingTemplate.data.barSetHash ?? null : null,
+        nextBarSetHash: built.barSetHash, mappings: built.mappings,
+        changes: diffAcceptanceBarContractSnapshots(
+          existingTemplate?.success ? view(existingTemplate.data.criteria, true) : null, view(built.criteria), 'seed').changes,
+        cohort: input.cohort, provenance: input.backfilled || input.cohort === 'legacy-backfilled' ? 'legacy-backfilled' : 'pre-implementation',
+        invalidatesPriorProof: Boolean(existing && rubricChanged) },
+    };
+  }
   for (const projection of built.projections) {
     const result = await setSpecClause(
       { ...projection, expectedRevision: revisionBySpec.get(projection.specId) ?? 0 },

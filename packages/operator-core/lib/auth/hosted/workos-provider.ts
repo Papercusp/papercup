@@ -261,7 +261,17 @@ function normalizeVerifiedSession(
   if (claims.sid !== authenticated.sessionId) {
     throw failure('invalid_session', 'The hosted identity session is not valid.');
   }
-  if (expectedNonce !== undefined && claims.nonce !== expectedNonce) {
+  // WorkOS Staging AuthKit currently omits `nonce` from otherwise-valid sealed
+  // password sessions even when the authorization URL carries `claim_nonce`.
+  // The callback route has already consumed signed single-use state, matched
+  // the browser-binding digest, and the exchange above validated the exact PKCE
+  // verifier. Preserve nonce mismatch detection when WorkOS emits the claim,
+  // but do not turn its observed omission into a universal login failure.
+  if (
+    expectedNonce !== undefined &&
+    claims.nonce !== undefined &&
+    claims.nonce !== expectedNonce
+  ) {
     throw failure('invalid_callback', 'The hosted identity callback is not valid.');
   }
   if (authenticated.user.emailVerified !== true) {

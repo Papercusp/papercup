@@ -13817,7 +13817,7 @@
           "POST"
         ]
       },
-      "description": "One 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:list / harness:status / work_items:list / harness:escalation in ONE round-trip instead of four.",
+      "description": "One COMPOUND 'state of X' read: a harness's status + escalations (with `harness`) or the harness index (without), PLUS the cross-cutting open-issues snapshot — harness:list / harness:status / work_items:list / harness:escalation in ONE round-trip instead of four. Use it for a multi-part/full-picture request; a single fact such as active/current phase is one direct harness:status call.",
       "capabilities": [
         "coord:read"
       ],
@@ -13842,8 +13842,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Answering \"what's the state of X\" / \"what's going on\" — pass `harness` for one harness's status + escalations + open issues, or omit it for the harness index + open issues, in one round-trip instead of harness:list + harness:status + work_items:list + harness:escalation.",
-        "notWhen": "You need one harness in full detail (harness:status / harness:get), one issue (work_items:get), or a topic-filtered issue sweep (work_items:list { topic }). Do NOT call it in a loop over every harness — pass the one slug you care about.",
+        "when": "Answering a multi-part \"full picture / state of X\" request that needs status PLUS escalations and open issues — pass `harness` for one harness, or omit it for the harness index + open issues, in one round-trip instead of harness:list + harness:status + work_items:list + harness:escalation.",
+        "notWhen": "You need a single harness status fact such as active/current phase — call harness:status directly. For one harness in full detail use harness:get; for one issue use work_items:get; for a topic-filtered issue sweep use work_items:list { topic }. Do NOT call it in a loop over every harness — pass the one slug you care about.",
         "chaining": "Bundles: harness:status + harness:escalation [+ harness:list] + work_items:list — prefer this over calling them separately. → work_items:get / work_items:claim a problem it surfaces."
       }
     },

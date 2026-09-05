@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import type postgres from 'postgres';
 import { defaultRunGit, type RunGit } from './storage';
 import { hashBlob } from './sigrefs';
 import { makeSignedProtocolContext, type SignedProtocolContext, type SignedProtocolScope } from './signed-context';
+import type { GitServingRequest } from './serving-capability';
 
 /** Local Git metadata outside fetched namespaces. PG alone cannot detect a
  * deleted/rebuilt bare store, so the physical incarnation marker lives in Git. */
@@ -72,4 +74,26 @@ export async function resolveStoreProtocolContext(input: {
     return result;
   });
   return context as SignedProtocolContext;
+}
+
+/** Capability issuance is existing-only: the server verifies registry scope
+ * and the physical store before allocating D-021's durable generation. */
+export async function resolveServingStoreContext(request: GitServingRequest, device: string): Promise<SignedProtocolContext | null> {
+  const [{ loadHarnessRegistry }, { canonicalRepoKey }, { hiveGitRepoPath }, { getOrgPg }] = await Promise.all([
+    import('../../harness-registry'), import('./repo-identity'), import('./storage'), import('@papercusp/db-org'),
+  ]);
+  const entry = (await loadHarnessRegistry(request.workspaceId)).projects.find(p => p.slug === request.installSlug);
+  const home = entry?.hive_slug ?? (entry?.self_repo ? entry.slug : undefined);
+  if (!entry || home !== request.potHomeSlug || canonicalRepoKey(entry) !== request.scope.repo_key) {
+    throw new Error('requested repository is not registered in the serving hive');
+  }
+  const repoPath = hiveGitRepoPath(home, request.scope.repo_key);
+  try {
+    if (!(await stat(repoPath)).isDirectory()) throw new Error('Git repository path is not a directory');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  return resolveStoreProtocolContext({ sql: getOrgPg().sql, slug: request.installSlug,
+    workspaceId: request.workspaceId, repoPath, scope: request.scope, device });
 }

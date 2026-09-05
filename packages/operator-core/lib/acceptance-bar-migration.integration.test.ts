@@ -147,10 +147,20 @@ describe('runAcceptanceBarMigrationInDatabase', () => {
       }] };
     await db.sql`INSERT INTO harness_shared.harness_plans
       (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
-      VALUES (${WORKSPACE},${HARNESS},'acceptance-legacy-identity','Legacy acceptance','active','legacy body',md5('legacy body'),3,'rubric',${JSON.stringify(legacy)}::jsonb)`;
+      VALUES (${WORKSPACE},${HARNESS},'acceptance-legacy-identity','Legacy acceptance','active','legacy body',md5('legacy body'),3,'rubric',${JSON.stringify(legacy)}::text::jsonb)`;
     const before = await runAcceptanceBarMigrationInDatabase({ workspaceId: WORKSPACE, harnessSlug: HARNESS,
-      actorId: 'su-migration-test', planSlug: 'legacy-identity' });
-    expect(before.outcomes[0]!.status).toBe('failed');
+      actorId: 'su-migration-test', planSlug: 'legacy-identity', dryRun: true });
+    expect(before.outcomes[0]!.status).toBe('refused');
+    const preview = await runAcceptanceBarMigrationInDatabase({ workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      actorId: 'su-migration-test', planSlug: 'legacy-identity', dryRun: true,
+      legacyCriterionMap: { 'R-1': 'canonical-outcome' } });
+    expect(preview.outcomes[0]!.status).toBe('dry-run');
+    expect(JSON.parse(preview.outcomes[0]!.detail)).toMatchObject({ priorRubricRevision: 3, nextRubricRevision: 4,
+      provenance: 'legacy-backfilled', invalidatesPriorProof: true });
+    const [unchanged] = await db.sql`SELECT version,template_data FROM harness_shared.harness_plans
+      WHERE plan_slug='acceptance-legacy-identity'`;
+    expect(Number(unchanged.version)).toBe(3);
+    expect(unchanged.template_data).toEqual(legacy);
     const result = await runAcceptanceBarMigrationInDatabase({ workspaceId: WORKSPACE, harnessSlug: HARNESS,
       actorId: 'su-migration-test', planSlug: 'legacy-identity', legacyCriterionMap: { 'R-1': 'canonical-outcome' } });
     expect(result.outcomes[0], result.outcomes[0]!.detail).toMatchObject({ status: 'applied' });

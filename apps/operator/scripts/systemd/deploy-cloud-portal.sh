@@ -290,11 +290,17 @@ require_production_current_release() {
 # whether the SOURCE has moved since the build, not how old the build is, and
 # ships an explicit override for that rollback case (WI-2141210).
 #
-# `publishStandaloneRuntime()` does not yet record a content digest in
-# `.papercusp-release.json` (only schemaVersion/buildId/release/sourceRoot/
-# publishedAt), so this compares against git history rather than a hash —
-# recording and comparing an actual source digest would need a portal-repo
-# change, which is deliberately out of scope here (see the work item).
+# PREFERRED evidence is CONTENT, not git state (EI-22388584299827941): on a
+# git-sync'd checkout "uncommitted changes" and "a commit newer than the release"
+# measure the sweep cadence, not the artifact — a release built from the working
+# tree seconds ago read as STALE, so every routine deploy carried the rollback
+# override and the check protected nothing. `publishStandaloneRuntime()` now
+# stamps the build's source-tree digest into `.papercusp-release.json` as
+# `sourceRootDigest`, and `scripts/release-source-digest.mjs` recomputes the same
+# digest for the checkout: identical ⇒ the checkout IS this release's source ⇒
+# fresh, whatever git says; different ⇒ stale. The git heuristic below is the
+# FALLBACK for releases published before the digest existed (or when the digest
+# cannot be computed), so older releases keep their original contract.
 require_fresh_current_release() {
   local manifest="$CURRENT_RELEASE_REAL/.papercusp-release.json"
   if [[ ! -f "$manifest" ]]; then
@@ -319,19 +325,42 @@ require_fresh_current_release() {
     return 0
   fi
 
-  local head_iso head_epoch=""
-  head_iso="$("$GIT_BIN" -C "$PORTAL_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
-  [[ -n "$head_iso" ]] && head_epoch="$("$DATE_BIN" -d "$head_iso" +%s 2>/dev/null || true)"
-
-  local dirty=0
-  [[ -n "$("$GIT_BIN" -C "$PORTAL_ROOT" status --porcelain 2>/dev/null)" ]] && dirty=1
-
   local reason=""
-  if [[ -n "$head_epoch" ]] && ((head_epoch > published_epoch)); then
-    reason="$PORTAL_ROOT has a commit newer than the release (built $published_at)"
+
+  # Content digest first. Only a manifest that carries one, AND a checkout that
+  # ships the digest CLI, can be judged this way; anything else falls through to
+  # the git heuristic below with a log line saying why.
+  local release_digest
+  release_digest="$(sed -n 's/.*"sourceRootDigest": *"\([0-9a-fA-F]*\)".*/\1/p' "$manifest" | head -1)"
+  local digest_cli="$PORTAL_ROOT/scripts/release-source-digest.mjs"
+  if [[ -n "$release_digest" && -f "$digest_cli" ]]; then
+    local checkout_digest=""
+    checkout_digest="$("$NODE_BIN" "$digest_cli" "$PORTAL_ROOT" 2>/dev/null | head -1 || true)"
+    if [[ "$checkout_digest" =~ ^[0-9a-fA-F]{16,}$ ]]; then
+      if [[ "${checkout_digest,,}" == "${release_digest,,}" ]]; then
+        log "current release source digest matches $PORTAL_ROOT (${release_digest:0:12}…); fresh"
+        return 0
+      fi
+      reason="$PORTAL_ROOT source digest ${checkout_digest:0:12}… differs from the release's ${release_digest:0:12}… (built $published_at)"
+    else
+      log "could not compute the $PORTAL_ROOT source digest via $digest_cli; falling back to git history"
+    fi
   fi
-  if ((dirty)); then
-    reason="${reason:+$reason; }$PORTAL_ROOT has uncommitted changes"
+
+  if [[ -z "$reason" ]]; then
+    local head_iso head_epoch=""
+    head_iso="$("$GIT_BIN" -C "$PORTAL_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
+    [[ -n "$head_iso" ]] && head_epoch="$("$DATE_BIN" -d "$head_iso" +%s 2>/dev/null || true)"
+
+    local dirty=0
+    [[ -n "$("$GIT_BIN" -C "$PORTAL_ROOT" status --porcelain 2>/dev/null)" ]] && dirty=1
+
+    if [[ -n "$head_epoch" ]] && ((head_epoch > published_epoch)); then
+      reason="$PORTAL_ROOT has a commit newer than the release (built $published_at)"
+    fi
+    if ((dirty)); then
+      reason="${reason:+$reason; }$PORTAL_ROOT has uncommitted changes"
+    fi
   fi
   [[ -n "$reason" ]] || return 0
 
