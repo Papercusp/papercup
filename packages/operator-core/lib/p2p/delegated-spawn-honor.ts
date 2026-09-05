@@ -60,6 +60,15 @@ import { resolveDeviceKeychainId } from '../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../identity/attest';
 import { listResourceAllotments, type AllotmentAudience } from './resource-allotments';
 import {
+  createByocBudget,
+  prepareByocExecution,
+  settleByocExecution,
+  type ByocExecutionContext,
+} from './byoc-execution';
+import { emptyMeteringLedger } from './metering-ledger';
+import type { BillingMode } from './billing-matrix';
+import type { AxisCap, LedgerState } from './offer-budget';
+import {
   resolveSeatLaunch,
   seatAvailabilityForFleet,
   seatLaunchOpts,
@@ -374,7 +383,48 @@ export type DelegatedSpawnHonorOutcome =
   | { outcome: 'skipped'; reason: string }
   | { outcome: 'already_claimed' }
   | { outcome: 'refused'; code: string }
-  | { outcome: 'honored'; opened: number; failed: number };
+  | {
+      outcome: 'honored';
+      opened: number;
+      failed: number;
+      /**
+       * P-017: seats actually COMMITTED against the BYOC budget — the reservation
+       * is opened at `payload.count` and committed at the number of members that
+       * genuinely booted, so this is the metered draw, not the requested one.
+       * `null` only when settlement itself refused (logged; never unwinds a live
+       * spawn — the members are already running).
+       */
+      committedSeats: number | null;
+    };
+
+/**
+ * P-017 (D-045 §3f): which X7 billing authority a delegated seat runs under.
+ *
+ * The honoring host executes on ITS OWN credentials, so a seat pinned to this
+ * host's local login or to a named pool id is `host-pays` — host-signed receipts
+ * alone are authoritative. A seat authored `AUTO` spends the gateway ACCOUNT
+ * POOL instead, which is `pool-with-attribution`; billing-matrix then enforces
+ * M17 (single-owner pools only), because honoring a remote fleet's request out
+ * of a MULTI-owner pool would spend other owners' credentials for a third party.
+ */
+export function byocBillingModeForRoute(credentialRoute: 'auto' | 'default' | 'pinned'): BillingMode {
+  return credentialRoute === 'auto' ? 'pool-with-attribution' : 'host-pays';
+}
+
+/**
+ * P-017: the seat axis this honor spends against. Denominated in `slots` (H14 —
+ * both sides of every comparison must already agree, and the delegated-seat
+ * board counts whole seats). The cap is what REMAINS on the matched slot, so a
+ * single reserve of the requested count is the honest ceiling test; the H11
+ * per-call clamp is the host's own `maxConcurrentSeats` policy ceiling.
+ */
+export function byocSeatAxisCap(available: number, maxConcurrentSeats: number): AxisCap {
+  return {
+    cap: Math.max(0, available),
+    unit: 'slots',
+    maxPerCall: maxConcurrentSeats > 0 ? maxConcurrentSeats : null,
+  };
+}
 
 /** DI seams so unit tests run without PG/keychain/desktop. */
 export interface DelegatedSpawnHonorDeps {
@@ -430,6 +480,16 @@ export interface DelegatedSpawnHonorDeps {
     fleetSlug: string;
     sinceMs: number;
   }) => Promise<LocalBootVerifyResult>;
+  /**
+   * P-017 (D-045 §3f): the M17 single-owner reading for the gateway account
+   * pool, consulted ONLY when the seat routes through it (`--account=auto` ⇒
+   * `pool-with-attribution`). `null` means the ownership could not be
+   * established, which billing-matrix treats as fail-closed — an unknown pool
+   * is never spent on a remote fleet's behalf. Default reads the account
+   * resolver lazily, keeping the inference-gateway graph off the sync
+   * projection's import path (the same posture as the other lazy deps here).
+   */
+  resolveBillingPool?: (workspaceId: string) => Promise<{ singleOwner: boolean } | null>;
 }
 
 async function defaultResolveDevicePubkey(githubUserId: number): Promise<string> {
@@ -566,6 +626,41 @@ async function defaultResolveHonorAccount(
     listPoolAccountIds: async () => ids,
     probeLocalLogin: () => probeLocalClaudeLogin(),
   });
+}
+
+/**
+ * P-017 default M17 pool reading (D-045 §3f).
+ *
+ * SCHEMA TRUTH, stated because the gate's strength depends on it: `AccountPool`
+ * is `{ accounts: ClaudeAccount[] }` — there is NO per-account owner field, and
+ * no multi-owner pool concept anywhere in this codebase today. A pool is loaded
+ * from THIS host's own workspace-scoped configuration (the accounts its owner
+ * linked in Settings → Deploy accounts), so a populated pool has exactly one
+ * owner by construction and `singleOwner: true` is a fact about the schema, not
+ * an assumption about the deployment. If a genuinely multi-owner pool is ever
+ * introduced, THIS function is the single place that must learn to say so.
+ *
+ * What the gate therefore actually catches — both real, neither reachable
+ * before this wiring:
+ *   - the pool read FAILING while the seat routes through the pool. Today
+ *     {@link defaultResolveHonorAccount} swallows that exception and returns the
+ *     requested account unchanged, so `--account=auto` survives a pool it could
+ *     not read and psu then refuses at boot: a silent dead member, the exact
+ *     WI-5316 failure. `null` here fails the honor CLOSED instead, loudly.
+ *   - a pool with no real accounts (local-fallback only) still carrying an
+ *     `auto` route: there is nothing to attribute a pooled draw to.
+ */
+async function defaultResolveBillingPool(workspaceId: string): Promise<{ singleOwner: boolean } | null> {
+  try {
+    const { resolveAccountPool } = await import('../inference-gateway/account-resolver');
+    const pool = await resolveAccountPool(workspaceId, 'claude');
+    const real = pool.filter((a) => a.source !== 'local-fallback');
+    return { singleOwner: real.length > 0 };
+  } catch {
+    // Unreadable pool ⇒ ownership UNKNOWN ⇒ fail closed (billing-matrix refuses
+    // `pool-with-attribution` without a single-owner reading). Never guess.
+    return null;
+  }
 }
 
 /**
@@ -912,6 +1007,47 @@ export async function honorSpawnRequestFromProjection(
   });
   if (!policy.ok) return refuse(policy.code, policy.detail, `refused:${policy.code}`);
 
+  // Gate 4.8 (P-017 / D-045 §3f): BYOC control plane. This host is about to run
+  // a remote fleet's members on ITS OWN credentials and seats — the definition
+  // of a BYOC execution — so the offer-budget / inference-lease / billing legs
+  // run BEFORE the atomic claim, from the null disposition, exactly like the
+  // gates above (no 'honoring' claim is left dangling on a refusal).
+  //
+  // prepareByocExecution is the CHOKEPOINT, not a formality: it resolves the X7
+  // billing authority (M17 single-owner pools for a pool-routed seat, D-009 no
+  // v1 relay), revalidates an inference lease when one is carried, and RESERVES
+  // the requested seats against the axis ledger under the H11 per-call clamp. A
+  // refusal from any of those legs aborts the spawn.
+  const billingMode = byocBillingModeForRoute(credentialRoute);
+  const resolveBillingPool = deps.resolveBillingPool ?? defaultResolveBillingPool;
+  const billingPool = billingMode === 'pool-with-attribution' ? await resolveBillingPool(args.workspaceId) : null;
+  const byocContext: ByocExecutionContext = {
+    // This host's stable metering identity. The device pubkey is what every
+    // federated receipt on this path already signs as `responderDevicePubkey`,
+    // so the spend meter keys on the SAME host identity the requester sees.
+    hostRef: devicePubkey,
+    fleetSlug: args.row.fleet_slug,
+    // 'local': the honoring host executes on its own machine and credentials.
+    axis: 'local',
+    unit: 'slots',
+    billedAmount: payload.count,
+    reservationId: args.row.offer_id,
+    billingMode,
+    billingContext: { pool: billingPool },
+    // Delegated seats carry no InferenceLease today, so the lease leg stays
+    // dormant here by DATA, not by omission — prepareByocExecution revalidates
+    // it the moment a lease is present on this context.
+    attestedUserId: payload.requesterOwnerId,
+    perUserContributionCap: null,
+  };
+  const byocBudget: LedgerState = createByocBudget(
+    byocSeatAxisCap(resolution.slot.available, loadedPolicy.policy.maxConcurrentSeats),
+  );
+  const prepared = prepareByocExecution({ budget: byocBudget, context: byocContext });
+  if (!prepared.ok) {
+    return refuse(prepared.code, prepared.detail, `refused:${prepared.code}`);
+  }
+
   // Gate 5: the atomic claim — exactly one hook invocation spawns.
   const claimed = await setDisposition(
     args.workspaceId,
@@ -1039,6 +1175,30 @@ export async function honorSpawnRequestFromProjection(
     return { outcome: 'refused', code };
   }
 
+  // P-017 SETTLEMENT (D-045 §3f). The reservation was opened at the REQUESTED
+  // count; commit it at what actually booted, so a partial honor draws only the
+  // seats it really consumed (`commit`'s `actualAmount` clamp) and the metering
+  // leg records that same number as the host's spend plus the requester's
+  // attributed contribution. Deliberately AFTER the boot check: seats that
+  // never ran a turn must not be metered.
+  //
+  // A settlement refusal is LOGGED, never a refusal outcome — the members are
+  // already live and un-spawning them is not on the table. `committedSeats:
+  // null` on the outcome is how a caller tells "not metered" from "metered 0".
+  const settled = settleByocExecution({
+    budget: prepared.ledger,
+    metering: emptyMeteringLedger(),
+    context: byocContext,
+    actualAmount: spawn.opened,
+  });
+  if (!settled.ok) {
+    console.log(
+      `[delegated-spawn-honor] ${args.row.offer_id}: BYOC settlement refused (${settled.code}): ${settled.detail} ` +
+        `— ${spawn.opened} member(s) are already live, so the honor stands unmetered.`,
+    );
+  }
+  const committedSeats = settled.ok ? settled.committedAmount : null;
+
   await setDisposition(
     args.workspaceId,
     args.potHomeSlug,
@@ -1062,6 +1222,14 @@ export async function honorSpawnRequestFromProjection(
   // and answering it currently requires shelling into the honoring host.
   const partial = spawn.failed > 0 ? `, ${spawn.failed} FAILED to open` : '';
   const bootNote = `. Local first-turn check CONFIRMED the agent ran (${bootVerify.detail}).`;
+  // P-017: the requester's only federated view of what this honor actually
+  // DREW. `local_disposition` never crosses the wire, so without this the
+  // metered draw would be invisible to the side being billed for it.
+  const meterNote = settled.ok
+    ? ` Metered ${settled.committedAmount} seat(s) on axis 'local' under billing mode '${billingMode}'` +
+      (settled.contributionCredited > 0 ? `, ${settled.contributionCredited} credited to '${payload.requesterOwnerId}'` : '') +
+      '.'
+    : ` NOT metered: BYOC settlement refused (${settled.code}).`;
   await emitDelegatedSpawnReceipt({
     workspaceId: args.workspaceId,
     potSlug: args.potHomeSlug,
@@ -1072,12 +1240,13 @@ export async function honorSpawnRequestFromProjection(
       `honored: opened ${spawn.opened}/${payload.count} member(s)${partial} for fleet ` +
       `'${args.row.fleet_slug}' on seat '${slot.ref}' with account='${acct.account}'` +
       (acct.note ? ` (${acct.note})` : '') +
-      bootNote,
+      bootNote +
+      meterNote,
     requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
     responderGithubUserId: actor.githubUserId,
     responderDevicePubkey: devicePubkey,
     actor: 'delegated-spawn-honor',
   });
 
-  return { outcome: 'honored', opened: spawn.opened, failed: spawn.failed };
+  return { outcome: 'honored', opened: spawn.opened, failed: spawn.failed, committedSeats };
 }

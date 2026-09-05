@@ -117,11 +117,34 @@ trap cleanup_kopia_pid EXIT
     "$HOME/macos-vm"
     /mnt/data/offload/windows-vm
   )
-  mapfile -t SRCS < <("$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
-    | awk -F'@' '/^[a-zA-Z]/' \
-    | grep -oE ':/[^ ]+' \
-    | sort -u \
-    | sed 's/^://' \
+  # ── REQUIRED SOURCES: the fix for a blind spot in the discovery above ───────
+  # Discovery is self-referential: it enumerates sources that ALREADY HAVE a
+  # snapshot, so a directory that has never been snapshotted CANNOT ENTER IT, by
+  # construction. There is no registration path. That is not a corner case — it
+  # is what happened on 2026-09-05 (WI-2146225): WI-2145150 relocated the
+  # Postgres dumps from /mnt/data/Backup/db-dumps to /mnt/backup/db-dumps
+  # because /mnt/data hit 97%, the new directory had no snapshot, so discovery
+  # never returned it, so it never got one. The dumps kept being produced
+  # perfectly and stopped leaving the box entirely, and every existing check
+  # stayed green: the freshness checks read LOCAL files, and check 2 takes the
+  # newest snapshot across ALL sources, so 16 healthy sources kept it green.
+  #
+  # Silent, self-perpetuating, and unbounded in time — the exact shape of
+  # EI-10733. So the paths that MUST be covered are named here and unioned in
+  # unconditionally: relocating a backup directory now costs one sweep of
+  # latency instead of forever. Only paths that exist on disk are added, so a
+  # box that does not have one is not spammed with errors for it.
+  REQUIRED_SOURCES=(
+    "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+  )
+  mapfile -t SRCS < <({ "$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
+      | awk -F'@' '/^[a-zA-Z]/' \
+      | grep -oE ':/[^ ]+' \
+      | sed 's/^://'
+    for r in ${REQUIRED_SOURCES[@]+"${REQUIRED_SOURCES[@]}"}; do
+      [ -d "$r" ] && printf '%s\n' "$r"
+    done
+    } | sort -u \
     | grep -vxF "$(printf '%s\n' "${COLD_SOURCES[@]}")")
   # Guard: the old loop snapshotted NOTHING, silently, if discovery came back empty
   # — the same shape as the `--max-results-per-source` flag breakage that made

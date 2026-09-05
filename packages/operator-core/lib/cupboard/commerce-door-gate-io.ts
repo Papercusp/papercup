@@ -1,0 +1,266 @@
+/**
+ * commerce-door-gate-io — the production wiring the four `agent-tools/cupboard/
+ * commerce-*.ts` doors call (D-045 §3d).
+ *
+ * `commerce-door-gate` holds the RULES and is pure; this module holds the I/O
+ * those rules need — the commerce snapshot they decide on, and the hosted
+ * checkout call. Splitting them is what lets every authorization rule be tested
+ * without a network, and lets this file be read as exactly "where the outside
+ * world enters".
+ *
+ * WHAT IS DELIBERATELY EMPTY HERE
+ * -------------------------------
+ * `loadCommerceState` returns an EMPTY snapshot today, and that is a measured
+ * fact rather than an oversight. P-010's persistence landed in the hosted
+ * Worker's D1 (`apps/operator-public/src/commerce-store.ts`, migration
+ * `019_commerce_ledger.sql`); the desktop operator has no commerce tables and
+ * no local writer, and the hosted API exposes no whole-ledger read — only
+ * `GET /commerce/entitlements?buyer=`. So there is genuinely nothing to load
+ * here yet.
+ *
+ * It is a NAMED seam rather than an absent one so that the persistence P-010
+ * (or P-016) lands has exactly ONE place to arrive, instead of a fifth door
+ * being invented for it. This is the same shape, and the same reasoning, as
+ * `install-door-gate-io.loadReleaseChain` returning null.
+ *
+ * WHAT THIS MEANS THE DOORS DO IN PRODUCTION TODAY — STATED PLAINLY
+ * ----------------------------------------------------------------
+ * An empty snapshot has no organizations, so `authorizeOrgActor` refuses every
+ * call with `unknown-org` until an org roster is published. That is FAIL-CLOSED
+ * and deliberate: the alternative — treating an unknown id as an individual
+ * buyer, which is what `resolveBuyerPrincipal` does on its own — would let any
+ * caller name any string and be authorized as that buyer. A door that refuses
+ * until it can actually check is the correct behaviour for a money surface;
+ * a door that proceeds because the check is unavailable is the bug.
+ *
+ * The checkout door's hosted leg is NOT stubbed in the same way: it posts to
+ * the real `POST /commerce/checkout-sessions` on the resolved Cupboard base
+ * URL, so once a roster exists the path is live end to end.
+ */
+import { resolveCupboardBaseUrl } from './base-url';
+import type { Installation, Organization, SeatPolicy, CreatorProfile } from './commerce-accounts';
+import { reduceLedger, type LedgerEvent } from './commerce-ledger';
+import {
+  gateCheckout,
+  gateCommerceDashboards,
+  gateRefundRequest,
+  gateSupportRequest,
+  type CheckoutDoorDecision,
+  type CheckoutDoorInput,
+  type CheckoutSessionRequest,
+  type CommerceSnapshot,
+  type DashboardsDoorDecision,
+  type DashboardsDoorInput,
+  type RefundDoorDecision,
+  type RefundDoorInput,
+  type SupportDoorDecision,
+  type SupportDoorInput,
+} from './commerce-door-gate';
+
+/**
+ * The single seam every commerce door reads its state through.
+ *
+ * Returning an empty fold is the honest answer while no local writer exists;
+ * synthesising rows here would make the doors look exercised in production when
+ * they are not. When persistence lands, this function is the only thing that
+ * changes.
+ */
+export async function loadCommerceLedgerEvents(): Promise<readonly LedgerEvent[]> {
+  return [];
+}
+
+export async function loadCommerceState(): Promise<CommerceSnapshot> {
+  const events = await loadCommerceLedgerEvents();
+  return {
+    ledger: reduceLedger(events),
+    orgs: new Map<string, Organization>(),
+    seatPolicies: new Map<string, SeatPolicy>(),
+    installations: [] as readonly Installation[],
+    creatorProfiles: new Map<string, CreatorProfile>(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The hosted checkout leg
+// ---------------------------------------------------------------------------
+
+/**
+ * The hosted route, verified against the landed Worker rather than a proposal.
+ *
+ * `apps/operator-public/src/routes/index.ts` mounts `commerceRoute()` at '/',
+ * and `routes/commerce.ts` registers `POST /commerce/checkout-sessions`. There
+ * is NO `/v1` prefix — su-57f4104a flagged this explicitly, because the P-010
+ * brief's text names one and faking it would mean the two halves never meet.
+ */
+export const CHECKOUT_SESSIONS_PATH = '/commerce/checkout-sessions';
+
+/** Error vocabulary the hosted route returns, as amended by its owner. */
+export type CheckoutHostedErrorCode =
+  | 'invalid_request'
+  | 'unauthorized'
+  | 'unknown_offer'
+  | 'unknown_product'
+  | 'inactive_offer'
+  | 'unsupported_pricing_model'
+  | 'amount_mismatch'
+  | 'zero_amount'
+  | 'unsupported_quantity'
+  | 'provider_error'
+  | 'provider_not_configured';
+
+export interface CheckoutSessionOk {
+  readonly ok: true;
+  readonly orderId: string;
+  readonly providerSessionId: string;
+  readonly url: string;
+  /** True when the route replayed an existing order for a repeated key (200). */
+  readonly idempotentReplay: boolean;
+}
+
+export interface CheckoutSessionFailed {
+  readonly ok: false;
+  readonly status: number;
+  readonly error: string;
+  readonly detail: string | null;
+}
+
+export type CheckoutSessionResult = CheckoutSessionOk | CheckoutSessionFailed;
+
+export interface CheckoutTransportDeps {
+  readonly fetchImpl?: typeof fetch;
+  readonly baseUrl?: string;
+  /** Override the GitHub bearer; omitted in production, supplied by tests. */
+  readonly authToken?: string;
+}
+
+/**
+ * POST the checkout session to the hosted route.
+ *
+ * A 201 is a fresh session and a 200 is the idempotent replay of one already
+ * created for the same key — both carry the same body, so the distinction is
+ * reported rather than flattened: a caller that retried after a timeout needs
+ * to know it did not create a second order.
+ */
+export async function postCheckoutSession(
+  request: CheckoutSessionRequest,
+  deps: CheckoutTransportDeps = {},
+): Promise<CheckoutSessionResult> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const base = (deps.baseUrl ?? resolveCupboardBaseUrl()).replace(/\/+$/, '');
+
+  // The route authenticates with a GitHub bearer (`resolveGithubBearer`), the
+  // SAME scheme publish-listing and delete-listing already use — reuse rather
+  // than a second credential path. Resolving it BEFORE the request turns a
+  // missing token into a local, named refusal instead of an opaque hosted 401.
+  let token = deps.authToken;
+  if (token === undefined) {
+    const { getGhAuthToken } = await import('../identity/gh-token');
+    const resolved = await getGhAuthToken();
+    if (resolved.kind !== 'ok') {
+      return {
+        ok: false,
+        status: 401,
+        error: 'gh_auth_required',
+        detail: 'no GitHub token is available to authenticate the checkout request',
+      };
+    }
+    token = resolved.token;
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(`${base}${CHECKOUT_SESSIONS_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(request),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: 'transport_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  const payload = (body ?? {}) as Record<string, unknown>;
+
+  if (response.status !== 200 && response.status !== 201) {
+    return {
+      ok: false,
+      status: response.status,
+      error: typeof payload.error === 'string' ? payload.error : `http_${response.status}`,
+      detail: typeof payload.detail === 'string' ? payload.detail : null,
+    };
+  }
+
+  const orderId = payload.orderId;
+  const providerSessionId = payload.providerSessionId;
+  const url = payload.url;
+  if (typeof orderId !== 'string' || typeof providerSessionId !== 'string' || typeof url !== 'string') {
+    // A 2xx whose body does not carry the contract is a contract breach, not a
+    // success — surfacing it as one would hand the caller `undefined` order ids.
+    return {
+      ok: false,
+      status: response.status,
+      error: 'malformed_response',
+      detail: `expected { orderId, providerSessionId, url } from ${CHECKOUT_SESSIONS_PATH}`,
+    };
+  }
+
+  return {
+    ok: true,
+    orderId,
+    providerSessionId,
+    url,
+    idempotentReplay: response.status === 200,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The four calls the doors make
+// ---------------------------------------------------------------------------
+
+export type CheckoutDoorOutcome =
+  | { readonly ok: true; readonly session: CheckoutSessionOk; readonly orderId: string }
+  | { readonly ok: false; readonly code: string; readonly detail: string; readonly status?: number };
+
+/**
+ * The single call `cupboard:checkout` makes: authorize locally, then start the
+ * hosted session. The local gate runs FIRST so an unauthorized request never
+ * becomes a provider round trip.
+ */
+export async function checkoutDoor(
+  input: CheckoutDoorInput,
+  deps: CheckoutTransportDeps = {},
+): Promise<CheckoutDoorOutcome> {
+  const snapshot = await loadCommerceState();
+  const decision: CheckoutDoorDecision = gateCheckout(input, snapshot);
+  if (!decision.ok) return { ok: false, code: decision.code, detail: decision.detail };
+
+  const session = await postCheckoutSession(decision.request, deps);
+  if (!session.ok) {
+    return { ok: false, code: session.error, detail: session.detail ?? '', status: session.status };
+  }
+  return { ok: true, session, orderId: session.orderId };
+}
+
+export async function refundRequestDoor(input: RefundDoorInput): Promise<RefundDoorDecision> {
+  return gateRefundRequest(input, await loadCommerceState());
+}
+
+export async function supportRequestDoor(input: SupportDoorInput): Promise<SupportDoorDecision> {
+  return gateSupportRequest(input, await loadCommerceState());
+}
+
+export async function commerceDashboardsDoor(
+  input: DashboardsDoorInput,
+): Promise<DashboardsDoorDecision> {
+  return gateCommerceDashboards(input, await loadCommerceState());
+}

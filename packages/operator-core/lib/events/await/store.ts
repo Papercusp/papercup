@@ -1026,13 +1026,13 @@ export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
  */
 export async function listParkedAwaitsForSubscribers(
   subscriberIds: readonly string[],
-): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt' | 'rootId'>>> {
+): Promise<Array<Pick<AwaitRow, 'subscriberId' | 'eventKey' | 'note' | 'expiresTs' | 'createdAt' | 'rootId' | 'boundTo'>>> {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, event_key, note, expires_ts, created_at, root_id
+    SELECT subscriber_id, event_key, note, expires_ts, created_at, root_id, bound_to
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -1066,6 +1066,9 @@ export async function listParkedAwaitsForSubscribers(
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
     createdAt: new Date(r.created_at).toISOString(),
     rootId: r.root_id != null ? Number(r.root_id) : null,
+    // Loop suppression needs the writer's provenance: an automatically bound
+    // dependency watch is interest in ONE item, not a deliberate session park.
+    boundTo: parseJsonb<LifecycleBinding>(r.bound_to),
   }));
   // P-016. This read IS the bench/park verdict behind fleet:assignments' `parkedOn`
   // and the claim-discipline watch, so both halves of the composed-leaf defect matter

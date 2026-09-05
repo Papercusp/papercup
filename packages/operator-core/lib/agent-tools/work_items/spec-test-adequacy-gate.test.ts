@@ -84,6 +84,9 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
       },
     },
     currentness: {
+      // WI-2146375: every dimension here reads 'current', which is only reachable when a
+      // comparison input WAS supplied — `unknown` is what you get when nobody asked.
+      comparisonSupplied: true,
       overall: 'current',
       dimensions: {
         spec: 'current',

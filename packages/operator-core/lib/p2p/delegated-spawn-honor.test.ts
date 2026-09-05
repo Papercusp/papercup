@@ -18,6 +18,8 @@ import {
   SPAWN_REQUEST_HONOR_WINDOW_MS,
   classifyRuntimeProbe,
   defaultVerifyLocalMemberBoot,
+  byocBillingModeForRoute,
+  byocSeatAxisCap,
   evaluateSpawnRequestTarget,
   honorSpawnRequestFromProjection,
   probeAgentBinResolvable,
@@ -248,6 +250,14 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     observed: true,
     detail: "member su-boot took a tool-backed turn in 'alpha' locally",
   }));
+  // P-017: the fixture seat is `AUTO`, and seatLaunchOpts maps AUTO→'auto', so
+  // EVERY honor test here routes through the gateway pool ⇒ billing mode
+  // 'pool-with-attribution' ⇒ the M17 single-owner reading is consulted. Default
+  // it to a readable single-owner pool for the same reason probeAgentRuntime and
+  // resolveHonorAccount are defaulted: these tests are pure DI (no PG), and the
+  // real reader dynamic-imports the account-resolver. The unknown-pool refusal
+  // and its positive control get their own tests below.
+  const resolveBillingPool = vi.fn(async () => ({ singleOwner: true }));
   const d: DelegatedSpawnHonorDeps = {
     hostAccepts: vi.fn(async () => true),
     resolveActor: vi.fn(async () => ({ githubUserId: UID_B })) as any,
@@ -263,6 +273,7 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     isTrustedUser,
     isPotMember,
     verifyLocalMemberBoot,
+    resolveBillingPool,
     nowMs: () => NOW,
     ...over,
   };
@@ -276,6 +287,7 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     isTrustedUser,
     isPotMember,
     verifyLocalMemberBoot,
+    resolveBillingPool,
   };
 }
 
@@ -315,7 +327,7 @@ describe('honorSpawnRequestFromProjection', () => {
   it('honors: claim → spawn → honored, with the seat pins from the matched slot', async () => {
     const { d, setDisposition, spawnMembers } = deps();
     const res = await honorSpawnRequestFromProjection(ARGS, d);
-    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(setDisposition).toHaveBeenNthCalledWith(1, WS, HOME, UID_A, 'spawnreq-0123456789abcdef', 'honoring', undefined, undefined);
     expect(setDisposition).toHaveBeenNthCalledWith(2, WS, HOME, UID_A, 'spawnreq-0123456789abcdef', 'honored', { expect: 'honoring' }, undefined);
     expect(spawnMembers).toHaveBeenCalledWith(
@@ -337,7 +349,7 @@ describe('honorSpawnRequestFromProjection', () => {
   // from a request nobody picked up.
   it('honors ⇒ emits a federated kind=honored receipt naming the account (EI-19333624101736074)', async () => {
     const { d, emitReceipt } = deps();
-    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(emitReceipt).toHaveBeenCalledOnce();
     expect(emitReceipt).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -365,7 +377,7 @@ describe('honorSpawnRequestFromProjection', () => {
       note: "downgraded --account=auto → default: this host's gateway pool is empty",
     }));
     const { d, emitReceipt } = deps({ resolveHonorAccount });
-    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     const emitted = emitReceipt.mock.calls[0]![0] as { kind: string; detail: string };
     expect(emitted.kind).toBe('honored');
     expect(emitted.detail).toContain("account='default'");
@@ -376,7 +388,7 @@ describe('honorSpawnRequestFromProjection', () => {
     const { d, emitReceipt } = deps({
       spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: 'second window failed' })),
     });
-    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 1, failed: 1 });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 1, failed: 1, committedSeats: 1 });
     const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
     expect(emitted.detail).toContain('opened 1/2');
     expect(emitted.detail).toContain('1 FAILED to open');
@@ -390,7 +402,7 @@ describe('honorSpawnRequestFromProjection', () => {
         detail: "member su-abc took a tool-backed turn in 'alpha' locally",
       }));
       const { d, setDisposition, emitReceipt } = deps({ verifyLocalMemberBoot });
-      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
       expect(verifyLocalMemberBoot).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: WS, fleetSlug: row().fleet_slug, sinceMs: NOW }),
       );
@@ -733,7 +745,7 @@ describe('honorSpawnRequestFromProjection', () => {
     }));
     const { d, spawnMembers } = deps({ resolveHonorAccount });
     const res = await honorSpawnRequestFromProjection(ARGS, d);
-    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(spawnMembers).toHaveBeenCalledWith(
       expect.objectContaining({
         // the seat is AUTO, but the honor-resolved account overrides it
@@ -753,7 +765,7 @@ describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
       availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
     });
     const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
-    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(isTrustedUser).toHaveBeenCalledWith(WS, UID_A); // UID_A = the requester (spawn_request publisher)
     expect(isPotMember).not.toHaveBeenCalled();
     expect(spawnMembers).toHaveBeenCalledWith(expect.objectContaining({ seatRef: 'sonnet:high:AUTO' }));
@@ -765,7 +777,7 @@ describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
       availabilityForFleet: vi.fn(async () => POT_AVAILABILITY) as any,
     });
     const res = await honorSpawnRequestFromProjection({ ...ARGS, row: potRow }, d);
-    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(isPotMember).toHaveBeenCalledWith(WS, POT_SLUG, UID_A);
     expect(isTrustedUser).not.toHaveBeenCalled();
   });
@@ -817,7 +829,7 @@ describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
   it('a FLEET-scoped request never calls the audience gate (potMatch null ⇒ skipped entirely)', async () => {
     const { d, isTrustedUser, isPotMember, spawnMembers } = deps();
     const res = await honorSpawnRequestFromProjection(ARGS, d); // ARGS.row is the fleet-scoped fixture
-    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
     expect(isTrustedUser).not.toHaveBeenCalled();
     expect(isPotMember).not.toHaveBeenCalled();
     expect(spawnMembers).toHaveBeenCalled();
@@ -843,7 +855,7 @@ describe('honorSpawnRequestFromProjection — the P-003 audience gate', () => {
       { ...ARGS, row: row(requestRecord({ payload: { targetOfferId: POT_TARGET_OFFER_ID } })) },
       d,
     );
-    expect(first).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(first).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
 
     // A SECOND, distinct spawn-request (different offer id) from the SAME requester
     // (UID_A) for the SAME pot offer — trust has since been revoked.
@@ -916,7 +928,7 @@ describe('honorSpawnRequestFromProjection — WI-5408 over-draw race (two fleets
       { ...ARGS, row: potReqRow('spawnreq-alpha-0001', 'alpha') },
       d,
     );
-    expect(winner).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+    expect(winner).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
 
     const loser = await honorSpawnRequestFromProjection(
       { ...ARGS, row: potReqRow('spawnreq-beta-0002', 'beta') },
@@ -1301,4 +1313,127 @@ describe('probeAgentBinResolvable (WI-5306, real login-shell probe)', () => {
     expect(missing.resolved).toBe(false);
     expect(missing.detail).toContain('command not found');
   }, 15_000);
+});
+
+// ── P-017 / D-045 §3f: the BYOC control plane on the honor path ──────────────
+//
+// What a regression here breaks: byoc-execution.ts goes back to having zero
+// production callers (its whole disposition under D-045), OR — worse — it keeps
+// being *called* while nothing depends on the answer, which is a `wired` verdict
+// that is technically true and substantively false. Every test below therefore
+// asserts a CONSEQUENCE (a spawn that does not happen, a metered number that
+// tracks reality), never merely that the function ran.
+describe('P-017 BYOC control plane (D-045 §3f)', () => {
+  describe('byocBillingModeForRoute — the X7 authority a delegated seat runs under', () => {
+    it("maps the gateway-pool route to 'pool-with-attribution' and own-credential routes to 'host-pays'", () => {
+      // 'auto' spends the shared account POOL, so M17 (single-owner pools only)
+      // must apply; the other two spend THIS host's own credential, where
+      // host-signed receipts alone are authoritative.
+      expect(byocBillingModeForRoute('auto')).toBe('pool-with-attribution');
+      expect(byocBillingModeForRoute('default')).toBe('host-pays');
+      expect(byocBillingModeForRoute('pinned')).toBe('host-pays');
+    });
+  });
+
+  describe('byocSeatAxisCap — the seat axis the honor reserves against', () => {
+    it('caps at what REMAINS on the slot, denominated in slots, clamped per-call by the host policy', () => {
+      expect(byocSeatAxisCap(3, 12)).toEqual({ cap: 3, unit: 'slots', maxPerCall: 12 });
+    });
+
+    it('never emits a negative cap, and treats a non-positive policy ceiling as "no per-call clamp"', () => {
+      // A leaked / over-consumed seat board can report available < 0 (WI-5317);
+      // offer-budget requires a finite cap >= 0, so a negative would make every
+      // reserve refuse for the wrong reason.
+      expect(byocSeatAxisCap(-2, 12).cap).toBe(0);
+      expect(byocSeatAxisCap(3, 0).maxPerCall).toBeNull();
+    });
+  });
+
+  describe('the M17 pool gate is LOAD-BEARING — an unreadable pool stops the spawn', () => {
+    it('refuses a pool-routed honor when pool ownership cannot be established, and never spawns', async () => {
+      // `null` = the account-resolver read FAILED, so ownership is UNKNOWN.
+      // Today defaultResolveHonorAccount swallows exactly this exception and
+      // lets `--account=auto` through to a boot-time death (the WI-5316 shape);
+      // billing-matrix fails it closed here instead.
+      const { d, spawnMembers, setDisposition, emitReceipt } = deps({
+        resolveBillingPool: vi.fn(async () => null),
+      });
+      const res = await honorSpawnRequestFromProjection(ARGS, d);
+
+      expect(res).toEqual({ outcome: 'refused', code: 'pool_not_single_owner' });
+      // The whole point: no members were launched.
+      expect(spawnMembers).not.toHaveBeenCalled();
+      // Refused from the NULL disposition — no 'honoring' claim left dangling.
+      expect(setDisposition).toHaveBeenCalledWith(
+        WS,
+        HOME,
+        UID_A,
+        'spawnreq-0123456789abcdef',
+        'refused:pool_not_single_owner',
+        undefined,
+        undefined,
+      );
+      // D-004: the requester learns WHY, over the one channel that crosses.
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'refusal',
+          refusal: expect.objectContaining({ code: 'pool_not_single_owner' }),
+        }),
+      );
+    });
+
+    it('POSITIVE CONTROL: the identical request DOES honor once the pool reads single-owner', async () => {
+      // Without this control the refusal above proves nothing — a request
+      // blocked by some unrelated gate would produce the same "did not spawn".
+      const { d, spawnMembers, resolveBillingPool } = deps();
+      const res = await honorSpawnRequestFromProjection(ARGS, d);
+
+      expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
+      expect(spawnMembers).toHaveBeenCalledOnce();
+      // And the gate really was consulted on this path — not skipped.
+      expect(resolveBillingPool).toHaveBeenCalledWith(WS);
+    });
+
+    it("does NOT consult the pool when the seat runs on this host's own credential", async () => {
+      // A 'default'-routed seat is host-pays: there is no pool to attribute to,
+      // so reading one would be a pointless dependency on gateway state.
+      const { d, resolveBillingPool } = deps({
+        resolveHonorAccount: vi.fn(async () => ({ ok: true as const, account: 'default' })),
+      });
+      const res = await honorSpawnRequestFromProjection(ARGS, d);
+
+      expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
+      expect(resolveBillingPool).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('settlement meters what BOOTED, not what was requested', () => {
+    it('commits the reservation at the actually-opened count on a PARTIAL honor', async () => {
+      // The reservation opens at payload.count (2). Only one member booted, so
+      // the draw committed against the budget — and reported to the requester
+      // being billed — must be 1, not 2.
+      const { d, emitReceipt } = deps({
+        spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: 'second window died' })),
+      });
+      const res = await honorSpawnRequestFromProjection(ARGS, d);
+
+      expect(res).toEqual({ outcome: 'honored', opened: 1, failed: 1, committedSeats: 1 });
+      const honored = emitReceipt.mock.calls.map((c: any[]) => c[0]).find((r: any) => r?.kind === 'honored');
+      expect(honored.detail).toContain("Metered 1 seat(s) on axis 'local' under billing mode 'pool-with-attribution'");
+    });
+
+    it('POSITIVE CONTROL: a full honor meters every requested seat', async () => {
+      // Pins the partial case above to the OPENED count specifically. Without
+      // this, "committedSeats: 1" is equally consistent with a settlement that
+      // always meters 1, which would under-bill every multi-seat honor.
+      const { d, emitReceipt } = deps();
+      const res = await honorSpawnRequestFromProjection(ARGS, d);
+
+      expect(res).toEqual({ outcome: 'honored', opened: 2, failed: 0, committedSeats: 2 });
+      const honored = emitReceipt.mock.calls.map((c: any[]) => c[0]).find((r: any) => r?.kind === 'honored');
+      expect(honored.detail).toContain('Metered 2 seat(s)');
+      // The requesting owner is credited the attributed contribution.
+      expect(honored.detail).toContain("2 credited to 'su-a'");
+    });
+  });
 });

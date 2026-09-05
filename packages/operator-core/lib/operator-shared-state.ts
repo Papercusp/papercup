@@ -1,6 +1,7 @@
 'use client';
 
 import { wsLocalKey } from './browser-workspace';
+import { backgroundRequest } from './transport-adapters/origin-scheduler-fetch';
 
 /**
  * Module-scoped shared state for the Operator chrome (button + panel +
@@ -189,7 +190,7 @@ export async function hydrateOperatorStateFromPg(): Promise<void> {
     for (const fn of store.setters) fn({ autoAccept: saved });
   }
   try {
-    const r = await fetch('/api/profile');
+    const r = await fetch('/api/profile', backgroundRequest());
     if (!r.ok) return;
     const profile = await r.json();
     // Prefer the new key; fall back to legacy auto_scan boolean.

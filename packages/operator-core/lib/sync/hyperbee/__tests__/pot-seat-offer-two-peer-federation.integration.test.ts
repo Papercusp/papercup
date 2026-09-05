@@ -293,6 +293,12 @@ describe('pot-scoped seat-offer — two-peer federation (WI-5409/P-010)', () => 
           detail: 'stubbed — tool-backed first turn proven in this integration test',
         }),
         resolveHonorAccount: async (acc: string) => ({ ok: true as const, account: acc }),
+        // P-017: ACCOUNT is 'AUTO' and seatLaunchOpts maps AUTO→'auto', so this
+        // honor bills as 'pool-with-attribution' and consults the M17 single-owner
+        // reading. Stubbed like every other environment seam in this test — the
+        // real reader dynamic-imports the inference-gateway account resolver,
+        // which this two-peer federation fixture has no pool for.
+        resolveBillingPool: async () => ({ singleOwner: true }),
         isTrustedUser,
         isPotMember: vi.fn(async () => true),
       };
@@ -307,7 +313,7 @@ describe('pot-scoped seat-offer — two-peer federation (WI-5409/P-010)', () => 
         { workspaceId: WORKSPACE_ID, potHomeSlug: HARNESS_SLUG, row, sql: dbB.sql },
         deps,
       );
-      expect(outcome).toEqual({ outcome: 'honored', opened: 1, failed: 0 });
+      expect(outcome).toEqual({ outcome: 'honored', opened: 1, failed: 0, committedSeats: 1 });
       expect(isTrustedUser).toHaveBeenCalledWith(WORKSPACE_ID, idA.userId);
       expect(spawnMembers).toHaveBeenCalledOnce();
       expect(emitReceipt).toHaveBeenCalledWith(
@@ -408,6 +414,12 @@ describe('pot-scoped seat-offer — two-peer federation (WI-5409/P-010)', () => 
         emitReceipt,
         probeAgentRuntime: async () => ({ resolved: true, detail: 'stubbed — no real desktop spawn in this test' }),
         resolveHonorAccount: async (acc: string) => ({ ok: true as const, account: acc }),
+        // P-017: ACCOUNT is 'AUTO' and seatLaunchOpts maps AUTO→'auto', so this
+        // honor bills as 'pool-with-attribution' and consults the M17 single-owner
+        // reading. Stubbed like every other environment seam in this test — the
+        // real reader dynamic-imports the inference-gateway account resolver,
+        // which this two-peer federation fixture has no pool for.
+        resolveBillingPool: async () => ({ singleOwner: true }),
         isTrustedUser,
         isPotMember: vi.fn(async () => true),
       };

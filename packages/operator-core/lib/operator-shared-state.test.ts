@@ -3,8 +3,14 @@
  * the background scanner. Run with:
  *   cd packages/operator-core && npx vitest run lib/operator-shared-state.test.ts
  */
-import { describe, expect, it } from 'vitest';
-import { isAutoAcceptLevel, isAutoAcceptedByThreshold } from './operator-shared-state';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  hydrateOperatorStateFromPg,
+  isAutoAcceptLevel,
+  isAutoAcceptedByThreshold,
+} from './operator-shared-state';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('isAutoAcceptLevel', () => {
   it('accepts the four valid levels', () => {
@@ -41,5 +47,29 @@ describe('isAutoAcceptedByThreshold', () => {
     expect(isAutoAcceptedByThreshold('low', 'low')).toBe(true);
     expect(isAutoAcceptedByThreshold('medium', 'low')).toBe(false);
     expect(isAutoAcceptedByThreshold('high', 'low')).toBe(false);
+  });
+});
+
+describe('hydrateOperatorStateFromPg', () => {
+  it('demotes the hidden Operator chrome profile read behind visible route work', async () => {
+    vi.stubGlobal('window', {
+      location: { href: 'https://app.papercusp.com/cloud-workspaces' },
+      localStorage: {
+        getItem: vi.fn(() => null),
+        setItem: vi.fn(),
+      },
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ auto_accept: 'medium' }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await hydrateOperatorStateFromPg();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/profile',
+      expect.objectContaining({ papercuspRequestClass: 'background-sync' }),
+    );
   });
 });

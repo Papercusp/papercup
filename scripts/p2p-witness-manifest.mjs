@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ALGORITHM = 'sha256';
 const SCHEMA_VERSION = 1;
@@ -155,7 +156,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify({ ok: true, artifactId: manifest.artifactId, manifest: destination })}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   main().catch((error) => {
     console.error(`p2p witness manifest failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

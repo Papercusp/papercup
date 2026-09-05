@@ -54,6 +54,15 @@ describe('fetchProfileOnce', () => {
     expect(getCalls()).toHaveLength(1);
   });
 
+  it('demotes the hidden profile hydration read behind visible route work', async () => {
+    installFetch(() => ({ theme_id: 'black' }));
+    await mod.fetchProfileOnce();
+    expect(getCalls()[0]?.[1]).toMatchObject({
+      headers: { accept: 'application/json' },
+      papercuspRequestClass: 'background-sync',
+    });
+  });
+
   it('force=true bypasses + refreshes the memo', async () => {
     installFetch(() => ({ theme_id: 'black' }));
     await mod.fetchProfileOnce();

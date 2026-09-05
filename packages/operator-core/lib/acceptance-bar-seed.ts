@@ -88,6 +88,8 @@ export interface AcceptanceBarSeedBuildInput {
   legacyCriterionMap?: Record<string, string>;
   adoptionEpoch: number;
   subjectPlanRevision: number;
+  /** Locked subject state; only the already-pinned started revision may reuse canonical BARs. */
+  planStatus?: string | null;
   rubricSlug: string;
   rubricRevision: number;
   existingTemplateData?: unknown;
@@ -364,6 +366,10 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     return refusal([{ code: 'bar_rubric_conflict', detail: 'the active acceptance rubric has invalid template_data' }]);
   }
   const existing = existingParsed?.success ? existingParsed.data : null;
+  const preserveCanonicalBars = input.planStatus != null && input.planStatus !== 'draft' &&
+    existing?.barContract?.subjectPlanRevision === input.subjectPlanRevision &&
+    existing.barContract.adoptionEpoch === input.adoptionEpoch &&
+    existing.barContract.cohort === input.cohort;
   if (existing && (existing.kind !== 'acceptance' || existing.subjectPlan !== input.planSlug)) {
     return refusal([{
       code: 'bar_rubric_conflict',
@@ -412,6 +418,11 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       });
     }
     const prior = existingByBar.get(bar.barKey);
+    // Once an amendment pins this exact started plan revision, the criterion is
+    // authoritative. Re-auditing must not replace its approved falsifier/plane
+    // with the original human seed. A changed plan revision still takes the
+    // normal meaning-change guard below the builder.
+    if (preserveCanonicalBars && prior) return { ...prior } as ProposeRubricCriterion;
     if (!prior || prior.barHash !== seeded.barHash) return seeded;
     return {
       ...seeded,
@@ -431,7 +442,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     description: existing?.description ?? `Predeclared acceptance BARs for ${input.planSlug}.`,
     proposedBy: existing?.proposedBy ?? input.actorId,
     barSetHash,
-    barContract: {
+    barContract: preserveCanonicalBars ? existing!.barContract : {
       schemaVersion: 1 as const,
       adoptionEpoch: input.adoptionEpoch,
       cohort: input.cohort,
@@ -451,6 +462,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   const projections: SpecClauseWrite[] = [];
   for (const criterion of criteria) {
     const mapping = mappingByKey.get(criterion.barKey!)!;
+    const evidencePlane = criterion.evidencePlane ?? mapping.evidencePlane;
     for (const planItemId of mapping.planItemIds) {
       projections.push({
         planSlug: input.planSlug,
@@ -459,7 +471,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         planItemId,
         behavior: criterion.model ?? '',
         behaviorClass: 'happy-path',
-        requiredEvidence: [mapping.evidencePlane],
+        requiredEvidence: [evidencePlane],
         lifecycleStatus: 'draft',
         falsifier: { observation: criterion.driftMarkers ?? '' },
         acceptanceRef: `${input.rubricSlug}@${input.rubricRevision}:${criterion.barKey}`,
@@ -469,7 +481,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
           barSetHash,
           rubricSlug: input.rubricSlug,
           rubricRevision: input.rubricRevision,
-          evidencePlane: mapping.evidencePlane,
+          evidencePlane,
         },
         actorId: input.actorId,
       });
@@ -635,6 +647,7 @@ export async function seedAcceptanceBarsInTransaction(
     legacyCriterionMap: input.legacyCriterionMap,
     adoptionEpoch: input.adoptionEpoch,
     subjectPlanRevision: input.planVersion,
+    planStatus: input.planStatus,
     rubricSlug,
     rubricRevision: provisionalRevision,
     ...(existing ? { existingTemplateData: existing.template_data } : {}),
@@ -695,6 +708,7 @@ export async function seedAcceptanceBarsInTransaction(
       cohort: input.cohort,
       adoptionEpoch: input.adoptionEpoch,
       subjectPlanRevision: input.planVersion,
+      planStatus: input.planStatus,
       rubricSlug,
       rubricRevision,
       existingTemplateData: existing!.template_data,

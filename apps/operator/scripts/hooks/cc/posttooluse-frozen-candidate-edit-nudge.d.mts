@@ -7,10 +7,91 @@ export function normalizeRepoPath(value: any): string;
 export function markerPath(): string;
 export function readMarker(path?: string): any;
 /**
- * P-005: name the CONSEQUENCE, not the rule. "Remember freeze-and-converge" is the prose
- * that already failed — it asks the reader to recall a regime and derive what it implies.
- * Returns null when there is nothing to say.
+ * P-019: the repair RADIUS — the failing paths plus every P-021 manifest leg's subject paths
+ * (a pre-P-022 marker has no `legs`, so the radius is the failing set alone). Normalized.
  */
-export function warningFor(marker: any, editedPath: any): string | null;
+export function repairRadius(marker: any): Set<any>;
+/**
+ * P-005 / D-007 #2: name the CONSEQUENCE, not the rule. "Remember freeze-and-converge" is the
+ * prose that already failed — it asks the reader to recall a regime and derive what it
+ * implies. Returns null when there is nothing to say (path outside the radius).
+ *
+ * `ledger` is the P-019 outcome for this path: `{ recorded: true }`, `{ recorded: false,
+ * detail }`, or null when no recording was attempted (self-test / no hunk extracted).
+ *
+ * @param {any} marker
+ * @param {string} editedPath
+ * @param {{ recorded: boolean, detail?: string } | null} [ledger]
+ * @returns {string | null}
+ */
+export function warningFor(marker: any, editedPath: string, ledger?: {
+    recorded: boolean;
+    detail?: string;
+} | null): string | null;
 /** Every path an Edit/Write/MultiEdit payload touched. */
 export function editedPathsFrom(payload: any): any[];
+/**
+ * P-019: the hunks a payload made — MUST match `hunksFromToolCall` in
+ * packages/operator-core/lib/release/frozen-repair-edit-ledger.ts (pinned by the parity test).
+ *   Edit / capability_edit         { file_path, old_string, new_string, replace_all? }
+ *   Write / capability_write       { file_path, content }
+ *   MultiEdit / capability_multi_edit { file_path, edits:[{ old_string, new_string, replace_all? }] }
+ *   Codex write_file               { path, content }
+ *   Codex apply_patch              patch text — not a hunk pair; nothing extracted (recorded as absent).
+ */
+export function hunksFrom(payload: any): any[];
+/** Did the client report the edit itself failed? A failed edit made no hunk to record. */
+export function toolCallFailed(payload: any): boolean;
+/**
+ * Per-session owner — the SAME resolution order as pretooluse-locks-acquire.sh, so the
+ * ledger row, the lock row and the agent's own `admit` call carry ONE identity.
+ */
+export function ownerIdentity(payload: any, env?: NodeJS.ProcessEnv, readFile?: (p: any) => string): any;
+/**
+ * Repo-relative path for an edited file: the SUPERPROJECT root when the file sits in a
+ * submodule (the gate's queue names paths from the superproject), else the toplevel. Null
+ * when the file is outside any repository — nothing to attribute to a lineage then.
+ */
+export function repoRelativePath(filePath: any, cwd?: string, git?: typeof execFileSync): string | null;
+/** Parse the MCP endpoint's JSON or SSE envelope into the inner tool result (or null). */
+export function parseMcpToolResult(rawText: any): {
+    ok: boolean;
+    detail: string;
+    inner?: undefined;
+} | {
+    ok: boolean;
+    inner: any;
+    detail?: undefined;
+};
+/**
+ * POST one `record-edit` through the same door the lock hook uses (bearer + ?client=owner so
+ * the server attributes the row to the per-session owner). Never throws.
+ */
+export function recordOneHunk({ operatorUrl, token, owner, marker, path, hunk, toolUseId, editIndex, atMs, fetchImpl }: {
+    operatorUrl: any;
+    token: any;
+    owner: any;
+    marker: any;
+    path: any;
+    hunk: any;
+    toolUseId: any;
+    editIndex: any;
+    atMs: any;
+    fetchImpl?: typeof fetch | undefined;
+}): Promise<{
+    recorded: boolean;
+    detail: string | undefined;
+    inserted?: undefined;
+    inner?: undefined;
+} | {
+    recorded: boolean;
+    inserted: boolean;
+    inner: any;
+    detail?: undefined;
+} | {
+    recorded: boolean;
+    detail: any;
+    inner: any;
+    inserted?: undefined;
+}>;
+import { execFileSync } from 'node:child_process';

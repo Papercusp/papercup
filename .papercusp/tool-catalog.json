@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 855,
+  "count": 859,
   "tools": [
     {
       "name": "ablation:report",
@@ -7413,6 +7413,42 @@
       }
     },
     {
+      "name": "cupboard:checkout",
+      "http": {
+        "path": "/api/agent-tools/cupboard/checkout",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Start a Cupboard checkout session for a buying organization: authorizes the acting user against that org, then creates a hosted payment session and returns its orderId, providerSessionId and url for the buyer to open. Repeating the same idempotencyKey returns the SAME order rather than charging twice (reported as idempotentReplay). Refuses before any provider call when the org is unknown, the acting user is not a member, or quantity is not 1.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A member of a buying organization wants to purchase a Cupboard offer and needs a payment link.",
+        "notWhen": "Reading what an org already bought (cupboard:commerce-dashboards). Refunding an order (cupboard:refund-request). Diagnosing why an install is blocked (cupboard:support-request).",
+        "chaining": "Pass a stable idempotencyKey and REUSE it on retry — a fresh key creates a second order. Hand the returned url to the buyer; the entitlement appears once the provider webhook settles."
+      }
+    },
+    {
+      "name": "cupboard:commerce-dashboards",
+      "http": {
+        "path": "/api/agent-tools/cupboard/commerce-dashboards",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a buying organization's Cupboard commerce state: `checkout` (what it bought, each purchase's entitlement and seat usage, gross/refunded/net), `refunds` (per-order settled, in-flight and safely-refundable amounts plus what keeps running after revocation), and `audit` (a deterministic export of orders, entitlements, refunds, payouts and installations with a rejection tally). Read-only. Revoked entitlements are reported, never hidden.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "You need what an organization bought, what is refundable, or a reproducible audit/export of its commerce state.",
+        "notWhen": "Starting a purchase (cupboard:checkout). Requesting a refund (cupboard:refund-request). Diagnosing one user's install block (cupboard:support-request).",
+        "chaining": "Ask for only the dashboards you need. `audit.integrity.rejections` names events the ledger refused — a non-empty list is a data problem, not a display one."
+      }
+    },
+    {
       "name": "cupboard:install-app",
       "http": {
         "path": "/api/agent-tools/cupboard/install-app",
@@ -7683,6 +7719,24 @@
       }
     },
     {
+      "name": "cupboard:refund-request",
+      "http": {
+        "path": "/api/agent-tools/cupboard/refund-request",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Authorize a refund on a Cupboard order: checks the acting user may act for the buying org, that the order belongs to that org, and that the amount fits the order's REFUNDABLE remainder (amount minus already-settled minus refunds still in flight). Omit amountMinor to request the whole refundable remainder. Returns the authorized amount plus the refund position, including which installations keep running after revocation.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A buying org wants money back on an order and you need the authorized amount plus the blast radius of revoking it.",
+        "notWhen": "Just reading refund positions without requesting one (cupboard:commerce-dashboards with dashboards:[\"refunds\"]). Starting a purchase (cupboard:checkout).",
+        "chaining": "Read the returned position.intentsSurvivingRevocation before telling a user what they lose — a refund revokes the entitlement but still permits repair, so it is not a kill switch."
+      }
+    },
+    {
       "name": "cupboard:search",
       "http": {
         "path": "/api/agent-tools/cupboard/search",
@@ -7698,6 +7752,24 @@
         "when": "Finding what's available on the public Cupboard — the user asks what plugins/blueprints/templates/apps/packs exist, or wants to search for one to install.",
         "notWhen": "You already have a listing id and want to INSTALL it (cupboard:install-plugin / cupboard:install-blueprint / templates:new-app / knowledge_packs:install). For the kind-specific browse UIs, blueprint:catalog / knowledge_packs:list / templates:list are narrower views of the same store.",
         "chaining": "Search → take a result id → install with the matching installer (cupboard:install-plugin for plugin/pack, cupboard:install-blueprint for blueprint, templates:new-app for template, knowledge_packs:install for a knowledge-pack)."
+      }
+    },
+    {
+      "name": "cupboard:support-request",
+      "http": {
+        "path": "/api/agent-tools/cupboard/support-request",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Diagnose why a user cannot install, update or repair something their organization bought: returns, per entitlement, the seat usage, that user's installation, and the specific blocker (no entitlement, not a member, entitlement revoked, installation released, or no seats available). Refusals are ordered like seat allocation, so an unentitled user is never told to buy more seats.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "A user reports they cannot install/update/repair a purchased unit and you need the specific reason.",
+        "notWhen": "Requesting money back (cupboard:refund-request). Reading org-wide purchase totals (cupboard:commerce-dashboards).",
+        "chaining": "Read findings[].blocked.code — \"no-seats-available\" means buy or release a seat; \"entitlement-revoked\" usually means a refund; \"not-entitled\" means the user is not in the buying org."
       }
     },
     {

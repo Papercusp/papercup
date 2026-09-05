@@ -45,6 +45,7 @@ import {
   reconcileActivationAuditRepairFiling,
 } from './agent-tools/plans/activation-audit-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
+import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
 
 let db: FreshPgDb;
 
@@ -455,6 +456,77 @@ describe('migration 938 activation-audit ledger', () => {
         FROM harness_shared.plan_spec_clauses
        WHERE plan_slug = 'post-epoch-seed-target'
     `).resolves.toEqual([{ n: 3, max_revision: 1 }]);
+  });
+
+  it('re-audits an amended pinned revision without reverting its canonical BAR or METHOD', async () => {
+    await seedPostEpochPlan();
+    const input = {
+      workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target', createdBy: 'su-seeder',
+      activation: { ...payload, mappings: [{ ...payload.mappings[0],
+        planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
+    };
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true });
+    const [stored] = await db.sql<Array<{ template_data: any }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    // Persist the post-amendment state as a fixture; amendment authorization has
+    // its own real-PG suite. The old Requirements text deliberately stays intact.
+    const amended = { ...stored!.template_data };
+    amended.criteria = amended.criteria.map((criterion: any) => criterion.barKey !== 'R-1' ? criterion :
+      normalizeAcceptanceBarCriterion({ ...criterion, barHash: undefined,
+        driftMarkers: 'The runtime returns a different committed BAR revision.',
+        evidencePlane: 'live', requiredScope: ['live'],
+        method: 'Read the committed runtime BAR revision.',
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }));
+    amended.barSetHash = computeAcceptanceBarSetHash(amended.criteria);
+    await db.sql`UPDATE harness_shared.harness_plans SET
+      template_data = ${JSON.stringify(amended)}::jsonb, version = 2
+      WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    await db.sql`UPDATE harness_shared.harness_plans SET status = 'active',
+      acceptance_bar_set_hash = ${amended.barSetHash}, acceptance_bar_rubric_revision = 2
+      WHERE plan_slug = 'post-epoch-seed-target'`;
+
+    expect(await recordCurrentActivationAudit({ ...input, createdBy: 'su-reauditor' }))
+      .toMatchObject({ ok: true, barSeed: { rubricRevision: 2, rubricChanged: false } });
+    const [after] = await db.sql<Array<{ template_data: unknown; version: number }>>`
+      SELECT template_data, version::int FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(after).toEqual({ template_data: amended, version: 2 });
+    const currentProjection = () => db.sql<Array<Record<string, unknown>>>`
+      SELECT r.revision, r.falsifier, r.source_bar_hash, r.evidence_plane,
+             r.source_rubric_revision, r.required_evidence
+        FROM harness_shared.plan_spec_clauses c
+        JOIN harness_shared.plan_spec_clause_revisions r
+          USING (workspace_id, harness_slug, plan_slug, spec_id)
+       WHERE c.plan_slug = 'post-epoch-seed-target'
+         AND c.spec_id = 'AUTO-BAR-R-1-P-001' AND r.revision = c.current_revision`;
+    const projected = await currentProjection();
+    expect(projected).toEqual([expect.objectContaining({
+      source_bar_hash: amended.criteria[0].barHash, evidence_plane: 'live',
+      required_evidence: ['live'], source_rubric_revision: 2,
+      falsifier: { observation: amended.criteria[0].driftMarkers },
+    })]);
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true,
+      barSeed: { rubricRevision: 2, rubricChanged: false } });
+    expect(await currentProjection()).toEqual(projected);
+
+    // Advancing the source revision does not grant this preservation path to a
+    // direct Requirements edit: the existing started-BAR guard still refuses it.
+    const changed = postEpochContent.replace('One acceptance criterion remains the BAR authority.',
+      'A weaker promise replaces the canonical BAR.');
+    const hash = hashPlanContent(changed);
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${changed}, content_hash = ${hash}, version = 8
+      WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 8, ${hash}, ${changed})`;
+    await expect(recordCurrentActivationAudit(input)).rejects.toThrow('BAR meaning cannot change');
+    const [unchanged] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(unchanged!.template_data).toEqual(amended);
   });
 
   it('keeps the cohort marker but rolls back audit/rubric/projections on an incomplete map', async () => {

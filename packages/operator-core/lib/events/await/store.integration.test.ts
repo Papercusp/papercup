@@ -1188,6 +1188,7 @@ describe('await-event store (PG)', () => {
       subscriberId: 'sub-a',
       eventKey: 'work-item:done:WI-2',
       note: 'blocked-item-holder auto-arm for WI-2',
+      boundTo: { kind: 'work-item-blocked', ref: 'WI-2' },
     });
   });
 

@@ -60,7 +60,7 @@ export interface AdmissionGitResult {
 /** Every git call goes through one runner so a test can observe or sabotage a step. */
 export type AdmissionGitRunner = (
   argv: readonly string[],
-  opts: { cwd: string; env?: NodeJS.ProcessEnv },
+  opts: { cwd: string; env?: NodeJS.ProcessEnv; input?: string },
 ) => AdmissionGitResult;
 
 export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
@@ -69,6 +69,7 @@ export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
     env: opts.env ?? process.env,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
+    ...(opts.input !== undefined ? { input: opts.input } : {}),
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 };
@@ -89,8 +90,34 @@ export type AdmissionRefusalCode =
   | 'source-unresolvable'
   | 'nothing-to-admit'
   | 'stray-paths'
+  | 'admission-incomplete'
   | 'lineage-ref-moved'
   | 'git-failed';
+
+/**
+ * P-004 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): one import an admitted
+ * file makes that resolves to NOTHING at the proved admission commit. The fix for the caller is
+ * always the same — admit `wanted` too — and never "widen to the tip".
+ */
+export interface AdmissionMissingImport {
+  /** The admitted file whose import cannot be resolved at the admission commit. */
+  from: string;
+  /** The specifier exactly as written in `from`. */
+  specifier: string;
+  /** The repo-relative path the caller should admit — the candidate that exists on `probeRef` when one does, else the first candidate tried. */
+  wanted: string;
+  /** Every repo-relative candidate probed at the admission commit, in probe order. */
+  tried: string[];
+  /** Whether `wanted` exists on the probe ref (the shared staging tip): `present` means admitting it closes the gap. */
+  atProbeRef: 'present' | 'absent' | 'unknown';
+}
+
+/** What a `preflight` hook returns to stop an admission: the proved commit stays unpublished garbage. */
+export interface AdmissionPreflightRefusal {
+  code: 'admission-incomplete';
+  detail: string;
+  missing: AdmissionMissingImport[];
+}
 
 export interface AdmissionRefusal {
   ok: false;
@@ -102,6 +129,10 @@ export interface AdmissionRefusal {
   paths?: string[];
   /** git-failed: the plumbing step that failed. */
   step?: string;
+  /** admission-incomplete: every unresolved import, with the path to admit. Never empty for that code. */
+  missing?: AdmissionMissingImport[];
+  /** admission-incomplete: the built-and-proved commit the preflight inspected (unpublished; ordinary garbage). */
+  commit?: string;
 }
 
 export interface AdmissionSuccess {
@@ -220,6 +251,16 @@ export interface AdmitPathsInput {
    * lineage ref that has moved — so its verdict is exactly the verdict confirm would get.
    */
   dryRun?: boolean;
+  /**
+   * P-004 completeness preflight. Runs on the built and PROVED admission commit, after the
+   * diff-tree and parent proofs and BEFORE the lineage ref moves — on a dry run too, so the
+   * preview carries the same verdict confirm would get. Return null to accept; return a
+   * refusal to stop the admission (`admission-incomplete`: the commit is never published and
+   * repairHead does not move). The hook sees exactly what would be published: the commit, its
+   * tree and the proved name set. It is the admit door's, not the primitive's, choice of check
+   * (`checkAdmissionImportCompleteness` in admission-import-completeness.ts is the one wired).
+   */
+  preflight?: (built: { commit: string; tree: string; admitted: readonly string[] }) => AdmissionPreflightRefusal | null;
 }
 
 /**
@@ -395,6 +436,17 @@ export function admitPathsOntoRepairHead(input: AdmitPathsInput): AdmissionOutco
     const parent = revParse(`${commit}^`);
     if (parent !== repairHeadSha) {
       return gitFailed('parent proof', { status: 1, stdout: '', stderr: `parent ${parent} != repairHead ${repairHeadSha}` });
+    }
+
+    // P-004 COMPLETENESS PREFLIGHT — on the proved commit, before anything is published. An
+    // admission that lands a file whose import resolves to nothing at this commit would only be
+    // caught a suite later by the gate's lint:tsc round; the door refuses it now and names the
+    // path to admit, and it NEVER widens to the tip on the caller's behalf.
+    if (input.preflight) {
+      const stop = input.preflight({ commit, tree, admitted: proof.admitted });
+      if (stop) {
+        return { ok: false, code: stop.code, detail: stop.detail, missing: stop.missing, commit };
+      }
     }
 
     // PUBLISH by compare-and-swap on the gate-owned lineage ref. The ref may not exist yet

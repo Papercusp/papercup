@@ -1,5 +1,7 @@
 'use client';
 
+import { backgroundRequest } from './transport-adapters/origin-scheduler-fetch';
+
 /**
  * Shared persistence plumbing for browser-presentation preferences that live
  * in the operator user profile (PG: `harness_shared.operator_user_profile`,
@@ -44,7 +46,10 @@ export function fetchProfileOnce(force = false): Promise<ProfilePayload> {
     inflight =
       typeof fetch === 'undefined'
         ? Promise.resolve({})
-        : fetch('/api/profile', { headers: { accept: 'application/json' } })
+        : fetch(
+            '/api/profile',
+            backgroundRequest({ headers: { accept: 'application/json' } }),
+          )
             .then((r) => (r.ok ? (r.json() as Promise<ProfilePayload>) : {}))
             .catch(() => ({}));
   }
