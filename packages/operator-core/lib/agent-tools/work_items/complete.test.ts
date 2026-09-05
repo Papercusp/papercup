@@ -960,6 +960,81 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── EI-20194762143976862: the completion emit IS the member→leader report ────────────────
+  // A fleet member is told, in base/prompts/su.md and su.fleet-member/prompts/fleet-posture.md,
+  // NOT to hand-author a second coord:send after work_items:complete — because the intrinsic
+  // completion emit already carries the structured record to the member's CURRENT fleet leader.
+  // That contract rests on ONE line in the emits render (`to.push('@fleet-leader:' + slug)`)
+  // and nothing pinned it: the fix landed 26 minutes after the item was filed, and the
+  // `fleetSlug` assertions above cover only HALF the chain — the value, never the address.
+  // Drop the selector and every member's completion silently stops reaching its leader while
+  // the prompt keeps instructing them not to send that report themselves. Silent by
+  // construction: the member sees ok:true either way.
+  //
+  // Asserted by EXECUTING the render, never by grepping the source — a source regex cannot
+  // tell a live contract from a comment, nor see whether the branch is reachable at all.
+  describe('completion emit addresses the fleet leader (EI-20194762143976862)', () => {
+    const issue = { id: 'WI-1', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+    const prevSlug = process.env.PAPERCUSP_FLEET_SLUG;
+    afterEach(() => {
+      if (prevSlug === undefined) delete process.env.PAPERCUSP_FLEET_SLUG;
+      else process.env.PAPERCUSP_FLEET_SLUG = prevSlug;
+    });
+
+    type EmitRule = {
+      when: (event: unknown) => boolean;
+      render: (event: unknown) => { to?: string[]; summary?: string; body?: string };
+    };
+    const completionEmit = () => (complete as { emits?: EmitRule[] }).emits?.[0];
+
+    it("addresses the member's CURRENT leader, carrying the report they are told not to re-send", async () => {
+      process.env.PAPERCUSP_FLEET_SLUG = 'nonp2p-bug-drain-0801';
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+
+      const r = await one({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: {
+          summary: 'fixed the thing',
+          tests: '5 green',
+          verifiedHow: 'unit',
+          filesChanged: ['packages/operator-core/lib/x.ts'],
+          deferred: ['the follow-up nobody has taken'],
+        },
+      });
+      expect(r.ok).toBe(true);
+
+      const rule = completionEmit();
+      const event = { result: { data: r } };
+      expect(rule?.when(event)).toBe(true);
+
+      const rendered = rule!.render(event);
+      // The leader seam itself — the whole reason a second manual report is redundant.
+      expect(rendered.to).toContain('@fleet-leader:nonp2p-bug-drain-0801');
+      // …and the projection that makes it a REPORT rather than a bare ping: item id and
+      // terminal disposition on the headline, verification evidence and the deferred
+      // caveats in the body. A leader who reads this needs nothing else from the member.
+      expect(rendered.summary).toContain('WI-1');
+      expect(rendered.summary).toMatch(/RESOLVED|DONE/);
+      expect(rendered.summary).toContain('5 green');
+      expect(rendered.body).toContain('packages/operator-core/lib/x.ts');
+      expect(rendered.body).toContain('the follow-up nobody has taken');
+    });
+
+    it('addresses no fleet leader outside a fleet (no PAPERCUSP_FLEET_SLUG)', async () => {
+      delete process.env.PAPERCUSP_FLEET_SLUG;
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
+      expect(r.ok).toBe(true);
+
+      const rendered = completionEmit()!.render({ result: { data: r } });
+      expect(rendered.to?.some((t) => t.startsWith('@fleet-leader:'))).toBe(false);
+    });
+  });
+
   // ── WI-5891 (leader audit follow-up to WI-5874/P-001) ────────────────────────────────────
   // A completion that claims `verifiedHow:'live-drove-ui'` to CLOSE the item must cite a real
   // artifact — the exact gap that let WI-5874/P-001 close on this label citing only two vitest
