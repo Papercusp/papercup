@@ -62,12 +62,7 @@ export const rubricCriterionWindowSchema = z
       .describe(
         "'rolling' = a fixed look-back from now (ms required); 'post-watermark' = everything since a named event watermark (watermarkRef required), e.g. the running bg-host generation",
       ),
-    ms: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe("rolling window length in ms (required when kind='rolling')"),
+    ms: z.number().int().positive().optional().describe("rolling window length in ms (required when kind='rolling')"),
     watermarkRef: z
       .string()
       .min(1)
@@ -79,7 +74,10 @@ export const rubricCriterionWindowSchema = z
   .strict()
   .superRefine((w, ctx) => {
     if (w.kind === 'rolling' && w.ms == null) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "window kind 'rolling' requires ms (the look-back length)" });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "window kind 'rolling' requires ms (the look-back length)",
+      });
     }
     if (w.kind === 'post-watermark' && !w.watermarkRef) {
       ctx.addIssue({
@@ -212,7 +210,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             'tree at propose time; actually RUN at grading time.',
         ),
     })
-      .strict(),
+    .strict(),
   z
     .object({
       kind: z.literal('cargo'),
@@ -293,7 +291,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       floor: z
         .enum(['l1', 'l2', 'l3', 'l4'])
         .describe(
-          'the depth rung every in-scope surface must meet (the census\'s own vocabulary: l1 executed, l2 conformant, l3 intent-tested, l4 hardened). Judged by the meets_lN flag, never depth >= N — the rungs are not nested.',
+          "the depth rung every in-scope surface must meet (the census's own vocabulary: l1 executed, l2 conformant, l3 intent-tested, l4 hardened). Judged by the meets_lN flag, never depth >= N — the rungs are not nested.",
         ),
     })
     .strict(),
@@ -346,36 +344,44 @@ export type AcceptanceBarProvenance = z.infer<typeof acceptanceBarProvenanceSche
 
 /** Original request metadata belongs to the same criterion as its BAR. Older
  * criteria omit this: absence must not be filled with invented provenance. */
-export const requirementIntentSchema = z.object({
-  request: z.string().trim().min(1),
-  rationale: z.string().trim().min(1).optional(),
-  constraints: z.array(z.string().trim().min(1)).max(200).optional(),
-  sourceRefs: z.array(z.string().trim().min(1)).max(100).optional(),
-}).strict();
+export const requirementIntentSchema = z
+  .object({
+    request: z.string().trim().min(1),
+    rationale: z.string().trim().min(1).optional(),
+    constraints: z.array(z.string().trim().min(1)).max(200).optional(),
+    sourceRefs: z.array(z.string().trim().min(1)).max(100).optional(),
+  })
+  .strict();
 
-export const requirementAcceptanceSchema = z.object({
-  condition: z.string().trim().min(1),
-  falsifier: z.string().trim().min(1),
-  requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
-  evidencePlane: acceptanceEvidencePlaneSchema.optional(),
-  requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
-  passRatings: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
-  mandatory: z.boolean().optional(),
-  role: acceptanceCriterionRoleSchema.optional(),
-  coversBarKeys: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
-}).strict();
+export const requirementAcceptanceSchema = z
+  .object({
+    condition: z.string().trim().min(1),
+    falsifier: z.string().trim().min(1),
+    requiredScope: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
+    evidencePlane: acceptanceEvidencePlaneSchema.optional(),
+    requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
+    passRatings: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
+    mandatory: z.boolean().optional(),
+    role: acceptanceCriterionRoleSchema.optional(),
+    coversBarKeys: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
+  })
+  .strict();
 
-export const requirementVerificationSchema = z.object({
-  method: z.string().trim().min(1),
-  check: rubricCriterionCheckSchema.optional(),
-  replication: z.string().trim().min(1).optional(),
-}).strict();
+export const requirementVerificationSchema = z
+  .object({
+    method: z.string().trim().min(1),
+    check: rubricCriterionCheckSchema.optional(),
+    replication: z.string().trim().min(1).optional(),
+  })
+  .strict();
 
-export const requirementSectionsSchema = z.object({
-  intent: requirementIntentSchema,
-  acceptance: requirementAcceptanceSchema,
-  verification: requirementVerificationSchema,
-}).strict();
+export const requirementSectionsSchema = z
+  .object({
+    intent: requirementIntentSchema,
+    acceptance: requirementAcceptanceSchema,
+    verification: requirementVerificationSchema,
+  })
+  .strict();
 
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
@@ -385,12 +391,11 @@ export const requirementSectionsSchema = z.object({
  */
 export const rubricCriterionSchema = z
   .object({
-    key: z
-      .string()
-      .min(1)
-      .describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
+    key: z.string().min(1).describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
     title: z.string().min(1).describe('short human label for the criterion'),
-    intent: requirementIntentSchema.optional().describe('acceptance-kind only: original request, rationale, constraints and source references'),
+    intent: requirementIntentSchema
+      .optional()
+      .describe('acceptance-kind only: original request, rationale, constraints and source references'),
     model: z.string().min(1).describe('how this criterion is supposed to work (the MODEL)'),
     barKey: z
       .string()
@@ -421,8 +426,9 @@ export const rubricCriterionSchema = z
     evidencePlane: acceptanceEvidencePlaneSchema
       .optional()
       .describe('acceptance-kind only: where this BAR must be evidenced (tree, deployed, or live)'),
-    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers
-      .describe('acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change'),
+    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
+      'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
+    ),
     passRatings: z
       .array(z.string().trim().min(1))
       .min(1)
@@ -504,28 +510,42 @@ export const acceptanceRubricCriterionSchema = rubricCriterionSchema.partial({
   driftMarkers: true,
 });
 
-/** Authoring aliases resolve before canonical template validation. */
-export const requirementCriterionInputSchema = acceptanceRubricCriterionSchema.extend({
-  bar: z.string().trim().min(1).optional(),
-  acceptance: requirementAcceptanceSchema.optional(),
-  verification: requirementVerificationSchema.optional(),
-}).superRefine((input, ctx) => {
-  try {
-    normalizeRequirementSections(input);
-  } catch (error) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
-  }
-});
+/**
+ * Validate authoring-alias conflicts without rewriting the tool-argument value.
+ * A bare zod transform here makes every containing tool schema impossible to
+ * represent as JSON Schema and crashes registration of the whole MCP catalog.
+ * The canonical rubric/template writers call normalizeRequirementSections
+ * after validation, so normalization stays centralized without that effect.
+ */
+export const requirementCriterionInputSchema = acceptanceRubricCriterionSchema
+  .extend({
+    bar: z.string().trim().min(1).optional(),
+    acceptance: requirementAcceptanceSchema.optional(),
+    verification: requirementVerificationSchema.optional(),
+  })
+  .superRefine((input, ctx) => {
+    try {
+      normalizeRequirementSections(input);
+    } catch (error) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
+    }
+  });
 
-export const requirementAmendmentSchema = z.object({
-  key: z.string().trim().min(1),
-  intent: requirementIntentSchema.optional(),
-  acceptance: requirementAcceptanceSchema.partial().optional(),
-  verification: requirementVerificationSchema.partial().optional(),
-}).strict().refine((input) =>
-  [input.intent, input.acceptance, input.verification].some((section) => section && Object.keys(section).length > 0),
-  'provide an Intent, Acceptance or Verification amendment',
-);
+export const requirementAmendmentSchema = z
+  .object({
+    key: z.string().trim().min(1),
+    intent: requirementIntentSchema.optional(),
+    acceptance: requirementAcceptanceSchema.partial().optional(),
+    verification: requirementVerificationSchema.partial().optional(),
+  })
+  .strict()
+  .refine(
+    (input) =>
+      [input.intent, input.acceptance, input.verification].some(
+        (section) => section && Object.keys(section).length > 0,
+      ),
+    'provide an Intent, Acceptance or Verification amendment',
+  );
 
 /**
  * The `rubric` template's structured data (the `template_data` jsonb). EXACTLY the
@@ -551,15 +571,15 @@ export const rubricTemplateDataSchema = z
       .min(1)
       .optional()
       .describe(
-        "acceptance-kind only: the slug of the plan this rubric is the definition-of-done FOR. " +
-          "An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric",
+        'acceptance-kind only: the slug of the plan this rubric is the definition-of-done FOR. ' +
+          'An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric',
       ),
     subjectGoal: z
       .string()
       .min(1)
       .optional()
       .describe(
-        "acceptance-kind only: the GOAL id this rubric is the definition-of-done FOR (the goal-mode " +
+        'acceptance-kind only: the GOAL id this rubric is the definition-of-done FOR (the goal-mode ' +
           "'achieved' gate keys off it — consult-min-max-and-rubric-vetting-2026-08-17 D-004 §2). " +
           'An acceptance rubric names exactly one subject (subjectPlan or subjectGoal); refused on a standard rubric',
       ),
@@ -643,10 +663,7 @@ export const rubricTemplateDataSchema = z
           'because the cases that break comparability share a criterion KEY: a question that narrowed ' +
           'under a kept key, or a kept key whose drill could not measure at all',
       ),
-    description: z
-      .string()
-      .optional()
-      .describe('one-line summary; the long-form narrative lives in the plan body'),
+    description: z.string().optional().describe('one-line summary; the long-form narrative lives in the plan body'),
     proposedBy: z
       .string()
       .min(1)
@@ -666,7 +683,7 @@ export const rubricTemplateDataSchema = z
       .min(1)
       .optional()
       .describe(
-        'EI-12932 first-party-bundle upgrade tracking: a stable hash of this rubric\'s bundle-sourced fields (characteristic/criteria/ratingScale/methodRef/description) as of the last first-party seed/upgrade write. Absent for a rubric never touched by the seeder, or one seeded before this field existed. Compared against a freshly computed hash of the LIVE stored fields to detect drift since that write — see rubricsNeedingSeed (cupboard/rubric-store.ts) for the decision core this guards.',
+        "EI-12932 first-party-bundle upgrade tracking: a stable hash of this rubric's bundle-sourced fields (characteristic/criteria/ratingScale/methodRef/description) as of the last first-party seed/upgrade write. Absent for a rubric never touched by the seeder, or one seeded before this field existed. Compared against a freshly computed hash of the LIVE stored fields to detect drift since that write — see rubricsNeedingSeed (cupboard/rubric-store.ts) for the decision core this guards.",
       ),
   })
   .strict()
@@ -691,8 +708,8 @@ export const rubricTemplateDataSchema = z
           path: ['criteria', i, 'check'],
           message:
             `criterion '${c.key}' binds two different instruments: check.instrumentKey ` +
-            `'${c.check.instrumentKey}' vs the legacy instrumentKey field '${c.instrumentKey}' — `
-            + 'they cannot both be authoritative. Keep the structured check (preferred) and drop ' +
+            `'${c.check.instrumentKey}' vs the legacy instrumentKey field '${c.instrumentKey}' — ` +
+            'they cannot both be authoritative. Keep the structured check (preferred) and drop ' +
             'the legacy field, or make them equal',
         });
       }
@@ -851,7 +868,11 @@ export const UNKNOWN_RATING_EQUIVALENTS = [
 ] as const;
 
 function normalizeRatingVocabularyToken(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/^n\/a$/, 'na');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-')
+    .replace(/^n\/a$/, 'na');
 }
 
 /** True when a rating-scale entry can represent an honest no-verdict outcome. */
@@ -982,17 +1003,24 @@ export const rubricTemplateDataAuthoringSchema = z.preprocess((input, ctx) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
   const data = input as Record<string, unknown>;
   if (data.kind !== 'acceptance' || !Array.isArray(data.criteria)) return input;
-  return { ...data, criteria: data.criteria.map((criterion, index) => {
-    if (!criterion || typeof criterion !== 'object' ||
-        (!('acceptance' in criterion) && !('verification' in criterion))) return criterion;
-    const parsed = requirementCriterionInputSchema.safeParse(criterion);
-    if (!parsed.success) {
-      for (const issue of parsed.error.issues) ctx.addIssue({ ...issue, path: ['criteria', index, ...issue.path] });
-      return criterion;
-    }
-    const { bar: _readAlias, ...canonical } = normalizeRequirementSections(parsed.data);
-    return canonical;
-  }) };
+  return {
+    ...data,
+    criteria: data.criteria.map((criterion, index) => {
+      if (
+        !criterion ||
+        typeof criterion !== 'object' ||
+        (!('acceptance' in criterion) && !('verification' in criterion))
+      )
+        return criterion;
+      const parsed = requirementCriterionInputSchema.safeParse(criterion);
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) ctx.addIssue({ ...issue, path: ['criteria', index, ...issue.path] });
+        return criterion;
+      }
+      const { bar: _readAlias, ...canonical } = normalizeRequirementSections(parsed.data);
+      return canonical;
+    }),
+  };
 }, canonicalRubricTemplateDataAuthoringSchema);
 
 /** The validated structured-data type for a `rubric` template instance. */

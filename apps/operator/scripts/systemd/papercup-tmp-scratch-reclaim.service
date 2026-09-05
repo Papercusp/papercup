@@ -1,0 +1,27 @@
+[Unit]
+Description=Papercusp shared /tmp scratch residue reclaimer (EI-22401828026029625)
+Documentation=https://github.com/papercusp/papercup/blob/main/apps/operator/scripts/systemd/README.md
+# This is host-level filesystem hygiene, not product behavior: the leaked
+# entries live in the shared /tmp namespace and are invisible to the operator's
+# per-workspace scratch GC.
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=600
+# The script is deliberately invoked with the production root and conservative
+# age floor. It remains dry-run by default when run manually.
+ExecStart=%h/papercupai-workspace/papercusp/scripts/reclaim-tmp-scratch-residue.sh --execute --root /tmp --max-age-min 240
+# The reclaimer must see the host's shared /tmp; PrivateTmp=yes would create an
+# isolated namespace and make a successful-looking no-op.
+PrivateTmp=no
+# It only needs to read the checked-in script and remove audited top-level
+# residue under /tmp. Keep the rest of the filesystem read-only.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

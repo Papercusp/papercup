@@ -194,11 +194,14 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     });
   });
 
-  it('preempts outcome verification while any grading row is actionable and preserves the cursor', async () => {
+  it('reserves a verification slice while grading remains actionable and preserves the cursor', async () => {
     const d = deps({
       readPortfolioGradingBacklog: vi.fn(async () => 2),
       readPendingOutcomeCandidates: vi.fn(async () => [
-        { ideaId: 'pending', origin: 'scout', routedRef: 'plan:p', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'pending-a', origin: 'scout', routedRef: 'plan:a', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'pending-b', origin: 'scout', routedRef: 'plan:b', routedAtMs: NOW + 1, humanGrade: 4 },
+        { ideaId: 'pending-c', origin: 'scout', routedRef: 'plan:c', routedAtMs: NOW + 2, humanGrade: 3 },
+        { ideaId: 'pending-d', origin: 'scout', routedRef: 'plan:d', routedAtMs: NOW + 3, humanGrade: 2 },
       ]),
       readPortfolioFrontierCheckpoint: vi.fn(async () => ({
         version: 1 as const,
@@ -221,25 +224,53 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     expect(results[0]).toMatchObject({
       eligibleBacklogCount: 2,
       alerted: false,
-      frontier: { phase: 'grading', cursorIdeaId: 'resume-after', consumedItems: 0 },
+      frontier: { phase: 'outcome-verification', gradingBacklog: 2, consumedItems: 3 },
     });
-    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(3);
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
 
-  it('rechecks at the write boundary and preempts a grading route that arrived after selection', async () => {
+  it('rechecks at the write boundary and narrows to the reserved slice when grading arrives', async () => {
     const readBacklog = vi.fn(async () => 0);
     readBacklog.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
     const d = deps({
       readPortfolioGradingBacklog: readBacklog,
       readPendingOutcomeCandidates: vi.fn(async () => [
-        { ideaId: 'pending', origin: 'scout', routedRef: 'plan:p', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'pending-a', origin: 'scout', routedRef: 'plan:a', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'pending-b', origin: 'scout', routedRef: 'plan:b', routedAtMs: NOW + 1, humanGrade: 4 },
+        { ideaId: 'pending-c', origin: 'scout', routedRef: 'plan:c', routedAtMs: NOW + 2, humanGrade: 3 },
+        { ideaId: 'pending-d', origin: 'scout', routedRef: 'plan:d', routedAtMs: NOW + 3, humanGrade: 2 },
       ]),
     });
     const results = await scoutOutcomeRefreshSweep(d);
     expect(readBacklog).toHaveBeenCalledTimes(2);
-    expect(results[0]?.frontier).toMatchObject({ phase: 'grading', gradingBacklog: 1, consumedItems: 0 });
-    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
+    expect(results[0]?.frontier).toMatchObject({
+      phase: 'outcome-verification',
+      gradingBacklog: 1,
+      consumedItems: 3,
+    });
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(3);
+  });
+
+  it('alerts stale-pending work even while grading is active', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const d = deps({
+      readPortfolioGradingBacklog: vi.fn(async () => 2),
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'pending', origin: 'scout', routedRef: 'plan:p', routedAtMs: NOW, humanGrade: 5 },
+      ]),
+      countStalePendingIdeas: vi.fn(async () => 3),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    warn.mockRestore();
+    expect(results[0]).toMatchObject({
+      eligibleBacklogCount: 2,
+      stalePendingCount: 3,
+      alerted: true,
+      frontier: { phase: 'outcome-verification', gradingBacklog: 2, consumedItems: 1 },
+    });
+    expect(d.recordFire).toHaveBeenCalledTimes(1);
+    expect(d.openEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('alerts (both channels) when ideas sit stale-pending and no recent fire exists', async () => {

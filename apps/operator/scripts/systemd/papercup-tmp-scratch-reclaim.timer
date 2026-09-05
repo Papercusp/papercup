@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the Papercusp shared /tmp scratch residue reclaimer every 30 minutes (EI-22401828026029625)
+
+[Timer]
+# Wall-clock scheduling survives systemd user-manager restarts, and
+# Persistent=true catches up a sweep missed while the machine was down.
+# The four-hour age floor in the script is the safety guard; the cadence keeps
+# an already-audited leak from accumulating for another day after it ages out.
+OnCalendar=*:0/30
+Persistent=true
+RandomizedDelaySec=60
+AccuracySec=1min
+Unit=papercup-tmp-scratch-reclaim.service
+
+[Install]
+WantedBy=timers.target

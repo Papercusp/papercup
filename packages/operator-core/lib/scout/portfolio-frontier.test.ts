@@ -5,6 +5,7 @@ import {
   finishPortfolioFrontierStep,
   orderPortfolioCandidates,
   planPortfolioFrontierStep,
+  PORTFOLIO_FRONTIER_VERIFICATION_FLOOR,
   type PortfolioFrontierCheckpoint,
   type PortfolioOutcomeCandidate,
 } from './portfolio-frontier';
@@ -61,20 +62,20 @@ describe('portfolio frontier ordering', () => {
 });
 
 describe('planPortfolioFrontierStep', () => {
-  it('preempts outcome verification whenever grading becomes actionable and preserves the cursor', () => {
+  it('reserves a bounded outcome slice while grading remains actionable', () => {
     const result = planPortfolioFrontierStep({
       gradingBacklog: 1,
-      pending: [candidate('pending')],
+      pending: [candidate('a'), candidate('b'), candidate('c'), candidate('d')],
       previous: checkpoint({ cursorIdeaId: 'resume-here' }),
       itemBudget: 10,
       timeBudgetMs: 5_000,
       nowMs: NOW,
     });
-    expect(result.selected).toEqual([]);
+    expect(result.selected.map((row) => row.ideaId)).toEqual(['a', 'b', 'c']);
     expect(result.checkpoint).toMatchObject({
-      phase: 'grading',
-      cursorIdeaId: 'resume-here',
-      consumedItems: 0,
+      phase: 'outcome-verification',
+      cursorIdeaId: 'c',
+      consumedItems: PORTFOLIO_FRONTIER_VERIFICATION_FLOOR,
       gradingBacklog: 1,
     });
   });

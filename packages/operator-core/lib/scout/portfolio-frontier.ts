@@ -2,13 +2,17 @@
  * Portfolio frontier — the bounded transition between idea grading and outcome
  * verification.
  *
- * The grading queue is the priority frontier. Only when it is empty may the
- * steward spend a bounded slice on pending outcome verification. The cursor is
- * an idea id, not an array offset, so a checkpoint survives insertions and
- * terminal removals without silently skipping work.
+ * The grading queue is the priority frontier. It remains the primary budget,
+ * but a small reserved slice is always available for pending outcome
+ * verification so a continuously replenished grading queue cannot starve the
+ * outcome cache forever. The cursor is an idea id, not an array offset, so a
+ * checkpoint survives insertions and terminal removals without silently
+ * skipping work.
  */
 
 export const PORTFOLIO_FRONTIER_CHECKPOINT_VERSION = 1 as const;
+/** Outcome work reserved on each wake while grading remains actionable. */
+export const PORTFOLIO_FRONTIER_VERIFICATION_FLOOR = 3 as const;
 
 export type PortfolioFrontierPhase = 'grading' | 'outcome-verification' | 'drained';
 
@@ -104,8 +108,8 @@ function comparePortfolioCandidates(a: PortfolioOutcomeCandidate, b: PortfolioOu
 }
 
 /**
- * Plan one bounded step. A non-empty grading frontier always preempts outcome
- * verification and preserves the outcome cursor for the next drained wake.
+ * Plan one bounded step. A non-empty grading frontier keeps priority, but
+ * reserves a bounded outcome-verification slice so it cannot starve forever.
  */
 export function planPortfolioFrontierStep(args: {
   gradingBacklog: number;
@@ -121,13 +125,20 @@ export function planPortfolioFrontierStep(args: {
   const ordered = orderPortfolioCandidates(args.pending);
   const previousCursor = args.previous?.cursorIdeaId ?? null;
   const updatedAt = new Date(args.nowMs).toISOString();
+  const hasGradingBacklog = gradingBacklog > 0;
+  const verificationBudget = hasGradingBacklog
+    ? Math.min(itemBudget, PORTFOLIO_FRONTIER_VERIFICATION_FLOOR)
+    : itemBudget;
 
-  if (gradingBacklog > 0) {
+  if (ordered.length === 0 || verificationBudget === 0 || timeBudgetMs === 0) {
     return {
       selected: [],
       checkpoint: {
         version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
-        phase: 'grading',
+        phase:
+          ordered.length === 0
+            ? (hasGradingBacklog ? 'grading' : 'drained')
+            : 'outcome-verification',
         cursorIdeaId: previousCursor,
         cursorGrade: args.previous?.cursorGrade ?? null,
         cursorRoutedAtMs: args.previous?.cursorRoutedAtMs ?? null,
@@ -137,28 +148,6 @@ export function planPortfolioFrontierStep(args: {
         consumedItems: 0,
         elapsedMs: 0,
         gradingBacklog,
-        pendingOutcomes: ordered.length,
-        evidenceSource: args.previous?.evidenceSource ?? null,
-        updatedAt,
-      },
-    };
-  }
-
-  if (ordered.length === 0 || itemBudget === 0 || timeBudgetMs === 0) {
-    return {
-      selected: [],
-      checkpoint: {
-        version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
-        phase: ordered.length === 0 ? 'drained' : 'outcome-verification',
-        cursorIdeaId: previousCursor,
-        cursorGrade: args.previous?.cursorGrade ?? null,
-        cursorRoutedAtMs: args.previous?.cursorRoutedAtMs ?? null,
-        currentIdeaId: null,
-        itemBudget,
-        timeBudgetMs,
-        consumedItems: 0,
-        elapsedMs: 0,
-        gradingBacklog: 0,
         pendingOutcomes: ordered.length,
         evidenceSource: args.previous?.evidenceSource ?? null,
         updatedAt,
@@ -184,7 +173,7 @@ export function planPortfolioFrontierStep(args: {
     start = afterBoundary >= 0 ? afterBoundary : 0;
   }
   const selected: PortfolioOutcomeCandidate[] = [];
-  const count = Math.min(itemBudget, ordered.length);
+  const count = Math.min(verificationBudget, ordered.length);
   for (let offset = 0; offset < count; offset += 1) {
     selected.push(ordered[(start + offset) % ordered.length]!);
   }
@@ -205,7 +194,7 @@ export function planPortfolioFrontierStep(args: {
       timeBudgetMs,
       consumedItems: selected.length,
       elapsedMs: 0,
-      gradingBacklog: 0,
+      gradingBacklog,
       pendingOutcomes: ordered.length,
       evidenceSource: null,
       updatedAt,

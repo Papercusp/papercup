@@ -1200,6 +1200,40 @@ cat /mnt/data/Backup/db-dumps/STATUS.json
 
 ---
 
+# Shared `/tmp` scratch residue reclaimer — EI-22401828026029625
+
+`papercup-tmp-scratch-reclaim.{timer,service}` is the host-level actor for the
+shared `/tmp` leak that the operator's per-workspace `scratch-gc` cannot see.
+It runs the deliberately narrow `scripts/reclaim-tmp-scratch-residue.sh` every
+30 minutes, deletes only the four audited top-level residue shapes after the
+conservative 240-minute age floor, and preserves `/tmp/pc-heavy/*`,
+`exthost-*.cpuprofile`, fresh entries, and every unmatched path. The service
+explicitly sets `PrivateTmp=no`; enabling private `/tmp` would turn a healthy
+run into a silent no-op. Manual invocations remain dry-run unless `--execute`
+is passed.
+
+## Install (one-time, on a fresh machine)
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+for f in papercup-tmp-scratch-reclaim.timer papercup-tmp-scratch-reclaim.service; do
+  ln -sf "$(pwd)/$f" ~/.config/systemd/user/
+done
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-tmp-scratch-reclaim.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-tmp-scratch-reclaim.timer
+systemctl --user cat papercup-tmp-scratch-reclaim.service
+journalctl --user -u papercup-tmp-scratch-reclaim.service --since "2 hours ago"
+bash "$(git rev-parse --show-toplevel)/scripts/reclaim-tmp-scratch-residue.sh" --help
+```
+
+---
+
 # Shared embedding sidecar — WI-4021 (relocated here EI-19380773834961669)
 
 `papercup-embed-sidecar.service` is the ONE supervised owner of the shared

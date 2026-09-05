@@ -1,10 +1,10 @@
-import { defineConfig } from '@playwright/test';
-import { join } from 'node:path';
-import transportProfile from './playwright.hosted-http1.config';
-import { readHostedHttp1AcceptanceConfig } from './e2e/_hosted-http1-config';
+import { defineConfig } from "@playwright/test";
+import { join } from "node:path";
+import transportProfile from "./playwright.hosted-http1.config";
+import { readHostedHttp1AcceptanceConfig } from "./e2e/_hosted-http1-config";
 
 const acceptance = readHostedHttp1AcceptanceConfig();
-const evidenceDir = join(acceptance.evidenceDir, 'workspace-session');
+const evidenceDir = join(acceptance.evidenceDir, "workspace-session");
 
 /**
  * P-031 real-host profile. Reuses private auth, exact origin, SOCKS and serial
@@ -20,10 +20,15 @@ export default defineConfig({
   testMatch: /hosted-workspace-acceptance\.live\.ts$/,
   timeout: 4 * 60_000,
   reporter: [
-    ['list'],
-    ['json', { outputFile: join(evidenceDir, 'playwright-results.json') }],
+    ["list"],
+    ["json", { outputFile: join(evidenceDir, "playwright-results.json") }],
   ],
-  outputDir: join(evidenceDir, 'artifacts'),
+  outputDir: join(evidenceDir, "artifacts"),
   // Retain only explicit receipts, never workspace screens or credentialed traces.
-  use: { ...transportProfile.use, screenshot: 'off', trace: 'off', video: 'off' },
+  use: {
+    ...transportProfile.use,
+    screenshot: "off",
+    trace: "off",
+    video: "off",
+  },
 });

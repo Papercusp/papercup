@@ -18,10 +18,10 @@
  *
  * (a) DECOUPLE: this sweep runs on its own in-process-throttled cadence
  *     (default 15min), wholly independent of whether Scout is cycling.
- * (b) FRONTIER: the canonical ungraded census is the priority phase. Only when
- *     that frontier drains does the sweep spend a bounded slice verifying
- *     pending outcomes, selected by value/age/id and resumed from a durable
- *     operator-settings checkpoint. New grading work preempts verification.
+ * (b) FRONTIER: the canonical ungraded census is the priority phase. The sweep
+ *     reserves a small verification slice even while that frontier is active,
+ *     selected by value/age/id and resumed from a durable operator-settings
+ *     checkpoint. New grading work keeps priority without starving outcomes.
  *     The existing routed ledger, authoritative Change-Feed joins, and lens
  *     weights remain the only outcome substrate — no parallel queue/store.
  * (c) ESCALATE: after a verification step, count routed ideas whose outcome is STILL
@@ -217,11 +217,11 @@ export interface OutcomeRefreshSweepDeps {
 
 /**
  * The decoupled, phase-aware outcome-refresh sweep. For each registered Blender
- * scope's WORKSPACE (de-duped — the corpus is workspace-wide, EI-10520): let a
- * non-empty grading frontier preempt; otherwise verify a bounded pending-outcome
- * batch, persist its checkpoint, then count+alert on stale-pending ideas. Never
- * throws — a sweep that crashes its host routine tick guards nothing. Kill
- * switch: PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC <= 0.
+ * scope's WORKSPACE (de-duped — the corpus is workspace-wide, EI-10520): keep
+ * grading work primary while reserving a bounded pending-outcome batch,
+ * persist its checkpoint, then count+alert on stale-pending ideas. Never throws
+ * — a sweep that crashes its host routine tick guards nothing. Kill switch:
+ * PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC <= 0.
  */
 export async function scoutOutcomeRefreshSweep(
   deps: OutcomeRefreshSweepDeps = {},
@@ -308,9 +308,10 @@ export async function scoutOutcomeRefreshSweep(
 
         // Re-read at the write boundary. A route can become grade-eligible
         // after the initial census but before the bounded batch starts; that
-        // transition must preempt this very step, not wait for the next 15m
-        // cadence. The prior outcome cursor is preserved by replanning from
-        // `previous` rather than the speculative outcome checkpoint above.
+        // transition must narrow this very step to the reserved verification
+        // slice, not wait for the next 15m cadence. The prior outcome cursor is
+        // preserved by replanning from `previous` rather than the speculative
+        // outcome checkpoint above.
         if (planned.selected.length > 0) {
           const latestGradingBacklog = await (
             deps.readPortfolioGradingBacklog ?? readPortfolioGradingBacklog
@@ -391,9 +392,11 @@ export async function scoutOutcomeRefreshSweep(
             workspaceId,
             staleBeforeMs: now - thresholdSec * 1_000,
           });
-          // A live grading frontier preempts this budget by design. Do not page
-          // that intentional phase as though outcome verification had run.
-          if (stalePendingCount > 0 && frontier.phase !== 'grading') {
+          // Do not suppress this detector merely because grading is active.
+          // The planner reserves an outcome slice under grading pressure, and
+          // this alert is the independent guard for a stale cache if that
+          // slice or the planner itself stops making progress.
+          if (stalePendingCount > 0) {
             const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
             const firedRecently =
               (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
@@ -403,10 +406,15 @@ export async function scoutOutcomeRefreshSweep(
                 'scout-outcome-stale-pending',
               )) > 0;
             if (!firedRecently) {
+              const phaseContext =
+                frontier.gradingBacklog > 0
+                  ? `while the grading frontier still has ${frontier.gradingBacklog} actionable item(s); ` +
+                    'outcome verification is reserved under that pressure'
+                  : 'after a bounded authoritative outcome-verification step';
               const reason =
                 `${stalePendingCount} routed idea(s) in workspace '${workspaceId}' have sat ` +
-                `outcome NULL/'pending' past the ${windowHours}h staleness threshold, even after a ` +
-                `bounded authoritative outcome-verification step — their rail artifact likely never ` +
+                `outcome NULL/'pending' past the ${windowHours}h staleness threshold ${phaseContext} — ` +
+                `their rail artifact likely never ` +
                 `reaches a terminal (an abandoned/never-disposed draft), or the refresh itself is ` +
                 `failing silently. Investigate via readRoutedIdeas / the ledger's outcome_checked_at.`;
               console.warn(`[scout-outcome-refresh] ALERT: ${reason}`);
@@ -433,13 +441,18 @@ export async function scoutOutcomeRefreshSweep(
           evaluatedWorkspaceCount,
           evaluatedScopeCount,
           eligibleBacklogCount:
-            frontier.phase === 'grading' ? frontier.gradingBacklog : stalePendingCount,
+            frontier.gradingBacklog > 0 ? frontier.gradingBacklog : stalePendingCount,
           stalePendingCount,
           alerted,
           frontier,
           reason:
-            frontier.phase === 'grading'
-              ? `grading frontier preempted outcome verification (${frontier.gradingBacklog} actionable)`
+            frontier.gradingBacklog > 0 && frontier.phase === 'grading'
+              ? `grading frontier has no available verification slice (${frontier.gradingBacklog} actionable)`
+              : frontier.gradingBacklog > 0
+                ? `${frontier.consumedItems} verified under grading pressure (${frontier.gradingBacklog} actionable); ` +
+                  (stalePendingCount > 0
+                    ? `${stalePendingCount} stale-pending${alerted ? ' (alerted)' : ' (debounced)'}`
+                    : 'no stale-pending')
               : stalePendingCount > 0
                 ? `${frontier.consumedItems} verified; ${stalePendingCount} stale-pending${alerted ? ' (alerted)' : ' (debounced)'}`
                 : `${frontier.consumedItems} verified; no stale-pending`,

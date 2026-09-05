@@ -1258,20 +1258,30 @@ function unifiedCgroupPath(raw: string): string | null {
   return value && value.startsWith('/') ? value : null;
 }
 
+/** A process carrying the gate stamps is only a checkpoint authority when systemd placed it
+ * inside this root's transient manual-checkpoint unit. Environment is inherited by every child
+ * and can be copied by an unrelated process; the unit cgroup is the launcher's OS-owned boundary.
+ * Compare path segments, rather than using `includes`, so a similarly-named sibling unit cannot
+ * satisfy the identity check. Descendant cgroups remain valid because they retain the unit's
+ * service segment as their ancestor. */
+function checkpointCgroupContainsUnit(cgroupPath: string, unit: string): boolean {
+  return cgroupPath.split('/').includes(`${unit}.service`);
+}
+
 /**
  * P-009 / WI-41252: find a gate-owned process during the startup interval before
  * `green-checkpoint.ts` acquires its shared run-lock or publishes a candidate.
  *
- * The identity deliberately uses three independent OS-owned facts and ZERO argv:
+ * The identity deliberately uses the launcher's OS-owned unit boundary plus the gate stamps and
+ * ZERO argv:
  *  - authority: both gate-verdict target stamps are present;
  *  - environment: PAPERCUSP_INTEGRATION_ROOT resolves to the root being queried;
- *  - cgroup: the process belongs to a live unified cgroup.
+ *  - cgroup: the process belongs to this root's per-root manual-checkpoint service cgroup.
  *
  * An agent prompt or a status command can mention every checkpoint token in argv, so
- * argv matching is not liveness evidence. Descendants inherit these authority stamps;
- * treating the whole cgroup as active is intentional because materialization work may
- * already have moved below the original wrapper. A failed procfs census is UNKNOWN,
- * never a confident idle reading.
+ * argv matching is not liveness evidence. Descendants inherit the authority stamps and stay
+ * valid when nested below the checkpoint service cgroup; an unrelated agent scope does not.
+ * A failed procfs census is UNKNOWN, never a confident idle reading.
  */
 export async function readCheckpointProcessAuthorityCheap(
   root: string,
@@ -1313,6 +1323,7 @@ export async function readCheckpointProcessAuthorityCheap(
   const pids = listed.value;
 
   const expectedRoot = path.resolve(root);
+  const expectedCheckpointUnit = checkpointUnitForRoot(expectedRoot);
   type ProcessAuthorityMatch = Omit<CheckpointProcessAuthorityReading, 'active' | 'probeFailed' | 'probeDetail'>;
   type ProcessAuthorityScan =
     | { status: 'ok'; match: ProcessAuthorityMatch | null }
@@ -1346,7 +1357,9 @@ export async function readCheckpointProcessAuthorityCheap(
     const rawCgroup = cgroup.value;
     if (rawCgroup === null) return { status: 'ok', match: null };
     const cgroupPath = unifiedCgroupPath(rawCgroup);
-    if (!cgroupPath) return { status: 'ok', match: null };
+    if (!cgroupPath || !checkpointCgroupContainsUnit(cgroupPath, expectedCheckpointUnit)) {
+      return { status: 'ok', match: null };
+    }
 
     const start = await readBounded(() => readProcessStartMs(pid));
     if (start.status !== 'ok') {

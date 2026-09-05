@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { rubricsAmendArgs } from './amend';
+import { z } from 'zod';
+import amendTool, { rubricsAmendArgs } from './amend';
 
 const criterion = {
   key: 'r-1',
@@ -18,6 +19,10 @@ const criterion = {
 };
 
 describe('rubrics:amend complete acceptance criteria input', () => {
+  it('keeps the complete tool schema JSON-Schema-representable', () => {
+    expect(() => z.toJSONSchema(amendTool.args as never)).not.toThrow();
+  });
+
   it('accepts a full criterion set with structured checks', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',

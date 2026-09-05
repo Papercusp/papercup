@@ -1262,6 +1262,8 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
 
   describe('readCheckpointProcessAuthorityCheap (P-009 pre-lock materialization)', () => {
     const now = Date.parse('2026-08-24T18:00:00.000Z');
+    const checkpointCgroupPath =
+      `/user.slice/user-1000.slice/user@1000.service/app.slice/${checkpointUnitForRoot('/tree')}.service`;
     const env = (over: Record<string, string> = {}) =>
       Object.entries({
         PAPERCUSP_GATE_VERDICT_WORKSPACE: 'papercusp-workspace',
@@ -1275,7 +1277,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       readCheckpointProcessAuthorityCheap('/tree', {
         listPids: () => [4242],
         readEnvironment: () => env(),
-        readCgroup: () => '0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope\n',
+        readCgroup: () => `0::${checkpointCgroupPath}\n`,
         readProcessStartMs: () => now - 45_000,
         nowMs: () => now,
         ...over,
@@ -1288,10 +1290,19 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
         pid: 4242,
         startedAtMs: now - 45_000,
         elapsedSec: 45,
-        cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope',
+        cgroupPath: checkpointCgroupPath,
         workspace: 'papercusp-workspace',
         harness: 'papercusp',
       });
+    });
+
+    it('rejects an unrelated agent scope even when it inherits every authority stamp', async () => {
+      await expect(
+        probe({
+          readCgroup: () =>
+            '0::/user.slice/user-1000.slice/user@1000.service/papercusp-agent.slice/pc-agent.scope\n',
+        }),
+      ).resolves.toMatchObject({ active: false, probeFailed: false, pid: null, cgroupPath: null });
     });
 
     it.each([
@@ -1317,7 +1328,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     });
 
     it('does not read cgroups until the environment proves the exact authority and root', async () => {
-      const readCgroup = vi.fn(() => '0::/run-u42.scope\n');
+      const readCgroup = vi.fn(() => `0::${checkpointCgroupPath}\n`);
       const reading = await probe({
         listPids: () => [100, 200],
         readEnvironment: (pid) => (pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env()),
