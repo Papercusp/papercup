@@ -55,11 +55,20 @@ if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then
   ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")
 fi
 ptool tools:find --json - "${ptool_scope[@]}" <<'JSON'
-{"query":"<what you need>"}
+{"query":"<what you need — or an exact verb name, to read that verb's schema>"}
 JSON
 ```
 
-Then call the returned name with quoting-safe stdin JSON:
+Each hit carries an **`argSchema`** — the tool's exact accepted keys — not just a
+name. **Read it before any write call, and copy the keys from it.** Guessing
+intuitive argument names is the single most common way a mutation fails here,
+and it costs a retry round trip every time: `locks:acquire` takes `paths` (NOT
+`files`, and it accepts no `harness` — it is workspace-global);
+`improvements:capture` takes `body` (NOT `description` or `evidence`). `ptool
+--list` shows names and descriptions only, so it cannot answer this — querying
+`tools:find` for a verb you already know by name is the schema lookup.
+
+Then call it with quoting-safe stdin JSON, keys taken from that `argSchema`:
 
 ```bash
 ptool <group:verb> --json - <<'JSON'
