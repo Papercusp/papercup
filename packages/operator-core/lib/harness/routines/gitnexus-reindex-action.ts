@@ -185,14 +185,25 @@ export const GITNEXUS_ANALYZE_STACK_KB = 4_096;
  * that close to a number chosen for a 50 MiB workload should own that number explicitly
  * rather than inherit whatever a future gitnexus release happens to pick.
  *
- * Deliberately set to the SAME 16 GiB currently in force: this is a pin, not a retune —
- * no behaviour change today, and an upstream default change can no longer silently move
- * our envelope. Raising it is cheap (VA only) IF the measured DB approaches it; the
- * follow-up that WATCHES for that is filed rather than assumed, because a ceiling with
- * nobody watching it fails silently, and per D-016 a mid-analyze failure leaves
- * orphan shadow/WAL residue gitnexus cannot itself recover from.
+ * Originally pinned at the SAME 16 GiB upstream uses (a pin, not a retune). RETUNED to
+ * 64 GiB on 2026-09-05 (plan gitnexus-embeddings-enablement-2026-09-05, D-003) from a
+ * measurement that falsified the "file size approaches the ceiling" model: the one-shot
+ * live-root bootstrap (`--force --embeddings 0`, /tmp/wi39394/bootstrap-live2/run.log) hit
+ * "Maximum database size of 17179869184 bytes has been reached" → "manual WAL checkpoint
+ * failed after retries" → SIGSEGV three seconds into the embedding INSERT phase, while the
+ * database FILE sat at 5.27 GB (31% of the ceiling) the whole run and the WAL at 0.8 MB.
+ * The identical run on an isolated checkout (same env, same graph, /tmp/wi39394/run4-embed-
+ * run.log) passed, the only difference being wall-clock: 74 min of embedding generation
+ * under fleet load, with gitnexus's manual WAL-checkpoint driver firing every 5 s
+ * throughout, versus 28 min. So the ceiling is a bound on the buffer manager's VIRTUAL
+ * frame reservation — which the checkpoint cadence consumes and the file size does not
+ * report — not on bytes on disk. 64 GiB is still VA only (VmSize already reads 230 GiB
+ * against a 10 GiB VmHWM), keeps the 0.6 alert ratio meaningful (38 GiB against a 5.3 GB
+ * file), and stays far under the 64-bit mmap ceiling. Per D-016 a mid-analyze failure
+ * leaves orphan shadow/WAL residue gitnexus cannot itself recover from, which is why the
+ * cliff is moved rather than watched.
  */
-export const GITNEXUS_LBUG_MAX_DB_BYTES = 16 * 1024 * 1024 * 1024;
+export const GITNEXUS_LBUG_MAX_DB_BYTES = 64 * 1024 * 1024 * 1024;
 
 /** Alert before the LadybugDB mmap ceiling becomes an outage cliff. */
 export const GITNEXUS_LBUG_DB_ALERT_RATIO = 0.6;
