@@ -65,6 +65,19 @@ describe('mcp-call argument parsing', () => {
     expect(() => parseArgs(['coord:whoami', '--raw=true'])).toThrow('--raw does not take a value');
   });
 
+  it('accepts the help flags without treating them as unknown options', () => {
+    expect(parseArgs(['--help'])).toEqual({
+      tool: undefined,
+      jsonArgs: undefined,
+      flags: { help: true },
+    });
+    expect(parseArgs(['-h'])).toEqual({
+      tool: undefined,
+      jsonArgs: undefined,
+      flags: { help: true },
+    });
+  });
+
   // WI-41249. The reader-only tests below pass `flags: { jsonFile }` by hand, so
   // they proved readJsonArgs worked while the parser was emitting `flags['json-file']`
   // and `--json-file` silently sent EMPTY args. Only an end-to-end assertion over the

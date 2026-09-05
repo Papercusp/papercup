@@ -426,6 +426,32 @@ describe('git-sync:run', () => {
     expect(result.note).toMatch(/NO targeted retry event fires/);
   });
 
+  it('names an in-flight git-sync auto-commit instead of calling it a peer', async () => {
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'held_exclusive',
+      blockedOn: 'git-sync:papercusp',
+      holders: [{
+        owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
+        owner_label: 'git-sync:papercusp',
+        mode: 'exclusive',
+        status: 'held',
+        lock_id: 'lock-system-git-sync',
+        reason: 'auto-commit papercusp',
+        acquired_ts: '2026-09-05T13:42:29.066Z',
+        expires_ts: '2026-09-05T13:52:29.066Z',
+        fence_seq: 42,
+      }],
+    };
+    const result = await mockSkippedFire(outcome);
+
+    expect(result.note).toMatch(/an in-flight git-sync auto-commit holds git-sync:papercusp/);
+    expect(result.note).not.toMatch(/a peer holds git-sync:papercusp/);
+    const { continuation } = result as { continuation: Record<string, unknown> };
+    expect(continuation.completion_event).toBeUndefined();
+    expect(continuation.await_tool).toBeUndefined();
+  });
+
   // POSITIVE CONTROL for the case above: the fix must be scoped to `held_exclusive`
   // ONLY. Every other refusal class still reaches the live emitter, so removing the
   // continuation wholesale would be a regression, not a fix.

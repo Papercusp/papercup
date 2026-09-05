@@ -115,7 +115,7 @@ export async function fetchWithConnectionRecovery(
  * explicitly selects the unscoped superuser session (`workspace=*`), which is
  * required for cross-workspace tools when the scoped-superuser clamp is ON.
  */
-export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces']);
+export const BOOLEAN_FLAGS = new Set(['raw', 'allWorkspaces', 'help']);
 export const VALUE_FLAGS = new Set(['json', 'jsonFile', 'client', 'workspace', 'harness', 'port']);
 
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
@@ -128,7 +128,9 @@ export function parseArgs(argv) {
   const pos = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) {
+    if (a === '-h') {
+      flags.help = true;
+    } else if (a.startsWith('--')) {
       const rawKey = a.slice(2);
       const equalsAt = rawKey.indexOf('=');
       const cliKey = equalsAt === -1 ? rawKey : rawKey.slice(0, equalsAt);
@@ -335,9 +337,9 @@ export function isInvokedDirectly(
 
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
-  if (!tool || tool === '--help' || tool === '-h') {
+  if (flags.help || !tool) {
     console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--all-workspaces] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
-    process.exit(tool ? 0 : 2);
+    process.exit(flags.help ? 0 : 2);
   }
   let tok;
   try {

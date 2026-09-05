@@ -18,7 +18,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
 import { fireGitSyncNow, type GitSyncFireOutcome } from '../../harness/git-sync/git-sync-action';
-import { GIT_SYNC_LOCK_RETRY_EVENT } from '../../harness/git-sync/git-sync-events';
+import { GIT_SYNC_LOCK_RETRY_EVENT, isSystemGitSyncHolder } from '../../harness/git-sync/git-sync-events';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { clampText, LIMITS, softText } from '../limits';
 
@@ -302,6 +302,9 @@ export default defineTool({
             },
           }
         : undefined;
+    const blockedByInFlightGitSync = outcome?.status === 'skipped'
+      && outcome.reason === 'held_exclusive'
+      && outcome.holders?.some((holder) => isSystemGitSyncHolder(holder, slug));
     const note = fired.degraded
       ? fired.reason === 'error'
         ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`
@@ -321,7 +324,8 @@ export default defineTool({
                 // and mentioning it — even to negate it — is what a skimming caller (or a
                 // substring match) turns back into the dead-drop await this branch exists
                 // to prevent.
-                `git-sync skipped: a peer holds ${outcome.blockedOn ?? 'the git-sync resource'} ` +
+                `git-sync skipped: ${blockedByInFlightGitSync ? 'an in-flight git-sync auto-commit' : 'a peer'} holds ` +
+                `${outcome.blockedOn ?? 'the git-sync resource'} ` +
                 '(held_exclusive). NO targeted retry event fires for this class, and this result ' +
                 'deliberately carries no completion_event — do not wait on one. Your changes are ' +
                 'not lost: the next scheduled git-sync tick commits them. Inspect ' +

@@ -30,7 +30,12 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
-import { normalizeRequirementSections, type RequirementIntent, type RequirementAcceptance, type RequirementVerification } from './requirement-contract';
+import {
+  normalizeRequirementSections,
+  type RequirementIntent,
+  type RequirementAcceptance,
+  type RequirementVerification,
+} from './requirement-contract';
 import {
   rubricTemplateDataSchema,
   rubricTemplateDataAuthoringSchema,
@@ -1119,18 +1124,27 @@ export function computeAcceptanceBarHash(criterion: AcceptanceBarHashInput): str
   const key = criterion.key.trim();
   const material = [
     ['criterionKey', key],
-    ...(criterion.intent ? [['intent', {
-      request: normalizedBarText(criterion.intent.request),
-      constraints: normalizedBarSet(criterion.intent.constraints),
-      rationale: normalizedBarText(criterion.intent.rationale),
-      sourceRefs: normalizedBarSet(criterion.intent.sourceRefs),
-    }]] : []),
+    ...(criterion.intent
+      ? [
+          [
+            'intent',
+            {
+              request: normalizedBarText(criterion.intent.request),
+              constraints: normalizedBarSet(criterion.intent.constraints),
+              rationale: normalizedBarText(criterion.intent.rationale),
+              sourceRefs: normalizedBarSet(criterion.intent.sourceRefs),
+            },
+          ],
+        ]
+      : []),
     ['barKey', criterion.barKey?.trim() || key],
     ['bar', canonicalBar],
     ['falsifier', normalizedBarText(criterion.driftMarkers)],
     ['requiredScope', normalizedBarSet(criterion.requiredScope)],
     ...(criterion.evidencePlane ? ([['evidencePlane', criterion.evidencePlane]] as const) : []),
-    ...(criterion.requiredTestLayers ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]] : []),
+    ...(criterion.requiredTestLayers
+      ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]]
+      : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
@@ -1203,7 +1217,9 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     ...(model || alias ? { model: model || alias } : {}),
     ...(criterion.barKey?.trim() ? { barKey: criterion.barKey.trim() } : {}),
     ...(criterion.requiredScope ? { requiredScope: normalizedBarSet(criterion.requiredScope) } : {}),
-    ...(criterion.requiredTestLayers ? { requiredTestLayers: normalizedBarSet(criterion.requiredTestLayers, true) } : {}),
+    ...(criterion.requiredTestLayers
+      ? { requiredTestLayers: normalizedBarSet(criterion.requiredTestLayers, true) }
+      : {}),
     ...(criterion.passRatings ? { passRatings: normalizedBarSet(criterion.passRatings, true) } : {}),
     ...(criterion.coversBarKeys ? { coversBarKeys: normalizedBarSet(criterion.coversBarKeys) } : {}),
   };
@@ -1639,9 +1655,7 @@ function buildRubricTemplateData(
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
-    ...(input.composes !== undefined
-      ? { composes: normalizeRubricCompositionRefs(input.composes) }
-      : {}),
+    ...(input.composes !== undefined ? { composes: normalizeRubricCompositionRefs(input.composes) } : {}),
     ...(input.barSetHash ? { barSetHash: input.barSetHash } : {}),
     ...(input.barContract ? { barContract: input.barContract } : {}),
     characteristic: input.characteristic,
@@ -2435,7 +2449,10 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
       'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, and/or composes',
     );
   }
-  if (input.requirement && (input.criteria || input.criterion || input.criterionClass || input.criterionEvidencePlane)) {
+  if (
+    input.requirement &&
+    (input.criteria || input.criterion || input.criterionClass || input.criterionEvidencePlane)
+  ) {
     throw new Error('invalid_args: requirement amendment cannot be combined with other criterion patches');
   }
   if (input.criteria && (input.criterion || input.criterionClass || input.criterionEvidencePlane)) {
@@ -2458,7 +2475,9 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     if (stored.kind !== 'acceptance' || !target) {
       throw new Error('invalid_args: requirement amendment requires an existing acceptance criterion');
     }
-    if (![patch.intent, patch.acceptance, patch.verification].some((section) => section && Object.keys(section).length)) {
+    if (
+      ![patch.intent, patch.acceptance, patch.verification].some((section) => section && Object.keys(section).length)
+    ) {
       throw new Error('invalid_args: requirement amendment is empty');
     }
     // Remove read aliases before replacing canonical fields; an old projected BAR
@@ -2469,14 +2488,18 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     const next: ProposeRubricCriterion = {
       ...canonical,
       ...(patch.intent ? { intent: patch.intent } : {}),
-      ...(acceptance ? {
-        ...Object.fromEntries(Object.entries(acceptance).filter(([key]) => !['condition', 'falsifier'].includes(key))),
-        ...(acceptance.condition !== undefined ? { model: acceptance.condition } : {}),
-        ...(acceptance.falsifier !== undefined ? { driftMarkers: acceptance.falsifier } : {}),
-      } : {}),
+      ...(acceptance
+        ? {
+            ...Object.fromEntries(
+              Object.entries(acceptance).filter(([key]) => !['condition', 'falsifier'].includes(key)),
+            ),
+            ...(acceptance.condition !== undefined ? { model: acceptance.condition } : {}),
+            ...(acceptance.falsifier !== undefined ? { driftMarkers: acceptance.falsifier } : {}),
+          }
+        : {}),
       ...(verification ?? {}),
     };
-    criteria = criteria.map((criterion) => criterion.key === patch.key ? next : criterion);
+    criteria = criteria.map((criterion) => (criterion.key === patch.key ? next : criterion));
   }
   if (input.criterion) {
     const { key, field, mode, text } = input.criterion;
@@ -2516,11 +2539,16 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
 
   if (input.criterionEvidencePlane) {
     const { key, evidencePlane } = input.criterionEvidencePlane;
-    if (stored.kind !== 'acceptance' || !criteria.some((criterion) => criterion.key === key) ||
-        !['tree', 'deployed', 'live'].includes(evidencePlane)) {
-      throw new Error('invalid_args: criterionEvidencePlane requires an existing acceptance criterion and a structural tree/deployed/live token');
+    if (
+      stored.kind !== 'acceptance' ||
+      !criteria.some((criterion) => criterion.key === key) ||
+      !['tree', 'deployed', 'live'].includes(evidencePlane)
+    ) {
+      throw new Error(
+        'invalid_args: criterionEvidencePlane requires an existing acceptance criterion and a structural tree/deployed/live token',
+      );
     }
-    criteria = criteria.map((criterion) => criterion.key === key ? { ...criterion, evidencePlane } : criterion);
+    criteria = criteria.map((criterion) => (criterion.key === key ? { ...criterion, evidencePlane } : criterion));
   }
 
   return {
@@ -2641,7 +2669,9 @@ export interface AcceptanceBarAmendmentPreview {
 }
 
 function amendmentFaultStage(input: AmendRubricInput): AmendRubricInput['faultInjection'] | undefined {
-  return input.faultInjection ?? (process.env.PAPERCUSP_ACCEPTANCE_BAR_AMENDMENT_FAULT as AmendRubricInput['faultInjection']);
+  return (
+    input.faultInjection ?? (process.env.PAPERCUSP_ACCEPTANCE_BAR_AMENDMENT_FAULT as AmendRubricInput['faultInjection'])
+  );
 }
 
 function injectAmendmentFault(input: AmendRubricInput, stage: NonNullable<AmendRubricInput['faultInjection']>): void {
@@ -2695,7 +2725,9 @@ async function resolveAcceptanceSubjectScope(
     throw new Error(`invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' was not found`);
   }
   if (rows.length > 1 && rows[0]!.harness_slug !== rows[1]!.harness_slug) {
-    throw new Error(`invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' is ambiguous across harnesses`);
+    throw new Error(
+      `invalid_args: acceptance BAR amendment subject plan '${subjectPlan}' is ambiguous across harnesses`,
+    );
   }
   return { workspaceId, harnessSlug: rows[0]!.harness_slug };
 }
@@ -2744,16 +2776,27 @@ async function amendAcceptanceBarRubric(
 
       // An explicit replay token identifies the original request, including its
       // approval receipt. Handle retries before CAS and re-applying append text.
-      const replay = input.idempotencyKey && parsePlan(subjectRow.content).decisions.find((decision) =>
-        decision.body.split('\n').includes(`Amendment-Id: ${input.idempotencyKey!.trim()}`));
+      const replay =
+        input.idempotencyKey &&
+        parsePlan(subjectRow.content).decisions.find((decision) =>
+          decision.body.split('\n').includes(`Amendment-Id: ${input.idempotencyKey!.trim()}`),
+        );
       if (replay && !preview) {
         if (!replay.body.split('\n').includes(`Request-Hash: ${amendmentRequestHash(input)}`)) {
           throw new Error('acceptance_bar_amendment_replay_conflict');
         }
-        return { rubric: stored, decisionId: replay.id, rubricRevision: Number(rubricRow.version),
-          subjectPlanRevision: Number(subjectRow.version), barSetHash: stored.barSetHash!,
-          changedBars: [], reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
-          idempotencyKey: input.idempotencyKey!.trim(), replayed: true };
+        return {
+          rubric: stored,
+          decisionId: replay.id,
+          rubricRevision: Number(rubricRow.version),
+          subjectPlanRevision: Number(subjectRow.version),
+          barSetHash: stored.barSetHash!,
+          changedBars: [],
+          reboundContracts: 0,
+          invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey: input.idempotencyKey!.trim(),
+          replayed: true,
+        };
       }
 
       const amended = applyRubricAmendment(stored, input);
@@ -2827,13 +2870,20 @@ async function amendAcceptanceBarRubric(
             });
       if (approval) {
         const implementers = await resolvePlanImplementerIdentities(subjectPlanHint, {
-          sql: tx as never, workspaceId: subjectScope.workspaceId,
+          sql: tx as never,
+          workspaceId: subjectScope.workspaceId,
         });
         for (const implementer of new Set([actorId, stored.createdBy, subjectRow.owner, ...implementers])) {
-          if (implementer && await areAcceptanceLineageRelated(approval.approvedBy, implementer, {
-            sql: tx as never, workspaceId: subjectScope.workspaceId,
-          })) {
-            throw new Error(`acceptance_bar_approval_in_implementer_lineage: '${approval.approvedBy}' is related to '${implementer}'`);
+          if (
+            implementer &&
+            (await areAcceptanceLineageRelated(approval.approvedBy, implementer, {
+              sql: tx as never,
+              workspaceId: subjectScope.workspaceId,
+            }))
+          ) {
+            throw new Error(
+              `acceptance_bar_approval_in_implementer_lineage: '${approval.approvedBy}' is related to '${implementer}'`,
+            );
           }
         }
       }
@@ -2854,7 +2904,9 @@ async function amendAcceptanceBarRubric(
       if (decisionHasAmendmentKey(subjectRow.content, idempotencyKey)) {
         return {
           rubric: stored,
-          decisionId: parsePlan(subjectRow.content).decisions.find((d) => d.body.includes(`Amendment-Id: ${idempotencyKey}`))!.id,
+          decisionId: parsePlan(subjectRow.content).decisions.find((d) =>
+            d.body.includes(`Amendment-Id: ${idempotencyKey}`),
+          )!.id,
           rubricRevision: oldRubricRevision,
           subjectPlanRevision: oldSubjectRevision,
           barSetHash: stored.barSetHash ?? String(guard.data.barSetHash ?? ''),
@@ -2929,8 +2981,10 @@ async function amendAcceptanceBarRubric(
         // One bounded source snapshot. The candidate is used ONLY for the
         // shared semantic comparison, never as an authoritative gate verdict.
         const snapshot = await readAcceptanceBarContractSnapshot(subjectPlanHint);
-        if (snapshot.completeness.truncated || snapshot.completeness.problems.some((problem) =>
-          problem.code === 'bar_snapshot_source_unavailable')) {
+        if (
+          snapshot.completeness.truncated ||
+          snapshot.completeness.problems.some((problem) => problem.code === 'bar_snapshot_source_unavailable')
+        ) {
           throw new Error('acceptance_bar_amendment_preview_source_incomplete');
         }
         const nextCriteria = guard.data.criteria as unknown as RubricCriterion[];
@@ -2965,7 +3019,8 @@ async function amendAcceptanceBarRubric(
             }),
         };
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
-        const open = changedBars.length ? await tx<Array<{ work_item_id: string }>>`
+        const open = changedBars.length
+          ? await tx<Array<{ work_item_id: string }>>`
           SELECT DISTINCT e.work_item_id FROM harness_shared.work_item_spec_revision_edges e
             JOIN harness_shared.work_items w ON w.workspace_id=e.workspace_id
              AND w.harness_slug=e.harness_slug AND w.feature_id=e.work_item_id
@@ -2975,7 +3030,8 @@ async function amendAcceptanceBarRubric(
              AND e.plan_slug=${subjectPlanHint} AND e.spec_id=ANY(${clauses.map((clause) => clause.spec_id)}::text[])
              AND e.spec_revision=c.current_revision
              AND w.status NOT IN ('done','dropped','resolved','closed','passed','deprecated')
-           ORDER BY e.work_item_id LIMIT 1001` : [];
+           ORDER BY e.work_item_id LIMIT 1001`
+          : [];
         if (open.length > 1000) throw new Error('acceptance_bar_amendment_preview_work_truncated');
         const missingMethod = nextCriteria.some((criterion) => criterion.mandatory && !criterion.method?.trim());
         return {
@@ -3044,7 +3100,14 @@ async function amendAcceptanceBarRubric(
         'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
       ].join('\n');
       const subjectBody = bumpUpdatedDate(
-        appendDecisionToBody(subjectRow.content, decisionId, 'Acceptance BAR amendment', decisionBody, amendmentDate(), []),
+        appendDecisionToBody(
+          subjectRow.content,
+          decisionId,
+          'Acceptance BAR amendment',
+          decisionBody,
+          amendmentDate(),
+          [],
+        ),
       );
       injectAmendmentFault(input, 'after-decision');
 
@@ -3073,7 +3136,11 @@ async function amendAcceptanceBarRubric(
          WHERE workspace_id = ${rubricScope.workspaceId}
            AND harness_slug = ${rubricScope.harnessSlug}
            AND plan_slug = ${input.rubricId}`;
-      await writePlanIndexRows(tx as never, { workspaceId: rubricScope.workspaceId, harnessSlug: rubricScope.harnessSlug, planSlug: input.rubricId }, rubricIdx);
+      await writePlanIndexRows(
+        tx as never,
+        { workspaceId: rubricScope.workspaceId, harnessSlug: rubricScope.harnessSlug, planSlug: input.rubricId },
+        rubricIdx,
+      );
       injectAmendmentFault(input, 'after-rubric');
 
       const subjectIdx = deriveIndexFromContent(subjectBody);
@@ -3099,7 +3166,11 @@ async function amendAcceptanceBarRubric(
          WHERE workspace_id = ${subjectScope.workspaceId}
            AND harness_slug = ${subjectScope.harnessSlug}
            AND plan_slug = ${subjectPlanHint}`;
-      await writePlanIndexRows(tx as never, { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint }, subjectIdx);
+      await writePlanIndexRows(
+        tx as never,
+        { workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint },
+        subjectIdx,
+      );
 
       // Every projection pins the GLOBAL rubric revision and BAR-set hash,
       // including BARs whose individual meaning did not change.
@@ -3279,7 +3350,9 @@ async function amendAcceptanceBarRubric(
  * — every WI-4287 loss-guard still applies to a `replace` (an `append` can only grow).
  * Returns null for an unknown rubricId; throws (like proposeRubric) on guard violations.
  */
-export async function previewAcceptanceBarAmendment(input: AmendRubricInput): Promise<AcceptanceBarAmendmentPreview | null> {
+export async function previewAcceptanceBarAmendment(
+  input: AmendRubricInput,
+): Promise<AcceptanceBarAmendmentPreview | null> {
   const scope = await resolveRubricWriteScope(input.rubricId);
   return (await amendAcceptanceBarRubric(input, scope, true))?.preview ?? null;
 }
@@ -3558,11 +3631,7 @@ export async function retireRubric(rubricId: string, by?: string, reason?: strin
       slug: rubricId,
       intent: `rubrics:retire ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(
-        rubricId,
-        by,
-        `rubrics:retire → retired${reason ? ` (${reason})` : ''}`,
-      ),
+      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:retire → retired${reason ? ` (${reason})` : ''}`),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };

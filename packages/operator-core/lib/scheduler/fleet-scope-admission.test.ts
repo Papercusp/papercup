@@ -1345,6 +1345,9 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/LANE COMPLETE/);
       expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/park ONE events:await/);
+      expect(miss.advice).toMatch(/work-item:claimable/);
+      expect(miss.advice).toMatch(/payload_filter/);
       expect(miss.excludedBreakdownSummary).toMatch(/all 2 are terminal/);
       expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual({
         matchedByFilter: 2,

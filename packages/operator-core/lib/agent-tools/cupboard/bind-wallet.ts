@@ -18,7 +18,7 @@ const args = z.discriminatedUnion('op', [
       .regex(/^0x[0-9a-fA-F]{40}$/)
       .describe('EVM wallet that will sign the returned SIWE-style message.'),
     chainId: z.number().int().positive().safe().optional().describe('EVM chain id; defaults to 1.'),
-  }),
+  }).strict(),
   z.object({
     op: z.literal('verify'),
     challengeId: z.string().min(1).max(100).describe('Server-issued challenge id returned by op=challenge.'),
@@ -26,9 +26,9 @@ const args = z.discriminatedUnion('op', [
       .string()
       .regex(/^0x[0-9a-fA-F]{130}$/)
       .describe('65-byte EIP-191 personal_sign signature over the exact returned message.'),
-  }),
-  z.object({ op: z.literal('status') }),
-  z.object({ op: z.literal('unbind') }),
+  }).strict(),
+  z.object({ op: z.literal('status') }).strict(),
+  z.object({ op: z.literal('unbind') }).strict(),
 ]);
 
 const text = (payload: Record<string, unknown>) => ({

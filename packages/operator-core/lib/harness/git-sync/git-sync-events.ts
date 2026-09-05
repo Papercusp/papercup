@@ -69,6 +69,26 @@ export function snapshotGitSyncLockHolders(holders: readonly ResourceHolder[]): 
   }));
 }
 
+/**
+ * Identify a holder created by the git-sync action for this install.
+ *
+ * Git-sync fires use unique owners so scheduled and manual invocations really
+ * contend, but they deliberately share the same label/reason. That metadata is
+ * the stable distinction between an in-flight git-sync run and an unrelated
+ * peer's lock; do not classify on the `system:git-sync` prefix alone because
+ * the lock can be held for a different install.
+ */
+export function isSystemGitSyncHolder(
+  holder: Pick<GitSyncLockHolderSnapshot, 'owner' | 'owner_label' | 'reason'>,
+  installSlug: string,
+): boolean {
+  return (
+    holder.owner.startsWith('system:git-sync:') &&
+    holder.owner_label === `git-sync:${installSlug}` &&
+    holder.reason === `auto-commit ${installSlug}`
+  );
+}
+
 /** Global signal for a git-sync fire that must retry after a resource is freed. */
 export const GIT_SYNC_LOCK_RETRY_EVENT = 'git-sync:lock-retry';
 

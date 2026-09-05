@@ -212,6 +212,7 @@ const {
   shortCarryHash,
   splitCarryNoteChecks,
   withCarryNoteChecks,
+  withCarryNoteWalls,
 } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -1173,6 +1174,8 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       contentHash: shortCarryHash(note),
       updatedAtMs,
       length: note.length,
+      walls: [],
+      checks: [],
     });
     expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith({
       harness: 'papercusp',
@@ -1181,6 +1184,25 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     });
     expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
     expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('read:true returns the complete carried walls and checks rows from the stored note', async () => {
+    const checks = [{ id: 'check-1', claim: 'gate is green', recheck: 'dev:pipeline_position' }];
+    const walls = [{ id: 'wall-1', claim: 'owner decision pending', recheck: 'coord:inbox' }];
+    const note = withCarryNoteWalls(withCarryNoteChecks('## Next action\nresume the focused test', checks), walls);
+    const updatedAtMs = 1_787_546_123_000;
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note, updatedAtMs });
+
+    const b = body(await call({ read: true, ownerId: 'su-caller', harness: 'papercusp' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      read: true,
+      note,
+      updatedAtMs,
+      walls,
+      checks,
+    });
   });
 
   describe('WI-1826126 — a newer carry-note stranded under another harness', () => {
@@ -1293,6 +1315,8 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       contentHash: null,
       updatedAtMs: null,
       length: 0,
+      walls: [],
+      checks: [],
     });
     expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
   });

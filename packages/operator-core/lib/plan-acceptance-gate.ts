@@ -235,6 +235,8 @@ export interface PlanAcceptanceGateVerdict {
 }
 
 export interface PlanAcceptanceGateOpts {
+  /** Freshly measured fingerprints for the original requirements' bound proof. */
+  current?: import('./agent-tools/plans/spec-evidence-store').EvidenceCurrentInput[];
   /**
    * An explicit, reasoned override of the CODE-TRUTH family only —
    * `plan_items_unfinished`, `acceptance_unaudited`, `audit_coverage_stale`,
@@ -451,6 +453,7 @@ export async function evaluatePlanAcceptanceGate(
       const expectedApplicable = hasRequirements || rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null);
       const barLifecycle = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'ship', {
         expectedApplicable,
+        ...(opts.current ? { current: opts.current } : {}),
       });
       if (expectedApplicable && !barLifecycle.applicable) {
         return {

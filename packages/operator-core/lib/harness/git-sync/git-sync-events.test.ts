@@ -7,6 +7,7 @@ import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
   emitGitSyncLockRetryEvent,
+  isSystemGitSyncHolder,
   snapshotGitSyncLockHolders,
 } from './git-sync-events';
 import { payloadMatchesFilter } from '../../events/await/pattern';
@@ -223,5 +224,43 @@ describe('emitGitSyncLockRetryEvent (EI-20271766491179856)', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-retry-event'));
     warn.mockRestore();
+  });
+});
+
+describe('isSystemGitSyncHolder (EI-22429374186419271)', () => {
+  it('recognizes an in-flight git-sync holder for the requested install', () => {
+    expect(
+      isSystemGitSyncHolder(
+        {
+          owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
+          owner_label: 'git-sync:harness-a',
+          reason: 'auto-commit harness-a',
+        },
+        'harness-a',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not misclassify a peer or another install as git-sync', () => {
+    expect(
+      isSystemGitSyncHolder(
+        {
+          owner: 'su-peer',
+          owner_label: 'peer agent',
+          reason: 'manual git work',
+        },
+        'harness-a',
+      ),
+    ).toBe(false);
+    expect(
+      isSystemGitSyncHolder(
+        {
+          owner: 'system:git-sync:3063386:026aff27-f42d-4d44-94b8-045f102f989a',
+          owner_label: 'git-sync:harness-b',
+          reason: 'auto-commit harness-b',
+        },
+        'harness-a',
+      ),
+    ).toBe(false);
   });
 });

@@ -2346,7 +2346,11 @@ export function fleetScopedMiss(
           : specExhausted
           ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
             'Checkpoint any final progress, release remaining lane resources, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
-            'fleet leader. Do NOT escalate, widen, or re-author the claim spec.'
+            'fleet leader. ' +
+            (claimablePayloadFilter
+              ? 'If new work later enters your scope, park ONE events:await { event: "work-item:claimable", payload_filter: <the `payloadFilter` returned in this response>, timeout_sec: 1800 } and end your turn — the wake is a HINT; scheduler:get_next remains authoritative.'
+              : 'Do NOT park an UNSCOPED work-item:claimable await — this response has no safe payload filter.') +
+            ' Do NOT escalate, widen, or re-author the claim spec.'
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +

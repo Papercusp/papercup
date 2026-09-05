@@ -3,18 +3,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
-import { listSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
-
-const fingerprint = z.string().trim().min(1).max(256);
-const currentSchema = z.object({
-  evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
-  evidenceRef: z.string().trim().min(1).max(2000),
-  sourceFingerprint: fingerprint,
-  testFingerprint: fingerprint.nullable().optional(),
-  fixtureFingerprint: fingerprint.nullable().optional(),
-  rubricFingerprint: fingerprint.nullable().optional(),
-  environmentFingerprint: fingerprint.nullable().optional(),
-});
+import { listSpecEvidence, SPEC_EVIDENCE_KINDS, evidenceCurrentInputSchema } from './spec-evidence-store';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -29,7 +18,7 @@ const argsSchema = z.object({
   evidenceKinds: z.array(z.enum(SPEC_EVIDENCE_KINDS)).min(1).max(SPEC_EVIDENCE_KINDS.length).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   current: z
-    .array(currentSchema)
+    .array(evidenceCurrentInputSchema)
     .max(500)
     .optional()
     .describe(

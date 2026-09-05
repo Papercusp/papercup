@@ -1023,7 +1023,27 @@ impl OperatorClient {
     /// (`coord:wake-mode` / `coord:wake-queue`, hive-agent-tabs P-008/P-009) + any
     /// future pui tool-call go through it.
     pub async fn run_tool(&self, name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
-        self.post_json("/api/agent-mcp/run-tool", run_tool_body(name, args))
+        self.post_json(
+            "/api/agent-mcp/run-tool",
+            run_tool_body(name, args, false),
+        )
+        .await
+    }
+
+    /// Execute a mutation the TUI already confirmed in its own y/n modal. The
+    /// server still re-checks eligibility, authorization and capability, and
+    /// the ordinary projected-tool dispatcher still writes the audit record;
+    /// this bool only satisfies the loopback route's high-risk confirmation
+    /// rail after the human's separate `y` keypress.
+    pub async fn run_tool_confirmed(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/agent-mcp/run-tool",
+            run_tool_body(name, args, true),
+        )
             .await
     }
 
@@ -3014,11 +3034,11 @@ fn run_tool_caller_sid() -> String {
     format!("pui-{}", std::process::id())
 }
 
-fn run_tool_body(name: &str, args: serde_json::Value) -> serde_json::Value {
+fn run_tool_body(name: &str, args: serde_json::Value, confirmed: bool) -> serde_json::Value {
     serde_json::json!({
         "name": name,
         "args": args,
-        "confirmed": false,
+        "confirmed": confirmed,
         "callerSid": run_tool_caller_sid(),
     })
 }
@@ -3699,6 +3719,7 @@ mod tests {
         let b = super::run_tool_body(
             "coord:wake-mode",
             serde_json::json!({ "agent": "s-1", "mode": "manual" }),
+            false,
         );
         assert_eq!(b["name"], "coord:wake-mode");
         assert_eq!(b["args"]["agent"], "s-1");
@@ -3715,6 +3736,7 @@ mod tests {
         let burn_down = super::run_tool_body(
             "work_items:burn_down",
             super::work_frontier_burn_down_args("papercusp"),
+            false,
         );
         assert_eq!(burn_down["args"]["payloadTier"], "full");
         assert_eq!(burn_down["args"]["harness"], "papercusp");
@@ -3722,6 +3744,7 @@ mod tests {
         let detail = super::run_tool_body(
             "work_items:get",
             super::work_frontier_detail_args(vec!["WI-ready".into()], "papercusp"),
+            false,
         );
         assert_eq!(detail["args"]["payloadTier"], "full");
         assert_eq!(detail["args"]["ids"][0], "WI-ready");
@@ -3783,8 +3806,8 @@ mod tests {
         // EI-1751: every call from this process must carry the SAME callerSid
         // (so the server can attribute per-instance telemetry), in the
         // established `pui-<pid>` shape (layout.rs's pane-id convention).
-        let a = super::run_tool_body("coord:wake-mode", serde_json::json!({}));
-        let b = super::run_tool_body("coord:wake-queue", serde_json::json!({}));
+        let a = super::run_tool_body("coord:wake-mode", serde_json::json!({}), false);
+        let b = super::run_tool_body("coord:wake-queue", serde_json::json!({}), false);
         let sid_a = a["callerSid"].as_str().expect("callerSid must be a string");
         let sid_b = b["callerSid"].as_str().expect("callerSid must be a string");
         assert!(sid_a.starts_with("pui-"), "got {sid_a:?}");
@@ -3793,6 +3816,19 @@ mod tests {
             "callerSid must be stable across calls from one process"
         );
         assert_eq!(sid_a, format!("pui-{}", std::process::id()));
+    }
+
+    #[test]
+    fn confirmed_run_tool_body_is_explicit_and_keeps_caller_attribution() {
+        let body = super::run_tool_body(
+            "fleet:bench",
+            serde_json::json!({ "member": "su-1", "wakeEvent": "gate:ready" }),
+            true,
+        );
+        assert_eq!(body["confirmed"], true);
+        assert_eq!(body["name"], "fleet:bench");
+        assert_eq!(body["args"]["member"], "su-1");
+        assert!(body["callerSid"].as_str().unwrap().starts_with("pui-"));
     }
 
     #[test]

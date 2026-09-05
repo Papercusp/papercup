@@ -87,6 +87,9 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../coordination/escalations', () => ({ openEscalation: h.openEscalation }));
 vi.mock('../../embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin-url/db',
+  // The migrate target resolver now reads the URL WITH its provenance; keep the
+  // two in agreement so a source-aware branch sees the same admin url.
+  getHarnessAdminUrlWithSource: () => ({ url: 'postgres://admin-url/db', source: 'env' }),
 }));
 vi.mock('../locks/su-lock-store', () => ({
   checkResourceAction: h.checkResourceAction,

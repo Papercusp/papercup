@@ -201,6 +201,36 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(typo.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
     });
 
+    it('surfaces a deadline refusal through the documented failure grep, not as a clean run', () => {
+      // A past epoch guarantees the scheduler refuses before launching a child. This is the
+      // real false-green path: status=refused and NOT MEASURED are truthful, but neither matches
+      // the documented `AFFECTED_EXIT|Test Files|FAIL ` triage grep on their own.
+      const { stdout, stderr, status } = runAffected(
+        ['--changed-paths', 'scripts/affected-tests.mjs'],
+        {
+          PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '1',
+          // This test itself runs under pc-heavy, whose after-ready paths are inherited by the
+          // child unless explicitly cleared. The refusal must reach the affected-tests deadline
+          // branch, not collide with the outer test lane's marker.
+          PC_HEAVY_PREEMPT_AFTER_READY: '',
+          PC_HEAVY_PREEMPT_READY_FILE: '',
+          PC_HEAVY_PSI_FINALIZATION_FILE: '',
+        },
+      );
+      const output = `${stdout}${stderr}`;
+      const triageLines = output.split('\n').filter((line) => /AFFECTED_EXIT|Test Files|FAIL /.test(line));
+
+      // A surrounding pc-heavy/systemd test lane may normalize an EX_CONFIG child exit to its
+      // own infrastructure refusal (observed as 75). The contract under test is the log surface,
+      // so require a non-zero child result without coupling this probe to the outer supervisor's
+      // status mapping.
+      expect(typeof status).toBe('number');
+      expect(status).toBeGreaterThan(0);
+      expect(output).toContain('AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient');
+      expect(output).toContain('NOT MEASURED');
+      expect(triageLines).toContain('AFFECTED_EXIT=78');
+    });
+
     it('accepts the conventional equals-form for value-taking flags', () => {
       const result = runAffected(['--changed-paths=scripts/affected-tests.mjs', '--dry']);
 

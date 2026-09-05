@@ -237,12 +237,14 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
           bar({
             method: 'Run tests.',
             check: { kind: 'tests', files: ['x.test.ts'] },
+            requiredTestLayers: ['integration'],
             proof: {
               state: 'current',
               currentEvidence: 1,
               staleEvidence: 0,
               kinds: ['test'],
               evidenceRefs: ['x'],
+              adequacy: { state: 'pass', checks: [{ specId: 'spec-1', revision: 1, verdict: 'pass', wouldBlock: [], evidenceRefs: ['x'] }] },
               uncertainEvidence: 0,
               evidencePlanes: [],
             },

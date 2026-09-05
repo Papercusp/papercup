@@ -10,7 +10,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { amendRubric, previewAcceptanceBarAmendment, rubricCompleteness, AMENDABLE_CRITERION_FIELDS, type AmendRubricInput } from '../../rubrics';
+import {
+  amendRubric,
+  previewAcceptanceBarAmendment,
+  rubricCompleteness,
+  AMENDABLE_CRITERION_FIELDS,
+  type AmendRubricInput,
+} from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 import { requirementCriterionInputSchema, requirementAmendmentSchema } from '../plans/rubric-template';
@@ -21,8 +27,11 @@ const amendmentCriterionSchema = requirementCriterionInputSchema;
 export const rubricsAmendArgs = z
   .object({
     rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
-    requirement: requirementAmendmentSchema.optional()
-      .describe('patch one requirement Intent, Acceptance or Verification; promise changes use the BAR amendment transaction'),
+    requirement: requirementAmendmentSchema
+      .optional()
+      .describe(
+        'patch one requirement Intent, Acceptance or Verification; promise changes use the BAR amendment transaction',
+      ),
     dryRun: z
       .boolean()
       .optional()
@@ -135,8 +144,11 @@ export const rubricsAmendArgs = z
   })
   .superRefine((args, ctx) => {
     if (args.requirement && (args.criteria || args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['requirement'],
-        message: 'requirement amendment cannot be combined with other criterion patches' });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requirement'],
+        message: 'requirement amendment cannot be combined with other criterion patches',
+      });
     }
     if (args.criteria && (args.criterion || args.criterionClass || args.criterionEvidencePlane)) {
       ctx.addIssue({
@@ -154,10 +166,11 @@ export default defineTool({
   description:
     "Amend one criterion field, replace a started acceptance rubric's complete criterion set, set its structural evidence plane, or update rubric-level refs. Use complete `criteria` when adding a BAR or binding structured checks across an already-seeded contract that rubrics:propose may not replace. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
   guidance: {
-    when: "A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.",
+    when: 'A targeted rubric improvement, or a complete-set revision of an already-seeded acceptance BAR contract that adds a BAR or structured checks through the atomic amendment/approval path.',
     notWhen:
       'Adding/removing criteria on a standard rubric, renaming stored keys, or changing rating scales — use rubrics:propose. Complete `criteria` here is acceptance-kind only and must preserve every stored key unless the canonical amendment rules explicitly support its removal.',
-    chaining: 'rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify.',
+    chaining:
+      'rubrics:get (read the stored field first) → rubrics:amend → the result reports `completeness` and `replicationSqlCheck` like propose/ratify.',
     seeAlso: ['rubrics:propose (whole-document revision)', 'rubrics:get (read before amending)'],
   },
   capability: 'coord:write',
@@ -199,7 +212,9 @@ export default defineTool({
       ...(args.shrinkReason !== undefined ? { shrinkReason: args.shrinkReason } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),
       ...(args.expectedRubricRevision !== undefined ? { expectedRubricRevision: args.expectedRubricRevision } : {}),
-      ...(args.expectedSubjectPlanRevision !== undefined ? { expectedSubjectPlanRevision: args.expectedSubjectPlanRevision } : {}),
+      ...(args.expectedSubjectPlanRevision !== undefined
+        ? { expectedSubjectPlanRevision: args.expectedSubjectPlanRevision }
+        : {}),
       ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
       ...(args.approvalRef !== undefined ? { approvalRef: args.approvalRef } : {}),
       ...(args.approvedBy !== undefined ? { approvedBy: args.approvedBy } : {}),
@@ -210,13 +225,18 @@ export default defineTool({
     };
     if (args.dryRun) {
       const preview = await previewAcceptanceBarAmendment(input);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: preview !== null, dryRun: true, preview }) }] };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: preview !== null, dryRun: true, preview }) }],
+      };
     }
     const rubric = await amendRubric(input);
     if (!rubric) {
       return {
         content: [
-          { type: 'text' as const, text: JSON.stringify({ ok: false, error: `no rubric '${args.rubricRef}' — rubrics:list to see refs` }) },
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: `no rubric '${args.rubricRef}' — rubrics:list to see refs` }),
+          },
         ],
       };
     }

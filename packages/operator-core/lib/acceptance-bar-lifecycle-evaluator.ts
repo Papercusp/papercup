@@ -13,6 +13,7 @@ import type {
   AcceptanceBarTrace,
 } from './acceptance-bar-contract-snapshot';
 import { readAcceptanceBarContractSnapshot } from './acceptance-bar-contract-snapshot';
+import type { EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 
 export type AcceptanceBarLifecyclePhase = 'pre-start' | 'pre-vetting' | 'pre-grading' | 'ship';
 
@@ -84,6 +85,8 @@ function phaseSnapshotCodes(
     'bar_snapshot_proof_missing',
     'bar_snapshot_proof_stale',
     'bar_snapshot_proof_uncertain',
+    'bar_snapshot_proof_depth_missing',
+    'bar_snapshot_proof_inadequate',
     'bar_snapshot_evidence_plane_unmet',
     'bar_snapshot_grading_missing',
     'bar_snapshot_grading_stale',
@@ -115,6 +118,8 @@ function baseBarCodes(snapshot: AcceptanceBarContractSnapshot, bar: AcceptanceBa
         'bar_snapshot_work_contract_stale',
         'bar_snapshot_proof_missing',
         'bar_snapshot_proof_stale',
+        'bar_snapshot_proof_depth_missing',
+        'bar_snapshot_proof_inadequate',
         'bar_snapshot_grading_missing',
         'bar_snapshot_grading_stale',
         'bar_snapshot_grading_not_pass',
@@ -166,6 +171,10 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
   // a non-empty METHOD (checked above), while runnable checks carry their own
   // file/instrument/probe/cargo binding in the structured check.
   if (phase === 'ship') {
+    if (bar.role === 'outcome') {
+      if (!bar.requiredTestLayers?.length) addCode(codes, 'bar_snapshot_proof_depth_missing');
+      else if (bar.proof.adequacy?.state !== 'pass') addCode(codes, 'bar_snapshot_proof_inadequate');
+    }
     if (bar.proof.state === 'missing') addCode(codes, 'bar_snapshot_proof_missing');
     if (bar.proof.state === 'stale' || bar.proof.state === 'truncated') addCode(codes, 'bar_snapshot_proof_stale');
     if (bar.proof.uncertainEvidence > 0) addCode(codes, 'bar_snapshot_proof_uncertain');
@@ -263,9 +272,9 @@ export const evaluateAcceptanceBarContract = evaluateAcceptanceBarLifecycle;
 export async function readAndEvaluateAcceptanceBarLifecycle(
   planSlug: string,
   phase: AcceptanceBarLifecyclePhase,
-  options: { expectedApplicable?: boolean } = {},
+  options: { expectedApplicable?: boolean; current?: EvidenceCurrentInput[] } = {},
 ): Promise<AcceptanceBarLifecycleVerdict> {
-  const snapshot = await readAcceptanceBarContractSnapshot(planSlug);
+  const snapshot = await readAcceptanceBarContractSnapshot(planSlug, {}, { current: options.current });
   // Callers that already know the subject carries the adoption marker (rubric
   // grading/vetting and the ship gate) set expectedApplicable=true, preserving
   // fail-closed behavior when a source read is unavailable. Generic start doors

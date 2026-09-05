@@ -6319,6 +6319,11 @@ try {
         "TASK_DEADLINE_REFUSAL line above names the remaining clock and the KNOWN work (a lower " +
         "bound — unknown-duration tasks are counted as zero and reported separately).",
     );
+    // EI-22431012667356741: the documented triage grep includes AFFECTED_EXIT, but this
+    // deliberate refusal previously emitted only status=refused and NOT MEASURED. Publish the
+    // known non-zero exit in the run log so a refusal cannot look like a clean run to a reader
+    // who follows that grep without knowing this special path.
+    errSync("AFFECTED_EXIT=78");
     terminalEmitted = true;
     errSync(`Full run log: ${RUN_LOG_PATH}`);
     process.exit(78);

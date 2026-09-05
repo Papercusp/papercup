@@ -150,6 +150,70 @@ impl FleetPanel {
     }
 }
 
+/// One explicit leader-cockpit mutation. The reducer arms one of these from
+/// the Fleet keymap, then a separate `y` press dispatches it through the
+/// audited run-tool bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetControlKind {
+    Bench,
+    Wake,
+    Relaunch,
+    FireGate,
+    BumpSpec,
+}
+
+impl FleetControlKind {
+    pub fn verb(self) -> &'static str {
+        match self {
+            FleetControlKind::Bench => "fleet:bench",
+            FleetControlKind::Wake => "coord:wake",
+            FleetControlKind::Relaunch => "fleet:respawn-member",
+            FleetControlKind::FireGate => "events:emit",
+            FleetControlKind::BumpSpec => "scheduler:set_claim_spec",
+        }
+    }
+}
+
+/// Fully-resolved target captured at arm time. This is deliberately concrete:
+/// member actions carry the roster cursor's owner id, and gate actions carry
+/// the first currently-unfired announced gate. Confirmation never re-resolves
+/// a moving cursor into a different target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetControlIntent {
+    pub kind: FleetControlKind,
+    pub fleet: String,
+    pub member: String,
+    pub member_label: String,
+    pub gate: Option<String>,
+}
+
+impl FleetControlIntent {
+    pub fn describe(&self) -> String {
+        match self.kind {
+            FleetControlKind::Bench => format!(
+                "bench {} until {}",
+                self.member_label,
+                self.gate.as_deref().unwrap_or("the selected gate")
+            ),
+            FleetControlKind::Wake => format!("wake {}", self.member_label),
+            FleetControlKind::Relaunch => format!("relaunch {}", self.member_label),
+            FleetControlKind::FireGate => format!(
+                "fire gate {}",
+                self.gate.as_deref().unwrap_or("the selected gate")
+            ),
+            FleetControlKind::BumpSpec => {
+                format!("bump claim spec for fleet {}", self.fleet)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FleetControlOutcome {
+    pub ok: bool,
+    pub message: String,
+}
+
 /// Fleet-tab state: the live activity ring, the fleet work-items, per-agent todo
 /// snapshots, the view mode, and the agent-selection cursor.
 pub struct FleetState {
@@ -210,6 +274,12 @@ pub struct FleetState {
     pub leader_fleet: Option<String>,
     pub leader_brief: Option<crate::models::FleetLeaderBrief>,
     pub leader_brief_error: Option<String>,
+    /// Two-step cockpit action state. `pending` owns the modal y/n confirmation;
+    /// `running` blocks double-fire while the async tool call is in flight; the
+    /// last compact audited outcome remains visible until another action arms.
+    pub control_pending: Option<FleetControlIntent>,
+    pub control_running: Option<FleetControlIntent>,
+    pub control_outcome: Option<FleetControlOutcome>,
 }
 
 impl Default for FleetState {
@@ -236,6 +306,9 @@ impl Default for FleetState {
             leader_fleet: None,
             leader_brief: None,
             leader_brief_error: None,
+            control_pending: None,
+            control_running: None,
+            control_outcome: None,
         }
     }
 }
@@ -467,6 +540,23 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 /// keys to move between/within panels + the `c` layout toggle. So the comms view
 /// and panel navigation are discoverable without guessing `c`.
 fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
+    if let Some(intent) = app.fleet.control_pending.as_ref() {
+        let line = Line::from(vec![
+            Span::styled(format!(" CONFIRM {} ", intent.describe()), Theme::warn()),
+            Span::styled(" [y] execute · [n/Esc] cancel ", Theme::info()),
+        ]);
+        f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
+        return;
+    }
+    if let Some(intent) = app.fleet.control_running.as_ref() {
+        let line = Line::from(Span::styled(
+            format!(" … running {} via {} ", intent.describe(), intent.kind.verb()),
+            Theme::warn(),
+        ));
+        f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
+        return;
+    }
+
     let toggle = if comms {
         "c: task-list+plans"
     } else {
@@ -492,12 +582,32 @@ fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
     // agent is in no fleet. Sourced from the roster entry already in the model
     // (RosterEntry.fleet_slug, stamped by adv-roster.ts).
     let mut spans: Vec<Span> = Vec::new();
+    if let Some(outcome) = app.fleet.control_outcome.as_ref() {
+        spans.push(Span::styled(
+            format!(
+                " {} {} · ",
+                if outcome.ok { "✓" } else { "✗" },
+                trunc(&outcome.message, 72)
+            ),
+            if outcome.ok {
+                Theme::success()
+            } else {
+                Theme::warn()
+            },
+        ));
+    }
     if let Some(sel) = app.selected_session() {
         spans.push(Span::styled(
             format!(" {} ", agent_id_fleet_label(sel)),
             Theme::info(),
         ));
         spans.push(Span::styled("·", Theme::dim()));
+    }
+    if control_target(app).is_some() {
+        spans.push(Span::styled(
+            " [b] bench [w] wake [r] relaunch [g] fire gate [s] bump spec · ",
+            Theme::info(),
+        ));
     }
     spans.push(Span::styled(marker, Theme::title_active()));
     spans.push(Span::styled(keys, Theme::info()));
@@ -689,7 +799,7 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[1]);
     if let Some(brief) = selected_leader_brief(app) {
-        draw_leader_cockpit(f, brief, cols[1]);
+        draw_leader_cockpit(f, app, brief, cols[1]);
     } else {
         draw_dossier(f, app, right[0], focus == FleetPanel::Dossier);
         draw_plan_progress(f, app, agg, right[1], focus == FleetPanel::PlanProgress);
@@ -721,7 +831,44 @@ fn selected_leader_brief(app: &App) -> Option<&crate::models::FleetLeaderBrief> 
     (brief.summary.fleet == fleet).then_some(brief)
 }
 
-fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, area: Rect) {
+/// The live fleet/member pair targeted by cockpit action keys. Unlike the
+/// render-only `selected_leader_brief`, this accepts any roster member in the
+/// acting leader's fleet: moving the roster cursor is how the owner chooses the
+/// bench/wake/relaunch target without adding a second member cursor.
+pub(crate) fn control_target(
+    app: &App,
+) -> Option<(
+    &crate::models::RosterEntry,
+    &crate::models::FleetLeaderBrief,
+)> {
+    if app.tab != crate::app::Tab::Fleet || app.fleet.mode != FleetMode::Curated {
+        return None;
+    }
+    let selected = app.selected_session()?;
+    let fleet = app.fleet.leader_fleet.as_deref()?;
+    if selected.fleet_slug.as_deref() != Some(fleet) || selected.owner_id.is_empty() {
+        return None;
+    }
+    let brief = app.fleet.leader_brief.as_ref()?;
+    (brief.ok && brief.summary.fleet == fleet).then_some((selected, brief))
+}
+
+pub(crate) fn first_unfired_gate(
+    brief: &crate::models::FleetLeaderBrief,
+) -> Option<&crate::models::FleetLeaderGate> {
+    brief
+        .announced_gates
+        .as_ref()?
+        .iter()
+        .find(|gate| !gate.fired)
+}
+
+fn draw_leader_cockpit(
+    f: &mut Frame,
+    app: &App,
+    brief: &crate::models::FleetLeaderBrief,
+    area: Rect,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -820,6 +967,12 @@ fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, a
             .into_iter()
             .map(Line::from),
     );
+    if app.fleet.control_pending.is_none() && app.fleet.control_running.is_none() {
+        lower.push(Line::from(Span::styled(
+            "[b] bench · [w] wake · [r] relaunch · [g] fire gate · [s] bump spec",
+            Theme::info(),
+        )));
+    }
     f.render_widget(
         Paragraph::new(lower).block(Theme::block(
             " declared invariants + admission ".into(),

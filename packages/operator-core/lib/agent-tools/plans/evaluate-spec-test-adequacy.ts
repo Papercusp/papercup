@@ -4,19 +4,8 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { listSpecClauses } from './spec-clauses-store';
-import { listSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
+import { listSpecEvidence, evidenceCurrentInputSchema } from './spec-evidence-store';
 import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
-
-const fingerprint = z.string().trim().min(1).max(256);
-const currentSchema = z.object({
-  evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
-  evidenceRef: z.string().trim().min(1).max(2000),
-  sourceFingerprint: fingerprint,
-  testFingerprint: fingerprint.nullable().optional(),
-  fixtureFingerprint: fingerprint.nullable().optional(),
-  rubricFingerprint: fingerprint.nullable().optional(),
-  environmentFingerprint: fingerprint.nullable().optional(),
-});
 
 /**
  * Exported so a scorecard's `rerunRecipe.args` can be validated against the REAL
@@ -33,7 +22,7 @@ export const argsSchema = z.object({
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
-  current: z.array(currentSchema).max(500).optional(),
+  current: z.array(evidenceCurrentInputSchema).max(500).optional(),
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
   limit: z.number().int().min(1).max(1000).optional(),
