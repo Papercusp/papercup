@@ -176,10 +176,10 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     >);
     await callTool({ title: 'observation', kind: 'change', lane: 'observation' });
 
-    mockCapture.mockResolvedValue({ ok: true, created: false, reason: 'likely-duplicate' } as unknown as Awaited<
+    mockCapture.mockResolvedValue({ ok: true, created: false, reason: 'check-only' } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
-    await callTool({ title: 'duplicate', kind: 'change' });
+    await callTool({ title: 'duplicate', kind: 'change', checkDuplicatesOnly: true });
 
     expect(mockEnterAgentReview).not.toHaveBeenCalled();
   });
@@ -274,6 +274,17 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     });
     expect(mockEnterAgentReview).not.toHaveBeenCalled();
     expect(mockSetCaptureReviewState).not.toHaveBeenCalled();
+  });
+});
+
+describe('improvements:capture — duplicate verdicts are annotations, not inaccessible declines (P-002)', () => {
+  it('documents accepted duplicate matches and reserves non-persistence for checkDuplicatesOnly', () => {
+    expect(captureTool.description).toContain('Dedup matches are annotated on the created row');
+    expect(captureTool.description).not.toContain('declines obvious matches');
+    const returns = captureTool.guidance?.returns ?? '';
+    expect(returns).toContain('created row carries `payload.dedupVerdict');
+    expect(returns).not.toContain('May DECLINE your capture');
+    expect(captureTool.guidance?.seeAlso?.[0]).toContain('checkDuplicatesOnly:true');
   });
 });
 
@@ -751,9 +762,10 @@ describe('improvements:capture — absence-shaped empty dedup gets a shipped-cod
     ).toBe(false);
 
     mockCapture.mockResolvedValueOnce({
-      ok: false,
-      created: false,
-      reason: 'likely-duplicate',
+      ok: true,
+      created: true,
+      issue: { id: 'EI-duplicate' },
+      dedupVerdict: 'likely-duplicate',
       possibleDuplicates: [{ id: 'EI-existing', title: 'The existing reader', state: 'open' }],
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
     expect(
@@ -1610,7 +1622,7 @@ describe('improvements:capture — the su-ideate GROUNDING leg (EI-10607)', () =
  * pre-check on the su kind:'feature' path. Pins the gate (su + feature +
  * improvement lane only), the response field semantics (array = checked, [] =
  * checked-and-clean, absent = not checked / check failed), and that a pre-check
- * failure NEVER fails the capture (D-005 — only the improvement-dedup declines).
+ * failure NEVER fails the capture (D-005 — duplicate matching is annotation-only).
  */
 describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
   const A_MATCH = [
@@ -1643,8 +1655,13 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
     expect(body.priorArt).toEqual([]);
   });
 
-  it('runs on a dedup-decline too (the collision report is MOST useful there)', async () => {
-    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+  it('runs on a duplicate-annotated filing too (the collision report is MOST useful there)', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-5' },
+      dedupVerdict: 'likely-duplicate',
+    } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
     mockPriorArt.mockResolvedValue(A_MATCH as Awaited<ReturnType<typeof noveltyPriorArt>>);
@@ -1751,8 +1768,13 @@ describe('improvements:capture — cheapExperiment gap is report-only (P-007/D-0
     expect('experimentGap' in (await bodyOf({ title: 'x', kind: 'feature', lane: 'observation' }))).toBe(false);
   });
 
-  it('reports on a dedup-decline too — the filer is told BEFORE they re-file', async () => {
-    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+  it('reports on a duplicate-annotated filing too — the filer sees the advisory with the accepted row', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-5' },
+      dedupVerdict: 'likely-duplicate',
+    } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
     const body = await bodyOf({ title: 'a dup', kind: 'feature' });
@@ -1831,8 +1853,13 @@ describe('improvements:capture — lens attribution is report-only (WI-38065)', 
     expect(mockRecordRoutedIdea).not.toHaveBeenCalled();
   });
 
-  it('reports on a dedup-decline too — the filer is told BEFORE they re-file', async () => {
-    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+  it('reports on a duplicate-annotated filing too — the filer sees the advisory with the accepted row', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-5' },
+      dedupVerdict: 'likely-duplicate',
+    } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
     expect((await bodyOf({ title: 'a dup', kind: 'feature' })).lensAttribution).toMatchObject({ sentinel: true });

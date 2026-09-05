@@ -8,7 +8,7 @@
  * engineer_issue = work_item[kind ∈ bug|change]) instead of letting the insight
  * rot in chat. A THIN wrapper over the shared `captureImprovement` core
  * (capture-core.ts) — the watchdog's event-driven captures use the same core, so
- * the semantics (search-first dedup, native kind column, payload paths,
+ * the semantics (dedup verdict annotations, native kind column, payload paths,
  * auto-tagging) live in exactly one place.
  */
 import { z } from 'zod';
@@ -276,8 +276,8 @@ export function describeExperimentGap(args: {
  * anyway (filings that omit `ideation` entirely), and nothing here blocks or declines. An agent
  * that genuinely wants no lens simply ignores it.
  *
- * Computed from the CALLER's args (like experimentGap), so a dedup-decline / checkDuplicatesOnly
- * response carries it too — the filer is told before they re-file, not after.
+ * Computed from the CALLER's args (like experimentGap), so a duplicate-annotated /
+ * checkDuplicatesOnly response carries it too — the filer is told at file time.
  */
 export function describeLensAttribution(
   args: { kind?: string; lane?: string; ideation?: { lens?: string } },
@@ -305,7 +305,7 @@ export function describeLensAttribution(
  * The writer (the ledger bridge below) and the readers (observationsImpact) have been wired since
  * EI-10607, yet 0 of 217 su-ideate rows carried refs (measured live 2026-08-16) — because nothing
  * told the filer at the moment they forgot. Same never-a-gate stance and caller-args basis as
- * describeLensAttribution above, so a dedup-decline response carries it too.
+ * describeLensAttribution above, so a duplicate-annotated response carries it too.
  */
 export function describeGroundingGap(
   args: { kind?: string; lane?: string; ideation?: { addressesPatternRefs?: string[] } },
@@ -417,7 +417,7 @@ export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
-    'Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Search-first dedup declines obvious matches unless force. lane:"observation" stays outside the work queue.',
+    'Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Dedup matches are annotated on the created row; only checkDuplicatesOnly skips persistence. lane:"observation" stays outside the work queue.',
   guidance: {
     when:
       'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. ' +
@@ -456,8 +456,8 @@ export default defineTool({
       'A filing with `paths` may also return `staleCodeWarning` — a REPORT-ONLY check for commits touching those paths after the running build. It names the serving sha and newer commits; it NEVER blocks the filing. Verify the deployed generation before treating a live observation as a current defect.\n\n' +
       'An su kind=feature filing also returns `priorArt[]` — a REPORT-ONLY novelty pre-check (including already-tried-and-failed priors) that NEVER blocks the filing. Absent field = not checked; [] = checked and nothing similar found.\n\n' +
       'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
-      '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +
-      '  • semantic:hard  — embedding match. May DECLINE your capture.\n' +
+      '  • no flag        — token-overlap (Jaccard) above threshold. The created row carries `payload.dedupVerdict:"likely-duplicate"`.\n' +
+      '  • semantic:hard  — embedding match. The created row carries the same verdict annotation.\n' +
       '  • semantic:soft  — weaker embedding match. ADVISORY ONLY, never declines.\n' +
       '  • lexical:"containment" — your (shorter) title is almost fully covered by a much longer stored one. ADVISORY ONLY, never declines. This is the net that makes a SHORT symptom query work: Jaccard divides by the union, so a short query that is a perfect subset of a long stored title scores |query|/|title| and cannot clear the threshold on its own.\n\n' +
       'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".' +
@@ -576,7 +576,7 @@ export default defineTool({
         force: z
           .boolean()
           .optional()
-          .describe('file even if a likely duplicate exists (default false → search-first declines)'),
+          .describe('suppress the duplicate verdict annotation when you have direct evidence this filing is distinct (default false)'),
         checkDuplicatesOnly: z
           .boolean()
           .optional()
@@ -1226,13 +1226,14 @@ export default defineTool({
       }
       const result = gated ? gated.value : await persist();
       // Directed @-mention — only when we actually CREATED a claimable item (not a
-      // dedup-decline / checkDuplicatesOnly / observation-lane reflection).
+      // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
       const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
       // su-loop-capability-parity P-005 (D-009): an SU session's IDEATE-pass FEATURE origination
       // earns a routed-ledger provenance row (origin='su-ideate') so it rides the SAME
       // grade/outcome/priming machinery Scout's ideas do — WITHOUT skewing Scout's per-lens
       // weight learning (the lens readers filter origin='scout'). Fires only for an su caller's
-      // freshly-created kind:'feature' (not the watchdog, not an observation, not a dedup-decline).
+      // freshly-created kind:'feature' (not the watchdog, not an observation, not a
+      // check-only probe or coalesced row).
       // Fully guarded + best-effort: a ledger hiccup must NEVER fail the capture the user asked for.
       if (
         source === 'su' &&
@@ -1344,7 +1345,7 @@ export default defineTool({
       // its named follow-up work-items AT FILE TIME, so a scorecard's motivating
       // improvement is never a separate round-trip someone forgets to make. Fires
       // only when the caller passed observation.linkTo AND an item was actually
-      // created (not a dedup-decline). Best-effort per target: one bad targetId
+      // created (not a coalesced/check-only result). Best-effort per target: one bad targetId
       // never fails the capture, and a partial failure is reported (not silent).
       let linked: { targetId: string; ok: boolean; error?: string }[] | undefined;
       if (observation?.linkTo?.length && captured.created && captured.issue?.id) {
@@ -1364,11 +1365,11 @@ export default defineTool({
       }
       // P-008 (su-ideate-learning-substrate): REPORT-ONLY novelty pre-check on the su
       // IDEATE-pass feature path — the same eligibility as the ledger row, but independent
-      // of creation (a dedup-decline / checkDuplicatesOnly response benefits too). Surfaces
+      // of creation (a duplicate-annotated / checkDuplicatesOnly response benefits too). Surfaces
       // the priors the title collides with (plans / decisions / routed-ledger ideas, incl.
       // already-decided "tried, failed" ones) as response.priorArt. NEVER a gate (D-005):
-      // only the improvement-dedup above may decline; a failed check just omits the field
-      // (absent = not checked; [] = checked, nothing similar).
+      // normal filings are accepted; checkDuplicatesOnly is the explicit non-persisting path,
+      // and a failed check just omits the field (absent = not checked; [] = checked, nothing similar).
       const priorArtRaw =
         source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
           ? await noveltyPriorArt(captureText.title).catch(() => undefined)
@@ -1394,11 +1395,11 @@ export default defineTool({
             }).catch(() => null)
           : null;
       // P-007/D-010: report-only cheapExperiment gap (see describeExperimentGap above).
-      // Computed from the CALLER's args, so a dedup-decline / checkDuplicatesOnly response
-      // carries it too — the filer is told before they re-file, not after.
+      // Computed from the CALLER's args, so a duplicate-annotated / checkDuplicatesOnly
+      // response carries it too.
       const experimentGap = describeExperimentGap(args);
       // WI-38065: report-only lens-attribution advisory (see describeLensAttribution above).
-      // Same caller-args basis as experimentGap, so a dedup-decline carries it too.
+      // Same caller-args basis as experimentGap, so a duplicate-annotated response carries it too.
       const lensAttribution = describeLensAttribution(args, source);
       // P-006/EI-10607: report-only grounding advisory (see describeGroundingGap above).
       const groundingGap = describeGroundingGap(args, source);
@@ -1424,8 +1425,8 @@ export default defineTool({
       ];
       // ── EI-19908952124502298: dangling-ref advisory, same helper `comment`/`complete`/
       // `update`/`checkpoint` carry. Scoped to a capture that actually CREATED a row:
-      // on a dedup-decline or checkDuplicatesOnly probe no body is stored under an id,
-      // so there is no durable text for a later reader to be misled by. `known` carries
+      // on a coalesced row or checkDuplicatesOnly probe no new body is stored under an id,
+      // so there is no new durable text for a later reader to be misled by. `known` carries
       // the freshly-minted id so a self-citation is never reported as phantom.
       const capturedRefSubject = captured.created ? captured.issue?.id : undefined;
       const capturedUnresolvedRefs = capturedRefSubject
