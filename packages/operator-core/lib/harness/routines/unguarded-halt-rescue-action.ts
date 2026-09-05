@@ -298,6 +298,9 @@ export async function claimabilityForCandidate(
         assignee: candidate.agentId,
         ...(resolved.fleetSlug ? { claimantFleetSlug: resolved.fleetSlug } : {}),
         claimSpecReferencesFleet: claimSpecReferencesField(spec, 'fleet'),
+        // EI-21398324268952860: mirror the claim's goal leg, so a halted goal-scoped drain is
+        // not judged unrescuable because its own plan lane reads as reserved.
+        claimSpecReferencesGoal: claimSpecReferencesField(spec, 'goal'),
       },
       { limit: 1, breakdownOnly: true },
     );

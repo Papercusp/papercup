@@ -280,6 +280,75 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
       }),
     );
   });
+
+  /**
+   * EI-21398324268952860: the GOAL sibling of the structural fleet authorization above. A
+   * per-goal standing drain fleet scopes its spec by `{ field:'goal', op:'=', value:<goalId> }`
+   * and its OWN steward mints plan-stamped work for it — which the plan-lane floor then reserved
+   * away from the only fleet entitled to it (`matchedByFilter=7, claimable=0, planLaneReserved=7`;
+   * the drain stalled fleet-wide). The fleet leg could not rescue those rows: measured live, 0 of
+   * the 9 stamped-and-untaken items carried a `fleet_slug` at all.
+   *
+   * Asserted on BOTH floors this diagnostic composes, deliberately — `claimFloorsWhereSql` feeds
+   * the `claimable` count and `reservedPlanLaneExclusionSql` feeds `reserved_plan_lane`. Deriving
+   * the flag for one and not the other is exactly how this fix could land looking complete while
+   * the diagnostic kept reporting the gating it had just removed.
+   */
+  it('EI-21398324268952860: derives structural GOAL authorization for both floors, and withholds it for a spec that does not reference goal', async () => {
+    admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITH_GOAL_AUTH');
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.reservedPlanLaneExclusionSql.mockReturnValue('RESERVATION_FLOOR');
+    admissionMocks.sql.mockResolvedValue([{ matched: 7, claimable: 7, reserved_plan_lane: 0 }]);
+
+    const goalReferencedScope = {
+      ...populationScope,
+      record: {
+        ...populationScope.record,
+        spec: {
+          ...populationScope.record.spec,
+          view: { filter: { field: 'goal' as const, op: '=' as const, value: 'work-on-everything-0a8163' } },
+        },
+      },
+    };
+
+    await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: goalReferencedScope,
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+    });
+
+    expect(admissionMocks.claimFloorsWhereSql).toHaveBeenLastCalledWith(
+      admissionMocks.sql,
+      expect.objectContaining({ claimSpecReferencesGoal: true }),
+    );
+    expect(admissionMocks.reservedPlanLaneExclusionSql).toHaveBeenLastCalledWith(
+      admissionMocks.sql,
+      expect.anything(),
+      'payload',
+      expect.objectContaining({ claimSpecReferencesGoal: true }),
+    );
+
+    // POSITIVE CONTROL. Without it this test passes just as well against a hardcoded `true`,
+    // which would grant goal authorization to EVERY caller and un-gate every ordinary plan lane
+    // — a strictly worse failure than the one being fixed. `populationScope`'s spec filters on
+    // `plan`, so it structurally references neither `fleet` nor `goal` and must be refused.
+    await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: populationScope,
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+    });
+
+    expect(admissionMocks.claimFloorsWhereSql).toHaveBeenLastCalledWith(
+      admissionMocks.sql,
+      expect.objectContaining({ claimSpecReferencesGoal: false }),
+    );
+    expect(admissionMocks.reservedPlanLaneExclusionSql).toHaveBeenLastCalledWith(
+      admissionMocks.sql,
+      expect.anything(),
+      'payload',
+      expect.objectContaining({ claimSpecReferencesGoal: false }),
+    );
+  });
 });
 
 const base: ClaimSpecSubject = {

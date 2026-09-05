@@ -1126,6 +1126,8 @@ export function issueClaimCandidateSubquery(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     /** Apply this compiled filter while materializing candidates instead of projecting it
      *  as `spec_match`; only the single-spec claimability snapshot uses this pushdown. */
     filterPushdown?: SqlFragment;
@@ -1147,6 +1149,7 @@ export function issueClaimCandidateSubquery(
     rigAvailable,
     claimantFleetSlug,
     claimSpecReferencesFleet,
+    claimSpecReferencesGoal,
     filterPushdown,
     projection = 'full',
   } = args;
@@ -1247,6 +1250,7 @@ export function issueClaimCandidateSubquery(
       (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
         claimantFleetSlug,
         claimSpecReferencesFleet,
+        claimSpecReferencesGoal,
       })})                                                             AS ok_plan_lane,
       (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
       (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
@@ -1315,6 +1319,8 @@ async function aggregateIssueClaimExclusionsOn(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
@@ -1364,6 +1370,7 @@ async function aggregateIssueClaimExclusionsOn(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.claimantFleetSlug,
     claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
   });
 
   const rows = (await sql`
@@ -1567,6 +1574,8 @@ export async function sampleIssueClaimExclusions(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     /** Run on this handle instead of a fresh pool checkout — pass the `tx` from
      *  {@link readIssueClaimability} to share ONE snapshot with the sibling reads. */
     client?: OrgSql;
@@ -1593,6 +1602,7 @@ export async function sampleIssueClaimExclusions(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.claimantFleetSlug,
     claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
   });
 
   // Each floor's sample is its own bounded scalar subquery over the materialized `sub`
@@ -1763,6 +1773,8 @@ export async function listIssueClaimableRows(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     /** The validated claim spec whose rank orders the survivors (defaults to
      *  DEFAULT_CLAIM_SPEC's fixed feature_order→created ordering). Reusing compileRank
      *  makes the listing order match what get_next under this spec would actually claim. */
@@ -1804,6 +1816,7 @@ export async function listIssueClaimableRows(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.claimantFleetSlug,
     claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
   });
 
   const rows = (await sql`
@@ -1958,6 +1971,8 @@ export async function aggregateAdmittedComposition(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     client?: OrgSql;
     /** EI-18802055183255275: see {@link aggregateIssueClaimExclusions}'s same-named opt. */
     precomputedTable?: string;
@@ -1978,6 +1993,7 @@ export async function aggregateAdmittedComposition(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.claimantFleetSlug,
     claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
   });
 
   const rows = (await sql`
@@ -2048,6 +2064,8 @@ export async function readIssueClaimability(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** EI-21398324268952860: the spec structurally names `goal` and may adopt that plan lane. */
+    claimSpecReferencesGoal?: boolean;
     spec?: ClaimSpec;
     /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
     client?: OrgSql;
@@ -2073,6 +2091,7 @@ export async function readIssueClaimability(
     rigAvailable: opts.rigAvailable,
     claimantFleetSlug: opts.claimantFleetSlug,
     claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
   };
 
   return (await sql.begin(async (tx) => {
@@ -2154,6 +2173,7 @@ export async function readIssueClaimability(
       rigAvailable: opts.rigAvailable,
       claimantFleetSlug: opts.claimantFleetSlug,
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+      claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     });
     const precomputedTable = 'claim_candidate_snapshot';
     await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
@@ -2179,6 +2199,7 @@ export async function readIssueClaimability(
       rigAvailable: opts.rigAvailable,
       claimantFleetSlug: opts.claimantFleetSlug,
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+      claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     });
     // Both expressions are byte-identical to aggregateIssueClaimExclusions' own `matched` and
     // `observation_lane` columns — keep them that way if either definition moves.
@@ -2827,6 +2848,7 @@ export async function getNextWorkItem(
         rigAvailable: opts.rigAvailable,
         claimantFleetSlug: opts.fleetSlug,
         claimSpecReferencesFleet,
+        claimSpecReferencesGoal,
       },
       ws,
       {
@@ -3036,6 +3058,7 @@ export async function getNextWorkItem(
         rigAvailable: opts.rigAvailable,
         claimantFleetSlug: opts.fleetSlug,
         claimSpecReferencesFleet,
+        claimSpecReferencesGoal,
       },
       ws,
       {

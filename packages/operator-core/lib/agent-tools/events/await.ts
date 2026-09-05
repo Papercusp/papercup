@@ -1345,6 +1345,9 @@ export default defineTool({
               assignee: identity.ownerId,
               claimantFleetSlug: record.fleetSlug,
               claimSpecReferencesFleet: claimSpecReferencesField(record.spec, 'fleet'),
+              // EI-21398324268952860: mirror the claim's goal leg, or this readiness read
+              // under-reports a goal-scoped spec's own plan lane as gated.
+              claimSpecReferencesGoal: claimSpecReferencesField(record.spec, 'goal'),
               spec: record.spec,
             },
             { limit: 20, statementTimeoutMs: 1_500 },

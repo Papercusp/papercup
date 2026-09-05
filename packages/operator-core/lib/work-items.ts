@@ -7429,6 +7429,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
        rigAvailable: filter.rigAvailable,
        claimantFleetSlug: filter.claimantFleetSlug,
        claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+       claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
      })}`;
   let pendingUnclaimed = poolRows[0]?.n ?? 0;
   let readyUnclaimed = readyRows[0]?.n ?? 0;
@@ -7524,6 +7525,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${reservedPlanLaneExclusionSql(sql, filter.assignee, 'wi.payload', {
            claimantFleetSlug: filter.claimantFleetSlug,
            claimSpecReferencesFleet: filter.claimSpecReferencesFleet,
+           claimSpecReferencesGoal: filter.claimSpecReferencesGoal,
          })}
          -- WI-2796: a cross-machine-rig-gated item is likewise pending-but-gated for a
          -- single-box caller — same floor the claim applies.
@@ -7707,9 +7709,11 @@ export function issueClaimBarFloorColumnsSql(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    claimSpecReferencesGoal?: boolean;
   },
 ) {
-  const { issueWs, assignee, cooldown, rigAvailable, claimantFleetSlug, claimSpecReferencesFleet } = opts;
+  const { issueWs, assignee, cooldown, rigAvailable, claimantFleetSlug, claimSpecReferencesFleet, claimSpecReferencesGoal } =
+    opts;
   return sql`
     (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
     (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
@@ -7722,6 +7726,7 @@ export function issueClaimBarFloorColumnsSql(
     (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
       claimantFleetSlug,
       claimSpecReferencesFleet,
+      claimSpecReferencesGoal,
     })})                                                                  AS ok_plan_lane,
     (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
     (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
@@ -7760,6 +7765,7 @@ export async function explainIssueClaimFloors(
     states?: readonly string[];
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    claimSpecReferencesGoal?: boolean;
   } = {},
 ): Promise<ClaimFloorAttribution[]> {
   if (ids.length === 0) return [];
@@ -7804,6 +7810,7 @@ export async function explainIssueClaimFloors(
              rigAvailable: opts.rigAvailable,
              claimantFleetSlug: opts.claimantFleetSlug,
              claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+             claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
            })}
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
