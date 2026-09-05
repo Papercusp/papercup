@@ -51,7 +51,7 @@ describe('SPA shell pre-hydration globals', () => {
   it('injects the active workspace id global before the module bundle', async () => {
     const res = await spaRoutes.request('/');
     expect(res.status).toBe(200);
-    expect(res.headers.get('cache-control')).toBe('no-store, max-age=0');
+    expect(res.headers.get('cache-control')).toBe('no-store, max-age=0, no-transform');
     const body = await res.text();
     expect(body).toContain('window.__PAPERCUSP_WS__=');
     // Injected inside <head> so it runs before the deferred module entry.
@@ -113,6 +113,7 @@ describe('SPA shell pre-hydration globals', () => {
       const body = await res.text();
 
       expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store, max-age=0, no-transform');
       expect(body).toContain('window.__PAPERCUSP_WS__="hosted-control-plane";');
       const markerStart = body.indexOf("window.__PAPERCUSP_HOSTED_BROWSER__=");
       expect(markerStart).toBeGreaterThan(-1);
