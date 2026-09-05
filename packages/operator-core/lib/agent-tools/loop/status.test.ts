@@ -165,23 +165,68 @@ describe('loop:status concurrency (EI-21869094231635430)', () => {
   });
 });
 
-describe('loop:status owner-scoped argument contract (EI-20232692935534790)', () => {
-  it('makes the intentional owner-only scope explicit and rejects misleading harness input', () => {
-    const tool = statusTool as unknown as {
+/**
+ * loop:status owner-scoped argument contract — EI-21137205137669557.
+ *
+ * SUPERSEDES EI-20232692935534790, which pinned the OPPOSITE contract (reject
+ * `harness` as "misleading input"). That earlier item saw the same symptom and
+ * chose a DOCUMENTATION fix: state the refusal as intentional, and pin it with a
+ * test. The refusal kept being hit and re-filed afterwards — EI-22401368814327235,
+ * EI-22382359559449487, EI-22380912988336391 and EI-22378007077312111 are all the
+ * same complaint, filed AFTER 2026-08-12, and one of them names the behaviour as
+ * "rejected by design and pinned" — i.e. an agent read the documentation, understood
+ * it, and still filed the refusal as friction. Documenting a papercut did not stop
+ * callers stubbing their toes on it.
+ *
+ * Accepting the arg is safe by CODE TRUTH, not by convention: getLoopStatuses
+ * (harness/routines/loop.ts) selects `WHERE r.target_owner_id = ANY(...)` as its only
+ * top-level predicate — there is no harness/install_slug filter — so a `harness` value
+ * cannot change the answer. `loop:end` had already settled the identical question the
+ * accept-and-ignore way with byte-identical wording, leaving `loop:status` the lone
+ * sibling in its own family that hard-errored on a harmless arg.
+ *
+ * The second test below is a CONTROL and must stay: zod objects strip unknown keys by
+ * default, so "safeParse succeeds" would pass even on a schema with no `harness` key at
+ * all. It is only meaningful because defineTool wraps args in `strictArgs`. If that
+ * strictness ever regresses, the control fails and the acceptance test becomes vacuous
+ * — which is exactly when you need to be told.
+ *
+ * The family-parity assertion checks the shared sentence rather than importing
+ * `./end`: end.ts pulls in workspace-registry, control-anchor, goal-io-validation,
+ * modes/*, and further `events/await/store` exports that this file's hand-listed
+ * vi.mock factories do not provide, so importing it would break the whole lane.
+ */
+describe('loop:status owner-scoped argument contract (EI-21137205137669557)', () => {
+  const tool = () =>
+    statusTool as unknown as {
       description?: string;
       guidance?: { when?: string };
       args: {
         safeParse: (value: unknown) => { success: boolean };
-        shape: { ownerId?: { description?: string } };
+        shape: { ownerId?: { description?: string }; harness?: { description?: string } };
       };
     };
 
-    expect(tool.description).toMatch(/owner-scoped/i);
-    expect(tool.description).toMatch(/does not take a `harness` argument/i);
-    expect(tool.guidance?.when).toMatch(/do not pass `harness`/i);
-    expect(tool.args.shape.ownerId?.description).toMatch(/owner-scoped/i);
-    expect(tool.args.safeParse({ ownerId: 'another-owner' }).success).toBe(true);
-    expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
+  it('ACCEPTS a harness arg instead of hard-erroring on it', () => {
+    expect(tool().args.safeParse({ harness: 'papercusp' }).success).toBe(true);
+    expect(tool().args.safeParse({ harness: 'papercusp', ownerId: 'another-owner' }).success).toBe(true);
+    expect(tool().args.safeParse({ ownerId: 'another-owner' }).success).toBe(true);
+    expect(tool().args.safeParse({}).success).toBe(true);
+  });
+
+  it('CONTROL: still rejects a genuinely unknown key, so the acceptance above is not blanket passthrough', () => {
+    expect(tool().args.safeParse({ notAnArgument: 'x' }).success).toBe(false);
+    // The near-miss a caller actually types; it must NOT be silently swallowed.
+    expect(tool().args.safeParse({ harness_slug: 'papercusp' }).success).toBe(false);
+  });
+
+  it('documents the arg as accepted-and-ignored, matching the loop:end sibling', () => {
+    expect(tool().description).toMatch(/owner-scoped/i);
+    expect(tool().description).toMatch(/accepted and ignored/i);
+    expect(tool().guidance?.when).toMatch(/ignores `harness`/i);
+    // The canonical sentence loop:end already uses, kept verbatim across the family.
+    expect(tool().args.shape.harness?.description).toMatch(/Accepted for compatibility and IGNORED/);
+    expect(tool().args.shape.harness?.description).toMatch(/keyed by owner, not by harness/);
   });
 });
 
