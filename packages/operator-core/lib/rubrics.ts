@@ -74,7 +74,11 @@ import {
 } from './acceptance-bar-amendment';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
-import { appendDecisionToBody, allocateNextDecisionId } from './agent-tools/plans/add-decision';
+// `decision-body` (pure), NOT `add-decision` (the tool module): the tool reads
+// `VALID_PLAN_SLUG` from `./source` at module scope, so importing it from a lib
+// stranded every plans test that mocks `./source` with a bare factory
+// (2026-09-05: arm-schedule / run-now / list.delta / shape-clip / launch.goal-stamp).
+import { appendDecisionToBody, allocateNextDecisionId } from './agent-tools/plans/decision-body';
 import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
