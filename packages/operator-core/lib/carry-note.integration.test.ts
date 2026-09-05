@@ -51,6 +51,9 @@ const {
   loopScope,
   renderCarryNote,
   parseCarryNote,
+  attestCarryNoteUnchanged,
+  CARRY_NOTE_ATTESTATION_MAX_CHAIN,
+  CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS,
 } = await import('./carry-note');
 
 if (priorLoopLockTimeout === undefined) delete process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
@@ -64,6 +67,13 @@ const CARRY_NOTES_DDL = `
     journal jsonb NOT NULL DEFAULT '[]'::jsonb,
     updated_ts bigint NOT NULL,
     deps jsonb,
+    -- migration 1118 (P-007/R-06) unchanged-attestation state. body_ts = when the note
+    -- TEXT last actually changed (NULL on pre-1118 rows; readers coalesce to
+    -- updated_ts); attested_count = the consecutive-attestation chain since the last
+    -- real body write. Kept in step with the real schema deliberately: this fixture
+    -- tracks harness_shared.carry_notes rather than stubbing a minimal subset.
+    body_ts bigint,
+    attested_count integer NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, scope))`;
 
 let db: FreshPgDb;
@@ -476,5 +486,263 @@ describe("WI-3648: a '*' workspaceId (the unscoped-superuser read wildcard) neve
     await setCarryNote({ scope, workspaceId: '' }, 'via empty string', { journal: false });
     expect(await getCarryNote({ scope })).toBe('via empty string');
     expect(await rowCount()).toBe(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// P-007/R-06 — unchanged attestation.
+//
+// The measured problem: 347 flush-gate refusals in 48h provoked 339 checkpoint
+// writes whose only purpose was to clear the gate, and only 0.2% of same-item
+// rewrites were byte-identical — i.e. agents pay to invent fresh prose about
+// state that did not move. Attestation lets an agent say "still current" instead
+// of rewriting, WITHOUT letting it conceal state that did move.
+//
+// Every test below is about that second clause. The value of the feature is the
+// bound, not the convenience: an attestation must be able to DEFER a flush and
+// never to REPLACE one, so the suite is weighted toward the refusals.
+// ───────────────────────────────────────────────────────────────────────────────
+
+type AttestRow = { note: string | null; updated_ts: number; body_ts: number | null; attested_count: number };
+async function attestRow(scope: string): Promise<AttestRow> {
+  const rows = await db.sql<
+    Array<{ note: string | null; updated_ts: string; body_ts: string | null; attested_count: number }>
+  >`
+    SELECT note, updated_ts, body_ts, attested_count
+      FROM harness_shared.carry_notes WHERE scope = ${scope}`;
+  const row = rows[0];
+  if (!row) throw new Error(`no carry_notes row for scope ${scope}`);
+  return {
+    note: row.note,
+    updated_ts: Number(row.updated_ts),
+    body_ts: row.body_ts == null ? null : Number(row.body_ts),
+    attested_count: Number(row.attested_count),
+  };
+}
+
+describe('P-007/R-06 unchanged attestation — freshness without a rewrite', () => {
+  it('refreshes freshness while leaving the body byte-identical (updated_ts moves, body_ts does not)', async () => {
+    const scope = workItemScope('h1', 'WI-attest-happy');
+    const body = 'did: read the gate code. left: tests. next: write them.';
+    await setCarryNote({ scope }, body, { journal: false });
+
+    const before = await attestRow(scope);
+    // A real write pins BOTH stamps together and zeroes the chain; that shared
+    // starting point is what makes the divergence below meaningful.
+    expect(before.body_ts).toBe(before.updated_ts);
+    expect(before.attested_count).toBe(0);
+
+    const res = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: shortCarryHash(body),
+      nowMs: before.updated_ts + 60_000,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.refusedReason).toBeUndefined();
+    expect(res.currentHash).toBe(shortCarryHash(body));
+    expect(res.attestedCount).toBe(1);
+    expect(res.bodyAgeMs).toBe(60_000);
+    expect(res.remainingAttestations).toBe(CARRY_NOTE_ATTESTATION_MAX_CHAIN - 1);
+
+    const after = await attestRow(scope);
+    expect(after.note).toBe(body); // the whole point: no rewrite
+    expect(after.updated_ts).toBe(before.updated_ts + 60_000); // freshness refreshed
+    // The decisive one. If body_ts moved with it, the body's age would restart on
+    // every attestation and the absolute-age ceiling below could be evaded forever.
+    expect(after.body_ts).toBe(before.body_ts);
+    expect(after.attested_count).toBe(1);
+    // …and no second row: attestation writes the SAME key, never a parallel one.
+    expect(await rowCount()).toBe(1);
+  });
+
+  it('G1: a hash that does not match the stored body refuses, names the real hash, and consumes no budget', async () => {
+    const scope = workItemScope('h1', 'WI-attest-g1');
+    await setCarryNote({ scope }, 'the stored body', { journal: false });
+    const before = await attestRow(scope);
+
+    const res = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: shortCarryHash('a body the agent never read'),
+      nowMs: before.updated_ts + 1_000,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.refusedReason).toBe('attestation_hash_mismatch');
+    // Returned so the caller can re-read what is actually there rather than guess.
+    expect(res.currentHash).toBe(shortCarryHash('the stored body'));
+
+    // A refusal must be inert. If it consumed a chain slot, a caller that guessed
+    // wrong once would silently shrink the allowance left for a legitimate one.
+    expect(await attestRow(scope)).toEqual(before);
+  });
+
+  it('G1: a hash captured BEFORE another writer replaced the body is refused, not re-blessed', async () => {
+    const scope = workItemScope('h1', 'WI-attest-raced');
+    await setCarryNote({ scope }, 'state as this agent last saw it', { journal: false });
+    const staleHash = shortCarryHash('state as this agent last saw it');
+
+    // A peer (or this agent's own successor) writes real new state.
+    await setCarryNote({ scope }, 'state after somebody else wrote', { journal: false });
+
+    const res = await attestCarryNoteUnchanged({ scope }, { contentHash: staleHash });
+    expect(res.ok).toBe(false);
+    expect(res.refusedReason).toBe('attestation_hash_mismatch');
+    expect(res.currentHash).toBe(shortCarryHash('state after somebody else wrote'));
+    // The replaced body is untouched — an attestation can never resurrect the old one.
+    expect((await attestRow(scope)).note).toBe('state after somebody else wrote');
+  });
+
+  it('refuses when nothing is stored — a missing checkpoint is writable, never attestable', async () => {
+    // No row at all.
+    const empty = await attestCarryNoteUnchanged({ scope: workItemScope('h1', 'WI-attest-none') }, {
+      contentHash: shortCarryHash('anything'),
+    });
+    expect(empty).toMatchObject({ ok: false, refusedReason: 'attestation_no_checkpoint', currentHash: null });
+
+    // A row that survives a CLEAR (journaling on keeps the row with note → null) is
+    // the same answer: there is no body to be still-current about.
+    const scope = workItemScope('h1', 'WI-attest-cleared');
+    await setCarryNote({ scope }, 'something', { journal: true });
+    await setCarryNote({ scope }, null, { journal: true });
+    expect((await attestRow(scope)).note).toBeNull(); // row survived the clear
+    const cleared = await attestCarryNoteUnchanged({ scope }, { contentHash: shortCarryHash('something') });
+    expect(cleared.refusedReason).toBe('attestation_no_checkpoint');
+  });
+
+  it('G3: the chain ceiling is real — attestation N+1 against one body is refused', async () => {
+    const scope = workItemScope('h1', 'WI-attest-chain');
+    const body = 'unchanged for a while now';
+    await setCarryNote({ scope }, body, { journal: false });
+    const hash = shortCarryHash(body);
+    const base = (await attestRow(scope)).updated_ts;
+
+    for (let n = 1; n <= CARRY_NOTE_ATTESTATION_MAX_CHAIN; n++) {
+      const ok = await attestCarryNoteUnchanged({ scope }, { contentHash: hash, nowMs: base + n * 1_000 });
+      expect(ok.ok).toBe(true);
+      expect(ok.attestedCount).toBe(n);
+      expect(ok.remainingAttestations).toBe(CARRY_NOTE_ATTESTATION_MAX_CHAIN - n);
+    }
+
+    const spent = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: hash,
+      nowMs: base + (CARRY_NOTE_ATTESTATION_MAX_CHAIN + 1) * 1_000,
+    });
+    expect(spent.ok).toBe(false);
+    expect(spent.refusedReason).toBe('attestation_exhausted');
+    expect(spent.attestedCount).toBe(CARRY_NOTE_ATTESTATION_MAX_CHAIN);
+    expect(spent.remainingAttestations).toBe(0);
+    // The exhausted attestation refreshed nothing — the body's freshness is frozen
+    // at the last admitted attestation, which is what forces the real write.
+    expect(await attestRow(scope)).toMatchObject({
+      updated_ts: base + CARRY_NOTE_ATTESTATION_MAX_CHAIN * 1_000,
+      attested_count: CARRY_NOTE_ATTESTATION_MAX_CHAIN,
+    });
+  });
+
+  it('G3: a real body write resets the chain — attestation DEFERS a flush, it never replaces one', async () => {
+    const scope = workItemScope('h1', 'WI-attest-reset');
+    await setCarryNote({ scope }, 'first body', { journal: false });
+    const hash = shortCarryHash('first body');
+    for (let n = 0; n < CARRY_NOTE_ATTESTATION_MAX_CHAIN; n++) {
+      expect((await attestCarryNoteUnchanged({ scope }, { contentHash: hash })).ok).toBe(true);
+    }
+    expect((await attestCarryNoteUnchanged({ scope }, { contentHash: hash })).refusedReason).toBe(
+      'attestation_exhausted',
+    );
+
+    // The agent does what the refusal told it to do: writes real state.
+    await setCarryNote({ scope }, 'second body, actually rewritten', { journal: false });
+    const afterWrite = await attestRow(scope);
+    expect(afterWrite.attested_count).toBe(0); // budget restored by the WRITE, not by time
+    expect(afterWrite.body_ts).toBe(afterWrite.updated_ts); // the body's age restarts too
+
+    const again = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: shortCarryHash('second body, actually rewritten'),
+    });
+    expect(again.ok).toBe(true);
+    expect(again.attestedCount).toBe(1);
+  });
+
+  it('G3: a body older than the absolute age ceiling is refused even with the chain untouched', async () => {
+    const scope = workItemScope('h1', 'WI-attest-old');
+    const body = 'written long ago';
+    await setCarryNote({ scope }, body, { journal: false });
+    const bodyTs = (await attestRow(scope)).body_ts!;
+    const hash = shortCarryHash(body);
+
+    // Exactly AT the ceiling still passes — the bound is `>`, and a boundary that
+    // silently refused early would make the ceiling untestable from its own value.
+    const atCeiling = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: hash,
+      nowMs: bodyTs + CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS,
+    });
+    expect(atCeiling.ok).toBe(true);
+    expect(atCeiling.bodyAgeMs).toBe(CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS);
+
+    const past = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: hash,
+      nowMs: bodyTs + CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS + 1,
+    });
+    expect(past.ok).toBe(false);
+    expect(past.refusedReason).toBe('attestation_exhausted');
+    // Chain budget was NOT the thing that ran out — this is the age backstop, and it
+    // is what makes "cannot conceal changed state" true by construction rather than
+    // by the agent's good faith.
+    expect(past.attestedCount).toBeLessThan(CARRY_NOTE_ATTESTATION_MAX_CHAIN);
+    expect(past.bodyAgeMs).toBe(CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS + 1);
+  });
+
+  it('a pre-1118 row (NULL body_ts) reads its last touch as the body write, instead of refusing forever', async () => {
+    const scope = workItemScope('h1', 'WI-attest-pre1118');
+    const body = 'written before migration 1118 existed';
+    await setCarryNote({ scope }, body, { journal: false });
+    // Simulate a row the backfill did not reach.
+    await db.sql`UPDATE harness_shared.carry_notes SET body_ts = NULL WHERE scope = ${scope}`;
+    const updatedTs = (await attestRow(scope)).updated_ts;
+
+    const res = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: shortCarryHash(body),
+      nowMs: updatedTs + 5_000,
+    });
+    // Reading a NULL body_ts as 0 instead of coalescing to updated_ts would make every
+    // such row look ~56 years old and refuse permanently — a silent, total regression
+    // for exactly the rows that predate the feature.
+    expect(res.ok).toBe(true);
+    expect(res.bodyAgeMs).toBe(5_000);
+  });
+
+  it('the chain ceiling holds under CONCURRENT attestations — the read and the increment are atomic', async () => {
+    const scope = workItemScope('h1', 'WI-attest-race');
+    const body = 'contended body';
+    await setCarryNote({ scope }, body, { journal: false });
+    const hash = shortCarryHash(body);
+
+    // Four in flight against a ceiling of two, on a pool of four connections. Without
+    // the FOR UPDATE the concurrent transactions read the SAME count and each commits
+    // an increment, admitting more than the ceiling allows — the bound stops being a
+    // bound exactly when contention is highest.
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => attestCarryNoteUnchanged({ scope }, { contentHash: hash, maxChain: 2 })),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(2);
+    expect(results.filter((r) => r.refusedReason === 'attestation_exhausted')).toHaveLength(2);
+    expect((await attestRow(scope)).attested_count).toBe(2);
+    // Admitted attestations are numbered 1..N with no duplicates — proof the counter
+    // was serialized rather than each caller having read a shared stale value.
+    expect(
+      results
+        .filter((r) => r.ok)
+        .map((r) => r.attestedCount)
+        .sort(),
+    ).toEqual([1, 2]);
+  });
+
+  it('an attestation never touches a DIFFERENT scope, and never invents a row', async () => {
+    const mine = workItemScope('h1', 'WI-attest-mine');
+    const other = workItemScope('h1', 'WI-attest-other');
+    await setCarryNote({ scope: mine }, 'mine', { journal: false });
+    await setCarryNote({ scope: other }, 'other', { journal: false });
+    const otherBefore = await attestRow(other);
+
+    expect((await attestCarryNoteUnchanged({ scope: mine }, { contentHash: shortCarryHash('mine') })).ok).toBe(true);
+    expect(await attestRow(other)).toEqual(otherBefore);
+    expect(await rowCount()).toBe(2); // a refused/absent scope must not upsert a row
   });
 });
