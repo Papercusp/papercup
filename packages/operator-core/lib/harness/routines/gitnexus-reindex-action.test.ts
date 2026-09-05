@@ -50,6 +50,9 @@ import {
   decideIndexDiskHealthUpdate,
   decideReindex,
   readRegistryEntry,
+  pickIndexFreshness,
+  readIndexMetaFreshness,
+  GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS,
   shouldSkipForHive,
   GITNEXUS_REPO_NAME,
   DEFAULT_MAX_LOAD_PER_CORE,
@@ -1039,6 +1042,109 @@ describe('readRegistryEntry', () => {
     const f = join(dir, `${String(label).replace(/\W/g, '')}.json`);
     if (contents != null) writeFileSync(f, contents);
     expect(readRegistryEntry(f, 'papercusp')).toBeNull();
+  });
+});
+
+describe('pickIndexFreshness — the cadence gates read the later COMPLETED analyze (WI-39394, 2026-09-05)', () => {
+  // The measured incident: the live tick completed 20:19:38Z (meta.json) while the registry row
+  // still carried the seed's 17:07:51Z — its registerRepo write was lost when the run was
+  // orphaned from its bg-host — and the very next fire read "3.4h old / 196 commits behind",
+  // bypassed the 45-minute floor and launched a second 107-minute full pass 13 minutes later.
+  const registry = { indexedAt: '2026-09-05T17:07:51.897Z', lastCommit: 'c2f4880698bb' };
+  const meta = { indexedAt: '2026-09-05T20:19:38.667Z', lastCommit: 'e549dce907eb' };
+
+  it('prefers meta.json when it records a newer completed index than the registry row', () => {
+    const f = pickIndexFreshness(registry, meta);
+    expect(f).toEqual({ indexedAt: meta.indexedAt, lastCommit: meta.lastCommit, source: 'meta' });
+  });
+
+  it('keeps the registry row when it is the newer record (the ordinary, both-writes-landed case)', () => {
+    const f = pickIndexFreshness({ indexedAt: '2026-09-05T22:20:00.000Z', lastCommit: 'fff' }, meta);
+    expect(f).toEqual({ indexedAt: '2026-09-05T22:20:00.000Z', lastCommit: 'fff', source: 'registry' });
+  });
+
+  it('a tie goes to the registry (same run, both writes landed — nothing to override)', () => {
+    const f = pickIndexFreshness({ indexedAt: meta.indexedAt, lastCommit: 'reg' }, { ...meta, lastCommit: 'meta' });
+    expect(f.source).toBe('registry');
+    expect(f.lastCommit).toBe('reg');
+  });
+
+  it('with no meta.json at all the registry row is the whole answer', () => {
+    expect(pickIndexFreshness(registry, null)).toEqual({ ...registry, source: 'registry' });
+  });
+
+  it('with no registry row a completed meta.json still bounds the floor', () => {
+    expect(pickIndexFreshness(null, meta)).toEqual({ ...meta, source: 'meta' });
+  });
+
+  it('neither ⇒ null freshness (the floor is then not applied and the cold-build gate decides)', () => {
+    expect(pickIndexFreshness(null, null)).toEqual({ indexedAt: null, lastCommit: null, source: 'none' });
+    expect(pickIndexFreshness({ indexedAt: 'not a date' }, { indexedAt: null, lastCommit: 'x' })).toEqual({
+      indexedAt: null,
+      lastCommit: 'x',
+      source: 'none',
+    });
+  });
+
+  it('the picked record actually closes the incident: the floor holds for the 20:32Z fire', () => {
+    const nowMs = Date.parse('2026-09-05T20:32:31.961Z');
+    const f = pickIndexFreshness(registry, meta);
+    const secondsSinceIndexed = (nowMs - Date.parse(f.indexedAt!)) / 1000;
+    expect(decideReindex(baseInput({ secondsSinceIndexed, commitsBehind: 196 })).run).toBe(false);
+    // …and would NOT have held off the stale registry row alone.
+    const stale = (nowMs - Date.parse(registry.indexedAt)) / 1000;
+    expect(decideReindex(baseInput({ secondsSinceIndexed: stale, commitsBehind: 196 })).run).toBe(true);
+  });
+
+  it('readIndexMetaFreshness reads a completed meta.json and refuses a mid-build one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-fresh-'));
+    mkdirSync(join(root, '.gitnexus'));
+    writeFileSync(gitnexusMetaPath(root), JSON.stringify({ ...meta, stats: { embeddings: 201473 } }));
+    expect(readIndexMetaFreshness(root)).toEqual(meta);
+    // gitnexus spreads the PREVIOUS run's indexedAt forward under the in-progress marker, so
+    // a mid-build meta must not be read as a completion (it would be the old timestamp anyway,
+    // but a torn build that died with the marker set must never look fresh).
+    writeFileSync(
+      gitnexusMetaPath(root),
+      JSON.stringify({ ...meta, incrementalInProgress: { startedAt: 1, toWriteCount: 0 } }),
+    );
+    expect(readIndexMetaFreshness(root)).toBeNull();
+    writeFileSync(gitnexusMetaPath(root), '{ truncated mid-write');
+    expect(readIndexMetaFreshness(root)).toBeNull();
+    expect(readIndexMetaFreshness(join(root, 'nope'))).toBeNull();
+  });
+
+  it('the action feeds decideReindex from the picked freshness, not the raw registry row', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+    const entry = src.indexOf('const entry = readRegistryEntry(registryPath(), repoName);');
+    const pick = src.indexOf('const freshness = pickIndexFreshness(entry, readIndexMetaFreshness(root));', entry);
+    const decision = src.indexOf('const decision = decideReindex(', pick);
+    expect(entry).toBeGreaterThan(0);
+    expect(pick).toBeGreaterThan(entry);
+    expect(decision).toBeGreaterThan(pick);
+    const between = src.slice(pick, decision);
+    expect(between).toContain('countCommitsBehind(root, freshness.lastCommit)');
+    expect(between).toContain('Date.parse(freshness.indexedAt)');
+    expect(between).not.toContain('entry.lastCommit');
+    expect(between).not.toContain('Date.parse(entry.indexedAt)');
+  });
+});
+
+describe('the DBOS per-fire ceiling clears the analyze budget (WI-39394, 2026-09-05)', () => {
+  // routineFireTimeoutMs() reads `routineTimeoutMs` off the registration; without it a fire
+  // runs under the 2-hour ROUTINE_FIRE_TIMEOUT_MS default, which is BELOW the 165-minute
+  // analyze budget — the measured live tick (107:26) was 12 minutes from a silent cancel.
+  const ROUTINE_FIRE_TIMEOUT_DEFAULT_MS = 2 * 60 * 60_000;
+
+  it('is registered on the system action, not merely exported', async () => {
+    const { getSystemActionEntry } = await import('./system-actions');
+    expect(getSystemActionEntry('gitnexus-reindex')?.routineTimeoutMs).toBe(GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS);
+  });
+
+  it('exceeds the analyze budget by a bounded margin and the 2h default', () => {
+    expect(GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS).toBeGreaterThan(GITNEXUS_ANALYZE_TIMEOUT_MS);
+    expect(GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS - GITNEXUS_ANALYZE_TIMEOUT_MS).toBeLessThanOrEqual(30 * 60_000);
+    expect(GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS).toBeGreaterThan(ROUTINE_FIRE_TIMEOUT_DEFAULT_MS);
   });
 });
 

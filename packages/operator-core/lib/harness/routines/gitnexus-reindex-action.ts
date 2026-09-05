@@ -117,6 +117,21 @@ export const GITNEXUS_REPO_NAME = 'papercusp';
 export const GITNEXUS_ANALYZE_TIMEOUT_MS = 165 * 60_000;
 
 /**
+ * The DBOS ceiling on ONE fire of this routine (`routineFireTimeoutMs` reads it off the
+ * registration below). It must clear GITNEXUS_ANALYZE_TIMEOUT_MS plus the preflight, canary
+ * and health bookkeeping around the spawn, because without an explicit value the fire runs
+ * under the 2-hour `ROUTINE_FIRE_TIMEOUT_MS` default — BELOW the analyze's own 165-minute
+ * budget. A fire cancelled at that default while its child is still inside budget releases
+ * the routine's dedup id (so the next cron fire launches the action beside a live writer —
+ * only WI-2146606's skip then stands between it and a double spawn) and never reaches the
+ * health record for the tick that completes minutes later. Measured 2026-09-05: the first
+ * routine-owned live tick took 107:26 against that 2h default — 12 minutes from a silent
+ * cancellation on a busier box. Fifteen minutes of margin covers everything the action does
+ * around the child (capacity telemetry, residue scan, canary, health write) with room.
+ */
+export const GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS = GITNEXUS_ANALYZE_TIMEOUT_MS + 15 * 60_000;
+
+/**
  * The analyze child's OWN cgroup ceiling (managedSpawn `memoryMaxBytes`), so a regression
  * can never consume the background host's 40 GiB quota.
  *
@@ -313,6 +328,78 @@ export function readRegistryEntry(file: string, repoName: string): GitnexusRegis
   } catch {
     return null;
   }
+}
+
+/** The two freshness fields the cadence gates consume, plus which writer's record won. */
+export interface IndexFreshness {
+  indexedAt: string | null;
+  lastCommit: string | null;
+  /** `meta` when `.gitnexus/meta.json` carries a newer completed index than the registry row. */
+  source: 'registry' | 'meta' | 'none';
+}
+
+/**
+ * Read `indexedAt` + `lastCommit` off `.gitnexus/meta.json` — the record gitnexus's `saveMeta`
+ * writes the moment an analyze's index is complete and consistent. Fail-soft: an absent,
+ * unreadable or mid-write file yields `null`, never a throw, so the registry read stays the
+ * fallback. A meta still carrying `incrementalInProgress` is a build that has NOT completed
+ * (its `indexedAt` is the PREVIOUS run's, spread forward), so it is reported as `null` rather
+ * than as a completion.
+ */
+export function readIndexMetaFreshness(root: string): Pick<IndexFreshness, 'indexedAt' | 'lastCommit'> | null {
+  try {
+    const m: unknown = JSON.parse(readFileSync(gitnexusMetaPath(root), 'utf8'));
+    if (typeof m !== 'object' || m === null) return null;
+    const rec = m as Record<string, unknown>;
+    if (readIncompleteIndexMarker(rec) !== null) return null;
+    return {
+      indexedAt: typeof rec.indexedAt === 'string' ? rec.indexedAt : null,
+      lastCommit: typeof rec.lastCommit === 'string' ? rec.lastCommit : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PURE — pick the freshness record the cadence gates should trust.
+ *
+ * The index's freshness has TWO writers with different failure modes, and the interval floor
+ * and the commits-behind gate must read the one that reflects the last COMPLETED analyze:
+ *
+ *  - `~/.gitnexus/registry.json` — written by gitnexus's `registerRepo`, which runs at the
+ *    tail of a run, AFTER `saveMeta` and the parse-cache save. Measured 2026-09-05 (WI-39394):
+ *    the live tick that completed at 20:19:38Z (meta.json `indexedAt`) left the registry at
+ *    the seed's 17:07:51Z — that run had been orphaned from its bg-host by an external restart
+ *    at 19:16Z and its registry write never landed — so the next fire, at 20:32Z, read the
+ *    index as 3.4h old and 196 commits behind, sailed past the 45-minute floor, and launched a
+ *    second 107-minute full pass 13 minutes after the first one finished.
+ *  - `.gitnexus/meta.json` — written by `saveMeta` once the index is complete; it is what
+ *    gitnexus itself trusts for its incremental decision and what `judgeCanary` reads.
+ *
+ * So: the FRESHER `indexedAt` of the two wins, carrying its own `lastCommit`. A lost registry
+ * write then costs a stale `gitnexus list` row instead of a duplicate full pass. The registry
+ * is still what decides `registered` (a repo the MCP cannot resolve by name must be rebuilt
+ * regardless of how fresh the files under it are).
+ */
+export function pickIndexFreshness(
+  registry: Pick<GitnexusRegistryEntry, 'indexedAt' | 'lastCommit'> | null,
+  meta: Pick<IndexFreshness, 'indexedAt' | 'lastCommit'> | null,
+): IndexFreshness {
+  const ms = (s: string | null | undefined): number => (typeof s === 'string' ? Date.parse(s) : Number.NaN);
+  const regMs = ms(registry?.indexedAt);
+  const metaMs = ms(meta?.indexedAt);
+  if (Number.isFinite(metaMs) && (!Number.isFinite(regMs) || metaMs > regMs)) {
+    return {
+      indexedAt: meta!.indexedAt,
+      lastCommit: meta!.lastCommit ?? registry?.lastCommit ?? null,
+      source: 'meta',
+    };
+  }
+  if (Number.isFinite(regMs)) {
+    return { indexedAt: registry!.indexedAt!, lastCommit: registry!.lastCommit ?? null, source: 'registry' };
+  }
+  return { indexedAt: null, lastCommit: registry?.lastCommit ?? meta?.lastCommit ?? null, source: 'none' };
 }
 
 /**
@@ -2019,9 +2106,18 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   }
 
   const entry = readRegistryEntry(registryPath(), repoName);
-  const commitsBehind = entry?.lastCommit ? await countCommitsBehind(root, entry.lastCommit) : null;
-  const indexedAtMs = entry?.indexedAt ? Date.parse(entry.indexedAt) : Number.NaN;
+  // Freshness comes from whichever of the registry row / meta.json records the later
+  // COMPLETED analyze — a registry write lost to an orphaned run must not read as "stale,
+  // rebuild" (see pickIndexFreshness). `registered` stays a registry question.
+  const freshness = pickIndexFreshness(entry, readIndexMetaFreshness(root));
+  const commitsBehind = freshness.lastCommit ? await countCommitsBehind(root, freshness.lastCommit) : null;
+  const indexedAtMs = freshness.indexedAt ? Date.parse(freshness.indexedAt) : Number.NaN;
   const secondsSinceIndexed = Number.isFinite(indexedAtMs) ? (Date.now() - indexedAtMs) / 1000 : null;
+  if (freshness.source === 'meta' && entry?.indexedAt) {
+    console.log(
+      `[gitnexus-reindex] freshness: meta.json (${freshness.indexedAt}) is newer than the registry row (${entry.indexedAt}) — trusting the completed index on disk`,
+    );
+  }
   const cores = Math.max(1, os.cpus().length);
 
   // Reuse the same writer and thresholds that power the infra panel and
@@ -2197,4 +2293,4 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   } catch (e) {
     console.warn(`[gitnexus-reindex] health tracking failed: ${e instanceof Error ? e.message : e}`);
   }
-});
+}, { routineTimeoutMs: GITNEXUS_REINDEX_ROUTINE_TIMEOUT_MS });
