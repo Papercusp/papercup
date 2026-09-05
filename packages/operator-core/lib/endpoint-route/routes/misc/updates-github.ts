@@ -95,8 +95,45 @@ export async function fetchAssetResponse(
   if (first.status >= 300 && first.status < 400) {
     const loc = first.headers.get('location');
     if (!loc) return null;
-    // Redirect target is a pre-signed CDN URL — no auth header.
-    return fetch(loc);
+    // WI-2144851. `fetch(loc)` took this Location verbatim, which broke this
+    // function's own documented contract in two directions:
+    //
+    //  - A RELATIVE Location is legal HTTP (RFC 9110 §10.2.2) and `fetch()`
+    //    cannot parse one — measured on node v25: `TypeError: Failed to parse
+    //    URL from /x`. That REJECTION, not a null, is what reached the three
+    //    call sites, and none of them wraps the call (updates-manifest.ts:546,
+    //    updates-rollback.ts:335, updates-download.ts:59) — so an anomalous
+    //    redirect surfaced to the user as a 500 instead of the honest
+    //    "asset unreachable" this function promises.
+    //  - A non-https Location was fetched anyway: an http: downgrade for bytes
+    //    we are about to stake a signature check on, or a file:/data: target
+    //    pointed at the operator's own disk.
+    //
+    // The only Location worth following here is an absolute https URL — that
+    // is the shape GitHub's asset API actually returns. Anything else is an
+    // unreachable asset, which is precisely what null means.
+    let target: URL;
+    try {
+      target = new URL(loc);
+    } catch {
+      // Never log `loc` itself: the legitimate value is a pre-signed CDN URL
+      // whose query string IS a credential.
+      console.warn(
+        `[updates-github] asset ${assetId}: redirect Location is not an absolute URL — refusing`,
+      );
+      return null;
+    }
+    if (target.protocol !== 'https:') {
+      console.warn(
+        `[updates-github] asset ${assetId}: refusing a ${target.protocol} redirect — release assets are https-only`,
+      );
+      return null;
+    }
+    // Redirect target is a pre-signed CDN URL — deliberately NO auth header.
+    // S3 rejects a request carrying both its query signature and an
+    // Authorization header, and forwarding the token off api.github.com would
+    // hand our GitHub credential to the CDN.
+    return fetch(target);
   }
   if (!first.ok) return null;
   return first;

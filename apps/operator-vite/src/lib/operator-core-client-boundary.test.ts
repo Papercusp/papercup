@@ -108,6 +108,48 @@ describe('operator-core client boundary', () => {
   });
 });
 
+// WI-2145038 / WI-2145237: the SERVER lexicon wiring. Its configure.ts statically
+// imports ../flag-distinct-id, which does `os.hostname()` from `node:os` AT MODULE
+// SCOPE — a Node builtin that must never enter a client graph. Client pages use the
+// twin hook, apps/operator/lib/useLexicon.ts. The Portal's webpack client
+// compilation fails outright on the `node:` scheme (portal build #3c, 2026-09-05
+// 03:33Z, import trace support/page.tsx → lexicon → configure → flag-distinct-id →
+// node:os); Vite only survives it through its browser-external stub.
+const SERVER_LEXICON_WIRING = /@papercusp\/operator-core\/lib\/lexicon(?:\/|$)/;
+const OPERATOR_APP_ROOT = join(__dirname, '..', '..', '..', 'operator', 'app');
+// SHRINK-ONLY. Pre-existing importers, tracked by WI-2145237: convert each page to
+// useLexicon() and DELETE its entry — a stale entry fails the test below, so the
+// list cannot outlive its reason.
+const SERVER_LEXICON_WIRING_ALLOWLIST = new Set([
+  'admin/dogfood-substrate/page.tsx',
+  'wiki/missing/page.tsx',
+  'project-docs/page.tsx',
+]);
+
+describe('operator app pages and the server lexicon wiring', () => {
+  it('keeps @papercusp/operator-core/lib/lexicon out of apps/operator/app value imports (outside the shrink-only allowlist)', () => {
+    const violations: string[] = [];
+    const allowlistHits = new Set<string>();
+    for (const file of sourceFiles(OPERATOR_APP_ROOT)) {
+      if (/\.test\.tsx?$/.test(file) || file.includes('/__tests__/')) continue;
+      const rel = relative(OPERATOR_APP_ROOT, file);
+      const hit = valueImports(readFileSync(file, 'utf8')).some((specifier) =>
+        SERVER_LEXICON_WIRING.test(specifier),
+      );
+      if (!hit) continue;
+      if (SERVER_LEXICON_WIRING_ALLOWLIST.has(rel)) {
+        allowlistHits.add(rel);
+        continue;
+      }
+      violations.push(`${rel}: import the client twin (@/lib/useLexicon) instead`);
+    }
+    expect(violations).toEqual([]);
+    // Shrink-only: a page that no longer imports the wiring must also drop its entry.
+    const stale = [...SERVER_LEXICON_WIRING_ALLOWLIST].filter((rel) => !allowlistHits.has(rel));
+    expect(stale, 'stale allowlist entries — delete them').toEqual([]);
+  });
+});
+
 // WI-39472: the scanner above silently over-reported for months and red-pinned the
 // release gate. These pin BOTH failure modes with the real shapes from
 // LearningTab.tsx, plus a calibration case — without the calibration, a scanner
