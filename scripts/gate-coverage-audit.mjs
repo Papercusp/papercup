@@ -15,7 +15,8 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_GATE_SOURCE = 'apps/operator/lib/release/green-checkpoint.ts';
@@ -315,4 +316,4 @@ function main() {
   if (uncovered.length > 10) console.log(`  · … ${uncovered.length - 10} more`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();
+if (isCliEntry(import.meta.url)) main();
