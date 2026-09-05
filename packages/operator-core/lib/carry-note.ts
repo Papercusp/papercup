@@ -2400,13 +2400,22 @@ export async function setCarryNoteWithPrior(
     }
     // jsonb bound as ${json}::text::jsonb — sql.json() throws on the org pool
     // (agent-insights/postgres-js-jsonb-binding).
+    // P-007/R-06 (migration 1118): a real body write pins `body_ts` to now and RESETS
+    // `attested_count`. `updated_ts` keeps meaning "row last touched", so an unchanged
+    // attestation (attestCarryNoteUnchanged, below) can bump updated_ts while leaving
+    // body_ts alone — and the gap between the two is the attested age that makes the
+    // attestation chain boundable. Resetting the count here is what makes the bound a
+    // per-body budget rather than a lifetime one: every genuine flush earns a fresh
+    // allowance, which is the behaviour that rewards writing over attesting.
     await tx`
-      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts, deps)
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts, deps,
+                                              body_ts, attested_count)
       VALUES (${ws}, ${scope}, ${noteCol}, ${JSON.stringify(journal)}::text::jsonb, ${now},
-              ${depsCol === null ? null : JSON.stringify(depsCol)}::text::jsonb)
+              ${depsCol === null ? null : JSON.stringify(depsCol)}::text::jsonb,
+              ${now}, 0)
       ON CONFLICT (workspace_id, scope) DO UPDATE
         SET note = EXCLUDED.note, journal = EXCLUDED.journal, updated_ts = EXCLUDED.updated_ts,
-            deps = EXCLUDED.deps`;
+            deps = EXCLUDED.deps, body_ts = EXCLUDED.body_ts, attested_count = 0`;
     return { stored: noteCol, priorLength, priorDeps };
   };
   // loop:checkpoint is a cold-loop continuity write. It must fail fast under
@@ -2417,6 +2426,148 @@ export async function setCarryNoteWithPrior(
     ? await boundedOrgTxn(write, { client: sql, acquireTimeoutMs: 8_000 })
     : await sql.begin(write);
   return result as SetCarryNoteResult;
+}
+
+// ── Unchanged attestation (fleet-friction-remediation-2026-08-21 P-007 / R-06) ──
+//
+// The flush gate holds a compaction boundary when a held item's checkpoint is older
+// than STALE_CHECKPOINT_WARN_MS. When the in-flight state genuinely has NOT moved, the
+// only escape today is rewriting the body — pure prose churn on the one tool an agent
+// calls precisely because it is out of context. An attestation is the cheap escape:
+// it says "this body is still current", refreshes freshness, and touches no text.
+//
+// R-06 also requires that an attestation "must not be able to conceal changed state".
+// That cannot be established by asking the agent nicely, so it is enforced structurally
+// by three independent guards. TWO live here (they are properties of the stored note);
+// the THIRD — positive evidence that the SUBJECT moved — is scope-specific and lives in
+// the caller (see attestWorkItemCheckpointUnchanged, which compares the work-item row's
+// own updated_ts against body_ts).
+//
+//   G1 CONTENT BINDING. `contentHash` must equal the stored body's hash, so an
+//      attestation is always about a body the agent has actually read. An agent that
+//      cannot produce the hash has not seen what it is attesting to, and a body some
+//      other writer replaced fails the check instead of being silently re-blessed.
+//   G3 BOUNDED CHAIN. An attestation extends freshness; it may never do so
+//      indefinitely. Both a consecutive-count ceiling and an absolute body-age ceiling
+//      apply, and a real write resets the count. This is the decisive property: however
+//      the other guards are argued with, a stale body cannot outlive the age ceiling,
+//      so an attestation can at worst DEFER a flush, never replace one.
+
+/** Consecutive unchanged attestations allowed before a real body write is required. */
+export const CARRY_NOTE_ATTESTATION_MAX_CHAIN = 3;
+
+/** A body older than this can never be attested, whatever the chain count says. The
+ *  backstop that makes "cannot conceal changed state" true by construction rather than
+ *  by the agent's good faith. */
+export const CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS = 2 * 60 * 60_000;
+
+export type CarryNoteAttestationRefusal =
+  /** Nothing stored — a missing checkpoint is never attestable, only writable. */
+  | 'attestation_no_checkpoint'
+  /** G1: the supplied hash does not match the stored body. */
+  | 'attestation_hash_mismatch'
+  /** G3: chain count or absolute body age exhausted; write a real checkpoint. */
+  | 'attestation_exhausted';
+
+export interface CarryNoteAttestationResult {
+  ok: boolean;
+  refusedReason?: CarryNoteAttestationRefusal;
+  /** Hash of what is ACTUALLY stored — returned on a mismatch so the caller can see
+   *  what it should have attested to, rather than guessing at the divergence. */
+  currentHash: string | null;
+  /** Attestations against the current body, INCLUDING this one when ok. */
+  attestedCount: number;
+  /** Age of the stored BODY (not the row) at evaluation time. */
+  bodyAgeMs: number | null;
+  /** Attestations still available against this body before a real write is required. */
+  remainingAttestations: number;
+}
+
+/**
+ * Refresh a carry-note's freshness WITHOUT touching its text (P-007/R-06).
+ *
+ * Bumps `updated_ts` and increments `attested_count`; `note`, `journal` and `deps` are
+ * left byte-identical, and `body_ts` stays pinned to the last real write. Refuses per
+ * the guards documented above rather than degrading — an attestation that cannot be
+ * honoured must send the caller to a real write, never quietly pass.
+ */
+export async function attestCarryNoteUnchanged(
+  ref: CarryNoteRef | string,
+  opts: {
+    contentHash: string;
+    nowMs?: number;
+    maxChain?: number;
+    maxBodyAgeMs?: number;
+    sql?: Sql;
+  },
+): Promise<CarryNoteAttestationResult> {
+  const { ws, scope } = resolveRef(ref);
+  const now = opts.nowMs ?? Date.now();
+  const maxChain = opts.maxChain ?? CARRY_NOTE_ATTESTATION_MAX_CHAIN;
+  const maxBodyAgeMs = opts.maxBodyAgeMs ?? CARRY_NOTE_ATTESTATION_MAX_BODY_AGE_MS;
+  const sql = opts.sql ?? getOrgPg().sql;
+  const refuse = (
+    refusedReason: CarryNoteAttestationRefusal,
+    over: Partial<CarryNoteAttestationResult> = {},
+  ): CarryNoteAttestationResult => ({
+    ok: false,
+    refusedReason,
+    currentHash: null,
+    attestedCount: 0,
+    bodyAgeMs: null,
+    remainingAttestations: 0,
+    ...over,
+  });
+
+  return (await sql.begin(async (tx) => {
+    // FOR UPDATE: the read and the increment must be one atomic step, or two
+    // concurrent attestations both observe the same count and the chain ceiling —
+    // the guard that makes the bound real — silently admits one extra each time.
+    const rows = await tx<
+      Array<{ note: string | null; updated_ts: string | number; body_ts: string | number | null; attested_count: number }>
+    >`
+      SELECT note, updated_ts, body_ts, attested_count
+        FROM harness_shared.carry_notes
+       WHERE workspace_id = ${ws} AND scope = ${scope}
+       FOR UPDATE`;
+    const row = rows[0];
+    const storedNote = row?.note ?? null;
+    if (!row || storedNote === null || storedNote.trim().length === 0) {
+      return refuse('attestation_no_checkpoint');
+    }
+    const currentHash = shortCarryHash(storedNote);
+    if (currentHash !== opts.contentHash.trim().toLowerCase()) {
+      return refuse('attestation_hash_mismatch', { currentHash });
+    }
+    // A NULL body_ts is a pre-1118 row the backfill did not reach; its last touch WAS
+    // its last body write, so updated_ts is the correct historical answer. Reading it
+    // as 0 instead would make every such row look infinitely old and refuse forever.
+    const bodyTs = row.body_ts == null ? Number(row.updated_ts) : Number(row.body_ts);
+    const bodyAgeMs = Number.isFinite(bodyTs) ? Math.max(0, now - bodyTs) : null;
+    const attestedCount = Number(row.attested_count) || 0;
+    if (attestedCount >= maxChain || bodyAgeMs === null || bodyAgeMs > maxBodyAgeMs) {
+      return refuse('attestation_exhausted', {
+        currentHash,
+        attestedCount,
+        bodyAgeMs,
+        remainingAttestations: 0,
+      });
+    }
+    const nextCount = attestedCount + 1;
+    // Only the two freshness columns move. Naming them explicitly (rather than a
+    // whole-row upsert) is what guarantees the body cannot be rewritten by this path.
+    await tx`
+      UPDATE harness_shared.carry_notes
+         SET updated_ts = ${now}, attested_count = ${nextCount}
+       WHERE workspace_id = ${ws} AND scope = ${scope}`;
+    return {
+      ok: true,
+      currentHash,
+      attestedCount: nextCount,
+      bodyAgeMs,
+      remainingAttestations: Math.max(0, maxChain - nextCount),
+    };
+  })) as CarryNoteAttestationResult;
 }
 
 /** Read the current carry-note (the full `note` column), or null when none/cleared. */

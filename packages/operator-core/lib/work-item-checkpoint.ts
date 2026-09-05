@@ -29,7 +29,10 @@ import {
   getCarryNote,
   getCarryJournal,
   workItemScope,
+  attestCarryNoteUnchanged,
   type CarryJournalEntry,
+  type CarryNoteAttestationResult,
+  type CarryNoteAttestationRefusal,
 } from './carry-note';
 import {
   DECLARED_DEPS_VERSION,
@@ -465,6 +468,113 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
   } catch {
     return { checkpoint: null, updatedAtMs: null };
   }
+}
+
+/** Refusal reasons for a work-item unchanged attestation: the generic carry-note ones
+ *  (content binding, chain bound) plus the work-item-specific evidence guard below. */
+export type WorkItemAttestationRefusal = CarryNoteAttestationRefusal | 'attestation_state_changed';
+
+export interface WorkItemAttestationResult extends Omit<CarryNoteAttestationResult, 'refusedReason'> {
+  refusedReason?: WorkItemAttestationRefusal;
+  /** On 'attestation_state_changed': when the item row actually moved, so the caller
+   *  can say WHAT changed rather than only that something did. */
+  itemUpdatedAtMs?: number | null;
+}
+
+/**
+ * Attest that a work-item's stored checkpoint is still current (P-007/R-06).
+ *
+ * Wraps {@link attestCarryNoteUnchanged} for the work-item scope and adds the third
+ * anti-concealment guard, which is the only one that can be expressed here rather than
+ * in the generic store:
+ *
+ *   G2 SUBJECT MOVEMENT. If the work-item ROW changed after the checkpoint body was
+ *      written, the attestation is refused. This is POSITIVE evidence that state moved
+ *      — a state flip, a comment, a link, a reassignment — so "unchanged" is a false
+ *      claim regardless of what the agent believes, and the honest answer is a real
+ *      checkpoint. The common stale case (a parked or blocked agent whose item has not
+ *      moved) passes cheaply, which is exactly the population the churn measurement
+ *      showed paying for rewrites it did not need.
+ *
+ * The guard is deliberately ordered BEFORE the store write: a refusal must not consume
+ * a slot from the chain budget, or a rejected attestation would silently shrink the
+ * allowance left for a legitimate one.
+ */
+export async function attestWorkItemCheckpointUnchanged(
+  ref: WorkItemCheckpointRef,
+  opts: { contentHash: string; nowMs?: number; maxChain?: number; maxBodyAgeMs?: number },
+): Promise<WorkItemAttestationResult> {
+  const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+  if (!ws || !ref.workItemId) {
+    return {
+      ok: false,
+      refusedReason: 'attestation_no_checkpoint',
+      currentHash: null,
+      attestedCount: 0,
+      bodyAgeMs: null,
+      remainingAttestations: 0,
+    };
+  }
+  const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
+  const { sql } = getOrgPg();
+
+  // G2. Read the item's own movement against the stored body's write instant. A read
+  // failure here must NOT manufacture a refusal (the same fail-open discipline the
+  // flush gate itself uses for every best-effort signal): an unreadable row leaves the
+  // guard unapplied, and G1/G3 still bound the attestation.
+  let itemUpdatedAtMs: number | null = null;
+  try {
+    // MAX, not a joined LIMIT 1: `feature_id` is unique only WITH `harness_slug`
+    // (that is the real PK), and the checkpoint scope may legitimately carry the
+    // WILDCARD harness — so the same id can match rows in several harnesses and a
+    // LIMIT 1 join would pick one arbitrarily. Picking arbitrarily can answer in the
+    // PASS direction, concealing a real move, which is the one direction this guard
+    // exists to close; the aggregate reads as "did ANY row for this id move", which
+    // is both deterministic and refuse-biased.
+    const rows = await sql<Array<{ item_updated: string | number | null; body_ts: string | number | null; updated_ts: string | number | null }>>`
+      SELECT (SELECT MAX(w.updated_ts)
+                FROM harness_shared.work_items w
+               WHERE w.workspace_id = n.workspace_id AND w.feature_id = ${ref.workItemId}) AS item_updated,
+             n.body_ts, n.updated_ts
+        FROM harness_shared.carry_notes n
+       WHERE n.workspace_id = ${ws} AND n.scope = ${scope}
+       LIMIT 1`;
+    const row = rows[0];
+    if (row) {
+      const itemTs = row.item_updated == null ? NaN : Number(row.item_updated);
+      // NULL body_ts is a pre-1118 row: its last touch was its last body write.
+      const bodyTs = row.body_ts == null ? Number(row.updated_ts) : Number(row.body_ts);
+      if (Number.isFinite(itemTs) && Number.isFinite(bodyTs)) {
+        itemUpdatedAtMs = itemTs;
+        if (itemTs > bodyTs) {
+          return {
+            ok: false,
+            refusedReason: 'attestation_state_changed',
+            currentHash: null,
+            attestedCount: 0,
+            bodyAgeMs: null,
+            remainingAttestations: 0,
+            itemUpdatedAtMs,
+          };
+        }
+      }
+    }
+  } catch {
+    /* fail-open: G1 and G3 still apply */
+  }
+
+  const result = await attestCarryNoteUnchanged(
+    // `ws` is already canonical; resolveRef re-canonicalizes idempotently.
+    { scope, workspaceId: ws },
+    {
+      contentHash: opts.contentHash,
+      nowMs: opts.nowMs,
+      maxChain: opts.maxChain,
+      maxBodyAgeMs: opts.maxBodyAgeMs,
+      sql,
+    },
+  );
+  return { ...result, itemUpdatedAtMs };
 }
 
 /** A claim-time checkpoint hint: only present when a PRIOR holder actually left one. */

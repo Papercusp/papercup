@@ -228,7 +228,19 @@ export function renderFlushRefusal(boundary: GateBoundary, tripwires: ReadonlyAr
     );
   }
   if (staleIds.length > 0) {
-    steps.push(`refresh the stale checkpoint(s) for ${staleIds.join(', ')} — work_items:checkpoint { id, checkpoint }`);
+    // P-007/R-06: a STALE checkpoint has two honest remedies, and naming only the
+    // expensive one is what produced the measured churn (48h to 2026-09-05: 261 of 347
+    // compaction refusals provoked a flush, costing 339 checkpoint writes made solely
+    // to clear this gate). If state genuinely moved, rewrite it; if it did not, attest
+    // and keep your turn. The attestation is offered ONLY here, never for a MISSING
+    // checkpoint below — there is nothing to attest to when nothing was ever written,
+    // and offering it there would read as a way to skip the flush entirely.
+    steps.push(
+      `refresh the stale checkpoint(s) for ${staleIds.join(', ')} — work_items:checkpoint { id, checkpoint } ` +
+        'if the state moved, or, if it genuinely has NOT, attest it instead of rewriting it: ' +
+        'work_items:checkpoint { id, unchanged: true, contentHash } (the hash comes from work_items:get { id }; ' +
+        'the attestation is bounded and refuses once the item itself has moved)',
+    );
   }
   if (armedLoop) {
     steps.push(
