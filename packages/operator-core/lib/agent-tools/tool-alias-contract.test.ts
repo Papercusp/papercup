@@ -36,11 +36,36 @@ function liveScannableTools(): AliasScannableTool[] {
     catalog.length,
     `listAllProjectedTools() returned only ${catalog.length} tool(s), far below the ` +
       `${MIN_PLAUSIBLE_CATALOG_SIZE}-tool floor. The agent-tools barrel did not register, so every assertion ` +
-      `below would pass over an EMPTY catalog. Run this through vitest (which side-effect-imports './index'), ` +
-      `not a standalone tsx probe.`,
+      `below would pass over an EMPTY catalog. Run this through vitest, or any driver that ` +
+      `side-effect-imports './index' first — without that import the barrel never registers.`,
   ).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_CATALOG_SIZE);
 
-  return catalog.map(toAliasScannableTool).filter((t): t is AliasScannableTool => t !== null);
+  const scannable = catalog
+    .map(toAliasScannableTool)
+    .filter((t): t is AliasScannableTool => t !== null);
+
+  // D-001 rule 2 ("a guard must assert its own DENOMINATOR"), applied to the
+  // right side of the filter. The floor above is asserted on the PRE-filter
+  // catalog, but what actually gets scanned is this post-filter population:
+  // toAliasScannableTool returns null for any tool whose projected inputSchema
+  // carries no `properties`. Measured 2026-09-05 (WI-2145955): 854 -> 854, zero
+  // dropped, so today these two counts are identical and nothing is hidden.
+  // That is exactly why this assertion is cheap now and load-bearing later — if
+  // a projection change ever drops a family of tools out of `properties`, they
+  // would leave the scanned class SILENTLY while the pre-filter count above
+  // stayed comfortably green. This is the same relocation of the ZodEffects
+  // blind spot D-008 names, one layer out: from `args.shape` to the JSON-Schema
+  // projection.
+  expect(
+    scannable.length,
+    `Only ${scannable.length} of ${catalog.length} catalog tools survived toAliasScannableTool, ` +
+      `below the ${MIN_PLAUSIBLE_CATALOG_SIZE}-tool floor. Tools are being dropped from the scanned ` +
+      `class because their projected inputSchema has no \`properties\` — the assertions below still ` +
+      `read green while covering a shrinking population. Fix the projection (or the conversion); do ` +
+      `not lower this floor to restore green.`,
+  ).toBeGreaterThanOrEqual(MIN_PLAUSIBLE_CATALOG_SIZE);
+
+  return scannable;
 }
 
 describe('tool argument aliases — class-wide contract (P-009)', () => {
