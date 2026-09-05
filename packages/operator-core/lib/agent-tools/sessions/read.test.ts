@@ -345,4 +345,81 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       ],
     });
   });
+
+  it("uses event chronology rather than turn_idx for session:'self' tail windows", async () => {
+    resolveSearchFilters.mockResolvedValueOnce({
+      filters: { owners: ['su-self'] },
+      selfSession: {
+        sourceKind: 'codex',
+        sessionId: 'sess-successor',
+        filePath: '/managed/sess-successor.jsonl',
+      },
+    });
+    const rows = [
+      {
+        source_kind: 'codex',
+        session_id: 'sess-predecessor',
+        turn_idx: 99,
+        speaker: 'assistant',
+        owner: 'su-self',
+        ts: '2026-08-24T10:00:00.000Z',
+        text: 'old predecessor turn with a high index',
+      },
+      {
+        source_kind: 'codex',
+        session_id: 'sess-successor',
+        turn_idx: 0,
+        speaker: 'user',
+        owner: 'su-self',
+        ts: '2026-08-24T12:00:00.000Z',
+        text: 'new successor turn',
+      },
+      {
+        source_kind: 'codex',
+        session_id: 'sess-successor',
+        turn_idx: 1,
+        speaker: 'assistant',
+        owner: 'su-self',
+        ts: '2026-08-24T13:00:00.000Z',
+        text: 'newest successor turn',
+      },
+    ];
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings, ...values] = args;
+      const sql = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
+      const limit = Number(values.at(-1));
+      // Model the database's two ORDER BY shapes so this test fails both on
+      // the old turn_idx tail and if the self-chain chronology clause regresses.
+      const ordered = sql.includes('COALESCE(ts, ingested_at)')
+        ? [...rows].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))
+        : [...rows].sort((a, b) => b.turn_idx - a.turn_idx);
+      return ordered.slice(0, limit);
+    });
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', tail: 2 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-self-tail-chronology-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const query = String((tx.mock.calls[0]?.[0] as string[] | undefined)?.join(' ? '));
+    expect(query).toContain('COALESCE(ts, ingested_at)');
+    expect(query).toContain('source_kind');
+    expect(query).toContain('session_id');
+    const structured = dispatched.result?.structuredContent as {
+      turns: Array<{ text: string }>;
+    };
+    expect(structured.turns.map((turn) => turn.text)).toEqual([
+      'new successor turn',
+      'newest successor turn',
+    ]);
+  });
 });

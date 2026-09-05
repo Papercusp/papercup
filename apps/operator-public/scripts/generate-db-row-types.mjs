@@ -21,9 +21,23 @@ const outputPath = join(appRoot, "src", "db-row-types.generated.ts");
 const checkOnly = process.argv.includes("--check");
 
 function migrationFiles() {
-  return readdirSync(migrationsDir)
+  const files = readdirSync(migrationsDir)
     .filter((name) => /^\d+_.+\.sql$/.test(name))
     .sort((a, b) => a.localeCompare(b, "en"));
+  const bySequence = new Map();
+  for (const file of files) {
+    const prefix = file.match(/^(\d+)_/)?.[1];
+    const sequence = Number(prefix);
+    const previous = bySequence.get(sequence);
+    if (previous) {
+      throw new Error(
+        `Duplicate migration sequence ${prefix}: ${previous} and ${file}. ` +
+          "Migration filename prefixes must be unique so production apply order is unambiguous.",
+      );
+    }
+    bySequence.set(sequence, file);
+  }
+  return files;
 }
 
 function loadSchema() {

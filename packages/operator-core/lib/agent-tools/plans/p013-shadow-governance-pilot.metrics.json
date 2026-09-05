@@ -15,8 +15,11 @@
   ],
   "verdict": {
     "enforcementActivatable": false,
-    "reason": "configurePlanAdmissionCertificateSource has no non-test call site, so state.certificateSource is null in production and every door refuses missing-certificate the moment governance.planAdmission is set",
-    "recommendation": "run mode:'shadow' until a FinalizationCertificate→AdmissionCertificate producer is wired"
+    "historical": true,
+    "asOf": "P-013 before P-037/WI-2146857",
+    "reason": "the pre-P-037 build had no production certificate producer, so every door refused missing-certificate when governance.planAdmission was set",
+    "recommendation": "historical: run mode:'shadow' until a FinalizationCertificate→AdmissionCertificate producer is wired",
+    "supersededBy": "P-037/WI-2146857 wires the production governance-event source; current seven-door coverage is plan-admission-certificate-source.test.ts"
   },
   "legs": {
     "governance-round": {

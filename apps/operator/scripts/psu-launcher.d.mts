@@ -1535,7 +1535,7 @@ export function stripCodexGatewayConfig(configText: any): string;
  * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean }} [opts]
  * @returns {string}
  */
-export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, priority, keepProviderTableWhenUnrouted }?: {
+export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, priority, keepProviderTableWhenUnrouted, }?: {
     gatewayOn?: boolean;
     ownerId?: string | null;
     priority?: string | null;

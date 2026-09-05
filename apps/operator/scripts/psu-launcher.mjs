@@ -138,8 +138,7 @@ export const PUI_TUI_ORIGIN = "pui";
  */
 export function agentPickerChoices({ tui = null } = {}) {
   const choices = AGENTS.map((agent) => ({ name: agent, value: agent }));
-  if (tui !== PUI_TUI_ORIGIN)
-    choices.push({ name: "pui", value: "pui" });
+  if (tui !== PUI_TUI_ORIGIN) choices.push({ name: "pui", value: "pui" });
   return choices;
 }
 
@@ -157,7 +156,9 @@ export function launchPuiWorkbench({
   const { bin, args } = puiWorkbenchCommand();
   const result = spawnImpl(bin, args, { cwd, env, stdio: "inherit" });
   if (result?.error)
-    throw new Error(`psu: failed to launch PUI workbench: ${result.error.message}`);
+    throw new Error(
+      `psu: failed to launch PUI workbench: ${result.error.message}`,
+    );
   return result?.status ?? (result?.signal ? 1 : 0);
 }
 
@@ -964,8 +965,11 @@ export function parseArgs(argv) {
     else if (a.startsWith("--owner-id="))
       out.ownerId = a.slice("--owner-id=".length);
     else if (a.startsWith("--context-size=")) {
-      const normalized = normalizeSuContextSize(a.slice("--context-size=".length));
-      if (!normalized.ok) throw new Error(`--context-size: ${normalized.error}`);
+      const normalized = normalizeSuContextSize(
+        a.slice("--context-size=".length),
+      );
+      if (!normalized.ok)
+        throw new Error(`--context-size: ${normalized.error}`);
       out.contextSize = normalized.contextSize;
       if (normalized.normalizedLegacyFull) {
         console.error(
@@ -1256,11 +1260,7 @@ const OMP_OPENROUTER_RESPONSES_ENV = "PI_OPENROUTER_RESPONSES";
  * An explicit environment override wins; unrelated models and backends remain
  * byte-identical. Pure + exported for fresh role, fresh SU, and resume tests.
  */
-export function ompResponsesCompatibilityEnv(
-  agent,
-  model,
-  env = process.env,
-) {
+export function ompResponsesCompatibilityEnv(agent, model, env = process.env) {
   if (
     agent !== "omp" ||
     typeof model !== "string" ||
@@ -2630,7 +2630,10 @@ export function recoverResumeSessionOwner(session, { home = homedir() } = {}) {
 /** Recover both durable identity halves for an out-of-window resume. The
  * adv-keyed entry wins when the row id is known; otherwise the native-session
  * entry supplies the id recorded at launch. */
-export function recoverResumeSessionIdentity(session, { home = homedir() } = {}) {
+export function recoverResumeSessionIdentity(
+  session,
+  { home = homedir() } = {},
+) {
   if (session?.id != null) {
     const advIdentity = recoverSessionIdentity(`adv-${session.id}`, { home });
     if (advIdentity) return advIdentity;
@@ -3333,7 +3336,10 @@ export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
       ? inheritedFamily === detectedFamily
       : detected.id === inherited.id;
   if (unchanged) return null;
-  return composeResumeModelSpec(detected.id, detected.effort || inherited.effort);
+  return composeResumeModelSpec(
+    detected.id,
+    detected.effort || inherited.effort,
+  );
 }
 
 /** The `--model` spec an argv carries, or null. Pure; the read half of the
@@ -4807,10 +4813,10 @@ export function codexAuthJsonReady(raw) {
     const tokens = parsed.tokens;
     return Boolean(
       tokens &&
-        typeof tokens === "object" &&
-        !Array.isArray(tokens) &&
-        typeof tokens.access_token === "string" &&
-        tokens.access_token.trim(),
+      typeof tokens === "object" &&
+      !Array.isArray(tokens) &&
+      typeof tokens.access_token === "string" &&
+      tokens.access_token.trim(),
     );
   } catch {
     return false;
@@ -4840,7 +4846,11 @@ export function codexFreshDefaultAuthPreflight({
   codexHome = null,
   readFile = readFileSync,
 } = {}) {
-  if (agent !== "codex" || headless !== true || accountRoutingMode(account) !== "default")
+  if (
+    agent !== "codex" ||
+    headless !== true ||
+    accountRoutingMode(account) !== "default"
+  )
     return { checked: false, ready: true, reason: "not-required" };
   if (!codexHome)
     return { checked: true, ready: false, reason: "missing-codex-home" };
@@ -5144,12 +5154,30 @@ export function codexAutoPoolWarning({
   now = Date.now(),
 } = {}) {
   if (!isCodexAutoRoute(agent, model, account)) return null;
-  const healthy = Number(stats?.codexHealthyAccounts);
-  if (!Number.isFinite(healthy) || healthy > 0) return null;
-  const total = Number(stats?.codexTotalAccounts);
-  const count =
-    Number.isFinite(total) && total > 0 ? `0 of ${Math.floor(total)}` : "0";
-  const recovery = Number(stats?.codexEarliestRecoveryAt);
+  if (!stats || typeof stats !== "object") return null;
+  const healthy = stats.codexHealthyAccounts;
+  const total = stats.codexTotalAccounts;
+  const hasRecovery = Object.prototype.hasOwnProperty.call(
+    stats,
+    "codexEarliestRecoveryAt",
+  );
+  const rawRecovery = stats.codexEarliestRecoveryAt;
+  // Warn only from the complete stats contract introduced with this guard.
+  // Number(null) and Number("") are both zero; coercing either would turn an
+  // unknown/legacy snapshot into a false all-walled warning. The pre-P-006
+  // gateway also exposed codexHealthyAccounts without the denominator/horizon,
+  // so require all three fields before speaking with certainty.
+  if (
+    healthy !== 0 ||
+    !Number.isInteger(total) ||
+    total <= 0 ||
+    !hasRecovery ||
+    (rawRecovery !== null &&
+      (typeof rawRecovery !== "number" || !Number.isFinite(rawRecovery)))
+  )
+    return null;
+  const count = `0 of ${total}`;
+  const recovery = rawRecovery ?? Number.NaN;
   const horizon =
     Number.isFinite(recovery) && recovery > now
       ? `; earliest known recovery ${new Date(recovery).toISOString()}`
@@ -5252,10 +5280,19 @@ export function stripCodexGatewayConfig(configText) {
 export function codexGatewayConfigPatch(
   configText,
   account = null,
-  { gatewayOn = false, ownerId = null, priority = null, keepProviderTableWhenUnrouted = false } = {},
+  {
+    gatewayOn = false,
+    ownerId = null,
+    priority = null,
+    keepProviderTableWhenUnrouted = false,
+  } = {},
 ) {
   const stripped = stripCodexGatewayConfig(configText).trimEnd();
-  const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId, priority });
+  const patch = codexGatewayConfigToml(account, {
+    gatewayOn,
+    ownerId,
+    priority,
+  });
   if (!patch.root.length && !patch.tables.length) {
     // WI-38706: "no gateway route for THIS launch" must not mean "delete the
     // provider table this thread's rollout names". codex stamps the provider
@@ -7836,7 +7873,8 @@ export function shouldSilenceClaudeTitle({
  *
  * Exported with injectables for tests (scripts/__tests__).
  */
-export const SUPERVISOR_BEAT_MS = EXTERNAL_SCHEDULES.psuSupervisorHeartbeat.defaultIntervalMs;
+export const SUPERVISOR_BEAT_MS =
+  EXTERNAL_SCHEDULES.psuSupervisorHeartbeat.defaultIntervalMs;
 
 /**
  * EI-19412221266350408 — consecutive `sessionTerminal` beats required before psu exits.
@@ -8416,10 +8454,14 @@ export async function acquireSessionResumeWithRecovery(
     const fromExpiry = outcome.leaseExpiresAt
       ? Date.parse(outcome.leaseExpiresAt) - observedAt
       : Number.NaN;
-    const leaseWaitMs = Number.isFinite(fromRetryAfter) && fromRetryAfter > 0
-      ? fromRetryAfter
-      : fromExpiry;
-    const remainingBudgetMs = Math.max(0, waitBudgetMs - (observedAt - startedAt));
+    const leaseWaitMs =
+      Number.isFinite(fromRetryAfter) && fromRetryAfter > 0
+        ? fromRetryAfter
+        : fromExpiry;
+    const remainingBudgetMs = Math.max(
+      0,
+      waitBudgetMs - (observedAt - startedAt),
+    );
     if (!Number.isFinite(leaseWaitMs) || leaseWaitMs < 0) {
       return {
         ...outcome,
@@ -8486,7 +8528,8 @@ async function reportSessionResumeTransition(
   try {
     const tok = token ?? readToken();
     const response = await fetchWithResilience(
-      operatorUrl + `/api/agent-mcp/console/bootstrap-su/session-resume-${transition}`,
+      operatorUrl +
+        `/api/agent-mcp/console/bootstrap-su/session-resume-${transition}`,
       {
         method: "POST",
         headers: {
@@ -8553,7 +8596,11 @@ async function reportSessionResumeTransition(
  * @param {ResumeTransitionOptions} [opts]
  * @returns {Promise<ResumeFinalizeOutcome>}
  */
-export function reportSessionResumeFinalized(advSessionId, resumeClaimKey, opts = {}) {
+export function reportSessionResumeFinalized(
+  advSessionId,
+  resumeClaimKey,
+  opts = {},
+) {
   return /** @type {Promise<ResumeFinalizeOutcome>} */ (
     reportSessionResumeTransition(
       "finalized",
@@ -8572,7 +8619,11 @@ export function reportSessionResumeFinalized(advSessionId, resumeClaimKey, opts 
  * @param {ResumeTransitionOptions} [opts]
  * @returns {Promise<ResumeReleaseOutcome>}
  */
-export function reportSessionResumeReleased(advSessionId, resumeClaimKey, opts = {}) {
+export function reportSessionResumeReleased(
+  advSessionId,
+  resumeClaimKey,
+  opts = {},
+) {
   return /** @type {Promise<ResumeReleaseOutcome>} */ (
     reportSessionResumeTransition(
       "released",
@@ -9568,7 +9619,8 @@ export function runWrapper(options) {
   // included) because it could not put anything in our environment — the psu
   // shim's re-exec loop spawned us, not it. Consuming is single-shot and
   // self-validating; a null here is the ordinary cold-launch case.
-  const hostHandoff = initialHostHandoff || (ownerId ? readHostHandoff(ownerId) : null);
+  const hostHandoff =
+    initialHostHandoff || (ownerId ? readHostHandoff(ownerId) : null);
   if (hostHandoff) {
     // Use the predecessor's argv VERBATIM. It was minted from an argv that had
     // already been through this launcher's whole normalization pass, so
@@ -9917,7 +9969,10 @@ export function devMajorMinor(dev) {
  * exited — i.e. refuse a resume that is now perfectly legal.
  * Rows read: `<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> <start> <end>`.
  */
-export function findFlockWriteHolderPid(procLocksText, { major, minor, inode }) {
+export function findFlockWriteHolderPid(
+  procLocksText,
+  { major, minor, inode },
+) {
   for (const raw of String(procLocksText || "").split("\n")) {
     const parts = raw.trim().split(/\s+/);
     if (parts.length < 6) continue;
@@ -10081,7 +10136,10 @@ export function procParentPid(pid, { readStat = readProcStatText } = {}) {
   const close = String(text ?? "").lastIndexOf(")");
   if (close < 0) return null;
   // After `<pid> (<comm>)` the next fields are `<state> <ppid> …`.
-  const rest = text.slice(close + 1).trim().split(/\s+/);
+  const rest = text
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/);
   const ppid = Number(rest[1]);
   return Number.isInteger(ppid) && ppid > 0 ? ppid : null;
 }
@@ -10223,11 +10281,7 @@ const ARGV_PROBE_BACKENDS = Object.freeze({
 
 /** Normalize a wire value to one canonical local-liveness witness. */
 export function normalizeResumeLocalLivenessEvidence(value) {
-  if (
-    value == null ||
-    typeof value !== "object" ||
-    Array.isArray(value)
-  )
+  if (value == null || typeof value !== "object" || Array.isArray(value))
     return null;
   const keys = Object.keys(value);
   const canonical = RESUME_LOCAL_LIVENESS_EVIDENCE_KINDS[value.kind];
@@ -10263,8 +10317,7 @@ export function normalizeCodexResumeLocalLivenessEvidence({
     typeof writerHolder !== "object" ||
     Array.isArray(writerHolder) ||
     writerHolder.held !== false ||
-    (writerHolder.reason !== "free" &&
-      writerHolder.reason !== "no-lock-file")
+    (writerHolder.reason !== "free" && writerHolder.reason !== "no-lock-file")
   )
     return null;
   return normalizeResumeLocalLivenessEvidence(NO_LIVE_CODEX_WRITER_EVIDENCE);
@@ -10580,9 +10633,7 @@ async function launchResume(
       }
     }
     const claim = await acquireSessionResumeWithRecovery(session.id, {
-      ...(localLivenessEvidence
-        ? { localLivenessEvidence }
-        : {}),
+      ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
     });
     if (!claim.claimed) {
       console.error(
@@ -10763,7 +10814,8 @@ async function launchResume(
         id: accountEnv?.id ?? null,
         ownerId: session.coordOwnerId ?? null,
         priority: session.role || "su",
-        keepProviderTableWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
+        keepProviderTableWhenUnrouted:
+          boundProvider === CODEX_GATEWAY_PROVIDER_ID,
       });
       // AFTER the gateway patch, which re-orders the file around its own markers —
       // see codexContextWindowConfigPatch for why these root keys must land first.
@@ -11056,7 +11108,8 @@ export function freshSuBootstrapBody(
   const launchMode = launchModeFromArgs(args);
   const effectiveModel =
     selections.agent === "codex" ? resolveCodexModel(args.model) : args.model;
-  const effectiveArgs = effectiveModel === args.model ? args : { ...args, model: effectiveModel };
+  const effectiveArgs =
+    effectiveModel === args.model ? args : { ...args, model: effectiveModel };
   return {
     agent: selections.agent,
     workspace: selections.workspace,
@@ -11741,9 +11794,9 @@ async function chooseResumeTarget(session, args) {
     // `sol` and `gpt-5.6-sol` are the same launch — the alias is just what psu's
     // own flags and docs call it — so the registry row for an id an alias already
     // resolves to would be a duplicate that looks like a choice.
-    codexSkipIds: RESUME_MODEL_MENU.filter((row) => row.backend === "codex").map(
-      (row) => normalizeCodexCliModel(row.value),
-    ),
+    codexSkipIds: RESUME_MODEL_MENU.filter(
+      (row) => row.backend === "codex",
+    ).map((row) => normalizeCodexCliModel(row.value)),
     codexDeniedIds: CODEX_DENIED_MODEL_IDS,
   });
   // A `select` cannot be typed into, so it is unusable at catalog scale (the OMP
@@ -13048,7 +13101,9 @@ async function ensureBackendInstalled(
  */
 async function launchHostHandoff(handoff) {
   const childEnv =
-    handoff?.childEnv && typeof handoff.childEnv === "object" && !Array.isArray(handoff.childEnv)
+    handoff?.childEnv &&
+    typeof handoff.childEnv === "object" &&
+    !Array.isArray(handoff.childEnv)
       ? { ...handoff.childEnv }
       : {};
   if (handoff?.ownerId) childEnv.PAPERCUSP_SID = String(handoff.ownerId);
@@ -13056,15 +13111,24 @@ async function launchHostHandoff(handoff) {
   if (handoff?.advSessionId != null)
     childEnv.PAPERCUSP_ADV_SESSION_ID = String(handoff.advSessionId);
   if (handoff?.codexHome) childEnv.CODEX_HOME = String(handoff.codexHome);
-  if (!childEnv.PAPERCUSP_SID || typeof handoff?.command !== "string" || !handoff.command) {
-    console.error("psu: host handoff is missing its session identity or backend command; refusing a bare successor");
+  if (
+    !childEnv.PAPERCUSP_SID ||
+    typeof handoff?.command !== "string" ||
+    !handoff.command
+  ) {
+    console.error(
+      "psu: host handoff is missing its session identity or backend command; refusing a bare successor",
+    );
     process.exitCode = 1;
     return;
   }
   runWrapper({
     wrapperBin: handoff.command,
     args: Array.isArray(handoff.args) ? handoff.args : [],
-    cwd: typeof handoff.cwd === "string" && handoff.cwd ? handoff.cwd : process.cwd(),
+    cwd:
+      typeof handoff.cwd === "string" && handoff.cwd
+        ? handoff.cwd
+        : process.cwd(),
     preserveCwd: true,
     envelopeEnv: childEnv,
     hostHandoff: handoff,

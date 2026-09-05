@@ -105,12 +105,19 @@ curl -X POST http://127.0.0.1:8787/harnesses \
 
 2. **Apply schema to remote (migrations run in order):**
    ```bash
-   npm run d1:apply:remote          # 001_init.sql
-   # then each incremental, in order:
-   wrangler d1 execute papercusp-cupboard --remote --file migrations/002_add_publisher_permission.sql
-   wrangler d1 execute papercusp-cupboard --remote --file migrations/003_add_publisher_attestation.sql
-   wrangler d1 execute papercusp-cupboard --remote --file migrations/004_listing_kinds_project_centric.sql
+   wrangler d1 migrations apply papercusp-cupboard --remote
    ```
+   This applies every file in `migrations/` that is not yet recorded in the
+   database's `d1_migrations` table, in name order, and records each one. It is
+   also `npm run deploy`'s `predeploy` step, so the worker can never ship ahead
+   of its schema again: on 2026-09-05 the worker was deployed referencing
+   `harnesses.visibility` (migration 018) while the remote database was still at
+   014 — `/listings` answered `D1_ERROR: no such column: h.visibility` and the
+   Cupboard tab was a 500 (WI-2147021). 015–021 were then applied by hand and
+   `d1_migrations` was back-filled with 001–021, so the tracking table is
+   authoritative from that point on. Do NOT go back to `wrangler d1 execute
+   --file` for an incremental migration: it applies the SQL without recording
+   it, and the next `migrations apply` would try to re-run it.
    ⚠ `004` is a one-shot table rebuild (adds `listing_kind` + project-centric 1:N
    keying; existing rows preserved as `kind='harness'`). Apply it exactly once.
 

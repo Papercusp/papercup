@@ -226,7 +226,7 @@ describe('wallet-binding Worker door', () => {
     expect(raw.prepare('SELECT COUNT(*) AS n FROM wallet_bindings').get()).toMatchObject({ n: 1 });
   });
 
-  it('prevents one verified wallet from becoming two principals and supports explicit unbind', async () => {
+  it('prevents one wallet from binding two principals, rolls back the losing challenge, and supports unbind', async () => {
     const { api, env, raw } = harness();
     const firstChallenge = await challenge(api, env, walletOne);
     await verify(api, env, firstChallenge.body.challengeId, sign(firstChallenge.body.message, keyOne));
@@ -243,6 +243,10 @@ describe('wallet-binding Worker door', () => {
     expect(await conflict.json()).toMatchObject({ error: 'wallet_already_bound' });
     expect(raw.prepare('SELECT principal_id FROM wallet_bindings WHERE wallet_address = ?').get(walletOne))
       .toMatchObject({ principal_id: 'gh:42' });
+    expect(
+      raw.prepare('SELECT consumed_at_ms FROM wallet_binding_challenges WHERE challenge_id = ?')
+        .get(conflictingChallenge.body.challengeId),
+    ).toMatchObject({ consumed_at_ms: null });
 
     auth.resolveGithubBearer.mockResolvedValue({ id: 42, login: 'wallet-owner' });
     const unbound = await api.request(
@@ -253,5 +257,16 @@ describe('wallet-binding Worker door', () => {
     expect(unbound.status).toBe(200);
     expect(await unbound.json()).toEqual({ unbound: true, previousWalletAddress: walletOne });
     expect(raw.prepare('SELECT COUNT(*) AS n FROM wallet_bindings').get()).toMatchObject({ n: 0 });
+
+    auth.resolveGithubBearer.mockResolvedValue({ id: 99, login: 'other-principal' });
+    const retried = await verify(
+      api,
+      env,
+      conflictingChallenge.body.challengeId,
+      sign(conflictingChallenge.body.message, keyOne),
+    );
+    expect(retried.status).toBe(201);
+    expect(raw.prepare('SELECT principal_id FROM wallet_bindings WHERE wallet_address = ?').get(walletOne))
+      .toMatchObject({ principal_id: 'gh:99' });
   });
 });

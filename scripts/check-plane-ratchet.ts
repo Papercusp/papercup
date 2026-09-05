@@ -21,7 +21,6 @@ import {
   type RatchetRow,
 } from '../packages/operator-core/lib/agent-plane-ratchet';
 import type { PlaneZeroReason } from '../packages/operator-core/lib/agent-plane-measurement';
-import { METRIC_SPECS } from '../packages/operator-core/lib/agent-plane-measurement';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 
 /**
@@ -146,19 +145,34 @@ async function main() {
       console.log(`      A zero was relabelled instead of a producer being built.`);
     }
     if (r.verdict === 'window-unjudgeable') {
-      // WI-212675: name the SHAPE, not one shape's story. Printing "the producer WROTE
-      // this window" for a traffic metric whose fleet was usage-walled describes the
-      // opposite of what happened, and sends the reader hunting a producer that is fine.
-      if (METRIC_SPECS[r.metric]?.eligibilityIsTraffic) {
-        console.log(`      the fleet made NO calls on this metric's surfaces this window — a starved`);
-        console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
-      } else {
-        console.log(`      the producer WROTE this window, but no unit admitted a verdict — a quiet`);
-        console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
+      // Name the measured SHAPE, not one shape's story. The row carries the same
+      // classification the verdict used, so the reporter cannot invert its cause.
+      switch (r.windowUnjudgeableReason) {
+        case 'occurrence-absent-liveness-independent':
+          console.log(`      no registered-cell citation occurred this window. Citation occurrence is`);
+          console.log(`      sender-authored and cannot evidence resolver liveness (last interpretable ${r.lastInterpretableAt}).`);
+          console.log(`      Reported, NOT failing. Citation-free windows stay unjudgeable regardless of`);
+          console.log(`      unrelated message volume; detected-but-noncomparable windows retain the run test.`);
+          break;
+        case 'occurrence-absent':
+          console.log(`      the scanner ran, but the measured occurrence did not happen — a quiet`);
+          console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
+          break;
+        case 'fleet-traffic-absent':
+          console.log(`      the fleet made NO calls on this metric's surfaces this window — a starved`);
+          console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
+          break;
+        case 'producer-output-no-comparable':
+        default:
+          console.log(`      the producer WROTE this window, but no unit admitted a verdict — a quiet`);
+          console.log(`      window, not a dead producer (last interpretable ${r.lastInterpretableAt}).`);
+          break;
       }
-      console.log(`      Reported, NOT failing. ${UNJUDGEABLE_WINDOW_RUN} consecutive uninterpretable windows`);
-      console.log(`      carrying this metric's usual volume would still be judged a regression —`);
-      console.log(`      but a run of STARVED windows is not evidence of one (WI-6562).`);
+      if (r.windowUnjudgeableReason !== 'occurrence-absent-liveness-independent') {
+        console.log(`      Reported, NOT failing. ${UNJUDGEABLE_WINDOW_RUN} consecutive uninterpretable windows`);
+        console.log(`      carrying this metric's usual volume would still be judged a regression —`);
+        console.log(`      but a run of STARVED windows is not evidence of one (WI-6562).`);
+      }
     }
     if (r.verdict === 'never-interpretable') {
       const gap = judgeGapLine(r);
