@@ -160,19 +160,30 @@ log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
 # arrives wherever the dumps do, including the next relocation.
 #
 # Idempotent and non-clobbering: create it when absent, otherwise only ensure
-# the *.tmp rule is present. Operators legitimately add their own exclusions
-# here (the tier-dump exclusions, for one), and this must never eat them.
-if [ ! -f "$DUMP/.kopiaignore" ]; then
-  printf '%s\n' \
-    '# In-progress dumps: <db>.tmp is mode 0700 postgres and is renamed into' \
-    '# place only after validation. Never the backup of record. Provisioned by' \
-    '# papercusp-db-backup.sh (WI-2146225) so it travels with the dump dir.' \
-    '*.tmp' > "$DUMP/.kopiaignore"
-  log ".kopiaignore provisioned at $DUMP (was missing)"
-elif ! grep -qxF '*.tmp' "$DUMP/.kopiaignore"; then
-  printf '%s\n' '*.tmp' >> "$DUMP/.kopiaignore"
-  log ".kopiaignore at $DUMP was missing the *.tmp rule — appended"
-fi
+# each REQUIRED rule is present. Operators legitimately add their own
+# exclusions here, and this must never eat them — we only ever append.
+#
+# ensure_kopiaignore_rule <rule> <why>
+# Appends <rule> only when that exact line is absent. Never rewrites, never
+# reorders, never removes. Safe to call repeatedly and in any order.
+ensure_kopiaignore_rule() {
+  local rule="$1" why="${2:-}"
+  if [ ! -f "$DUMP/.kopiaignore" ]; then
+    printf '%s\n' \
+      '# Provisioned by papercusp-db-backup.sh (WI-2146225) so the rules travel' \
+      '# with the dump dir — including across the next relocation.' \
+      '' > "$DUMP/.kopiaignore"
+    log ".kopiaignore provisioned at $DUMP (was missing)"
+  fi
+  if ! grep -qxF "$rule" "$DUMP/.kopiaignore"; then
+    [ -n "$why" ] && printf '%s\n' "" "# $why" >> "$DUMP/.kopiaignore"
+    printf '%s\n' "$rule" >> "$DUMP/.kopiaignore"
+    log ".kopiaignore at $DUMP was missing '$rule' — appended"
+  fi
+}
+
+ensure_kopiaignore_rule '*.tmp' \
+  'In-progress dumps: <db>.tmp is mode 0700 postgres and is renamed into place only after validation. Never the backup of record.'
 
 # Single instance. A backup still running when the next timer fires must not be
 # joined by a second one (that is WI-3550's overlap failure, on a bigger job).
@@ -482,6 +493,29 @@ PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"
 PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.session_archive_files harness_shared.session_turns harness_shared.tool_invocations harness_shared.session_turn_chunks harness_shared.session_turn_parts harness_shared.route_invocations}"
 TIER_DUMPED=()
 TIER_FAILED=()
+
+# ── Tier 2 (transcript) is NEVER enrolled in kopia — and that rule is TREE-OWNED
+# The transcript tier is ~73G of high-churn session archive. The ratified ruling
+# on WI-2146225 is "enroll tier 1, never tier 2": covering it would put tens of
+# gigabytes of churning duplicate data into a repo whose volume capacity is the
+# very wall that caused the dump relocation this work-item exists to repair.
+#
+# That exclusion previously lived ONLY as an operator-added line in an untracked
+# .kopiaignore — the exact failure shape documented at the top of this file, and
+# the one that already cost this system its dump coverage once: state kept
+# outside the tree does not survive a relocation, and its absence raises no
+# error anywhere. It would have failed silently and EXPENSIVELY here (a sweep
+# would simply start uploading tier 2), so the producer provisions it.
+#
+# Derived from PC_BACKUP_TIER_DBS rather than hardcoded, so it cannot drift from
+# the tier set actually being written. Tier 1 (<db>-state) is deliberately NOT
+# excluded: it is the enrolled tier.
+if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
+  for db in $PC_BACKUP_TIER_DBS; do
+    ensure_kopiaignore_rule "$db-transcript" \
+      "Tier 2 (transcript) is deliberately NOT backed up — ratified on WI-2146225. Tier 1 ($db-state) IS enrolled and must stay covered."
+  done
+fi
 
 if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
   for db in $PC_BACKUP_TIER_DBS; do
