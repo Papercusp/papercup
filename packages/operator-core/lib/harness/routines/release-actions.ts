@@ -1574,7 +1574,16 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     undefined,
     // P-009: thread the hold tick's cheap-legs measurement so gate_health stays MEASURED
     // during an awaiting-fixer hold instead of stamping failingTestsMeasured:false.
-    { runId: verdict.runId, repairTickLegs: verdict.repairTickLegs },
+    {
+      runId: verdict.runId,
+      candidateSource: verdict.candidateSource,
+      diagnostic: verdict.diagnostic,
+      selectedAtMs: verdict.selectedAtMs,
+      postSuiteMeasured: verdict.postSuiteMeasured,
+      postSuiteLegs: verdict.postSuiteLegs,
+      repairQueue: verdict.repairQueue,
+      repairTickLegs: verdict.repairTickLegs,
+    },
   );
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
@@ -1625,7 +1634,17 @@ export async function recordPendingCheckpointVerdict(
     verdict.retriage,
     verdict.summary ?? null,
     undefined,
-    { promotionPending: true, green: verdict.green, runId: verdict.runId },
+    {
+      promotionPending: true,
+      green: verdict.green,
+      runId: verdict.runId,
+      candidateSource: verdict.candidateSource,
+      diagnostic: verdict.diagnostic,
+      selectedAtMs: verdict.selectedAtMs,
+      postSuiteMeasured: verdict.postSuiteMeasured,
+      postSuiteLegs: verdict.postSuiteLegs,
+      repairQueue: verdict.repairQueue,
+    },
   );
   return true;
 }
@@ -1917,25 +1936,6 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     }
   }
 
-  // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
-  // release-fixer agent to diagnose + fix the failing test — the test-failure
-  // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
-  // EI-13723: only for the version-skew fallback (!recordedByRun) — when the run recorded
-  // its own verdict, `recordCheckpointVerdict` (called from inside the CLI, above) already
-  // ran this exact check. Dispatching here TOO for a recordedByRun verdict would double-fire
-  // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
-  // keeps this a pure fallback instead of a race with the producer-side dispatch.
-  if (
-    !isPinnedCheckpointVerdict(parsed) &&
-    !recordedByRun &&
-    !parsed?.repairQueue &&
-    shouldDispatchReleaseFixer(status, candidate, failingTests, parsed?.retriage)
-  ) {
-    await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
-      console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
-    );
-  }
-
   // P-004: track the red streak + time-since-last-green across ticks and fire a
   // LOUDER urgent alert when the gate has been HELD too long (the "stuck for a
   // while" signal, distinct from the per-candidate notification). Runs for every
@@ -1960,9 +1960,39 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       undefined,
       // P-009: same threading as the producer-side path — the version-skew fallback must
       // not lose the measurement a modern CLI took.
-      { repairTickLegs: parsed?.repairTickLegs },
+      {
+        runId: parsed?.runId,
+        candidateSource: parsed?.candidateSource,
+        diagnostic: parsed?.diagnostic,
+        selectedAtMs: parsed?.selectedAtMs,
+        postSuiteMeasured: parsed?.postSuiteMeasured,
+        postSuiteLegs: parsed?.postSuiteLegs,
+        repairQueue: parsed?.repairQueue,
+        repairTickLegs: parsed?.repairTickLegs,
+      },
     ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} stall tracking failed: ${e instanceof Error ? e.message : e}`),
+    );
+  }
+
+  // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
+  // release-fixer agent to diagnose + fix the failing test — the test-failure
+  // sibling of git-sync's merge-resolver. Fail-safe + deduped per red-candidate.
+  // EI-13723: only for the version-skew fallback (!recordedByRun) — when the run recorded
+  // its own verdict, `recordCheckpointVerdict` (called from inside the CLI, above) already
+  // ran this exact check. Dispatching here TOO for a recordedByRun verdict would double-fire
+  // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
+  // keeps this a pure fallback instead of a race with the producer-side dispatch.
+  // EI-22344736163383832: tracking must settle first so the dispatcher can compare its input
+  // against the exact persisted snapshot rather than racing an unrecorded legacy fallback.
+  if (
+    !isPinnedCheckpointVerdict(parsed) &&
+    !recordedByRun &&
+    !parsed?.repairQueue &&
+    shouldDispatchReleaseFixer(status, candidate, failingTests, parsed?.retriage)
+  ) {
+    await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
+      console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
 
@@ -3014,6 +3044,13 @@ export async function trackGateStall(
     runId?: string;
     candidateSource?: 'pinned' | 'tip';
     diagnostic?: 'candidate-pinned';
+    /** WI-22344736163383832: producer selection timestamp carried into the snapshot. */
+    selectedAtMs?: number;
+    /** WI-22344736163383832: measured post-suite scope carried into the snapshot. */
+    postSuiteMeasured?: boolean;
+    postSuiteLegs?: NonNullable<CheckpointVerdict['postSuiteLegs']>;
+    /** WI-22344736163383832: the serialized repair state that owns this observation. */
+    repairQueue?: FrozenCandidateRepairQueue | null;
     /** P-009: the awaiting-fixer hold tick's cheap-legs measurement (CheckpointVerdict.repairTickLegs).
      *  Present ⇒ this "no-verdict" tick DID measure the non-test legs at repairHead, so the
      *  inconclusive path refreshes instead of stamping failingTestsMeasured:false. */
@@ -3099,6 +3136,10 @@ export async function trackGateStall(
   const gh = rows[0]?.gh ?? {};
   const lastFixer = rows[0]?.lf ?? null;
   const repairQueue = parseFrozenCandidateRepairQueue(rows[0]?.rq);
+  const snapshotQueue = options.repairQueue ?? repairQueue ?? undefined;
+  const snapshotCandidate = candidate ?? snapshotQueue?.candidate;
+  const snapshotFailures =
+    options.repairTickLegs?.failingSignatures ?? failingTests ?? snapshotQueue?.failingTests ?? null;
   const repairFixerAlive = repairQueue?.fixerSpawnId
     ? await releaseFixerSpawnAlive(sql, repairQueue.fixerSpawnId).catch(() => null)
     : undefined;
@@ -3135,6 +3176,29 @@ export async function trackGateStall(
       ? 'red'
       : 'record-only'
     : classifyGateStallStatus(status, pinMoved, retriage);
+  const buildTrackCandidateSnapshot = (
+    staleness: CandidateStaleness,
+    failingTestsMeasured: boolean | null,
+  ): CandidateSnapshot | null => {
+    if (!snapshotCandidate) return null;
+    return buildCandidateSnapshot({
+      candidate: snapshotCandidate,
+      base: from,
+      runId: options.runId,
+      source: options.candidateSource === 'pinned' ? 'pinned' : 'tip',
+      selectedAtMs: options.selectedAtMs,
+      candidateCommittedAt: staleness.candidateCommittedAt,
+      commitsBehindTip: staleness.commitsBehindTip,
+      failingTests: snapshotFailures,
+      failingTestsMeasured,
+      postSuiteMeasured: options.postSuiteMeasured,
+      postSuiteLegs: options.postSuiteLegs,
+      repairQueue: snapshotQueue,
+      retriage: retriage
+        ? { classification: retriage.classification, tip: retriage.tip }
+        : undefined,
+    });
+  };
   // Compute all three ladder axes ONCE, before the noop split. `repair-in-progress` is
   // intentionally not a red and must never move the count/whole-gate-age axes, but it is the
   // primary producer of the fixer-succession axis. Keeping one decision call preserves
@@ -3256,6 +3320,10 @@ export async function trackGateStall(
         observedAtMs: Date.now(),
       });
       const tickLegs = options.repairTickLegs;
+      const candidateSnapshot = buildTrackCandidateSnapshot(
+        { candidateCommittedAt: null, commitsBehindTip: null },
+        tickLegs ? true : false,
+      );
       try {
         if (tickLegs) {
           // P-009 (gate-verdict-liveness-and-repair-reliability-2026-08-31): this hold tick
@@ -3284,11 +3352,14 @@ export async function trackGateStall(
                           jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
                           '{gate_health,failingTestsMeasured}', 'true'::jsonb, true),
                         '{gate_health,repairTickLegs}', $3::jsonb, true),
-                      '{gate_health,failingTests}',
+                          '{gate_health,failingTests}',
                       (SELECT COALESCE(jsonb_agg(e.value), '[]'::jsonb)
                          FROM jsonb_array_elements_text(COALESCE(metadata->'gate_health'->'failingTests', '[]'::jsonb)) AS e
-                        WHERE NOT (e.value = ANY($4::text[]))) || $5::jsonb,
+                         WHERE NOT (e.value = ANY($4::text[]))) || $5::jsonb,
                       true),
+                    '{gate_health,candidateSnapshot}',
+                    $6::jsonb,
+                    true),
                     updated_at = now()
               WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
             [
@@ -3302,6 +3373,7 @@ export async function trackGateStall(
               }),
               measuredIds,
               JSON.stringify(tickLegs.failingSignatures.slice(0, 20)),
+              JSON.stringify(candidateSnapshot),
             ],
           );
         } else {
@@ -3313,9 +3385,13 @@ export async function trackGateStall(
                       'false'::jsonb,
                       true
                     ),
+                    '{gate_health,candidateSnapshot}',
+                    $3::jsonb,
+                    true
+                    ),
                     updated_at = now()
               WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-            [ctx.installSlug, inconclusivePayload],
+            [ctx.installSlug, inconclusivePayload, JSON.stringify(candidateSnapshot)],
           );
         }
       } catch (e) {
@@ -3533,6 +3609,7 @@ export async function trackGateStall(
           commitsBehindTip: null,
         }))
       : { candidateCommittedAt: null, commitsBehindTip: null };
+  const verdictCandidateSnapshot = buildTrackCandidateSnapshot(staleness, true);
   // EI-20706962612084953: where `main` is left AFTER this run — the value the NEXT tick
   // compares its live pin against (see `lastObservedMainPin` above). 'advanced' fast-forwards
   // main to the candidate; every non-advancing status leaves it exactly where this run found
@@ -3617,6 +3694,7 @@ export async function trackGateStall(
           failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
+          candidateSnapshot: verdictCandidateSnapshot,
           retriageStaleTip: null,
           retriageDetail: null,
           retriageClassification: null,
@@ -4109,6 +4187,7 @@ export async function trackGateStall(
       failingTestsMeasured: true,
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
+      candidateSnapshot: verdictCandidateSnapshot,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
       retriageDetail: retriageBlocked ? retriage!.detail : null,
       // WI-7482: the two fields above are stale-ONLY by design (paired + cleared together, per
@@ -4287,6 +4366,8 @@ export interface ReleaseFixerRecord {
    *  THE signal P-014/D-009 added: the id we check liveness against. */
   spawnId?: string | null;
   runId?: string | null;
+  /** CandidateSnapshot.identity used to reserve and patch this record safely. */
+  snapshotIdentity?: string;
   /** When the human was last notified for this signature (notify cooldown, separate from dispatch). */
   notifiedAt?: number;
 }
@@ -5533,13 +5614,37 @@ export async function dispatchReleaseFixer(
   const { sql } = getOrgPg();
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf,
-            metadata->'gate_health'->>'failingTestsMeasured' AS ftm
+            metadata->'gate_health'->>'failingTestsMeasured' AS ftm,
+            metadata->'gate_health'->'candidateSnapshot' AS cs
        FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null }>;
+  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null; cs: unknown }>;
   const lf = rows[0]?.lf ?? null;
   const failingTestsMeasured = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
+  const candidateSnapshot = parseCandidateSnapshot(rows[0]?.cs);
+  if (
+    !candidateSnapshotMatchesDispatch(candidateSnapshot, {
+      candidate,
+      failingTests,
+    })
+  ) {
+    console.log(
+      `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: ` +
+        'no fresh candidate snapshot matches the candidate and failing-test signature',
+    );
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'release-fixer-skipped-snapshot',
+      detail: {
+        candidate: candidate.slice(0, 12),
+        snapshotIdentity: candidateSnapshot?.identity ?? null,
+      },
+    }).catch(() => {});
+    return null;
+  }
 
   if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests, failingTestsMeasured)) {
     console.log(
@@ -5584,14 +5689,44 @@ export async function dispatchReleaseFixer(
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
   // The spawn id is patched in after the fire below.
   const notifiedAt = decision.notify ? now : (lf?.notifiedAt ?? null);
-  const writeRecord = (rec: ReleaseFixerRecord): Promise<unknown> =>
-    sql.unsafe(
+  const snapshotIdentity = candidateSnapshot.identity;
+  const previousLastFixer = JSON.stringify(lf ?? null);
+  const writeRecord = async (rec: ReleaseFixerRecord, expectedLastFixer: ReleaseFixerRecord | null): Promise<boolean> => {
+    const written = (await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
-        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-      [ctx.installSlug, JSON.stringify({ last_fixer: rec })],
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb, updated_at = now()
+        WHERE install_slug = $1
+          AND target_role = 'system:green-checkpoint'
+          AND metadata->'gate_health'->'candidateSnapshot'->>'identity' = $2
+          AND COALESCE(metadata->'last_fixer', 'null'::jsonb) = $3::jsonb
+        RETURNING true AS written`,
+      [
+        ctx.installSlug,
+        snapshotIdentity,
+        expectedLastFixer ? JSON.stringify(expectedLastFixer) : previousLastFixer,
+        JSON.stringify({ last_fixer: rec }),
+      ],
+    )) as Array<{ written?: boolean }>;
+    return written.length > 0;
+  };
+  const reservation: ReleaseFixerRecord = {
+    signature,
+    candidate,
+    at: now,
+    spawnId: null,
+    runId: null,
+    snapshotIdentity,
+    notifiedAt: notifiedAt ?? undefined,
+  };
+  // EI-22344736163383832: reserve the dedup slot only if the exact snapshot and prior
+  // last_fixer record are still current. Two concurrent dispatchers now cannot both fire.
+  if (!(await writeRecord(reservation, lf))) {
+    console.log(
+      `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: ` +
+        'candidate snapshot or last_fixer changed before reservation',
     );
-  await writeRecord({ signature, candidate, at: now, spawnId: null, runId: null, notifiedAt: notifiedAt ?? undefined });
+    return null;
+  }
 
   // P-003: a user-facing notification (native OS notification on desktop, mobile push).
   // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
@@ -5674,17 +5809,30 @@ export async function dispatchReleaseFixer(
   // Patch the recorded fixer's spawn id so the NEXT tick can check ITS liveness (D-009).
   const spawnId = fired?.spawn?.spawnId ?? null;
   const runId = fired?.spawn?.runId ?? null;
+  let recordPatched = true;
   if (spawnId || runId) {
-    await writeRecord({ signature, candidate, at: now, spawnId, runId, notifiedAt: notifiedAt ?? undefined }).catch(
-      () => {},
-    );
+    recordPatched = await writeRecord(
+      { ...reservation, spawnId, runId },
+      reservation,
+    ).catch(() => false);
+    if (!recordPatched) {
+      console.warn(
+        `${orchestratorStdoutTag()} release-fixer record patch lost snapshot/last_fixer CAS for ${candidate.slice(0, 8)}`,
+      );
+    }
   }
   await appendPipelineEvent({
     workspaceId: ctx.workspaceId,
     installSlug: ctx.installSlug,
     kind: 'release_fixer',
     status: fired ? 'ok' : 'failed',
-    detail: { candidate: candidate.slice(0, 12), reason: decision.reason, spawnId: spawnId ?? undefined },
+    detail: {
+      candidate: candidate.slice(0, 12),
+      reason: decision.reason,
+      spawnId: spawnId ?? undefined,
+      snapshotIdentity,
+      recordPatched,
+    },
   }).catch(() => {});
   return { spawnId, runId };
 }
