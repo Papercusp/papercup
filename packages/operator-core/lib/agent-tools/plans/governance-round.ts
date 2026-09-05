@@ -58,6 +58,12 @@ export function finalizeGovernanceRound(input: { round: GovernanceRound; events:
   return { ok: true, value: { ...base, certificateHash: certificateHash(base) } };
 }
 
+/** Recompute a certificate's hash and compare: any field edited after finalization fails this. */
+export function verifyFinalizationCertificate(cert: FinalizationCertificate): boolean {
+  const { certificateHash: claimed, ...base } = cert;
+  return typeof claimed === 'string' && claimed.length > 0 && certificateHash(base) === claimed;
+}
+
 export function rebuildGovernanceRound(round: GovernanceRound, events: readonly GovernanceVoteEvent[]): RoundResult<GovernanceVoteEvent[]> {
   let current: GovernanceVoteEvent[] = [];
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence || a.eventId.localeCompare(b.eventId))) {
