@@ -106,7 +106,7 @@
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { MACHINE_SENDER_PATTERN } from './machine-authored';
 import { fetchSatisfiedDirectiveMessageIds } from './directive-effect-read';
-import { resolveSessionStates } from './liveness-oracle';
+import { endedRecordedOwnerIds } from '../../adv-sessions';
 import type { SessionState } from './presence-wakeability';
 
 export interface UnansweredDirectedEntry {
@@ -197,15 +197,25 @@ export const UNANSWERED_NEWEST_CAP = 3;
 export const UNANSWERED_SENDER_CAP = 32;
 
 /**
- * The narrow slice of the liveness oracle this module depends on — declared
- * structurally so the DI seam does not drag the oracle's whole option surface
- * into a unit test. Only `sessionState` is read, and only a positive `'ended'`
- * ever changes an outcome.
+ * Positive death evidence for a set of ownerIds — the ONLY signal allowed to
+ * demote a message. Returns just the ids proven ended; an id it knows nothing
+ * about is simply ABSENT, which is what makes the seam fail open by
+ * construction rather than by remembering to.
+ *
+ * ⚠⚠ DO NOT "UPGRADE" THIS TO `resolveSessionStates`. That is the obvious
+ * refactor, it is what this code did first, and it is WRONG here — measured
+ * 2026-09-05, it took every unanswered message in the integration suite to
+ * zero. `resolveSessionStates` returns `sessionState: 'ended'` for a BARE id
+ * it has never heard of (no presence row, no recorded session): a bare subject
+ * carries no heartbeat, so the derivation reads not-wakeable + no-live-turn as
+ * death, and reports it as a measured verdict — `signalMissing` is NOT set, and
+ * the verdict even carries `heartbeatFresh: true` beside `ended`. The oracle is
+ * built to be fed subjects that CARRY presence data (or `hydratePerId: true`,
+ * whose own doc forbids it for whole rosters, which is exactly how this
+ * function is called). Feeding it bare ids converts ABSENCE OF EVIDENCE into
+ * EVIDENCE OF DEATH — the precise inversion this whole split exists to avoid.
  */
-export type ResolveSessionStatesFn = (
-  subjects: readonly { ownerId: string }[],
-  opts?: { nowMs?: number },
-) => Promise<Map<string, { sessionState: SessionState | null }>>;
+export type EndedSendersFn = (ownerIds: string[]) => Promise<ReadonlySet<string>>;
 
 export interface UnansweredDirectedRow {
   recipient: string;
@@ -407,9 +417,9 @@ export async function fetchUnansweredDirected(
     nowMs?: number;
     lookbackMs?: number;
     perRecipientCap?: number;
-    /** DI seam (unit tests): override the liveness oracle used for the
-     *  EI-20085805220385722 live/stale split. */
-    resolveSessionStatesFn?: ResolveSessionStatesFn;
+    /** DI seam (unit tests): override the positive death-evidence read used for
+     *  the EI-20085805220385722 live/stale split. */
+    endedSendersFn?: EndedSendersFn;
   } = {},
 ): Promise<Map<string, UnansweredDirectedSummary>> {
   if (recipientIds.length === 0 || !coordHasPgFastPath()) return new Map();
@@ -725,43 +735,43 @@ export async function fetchUnansweredDirected(
  * nobody behind the ask, so its message must not ride the "outranks your own
  * work" preemption — but it is REPORTED (staleCount), never silently dropped.
  *
- * Two deliberate bounds:
- *   - NO `hydratePerId`. That option costs one point-read PER SUBJECT and its
- *     own doc reserves it for small-N bare-id callers, "never for whole
- *     rosters" — and this function IS called with whole rosters
- *     (fleet/assignments.ts, fleet-audit.ts). Every leg we need is batched:
- *     the recordedEnded branch derives 'ended' from endedRecordedOwnerIds with
- *     no presence row at all.
- *   - The distinct-sender set is capped in SQL ({@link UNANSWERED_SENDER_CAP}
- *     per recipient) and the union is resolved in ONE oracle call.
+ * The evidence source is {@link EndedSendersFn} — POSITIVE death evidence only
+ * (`endedRecordedOwnerIds`: the sender's most-recent recorded session has an
+ * `ended_at`). Read that type's warning before changing it: the obvious
+ * "upgrade" to the full `resolveSessionStates` verdict is what this code did
+ * first, and it zeroed every unanswered counter, because that oracle answers
+ * `'ended'` for a bare id it has never heard of. One batched query, no
+ * per-subject point reads, and an unknown sender is absent from the set rather
+ * than presumed dead.
+ *
+ * The distinct-sender set is additionally capped in SQL
+ * ({@link UNANSWERED_SENDER_CAP} per recipient).
  *
  * Best-effort like its sibling decorations: ANY failure returns the
  * unpartitioned map, i.e. every message keeps counting.
  */
-async function decorateUnansweredLiveness(
+export async function decorateUnansweredLiveness(
   map: Map<string, UnansweredDirectedSummary>,
-  opts: { nowMs?: number; resolveSessionStatesFn?: ResolveSessionStatesFn } = {},
+  opts: { endedSendersFn?: EndedSendersFn } = {},
 ): Promise<Map<string, UnansweredDirectedSummary>> {
   const senderIds = new Set<string>();
   for (const summary of map.values()) {
     for (const s of summary.senders) senderIds.add(s.from);
   }
   if (senderIds.size === 0) return map;
-  const resolveFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
-  let verdicts: Map<string, { sessionState: SessionState | null }>;
+  const endedFn = opts.endedSendersFn ?? endedRecordedOwnerIds;
+  let ended: ReadonlySet<string>;
   try {
-    verdicts = await resolveFn(
-      [...senderIds].map((ownerId) => ({ ownerId })),
-      { nowMs: opts.nowMs },
-    );
+    ended = await endedFn([...senderIds]);
   } catch {
-    return map; // fail OPEN — an oracle failure never demotes a live obligation
+    return map; // fail OPEN — a read failure never demotes a live obligation
   }
   const out = new Map<string, UnansweredDirectedSummary>();
   for (const [recipient, summary] of map) {
     out.set(
       recipient,
-      partitionUnansweredByLiveness(summary, (ownerId) => verdicts.get(ownerId)?.sessionState),
+      // Absent from the set ⇒ `undefined` ⇒ 'unknown' ⇒ still counts.
+      partitionUnansweredByLiveness(summary, (ownerId) => (ended.has(ownerId) ? 'ended' : undefined)),
     );
   }
   return out;

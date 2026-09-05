@@ -899,7 +899,10 @@ export async function resolveOrientationState(
   return {
     held,
     unansweredDirected: inbox.count,
-    unansweredStale: inbox.staleCount ?? 0,
+    // `in` rather than a plain read: an injected seam (tests, an older deps
+    // object) may legitimately omit the field, and the union type says so.
+    // Absent ⇒ 0 ⇒ nothing demoted, which is the fail-open direction.
+    unansweredStale: 'staleCount' in inbox ? (inbox.staleCount ?? 0) : 0,
     inboxRecent: inbox.newest,
     announcedGates,
     openAsks,
