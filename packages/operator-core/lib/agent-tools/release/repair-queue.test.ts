@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   admit: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
+  presence: vi.fn(),
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueue: mocks.read,
@@ -45,6 +46,35 @@ vi.mock('../../release/repair-head-admission', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-1' }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
 vi.mock('../locks/identity', () => ({ readIdentity: () => ({ ownerId: 'su-test' }) }));
+// P-021 claim-leg: claiming a leg claims its paths — the caller's presence current_files.
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-test', ownerLabel: 'su · test', workspaceId: 'ws-1' }),
+}));
+vi.mock('../coordination/presence', () => ({ writePresence: mocks.presence }));
+
+/** A P-021 repair manifest with one red test-file leg whose subject path is known. */
+const manifestRow = {
+  legId: 'test-file:lib/red.test.ts',
+  kind: 'test-file' as const,
+  recipe: 'npm run test:file -- lib/red.test.ts',
+  subjectPaths: ['lib/red.test.ts'],
+  subjectPathsTruncated: 0,
+  subjectSource: 'leg-id' as const,
+  status: { kind: 'red-at-candidate' as const },
+  statusLabel: 'red-at-candidate',
+  admitCommand: "release:repair-queue { op:'admit', paths:['lib/red.test.ts'] }",
+  claim: null,
+};
+const manifest = {
+  schemaVersion: 1 as const,
+  candidate: queue.candidate,
+  repairHead: queue.repairHead,
+  signatureFingerprint: 'fp-1',
+  builtAtMs: 5,
+  rows: [manifestRow],
+  rowsTruncated: 0,
+};
+const queueWithManifest = { ...queue, manifest };
 
 /** What the P-001 primitive returns for a clean single-path admission onto the fixture queue. */
 const admissionOf = (published: boolean, paths = ['lib/red.test.ts']) => ({
@@ -85,6 +115,7 @@ beforeEach(() => {
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
   mocks.write.mockResolvedValue(undefined);
+  mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
@@ -603,6 +634,108 @@ describe('release:repair-queue', () => {
         retireAllowed: false,
         retireRefusal: 'liveness-unknown',
       },
+    });
+  });
+
+  // P-021 (D-007 #1): the repair manifest rides on get, and claim-leg takes one row of it.
+  describe('claim-leg (P-021 repair manifest)', () => {
+    it('get renders the manifest rows + summary when the queue carries one', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+      expect(result.repairQueue.manifest).toMatchObject({ candidate: queue.candidate, rows: [{ legId: manifestRow.legId }] });
+      expect(result.repairQueue.manifestSummary).toEqual({ legs: 1, red: 1, admitted: 0, green: 0, claimed: 0, pathless: 0 });
+    });
+
+    it('claims the leg: persists the claim on the queue row, sets presence current_files to its paths, audits, returns the admit command', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
+      const result = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
+      );
+      expect(mocks.write).toHaveBeenCalledTimes(1);
+      const [target, written] = mocks.write.mock.calls[0]!;
+      expect(target).toEqual({ workspaceId: 'ws-1', installSlug: 'papercusp' });
+      expect(written).toMatchObject({
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        manifest: { rows: [{ legId: manifestRow.legId, claim: { actor: 'su-test' } }] },
+      });
+      // Claiming a leg claims its paths: presence current_files = the leg's subject paths.
+      expect(mocks.presence).toHaveBeenCalledTimes(1);
+      expect(mocks.presence.mock.calls[0]![1]).toEqual({ currentFiles: ['lib/red.test.ts'] });
+      expect(result).toMatchObject({
+        ok: true,
+        op: 'claim-leg',
+        claimed: true,
+        released: false,
+        verdict: 'claimed',
+        persisted: true,
+        auditRecorded: true,
+        paths: ['lib/red.test.ts'],
+        presenceFiles: ['lib/red.test.ts'],
+        admitCommand: manifestRow.admitCommand,
+        row: { legId: manifestRow.legId, claim: { actor: 'su-test' } },
+        repairQueue: { manifestSummary: { claimed: 1 } },
+      });
+      expect(result.nextAction).toContain(manifestRow.admitCommand);
+      expect(result.nextAction).toMatch(/Do NOT fire release:checkpoint-run/);
+      const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
+      expect(auditDetails).toMatchObject({ op: 'claim-leg', leg: manifestRow.legId, paths: ['lib/red.test.ts'], persisted: true });
+    });
+
+    it('release:true hands the leg back (holder only) and does not touch presence', async () => {
+      const held = { ...manifest, rows: [{ ...manifestRow, claim: { actor: 'su-test', atMs: 7 } }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, manifest: held } });
+      const result = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId, release: true } as never, { role: 'su' } as never),
+      );
+      expect(mocks.write.mock.calls[0]![1]).toMatchObject({ manifest: { rows: [{ legId: manifestRow.legId, claim: null }] } });
+      expect(mocks.presence).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: true, claimed: false, released: true, verdict: 'released', persisted: true });
+    });
+
+    it('never contests a live claim: a leg held by another actor is refused with the holder named, and nothing is written', async () => {
+      const held = { ...manifest, rows: [{ ...manifestRow, claim: { actor: 'su-other', atMs: 7 } }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, manifest: held } });
+      const result = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
+      );
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(mocks.presence).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        ok: false,
+        claimed: false,
+        refused: true,
+        reason: 'held-by-other',
+        holder: { actor: 'su-other' },
+      });
+    });
+
+    it('refuses an unknown leg id and lists the legs the manifest names', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
+      const result = body(await tool.handler({ op: 'claim-leg', leg: 'nope' } as never, { role: 'su' } as never));
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: false, refused: true, reason: 'no-such-leg', legIds: [manifestRow.legId] });
+    });
+
+    it('refuses no-manifest when the queue has not been re-derived yet, and no-frozen-queue when nothing is frozen', async () => {
+      const noManifest = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
+      );
+      expect(noManifest).toMatchObject({ ok: false, refused: true, reason: 'no-manifest' });
+      mocks.readState.mockResolvedValue({ status: 'absent' });
+      const none = body(await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never));
+      expect(none).toMatchObject({ ok: true, claimed: false, verdict: 'no-frozen-queue' });
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('a queue-row write failure reports persist_failed and leaves presence untouched', async () => {
+      mocks.readState.mockResolvedValue({ status: 'value', queue: queueWithManifest });
+      mocks.write.mockRejectedValueOnce(new Error('pg down'));
+      const result = body(
+        await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),
+      );
+      expect(mocks.presence).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: false, claimed: false, persisted: false, refused: true, reason: 'persist_failed' });
     });
   });
 });

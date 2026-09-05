@@ -324,6 +324,14 @@
     // Unregistered that import is a TS7016: measured here as operator-core lint:tsc
     // 0 -> 1 against a baseline of 0 on the test file, which is precisely the
     // absorption this list exists to prevent.
-    "scripts/verify-sidecar-host-compat.mjs"
+    "scripts/verify-sidecar-host-compat.mjs",
+    // main-greening 2026-09-05 (WI-212675) — the P2P witness-artifact manifest builder.
+    // Registered for this list's FIRST reason: it is imported directly by
+    // apps/operator/lib/p2p-witness-manifest.test.ts, where it paid a TS7016 that
+    // regressed lint:tsc:workspaces (operator leg) at tip — one of the two errors that
+    // would red-pin the next fresh gate cut. Enrolled rather than `@ts-expect-error`-d
+    // because the test asserts on the manifest's inferred shape (inputs.source,
+    // optionalPacks.model.sha256, artifactId).
+    "scripts/p2p-witness-manifest.mjs"
   ]
 }

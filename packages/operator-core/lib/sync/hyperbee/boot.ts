@@ -73,6 +73,7 @@ import {
   type AdmittedLog,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
+  type MergeApplyFailure,
 } from './read-merge';
 import { produceLogSnapshot, shouldCompactOwnLog, type ProduceSnapshotResult } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
@@ -3491,6 +3492,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             logKeys,
           );
         } catch (e) {
+          // F4: an unreadable durable cursor may be holding an unapplied entry
+          // at zero. Snapshot skipping is unsafe until that state is known.
+          for (const key of logKeys) {
+            if (!mergeCursor.positions.has(key)) mergeCursor.positions.set(key, 0);
+          }
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
@@ -3751,6 +3757,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               durableCursorPositions(),
               pgMergeCursorStore,
               currentApplyBinding(),
+              new Map<string, MergeApplyFailure>(
+                [...(mergeCursor.applyFailures ?? []), ...(memoryReplayCursor?.applyFailures ?? [])]
+                  // When both cursors defer the same log, retain the earliest
+                  // unresolved operation alongside the conservative position.
+                  .sort((a, b) => b[1].position - a[1].position),
+              ),
             )
           : undefined;
 
@@ -3887,6 +3899,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               mergeCursor.positions,
               pgMergeCursorStore,
               currentApplyBinding(),
+              mergeCursor.applyFailures ?? new Map(),
             );
           }
         }

@@ -19,7 +19,7 @@
  */
 
 import { getLongLivedAdminPool } from '../../long-lived-admin-pool';
-import type { MergeCursorPeerLifecycle, MergeCursorPeerLifecycleState, MergeCursorStore } from './read-merge';
+import type { MergeApplyFailure, MergeCursorPeerLifecycle, MergeCursorPeerLifecycleState, MergeCursorStore } from './read-merge';
 
 /** Process-lived shared pool. `max: 2` is ample — the cursor does one load at boot + a
  *  small periodic upsert per fold, never a hot query path. Re-resolves the admin URL on
@@ -84,7 +84,22 @@ export function createPgMergeCursorStore(
       for (const r of rows) out.set(r.log_keyhex, Number(r.position));
       return out;
     },
-    async save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void> {
+    async loadApplyFailures(applyBinding: string | null): Promise<Map<string, MergeApplyFailure>> {
+      const rows = await sqlProvider()<{ log_keyhex: string; apply_failure: MergeApplyFailure }[]>`
+        SELECT log_keyhex, apply_failure
+        FROM harness_shared.substrate_merge_cursor
+        WHERE workspace_id = ${workspaceId}
+          AND harness_slug = ${harnessSlug}
+          AND apply_binding IS NOT DISTINCT FROM ${applyBinding}::text
+          AND apply_failure IS NOT NULL
+      `;
+      return new Map(rows.map((row) => [row.log_keyhex, row.apply_failure]));
+    },
+    async save(
+      positions: ReadonlyMap<string, number>,
+      applyBinding: string | null,
+      applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
+    ): Promise<void> {
       if (positions.size === 0) return;
       const s = sqlProvider();
       const now = new Date();
@@ -95,6 +110,7 @@ export function createPgMergeCursorStore(
         position,
         apply_binding: applyBinding,
         updated_at: now,
+        ...(applyFailures ? { apply_failure: applyFailures.has(log_keyhex) ? s.json({ ...applyFailures.get(log_keyhex)! }) : null } : {}),
       }));
       await s`
         INSERT INTO harness_shared.substrate_merge_cursor ${s(
@@ -105,6 +121,7 @@ export function createPgMergeCursorStore(
           'position',
           'apply_binding',
           'updated_at',
+          ...(applyFailures ? ['apply_failure' as const] : []),
         )}
         ON CONFLICT (workspace_id, harness_slug, log_keyhex)
         DO UPDATE SET position = EXCLUDED.position,
@@ -112,6 +129,7 @@ export function createPgMergeCursorStore(
                       -- NEW scope, so the row must stop advertising the old one (otherwise
                       -- the healed progress would be discarded again on the next boot).
                       apply_binding = EXCLUDED.apply_binding,
+                      ${applyFailures ? s`apply_failure = EXCLUDED.apply_failure,` : s``}
                       updated_at = EXCLUDED.updated_at
       `;
     },

@@ -11,13 +11,13 @@
  * A→B incremental stall is a live instance: B never applies the owner's op.)
  *
  * THE FIX: record the winner only AFTER a non-throwing apply, so a transient
- * throw leaves the op un-deduped → retried next pass → converges. A PERSISTENTLY-
- * throwing (poison) op quarantines after MAX_APPLY_THROWS so it can't loop forever.
+ * throw leaves the op un-deduped → retried next pass → converges. F4 keeps that
+ * guarantee after repeated failures too, and reports the unresolved backlog.
  *
  * TEETH: tests 1 + 4 assert the winner is NOT recorded after a throw and the op
  * IS applied on retry — both FALSE under the pre-fix winner-before-apply ordering.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from './read-merge';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
@@ -29,9 +29,11 @@ function put(hbKey: string, ts: number, value: unknown): PeerLogOp {
   return { type: 'put', table: 'features-by-id', hbKey, value, ts, schema_version: 1, author_pubkey: 'pk' };
 }
 const KEY = (hbKey: string) => `features-by-id::${hbKey}`;
+afterEach(() => vi.restoreAllMocks());
 
 describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)', () => {
   it('a VALID op whose apply throws ONCE is APPLIED on retry, not skipped forever', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cursor = createMergeCursor();
     const log = memLog('A', [put('k1', 1000, { id: 'k1' })]);
     const applied: string[] = [];
@@ -45,10 +47,10 @@ describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)'
       return true;
     };
 
-    // Pass 1: apply throws on k1 → the merge propagates the throw.
-    await expect(
-      mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 }),
-    ).rejects.toThrow('transient PG blip');
+    const first = await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    expect(first.caughtUp).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cursor HELD'), 'transient PG blip');
+    expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'retryable' });
 
     // THE FIX (teeth): the winner was NOT recorded, and the cursor did not advance,
     // so k1 is eligible to be re-read + retried (under the pre-fix code k1's winner
@@ -63,7 +65,8 @@ describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)'
     expect(cursor.positions.get('A')).toBe(1);
   });
 
-  it('a PERSISTENTLY-throwing (poison) op QUARANTINES — terminates (no infinite loop), and a newer op still lands', async () => {
+  it('repeated infrastructure failures never become winners, and recover after the old retry budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cursor = createMergeCursor();
     const poison = memLog('A', [put('k1', 1000, { id: 'poison' })]);
     const apply = async (_op: OpEnvelope): Promise<boolean> => {
@@ -72,32 +75,24 @@ describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)'
     // The quarantine logs via console.error by design — mock it + assert it fired.
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // Each throwing pass re-reads the same op (cursor never advanced). After the
-    // bounded retry budget it QUARANTINES (returns normally instead of throwing).
-    let throwingPasses = 0;
-    let settled = false;
-    for (let i = 0; i < 8 && !settled; i++) {
-      try {
-        await mergeAdmittedLogsIncremental([poison], cursor, { applyImpl: apply, getTimeoutMs: 0 });
-        settled = true;
-      } catch {
-        throwingPasses++;
-      }
+    const backlog = vi.fn();
+    for (let i = 0; i < 8; i++) {
+      const result = await mergeAdmittedLogsIncremental([poison], cursor, {
+        applyImpl: apply, getTimeoutMs: 0, onBacklog: backlog,
+      });
+      expect(result.caughtUp).toBe(false);
     }
-    expect(settled).toBe(true); // BOUNDED — never an infinite retry loop
-    expect(throwingPasses).toBeGreaterThanOrEqual(1);
-    expect(throwingPasses).toBeLessThanOrEqual(3); // MAX_APPLY_THROWS-bounded
-    // The quarantine was logged (not a silent drop) exactly once.
     expect(errSpy).toHaveBeenCalledWith(
-      expect.stringContaining('WI-255 quarantine'),
+      expect.stringContaining('UNAPPLIED BACKLOG'),
       expect.stringContaining('poison'),
     );
     errSpy.mockRestore();
 
-    // Quarantine recorded the winner (so beatsStored stops re-selecting it) and the
-    // cursor advanced past it — the poison op is dropped, not applied.
-    expect(cursor.winners.has(KEY('k1'))).toBe(true);
-    expect(cursor.positions.get('A')).toBe(1);
+    expect(cursor.winners.has(KEY('k1'))).toBe(false);
+    expect(cursor.positions.get('A')).toBe(0);
+    expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'retryable', attempts: 8 });
+    expect(backlog).toHaveBeenCalledWith('A', 0, 1);
+    expect(warn).toHaveBeenCalledTimes(1);
 
     // A NEWER op for the same key still applies (it beats the quarantined winner) —
     // quarantine drops the ONE poison op, it does not poison the key forever.
@@ -106,11 +101,12 @@ describe('WI-255 — incremental merge apply-throw recovery (no permanent drop)'
       applied.push(`${op.hbKey}@${op.ts}`);
       return true;
     };
-    const fresh = createMergeCursor();
     const newer = memLog('A', [put('k1', 1000, {}), put('k1', 2000, { id: 'good' })]);
-    // (fresh apply never throws — model the cleared transient on the live key)
-    await mergeAdmittedLogsIncremental([newer], fresh, { applyImpl: goodApply, getTimeoutMs: 0 });
+    await mergeAdmittedLogsIncremental([newer], cursor, { applyImpl: goodApply, getTimeoutMs: 0 });
+    expect(applied).toContain('k1@1000');
     expect(applied).toContain('k1@2000');
+    expect(cursor.applyFailures?.has('A')).toBe(false);
+    expect(cursor.positions.get('A')).toBe(2);
   });
 
   it('SUCCESS-PATH UNCHANGED: a clean op applies + records its winner; a stale (LWW-losing) op is skipped', async () => {

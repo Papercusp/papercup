@@ -142,7 +142,8 @@
           "id": "wdio",
           "label": "WebdriverIO",
           "globs": [
-            "tools/perf-test/wdio/specs/**/*.spec.ts"
+            "tools/perf-test/wdio/specs/**/*.spec.ts",
+            "tools/perf-test/wdio/*.test.ts"
           ],
           "runners": [
             {
@@ -1447,6 +1448,13 @@
           "label": "E2E (all specs)",
           "globs": [
             "apps/operator/e2e/*.spec.ts"
+          ]
+        },
+        {
+          "id": "e2e-helpers",
+          "label": "E2E helpers (unit)",
+          "globs": [
+            "apps/operator/e2e/*.test.ts"
           ]
         }
       ]

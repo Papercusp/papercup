@@ -82,11 +82,13 @@ describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or dro
       throw fkViolation();
     };
 
-    await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+    const result = await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
 
     // The whole point: a recorded winner is what permanently drops an op, because
     // `beatsStored` then refuses to re-select it.
     expect(cursor.winners.has(KEY('k1'))).toBe(false);
+    expect(result.caughtUp).toBe(false);
+    expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'dependency-waiting', errorCode: '23503' });
   });
 
   it('SELF-HEALS: the same op applies once the missing referent lands — no re-fold, no operator action', async () => {
@@ -133,12 +135,12 @@ describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or dro
     expect(deferralLogs).toHaveLength(1);
   });
 
-  it('STILL QUARANTINES genuine poison — the narrow predicate must not weaken the WI-255 guard', async () => {
+  it('retains an explicit permanent rejection as a dead letter while later valid rows apply', async () => {
     const cursor = createMergeCursor();
-    const log = memLog('A', [put('k1', 1000, { id: 'poison' })]);
-    const apply = async (_op: OpEnvelope): Promise<boolean> => {
-      throw new Error('poison: value PG can never store'); // no .code → not structural
-    };
+    const log = memLog('A', [put('k1', 1000, { id: 'poison' }), put('k2', 1001, {})]);
+    const apply = vi.fn(async (op: OpEnvelope) => op.hbKey === 'k1'
+      ? { kind: 'rejected' as const, reason: 'schema rejects this value', errorCode: 'invalid-value' }
+      : { kind: 'applied' as const, changed: true });
 
     // Enough passes to exhaust MAX_APPLY_THROWS; a non-structural throw still
     // propagates until it quarantines, at which point the winner IS recorded.
@@ -146,8 +148,11 @@ describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or dro
       await mergeAdmittedLogsIncremental([log], cursor, {
         applyImpl: apply,
         getTimeoutMs: 0,
-      }).catch(() => undefined);
+      });
     }
-    expect(cursor.winners.has(KEY('k1'))).toBe(true);
+    expect(cursor.winners.has(KEY('k1'))).toBe(false);
+    expect(cursor.winners.has(KEY('k2'))).toBe(true);
+    expect(cursor.positions.get('A')).toBe(0);
+    expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'rejected', errorCode: 'invalid-value' });
   });
 });

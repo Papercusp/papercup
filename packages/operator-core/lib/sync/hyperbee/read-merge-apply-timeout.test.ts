@@ -9,22 +9,14 @@
  * an old iMac device's stale plan-parts (~ef7a8160) hung merge-apply forever, so
  * the harness's PG-persisted merge cursor simply stopped advancing, silently.
  *
- * THE FIX: `applyRecordingWinner` now races `apply(env)` against
- * `MERGE_APPLY_TIMEOUT_MS` (`applyTimeoutMs` opt) via `raceApplyTimeout`. A
- * timeout throws `MergeApplyTimeoutError`, funneled into the SAME WI-255
- * `MAX_APPLY_THROWS` retry/quarantine counter a throwing apply already uses —
- * so a transient (load-induced) hang gets a couple of free retries, and a
- * PERSISTENTLY-hanging (poison) op quarantines (winner recorded + dropped)
- * exactly like a persistently-throwing one, unwedging the whole merge loop.
- *
- * TEETH: test 1 pins that an op whose apply NEVER settles is nonetheless
- * DROPPED (not retried forever) once the bound is set low enough to exercise in
- * a unit test; test 2 pins that a merely-SLOW (but eventually successful) apply
+ * F4: the timeout bounds a pass, not data durability. A never-settling write is
+ * retained behind the cursor and its promise reused. Other logs still progress.
+ * Test 2 pins that a merely-SLOW (but eventually successful) apply
  * is NOT mistaken for poison — it applies normally once the retry gives it
  * enough real time; test 3 pins `applyTimeoutMs: 0` fully disables the bound
  * (today's pre-WI-3896 behavior, preserved as an explicit opt-out).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from './read-merge';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
@@ -36,49 +28,43 @@ function put(hbKey: string, ts: number, value: unknown): PeerLogOp {
   return { type: 'put', table: 'features-by-id', hbKey, value, ts, schema_version: 1, author_pubkey: 'pk' };
 }
 const KEY = (hbKey: string) => `features-by-id::${hbKey}`;
+afterEach(() => vi.restoreAllMocks());
 
 describe('WI-3896 — incremental merge apply-TIMEOUT recovery (bounded hang, no permanent wedge)', () => {
-  it('a PERMANENTLY-hung (never settling) apply QUARANTINES after bounded retries — the merge loop never wedges forever', async () => {
+  it('a never-settling apply stays recoverable without repeated writes or blocking other logs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const cursor = createMergeCursor();
     const poison = memLog('A', [put('k1', 1000, { id: 'ef7a8160-stale-plan-part' })]);
     // Models the live incident: apply() never resolves, never rejects (a wedged
     // connection/lock against a stale/dead device's row).
-    const apply = async (_op: OpEnvelope): Promise<boolean> => new Promise<boolean>(() => {});
+    let finish!: (value: boolean) => void;
+    const hung = new Promise<boolean>((resolve) => { finish = resolve; });
+    const apply = vi.fn(async (op: OpEnvelope): Promise<boolean> => op.hbKey === 'k1' ? hung : true);
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    let settled = false;
-    let timeoutEpisodes = 0;
-    for (let i = 0; i < 8 && !settled; i++) {
-      try {
-        // Tiny bound so the test runs fast in real time; production default is
-        // MERGE_APPLY_TIMEOUT_MS (45s) — only the magnitude differs, not the shape.
-        await mergeAdmittedLogsIncremental([poison], cursor, {
+    const healthy = memLog('B', [put('k2', 1001, {})]);
+    for (let i = 0; i < 5; i++) {
+        const result = await mergeAdmittedLogsIncremental([poison, healthy], cursor, {
           applyImpl: apply,
           getTimeoutMs: 0,
           applyTimeoutMs: 10,
         });
-        settled = true;
-      } catch (e) {
-        timeoutEpisodes++;
-        expect((e as Error).message).toContain('TIMEOUT');
-      }
+        expect(result.caughtUp).toBe(false);
     }
-
-    expect(settled).toBe(true); // BOUNDED — the permanently-hung op cannot wedge the loop forever
-    expect(timeoutEpisodes).toBeGreaterThanOrEqual(1);
-    expect(timeoutEpisodes).toBeLessThanOrEqual(3); // MAX_APPLY_THROWS-bounded, same as WI-255
-
-    // Quarantined + logged distinctly from a throw (WI-3896, not WI-255).
     expect(errSpy).toHaveBeenCalledWith(
-      expect.stringContaining('WI-3896 quarantine'),
+      expect.stringContaining('UNAPPLIED BACKLOG'),
       expect.stringContaining('TIMEOUT'),
     );
     errSpy.mockRestore();
 
-    // Winner recorded (beatsStored stops re-selecting it) and the cursor advanced —
-    // the poison op is dropped, not applied; a newer op for the same key still wins.
-    expect(cursor.winners.has(KEY('k1'))).toBe(true);
-    expect(cursor.positions.get('A')).toBe(1);
+    expect(cursor.winners.has(KEY('k1'))).toBe(false);
+    expect(cursor.positions.get('A')).toBe(0);
+    expect(cursor.positions.get('B')).toBe(1);
+    expect(cursor.applyFailures?.get('A')).toMatchObject({ position: 0, kind: 'retryable', attempts: 5 });
+    expect(apply.mock.calls.filter(([op]) => op.hbKey === 'k1')).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    finish(true); // teardown the otherwise never-settling stage timer.
+    await hung;
   });
 
   it('a SLOW-but-eventually-successful apply is NOT mistaken for poison — it lands once it gets enough real time', async () => {

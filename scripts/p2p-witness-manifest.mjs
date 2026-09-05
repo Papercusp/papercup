@@ -76,6 +76,27 @@ function canonical(value) {
   });
 }
 
+/**
+ * Build the deterministic identity manifest for one (superproject, submodule)
+ * source pair and materialise it under `outputDir`.
+ *
+ * Typed here because `scripts/p2p-witness-manifest.d.mts` is GENERATED from this
+ * JSDoc: without it the `= null` defaults infer as `null`-only and every string
+ * caller (the vitest suite passes a model-pack directory) becomes a TS2322.
+ *
+ * @param {{
+ *   repoRoot: string,
+ *   outputDir: string,
+ *   sourceSha: string,
+ *   submoduleSha: string,
+ *   runtimePath?: string,
+ *   dependencyInputs?: string[],
+ *   migrationInputs?: string[],
+ *   seedInputs?: string[],
+ *   modelPackPath?: string | null,
+ *   capabilityPackPath?: string | null,
+ * }} options
+ */
 export async function buildManifest({
   repoRoot,
   outputDir,

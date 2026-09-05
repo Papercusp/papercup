@@ -363,6 +363,25 @@ interface WinnerMeta {
   src: string; // sourceLogKeyHex ('' when absent) — lwwPick's total-order tiebreak
 }
 
+/** F4: processing an entry is distinct from materializing it. Boolean sinks
+ * retain their existing handled/changed contract; typed sinks can defer or reject. */
+export type MergeApplyOutcome =
+  | { kind: 'applied'; changed: boolean }
+  | { kind: 'rejected' | 'dependency-waiting' | 'retryable'; reason: string; errorCode?: string };
+
+/** The FIRST unresolved entry in a log. Its bytes and all later entries remain
+ * in Hypercore behind the held durable cursor; no payload is copied into PG. */
+export interface MergeApplyFailure {
+  position: number;
+  groupKey: string;
+  kind: 'rejected' | 'dependency-waiting' | 'retryable';
+  reason: string;
+  errorCode?: string;
+  attempts: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
 /** Result of one physical `log.get(position)` attempt. */
 type ReadAttemptResult =
   | { kind: 'op'; op: PeerLogOp | null }
@@ -385,11 +404,16 @@ export interface MergeCursor {
    * winner is now recorded only AFTER a non-throwing apply, so a TRANSIENT apply
    * throw (a PG blip/deadlock/timeout mid-merge) leaves the op un-deduped and it
    * is retried next pass instead of being skipped forever (the data-loss bug).
-   * This counter bounds a PERSISTENTLY-throwing (poison) op so it quarantines
-   * (record+skip+log) instead of looping. Optional for back-compat with cursors
+   * This counter rate-limits backlog diagnostics; it NEVER makes a failure a
+   * successful winner. Optional for back-compat with cursors
    * built as a bare `{ positions, winners }` (lazily initialized at the apply site).
    */
   applyThrows?: Map<string, number>;
+  /** First unresolved materialization per log, persisted beside its position. */
+  applyFailures?: Map<string, MergeApplyFailure>;
+  /** Reuse a timed-out write while it is still in flight, rather than starting
+   * another unbounded PG operation on every merge tick. */
+  pendingApplies?: Map<string, Promise<boolean | MergeApplyOutcome>>;
   /**
    * WI-2003: per-position CONSECUTIVE read-throw counter (`${log.keyHex}:${pos}`
    * → count), the READ-side mirror of `applyThrows`. `readOpBoundedDetailed`
@@ -706,7 +730,14 @@ export interface MergeCursorStore {
    * Upsert the given positions, STAMPED with the apply binding they were folded
    * under. Best-effort; may throw — the caller isolates it.
    */
-  save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void>;
+  save(
+    positions: ReadonlyMap<string, number>,
+    applyBinding: string | null,
+    applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
+  ): Promise<void>;
+  /** Optional for position-only fakes. A failure at position ZERO must also be
+   * seeded, so a later snapshot cannot skip the unapplied entry on restart. */
+  loadApplyFailures?(applyBinding: string | null): Promise<Map<string, MergeApplyFailure>>;
   /**
    * Optional while non-PG/in-memory fakes retain the position-only contract.
    * The canonical PG implementation always provides this nested store.
@@ -749,6 +780,7 @@ export function seedCursorFromPgCache(
   cursor: MergeCursor,
   saved: ReadonlyMap<string, number>,
   admittedKeyHexes?: Iterable<string>,
+  failures?: ReadonlyMap<string, MergeApplyFailure>,
 ): void {
   const entries: Iterable<readonly [string, number]> = admittedKeyHexes
     ? (function* () {
@@ -759,8 +791,10 @@ export function seedCursorFromPgCache(
       })()
     : saved;
   for (const [keyHex, position] of entries) {
-    if (position > 0 && !cursor.positions.has(keyHex)) {
-      cursor.positions.set(keyHex, position);
+    const failure = failures?.get(keyHex);
+    if ((position > 0 || failure || (failures !== undefined && position === 0)) && !cursor.positions.has(keyHex)) {
+      cursor.positions.set(keyHex, failure ? Math.min(position, failure.position) : position);
+      if (failure) (cursor.applyFailures ??= new Map()).set(keyHex, failure);
     }
   }
 }
@@ -769,25 +803,42 @@ export function seedCursorFromPgCache(
  * fail-open (the caller logs it; folds start at zero), matching the old latch. */
 export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   let saved: ReadonlyMap<string, number> | undefined;
+  let failures: ReadonlyMap<string, MergeApplyFailure> | undefined;
   let savedApplyBinding: string | null | undefined;
   let invalidated = false;
+  let loadFailed = false;
   return {
     async seed(cursor, store, applyBinding, admittedKeyHexes) {
-      if (invalidated) return;
+      if (invalidated) {
+        if (loadFailed) {
+          for (const key of admittedKeyHexes) {
+            if (!cursor.positions.has(key)) cursor.positions.set(key, 0);
+          }
+        }
+        return;
+      }
       if (!saved || savedApplyBinding !== applyBinding) {
         try {
-          saved = await store.load(applyBinding);
+          [saved, failures] = await Promise.all([
+            store.load(applyBinding),
+            store.loadApplyFailures?.(applyBinding),
+          ]);
           savedApplyBinding = applyBinding;
         } catch (error) {
           invalidated = true;
+          loadFailed = true;
+          for (const key of admittedKeyHexes) {
+            if (!cursor.positions.has(key)) cursor.positions.set(key, 0);
+          }
           throw error;
         }
       }
-      seedCursorFromPgCache(cursor, saved, admittedKeyHexes);
+      seedCursorFromPgCache(cursor, saved, admittedKeyHexes, failures);
     },
     invalidate() {
       invalidated = true;
       saved = undefined;
+      failures = undefined;
       savedApplyBinding = undefined;
     },
   };
@@ -824,8 +875,11 @@ export async function seedCursorFromPg(
   store: MergeCursorStore,
   applyBinding: string | null,
 ): Promise<void> {
-  const saved = await store.load(applyBinding);
-  seedCursorFromPgCache(cursor, saved);
+  const [saved, failures] = await Promise.all([
+    store.load(applyBinding),
+    store.loadApplyFailures?.(applyBinding),
+  ]);
+  seedCursorFromPgCache(cursor, saved, undefined, failures);
 }
 
 /**
@@ -846,8 +900,10 @@ export async function persistCursor(
   positions: ReadonlyMap<string, number>,
   store: MergeCursorStore,
   applyBinding: string | null,
+  applyFailures?: ReadonlyMap<string, MergeApplyFailure>,
 ): Promise<void> {
-  await store.save(positions, applyBinding);
+  if (applyFailures) await store.save(positions, applyBinding, applyFailures);
+  else await store.save(positions, applyBinding);
 }
 
 /**
@@ -933,16 +989,15 @@ function recordWinner(
 }
 
 /**
- * WI-255: how many CONSECUTIVE apply throws on the SAME op before we stop
- * retrying and QUARANTINE it. 3 gives a transient blip a couple of free retries
- * while bounding a poison op's loop.
+ * F4: repeated failures raise a loud backlog diagnostic. This is an ALERT
+ * threshold, never a retry budget or evidence of permanent rejection.
  */
-const MAX_APPLY_THROWS = 3;
+const APPLY_FAILURE_ALERT_AFTER = 3;
 
 /** Op identity for the per-op throw counter — a new op (or a different winner for
  *  the key) gets a fresh retry budget; the same poison op accumulates throws. */
 function opIdent(groupKey: string, env: OpEnvelope): string {
-  return `${groupKey}\x00${env.ts ?? 0}\x00${env.sourceLogKeyHex ?? ''}\x00${env.type}`;
+  return JSON.stringify([groupKey, env.ts ?? 0, env.hlc ?? '', env.sourceLogKeyHex ?? '', env.type]);
 }
 
 /**
@@ -967,19 +1022,14 @@ function opIdent(groupKey: string, env: OpEnvelope): string {
 export const MERGE_APPLY_TIMEOUT_MS = 45_000;
 
 /**
- * Thrown when a single `apply(env)` exceeds `MERGE_APPLY_TIMEOUT_MS`. Handled by
- * `applyRecordingWinner`'s EXISTING WI-255 retry/quarantine counter identically to
- * a throwing apply (same `MAX_APPLY_THROWS` budget) — a transient timeout (host
- * load) gets a couple of free retries; a PERSISTENTLY-timing-out (poison) op is
- * quarantined (winner recorded + dropped) exactly like a persistently-throwing one,
- * so ONE unresolvable row can no longer wedge the whole merge loop forever.
+ * Thrown when a single apply exceeds its bound. A timeout is retryable, never
+ * proof of poison: keep the cursor held and reuse the pending write next pass.
  */
 export class MergeApplyTimeoutError extends Error {
   constructor(readonly groupKey: string, readonly timeoutMs: number) {
     super(
       `[read-merge] merge-apply TIMEOUT for ${groupKey}: exceeded ${timeoutMs}ms — a hung ` +
-        `projection write (WI-3896 class) is being treated as a transient failure (bounded ` +
-        `retry → quarantine after ${MAX_APPLY_THROWS} consecutive occurrences).`,
+        `projection write remains unapplied; cursor held for replay (never dropped by retry exhaustion).`,
     );
     this.name = 'MergeApplyTimeoutError';
   }
@@ -1019,14 +1069,10 @@ async function raceApplyTimeout<T>(groupKey: string, p: Promise<T>, timeoutMs: n
  * retried, and on the retry `beatsStored(env, env)` is false (strict `>`), so the
  * op was SKIPPED forever — silent DATA LOSS until a rare full re-fold.
  *
- * Now: a TRANSIENT throw propagates with the winner NOT recorded, so the op is
- * re-read + retried next pass and converges once the transient clears. A
- * PERSISTENTLY-throwing (poison) op — e.g. a value PG can never store — is
- * quarantined after MAX_APPLY_THROWS consecutive throws: its winner is recorded
- * (so `beatsStored` stops re-selecting it) and it is dropped with a log, never an
- * infinite retry loop. Winner-recording semantics on the no-throw path are
- * UNCHANGED (apply true OR false both record the winner). Returns true iff apply
- * landed the op.
+ * F4: failures return typed dispositions without recording a winner. The caller
+ * holds and persists the first unresolved position, so outage/restart recovery
+ * replays original bytes. A boolean false still means the existing sink handled
+ * the op without changing a row (e.g. a scope or LWW drop), not an exception.
  *
  * P-012 (fleet-reliability-verification-2026-07-10, named-hop pipeline
  * observability): `apply(env)` is an unbounded PG write (the projection
@@ -1037,9 +1083,8 @@ async function raceApplyTimeout<T>(groupKey: string, p: Promise<T>, timeoutMs: n
  * `STAGE_STALL_LOG_MS`, THEN (WI-3896) `raceApplyTimeout` bounds it at
  * `MERGE_APPLY_TIMEOUT_MS` — the per-op timeout `readOpBoundedDetailed` already
  * has on the read side, closing the gap this doc-comment used to flag as
- * missing. A timeout is funneled into the SAME retry/quarantine counter below
- * as a throw, so a persistently-hanging (poison) op converges to quarantine
- * exactly like a persistently-throwing one — see `MergeApplyTimeoutError`.
+ * missing. Repeated timeouts remain unresolved and alert; they never advance
+ * the materialization cursor — see `MergeApplyTimeoutError`.
  */
 /**
  * WI-559 / EI-18775450536624845 — is this a STRUCTURAL apply failure: one caused by
@@ -1061,9 +1106,9 @@ async function raceApplyTimeout<T>(groupKey: string, p: Promise<T>, timeoutMs: n
  * store, whereas this op is perfectly storable and merely EARLY. Dropping it is the
  * one thing that must not happen, because nothing re-reads it afterwards.
  *
- * Deliberately NARROW. Widening this predicate weakens the poison quarantine that
- * stops a genuinely un-appliable op from wedging the merge loop forever — only add a
- * code that is provably self-healing once the missing referent exists.
+ * Keep this narrow: dependency failures allow later rows in the same log to
+ * apply, while infrastructure failures stop that log's pass to bound outage work.
+ * Neither disposition drops the original operation.
  */
 function isStructuralApplyFailure(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
@@ -1074,80 +1119,50 @@ async function applyRecordingWinner(
   cursor: MergeCursor,
   groupKey: string,
   env: OpEnvelope,
-  apply: (op: OpEnvelope) => Promise<boolean>,
+  apply: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>,
   scope = 'read-merge',
   applyTimeoutMs: number = MERGE_APPLY_TIMEOUT_MS,
   maxWinnersEntries: number = DEFAULT_MAX_WINNERS_ENTRIES,
   onWinnersEvicted?: (evictedCount: number, size: number) => void,
-  /**
-   * WI-559: fired when this op is STRUCTURALLY DEFERRED. The caller MUST hold this
-   * log's cursor at the deferred position, because positions only ever move forward
-   * — advancing past a deferred op loses it just as permanently as quarantining it
-   * (not recording a winner is necessary but NOT sufficient; the op also has to be
-   * re-READ). Later ops in the pass still apply and record winners, so the re-read
-   * next pass is cheap: `beatsStored` dedupes every one of them.
-   */
-  onStructuralDeferral?: () => void,
-): Promise<boolean> {
-  let ok: boolean;
+): Promise<MergeApplyOutcome> {
+  const ident = opIdent(groupKey, env);
+  let outcome: MergeApplyOutcome;
   try {
-    ok = await raceApplyTimeout(
-      groupKey,
-      logIfStageStalls(scope, `merge-apply (${groupKey})`, apply(env)),
-      applyTimeoutMs,
-    );
+    const pending = (cursor.pendingApplies ??= new Map<string, Promise<boolean | MergeApplyOutcome>>());
+    let write = pending.get(ident);
+    if (!write) {
+      write = logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => apply(env)));
+      pending.set(ident, write);
+      const current = write;
+      void write.finally(() => {
+        if (pending.get(ident) === current) pending.delete(ident);
+      }).catch(() => {});
+    }
+    const result = await raceApplyTimeout(groupKey, write, applyTimeoutMs);
+    outcome = typeof result === 'boolean' ? { kind: 'applied', changed: result } : result;
   } catch (err) {
-    // WI-559: a STRUCTURAL failure is neither transient nor poison, and the two
-    // existing branches both handle it WRONG — rethrowing aborts the pass (so no
-    // LATER op in it can land either), and quarantining drops the op forever.
-    // Correct handling is a third outcome: SKIP this op without recording a winner,
-    // and let the pass continue. The winner stays unrecorded, so `beatsStored` will
-    // re-select the op on a later pass and it lands by itself once the referent
-    // exists — no re-fold, no operator action.
-    if (isStructuralApplyFailure(err)) {
-      // Reuse the existing per-op streak counter purely to RATE-LIMIT the log — a
-      // whole-Pot structural mismatch defers every roster op on every pass, which
-      // would otherwise flood the journal (the live incident deferred ~20 ops in 3
-      // minutes, forever). The counter deliberately never reaches quarantine here;
-      // it self-clears on the success path once the referent lands.
-      const throws = (cursor.applyThrows ??= new Map());
-      const ident = opIdent(groupKey, env);
-      const n = (throws.get(ident) ?? 0) + 1;
-      throws.set(ident, n);
-      if (n === 1 || n % 100 === 0) {
-        console.warn(
-          `[read-merge] structural apply deferral (${n}×): op ${groupKey} (src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) ` +
-            `references a row this receiver does not have yet — SKIPPED (winner NOT recorded, cursor HELD), the pass ` +
-            `CONTINUES, and it re-applies automatically once the referent lands. Not quarantined, not lost: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      onStructuralDeferral?.();
-      return false;
-    }
-    const isTimeout = err instanceof MergeApplyTimeoutError;
-    const throws = (cursor.applyThrows ??= new Map());
-    const ident = opIdent(groupKey, env);
-    const n = (throws.get(ident) ?? 0) + 1;
-    if (n < MAX_APPLY_THROWS) {
-      throws.set(ident, n); // transient — winner NOT recorded → retried next pass
-      throw err;
-    }
-    // Persistently poison (threw OR timed out `MAX_APPLY_THROWS` times running) —
-    // quarantine (record winner + drop) so it can't loop/wedge forever.
-    throws.delete(ident);
-    recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
-    console.error(
-      isTimeout
-        ? `[read-merge] WI-3896 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) timed out on apply (>${applyTimeoutMs}ms) ${n}× — this may be LOAD-induced (a legitimately slow write under host CPU pressure — re-check current load before assuming permanent poison) or a genuinely un-resolvable write (e.g. stale/dead-device keymat that will never decrypt/apply); recording winner + dropping to avoid a retry loop:`
-        : `[read-merge] WI-255 quarantine: op ${groupKey} (ts=${env.ts ?? 0}, src=${(env.sourceLogKeyHex ?? '').slice(0, 12)}) threw on apply ${n}× — recording winner + dropping to avoid a retry loop:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    return false;
+    const code = (err as { code?: unknown } | null)?.code;
+    outcome = {
+      kind: isStructuralApplyFailure(err) ? 'dependency-waiting' : 'retryable',
+      reason: (err instanceof Error ? err.message : String(err)).replaceAll('\0', '').slice(0, 512),
+      ...(typeof code === 'string' ? { errorCode: code } : {}),
+    };
   }
-  cursor.applyThrows?.delete(opIdent(groupKey, env)); // success clears the throw streak
-  recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
-  return ok;
+  if (outcome.kind === 'applied') {
+    cursor.applyThrows?.delete(ident);
+    recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
+  } else {
+    const counts = (cursor.applyThrows ??= new Map());
+    const n = (counts.get(ident) ?? 0) + 1;
+    counts.set(ident, n);
+    if (n === 1 || n % 100 === 0) {
+      console.warn(`[read-merge] ${outcome.kind === 'dependency-waiting' ? 'structural apply deferral' : 'unapplied entry'} (${n}×): ${scope} ${groupKey}; cursor HELD for replay`, outcome.reason);
+    }
+    if (n === APPLY_FAILURE_ALERT_AFTER || n % 100 === 0) {
+      console.error(`[read-merge] UNAPPLIED BACKLOG: ${scope} ${groupKey} (${outcome.kind}, ${n}×); materialization incomplete, original log entry retained`, outcome.reason);
+    }
+  }
+  return outcome;
 }
 
 /** A log the incremental merge can OPTIONALLY range-prefetch (RemoteLog does;
@@ -1158,7 +1173,7 @@ interface PrefetchableLog extends AdmittedLog {
 
 export interface IncrementalMergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). */
-  applyImpl?: (op: OpEnvelope) => Promise<boolean>;
+  applyImpl?: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
   /** Per-op read timeout (ms) — same semantics as MergeOpts.getTimeoutMs. */
   getTimeoutMs?: number;
   /** WI-3896: per-op APPLY timeout (ms) — bounds a single `apply(env)` write so a
@@ -1339,8 +1354,22 @@ export async function mergeAdmittedLogsIncremental(
     // one — and the deferred op finally lands by itself once its referent arrives.
     let pos = from;
     let firstDeferredPos = -1;
-    const holdCursorHere = (): void => {
-      if (firstDeferredPos < 0) firstDeferredPos = pos;
+    const previousFailure = cursor.applyFailures?.get(log.keyHex);
+    const holdCursorHere = (outcome: Exclude<MergeApplyOutcome, { kind: 'applied' }>, groupKey: string): void => {
+      if (firstDeferredPos >= 0) return;
+      firstDeferredPos = pos;
+      const same = previousFailure?.position === pos && previousFailure.groupKey === groupKey;
+      const now = Date.now();
+      (cursor.applyFailures ??= new Map()).set(log.keyHex, {
+        position: pos,
+        groupKey: groupKey.replaceAll('\0', '').slice(0, 512),
+        kind: outcome.kind,
+        reason: outcome.reason.replaceAll('\0', '').slice(0, 512),
+        ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+        attempts: same ? previousFailure.attempts + 1 : 1,
+        firstSeenAt: same ? previousFailure.firstSeenAt : now,
+        lastSeenAt: now,
+      });
     };
     const effectivePos = (p: number): number =>
       firstDeferredPos >= 0 ? Math.min(p, firstDeferredPos) : p;
@@ -1488,64 +1517,76 @@ export async function mergeAdmittedLogsIncremental(
       // exactly the cost win (the joiner's cursor can start AT this op's index and
       // skip the summarized prefix). `continue` advances the cursor past it.
       if (isSnapshotOp(op)) {
+        let retryable = false;
         for (const row of snapshotRows(op)) {
           const env = snapshotRowToEnvelope(row, log.keyHex);
           const groupKey = `${env.table}::${env.hbKey}`;
           const prev = cursor.winners.get(groupKey);
           if (prev && !beatsStored(env, prev)) continue; // stale row, never applied
-          if (
-            await applyRecordingWinner(
-              cursor,
-              groupKey,
-              env,
-              apply,
-              log.keyHex,
-              applyTimeoutMs,
-              maxWinnersEntries,
-              onWinnersEvicted,
-              holdCursorHere,
-            )
-          )
-            applied++;
+          const outcome = await applyRecordingWinner(
+            cursor,
+            groupKey,
+            env,
+            apply,
+            `${cursorTag}${log.keyHex}`,
+            applyTimeoutMs,
+            maxWinnersEntries,
+            onWinnersEvicted,
+          );
+          if (outcome.kind === 'applied') {
+            if (outcome.changed) applied++;
+          } else {
+            holdCursorHere(outcome, groupKey);
+            if (outcome.kind === 'retryable') {
+              retryable = true;
+              break;
+            }
+          }
         }
+        if (retryable) break;
         continue;
       }
       const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = cursor.winners.get(groupKey);
       if (prev && !beatsStored(env, prev)) continue; // ts-guard: stale op, never applied
-      if (
-        await applyRecordingWinner(
-          cursor,
-          groupKey,
-          env,
-          apply,
-          log.keyHex,
-          applyTimeoutMs,
-          maxWinnersEntries,
-          onWinnersEvicted,
-          holdCursorHere,
-        )
-      )
-        applied++;
+      const outcome = await applyRecordingWinner(
+        cursor,
+        groupKey,
+        env,
+        apply,
+        `${cursorTag}${log.keyHex}`,
+        applyTimeoutMs,
+        maxWinnersEntries,
+        onWinnersEvicted,
+      );
+      if (outcome.kind === 'applied') {
+        if (outcome.changed) applied++;
+      } else {
+        holdCursorHere(outcome, groupKey);
+        // An infrastructure outage should cost at most one bounded apply per
+        // log per pass. Dependency/rejection cases still allow later rows to land.
+        if (outcome.kind === 'retryable') break;
+      }
     }
     // WI-559: never advance PAST a structurally-deferred op — positions are
     // monotonic, so doing so loses it exactly as permanently as quarantining it.
     cursor.positions.set(log.keyHex, effectivePos(pos));
+    if (firstDeferredPos < 0) cursor.applyFailures?.delete(log.keyHex);
     // WI-2105 REV fix: persist this log's advanced cursor (persist-after-apply —
     // the pass's applies committed above). Guarded on `pos > from` so an
     // unchanged log doesn't churn PG each 1Hz tick.
-    if (onCursorAdvance && pos > from) {
+    if (onCursorAdvance && (pos > from || firstDeferredPos >= 0 || previousFailure)) {
       try {
         await onCursorAdvance(cursor.positions);
       } catch {
         // best-effort: a failed persist must never abort the merge pass
       }
     }
-    if (pos < log.length) {
+    if (effectivePos(pos) < log.length) {
       caughtUp = false;
       try {
-        opts?.onBacklog?.(log.keyHex, pos, log.length);
+        opts?.onBacklog?.(log.keyHex, effectivePos(pos), log.length);
       } catch {
         // observability must never abort the pass
       }
