@@ -27,6 +27,9 @@ const BASE = {
   watchdog: { fires24h: 0, livenessArmed: true, staleForMs: 0, recentErrors: 0 },
   scout: { lastTickAt: 1, lastRanAt: 1, ideasLastRun: 3, ideasInWindow: 6, ranInWindow: 2, transportDeath: false },
   plans: { active: 3, started: 2, shipped: 0, draft: 1, itemsDone: 0, itemsTotal: 0, stalledPlans: 0, startedDraft: 0 },
+  // EI-19950525038045198: end-to-end-flow reads executor capacity from the su FLEET, not from
+  // `bees` — the nursery tier is retired, so bees.running is structurally 0 forever.
+  suFleet: { total: 3, live: 2, stale: 0, byRole: {} },
 };
 
 /** Build a SystemHealth with per-panel data; pass `null` to simulate a failed (unread) panel. */
@@ -41,6 +44,7 @@ function mkHealth(over: Partial<Record<keyof typeof BASE, unknown>> = {}): Syste
       watchdog: panel(pick('watchdog')),
       scout: panel(pick('scout')),
       plans: panel(pick('plans')),
+      suFleet: panel(pick('suFleet')),
     },
   } as unknown as SystemHealth;
 }
@@ -95,6 +99,73 @@ describe('synthesizeCoordinationScorecard', () => {
     expect(synthesizeCoordinationScorecard(mkHealth())['end-to-end-flow'].rating).toBe('healthy');
     const mid = synthesizeCoordinationScorecard(mkHealth({ workFeed: { ...BASE.workFeed, autoEligibleStuck: 5 } }));
     expect(mid['end-to-end-flow'].rating).toBe('degraded');
+  });
+
+  // ── EI-19950525038045198: attempts:0 is no longer ONE opaque bucket ──────────────
+  //
+  // This is the falsifier the item itself specifies: replay the SAME stuck count under
+  // capacity-starvation and under dispatcher-breakage. If both produce the same verdict, the
+  // split provides no diagnostic value over the single bucket and the mechanism is wrong.
+  it('same stuck count scores DIFFERENTLY under capacity starvation vs dispatcher breakage (EI-19950525038045198)', () => {
+    const stuckFeed = { ...BASE.workFeed, autoEligibleStuck: 126 };
+
+    const starved = synthesizeCoordinationScorecard(
+      mkHealth({ workFeed: stuckFeed, suFleet: { total: 3, live: 0, stale: 3, byRole: {} } }),
+    );
+    const dispatcherBroken = synthesizeCoordinationScorecard(
+      mkHealth({ workFeed: stuckFeed, suFleet: { total: 3, live: 3, stale: 0, byRole: {} } }),
+    );
+    assertWellFormed(starved);
+    assertWellFormed(dispatcherBroken);
+
+    // THE POINT: identical input backlog, different verdicts.
+    expect(starved['end-to-end-flow'].rating).not.toBe(dispatcherBroken['end-to-end-flow'].rating);
+
+    // No live executor to dispatch to ⇒ expected under load, never escalated to 'broken'.
+    expect(starved['end-to-end-flow'].rating).toBe('degraded');
+    expect(starved['end-to-end-flow'].evidence).toContain('quiescent-awaiting-capacity');
+
+    // Executors available and work still undispatched ⇒ always a bug.
+    expect(dispatcherBroken['end-to-end-flow'].rating).toBe('broken');
+    expect(dispatcherBroken['end-to-end-flow'].evidence).toContain('signal1-only-no-dispatch');
+  });
+
+  // Capacity must come from the su fleet, NOT from the retired nursery tier. If this ever
+  // regresses to `bees.running`, bees:0 would read as starvation and the criterion would
+  // report 'degraded' forever instead of catching a real dispatcher stall.
+  it('reads capacity from the su fleet, not from retired bees (EI-19950525038045198)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({
+        workFeed: { ...BASE.workFeed, autoEligibleStuck: 126 },
+        bees: { ...BASE.bees, running: 0 }, // retired tier: structurally 0, must not gate the verdict
+        suFleet: { total: 3, live: 3, stale: 0, byRole: {} },
+      }),
+    );
+    expect(r['end-to-end-flow'].rating).toBe('broken');
+    expect(r['end-to-end-flow'].evidence).toContain('signal1-only-no-dispatch');
+    expect(r['end-to-end-flow'].evidence).not.toContain('bees running');
+  });
+
+  // unreadable ≠ observed-zero. An unobserved fleet panel must not be read as starvation.
+  it('an unobserved fleet panel is NOT read as starvation (EI-19950525038045198)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({ workFeed: { ...BASE.workFeed, autoEligibleStuck: 126 }, suFleet: null }),
+    );
+    expect(r['end-to-end-flow'].rating).toBe('broken');
+    expect(r['end-to-end-flow'].evidence).toContain('NOT OBSERVED');
+    expect(r['end-to-end-flow'].evidence).not.toContain('quiescent-awaiting-capacity');
+  });
+
+  // The survey's own docblock warns that a failed read fabricates autoEligibleStuck:0. Reporting
+  // that as 'healthy' would let a broken instrument buy silence from the alarm.
+  it('an unreadable work-feed survey reports unknown, never healthy (EI-19950525038045198)', () => {
+    const r = synthesizeCoordinationScorecard(
+      mkHealth({ workFeed: { ...BASE.workFeed, autoEligibleStuck: 0, frontierUnreadable: true } }),
+    );
+    assertWellFormed(r);
+    expect(r['end-to-end-flow'].rating).toBe('unknown');
+    expect(r['end-to-end-flow'].rating).not.toBe('healthy');
+    expect(r['end-to-end-flow'].evidence).toContain('NOT OBSERVED');
   });
 
   it('Scout transport-death → ideation-quality broken; draft-force-start → queen-plan-selection degraded', () => {

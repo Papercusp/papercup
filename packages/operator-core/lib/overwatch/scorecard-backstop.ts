@@ -185,16 +185,57 @@ export function synthesizeCoordinationScorecard(
 
   const r: Record<string, ScorecardRating> = {};
 
-  // end-to-end-flow — is work flowing queue→bee→done? (broken = input present, output absent)
+  // end-to-end-flow — is work flowing queue→executor→done? (broken = input present, output absent)
+  //
+  // EI-19950525038045198: `attempts:0` used to be ONE opaque bucket, so "the dispatcher is
+  // broken" and "there is simply nothing to dispatch to" scored identically. Worse, the old
+  // evidence string interpolated a capacity number (`${running} bees running`) that the rating
+  // never consumed — the verdict was a pure function of `stuck` — so an operator read
+  // "7 stuck, 0 bees running" as a causal explanation for a decision that had ignored the
+  // second half entirely. Capacity is now an INPUT, and the disposition is named.
+  //
+  // Capacity is read from the su FLEET (the live fan-out mechanism), never from `bees`: the
+  // Mug/Kettle/cup nursery tier is retired permanently, so `bees.running` is structurally 0 and
+  // gating on it would classify EVERYTHING as capacity-starved — inverting this bug instead of
+  // fixing it. An ABSENT suFleet panel means capacity was NOT OBSERVED, which is deliberately
+  // not the same as observing zero (the `unreadable ≠ clear` lesson already documented on
+  // WorkFeedHealth.frontierUnreadable / stalePausedRoutinesUnreadable).
   if (wf) {
     const stuck = wf.autoEligibleStuck;
-    const running = bees?.running ?? 0;
-    const rating = stuck >= 50 ? 'broken' : stuck > 0 ? 'degraded' : 'healthy';
+    const fleet = p.suFleet?.data ?? null;
+    const liveExecutors = fleet ? fleet.live : null; // null ⇒ NOT OBSERVED, never 0
+    const starved = liveExecutors === 0;
+
+    let rating: ScorecardRating['rating'];
+    let disposition: string;
+    if (wf.frontierUnreadable) {
+      // The survey failed this tick, so `autoEligibleStuck` is a FABRICATED ZERO. Reporting
+      // that as 'healthy' is the same conflation the field's own docblock warns about: a
+      // broken instrument would buy silence from the criterion that exists to raise the alarm.
+      rating = 'unknown';
+      disposition = 'survey-unreadable (autoEligibleStuck NOT OBSERVED this tick)';
+    } else if (stuck === 0) {
+      rating = 'healthy';
+      disposition = 'flowing';
+    } else if (starved) {
+      // Expected under load: eligible work exists but there is no live executor to take it.
+      // Deliberately NOT 'broken' at any depth — this is the false-positive class the split
+      // exists to stop escalating.
+      rating = 'degraded';
+      disposition = 'quiescent-awaiting-capacity';
+    } else {
+      rating = stuck >= 50 ? 'broken' : 'degraded';
+      disposition =
+        liveExecutors === null
+          ? 'stuck-capacity-unobserved (cannot attribute)'
+          : 'signal1-only-no-dispatch (executors available and work still undispatched — always a bug)';
+    }
+
     r['end-to-end-flow'] = {
       rating,
-      evidence: `auto-synth: ${stuck} auto-eligible items stuck at attempts:0, ${running} bees running, ${
-        bees?.placements.workingTracked ?? 0
-      } placements tracked, ${wf.frontier} ready frontier, ${wf.deadRoutines} dead routines`,
+      evidence: `auto-synth: ${disposition}; ${stuck} auto-eligible items stuck at attempts:0, ${
+        liveExecutors === null ? 'live fleet executors NOT OBSERVED' : `${liveExecutors} live fleet executors`
+      }, ${wf.frontier} ready frontier, ${wf.deadRoutines} dead routines`,
     };
   } else r['end-to-end-flow'] = unknown();
 
