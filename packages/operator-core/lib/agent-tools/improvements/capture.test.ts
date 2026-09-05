@@ -1048,6 +1048,16 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(captureTool.guidance?.argRedirects?.linkTo).toBe('observation.linkTo');
   });
 
+  it('routes the prose-carrying aliases to body rather than dead-ending (EI-20221816695899285)', () => {
+    // Both are rejected by the strict schema — that part is correct and asserted here
+    // so the redirect can never be mistaken for the key becoming accepted.
+    for (const alias of ['description', 'evidence'] as const) {
+      const parsed = argsSchema.safeParse({ title: `top-level ${alias}`, kind: 'bug', [alias]: 'the prose' });
+      expect(parsed.success).toBe(false);
+      expect(captureTool.guidance?.argRedirects?.[alias]).toBe('body');
+    }
+  });
+
   it('accepts a rubric-graded observation (rubricRef + ratings with evidence)', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard',

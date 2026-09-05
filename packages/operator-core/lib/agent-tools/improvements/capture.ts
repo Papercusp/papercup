@@ -427,6 +427,13 @@ export default defineTool({
       // for a tool-call failure), so the right answer looks like a guess between three.
       // Routes at zero prompt weight, exactly like `linkTo` above.
       evidence: 'body',
+      // EI-20221816695899285: `description` is the same dead end as `evidence`, from a
+      // second direction — every tool this caller reaches carries a tool-level
+      // `description`, so passing one as an ARG is a natural conflation rather than a
+      // guess. The strict schema rejects it correctly, but the bare rejection lists the
+      // accepted keys without saying which one carries the prose, and `body` is not a
+      // name the caller would land on unaided. Routes at zero prompt weight.
+      description: 'body',
     },
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +
