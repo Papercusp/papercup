@@ -435,11 +435,15 @@ export async function clearImpliedModes(o: {
 
 /**
  * `set_by` stamped on a row the RECONCILE created, so a backfilled row is
- * distinguishable from one the agent (or a human) authored. WI-37842 wants a
- * real provenance column for the harder question (which rows may be RETIRED by
- * implication); this narrower marker is enough for the question a reader of the
- * population actually asks — "did the agent do this, or did the system?" — and
- * needs no migration. Grading depends on the distinction: goal-mode-e2e's
+ * distinguishable from one the agent (or a human) authored.
+ *
+ * This marker and `implied_by` answer DIFFERENT questions and neither replaces
+ * the other. `implied_by` (migration 1075) records WHICH mode/subject derived a
+ * row, which is what makes retire-by-implication safe — see `clearImpliedModes`.
+ * This one records WHO wrote it, the question a reader of the population
+ * actually asks: "did the agent do this, or did the system?" A reconcile-created
+ * row carries both; an agent's own cascade write carries only `implied_by`.
+ * Grading depends on the distinction: goal-mode-e2e's
  * `mode-and-subject-integrity` reads these rows, and a backfilled row credited
  * to the agent would be evidence of compliance the agent never performed.
  */
