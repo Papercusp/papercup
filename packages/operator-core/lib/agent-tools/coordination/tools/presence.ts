@@ -65,6 +65,14 @@ export default defineTool({
       hive: 'pot',
       agent: 'owner',
       includeStale: 'owner',
+      // EI-21480522630558604: a caller wanting a BOUNDED multi-owner lookup reached for
+      // `items:[<ownerIds>]` — the work_items family's collection key — and, with no
+      // redirect declared, got the corrected-call machinery's "this tool declares no
+      // counterpart — the fix is to drop it, not to look for a synonym". Here that is the
+      // opposite of the truth: `owners` IS the counterpart, and for want of it that filing
+      // fell back to one call per owner, which is exactly the response-budget truncation
+      // `owners` exists to prevent.
+      items: 'owners',
       include_stale: {
         tool: 'coord:presence',
         args: { owner: '<agent-id>' },
