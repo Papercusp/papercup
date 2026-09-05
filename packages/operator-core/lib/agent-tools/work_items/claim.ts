@@ -780,6 +780,23 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // above unconditionally (which would fire on every checkpointed claim, background job or
     // not). See detectBgJobCheckpointClaim for why this can't be a live PID check here.
     const bgJobWarning = hint ? detectBgJobCheckpointClaim(hint.checkpoint) : { detected: false };
+    // EI-19464910043764424: the checkpointWarning below is about COMPLETENESS ("may already
+    // be done"); it says nothing about whether the checkpoint's own cited evidence still
+    // EXISTS. Scan the checkpoint body for repo paths that are gone, through the same port
+    // the stored-payload hints already use. Fail-soft: saying nothing asserts nothing.
+    const checkpointStalePathWarning = hint?.checkpoint
+      ? await import('../../stale-path-hints-claim-port')
+          .then(async (m) => {
+            const subjectId = workItem.id ?? it.id;
+            const bySource = await m.getStalePathRefsBySourceForSubjects([
+              // Checkpoint ONLY — title/summary refs are already reported by the sibling
+              // leg above, and repeating them here would double-warn for one dead path.
+              { id: subjectId, checkpoint: hint.checkpoint },
+            ]);
+            return m.staleCheckpointPathsNote(bySource[subjectId] ?? null);
+          })
+          .catch(() => null)
+      : null;
     const planContradictionWarn = planItemContradictionWarning(planContradiction, workItem.id ?? it.id);
     const planItemLandedWarn = planItemLandedWarning(planItemLanded, workItem.id ?? it.id);
     return hint

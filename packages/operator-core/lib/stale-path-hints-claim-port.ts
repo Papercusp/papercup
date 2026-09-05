@@ -222,6 +222,99 @@ export interface StalePathRefSubject {
   id: string;
   title?: string | null;
   summary?: string | null;
+  /**
+   * The re-injected CHECKPOINT body, when the caller has one (EI-19464910043764424).
+   *
+   * Scanned SEPARATELY from title/summary, never concatenated with them. A checkpoint
+   * presents as a verified done-list — often ending in an instruction to close — so a
+   * dead path cited THERE is a different and sharper signal than one in a filing's
+   * prose, where describing a file yet to be created is normal and expected.
+   */
+  checkpoint?: string | null;
+}
+
+/** Unresolved prose-cited paths, split by WHICH text cited them. */
+export interface StalePathRefsBySource {
+  /** Cited in title/summary — the filing's own prose. */
+  prose: ClaimTimeStalePathRef[];
+  /** Cited in the checkpoint body, and not already reported under `prose`. */
+  checkpoint: ClaimTimeStalePathRef[];
+  /** How many repo-relative paths the checkpoint cited in total, resolved or not. */
+  checkpointCitedTotal: number;
+}
+
+/**
+ * The one scan both public entry points share, so prose and checkpoint can never
+ * drift apart in how they resolve — only in how they are REPORTED. One tree lookup.
+ */
+function splitForSubjects(
+  subjects: readonly StalePathRefSubject[],
+  topLevel: string,
+): Record<string, StalePathRefsBySource> {
+  const unresolvedOf = (text: string): ClaimTimeStalePathRef[] =>
+    deriveRepoPathsFromText(text).filter(
+      (path) => isContainedRepoPath(topLevel, path) && !existsSync(join(topLevel, path)),
+    );
+
+  const bySource: Record<string, StalePathRefsBySource> = {};
+  for (const subject of subjects) {
+    const prose = unresolvedOf(`${subject.title ?? ''}\n${subject.summary ?? ''}`);
+    const checkpointText = subject.checkpoint ?? '';
+    // Total CITED (not just unresolved) — the "N of M" denominator, and the flag that
+    // distinguishes "this checkpoint cites no paths" (stay silent) from "all of its
+    // paths resolve" (also silent, but for a different reason).
+    const checkpointCitedTotal = checkpointText ? deriveRepoPathsFromText(checkpointText).length : 0;
+    const checkpoint = checkpointText
+      ? unresolvedOf(checkpointText).filter((path) => !prose.includes(path))
+      : [];
+    bySource[subject.id] = { prose, checkpoint, checkpointCitedTotal };
+  }
+  return bySource;
+}
+
+/**
+ * Same resolution as `getStalePathRefsForSubjects`, but keeping the SOURCE of each
+ * unresolved path (EI-19464910043764424). Callers that re-inject a checkpoint use this
+ * so the warning can say the dead path came from the checkpoint itself — the artifact
+ * presenting as verified evidence — rather than burying it in the filing's prose.
+ */
+export async function getStalePathRefsBySourceForSubjects(
+  subjects: readonly StalePathRefSubject[],
+  repoRoot?: string,
+): Promise<Record<string, StalePathRefsBySource>> {
+  if (subjects.length === 0) return {};
+  try {
+    const topLevel = await resolveRepoRoot(repoRoot);
+    if (!topLevel) return {};
+    return splitForSubjects(subjects, topLevel);
+  } catch {
+    // Advisory-only, same contract as every sibling leg: a filesystem/git failure is
+    // absence of evidence, never a clean bill of health (WI-6737).
+    return {};
+  }
+}
+
+/**
+ * Render the checkpoint half as the reader-facing warning.
+ *
+ * Returns null when the checkpoint cited no paths at all, AND when every path it cited
+ * resolves — both are silence, deliberately: a checkpoint that names no files must
+ * never grow a spurious warning, which is the sequencing note the filing called out.
+ */
+export function staleCheckpointPathsNote(split: StalePathRefsBySource | null): string | null {
+  if (!split || split.checkpoint.length === 0) return null;
+  const n = split.checkpoint.length;
+  const noun = n === 1 ? 'path' : 'paths';
+  const verb = n === 1 ? 'does' : 'do';
+  return (
+    `⚠ ${n} of ${split.checkpointCitedTotal} ${noun} cited by this CHECKPOINT ${verb} not ` +
+    `exist in the current tree: ${split.checkpoint.map((p) => `'${p}'`).join(', ')}. ` +
+    `A checkpoint reads as verified evidence, so treat this as a directed question — what ` +
+    `replaced the file, and did the work it describes survive that change? Do NOT read it as ` +
+    `proof the work was dropped: the file may simply have been renamed, and the fix carried ` +
+    `forward with it. Advisory and unresolved-paths-only; absence of this warning does not ` +
+    `verify the checkpoint. [EI-19464910043764424]`
+  );
 }
 
 /**
@@ -241,12 +334,9 @@ export async function getStalePathRefsForSubjects(
     const topLevel = await resolveRepoRoot(repoRoot);
     if (!topLevel) return {};
     const byId: Record<string, ClaimTimeStalePathRef[]> = {};
-    for (const subject of subjects) {
-      const cited = deriveRepoPathsFromText(`${subject.title ?? ''}\n${subject.summary ?? ''}`);
-      const unresolved = cited.filter(
-        (path) => isContainedRepoPath(topLevel, path) && !existsSync(join(topLevel, path)),
-      );
-      if (unresolved.length > 0) byId[subject.id] = unresolved;
+    for (const [id, split] of Object.entries(splitForSubjects(subjects, topLevel))) {
+      const unresolved = [...split.prose, ...split.checkpoint];
+      if (unresolved.length > 0) byId[id] = unresolved;
     }
     return byId;
   } catch {
