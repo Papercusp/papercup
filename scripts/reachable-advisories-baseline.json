@@ -13,9 +13,13 @@
     "from `node scripts/check-reachable-advisories.mjs --list`, never from a hand grep.",
     "",
     "Seeded 2026-09-05 from a measured run: 99 total advisories, 9 gating, 22 non-shipping",
-    "only, 12 unattributed (failed closed as shipping).",
+    "only, 12 unattributed (failed closed as shipping). RE-MEASURED 2026-09-05 after the",
+    "lodash-es fix landed: 93 total, 8 gating, 22 non-shipping only, 7 unattributed,",
+    "8 baselined, 0 NEW offenders, 0 stale.",
     "",
-    "Dispositions are 1 patch-eligible / 8 deferred-semver-major. The split was corrected",
+    "Dispositions are now 8 deferred-semver-major and ZERO patch-eligible: the single",
+    "patch-eligible entry (lodash-es) was FIXED on 2026-09-05 and removed from this list,",
+    "which is what shrink-only looks like in practice. The split was corrected",
     "TWICE on 2026-09-05, by two different failures of the same optimism:",
     "",
     "  (1) `npm audit --omit=dev` is OPTIMISTIC about fixes and called style-dictionary",
@@ -31,6 +35,10 @@
     "      a breaking bump, which the ADVISORY RANGE alone proves without any manifest read:",
     "      `^<installed>` is a semver SUBSET of the vulnerable range, so no compatible",
     "      version escapes it. See each entry's reason for its measurement.",
+    "",
+    "      lodash-es has SINCE BEEN FIXED (root `overrides` pin to ^4.18.1 + install:safe,",
+    "      2026-09-05) and is no longer in this list. The paragraph above is kept as the",
+    "      reason the derivation exists, not as a description of an open entry.",
     "",
     "      That derivation IS NOW IMPLEMENTED (deriveFixFeasibility, WI-2144851): the",
     "      analyzer computes semver.subset('^' + installed, advisory range) per finding and",
@@ -63,7 +71,6 @@
     "d3-color",
     "js-yaml",
     "langsmith",
-    "lodash-es",
     "markmap-view",
     "nanoid",
     "style-dictionary"
@@ -80,12 +87,6 @@
       "disposition": "deferred-semver-major",
       "reason": "Deferring the breaking upgrade langsmith@0.3.87 -> 0.6.0+ (0.10.1 is latest published). CORRECTED 2026-09-05 from patch-eligible: the hoisted copy at node_modules/langsmith is 0.8.7 and is NOT vulnerable — the vulnerable copy is the one nested under @browserbasehq/stagehand at 0.3.87. The worst advisory (GHSA-3644-q5cj-c5c7, high) is fixed only at >=0.6.0, and `^0.3.87` is a semver SUBSET of `<0.6.0`; under 0.x semver a minor bump is breaking, so no compatible version escapes. Also blocked behind the stagehand entry: the vulnerable copy is stagehand's own pinned dependency, so a root override would force it inside a package that was never tested against it. EXPECT THIS ROW TO REPORT UNCORROBORATED, permanently and correctly: the 0.3.87 copy is reachable only through a dev path, so `npm ls --omit=dev` — which is what deriveFixFeasibility reads — sees only the clean 0.8.7 and cannot test any caret range against the advisory. That is the instrument's blind spot, not a defect in this reason; do not 'fix' it by relaxing the disposition to match the derivation.",
       "owners": ["@papercusp/testing-shell", "@papercusp/web"]
-    },
-    "lodash-es": {
-      "severity": "high",
-      "disposition": "patch-eligible",
-      "reason": "THE ONE GENUINELY PATCH-COMPATIBLE ENTRY, re-measured 2026-09-05 against the published registry: installed 4.17.21, latest 4.18.1, advisories cover <=4.17.23 — so 4.18.1 escapes them and `^4.17.21` is NOT a subset of the vulnerable range. No direct declaration anywhere in the tree; it arrives transitively (effects: chevrotain and friends), so the fix is a root `overrides` entry pinning lodash-es to ^4.18.1. STILL OPEN because applying it needs an install: `npm audit fix --legacy-peer-deps` was dry-run and makes 204 changes (reifies the whole tree: ai -> 5.0.253, @tiptap/core 3.22.5 -> 3.31.3, adds @ai-sdk/gateway), which is a fleet-breaking blast radius on a shared tree ~100 agents test against. The override route still needs `npm run install:safe` (never a bare npm install) and a quiet window.",
-      "owners": ["@papercusp/web"]
     },
     "style-dictionary": {
       "severity": "high",
