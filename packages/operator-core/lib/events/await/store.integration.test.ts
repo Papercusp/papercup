@@ -609,6 +609,67 @@ describe('await-event store (PG)', () => {
     expect(rows[0].payload).toHaveProperty('held_open_reason', 'blocked');
   });
 
+  // EI-20721448404004954: firing is the THIRD settlement path. Retirement and
+  // supersession already reconciled blockers; a gate that actually OPENED did not,
+  // so the success case was the one that stranded finished work.
+  it('firing clears the matching event blocker and restores an auto-blocked issue', async () => {
+    const eventKey = 'gate:announcement-fire-reconciles-blocker';
+    const otherKey = 'gate:announcement-fire-unrelated-gate';
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (
+        'EI-fire-reconcile', 'blocked', 'bug',
+        ${JSON.stringify({
+          _claimHold: true,
+          held_open_by: 'test-agent',
+          held_open_reason: 'blocked',
+          externalBlockers: [eventBlocker(eventKey)],
+        })}::text::jsonb
+      )
+    `;
+    // CONTROL: an item parked on a DIFFERENT gate must be left untouched, so a
+    // reconciler that cleared every event blocker could not pass this test.
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (
+        'EI-fire-reconcile-control', 'blocked', 'bug',
+        ${JSON.stringify({
+          _claimHold: true,
+          held_open_by: 'test-agent',
+          held_open_reason: 'blocked',
+          externalBlockers: [eventBlocker(otherKey)],
+        })}::text::jsonb
+      )
+    `;
+
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).resolves.toBe(1);
+
+    const rows = await rootSql`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = 'EI-fire-reconcile'
+    `;
+    expect(rows[0].status).toBe('open');
+    expect(rows[0].payload).toMatchObject({
+      externalBlockers: [
+        expect.objectContaining({ kind: 'event', ref: eventKey, status: 'cleared', clearedBy: 'emit' }),
+      ],
+    });
+    expect(rows[0].payload).not.toHaveProperty('_claimHold');
+    expect(rows[0].payload).not.toHaveProperty('held_open_reason');
+
+    const control = await rootSql`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = 'EI-fire-reconcile-control'
+    `;
+    expect(control[0].status).toBe('blocked');
+    expect(control[0].payload).toMatchObject({
+      externalBlockers: [expect.objectContaining({ kind: 'event', ref: otherKey, status: 'active' })],
+    });
+  });
+
   it('guards announcement retirement by owner, generation, and fired state', async () => {
     const foreign = await registerAnnouncement({ subscriberId: 'owner-a', eventKey: 'gate:retire-foreign', scopeKind: 'global' });
     await expect(retireAnnouncement({ announcementId: foreign.id, subscriberId: 'owner-b' })).resolves.toMatchObject({
