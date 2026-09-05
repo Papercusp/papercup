@@ -286,20 +286,6 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     id: 'GET /adv/sessions/search-transcripts',
     entry: 'endpoint-route/routes/adv/sessions.ts',
     engine: 'hybrid',
-    embedderWrap: {
-      reason:
-        'adv/sessions.ts:1030 hands the engine a LAZY wrapper (`async text => (await embedderReadyP)(text)`) ' +
-        'rather than the resolved instance, so `embedderModeOf` misses and the policy resolves NO floor. The ' +
-        'wrapper is deliberate (WI-4734): it moves acquire+embed inside the engine concurrent embed window so ' +
-        'the BM25 leg is not stalled behind acquisition. It cannot simply be unwrapped — the stamped instance ' +
-        'does not exist until acquisition resolves, and the floor is read before the legs run ' +
-        '(hybrid.ts:452). Pre-stamping would mean guessing a space the resolver can still fall back OUT of, ' +
-        'which is the foreign-floor hazard D-021 refuses. Worse here than most: session_turn is sparsely ' +
-        'embedded, exactly the corpus where an unfloored vector leg returns its k nearest rows whether or not ' +
-        'any is a match. The fix is the shape work-items.ts:2266 already uses — stamped instance when warm, ' +
-        'throw-only rejecting embedder when cold (D-023) — which needs that ~80-line pattern extracted first.',
-      trackedBy: 'WI-2144957',
-    },
   },
   {
     id: 'GET /user/search',
