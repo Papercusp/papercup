@@ -37,6 +37,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate, type CitationDeployment } from '../../plan-acceptance-gate';
+import { evidenceCurrentInputSchema } from './spec-evidence-store';
 import {
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
   launchAcceptanceGrader,
@@ -85,6 +86,8 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
 const argsSchema = z
   .object({
     harness: harnessArg,
+    current: z.array(evidenceCurrentInputSchema).max(2000).optional()
+      .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; missing currentness never establishes fulfillment'),
     slug: z.string().min(1).optional(),
     slugs: z
       .array(z.string().min(1))
@@ -408,6 +411,7 @@ export default defineTool({
           // grading sweep which call this same gate on hot/periodic paths.
           const gate = await evaluatePlanAcceptanceGate(slug, {
             probeCitationDeployment: true,
+            ...(args.current ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
           });
           citationDeployment = gate.citationDeployment;
