@@ -48,6 +48,11 @@ import {
   setFleetLaunchTransaction,
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
+import { decideMemberRecovery, type MemberRecoveryDecision } from '../../fleet/member-recovery';
+import { strandWedgedMember, type StrandMemberResult } from '../../fleet/member-recovery-actions';
+import { listTasks, markStranded } from '../../task-manager/store';
+import { freezeTask } from '../../task-manager/control';
+import { emitFleetTransitionEdge } from '../../fleet-transition-events';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
@@ -564,6 +569,71 @@ function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; unmanag
   );
   const unmanaged = failed > 0 && Boolean(results?.some((r) => r.ok === false && r.code === 'live_unmanaged'));
   return { ok: failed === 0, alreadyGone, unmanaged, data };
+}
+
+/**
+ * P-009: turn a refusal into a CONTAINED, MARKED failure.
+ *
+ * Both refusal paths below (a kill that failed, and an unmanaged member that ignored its drain
+ * request) used to end at `return json({ ok:false, ... })`. That answer is correct about the one
+ * thing it says — do not launch a replacement — and silent about everything the leader actually
+ * needs: the old member is still live, still holding its claims, and nothing anywhere records
+ * that it is wedged. The leader's only evidence is a failed tool call, which nothing else reads.
+ * That is the "indefinitely live wedge" P-009's acceptance forbids.
+ *
+ * So the refusal now also freezes the member's tasks, marks them `stranded` with the cause, and
+ * emits the transition edge carrying that same cause. The decision itself is made by the pure
+ * core so the six acceptance scenarios are unit tests, not fixtures.
+ */
+async function containWedgedMember(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  memberOwnerId: string;
+  leaderOwnerId: string;
+  attemptKey: string;
+  kill: 'failed' | 'unmanaged';
+  drain?: 'unverified';
+}): Promise<{ decision: MemberRecoveryDecision; recovery: StrandMemberResult }> {
+  const decision = decideMemberRecovery({
+    fleetSlug: args.fleetSlug,
+    memberOwnerId: args.memberOwnerId,
+    leaderOwnerId: args.leaderOwnerId,
+    attemptKey: args.attemptKey,
+    kill: args.kill,
+    drain: args.drain,
+    now: Date.now(),
+  });
+  const recovery = await strandWedgedMember(
+    {
+      workspaceId: args.workspaceId,
+      fleetSlug: args.fleetSlug,
+      memberOwnerId: args.memberOwnerId,
+      decision,
+    },
+    {
+      listTasks: (filter) => listTasks({ workspaceId: filter.workspaceId, coordOwnerId: filter.coordOwnerId }),
+      freezeTask: async (taskId) => {
+        const outcome = await freezeTask(taskId);
+        return { ok: outcome.ok, error: 'error' in outcome ? String(outcome.error) : undefined };
+      },
+      markStranded: (verdicts) => markStranded(verdicts),
+      emitTransition: (edge) =>
+        emitFleetTransitionEdge({
+          kind: edge.kind as 'member-stalled',
+          fleetSlug: edge.fleetSlug,
+          agentId: edge.memberOwnerId,
+          // The transition surface takes from/to strings for its summary line; the CAUSE rides in
+          // `to` so a reader of the event gets it without a second lookup, which is exactly the
+          // acceptance criterion ("transition events carry the reason").
+          to: `stranded: ${edge.reason}`,
+          from: 'live',
+        }),
+      // Fail-soft: this runs on a path where something has already gone wrong, so a second
+      // failure must degrade the report rather than replace it with an exception.
+      onError: () => {},
+    },
+  );
+  return { decision, recovery };
 }
 
 /** capability:launch-agent returns human-readable TEXT + an `isError` flag (not JSON) —
@@ -1198,6 +1268,18 @@ export default defineTool({
         timeoutMs: (args.drainVerifySec ?? DEFAULT_DRAIN_VERIFY_SEC) * 1000,
       });
       if (!cooperativeDrain.verified) {
+        // P-009 (the ignored-wake acceptance case): refusing to launch is necessary but not
+        // sufficient. Contain and mark the member, so the leader inherits an actionable failure
+        // instead of a live wedge whose only trace is this failed call.
+        const contained = await containWedgedMember({
+          workspaceId,
+          fleetSlug: slug,
+          memberOwnerId,
+          leaderOwnerId: target.callerId,
+          attemptKey: args.idempotencyKey ?? `drain-unverified:${request.msg_id ?? Date.now()}`,
+          kill: 'unmanaged',
+          drain: 'unverified',
+        });
         return json(
           {
             ok: false,
@@ -1208,14 +1290,59 @@ export default defineTool({
             requestId: request.msg_id ?? null,
             wake,
             verification: cooperativeDrain,
-            message: `The unmanaged member did not reach a verified terminal state within ${args.drainVerifySec ?? DEFAULT_DRAIN_VERIFY_SEC}s — NOT launching a replacement (would double-run the lane).`,
+            recovery: contained.recovery,
+            disposition: contained.decision.disposition,
+            claims: contained.decision.claims,
+            recoveryToken: contained.decision.token,
+            message:
+              `The unmanaged member did not reach a verified terminal state within ${args.drainVerifySec ?? DEFAULT_DRAIN_VERIFY_SEC}s — ` +
+              'NOT launching a replacement (would double-run the lane). ' +
+              `${contained.decision.reason}. ` +
+              (contained.recovery.contained
+                ? `Its ${contained.recovery.tasks.length} task(s) are FROZEN and marked stranded; its claims are preserved. Thaw with processes:freeze { resume:true } once you have decided, or force-release its claims and retry with a fresh idempotencyKey.`
+                : contained.recovery.noTasksFound
+                  ? 'No enrolled task rows were found for this member (an unmanaged session has none), so it could NOT be frozen — it may still be running. Resolve it by hand before retrying.'
+                  : `Containment was INCOMPLETE (${contained.recovery.tasks.filter((t) => !t.frozen).length} of ${contained.recovery.tasks.length} task(s) could not be frozen) — the member may still be running.`),
           },
           true,
         );
       }
     }
     if (!kill.ok && !kill.alreadyGone && !kill.unmanaged) {
-      return json({ ok: false, error: 'kill_failed', fleet: slug, member: memberOwnerId, killed: kill.data, message: 'could not drain the old member — NOT launching a replacement (would double-run the lane).' }, true);
+      // P-009 (the injected-kill-failure acceptance case). A failed kill is the one reading that
+      // most needs containment: the process we asked to end did not end, so it is still holding
+      // its lane and still capable of writing. Freeze first, then mark — marking a row stranded
+      // while its process runs records a stop that did not happen.
+      const contained = await containWedgedMember({
+        workspaceId,
+        fleetSlug: slug,
+        memberOwnerId,
+        leaderOwnerId: target.callerId,
+        attemptKey: args.idempotencyKey ?? `kill-failed:${Date.now()}`,
+        kill: 'failed',
+      });
+      return json(
+        {
+          ok: false,
+          error: 'kill_failed',
+          fleet: slug,
+          member: memberOwnerId,
+          killed: kill.data,
+          recovery: contained.recovery,
+          disposition: contained.decision.disposition,
+          claims: contained.decision.claims,
+          recoveryToken: contained.decision.token,
+          message:
+            'could not drain the old member — NOT launching a replacement (would double-run the lane). ' +
+            `${contained.decision.reason}. ` +
+            (contained.recovery.contained
+              ? `Its ${contained.recovery.tasks.length} task(s) are FROZEN and marked stranded; its claims are preserved (NOT released — a frozen process still owns its lane). Diagnose, then either thaw (processes:freeze { resume:true }) or processes:kill { taskId } the subtree and retry with a fresh idempotencyKey.`
+              : contained.recovery.noTasksFound
+                ? 'No enrolled task rows were found for this member, so it could NOT be frozen — it may still be running. Resolve it by hand before retrying.'
+                : `Containment was INCOMPLETE (${contained.recovery.tasks.filter((t) => !t.frozen).length} of ${contained.recovery.tasks.length} task(s) could not be frozen) — the member may still be running.`),
+        },
+        true,
+      );
     }
     const drainOutcome = kill.unmanaged
       ? 'cooperatively-drained'
