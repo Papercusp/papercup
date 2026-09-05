@@ -318,7 +318,9 @@ export async function launchAcceptanceGraderForGate(
   // descended from this independent system actor; otherwise the launch-side
   // lineage guard correctly rejects it as the author's child. The same actor
   // owns the periodic recovery sweep, so immediate and recovery paths share one
-  // auditable origin instead of weakening the direct-author guard.
+  // auditable origin instead of weakening the direct-author guard. Idempotent
+  // ship retries therefore re-enter the same launcher's terminal-log recovery
+  // (including its one-shot backend fallback) under that stable system origin.
   return launch(slug, {
     ...scopedCtx,
     uiClientId: null,
