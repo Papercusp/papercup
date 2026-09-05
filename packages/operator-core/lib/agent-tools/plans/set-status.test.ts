@@ -14,8 +14,43 @@ import {
   expectedStatusMismatch,
   planSyncWorkItemState,
   planItemCompensationMutation,
+  shouldFirePlanItemDone,
   type HolderInfo,
 } from './set-status';
+
+// EI-22377738415938641: the `plan-item:done` EDGE gate. Reported as "the event can precede
+// the durable status transition"; the ledger disproves that (one fire, 560ms AFTER the
+// work-item went terminal, plan row already done). What was genuinely missing is any test of
+// the gate itself — and events/await.ts's latch is only sound while it holds.
+describe('shouldFirePlanItemDone (EI-22377738415938641)', () => {
+  it('fires on a real →done edge', () => {
+    expect(shouldFirePlanItemDone('done', 'todo')).toBe(true);
+    expect(shouldFirePlanItemDone('done', 'wip')).toBe(true);
+    expect(shouldFirePlanItemDone('done', 'blocked')).toBe(true);
+  });
+
+  it('does NOT re-fire when an already-done item is set done again', () => {
+    // The awaiter contract: this key fires exactly once. A re-set that fired again would
+    // wake every awaiter spuriously and break the once-only equivalence the latch relies on.
+    expect(shouldFirePlanItemDone('done', 'done')).toBe(false);
+  });
+
+  it('does not fire for any non-done target status', () => {
+    for (const next of ['todo', 'wip', 'blocked', 'needs-human', 'dropped']) {
+      expect(shouldFirePlanItemDone(next, 'todo')).toBe(false);
+      expect(shouldFirePlanItemDone(next, 'done')).toBe(false);
+    }
+  });
+
+  it('treats an unknown prior status as an edge (fail toward waking awaiters)', () => {
+    // An unreadable oldStatus must not silently swallow the fire: a missed wake strands a
+    // parked awaiter for its whole timeout, which is the worse direction than one extra wake.
+    // Both spellings: the call site's `oldStatus` is `string | null`, so null is the shape
+    // that actually reaches this in production — undefined only via a direct caller.
+    expect(shouldFirePlanItemDone('done', undefined)).toBe(true);
+    expect(shouldFirePlanItemDone('done', null)).toBe(true);
+  });
+});
 
 describe('planItemCompensationMutation (P-010)', () => {
   const body = (status: string) =>

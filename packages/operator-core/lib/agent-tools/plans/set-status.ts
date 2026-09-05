@@ -861,6 +861,31 @@ export type RestorePlanItemStatusResult =
   | 'source_changed'
   | 'busy';
 
+/**
+ * The edge gate for `plan-item:done:<slug>:<id>`: fire ONLY on a real todo/wip → done
+ * transition, never on a re-set of an already-done item.
+ *
+ * Extracted as a pure predicate (EI-22377738415938641) because the whole awaiter contract
+ * rests on it and nothing tested it. `events/await.ts`'s plan-item-done LATCH resolves an
+ * await immediately when the item's live status is already `done`, and it is allowed to do
+ * that ONLY because this key "fires exactly once, on the real →done edge" — so if this gate
+ * ever regressed to firing on every set, awaiters would take spurious wakes AND the latch's
+ * equivalence ("live-status==done" ≡ "the event already fired") would silently stop holding.
+ *
+ * The call site fires this AFTER the durable status write returns, inside the same lock —
+ * which is the ordering EI-22377738415938641 suspected was violated. It is not: the
+ * event ledger recorded exactly ONE fire for the reported item
+ * (plan-item:done:identities-v1-2026-08-30:P-040, 2026-09-05T00:02:33.815Z), 560ms AFTER its
+ * work-item went terminal, with the plan row already `done`. The transient the reporter saw
+ * — work-item done, plan item still todo, plan claim retained — is the gap BEFORE this fires,
+ * because completion converges the work-item and the plan item in separate steps rather than
+ * one transaction. That window is real, but it closes at this emit, which is exactly why the
+ * event REMAINS trustworthy as proof of the plan row's terminal state.
+ */
+export function shouldFirePlanItemDone(nextStatus: string, oldStatus: string | null | undefined): boolean {
+  return nextStatus === 'done' && oldStatus !== 'done';
+}
+
 export function planItemCompensationMutation(
   current: string | null,
   input: {
@@ -1509,11 +1534,12 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     detail: it.itemId,
   });
 
+  // See `shouldFirePlanItemDone` for the edge gate this call depends on.
   // P-105: plan-item:done:<slug>:<id> — wake anyone awaiting this item (a peer's lane,
   // a cross-plan blocking dependency) the moment it flips to done, instead of polling
   // plans:get. Transition-gated: a real →done edge only, never a re-set of an
   // already-done item. Fire-and-forget; never fails the flip.
-  if (it.status === 'done' && result.value.oldStatus !== 'done') {
+  if (shouldFirePlanItemDone(it.status, result.value.oldStatus)) {
     emitPlanItemDoneEvent(it.slug, it.itemId);
     // WI-1830: if that →done flip drained the whole plan (zero open items left, computed
     // race-safe inside the lock above), fire `fleet:drained:<slug>` for each fleet whose
