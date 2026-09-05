@@ -102,8 +102,10 @@ const okCore = (title: string, over: Partial<OkCore> = {}): CreateOneWorkItemRes
   workItem: aWorkItem({ id: `WI-${title}`, title }),
   ...over,
 });
-const tool = (await import('./create')).default;
-const codeSmellsLikeCode = (await import('./create')).codeSmellsLikeCode;
+const createModule = await import('./create');
+const tool = createModule.default;
+const codeSmellsLikeCode = createModule.codeSmellsLikeCode;
+const createMaxConcurrency = createModule.WORK_ITEMS_CREATE_MAX_CONCURRENCY;
 
 const ctx = { workspaceId: 'default', harnessSlug: 'papercup' } as never;
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -126,6 +128,32 @@ beforeEach(() => {
   });
   fleetAdmission.decision = { allowed: true, scoped: false };
   createM.mockImplementation(async (spec) => okCore(spec.title));
+});
+
+describe('bounded bulk persistence (EI-22457131413761799)', () => {
+  it('runs a large batch concurrently without exceeding the writer ceiling', async () => {
+    let active = 0;
+    let peak = 0;
+    createM.mockImplementation(async (spec) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return okCore(spec.title);
+    });
+
+    const items = Array.from({ length: 12 }, (_, index) => ({
+      kind: 'task',
+      title: `validation shard ${index + 1}`,
+    }));
+    const result = await body({ items });
+
+    expect(peak).toBe(createMaxConcurrency);
+    expect(result.counts).toEqual({ ok: 12, failed: 0 });
+    expect(result.results.map((entry: { title: string }) => entry.title)).toEqual(
+      items.map((entry) => entry.title),
+    );
+  });
 });
 
 describe('DRAIN admission mode derivation (WI-38403)', () => {
