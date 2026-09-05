@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import proposeTool, { rubricsProposeArgs } from './propose';
 import { normalizeRequirementSections } from '../../requirement-contract';
 
@@ -25,16 +26,33 @@ const lightAcceptanceCriterion = {
 };
 
 describe('rubrics:propose args — releaseGating kind contract', () => {
+  it('keeps the complete tool schema JSON-Schema-representable', () => {
+    expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
+  });
+
   it('accepts unified sections at the real proposal door and refuses conflicting duplicates', () => {
-    const unified = { key: 'export', title: 'Export', barKey: 'R-1',
+    const unified = {
+      key: 'export',
+      title: 'Export',
+      barKey: 'R-1',
       intent: { request: 'Export all rows.' },
-      acceptance: { condition: 'All filtered rows exported.', falsifier: 'A row is missing.', requiredTestLayers: ['e2e'] },
+      acceptance: {
+        condition: 'All filtered rows exported.',
+        falsifier: 'A row is missing.',
+        requiredTestLayers: ['e2e'],
+      },
       verification: { method: 'Compare a full fixture export.', check: { kind: 'instrument', instrumentKey: 'none' } },
     };
     const args = { ...base, kind: 'acceptance', subjectPlan: 'export', criteria: [unified] };
     const parsed = rubricsProposeArgs.parse(args);
-    expect(normalizeRequirementSections(parsed.criteria[0]!)).toMatchObject({ model: 'All filtered rows exported.', method: 'Compare a full fixture export.', requiredTestLayers: ['e2e'] });
-    expect(rubricsProposeArgs.safeParse({ ...args, criteria: [{ ...unified, model: 'First page only.' }] }).success).toBe(false);
+    expect(normalizeRequirementSections(parsed.criteria[0]!)).toMatchObject({
+      model: 'All filtered rows exported.',
+      method: 'Compare a full fixture export.',
+      requiredTestLayers: ['e2e'],
+    });
+    expect(
+      rubricsProposeArgs.safeParse({ ...args, criteria: [{ ...unified, model: 'First page only.' }] }).success,
+    ).toBe(false);
   });
   it('rejects rubric refs that the canonical plan lock cannot store', () => {
     const parsed = rubricsProposeArgs.safeParse({
@@ -189,12 +207,14 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
       });
     }
 
-    expect(rubricsProposeArgs.safeParse({
-      ...base,
-      kind: 'acceptance',
-      subjectPlan: 'release-plan',
-      criteria: [{ ...lightAcceptanceCriterion, evidencePlane: 'production-ish' }],
-    }).success).toBe(false);
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        kind: 'acceptance',
+        subjectPlan: 'release-plan',
+        criteria: [{ ...lightAcceptanceCriterion, evidencePlane: 'production-ish' }],
+      }).success,
+    ).toBe(false);
 
     expect(
       rubricsProposeArgs.safeParse({

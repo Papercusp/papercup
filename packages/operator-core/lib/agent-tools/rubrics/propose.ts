@@ -26,299 +26,305 @@ import { VALID_PLAN_SLUG } from '../plans/source';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
 
-const criterion = z.object({
-  key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
-  title: z.string().min(1),
-  intent: requirementIntentSchema.optional(),
-  acceptance: requirementAcceptanceSchema.optional(),
-  verification: requirementVerificationSchema.optional(),
-  requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers,
-  model: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
-    ),
-  bar: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      'acceptance-kind only: clearer wire/UI alias for model. It is canonicalized into model and never stored as a second text field; if both are supplied they must match after trimming',
-    ),
-  barKey: z
-    .string()
-    .min(1)
-    .optional()
-    .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
-  barHash: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .optional()
-    .describe(
-      'read-back compatibility only: the server ignores this value and recomputes barHash from canonical meaning on every write',
-    ),
-  role: acceptanceCriterionRoleSchema
-    .optional()
-    .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
-  mandatory: z
-    .boolean()
-    .optional()
-    .describe('acceptance-kind only: include this outcome in the non-waivable ship floor'),
-  requiredScope: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(200)
-    .optional()
-    .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
-  evidencePlane: acceptanceEvidencePlaneSchema
-    .optional()
-    .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
-  passRatings: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(50)
-    .optional()
-    .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
-  coversBarKeys: z
-    .array(z.string().min(1))
-    .min(1)
-    .max(200)
-    .optional()
-    .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
-  barProvenance: acceptanceBarProvenanceSchema
-    .optional()
-    .describe('acceptance-kind only: pre-implementation declaration or honest legacy-backfill provenance'),
-  method: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria only when a concrete check/procedure makes the outcome independently falsifiable',
-    ),
-  ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
-  driftMarkers: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      'what degraded / broken looks like — the concrete falsifier. REQUIRED and non-empty for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
-    ),
-  replication: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
-    ),
-  instrumentKey: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
-  window: rubricCriterionWindowSchema.optional(),
-  criterionClass: z
-    .enum(['settle-once', 'violatable'])
-    .optional()
-    .describe(
-      "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
-    ),
-  check: rubricCriterionCheckSchema
-    .optional()
-    .describe(
-      "the criterion's STRUCTURED CHECK (P-011 / D-006), preferred wherever the outcome is objectively checkable: " +
-        "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
-        "THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted " +
-        "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
-        "Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); " +
-        'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
-    ),
-}).superRefine((input, ctx) => {
-  try {
-    normalizeRequirementSections(input);
-  } catch (error) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
-  }
-});
-
-export const rubricsProposeArgs = z.object({
-  rubricRef: z
-    .string()
-    .min(1)
-    .max(120)
-    .regex(VALID_PLAN_SLUG, 'must be a valid plan slug (letters, numbers, ., _, -; optional @run-N suffix)')
-    .describe('rubric ref/slug stored as a plan slug, e.g. "pot-coordination-health"'),
-  kind: z
-    .enum(['standard', 'acceptance'])
-    .optional()
-    .describe(
-      "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot definition-of-done linked by subjectPlan (plan mode) or subjectGoal (goal mode), activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the work's implementation, before it may be marked done — the matching completion gate reads it",
-    ),
-  subjectPlan: z
-    .string()
-    .min(1)
-    .max(200)
-    .optional()
-    .describe(
-      'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
-    ),
-  subjectGoal: z
-    .string()
-    .min(1)
-    .max(200)
-    .optional()
-    .describe(
-      "acceptance kind only: the id of the goal this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused",
-    ),
-  classRef: z
-    .string()
-    .min(1)
-    .max(120)
-    .optional()
-    .describe(
-      'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
-    ),
-  composes: z
-    .array(z.string().trim().min(1))
-    .min(1)
-    .max(16)
-    .optional()
-    .describe(
-      'unpinned composition refs: reusable standard-kind rubrics this rubric composes; each ref is resolved at write time and each rubric evolves independently (omit revision pins)',
-    ),
-  characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
-  title: hardText(LIMITS.SHORT_TITLE),
-  description: hardText(8000).optional(),
-  criteria: z
-    .array(criterion)
-    .describe(
-      'the gradeable items. Standard kind: >=1 required, each with full model/method/driftMarkers. Acceptance kind: 3–7 outcome criteria tracing to the plan\'s goal + Decisions (may be empty with classRef)',
-    ),
-  ratingScale: z
-    .array(z.string())
-    .optional()
-    .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
-  methodRef: z
-    .string()
-    .max(200)
-    .nullable()
-    .optional()
-    .describe('agent-insights runbook slug for the long-form method; null is accepted from rubrics:get when unset'),
-  releaseGating: z
-    .boolean()
-    .optional()
-    .describe(
-      'mark this standard-kind rubric as a release gate; acceptance-kind rubrics are one-shot and cannot set releaseGating; every standard criterion then requires a unique machine-readable instrument binding',
-    ),
-  dropKeys: z
-    .array(z.string().min(1))
-    .max(100)
-    .optional()
-    .describe(
-      'loss-guard ack: stored criterion keys this proposal INTENTIONALLY drops. Propose is a whole-document replace — omitting a stored key without acking it here is rejected (it would silently delete the criterion)',
-    ),
-  allowMethodShrink: z
-    .boolean()
-    .optional()
-    .describe(
-      "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40%, lose its REPLICATION DRILL marker, or intentionally remove its stored structured check (reverting deterministic enforcement to fuzzy judgment). Requires shrinkReason",
-    ),
-  shrinkReason: z
-    .string()
-    .min(1)
-    .max(2000)
-    .optional()
-    .describe('why the procedure shrink or structured-check removal is intentional (required with allowMethodShrink)'),
-  classDowngradeReason: z
-    .string()
-    .min(1)
-    .max(2000)
-    .optional()
-    .describe(
-      "loss-guard ack (P-008): why a stored 'violatable' criterion is intentionally being downgraded to settle-once (removing its provisional-until-terminal protection)",
-    ),
-}).superRefine((args, ctx) => {
-  // Keep the published dispatch schema aligned with rubricTemplateDataSchema and
-  // proposeRubric: acceptance rubrics are one-shot definitions of done, so they
-  // cannot participate in the reusable standard rubric release gate. Without this
-  // check, callers pass schema validation and only discover the invalid combination
-  // after the whole-document proposal reaches the handler.
-  if (args.kind === 'acceptance' && args.releaseGating === true) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['releaseGating'],
-      message:
-        'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:\'standard\' for a reusable release bar',
-    });
-  }
-
-  args.criteria.forEach((criterion, index) => {
-    const barFields = [
-      criterion.intent,
-      criterion.acceptance,
-      criterion.verification,
-      criterion.requiredTestLayers,
-      criterion.evidencePlane,
-      criterion.bar,
-      criterion.barKey,
-      criterion.barHash,
-      criterion.role,
-      criterion.mandatory,
-      criterion.requiredScope,
-      criterion.passRatings,
-      criterion.coversBarKeys,
-      criterion.barProvenance,
-    ];
-    if (args.kind !== 'acceptance' && barFields.some((value) => value !== undefined)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['criteria', index, 'barKey'],
-        message: 'BAR metadata is acceptance-kind only; standard criteria keep their existing model/method contract',
-      });
-    }
-    if (
-      criterion.model?.trim() &&
-      criterion.bar?.trim() &&
-      criterion.model.trim().replace(/\r\n?/g, '\n') !== criterion.bar.trim().replace(/\r\n?/g, '\n')
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['criteria', index, 'bar'],
-        message: '`model` is the canonical BAR text; a supplied bar alias must match it after trimming',
-      });
+const criterion = z
+  .object({
+    key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
+    title: z.string().min(1),
+    intent: requirementIntentSchema.optional(),
+    acceptance: requirementAcceptanceSchema.optional(),
+    verification: requirementVerificationSchema.optional(),
+    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers,
+    model: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric; optional on an acceptance-kind criterion only when the title, non-empty driftMarkers, and concrete verification check/procedure carry the outcome semantics the meta-acceptance-rubric vets',
+      ),
+    bar: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'acceptance-kind only: clearer wire/UI alias for model. It is canonicalized into model and never stored as a second text field; if both are supplied they must match after trimming',
+      ),
+    barKey: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('acceptance-kind only: stable BAR identity, normally the source R-N key'),
+    barHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional()
+      .describe(
+        'read-back compatibility only: the server ignores this value and recomputes barHash from canonical meaning on every write',
+      ),
+    role: acceptanceCriterionRoleSchema
+      .optional()
+      .describe("acceptance-kind only: 'outcome' is gradeable truth; 'disclosure' can report but never satisfy it"),
+    mandatory: z
+      .boolean()
+      .optional()
+      .describe('acceptance-kind only: include this outcome in the non-waivable ship floor'),
+    requiredScope: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('acceptance-kind only: stable surface/cohort/subject tokens the BAR must cover'),
+    evidencePlane: acceptanceEvidencePlaneSchema
+      .optional()
+      .describe('acceptance BAR required proof plane: tree, deployed, or live; preserved through METHOD-only updates'),
+    passRatings: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('acceptance-kind only: explicit rating labels that satisfy this BAR'),
+    coversBarKeys: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('acceptance disclosure only: outcome BAR keys this criterion reports on'),
+    barProvenance: acceptanceBarProvenanceSchema
+      .optional()
+      .describe('acceptance-kind only: pre-implementation declaration or honest legacy-backfill provenance'),
+    method: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria only when a concrete check/procedure makes the outcome independently falsifiable',
+      ),
+    ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
+    driftMarkers: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'what degraded / broken looks like — the concrete falsifier. REQUIRED and non-empty for every bespoke criterion of BOTH kinds (standard AND acceptance); an acceptance rubric may only omit criteria entirely, via classRef with an empty criteria array (plan D-009)',
+      ),
+    replication: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "this criterion's own REPLICATION DRILL: the full copy-runnable testing procedure (fixtures → verbatim subject prompt → spawn/measurement → grading queries → cleanup). Every criterion SHOULD carry one — rubrics:ratify reports the ones that don't",
+      ),
+    instrumentKey: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("stable machine-readable instrument binding; use 'none' only for an explicitly manual criterion"),
+    window: rubricCriterionWindowSchema.optional(),
+    criterionClass: z
+      .enum(['settle-once', 'violatable'])
+      .optional()
+      .describe(
+        "grading class (P-008): 'violatable' = monotonic-downward, one violation falsifies permanently — mid-run ratings are stamped PROVISIONAL by scorecards:emit until the graded subject terminates. Omitted = settle-once",
+      ),
+    check: rubricCriterionCheckSchema
+      .optional()
+      .describe(
+        "the criterion's STRUCTURED CHECK (P-011 / D-006), preferred wherever the outcome is objectively checkable: " +
+          "kind:'tests' { files:[...] } = deterministic must-pass — paths must resolve against the live tree or " +
+          'THIS PROPOSE IS REFUSED, and scorecards:emit actually RUNS the files at grading time (a contradicted ' +
+          "pass-rating refuses the emit); kind:'instrument' { instrumentKey } = the generalized instrument binding. " +
+          'Omitted = fuzzy judgment criterion; for an acceptance rubric with bespoke criteria, AT LEAST ONE criterion must carry a structured check (and every objectively checkable outcome should carry its own); ' +
+          'when revising, intentionally removing a stored check requires allowMethodShrink:true plus shrinkReason',
+      ),
+  })
+  .superRefine((input, ctx) => {
+    try {
+      normalizeRequirementSections(input);
+    } catch (error) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: String(error) });
     }
   });
 
-  // Keep dispatch validation aligned with the stricter acceptance authoring
-  // profile enforced by proposeRubric. Model/method intentionally remain
-  // optional for the light acceptance profile, but each bespoke criterion
-  // still needs a concrete falsifier and the rubric needs a machine- or
-  // explicitly-manual verification binding before meta-rubric vetting.
-  if (args.kind === 'acceptance' && args.criteria.length > 0) {
+export const rubricsProposeArgs = z
+  .object({
+    rubricRef: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(VALID_PLAN_SLUG, 'must be a valid plan slug (letters, numbers, ., _, -; optional @run-N suffix)')
+      .describe('rubric ref/slug stored as a plan slug, e.g. "pot-coordination-health"'),
+    kind: z
+      .enum(['standard', 'acceptance'])
+      .optional()
+      .describe(
+        "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot definition-of-done linked by subjectPlan (plan mode) or subjectGoal (goal mode), activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the work's implementation, before it may be marked done — the matching completion gate reads it",
+      ),
+    subjectPlan: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
+      ),
+    subjectGoal: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'acceptance kind only: the id of the goal this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
+      ),
+    classRef: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
+      ),
+    composes: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(16)
+      .optional()
+      .describe(
+        'unpinned composition refs: reusable standard-kind rubrics this rubric composes; each ref is resolved at write time and each rubric evolves independently (omit revision pins)',
+      ),
+    characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
+    title: hardText(LIMITS.SHORT_TITLE),
+    description: hardText(8000).optional(),
+    criteria: z
+      .array(criterion)
+      .describe(
+        "the gradeable items. Standard kind: >=1 required, each with full model/method/driftMarkers. Acceptance kind: 3–7 outcome criteria tracing to the plan's goal + Decisions (may be empty with classRef)",
+      ),
+    ratingScale: z
+      .array(z.string())
+      .optional()
+      .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
+    methodRef: z
+      .string()
+      .max(200)
+      .nullable()
+      .optional()
+      .describe('agent-insights runbook slug for the long-form method; null is accepted from rubrics:get when unset'),
+    releaseGating: z
+      .boolean()
+      .optional()
+      .describe(
+        'mark this standard-kind rubric as a release gate; acceptance-kind rubrics are one-shot and cannot set releaseGating; every standard criterion then requires a unique machine-readable instrument binding',
+      ),
+    dropKeys: z
+      .array(z.string().min(1))
+      .max(100)
+      .optional()
+      .describe(
+        'loss-guard ack: stored criterion keys this proposal INTENTIONALLY drops. Propose is a whole-document replace — omitting a stored key without acking it here is rejected (it would silently delete the criterion)',
+      ),
+    allowMethodShrink: z
+      .boolean()
+      .optional()
+      .describe(
+        "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40%, lose its REPLICATION DRILL marker, or intentionally remove its stored structured check (reverting deterministic enforcement to fuzzy judgment). Requires shrinkReason",
+      ),
+    shrinkReason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe(
+        'why the procedure shrink or structured-check removal is intentional (required with allowMethodShrink)',
+      ),
+    classDowngradeReason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe(
+        "loss-guard ack (P-008): why a stored 'violatable' criterion is intentionally being downgraded to settle-once (removing its provisional-until-terminal protection)",
+      ),
+  })
+  .superRefine((args, ctx) => {
+    // Keep the published dispatch schema aligned with rubricTemplateDataSchema and
+    // proposeRubric: acceptance rubrics are one-shot definitions of done, so they
+    // cannot participate in the reusable standard rubric release gate. Without this
+    // check, callers pass schema validation and only discover the invalid combination
+    // after the whole-document proposal reaches the handler.
+    if (args.kind === 'acceptance' && args.releaseGating === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['releaseGating'],
+        message:
+          "releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt; set kind:'standard' for a reusable release bar",
+      });
+    }
+
     args.criteria.forEach((criterion, index) => {
-      if (!(criterion.acceptance?.falsifier ?? criterion.driftMarkers)?.trim()) {
+      const barFields = [
+        criterion.intent,
+        criterion.acceptance,
+        criterion.verification,
+        criterion.requiredTestLayers,
+        criterion.evidencePlane,
+        criterion.bar,
+        criterion.barKey,
+        criterion.barHash,
+        criterion.role,
+        criterion.mandatory,
+        criterion.requiredScope,
+        criterion.passRatings,
+        criterion.coversBarKeys,
+        criterion.barProvenance,
+      ];
+      if (args.kind !== 'acceptance' && barFields.some((value) => value !== undefined)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['criteria', index, 'driftMarkers'],
-          message:
-            `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
-            '(the concrete degraded/broken state that falsifies the outcome)',
+          path: ['criteria', index, 'barKey'],
+          message: 'BAR metadata is acceptance-kind only; standard criteria keep their existing model/method contract',
+        });
+      }
+      if (
+        criterion.model?.trim() &&
+        criterion.bar?.trim() &&
+        criterion.model.trim().replace(/\r\n?/g, '\n') !== criterion.bar.trim().replace(/\r\n?/g, '\n')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria', index, 'bar'],
+          message: '`model` is the canonical BAR text; a supplied bar alias must match it after trimming',
         });
       }
     });
-    if (!args.criteria.some((criterion) => (criterion.verification?.check ?? criterion.check) != null)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['criteria'],
-        message:
-          'acceptance-kind rubrics with bespoke criteria require at least one structured check ' +
-          "(for example check:{kind:'tests'|'cargo'|'instrument'|'coverage'|'requirements'}); " +
-          'model/method may remain light only when the outcome is still concrete and independently falsifiable',
+
+    // Keep dispatch validation aligned with the stricter acceptance authoring
+    // profile enforced by proposeRubric. Model/method intentionally remain
+    // optional for the light acceptance profile, but each bespoke criterion
+    // still needs a concrete falsifier and the rubric needs a machine- or
+    // explicitly-manual verification binding before meta-rubric vetting.
+    if (args.kind === 'acceptance' && args.criteria.length > 0) {
+      args.criteria.forEach((criterion, index) => {
+        if (!(criterion.acceptance?.falsifier ?? criterion.driftMarkers)?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['criteria', index, 'driftMarkers'],
+            message:
+              `acceptance-kind criterion '${criterion.key}' requires non-empty driftMarkers ` +
+              '(the concrete degraded/broken state that falsifies the outcome)',
+          });
+        }
       });
+      if (!args.criteria.some((criterion) => (criterion.verification?.check ?? criterion.check) != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria'],
+          message:
+            'acceptance-kind rubrics with bespoke criteria require at least one structured check ' +
+            "(for example check:{kind:'tests'|'cargo'|'instrument'|'coverage'|'requirements'}); " +
+            'model/method may remain light only when the outcome is still concrete and independently falsifiable',
+        });
+      }
     }
-  }
-});
+  });
 
 export default defineTool({
   name: 'rubrics:propose',
@@ -327,8 +333,10 @@ export default defineTool({
     'Propose/replace a rubric → status "proposed". ⚠ Whole-document replace: call rubrics:get first and resubmit all criteria/checks; omissions need dropKeys. Standard criteria require model/method/driftMarkers; acceptance criteria may omit model/method only with a concrete outcome, non-empty driftMarkers falsifier, and at least one structured check. Removing a stored structured check, shrinking method+replication >40%, or losing a REPLICATION DRILL requires allowMethodShrink + shrinkReason.',
   guidance: {
     when: 'Use for a new/revised rubric (rubrics:get first; resubmit all criteria/checks). Standard criteria need model, method, and driftMarkers. Acceptance criteria are a light profile: use outcome-shaped titles, a non-empty driftMarkers falsifier, traceability to the plan goal/Decisions, regression coverage, and peer non-overlap; include at least one structured check and bind objective outcomes when possible. Each criterion should carry a replication drill; methodRef names the runbook. Stored structured check removal needs allowMethodShrink:true + shrinkReason. See /internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook.',
-    notWhen: 'One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.',
-    chaining: 'rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first.',
+    notWhen:
+      'One-off finding → free-text observation; activating a proposed rubric → rubrics:ratify. Search first to avoid duplicates.',
+    chaining:
+      'rubrics:search → rubrics:get → rubrics:propose → independent rubrics:ratify. Preserve every structured check; intentional removal needs allowMethodShrink + shrinkReason. Review completeness and replicationSqlCheck; fix gaps first.',
     returns:
       "{ ok, rubric, completeness, replicationSqlCheck, statusOverride }. statusOverride is non-null ONLY for kind:'acceptance' when the requested activation was silently discarded because that rubricRef is already retired against its shipped plan — content still lands (ok:true, statusOverride.contentApplied:true) but the rubric stays retired; your submitted criteria/description/title DID overwrite the retired document (recoverable via plans:revision-diff, not rubrics:get). A retired-with-the-ship rubric IS the shipped plan's validation record — a NEW acceptance rubric for a shipped subjectPlan is REFUSED (subject_plan_shipped); only a goal subject takes a new rubricRef.",
     seeAlso: [
