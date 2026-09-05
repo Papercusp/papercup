@@ -3,6 +3,7 @@ import type { BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import type { AnnounceBudgetState } from '../../sync/pot-git/ref-announce';
 import type { ParkedRefAnnouncements } from '../../sync/pot-git/ref-announce-tick';
+import type { SignedSnapshotFloor } from '../../sync/pot-git/signed-context';
 
 /**
  * WI-7063 — complete persisted shapes for the remaining multi-writer nested
@@ -54,6 +55,8 @@ export interface RefAnnounceRoutineState {
   lastEventId: number;
   budgetStates: Record<string, AnnounceBudgetState | null>;
   publishVersion: number;
+  publishGeneration: string | null;
+  replayFloors: Record<string, SignedSnapshotFloor>;
   parked: ParkedRefAnnouncements;
   at: number;
 }
@@ -115,6 +118,8 @@ const REF_ANNOUNCE_FIELDS = [
   'lastEventId',
   'budgetStates',
   'publishVersion',
+  'publishGeneration',
+  'replayFloors',
   'parked',
   'at',
 ] as const satisfies readonly (keyof RefAnnounceRoutineState)[];
