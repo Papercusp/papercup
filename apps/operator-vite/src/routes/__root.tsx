@@ -42,6 +42,11 @@ import TerminalDivider from '@/app/_components/TerminalDivider';
 import NativeTerminalGate from '@/app/_components/NativeTerminalGate';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
+// EI-15848: the counterpart to DevReloadGate. That one suppresses auto-reloads
+// so concurrent saves cannot keep the page half-mounted; this one tells the
+// user when a reload has actually become worth doing, so a window can no longer
+// silently serve a stale bundle.
+import BundleFreshnessNotice from '../components/BundleFreshnessNotice';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
 // Universal in-app perf-recorder host (channel/storage-compatible with the
 // operator's _lib — same CHANNEL_NAME + localStorage key). Activates only when
