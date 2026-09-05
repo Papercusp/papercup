@@ -455,11 +455,42 @@ dump_one() {
   fi
 }
 
+# ── tier configuration — declared HERE because it decides the pass below ────
+# These two live above the undifferentiated pass, not beside the tier pass that
+# uses the rest of the tier config, because as of the 2026-09-05 cutover they
+# DECIDE THIS PASS'S MEMBERSHIP: a tiered database is dumped as its tier pair
+# INSTEAD of whole, not as well as. Moving them back down silently re-enables
+# the double dump.
+PC_BACKUP_TIERS_ENABLED="${PC_BACKUP_TIERS_ENABLED:-1}"
+PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"
+
+# is_tiered <db> — true when THIS run dumps $db as a tier pair instead of whole.
+# Setting PC_BACKUP_TIERS_ENABLED=0 is the escape hatch and it is complete: the
+# database falls straight back into the undifferentiated pass below, so disabling
+# tiers can never leave it undumped. That fallback is also why "$db" itself is NOT
+# written into .kopiaignore — an ignore rule would survive the fallback and turn it
+# into silent zero coverage, which is the failure this whole work-item repairs.
+is_tiered() {
+  [ "$PC_BACKUP_TIERS_ENABLED" = 1 ] || return 1
+  case " $PC_BACKUP_TIER_DBS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
 for db in $DBS; do
+  # RETIRED 2026-09-05 (WI-2146225): the undifferentiated papercusp dump. It was
+  # 94G written every hour beside 95G of tiers covering the same rows — the same
+  # data dumped twice, at double the dump budget, on a run already taking ~20min.
+  # Authorized only after tier 1 was proven BOTH restorable (pg_restore rc=0, 590
+  # tables, 95 FKs validated) AND inside a COMPLETE kopia snapshot at PATH level
+  # (k4258cdeb). Neither half alone is sufficient: an enrolled-but-unsnapshotted
+  # tier and a snapshotted-but-unrestorable one both read as "covered".
+  if is_tiered "$db"; then
+    log "$db dumped as tiers ($db-state + $db-transcript), not undifferentiated"
+    continue
+  fi
   if dump_one "$db" "$db"; then DUMPED+=("$db"); else FAILED+=("$db"); fi
 done
 
-# ── tiered dumps (WI-2146225) — ADDITIVE PHASE ──────────────────────────────
+# ── tiered dumps (WI-2146225) — AUTHORITATIVE PHASE ─────────────────────────
 # MEASURED 2026-09-05 on the live 93 GiB papercusp dump, by attributing every
 # -Fd data member to its table via the archive TOC: SIX append-only
 # transcript/telemetry tables are 73 GiB of it (78%), and the state that
@@ -476,20 +507,25 @@ done
 # matching — silently, with no error — a DIFFERENT table on the next run. The
 # producer is the only layer that can name a table by name.
 #
-# ADDITIVE-FIRST, DELIBERATELY. The undifferentiated "$db" dump above is still
-# the authoritative artifact and is untouched by this pass. These tiers are
-# written ALONGSIDE it and must be restore-verified before the undifferentiated
-# dump is retired (which is the change that actually banks the win). Until then
-# this costs disk — /mnt/backup is a separate 1.2T volume at 19% used, which is
-# what makes paying it for one changeover affordable.
+# THE TIERS ARE NOW AUTHORITATIVE (cutover 2026-09-05, WI-2146225). This pass was
+# additive-first on purpose while the undifferentiated dump still existed; it does
+# not exist any more, so for a tiered database THIS is the entire backup — tier 1
+# ($db-state) carries the state that has to come back to restart the system and is
+# the tier enrolled in kopia; tier 2 ($db-transcript) is the local-only append-only
+# archive. Together they are the whole database.
 #
-# TIER FAILURES DO NOT REDDEN THE BACKUP, for the same reason the oddsmith leg
-# below does not: while the authoritative dump is healthy, raising
-# ALERT-BACKUP-FAILING over a redundant artifact is a false alarm, and this file
-# already warns twice that a false alarm is how a real one stops being believed.
-# They get their own status fields and their own staleness assertion instead.
-PC_BACKUP_TIERS_ENABLED="${PC_BACKUP_TIERS_ENABLED:-1}"
-PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"
+# TIER FAILURES NOW REDDEN THE BACKUP, and this inverted with the cutover. While an
+# undifferentiated dump existed, reddening over a redundant artifact was a FALSE
+# ALARM and this file warns twice that a false alarm is how a real one stops being
+# believed. With that dump retired the same silence is the opposite defect: a failed
+# tier means the database has NO fresh backup at all, and staying green over it is
+# exactly the 30-day-unnoticed blindness EI-10733 exists to prevent. So each tier
+# joins DUMPED/FAILED like any other database, AND keeps its own status field.
+#
+# ⚠ The consumer default travels with this: papercup-backup-health-check.sh asserts
+# freshness over BACKUP_ARTIFACTS, whose default named pg/papercusp. Left stale it
+# would have alarmed forever on a path nothing writes — the PERMANENT false alarm
+# documented in that file's own header — while never once looking at the tiers.
 PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.session_archive_files harness_shared.session_turns harness_shared.tool_invocations harness_shared.session_turn_chunks harness_shared.session_turn_parts harness_shared.route_invocations}"
 TIER_DUMPED=()
 TIER_FAILED=()
@@ -519,13 +555,13 @@ fi
 
 if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
   for db in $PC_BACKUP_TIER_DBS; do
-    # Only tier a database this run actually dumped. Tiering one whose
-    # authoritative dump just failed would spend the whole dump budget again on
-    # a database we already know is in trouble.
-    case " ${DUMPED[*]} " in *" $db "*) ;; *)
-      log "$db-state/$db-transcript SKIPPED — authoritative $db dump did not succeed this run"
-      continue ;;
-    esac
+    # NO "did the undifferentiated dump succeed" GATE ANY MORE. It read
+    # `case " ${DUMPED[*]} " in *" $db "*)` and skipped the tiers when the whole-db
+    # dump had failed — correct while that dump was the backup and the tiers were a
+    # redundant extra. After the cutover it inverts into the worst possible rule:
+    # the tiered database is never in DUMPED (nothing dumps it whole), so the gate
+    # would skip the ONLY backup this database has, on every single run, and report
+    # a green "backup OK" while doing it. Deleted deliberately, not overlooked.
 
     # VERIFY EVERY CONFIGURED TABLE EXISTS FIRST — this is the recurrence guard
     # for the failure this split can have, and it is silent in BOTH directions:
@@ -548,6 +584,7 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
     done
     if [ -n "$missing" ]; then
       TIER_FAILED+=("$db-state" "$db-transcript")
+      FAILED+=("$db-state" "$db-transcript")
       log "$db tiers SKIPPED — configured transcript table(s) do not exist: $missing. Refusing to dump: pg_dump ignores a table pattern that matches nothing, so proceeding would silently leave those rows in the state tier AND out of the transcript tier."
       continue
     fi
@@ -561,8 +598,21 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
       inc+=("--table=$t")
     done
 
-    if dump_one "$db" "$db-state" "${ex[@]}"; then TIER_DUMPED+=("$db-state"); else TIER_FAILED+=("$db-state"); fi
-    if dump_one "$db" "$db-transcript" "${inc[@]}"; then TIER_DUMPED+=("$db-transcript"); else TIER_FAILED+=("$db-transcript"); fi
+    # Each tier lands in BOTH ledgers: TIER_* so a consumer can still ask about the
+    # split specifically, and DUMPED/FAILED because since the cutover these ARE the
+    # database's backup and a failure has to reach ALERT-BACKUP-FAILING like any
+    # other. Reporting a tier failure only in tierFailed[] would leave the run's
+    # top-level "ok" true with the database wholly unbacked.
+    if dump_one "$db" "$db-state" "${ex[@]}"; then
+      TIER_DUMPED+=("$db-state"); DUMPED+=("$db-state")
+    else
+      TIER_FAILED+=("$db-state"); FAILED+=("$db-state")
+    fi
+    if dump_one "$db" "$db-transcript" "${inc[@]}"; then
+      TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
+    else
+      TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
+    fi
   done
 fi
 
@@ -714,12 +764,13 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
-  # WI-2146225 tiered dumps. Reported SEPARATELY from dumped/failed for the same
-  # reason the oddsmith fields are: during the additive phase these are redundant
-  # copies of an authoritative dump that is already green, so folding a tier
-  # failure into "ok" would raise ALERT-BACKUP-FAILING on a healthy backup.
-  # A consumer that wants to assert on them has its own named fields to do it
-  # with, rather than inferring tier health from a whole-cluster boolean.
+  # WI-2146225 tiered dumps. These fields are now a NAMED VIEW of the split, not a
+  # quarantine: since the 2026-09-05 cutover each tier ALSO appears in dumped[] /
+  # failed[] and therefore does move "ok". That is the opposite of the additive
+  # phase, when a tier was a redundant copy beside a green authoritative dump and
+  # folding its failure into "ok" would have alarmed on a healthy backup. The tier
+  # pair IS the backup now, so a consumer asserting only on dumped[]/failed[] gets
+  # the right answer, and one that wants the split specifically still has these.
   printf '  "tiersEnabled": %s,\n' "$([ "$PC_BACKUP_TIERS_ENABLED" = 1 ] && echo true || echo false)"
   printf '  "tierDumped": [%s],\n' "$(json_arr ${TIER_DUMPED[@]+"${TIER_DUMPED[@]}"})"
   printf '  "tierFailed": [%s],\n' "$(json_arr ${TIER_FAILED[@]+"${TIER_FAILED[@]}"})"

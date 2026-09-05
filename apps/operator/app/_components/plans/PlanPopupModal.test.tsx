@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import type { CSSProperties, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import {
   NuqsTestingAdapter,
   type OnUrlUpdateFunction,
@@ -61,7 +67,9 @@ vi.mock("@/app/harness/Modal", () => ({
 
 vi.mock("@/app/harness/Tooltip", () => ({
   Tooltip: ({ label, children }: { label: ReactNode; children: ReactNode }) => (
-    <span title={typeof label === "string" ? label : undefined}>{children}</span>
+    <span title={typeof label === "string" ? label : undefined}>
+      {children}
+    </span>
   ),
 }));
 
@@ -276,16 +284,22 @@ describe("PlanPopupModal fullscreen and target lifecycle", () => {
       expect(fullscreen.requestFullscreen).toHaveBeenCalledTimes(1),
     );
     expect(fullscreen.requestFullscreen.mock.instances[0]).toBe(surface);
-    expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Exit fullscreen" }),
+    ).toBeTruthy();
 
     fullscreen.externalExit();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Enter fullscreen" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", { name: "Enter fullscreen" }),
+      ).toBeTruthy(),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Enter fullscreen" }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Exit fullscreen" })).toBeTruthy(),
+      expect(
+        screen.getByRole("button", { name: "Exit fullscreen" }),
+      ).toBeTruthy(),
     );
     fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }));
     await waitFor(() =>

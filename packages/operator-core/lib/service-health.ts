@@ -296,6 +296,13 @@ export interface LoadedCodeIdentity {
   reportedAt?: string | null;
 }
 
+/** Minimal async exec shape used by the committed hot-path identity check. */
+export type CodeDriftExecFile = (
+  file: string,
+  args: string[],
+  options: { cwd: string; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string }>;
+
 /**
  * EI-21392098254217280 — `/api/health` and `/api/desktop/version` only prove
  * that the listener can answer a cheap GET. They do not prove that the MCP
@@ -929,6 +936,7 @@ export function evaluateBgHostCodeDrift(
   newestFile?: string | null,
   loadedIdentity?: LoadedCodeIdentity | null,
   currentSourceSha?: string | null,
+  sourceChangedSinceLoaded?: boolean | null,
 ): ProbeResult {
   return evaluateCodeDrift(PORTLESS_PROBE_NAMES.bgHostCode, bootMs, hotChangeMs, newestFile, {
     unknown: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)',
@@ -939,13 +947,13 @@ export function evaluateBgHostCodeDrift(
       `\`systemctl --user restart papercusp-bg-host.service\`. If you just landed routine-behavior code and it ` +
       `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
     identityCurrent: (loadedSha, expectedSha) =>
-      `bg-host code current (loaded build ${loadedSha} from runtime-vintage matches current source ${expectedSha}; ` +
+      `bg-host code current (loaded build ${loadedSha} from runtime-vintage matches current hot-path source at ${expectedSha}; ` +
       `mtime is only a fallback signal)`,
     identityDrift: (loadedSha, expectedSha, identity) =>
       `⚠ bg-host CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
       `scheduled loop fires / routines / wake emits are running STALE code until ` +
       `\`systemctl --user restart papercusp-bg-host.service\`.`,
-  }, loadedIdentity, currentSourceSha);
+  }, loadedIdentity, currentSourceSha, sourceChangedSinceLoaded);
 }
 
 /**
@@ -962,6 +970,7 @@ export function evaluateMcpProxyCodeDrift(
   newestFile?: string | null,
   loadedIdentity?: LoadedCodeIdentity | null,
   currentSourceSha?: string | null,
+  sourceChangedSinceLoaded?: boolean | null,
 ): ProbeResult {
   return evaluateCodeDrift(PORTLESS_PROBE_NAMES.mcpProxyCode, bootMs, hotChangeMs, newestFile, {
     unknown: 'mcp-proxy code-drift unknown (boot time or hot-path change time unreadable)',
@@ -973,13 +982,13 @@ export function evaluateMcpProxyCodeDrift(
       `\`systemctl --user restart papercup-mcp-proxy.service\`. If agents are still hitting a proxy ` +
       `failure you already fixed, this is why (EI-21390665295968159).`,
     identityCurrent: (loadedSha, expectedSha) =>
-      `mcp-proxy code current (loaded build ${loadedSha} from runtime-vintage matches current source ${expectedSha}; ` +
+      `mcp-proxy code current (loaded build ${loadedSha} from runtime-vintage matches current hot-path source at ${expectedSha}; ` +
       `mtime is only a fallback signal)`,
     identityDrift: (loadedSha, expectedSha, identity) =>
       `⚠ mcp-proxy CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
       `the :9071 proxy is running STALE code until ` +
       `\`systemctl --user restart papercup-mcp-proxy.service\`.`,
-  }, loadedIdentity, currentSourceSha);
+  }, loadedIdentity, currentSourceSha, sourceChangedSinceLoaded);
 }
 
 /** Shared pure verdict for a "tsx-loads the working tree, no file-watch" unit: process
@@ -999,6 +1008,7 @@ function evaluateCodeDrift(
   },
   loadedIdentity?: LoadedCodeIdentity | null,
   currentSourceSha?: string | null,
+  sourceChangedSinceLoaded?: boolean | null,
 ): ProbeResult {
   const identity = loadedIdentity ?? null;
   const loadedSha = identity?.treeSha?.trim() || null;
@@ -1011,7 +1021,15 @@ function evaluateCodeDrift(
       loadedPid: identity.pid ?? null,
       loadedReportedAt: identity.reportedAt ?? null,
     };
-    if (!sameSourceSha(loadedSha, expectedSha)) {
+    // Direct callers that omit the scoped comparison retain the old pure-helper
+    // behavior for backwards compatibility. The real probe always supplies a
+    // three-state result from Git, so a failed scoped read falls through to the
+    // mtime leg instead of turning an unrelated commit into a false warning.
+    const identityDiffers =
+      sourceChangedSinceLoaded === undefined
+        ? !sameSourceSha(loadedSha, expectedSha)
+        : sourceChangedSinceLoaded;
+    if (identityDiffers === true) {
       return {
         name,
         up: true,
@@ -1024,7 +1042,7 @@ function evaluateCodeDrift(
     // A matching commit identity proves the bundle was built from this commit,
     // but not that the working tree is clean. Keep the mtime leg for a newer
     // uncommitted edit so identity-first does not hide that distinct case.
-    if (bootMs !== null && hotChangeMs !== null && hotChangeMs <= bootMs) {
+    if (identityDiffers === false && bootMs !== null && hotChangeMs !== null && hotChangeMs <= bootMs) {
       return {
         name,
         up: true,
@@ -1090,6 +1108,44 @@ function sameSourceSha(a: string, b: string): boolean {
   return left === right || (left.length >= 7 && right.startsWith(left)) || (right.length >= 7 && left.startsWith(right));
 }
 
+function isGitSha(value: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(value.trim());
+}
+
+const CODE_DRIFT_TEST_EXCLUDE_PATHSPEC = ':(exclude)**/*.test.ts';
+
+/**
+ * Compare two committed identities only in the files a service actually loads.
+ *
+ * A runtime-vintage `treeSha` is a whole-repository commit identity. Comparing it
+ * directly with the current whole-repository HEAD makes every unrelated commit
+ * look like service code drift. `git diff --name-only ... -- <hot paths>` keeps
+ * the committed leg in the same scope as the mtime leg. `null` is deliberate:
+ * an unavailable/unknown Git ref must not be interpreted as "no drift".
+ */
+export async function compareCommittedHotPaths(
+  run: CodeDriftExecFile,
+  integrationRoot: string,
+  loadedSha: string,
+  currentSha: string,
+  hotPaths: readonly string[],
+): Promise<boolean | null> {
+  const loaded = loadedSha.trim();
+  const current = currentSha.trim();
+  if (!isGitSha(loaded) || !isGitSha(current) || hotPaths.length === 0) return null;
+  if (sameSourceSha(loaded, current)) return false;
+  try {
+    const { stdout } = await run(
+      'git',
+      ['diff', '--name-only', loaded, current, '--', ...hotPaths, CODE_DRIFT_TEST_EXCLUDE_PATHSPEC],
+      { cwd: integrationRoot, timeout: 3000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return null;
+  }
+}
+
 function identityLabel(identity: LoadedCodeIdentity): string {
   const pid = identity.pid == null ? '' : ` pid ${identity.pid}`;
   const host = identity.host ? ` on ${identity.host}` : '';
@@ -1147,6 +1203,7 @@ async function probeCodeDrift(
       newestFile?: string | null,
       loadedIdentity?: LoadedCodeIdentity | null,
       currentSourceSha?: string | null,
+      sourceChangedSinceLoaded?: boolean | null,
     ) => ProbeResult;
     platformNote: string;
     failedNote: string;
@@ -1239,6 +1296,16 @@ async function probeCodeDrift(
     } catch {
       // A missing git identity leaves the mtime fallback as the only honest leg.
     }
+    const sourceChangedSinceLoaded =
+      loadedIdentity?.treeSha && currentSourceSha
+        ? await compareCommittedHotPaths(
+            run,
+            integrationRoot,
+            loadedIdentity.treeSha,
+            currentSourceSha,
+            spec.hotPaths,
+          )
+        : null;
     const { stdout: findOut } = await run(
       'find',
       [...spec.hotPaths, '-name', '*.ts', '-not', '-name', '*.test.ts', '-printf', '%T@ %p\n'],
@@ -1256,7 +1323,14 @@ async function probeCodeDrift(
       }
     }
     return {
-      ...spec.evaluate(bootMs, hotChangeMs, newestFile, loadedIdentity, currentSourceSha),
+      ...spec.evaluate(
+        bootMs,
+        hotChangeMs,
+        newestFile,
+        loadedIdentity,
+        currentSourceSha,
+        sourceChangedSinceLoaded,
+      ),
       latencyMs: Date.now() - start,
     };
   } catch {

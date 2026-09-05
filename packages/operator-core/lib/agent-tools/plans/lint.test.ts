@@ -422,6 +422,61 @@ describe('plans:lint — item lines missing the status token (EI-480)', () => {
   });
 });
 
+describe('plans:lint — wrapper corruption diagnostics', () => {
+  const phasePlan = (phaseBody: string) =>
+    `---\n` +
+    `title: T\n` +
+    `slug: wrapper-corruption-lint-test\n` +
+    `status: active\n` +
+    `created: 2026-09-05\n` +
+    `---\n\n` +
+    `# T\n\n` +
+    `## Now\n\n**State:** x\n\n**Next:** y\n\n` +
+    `## Phase 1\n\n${phaseBody}\n\n` +
+    `## Decisions\n\n### D-001 — a decision\nBody.\n`;
+
+  it('turns detached item markers into errors and mid-word breaks into warnings', async () => {
+    const report = await lintParsed(
+      parsePlan(
+        phasePlan(
+          '- **P-001** `todo` provenance, maintainer review, publish/y\n' +
+            'ank/revoke, and audit. blocked-by: P-006 importance: high',
+        ),
+      ),
+      'wrapper-corruption-lint-test',
+      false,
+    );
+
+    const parseError = report.errors.find((finding) => finding.code === 'parse_warning');
+    expect(parseError).toBeTruthy();
+    expect(parseError?.message).toMatch(/orphan item marker/i);
+    expect(parseError?.message).toMatch(/blocked-by:/i);
+
+    const parseNotice = report.warnings.find((finding) => finding.code === 'parse_notice');
+    expect(parseNotice).toBeTruthy();
+    expect(parseNotice?.message).toMatch(/mid-word hard line break/i);
+    expect(codes(report.errors)).not.toContain('unknown_blocked_by');
+  });
+
+  it('does not warn about valid indented marker continuations', async () => {
+    const report = await lintParsed(
+      parsePlan(
+        phasePlan(
+          '- **P-001** `todo` a long item whose keywords wrapped onto the next\n' +
+            '  line entirely blocked-by: P-002 importance: high\n' +
+            '- **P-002** `done` prerequisite',
+        ),
+      ),
+      'wrapper-corruption-lint-test',
+      false,
+    );
+
+    expect(codes(report.errors)).not.toContain('parse_warning');
+    expect(codes(report.warnings)).not.toContain('parse_notice');
+    expect(codes(report.warnings)).not.toContain('unknown_blocked_by');
+  });
+});
+
 /**
  * EI-44: owner-gated asks written as `## Now` PROSE ("Owner: decide D-002",
  * "human greenlights a phase", "Owner: provide creds") are invisible to every

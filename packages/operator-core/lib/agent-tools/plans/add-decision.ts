@@ -428,7 +428,11 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   const propagatedTo: string[] = [];
   const unknownAffects: string[] = [];
   for (const affectedSlug of affects) {
-    const exists = await readPlanBySlug(affectedSlug);
+    // Reuse the exact (workspace, Hive-home) scope that withPlanLock resolved
+    // for the source write. Calling readPlanBySlug without opts silently falls
+    // back to the operator-home plan partition, so a valid cross-plan slug in
+    // another harness is misreported as unknown_affects.
+    const exists = await readPlanBySlug(affectedSlug, result.scope);
     if (!exists) {
       unknownAffects.push(affectedSlug);
       continue;

@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
+import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
 import { pipelineName } from '../../release/pipeline-name';
 import { execFileSync } from 'node:child_process';
@@ -765,6 +766,37 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     } finally {
       log.mockRestore();
     }
+  });
+
+  it('persists a canonical candidate snapshot on a no-verdict abort with valid nested jsonb_set SQL', async () => {
+    fakeSql.unsafe.mockClear();
+    const candidate = 'a'.repeat(40);
+    await trackGateStall(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      'error',
+      candidate,
+      ['lib/red.test.ts'],
+      'b'.repeat(40),
+      undefined,
+      'crashed before publishing a verdict',
+    );
+
+    const update = fakeSql.unsafe.mock.calls.find(([query]) =>
+      String(query).includes("'{gate_health,candidateSnapshot}'"),
+    );
+    expect(update).toBeDefined();
+    const query = String(update![0]);
+    expect(query).toMatch(
+      /'\{gate_health,candidateSnapshot\}'\s*,\s*\$3::jsonb\s*,\s*true\s*\)\s*,\s*updated_at\s*=\s*now\(\)/,
+    );
+    const snapshot = JSON.parse(String((update![1] as unknown[])[2])) as Record<string, unknown>;
+    expect(snapshot).toMatchObject({
+      schemaVersion: 1,
+      candidate,
+      failureSignature: 'lib/red.test.ts',
+      failingTests: ['lib/red.test.ts'],
+      failingTestsMeasured: false,
+    });
   });
 });
 
@@ -3986,12 +4018,35 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       return fakeSpawn('', 0); // any other git read (staleness measurement) — value irrelevant here
     });
 
+    const persistedSnapshot = buildCandidateSnapshot(
+      { candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'] },
+      Date.now(),
+    );
+    expect(persistedSnapshot).not.toBeNull();
+    // trackGateStall reads the routine row before writing the producer snapshot; the
+    // dispatcher then reads that freshly persisted snapshot before its identity CAS.
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ gh: null, lf: null, rq: null }]))
+      // trackGateStall's final gate_health merge update has no returned rows.
+      .mockResolvedValueOnce(sqlRows([]))
+      // dispatchReleaseFixer reads the snapshot written by the producer.
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: persistedSnapshot }]))
+      // The exact snapshot/last_fixer CAS must report its row as written before firing.
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },
       { reason: 'not-green', green: false, candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'] },
     );
 
     expect(recorded).toBe(true);
+    const producerWrite = fakeSql.unsafe.mock.calls.find(([query]) =>
+      String(query).includes("'{gate_health}'"),
+    );
+    expect(producerWrite).toBeDefined();
+    expect(JSON.parse(String((producerWrite![1] as unknown[])[1]))).toEqual(
+      expect.objectContaining({ gate_health: expect.objectContaining({ candidateSnapshot: expect.any(Object) }) }),
+    );
     // The bug: before EI-13723 this fire NEVER happened for a verdict recorded outside the
     // routine handler — exactly the shape a manual release:checkpoint-run self-records through.
     expect(fireLaunchBlueprintForEvent).toHaveBeenCalledWith(
@@ -4004,6 +4059,12 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
         timeoutMs: 2_700_000,
       }),
     );
+    const reservation = fakeSql.unsafe.mock.calls.find(([query]) => {
+      const text = String(query);
+      return text.includes("metadata->'gate_health'->'candidateSnapshot'->>'identity'") && text.includes("metadata->'last_fixer'");
+    });
+    expect(reservation).toBeDefined();
+    expect(reservation![1]).toEqual(expect.arrayContaining(['my-harness', persistedSnapshot!.identity, 'null']));
   });
 
   it('WI-39944: a queue-owned red records its queue but never launches the legacy moving-tip fixer', async () => {

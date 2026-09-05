@@ -142,7 +142,9 @@ export default function PlanPopupModal({
       }
       await target.requestFullscreen();
     } catch {
-      setFullscreenError("The browser did not allow fullscreen for this popup.");
+      setFullscreenError(
+        "The browser did not allow fullscreen for this popup.",
+      );
     }
   };
 
@@ -199,109 +201,114 @@ export default function PlanPopupModal({
             className="plan-popup__surface"
             data-testid="plan-popup-fullscreen-surface"
           >
-          <div className="plan-popup__header">
-            <div className="plan-popup__identity">
-              <div className="plan-popup__title" title={planSlug ?? undefined}>
-                {planTitle ?? planSlug}
+            <div className="plan-popup__header">
+              <div className="plan-popup__identity">
+                <div
+                  className="plan-popup__title"
+                  title={planSlug ?? undefined}
+                >
+                  {planTitle ?? planSlug}
+                </div>
+                {provenanceResolved ? (
+                  <PlanProvenanceBadge
+                    origin={resolvedOrigin ?? null}
+                    ownerIdentity={resolvedOwnerIdentity}
+                    testId="plan-popup-provenance-badge"
+                  />
+                ) : null}
               </div>
-              {provenanceResolved ? (
-                <PlanProvenanceBadge
-                  origin={resolvedOrigin ?? null}
-                  ownerIdentity={resolvedOwnerIdentity}
-                  testId="plan-popup-provenance-badge"
-                />
-              ) : null}
-            </div>
-            <div
-              className="plan-popup__tabs"
-              role="tablist"
-              aria-label="Plan popup view"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "plan"}
-                className={`plan-popup__tab${view === "plan" ? " is-on" : ""}`}
-                onClick={() => void setView("plan")}
-                data-testid="plan-popup-tab-plan"
+              <div
+                className="plan-popup__tabs"
+                role="tablist"
+                aria-label="Plan popup view"
               >
-                Plan
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "sessions"}
-                className={`plan-popup__tab${view === "sessions" ? " is-on" : ""}`}
-                onClick={() => void setView("sessions")}
-                data-testid="plan-popup-tab-sessions"
-              >
-                Sessions
-              </button>
-            </div>
-            <Tooltip
-              side="bottom"
-              label={
-                fullscreenError ??
-                (fullscreenAvailable
-                  ? isFullscreen
-                    ? "Restore plan popup"
-                    : "View plan fullscreen"
-                  : "Fullscreen is not available in this browser")
-              }
-            >
-              <button
-                type="button"
-                className="plan-popup__fullscreen"
-                onClick={() => void toggleFullscreen()}
-                disabled={!fullscreenAvailable}
-                aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                aria-pressed={isFullscreen}
-                title={
-                  fullscreenAvailable
-                    ? undefined
-                    : "Fullscreen is not available in this browser"
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "plan"}
+                  className={`plan-popup__tab${view === "plan" ? " is-on" : ""}`}
+                  onClick={() => void setView("plan")}
+                  data-testid="plan-popup-tab-plan"
+                >
+                  Plan
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "sessions"}
+                  className={`plan-popup__tab${view === "sessions" ? " is-on" : ""}`}
+                  onClick={() => void setView("sessions")}
+                  data-testid="plan-popup-tab-sessions"
+                >
+                  Sessions
+                </button>
+              </div>
+              <Tooltip
+                side="bottom"
+                label={
+                  fullscreenError ??
+                  (fullscreenAvailable
+                    ? isFullscreen
+                      ? "Restore plan popup"
+                      : "View plan fullscreen"
+                    : "Fullscreen is not available in this browser")
                 }
-                data-testid="plan-popup-fullscreen"
               >
-                {isFullscreen ? (
-                  <Minimize2 size={14} aria-hidden="true" />
-                ) : (
-                  <Maximize2 size={14} aria-hidden="true" />
-                )}
+                <button
+                  type="button"
+                  className="plan-popup__fullscreen"
+                  onClick={() => void toggleFullscreen()}
+                  disabled={!fullscreenAvailable}
+                  aria-label={
+                    isFullscreen ? "Exit fullscreen" : "Enter fullscreen"
+                  }
+                  aria-pressed={isFullscreen}
+                  title={
+                    fullscreenAvailable
+                      ? undefined
+                      : "Fullscreen is not available in this browser"
+                  }
+                  data-testid="plan-popup-fullscreen"
+                >
+                  {isFullscreen ? (
+                    <Minimize2 size={14} aria-hidden="true" />
+                  ) : (
+                    <Maximize2 size={14} aria-hidden="true" />
+                  )}
+                </button>
+              </Tooltip>
+              <button
+                type="button"
+                className="plan-popup__close"
+                onClick={guardedClose}
+                aria-label="Close plan popup"
+                data-testid="plan-popup-close"
+              >
+                ✕
               </button>
-            </Tooltip>
-            <button
-              type="button"
-              className="plan-popup__close"
-              onClick={guardedClose}
-              aria-label="Close plan popup"
-              data-testid="plan-popup-close"
-            >
-              ✕
-            </button>
-          </div>
-          {view === "sessions" ? (
-            <PlanSessionsTab planSlug={planSlug!} harnessSlug={harnessSlug} />
-          ) : (
-            <div
-              className="pc-plans__main plan-popup__body"
-              data-testid="plan-popup-body"
-            >
-              <PlanDetail
-                key={planSlug}
-                slug={planSlug!}
-                harnessSlug={harnessSlug}
-                showBack={false}
-                onClose={guardedClose}
-                onDirtyChange={(d: boolean) => {
-                  dirtyRef.current = d;
-                }}
-                startStatus={null}
-                onStartStatusChange={() => {}}
-                onPlanStatusChange={() => {}}
-              />
             </div>
-          )}
+            {view === "sessions" ? (
+              <PlanSessionsTab planSlug={planSlug!} harnessSlug={harnessSlug} />
+            ) : (
+              <div
+                className="pc-plans__main plan-popup__body"
+                data-testid="plan-popup-body"
+              >
+                <PlanDetail
+                  key={planSlug}
+                  slug={planSlug!}
+                  harnessSlug={harnessSlug}
+                  showBack={false}
+                  onClose={guardedClose}
+                  onDirtyChange={(d: boolean) => {
+                    dirtyRef.current = d;
+                  }}
+                  startStatus={null}
+                  onStartStatusChange={() => {}}
+                  onPlanStatusChange={() => {}}
+                />
+              </div>
+            )}
           </div>
         </Modal>
       ) : null}

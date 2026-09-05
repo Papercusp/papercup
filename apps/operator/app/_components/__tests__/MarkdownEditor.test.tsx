@@ -22,7 +22,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 // ── Vditor mock ─────────────────────────────────────────────────────────────
 //
@@ -46,7 +52,7 @@ const instances: MockVditorInstance[] = [];
 class MockVditor {
   element: HTMLElement;
   options: any;
-  value = '';
+  value = "";
   setValue: ReturnType<typeof vi.fn>;
   getValue: ReturnType<typeof vi.fn>;
   disabled: ReturnType<typeof vi.fn>;
@@ -75,11 +81,9 @@ class MockVditor {
 
   // Static API used by MarkdownPreview (not under test here, but keep it
   // safe in case the module touches it).
-  static preview = vi.fn(async (
-    _element?: HTMLElement,
-    _value?: string,
-    _options?: unknown,
-  ) => {});
+  static preview = vi.fn(
+    async (_element?: HTMLElement, _value?: string, _options?: unknown) => {},
+  );
   static outlineRender = vi.fn(
     (_root?: HTMLElement, _outline?: HTMLElement) => {},
   );
@@ -104,7 +108,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   delete document.documentElement.dataset.theme;
-  document.documentElement.style.removeProperty('--bg');
+  document.documentElement.style.removeProperty("--bg");
 });
 
 describe('preloadVditor', () => {
@@ -216,9 +220,9 @@ describe('MarkdownPreview — readable frontmatter/code styling', () => {
     expect(styles).toContain('var(--border-strong');
   });
 
-  it('inherits the resolved host color scheme and follows live theme changes', async () => {
-    document.documentElement.dataset.theme = 'portal-light';
-    document.documentElement.style.setProperty('--bg', '#f4f0e8');
+  it("inherits the resolved host color scheme and follows live theme changes", async () => {
+    document.documentElement.dataset.theme = "portal-light";
+    document.documentElement.style.setProperty("--bg", "#f4f0e8");
     render(<MarkdownPreview value="# Theme" />);
 
     await waitFor(() => {
@@ -226,42 +230,42 @@ describe('MarkdownPreview — readable frontmatter/code styling', () => {
         mode?: string;
         theme?: { current?: string };
       };
-      expect(options.mode).toBe('light');
-      expect(options.theme?.current).toBe('light');
+      expect(options.mode).toBe("light");
+      expect(options.theme?.current).toBe("light");
     });
 
-    document.documentElement.dataset.theme = 'portal-dark';
-    document.documentElement.style.setProperty('--bg', '#191817');
-    window.dispatchEvent(new CustomEvent('papercusp:theme-changed'));
+    document.documentElement.dataset.theme = "portal-dark";
+    document.documentElement.style.setProperty("--bg", "#191817");
+    window.dispatchEvent(new CustomEvent("papercusp:theme-changed"));
 
     await waitFor(() => {
       const options = MockVditor.preview.mock.calls.at(-1)?.[2] as {
         mode?: string;
         theme?: { current?: string };
       };
-      expect(options.mode).toBe('dark');
-      expect(options.theme?.current).toBe('dark');
+      expect(options.mode).toBe("dark");
+      expect(options.theme?.current).toBe("dark");
     });
   });
 
-  it('uses semantic host tokens instead of forcing a dark preview surface', async () => {
+  it("uses semantic host tokens instead of forcing a dark preview surface", async () => {
     const { container } = render(<MarkdownPreview value="# Semantic" />);
     await waitFor(() => expect(MockVditor.preview).toHaveBeenCalled());
 
-    expect(container.querySelector('.pc-md-preview')?.getAttribute('style')).toContain(
-      'var(--bg-1',
-    );
-    const styles = Array.from(container.querySelectorAll('style'))
-      .map((element) => element.textContent ?? '')
-      .join('\n');
-    expect(styles).not.toContain('#19232A');
-    expect(styles).toContain('var(--fg');
-    expect(styles).toContain('var(--bg-popover');
+    expect(
+      container.querySelector(".pc-md-preview")?.getAttribute("style"),
+    ).toContain("var(--bg-1");
+    const styles = Array.from(container.querySelectorAll("style"))
+      .map((element) => element.textContent ?? "")
+      .join("\n");
+    expect(styles).not.toContain("#19232A");
+    expect(styles).toContain("var(--fg");
+    expect(styles).toContain("var(--bg-popover");
   });
 
-  it('renders a labeled, keyboard-reachable P/D outline that scrolls the inner plan', async () => {
+  it("renders a labeled, keyboard-reachable P/D outline that scrolls the inner plan", async () => {
     const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: scrollIntoView,
     });
@@ -271,35 +275,37 @@ describe('MarkdownPreview — readable frontmatter/code styling', () => {
         '<h2 id="phase">Phase 1</h2>',
         '<h3 id="p-001">P-001 Build it</h3>',
         '<h3 id="d-002">D-002 Keep it shared</h3>',
-      ].join('');
+      ].join("");
     });
     MockVditor.outlineRender.mockImplementationOnce((_root, outline) => {
       if (!outline) return;
       outline.innerHTML = [
-        '<ul>',
+        "<ul>",
         '<li><a href="#phase" data-target-id="phase">Phase 1</a></li>',
         '<li><a href="#p-001" data-target-id="p-001">P-001 Build it</a></li>',
         '<li><a href="#d-002" data-target-id="d-002">D-002 Keep it shared</a></li>',
-        '</ul>',
-      ].join('');
+        "</ul>",
+      ].join("");
     });
 
     render(<MarkdownPreview value="# Plan" outline="left" />);
 
-    const navigation = await screen.findByRole('navigation', { name: 'Plan outline' });
-    const links = Array.from(navigation.querySelectorAll('a'));
+    const navigation = await screen.findByRole("navigation", {
+      name: "Plan outline",
+    });
+    const links = Array.from(navigation.querySelectorAll("a"));
     expect(links).toHaveLength(3);
-    expect(links[0]?.dataset.planOutlineKind).toBe('section');
-    expect(links[1]?.dataset.planOutlineKind).toBe('item');
-    expect(links[2]?.dataset.planOutlineKind).toBe('decision');
+    expect(links[0]?.dataset.planOutlineKind).toBe("section");
+    expect(links[1]?.dataset.planOutlineKind).toBe("item");
+    expect(links[2]?.dataset.planOutlineKind).toBe("decision");
     expect(links.every((link) => link.tabIndex >= 0)).toBe(true);
 
     fireEvent.click(links[1]!);
     expect(scrollIntoView).toHaveBeenCalledWith({
-      block: 'start',
-      behavior: 'smooth',
+      block: "start",
+      behavior: "smooth",
     });
-    expect(links[1]?.getAttribute('aria-current')).toBe('location');
+    expect(links[1]?.getAttribute("aria-current")).toBe("location");
   });
 });
 

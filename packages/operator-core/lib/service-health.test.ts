@@ -18,6 +18,7 @@ import {
   probeBgHostCodeDrift,
   BG_HOST_HOT_PATHS,
   BG_HOST_STALE_MS,
+  compareCommittedHotPaths,
   SUPERVISED_PROCESSES,
   supervisedProcesses,
   applyDownConfirmDebounce,
@@ -32,6 +33,7 @@ import {
   parseMcpHandshakePayload,
   probeMcpHandshake,
   MCP_HEALTH_PROBE_CLIENT,
+  type CodeDriftExecFile,
   type ProbeResult,
 } from './service-health';
 import type { ListeningSocket } from './listening-sockets';
@@ -806,6 +808,31 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
     });
   });
 
+  it('unrelated committed changes do not flag drift when the scoped hot paths are unchanged', () => {
+    const res = evaluateBgHostCodeDrift(
+      NOW - 10 * 60_000,
+      NOW - 60 * 60_000,
+      'x.ts',
+      {
+        source: 'runtime-vintage',
+        treeSha: 'old-build',
+        pid: 123,
+        host: 'tower',
+        reportedAt: new Date(NOW - 9 * 60_000).toISOString(),
+      },
+      'new-build',
+      false,
+    );
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/code current/);
+    expect(res.note).not.toMatch(/CODE DRIFT/);
+    expect(res.provenance).toMatchObject({
+      source: 'runtime-vintage',
+      loadedSha: 'old-build',
+      expectedSha: 'new-build',
+    });
+  });
+
   it('matching loaded identity is reported as runtime-vintage current, not mtime fallback', () => {
     const res = evaluateBgHostCodeDrift(
       NOW - 10 * 60_000,
@@ -819,6 +846,7 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
         reportedAt: new Date(NOW - 9 * 60_000).toISOString(),
       },
       'ABC123456789',
+      false,
     );
     expect(res.up).toBe(true);
     expect(res.note).toMatch(/code current/);
@@ -843,6 +871,7 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
         reportedAt: new Date(NOW - 59 * 60_000).toISOString(),
       },
       'abc123456789',
+      false,
     );
     expect(res.up).toBe(true);
     expect(res.note).toMatch(/CODE DRIFT/);
@@ -869,6 +898,35 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
   it('drift is floored at ~1m so a seconds-level drift never rounds to "~0m"', () => {
     const res = evaluateBgHostCodeDrift(NOW - 10_000, NOW - 5_000, 'abc');
     expect(res.note).toMatch(/~1m AFTER/);
+  });
+});
+
+describe('compareCommittedHotPaths (service-scoped runtime identity)', () => {
+  it('passes only the service hot paths to git and treats a clean scoped diff as current', async () => {
+    const calls: Array<{ file: string; args: string[]; options: { cwd: string; timeout: number; maxBuffer: number } }> = [];
+    const run: CodeDriftExecFile = async (file, args, options) => {
+      calls.push({ file, args, options });
+      return { stdout: '' };
+    };
+
+    await expect(compareCommittedHotPaths(run, '/repo', 'abc1234', 'def5678', BG_HOST_HOT_PATHS)).resolves.toBe(false);
+    expect(calls).toEqual([
+      {
+        file: 'git',
+        args: ['diff', '--name-only', 'abc1234', 'def5678', '--', ...BG_HOST_HOT_PATHS, ':(exclude)**/*.test.ts'],
+        options: { cwd: '/repo', timeout: 3000, maxBuffer: 4 * 1024 * 1024 },
+      },
+    ]);
+  });
+
+  it('returns changed for a scoped diff and unknown when Git cannot resolve the refs', async () => {
+    const changed: CodeDriftExecFile = async () => ({ stdout: 'packages/operator-core/lib/events/fire.ts\n' });
+    const failed: CodeDriftExecFile = async () => {
+      throw new Error('unknown revision');
+    };
+
+    await expect(compareCommittedHotPaths(changed, '/repo', 'abc1234', 'def5678', BG_HOST_HOT_PATHS)).resolves.toBe(true);
+    await expect(compareCommittedHotPaths(failed, '/repo', 'abc1234', 'def5678', BG_HOST_HOT_PATHS)).resolves.toBeNull();
   });
 });
 

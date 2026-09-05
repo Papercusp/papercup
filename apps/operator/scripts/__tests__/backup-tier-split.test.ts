@@ -48,6 +48,15 @@ const SCRIPT =
 
 const src = readFileSync(SCRIPT, 'utf8');
 
+// The CONSUMER half of the split. Its BACKUP_ARTIFACTS default has to name the
+// artifacts this producer actually writes, and nothing in either script's own
+// tests can see that pairing — see the cross-file case at the bottom.
+const HEALTH_CHECK_SCRIPT =
+  process.env.BACKUP_HEALTH_CHECK_SCRIPT ??
+  resolve(__dirname, '..', 'papercup-backup-health-check.sh');
+
+const healthCheckSrc = readFileSync(HEALTH_CHECK_SCRIPT, 'utf8');
+
 /** The default value of a `VAR="${VAR:-default}"` assignment. */
 function defaultOf(name: string): string | null {
   const m = src.match(new RegExp(`^${name}="\\$\\{${name}:-([^}]*)\\}"`, 'm'));
@@ -118,18 +127,112 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     expect(src).toMatch(/dump_one "\$db" "\$db-transcript"/);
   });
 
-  it('never lets a tier failure redden the authoritative backup', () => {
-    // During the additive phase the tiers are redundant copies of a dump that is
-    // already green. Folding a tier failure into FAILED would raise
-    // ALERT-BACKUP-FAILING on a healthy backup — the false-alarm trap the script
-    // header already warns about twice.
-    const tierPass = src.slice(src.indexOf('ADDITIVE PHASE'));
-    expect(tierPass.length).toBeGreaterThan(0);
+  it('reddens the backup when a tier fails, now that the tiers ARE the backup', () => {
+    // INVERTED at the 2026-09-05 cutover, deliberately. This test previously
+    // asserted the OPPOSITE — that the tier pass must never append to FAILED —
+    // and that was right while an undifferentiated papercusp dump existed: a tier
+    // was then a redundant copy beside a green authoritative dump, so reddening
+    // over it was the false-alarm trap the script header warns about twice.
+    //
+    // pg/papercusp is retired. The tier pair is the whole backup for a tiered
+    // database, so the same silence is now the opposite defect: a failed tier
+    // means NO fresh backup of that database exists, and a run that stays green
+    // over it is the 30-day-unnoticed blindness EI-10733 exists to prevent.
+    // OK derives from FAILED being empty, so appending is what reaches
+    // ALERT-BACKUP-FAILING at all.
+    const tierPass = src.slice(src.indexOf('AUTHORITATIVE PHASE'));
+    expect(tierPass.length, 'expected the tier pass header').toBeGreaterThan(0);
     expect(tierPass).toContain('TIER_FAILED+=');
+    const plainFailedAppends = tierPass.match(/(?<!TIER_)FAILED\+=/g) ?? [];
     expect(
-      tierPass.match(/(?<!TIER_)FAILED\+=/g),
-      'the tier pass must not append to the authoritative FAILED array',
+      plainFailedAppends.length,
+      'a tier failure must reach the authoritative FAILED array (dump failure AND the missing-table refusal)',
+    ).toBeGreaterThanOrEqual(2);
+    // The dead gate: skipping the tiers unless the whole-db dump succeeded. A
+    // tiered database is never in DUMPED any more, so leaving this in would skip
+    // the only backup it has on every run while reporting "backup OK".
+    expect(
+      tierPass.match(/case " \$\{DUMPED\[\*\]\} " in/),
+      'the "did the undifferentiated dump succeed" gate must stay deleted',
     ).toBeNull();
+  });
+
+  it('dumps a tiered database as tiers INSTEAD of whole, never both', () => {
+    // The retirement itself. Before the cutover papercusp was written twice an
+    // hour — ~94G undifferentiated plus ~95G of tiers covering the same rows — on
+    // a run already taking ~20 minutes. The undifferentiated pass must therefore
+    // SKIP a tiered database, and the decision has to be made before that pass
+    // runs, which is why the two tier vars are declared above it.
+    const wholeDbPass = src.slice(src.indexOf('for db in $DBS; do'));
+    expect(wholeDbPass.length, 'expected the undifferentiated pass').toBeGreaterThan(0);
+    expect(
+      wholeDbPass.slice(0, wholeDbPass.indexOf('\ndone')),
+      'the undifferentiated pass must skip databases the tier pass owns',
+    ).toMatch(/is_tiered "\$db"/);
+    // Declaration order is load-bearing: is_tiered reads both vars, and a shell
+    // reading them after this point would treat every database as untiered and
+    // silently restore the double dump.
+    expect(src.indexOf('PC_BACKUP_TIERS_ENABLED="${PC_BACKUP_TIERS_ENABLED:-1}"')).toBeLessThan(
+      src.indexOf('for db in $DBS; do'),
+    );
+    expect(src.indexOf('PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"')).toBeLessThan(
+      src.indexOf('for db in $DBS; do'),
+    );
+    // Exactly one assignment of each, so the hoist cannot leave a shadowing copy
+    // further down that reads correct in isolation.
+    expect((src.match(/^PC_BACKUP_TIERS_ENABLED=/gm) ?? []).length).toBe(1);
+    expect((src.match(/^PC_BACKUP_TIER_DBS=/gm) ?? []).length).toBe(1);
+  });
+
+  it('never writes a tiered database itself into .kopiaignore', () => {
+    // PC_BACKUP_TIERS_ENABLED=0 is the escape hatch, and it works by dropping the
+    // database back into the undifferentiated pass. An ignore rule for "$db" would
+    // survive that fallback and turn it into silent ZERO coverage — the exact
+    // condition WI-2146225 exists to repair. Only "$db-transcript" is ever excluded.
+    const rules = src.match(/ensure_kopiaignore_rule "[^"]*"/g) ?? [];
+    expect(rules.length, 'expected .kopiaignore rules to assert on').toBeGreaterThan(0);
+    expect(rules).toContain('ensure_kopiaignore_rule "$db-transcript"');
+    expect(rules).not.toContain('ensure_kopiaignore_rule "$db"');
+  });
+
+  it('keeps the health-check consumer naming the artifacts that actually exist', () => {
+    // THE CROSS-FILE STRAND, and the one nothing else can catch: the producer and
+    // its alarm live in different files, so retiring pg/papercusp here while
+    // papercup-backup-health-check.sh still asserted freshness over that path
+    // produced both failures its own header warns about at once — a PERMANENT
+    // false alarm on a path nothing writes (no fresh run can ever clear it), and a
+    // BLIND detector, because the two artifacts now holding the whole database
+    // were watched by nothing. Neither script's own tests can see the other half.
+    const m = healthCheckSrc.match(/^BACKUP_ARTIFACTS="\$\{BACKUP_ARTIFACTS:-([^}]*)\}"/m);
+    expect(m, 'expected a BACKUP_ARTIFACTS default to assert on').toBeTruthy();
+    const artifacts = (m as RegExpMatchArray)[1].split(/\s+/).filter(Boolean);
+    // Derived from the producer, not hardcoded: whatever database the producer
+    // tiers must have BOTH its tiers watched, and must not be watched whole.
+    const tierDbs = (defaultOf('PC_BACKUP_TIER_DBS') ?? '').split(/\s+/).filter(Boolean);
+    expect(tierDbs.length, 'expected at least one tiered database').toBeGreaterThan(0);
+    for (const db of tierDbs) {
+      expect(artifacts, `${db}'s state tier must be watched`).toContain(`pg/${db}-state`);
+      expect(artifacts, `${db}'s transcript tier must be watched`).toContain(
+        `pg/${db}-transcript`,
+      );
+      expect(
+        artifacts,
+        `pg/${db} is retired — watching it is a permanent false alarm`,
+      ).not.toContain(`pg/${db}`);
+    }
+  });
+
+  it('pins the health-check self-test to its own fixture, not the production default', () => {
+    // The self-test builds pg/papercusp + pg/restart in a temp tree. Inheriting the
+    // production default meant this very cutover silently turned all 45 cases into
+    // "artifact absent" — they keep running and keep printing ok while testing
+    // nothing about staleness. Exported once inside the self-test block so a new
+    // case cannot be added without it.
+    const selfTest = healthCheckSrc.slice(
+      healthCheckSrc.indexOf('if [ "${1:-}" = "--self-test" ]'),
+    );
+    expect(selfTest.length, 'expected the self-test block').toBeGreaterThan(0);
+    expect(selfTest).toMatch(/export BACKUP_ARTIFACTS=/);
   });
 
   it('reports tier outcomes in STATUS.json under their own fields', () => {

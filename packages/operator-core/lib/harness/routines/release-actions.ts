@@ -3380,11 +3380,12 @@ export async function trackGateStall(
           await sql.unsafe(
             `UPDATE harness_shared.routines
                 SET metadata = jsonb_set(
-                      jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                      jsonb_set(
+                        jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
                       '{gate_health,failingTestsMeasured}',
                       'false'::jsonb,
                       true
-                    ),
+                      ),
                     '{gate_health,candidateSnapshot}',
                     $3::jsonb,
                     true

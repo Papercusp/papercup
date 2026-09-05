@@ -11,15 +11,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-import { TOOLTIP_CONTENT_STYLE, Tooltip } from './Tooltip';
+import { TOOLTIP_CONTENT_STYLE, Tooltip } from "./Tooltip";
 
 afterEach(cleanup);
 
 describe('Tooltip (harness Radix-Tooltip wrapper)', () => {
-  it('inherits semantic foreground and border tokens in light and dark hosts', () => {
-    expect(TOOLTIP_CONTENT_STYLE.background).toContain('var(--bg-1)');
-    expect(TOOLTIP_CONTENT_STYLE.color).toBe('var(--fg, #e7f7ff)');
-    expect(TOOLTIP_CONTENT_STYLE.border).toContain('var(--border');
+  it("inherits semantic foreground and border tokens in light and dark hosts", () => {
+    expect(TOOLTIP_CONTENT_STYLE.background).toContain("var(--bg-1)");
+    expect(TOOLTIP_CONTENT_STYLE.color).toBe("var(--fg, #e7f7ff)");
+    expect(TOOLTIP_CONTENT_STYLE.border).toContain("var(--border");
   });
 
   it('renders children bare when no label is given (guard branch)', () => {

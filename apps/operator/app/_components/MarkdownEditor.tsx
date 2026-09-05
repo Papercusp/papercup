@@ -45,31 +45,31 @@ function VditorUnavailable({
     <div
       className={className}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
+        display: "flex",
+        flexDirection: "column",
         minHeight: 120,
         fontSize: 13,
-        color: 'var(--fg-mute, #7f9bb4)',
+        color: "var(--fg-mute, #7f9bb4)",
         ...style,
       }}
     >
       <div
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
           gap: 12,
-          flexWrap: 'wrap',
-          padding: hasRaw ? '8px 12px' : 16,
-          textAlign: 'center',
+          flexWrap: "wrap",
+          padding: hasRaw ? "8px 12px" : 16,
+          textAlign: "center",
           borderBottom: hasRaw
-            ? '1px solid var(--border, rgba(125,211,252,0.18))'
+            ? "1px solid var(--border, rgba(125,211,252,0.18))"
             : undefined,
         }}
       >
         <span>
           Couldn&rsquo;t load the markdown renderer
-          {hasRaw ? ' — showing raw text. ' : '. '}
+          {hasRaw ? " — showing raw text. " : ". "}
           <span style={{ fontSize: 12 }}>
             The app was likely updated underneath this page.
           </span>
@@ -78,14 +78,14 @@ function VditorUnavailable({
           type="button"
           onClick={() => hardReload()}
           style={{
-            padding: '4px 14px',
+            padding: "4px 14px",
             fontSize: 12,
             fontWeight: 600,
-            color: '#06121b',
-            background: 'var(--accent, #57d7ff)',
+            color: "#06121b",
+            background: "var(--accent, #57d7ff)",
             border: 0,
             borderRadius: 6,
-            cursor: 'pointer',
+            cursor: "pointer",
             flexShrink: 0,
           }}
         >
@@ -99,15 +99,15 @@ function VditorUnavailable({
             minHeight: 0,
             margin: 0,
             padding: 16,
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
             fontSize: 13,
             lineHeight: 1.6,
-            color: 'var(--fg, #e6e6e6)',
-            background: 'var(--bg-1, #19232a)',
+            color: "var(--fg, #e6e6e6)",
+            background: "var(--bg-1, #19232a)",
             fontFamily:
-              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
           }}
         >
           {raw}
@@ -146,15 +146,19 @@ function VditorUnavailable({
  */
 export const VDITOR_CDN = '/vditor';
 
-export type MarkdownColorScheme = 'light' | 'dark';
+export type MarkdownColorScheme = "light" | "dark";
 
 function colorChannels(value: string): [number, number, number] | null {
   const color = value.trim();
   const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})(?:[0-9a-f]{2})?$/i)?.[1];
   if (hex) {
-    const full = hex.length === 3
-      ? hex.split('').map((part) => `${part}${part}`).join('')
-      : hex;
+    const full =
+      hex.length === 3
+        ? hex
+            .split("")
+            .map((part) => `${part}${part}`)
+            .join("")
+        : hex;
     return [
       Number.parseInt(full.slice(0, 2), 16),
       Number.parseInt(full.slice(2, 4), 16),
@@ -162,9 +166,7 @@ function colorChannels(value: string): [number, number, number] | null {
     ];
   }
   const rgb = color.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
-  return rgb
-    ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])]
-    : null;
+  return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])] : null;
 }
 
 /** Resolve Vditor's binary content theme from the host's live semantic theme.
@@ -172,25 +174,25 @@ function colorChannels(value: string): [number, number, number] | null {
  * computed `--bg` luminance is the source of truth rather than a hard-coded id
  * list. */
 export function resolveMarkdownColorScheme(
-  root: HTMLElement | null = typeof document === 'undefined'
+  root: HTMLElement | null = typeof document === "undefined"
     ? null
     : document.documentElement,
 ): MarkdownColorScheme {
-  if (!root || typeof window === 'undefined') return 'dark';
-  if (root.dataset.theme === 'portal-light') return 'light';
-  if (root.dataset.theme === 'portal-dark') return 'dark';
+  if (!root || typeof window === "undefined") return "dark";
+  if (root.dataset.theme === "portal-light") return "light";
+  if (root.dataset.theme === "portal-dark") return "dark";
   const styles = window.getComputedStyle(root);
-  const channels = colorChannels(styles.getPropertyValue('--bg'));
+  const channels = colorChannels(styles.getPropertyValue("--bg"));
   if (channels) {
     const [red, green, blue] = channels;
     return (red * 299 + green * 587 + blue * 114) / 1000 >= 160
-      ? 'light'
-      : 'dark';
+      ? "light"
+      : "dark";
   }
   const colorScheme = styles.colorScheme;
-  return colorScheme.includes('light') && !colorScheme.includes('dark')
-    ? 'light'
-    : 'dark';
+  return colorScheme.includes("light") && !colorScheme.includes("dark")
+    ? "light"
+    : "dark";
 }
 
 function useMarkdownColorScheme(): MarkdownColorScheme {
@@ -198,28 +200,31 @@ function useMarkdownColorScheme(): MarkdownColorScheme {
     resolveMarkdownColorScheme(),
   );
   useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    if (typeof window === "undefined" || typeof document === "undefined")
+      return;
     const sync = () => setScheme(resolveMarkdownColorScheme());
-    window.addEventListener('papercusp:theme-changed', sync);
-    window.addEventListener('storage', sync);
-    const observer = typeof MutationObserver === 'undefined'
-      ? null
-      : new MutationObserver(sync);
+    window.addEventListener("papercusp:theme-changed", sync);
+    window.addEventListener("storage", sync);
+    const observer =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(sync);
     observer?.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme', 'style'],
+      attributeFilter: ["data-theme", "style"],
     });
-    const media = typeof window.matchMedia === 'function'
-      ? window.matchMedia('(prefers-color-scheme: dark)')
-      : null;
-    media?.addEventListener?.('change', sync);
+    const media =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-color-scheme: dark)")
+        : null;
+    media?.addEventListener?.("change", sync);
     media?.addListener?.(sync);
     sync();
     return () => {
-      window.removeEventListener('papercusp:theme-changed', sync);
-      window.removeEventListener('storage', sync);
+      window.removeEventListener("papercusp:theme-changed", sync);
+      window.removeEventListener("storage", sync);
       observer?.disconnect();
-      media?.removeEventListener?.('change', sync);
+      media?.removeEventListener?.("change", sync);
       media?.removeListener?.(sync);
     };
   }, []);
@@ -404,36 +409,46 @@ export function MarkdownPreview({
     setLoadError(false);
     (async () => {
       await loadVditorCss();
-      const Vditor = (await import('vditor')).default;
+      const Vditor = (await import("vditor")).default;
       if (cancelled || !ref.current) return;
       const previewOpts: Record<string, unknown> = {
         cdn: VDITOR_CDN,
         transform: neutralizePlantuml,
         mode: colorScheme,
         theme: { current: colorScheme },
-        math: { engine: 'KaTeX' },
+        math: { engine: "KaTeX" },
         anchor: 1,
-        lang: 'en_US',
+        lang: "en_US",
       };
       if (renderersRef.current) previewOpts.renderers = renderersRef.current;
-      await Vditor.preview(ref.current, expandWikiLinks(value ?? ''), previewOpts as never);
+      await Vditor.preview(
+        ref.current,
+        expandWikiLinks(value ?? ""),
+        previewOpts as never,
+      );
       if (cancelled || !ref.current) return;
-      try { onParsedRef.current?.(ref.current); } catch { /* decorator errors don't fail render */ }
+      try {
+        onParsedRef.current?.(ref.current);
+      } catch {
+        /* decorator errors don't fail render */
+      }
       if (outline && outlineRef.current && ref.current) {
         const outlineRoot = outlineRef.current;
         const previewRoot = ref.current;
-        outlineRoot.innerHTML = '';
+        outlineRoot.innerHTML = "";
         Vditor.outlineRender(previewRoot, outlineRoot);
 
-        const links = Array.from(outlineRoot.querySelectorAll<HTMLAnchorElement>('a'));
+        const links = Array.from(
+          outlineRoot.querySelectorAll<HTMLAnchorElement>("a"),
+        );
         for (const link of links) {
           const targetId = getOutlineTargetId(link);
-          const identity = `${targetId ?? ''} ${link.textContent ?? ''}`;
+          const identity = `${targetId ?? ""} ${link.textContent ?? ""}`;
           link.dataset.planOutlineKind = /\bp-\d{3,}\b/i.test(identity)
-            ? 'item'
+            ? "item"
             : /\bd-\d{3,}\b/i.test(identity)
-              ? 'decision'
-              : 'section';
+              ? "decision"
+              : "section";
           // Vditor normally emits anchors, but keep custom-renderer entries in
           // the keyboard order even when they only carry `data-target-id`.
           link.tabIndex = 0;
@@ -441,8 +456,8 @@ export function MarkdownPreview({
 
         const markCurrent = (active: HTMLAnchorElement) => {
           for (const link of links) {
-            if (link === active) link.setAttribute('aria-current', 'location');
-            else link.removeAttribute('aria-current');
+            if (link === active) link.setAttribute("aria-current", "location");
+            else link.removeAttribute("aria-current");
           }
         };
 
@@ -452,22 +467,25 @@ export function MarkdownPreview({
         // Intercept and scrollIntoView() the heading instead so it scrolls
         // whichever ancestor is actually scrollable.
         const onClick = (event: Event) => {
-          const target = event.target instanceof Element
-            ? event.target.closest<HTMLAnchorElement>('a')
-            : null;
+          const target =
+            event.target instanceof Element
+              ? event.target.closest<HTMLAnchorElement>("a")
+              : null;
           if (!target || !outlineRoot.contains(target)) return;
           const targetId = getOutlineTargetId(target);
           if (!targetId) return;
-          const heading = Array.from(previewRoot.querySelectorAll<HTMLElement>('[id]'))
-            .find((candidate) => candidate.id === targetId);
+          const heading = Array.from(
+            previewRoot.querySelectorAll<HTMLElement>("[id]"),
+          ).find((candidate) => candidate.id === targetId);
           if (!heading) return;
           event.preventDefault();
           event.stopPropagation();
           markCurrent(target);
-          heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          heading.scrollIntoView({ block: "start", behavior: "smooth" });
         };
-        outlineRoot.addEventListener('click', onClick, true);
-        disposeOutline = () => outlineRoot.removeEventListener('click', onClick, true);
+        outlineRoot.addEventListener("click", onClick, true);
+        disposeOutline = () =>
+          outlineRoot.removeEventListener("click", onClick, true);
       }
     })().catch((err: unknown) => {
       if (cancelled) return;
@@ -475,7 +493,7 @@ export function MarkdownPreview({
       // Surface a reload affordance instead of a silently blank pane.
       setLoadError(true);
       // eslint-disable-next-line no-console
-      console.error('[MarkdownPreview] vditor failed to load:', err);
+      console.error("[MarkdownPreview] vditor failed to load:", err);
     });
     return () => {
       cancelled = true;
@@ -505,17 +523,18 @@ export function MarkdownPreview({
     );
     return (
       <div
-        className={['pc-md-preview-layout', `pc-md-preview-layout--outline-${position}`, className]
+        className={[
+          "pc-md-preview-layout",
+          `pc-md-preview-layout--outline-${position}`,
+          className,
+        ]
           .filter(Boolean)
-          .join(' ')}
+          .join(" ")}
         style={style}
       >
-        {position === 'left' && outlinePanel}
-        <div
-          ref={ref}
-          className="vditor-reset pc-md-preview"
-        />
-        {position === 'right' && outlinePanel}
+        {position === "left" && outlinePanel}
+        <div ref={ref} className="vditor-reset pc-md-preview" />
+        {position === "right" && outlinePanel}
         <style>{`
           ${markdownPreviewOutlineCss}
           ${markdownPreviewReadableCodeCss}
@@ -528,8 +547,12 @@ export function MarkdownPreview({
     <>
       <div
         ref={ref}
-        className={`vditor-reset pc-md-preview ${className ?? ''}`}
-        style={{ background: 'var(--bg-1, #19232a)', color: 'var(--fg, #e6e6e6)', ...style }}
+        className={`vditor-reset pc-md-preview ${className ?? ""}`}
+        style={{
+          background: "var(--bg-1, #19232a)",
+          color: "var(--fg, #e6e6e6)",
+          ...style,
+        }}
       />
       <style>{markdownPreviewReadableCodeCss}</style>
     </>
@@ -539,8 +562,8 @@ export function MarkdownPreview({
 function getOutlineTargetId(link: HTMLAnchorElement): string | null {
   const explicit = link.dataset.targetId?.trim();
   if (explicit) return explicit;
-  const href = link.getAttribute('href') ?? '';
-  if (!href.startsWith('#') || href.length === 1) return null;
+  const href = link.getAttribute("href") ?? "";
+  if (!href.startsWith("#") || href.length === 1) return null;
   try {
     return decodeURIComponent(href.slice(1));
   } catch {
@@ -721,9 +744,9 @@ const DEFAULT_TOOLBAR: MarkdownEditorToolbar = [
 export function MarkdownEditor({
   value,
   onChange,
-  mode = 'ir',
+  mode = "ir",
   readOnly = false,
-  height = '100%',
+  height = "100%",
   minHeight = 200,
   toolbar = DEFAULT_TOOLBAR,
   outline = false,
@@ -751,30 +774,32 @@ export function MarkdownEditor({
     setLoadError(false);
     (async () => {
       await loadVditorCss();
-      const Vditor = (await import('vditor')).default;
+      const Vditor = (await import("vditor")).default;
       if (cancelled || !containerRef.current) return;
       const initialColorScheme = colorSchemeRef.current;
       const inst = new Vditor(containerRef.current, {
         cdn: VDITOR_CDN,
         mode,
-        theme: initialColorScheme === 'dark' ? 'dark' : 'classic',
-        lang: 'en_US',
+        theme: initialColorScheme === "dark" ? "dark" : "classic",
+        lang: "en_US",
         cache: { enable: false },
         undoDelay: 0,
         minHeight,
         placeholder,
         toolbar,
-        outline: outline ? { enable: true, position: outline } : { enable: false, position: 'left' },
+        outline: outline
+          ? { enable: true, position: outline }
+          : { enable: false, position: "left" },
         preview: {
           theme: { current: initialColorScheme },
-          math: { engine: 'KaTeX' },
+          math: { engine: "KaTeX" },
           transform: neutralizePlantuml,
         },
         input: (next: string) => onChangeRef.current?.(next),
         after: () => {
           if (cancelled) return;
           editorRef.current = inst;
-          inst.setValue(initialValueRef.current ?? '');
+          inst.setValue(initialValueRef.current ?? "");
           if (readOnly) inst.disabled();
           else inst.enable();
           // `outline.enable: true` mounts the DOM but Vditor leaves it
@@ -788,34 +813,49 @@ export function MarkdownEditor({
           // once we constrain it to a container).
           if (outline) {
             const wireOutline = () => {
-              const panel = containerRef.current?.querySelector('.vditor-outline') as HTMLElement | null;
+              const panel = containerRef.current?.querySelector(
+                ".vditor-outline",
+              ) as HTMLElement | null;
               if (!panel) return;
-              panel.style.display = 'block';
+              panel.style.display = "block";
               if (panel.dataset.pcOutlineWired) return;
-              panel.dataset.pcOutlineWired = '1';
-              panel.addEventListener('click', (event) => {
-                let t = event.target as HTMLElement | null;
-                while (t && t !== panel) {
-                  const tid = t.getAttribute?.('data-target-id');
-                  if (tid) {
-                    const heading = containerRef.current?.querySelector(`#${CSS.escape(tid)}`) as HTMLElement | null;
-                    if (heading) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
+              panel.dataset.pcOutlineWired = "1";
+              panel.addEventListener(
+                "click",
+                (event) => {
+                  let t = event.target as HTMLElement | null;
+                  while (t && t !== panel) {
+                    const tid = t.getAttribute?.("data-target-id");
+                    if (tid) {
+                      const heading = containerRef.current?.querySelector(
+                        `#${CSS.escape(tid)}`,
+                      ) as HTMLElement | null;
+                      if (heading) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        heading.scrollIntoView({
+                          block: "start",
+                          behavior: "smooth",
+                        });
+                      }
+                      return;
                     }
-                    return;
+                    t = t.parentElement;
                   }
-                  t = t.parentElement;
-                }
-              }, true);
+                },
+                true,
+              );
             };
             requestAnimationFrame(() => requestAnimationFrame(wireOutline));
             setTimeout(wireOutline, 100);
             setTimeout(wireOutline, 400);
           }
           setReady(true);
-          try { onInstanceRef.current?.(inst); } catch { /* consumer error shouldn't abort mount */ }
+          try {
+            onInstanceRef.current?.(inst);
+          } catch {
+            /* consumer error shouldn't abort mount */
+          }
         },
       });
     })().catch((err: unknown) => {
@@ -824,12 +864,20 @@ export function MarkdownEditor({
       // Surface a reload affordance instead of a silently empty editor.
       setLoadError(true);
       // eslint-disable-next-line no-console
-      console.error('[MarkdownEditor] vditor failed to load:', err);
+      console.error("[MarkdownEditor] vditor failed to load:", err);
     });
     return () => {
       cancelled = true;
-      try { onInstanceRef.current?.(null); } catch { /* ignore */ }
-      try { editorRef.current?.destroy(); } catch { /* destroy after unmount race */ }
+      try {
+        onInstanceRef.current?.(null);
+      } catch {
+        /* ignore */
+      }
+      try {
+        editorRef.current?.destroy();
+      } catch {
+        /* destroy after unmount race */
+      }
       editorRef.current = null;
       setReady(false);
     };
@@ -843,9 +891,10 @@ export function MarkdownEditor({
     const inst = editorRef.current;
     const current = inst.getValue();
     if (current === value) return;
-    const sx = window.scrollX, sy = window.scrollY;
+    const sx = window.scrollX,
+      sy = window.scrollY;
     const focused = !!containerRef.current?.contains(document.activeElement);
-    inst.setValue(value ?? '');
+    inst.setValue(value ?? "");
     if (!focused) {
       requestAnimationFrame(() => window.scrollTo(sx, sy));
     }
@@ -863,7 +912,7 @@ export function MarkdownEditor({
   useEffect(() => {
     if (!ready || !editorRef.current) return;
     editorRef.current.setTheme(
-      colorScheme === 'dark' ? 'dark' : 'classic',
+      colorScheme === "dark" ? "dark" : "classic",
       colorScheme,
     );
   }, [colorScheme, ready]);
@@ -920,8 +969,8 @@ export function MarkdownEditor({
       `}</style>
       <div
         ref={containerRef}
-        className={`pc-md-editor-host ${className ?? ''}`}
-        style={{ height, width: '100%', minHeight: 0, ...style }}
+        className={`pc-md-editor-host ${className ?? ""}`}
+        style={{ height, width: "100%", minHeight: 0, ...style }}
       />
     </>
   );

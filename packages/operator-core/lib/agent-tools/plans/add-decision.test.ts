@@ -20,6 +20,7 @@ const handlerMocks = vi.hoisted(() => ({
     harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
   })),
   recoverHarnessFromSlugs: vi.fn(),
+  readPlanBySlug: vi.fn(),
   withPlanLock: vi.fn(),
   planRevisionCapture: vi.fn(),
   emitPlanEventForCaller: vi.fn(async () => {}),
@@ -39,6 +40,10 @@ vi.mock('../_harness-scope', async (orig) => ({
 vi.mock('./slug-scope', async (orig) => ({
   ...(await orig<typeof import('./slug-scope')>()),
   recoverHarnessFromSlugs: handlerMocks.recoverHarnessFromSlugs,
+}));
+vi.mock('./source', async (orig) => ({
+  ...(await orig<typeof import('./source')>()),
+  readPlanBySlug: handlerMocks.readPlanBySlug,
 }));
 vi.mock('./with-plan-lock', () => ({
   withPlanLock: handlerMocks.withPlanLock,
@@ -439,6 +444,41 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       expect.any(Function),
     );
     expect(result.results[0]).toMatchObject({ ok: true, slug: 'handler-plan', decisionId: 'D-001' });
+  });
+
+  it('resolves affected plans against the source write scope (same-harness cross-plan repro)', async () => {
+    const ctx = handlerContext();
+    const resolvedScope = { workspaceId: 'sidestage-workspace', harnessSlug: 'sidestage' };
+    handlerMocks.readPlanBySlug.mockResolvedValueOnce({});
+    handlerMocks.withPlanLock.mockImplementationOnce(
+      async (
+        _ctx: unknown,
+        _opts: unknown,
+        mutate: (body: string) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        const result = await mutate(HANDLER_PLAN);
+        return { kind: 'ok', ...result, filePath: 'handler-plan.md', scope: resolvedScope };
+      },
+    );
+
+    const result = await handlerBody(
+      {
+        harness: 'sidestage',
+        slug: 'handler-plan',
+        title: 'Cross-plan propagation',
+        body: 'Propagate this decision to the affected plan.',
+        affects: ['affected-plan'],
+      },
+      ctx,
+    );
+
+    expect(handlerMocks.readPlanBySlug).toHaveBeenCalledWith('affected-plan', resolvedScope);
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-001',
+      propagated_to: ['affected-plan'],
+    });
+    expect(result.results[0]).not.toHaveProperty('unknown_affects');
   });
 
   it('WI-42142: refuses a decision whose owner claim is anchored to a NON-owner turn, before taking the plan lock', async () => {

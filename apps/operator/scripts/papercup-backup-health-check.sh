@@ -55,7 +55,7 @@
 # Usage: papercup-backup-health-check.sh
 # Env:
 #   BACKUP_DUMP_DIR      (default /mnt/data/Backup/db-dumps) — where the dumps land
-#   BACKUP_ARTIFACTS     (default "pg/papercusp pg/restart") — space-separated dump artifacts
+#   BACKUP_ARTIFACTS     (default "pg/papercusp-state pg/papercusp-transcript pg/restart") — space-separated dump artifacts
 #                                                              (relative to BACKUP_DUMP_DIR) that
 #                                                              MUST stay fresh. These are the
 #                                                              per-DB pg_dump -Fd directories
@@ -150,7 +150,20 @@ fi
 # records what the stale fallback did here: it tailed a db-backup.log frozen on
 # "backup FAILED", so the alarm could never clear and was blind to real failures.
 BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}}"
-BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
+# WI-2146225 cutover 2026-09-05: papercusp is dumped as a TIER PAIR, and the
+# undifferentiated pg/papercusp dump it used to name here is RETIRED — nothing
+# writes that path any more. Leaving the old default would have produced BOTH
+# failures this file's own header warns about, at once: a PERMANENT false alarm on
+# a path that can never be fresh again, AND a blind detector, because the two
+# artifacts that now hold the whole database were not being looked at by anything.
+# Both tiers are listed because either one going stale means real data is unbacked
+# — tier 1 (state) is what restarts the system and is the tier kopia carries, tier
+# 2 (transcript) is the ONLY copy of session_turns + tool_invocations that exists.
+# ⚠ TRAVELS WITH THE PRODUCER: if you ever set PC_BACKUP_TIERS_ENABLED=0 in
+# papercusp-db-backup.sh, papercusp falls back to one undifferentiated dump and
+# this list must go back to pg/papercusp in the same change, or the alarm inverts
+# again. The producer's is_tiered() comment names this dependency from its side.
+BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp-state pg/papercusp-transcript pg/restart}"
 # Unquoted on purpose at the loop below so the glob expands per workspace; an
 # unmatched glob stays literal, which then reads as "absent" and is silent.
 #
@@ -836,6 +849,16 @@ if [ "${1:-}" = "--self-test" ]; then
   mkdir -p "$t/dump" "$t/state"
   self="${BASH_SOURCE[0]}"
   p=0; f=0
+  # PIN THE ARTIFACT LIST TO THIS FIXTURE, do not inherit the production default.
+  # Every case below builds pg/papercusp + pg/restart in a temp tree and asserts on
+  # the marker; inheriting BACKUP_ARTIFACTS meant a change to the PRODUCTION default
+  # (WI-2146225 retired pg/papercusp for the tier pair) silently turned every case
+  # into "artifact absent" — the cases still run, still write markers, and still look
+  # like they are testing staleness while actually testing nothing of the kind.
+  # Exported once here rather than added to each of the eight nested invocations, so
+  # a ninth case cannot be added without it. The production default gets its own
+  # guard in apps/operator/scripts/__tests__/backup-tier-split.test.ts.
+  export BACKUP_ARTIFACTS="pg/papercusp pg/restart"
   # ── WI-2145430 recurrence guard: the shell's OWN runtime errors ──────────
   # `bash -n` is STRUCTURALLY BLIND to this class, so the syntax check that
   # guards this script cannot see it. An unescaped double quote inside a

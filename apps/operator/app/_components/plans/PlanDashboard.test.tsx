@@ -534,80 +534,106 @@ describe('PlanDashboard activity feed', () => {
 });
 
 describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-2026-08-31)', () => {
-  it('renders the Now card, the segmented band, and every decision as a full-detail action', () => {
+  it("renders the Now card, the segmented band, and every decision as a full-detail action", () => {
     seed();
     planData.value = plan({
-      slug: 'p1',
-      title: 'Security posture closure',
-      startStatus: 'started',
+      slug: "p1",
+      title: "Security posture closure",
+      startStatus: "started",
       items: itemsOf({ done: 3, wip: 2, todo: 4 }),
-      now: { state: 'Closing the last leg.', next: 'P-006 measure it' },
+      now: { state: "Closing the last leg.", next: "P-006 measure it" },
       decisions: [
-        { id: 'D-001', title: 'Oldest ruling' },
-        { id: 'D-007', title: 'Latest ruling' },
-        { id: 'D-003', title: 'Middle ruling' },
+        { id: "D-001", title: "Oldest ruling" },
+        { id: "D-007", title: "Latest ruling" },
+        { id: "D-003", title: "Middle ruling" },
       ],
     });
     renderDash();
-    const now = screen.getByTestId('plan-dash-now');
-    expect(now.textContent).toContain('Closing the last leg.');
-    expect(now.textContent).toContain('next: P-006 measure it');
+    const now = screen.getByTestId("plan-dash-now");
+    expect(now.textContent).toContain("Closing the last leg.");
+    expect(now.textContent).toContain("next: P-006 measure it");
     // Band: count text (same testid/format as ever) + one segment per bucket.
-    const band = screen.getByTestId('plan-dash-band');
-    expect(screen.getByTestId('plan-dash-progress').textContent).toBe('3 of 9 items done');
-    expect(band.querySelectorAll('.plan-dash__band-seg').length).toBe(3); // done, wip, todo
-    expect(band.textContent).toContain('2 in progress');
-    expect(band.textContent).toContain('nothing needs you');
+    const band = screen.getByTestId("plan-dash-band");
+    expect(screen.getByTestId("plan-dash-progress").textContent).toBe(
+      "3 of 9 items done",
+    );
+    expect(band.querySelectorAll(".plan-dash__band-seg").length).toBe(3); // done, wip, todo
+    expect(band.textContent).toContain("2 in progress");
+    expect(band.textContent).toContain("nothing needs you");
     // Decisions: every D-entry stays available, newest first, and opens the
     // canonical full plan at its exact anchor.
-    const dec = screen.getByTestId('plan-dash-decisions');
-    const refs = Array.from(dec.querySelectorAll('.plan-dash__dref')).map((n) => n.textContent);
-    expect(refs).toEqual(['D-007', 'D-003', 'D-001']);
-    expect(dec.textContent).toContain('3 decisions');
-    fireEvent.click(screen.getByTestId('plan-dash-decision-D-001'));
-    expect(setters['ppv']).toHaveBeenCalledWith('plan');
-    expect(setters['jump']).toHaveBeenCalledWith('D-001');
-    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
+    const dec = screen.getByTestId("plan-dash-decisions");
+    const refs = Array.from(dec.querySelectorAll(".plan-dash__dref")).map(
+      (n) => n.textContent,
+    );
+    expect(refs).toEqual(["D-007", "D-003", "D-001"]);
+    expect(dec.textContent).toContain("3 decisions");
+    fireEvent.click(screen.getByTestId("plan-dash-decision-D-001"));
+    expect(setters["ppv"]).toHaveBeenCalledWith("plan");
+    expect(setters["jump"]).toHaveBeenCalledWith("D-001");
+    expect(setters["wppop"]).toHaveBeenCalledWith("papercusp::p1");
   });
 
-  it('opens every P-item in the full plan and keeps a separate linked-work-item action', () => {
+  it("opens every P-item in the full plan and keeps a separate linked-work-item action", () => {
     seed();
     planData.value = plan({
-      slug: 'p1',
-      startStatus: 'started',
+      slug: "p1",
+      startStatus: "started",
       items: [
-        { id: 'P-001', storedStatus: 'done', effectiveStatus: 'done', text: 'shipped bit' },
-        { id: 'P-002', storedStatus: 'wip', effectiveStatus: 'wip', text: 'active bit' },
-        { id: 'P-003', storedStatus: 'todo', effectiveStatus: 'todo', text: 'queued bit' },
-        { id: 'P-004', storedStatus: 'blocked', effectiveStatus: 'blocked', text: 'stuck bit' },
+        {
+          id: "P-001",
+          storedStatus: "done",
+          effectiveStatus: "done",
+          text: "shipped bit",
+        },
+        {
+          id: "P-002",
+          storedStatus: "wip",
+          effectiveStatus: "wip",
+          text: "active bit",
+        },
+        {
+          id: "P-003",
+          storedStatus: "todo",
+          effectiveStatus: "todo",
+          text: "queued bit",
+        },
+        {
+          id: "P-004",
+          storedStatus: "blocked",
+          effectiveStatus: "blocked",
+          text: "stuck bit",
+        },
       ],
-      linkedFeatures: { 'P-002': { featureId: 'WI-77', status: 'wip' } },
+      linkedFeatures: { "P-002": { featureId: "WI-77", status: "wip" } },
     });
     renderDash();
-    const items = screen.getByTestId('plan-dash-items');
+    const items = screen.getByTestId("plan-dash-items");
     // Group order: attention → wip → todo → done; labels carry counts.
-    expect(items.textContent).toContain('Needs attention · 1');
-    expect(items.textContent).toContain('In progress · 1');
-    expect(items.textContent).toContain('Up next · 1');
-    expect(items.textContent).toContain('Done · 1');
+    expect(items.textContent).toContain("Needs attention · 1");
+    expect(items.textContent).toContain("In progress · 1");
+    expect(items.textContent).toContain("Up next · 1");
+    expect(items.textContent).toContain("Done · 1");
     // The promoted item retains both identities. Its main action opens P-002
     // in the canonical plan; the separate work action opens WI-77.
-    const promoted = screen.getByTestId('plan-dash-item-P-002');
-    expect(promoted.textContent).toContain('WI-77');
-    fireEvent.click(screen.getByTestId('plan-dash-item-detail-P-002'));
-    expect(setters['ppv']).toHaveBeenCalledWith('plan');
-    expect(setters['jump']).toHaveBeenCalledWith('P-002');
-    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
-    expect(setters['wpop']).not.toHaveBeenCalled();
+    const promoted = screen.getByTestId("plan-dash-item-P-002");
+    expect(promoted.textContent).toContain("WI-77");
+    fireEvent.click(screen.getByTestId("plan-dash-item-detail-P-002"));
+    expect(setters["ppv"]).toHaveBeenCalledWith("plan");
+    expect(setters["jump"]).toHaveBeenCalledWith("P-002");
+    expect(setters["wppop"]).toHaveBeenCalledWith("papercusp::p1");
+    expect(setters["wpop"]).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId('plan-dash-item-work-P-002'));
-    expect(setters['wpop']).toHaveBeenCalledWith('papercusp::WI-77');
+    fireEvent.click(screen.getByTestId("plan-dash-item-work-P-002"));
+    expect(setters["wpop"]).toHaveBeenCalledWith("papercusp::WI-77");
 
     // An unpromoted row is equally actionable and targets its own P-anchor.
-    expect(screen.getByTestId('plan-dash-item-P-003').textContent).toContain('P-003');
-    fireEvent.click(screen.getByTestId('plan-dash-item-detail-P-003'));
-    expect(setters['jump']).toHaveBeenCalledWith('P-003');
-    expect(setters['wppop']).toHaveBeenLastCalledWith('papercusp::p1');
+    expect(screen.getByTestId("plan-dash-item-P-003").textContent).toContain(
+      "P-003",
+    );
+    fireEvent.click(screen.getByTestId("plan-dash-item-detail-P-003"));
+    expect(setters["jump"]).toHaveBeenCalledWith("P-003");
+    expect(setters["wppop"]).toHaveBeenLastCalledWith("papercusp::p1");
   });
 
   it('collapses consecutive generic edit rows into a run and promotes rationales to notes', () => {
