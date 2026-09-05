@@ -91,7 +91,7 @@ export class DbEncryptionKeyError extends Error {
  * `PAPERCUSP_DB_ENCRYPTION_KEY_FILE` relocates the file — for a mounted secret,
  * a separate volume, or a throwaway path under test.
  */
-function keyFile(): string {
+export function dbEncryptionKeyFilePath(): string {
   const override = process.env[KEY_FILE_ENV_VAR];
   if (override && override.trim()) return override.trim();
   return join(homedir(), '.papercusp', 'db-encryption-key');
@@ -215,7 +215,7 @@ export function getDbEncryptionKey(): string {
     return _cachedKey;
   }
 
-  const KEY_FILE = keyFile();
+  const KEY_FILE = dbEncryptionKeyFilePath();
   if (existsSync(KEY_FILE)) {
     const raw = readFileSync(KEY_FILE, 'utf8').trim();
     if (raw) {
