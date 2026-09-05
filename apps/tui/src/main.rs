@@ -3087,13 +3087,9 @@ async fn execute_workbench_command(
                 let _ = tx.send(Event::Error(format!("create '{slug}': {e}")));
             }
         },
-        // `:share <slug> [remote] [public]` (D-010) — the full share sequence.
-        P::SharePot {
-            slug,
-            remote,
-            public,
-        } => {
-            share_pot(&client, &slug, remote, public, &tx).await;
+        // `:share <slug> [invite|public|private]` — hive-native sharing.
+        P::SharePot { slug, visibility } => {
+            share_pot(&client, &slug, visibility, &tx).await;
         }
         // `:message <text>` (inbox-tiering D-004) — "Message owner": open a
         // work-item-scoped conversation with the selected inbox item's owning
@@ -3151,26 +3147,171 @@ async fn execute_workbench_command(
     }
 }
 
-/// The `:share <slug>` command — RETIRED surface, fail-fast. The per-harness
-/// ShareWizard API generation this used to mirror (`binding/resolve` →
-/// `:slug/share/finalize` → `harness/cupboard/publish`) was retired server-side
-/// (comb-retire-per-harness-sharing-2026-06-11 — routes/index.ts names the
-/// retirement), so the old multi-step flow could only 404 mid-wizard. Surface
-/// the retirement in one clear error instead; re-pointing `:share` at the
-/// modern sharing surface (binding claim + typed cupboard publish) is a
-/// tracked follow-up (P-003 own-tui-full-divorce-2026-08-24).
+/// Hive-native `:share` (pui-tui-next-wave D-005): read the owner's current
+/// metadata, then call the one set-pot composition. The retired GitHub binding /
+/// shared.json / generic harness-publish generation is deliberately absent.
 async fn share_pot(
-    _client: &OperatorClient,
+    client: &OperatorClient,
     slug: &str,
-    _remote: Option<String>,
-    _public: bool,
+    visibility: models::HiveVisibility,
     tx: &UnboundedSender<Event>,
 ) {
-    let _ = tx.send(Event::Error(format!(
-        "share: the per-pot share flow was retired server-side (2026-06-11) — \
-         share '{slug}' via the desktop's current sharing surface (binding \
-         claim + cupboard publish); re-pointing :share is a tracked follow-up"
+    let toast = |message: String| {
+        Event::Notify(models::Notif {
+            level: "info".to_string(),
+            message,
+            harness: Some(slug.to_string()),
+            ts: None,
+        })
+    };
+
+    let meta = match client.hive_share_meta(slug).await {
+        Ok(meta) => meta,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("share: read '{slug}' metadata: {e}")));
+            return;
+        }
+    };
+    let title = if meta.title.trim().is_empty() {
+        slug.to_string()
+    } else {
+        meta.title.clone()
+    };
+    let invite_secret = if visibility == models::HiveVisibility::Invite {
+        match meta
+            .invite_secret
+            .clone()
+            .filter(|secret| valid_invite_secret(secret))
+        {
+            Some(secret) => Some(secret),
+            None => match mint_invite_secret() {
+                Ok(secret) => Some(secret),
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("share: mint invite secret: {e}")));
+                    return;
+                }
+            },
+        }
+    } else {
+        None
+    };
+    let request = models::SetHiveListingRequest {
+        pot_id: slug.to_string(),
+        title,
+        description: meta.description.clone(),
+        visibility,
+        invite_secret: invite_secret.clone(),
+    };
+    let outcome = match client.set_hive_listing(&request).await {
+        Ok(outcome) if outcome.ok && outcome.saved => outcome,
+        Ok(_) => {
+            let _ = tx.send(Event::Error(format!(
+                "share: '{slug}' listing returned without a saved outcome"
+            )));
+            return;
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("share: save '{slug}': {e}")));
+            return;
+        }
+    };
+
+    let invite_link = invite_secret
+        .as_deref()
+        .map(|secret| format_hive_invite_link(secret, meta.hive_pubkey.as_deref(), &request.title));
+    if let Some(error) = outcome.announce_error.as_deref() {
+        let artifact = invite_link
+            .as_deref()
+            .map(|link| format!(" — invite: {link}"))
+            .unwrap_or_default();
+        let _ = tx.send(Event::Error(format!(
+            "share: '{slug}' saved as {}, but publish failed: {error}{artifact}",
+            visibility.as_str()
+        )));
+        return;
+    }
+
+    let _ = tx.send(toast(share_completion_message(
+        slug,
+        visibility,
+        &outcome,
+        invite_link.as_deref(),
     )));
+}
+
+/// 24 CSPRNG bytes as lowercase hex — the current desktop share dialog's
+/// invite-secret shape, without adding a one-use dependency to the Unix TUI.
+fn mint_invite_secret() -> Result<String> {
+    use std::io::Read;
+    let mut bytes = [0u8; 24];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn valid_invite_secret(secret: &str) -> bool {
+    (32..=128).contains(&secret.len()) && secret.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn format_hive_invite_link(secret: &str, pubkey: Option<&str>, title: &str) -> String {
+    let mut params = Vec::with_capacity(3);
+    if let Some(pubkey) = pubkey.filter(|value| !value.is_empty()) {
+        params.push(format!("pubkey={}", encode_query_component(pubkey)));
+    }
+    params.push(format!("secret={}", encode_query_component(secret)));
+    if !title.is_empty() {
+        params.push(format!("title={}", encode_query_component(title)));
+    }
+    format!("papercusp://pot?{}", params.join("&"))
+}
+
+fn share_completion_message(
+    slug: &str,
+    visibility: models::HiveVisibility,
+    outcome: &models::SetHiveListingResponse,
+    invite_link: Option<&str>,
+) -> String {
+    if visibility == models::HiveVisibility::Private {
+        return if outcome.withdrawn {
+            format!("withdrew '{slug}' from the directory + Cupboard")
+        } else {
+            format!("set '{slug}' private")
+        };
+    }
+
+    let peers = outcome.reachable_peers.unwrap_or(0);
+    let reach = if outcome.announced && peers > 0 {
+        format!(
+            "; reached {peers} peer{}",
+            if peers == 1 { "" } else { "s" }
+        )
+    } else if outcome.announced {
+        "; no reachable peers yet".to_string()
+    } else {
+        "; saved locally, not announced".to_string()
+    };
+    match visibility {
+        models::HiveVisibility::Public => {
+            format!("published '{slug}' to the directory + Cupboard{reach}")
+        }
+        models::HiveVisibility::Invite => format!(
+            "shared '{slug}' invite-only{reach} — {}",
+            invite_link.unwrap_or("invite artifact unavailable")
+        ),
+        models::HiveVisibility::Private => unreachable!("handled above"),
+    }
 }
 
 /// Fetch Cupboard listings for the active (kind, query) filter (D-011) and emit
@@ -6046,6 +6187,45 @@ async fn refetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hive_invite_artifact_matches_the_canonical_shape() {
+        let link = format_hive_invite_link(
+            "deadbeefdeadbeefdeadbeefdeadbeef",
+            Some("ab+/="),
+            "Acme / Hive",
+        );
+        assert_eq!(
+            link,
+            "papercusp://pot?pubkey=ab%2B%2F%3D&secret=deadbeefdeadbeefdeadbeefdeadbeef&title=Acme%20%2F%20Hive"
+        );
+        assert!(valid_invite_secret("deadbeefdeadbeefdeadbeefdeadbeef"));
+        assert!(!valid_invite_secret("too-short"));
+    }
+
+    #[test]
+    fn share_completion_never_calls_zero_peer_publication_reachable() {
+        let outcome = models::SetHiveListingResponse {
+            ok: true,
+            saved: true,
+            announced: true,
+            reachable_peers: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            share_completion_message("acme", models::HiveVisibility::Public, &outcome, None,),
+            "published 'acme' to the directory + Cupboard; no reachable peers yet"
+        );
+        assert_eq!(
+            share_completion_message(
+                "acme",
+                models::HiveVisibility::Invite,
+                &outcome,
+                Some("papercusp://pot?secret=abc"),
+            ),
+            "shared 'acme' invite-only; no reachable peers yet — papercusp://pot?secret=abc"
+        );
+    }
 
     #[test]
     fn claim_spec_bump_changes_only_revision() {
