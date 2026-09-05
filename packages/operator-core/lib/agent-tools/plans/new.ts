@@ -97,7 +97,7 @@ export const argsSchema = z
       .max(200_000)
       .optional()
       .describe(
-        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item and is silently ignored. plans:new returns itemsParsed + the parsed items so you can confirm they registered. Omit content to get the empty starter template.',
+        'Optional — the FULL plan body (the markdown BELOW the frontmatter: ## Now, ## Background, ## Requirements, ## Design, ## Phase 1 with items, ## Decisions). This is the same canonical field name used by plans:set-content. When provided, plans:new writes valid frontmatter + this content in ONE call, so you do NOT need a follow-up plans:set-content round-trip. Do NOT include your own --- frontmatter block — it is generated from slug/title/status/ownerEmail. ITEM LINES have a STRICT grammar and are the #1 fumble: an item is `- **P-001** `todo` Do the thing` — a `-`/`*` bullet, the id in **bold**, a status token in `backticks` (todo|wip|blocked|needs-human|done|dropped), then the text (optional trailing `blocked-by: P-002`, `importance: high`). A plain `- ` bullet, a `- [ ] ` checkbox, or `1. ` numbered line is NOT an item: plans:new refuses malformed item-looking lines with structured parse feedback before writing. plans:new returns itemsParsed + the parsed items so you can confirm they registered. If you intend to call plans:start, include substantive ## Requirements and ## Design sections alongside the P-NNN items; plans:start holds promotion until that spec triad is present. Omit content to get the empty starter template.',
       ),
     propertySchema: z
       .record(z.string(), z.unknown())
@@ -308,11 +308,11 @@ export default defineTool({
   description:
     'Create a new plan in the plan STORE. This is the ONLY way to create a plan — never write a plan file on disk yourself (a raw file is not registered in the store and collides here). Pass `content` to author the whole plan in ONE call (frontmatter is generated for you); omit it for an empty starter template. Slug uniqueness enforced inside a lock.',
   guidance: {
-    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip.',
+    when: 'Starting a new plan. The one-shot path: plans:new { slug, title, content } — pass the full markdown body (## Now / ## Background / ## Requirements / ## Design / ## Phase 1 items / ## Decisions) and it lands in one call, no set-content round-trip. If the plan will be started, include substantive Requirements + Design sections and canonical P-NNN item lines.',
     notWhen:
       'You want to edit an existing plan — use plans:set-content / set-now / add-decision / add-item. Never create a plan by writing a .md file under docs/plans/ — it is not in the store; always use this tool.',
     chaining:
-      'Author-in-one: plans:new { slug, title, content }. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
+      'Author-in-one: plans:new { slug, title, content }. For plans:start promotion, include substantive ## Requirements + ## Design sections and canonical P-NNN items — plans:start holds the items until this spec triad is present. Incremental: plans:new → plans:set-now → plans:add-item × N. Then plans:start to promote items to work-items.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -338,6 +338,43 @@ export default defineTool({
     // appends today's date when the caller didn't already include one.
     const slug = ensureDatedSlug(args.slug, date);
     const body = args.content;
+    const renderedBody = buildTemplate({
+      slug,
+      title: args.title,
+      status,
+      owner: args.ownerEmail ?? null,
+      date,
+      ...(body != null ? { body } : {}),
+    });
+    const parseSummary = summarizeItemParse(renderedBody, {
+      bodyProvided: body != null && body.trim().length > 0,
+      hintOnZeroItems: true,
+    });
+
+    // Parse admission happens before any plan lock or persistence. A body that
+    // contains item-looking lines but fails the strict P-NNN grammar would
+    // otherwise create a plan that looks successful while promoting zero
+    // items later. Return the same structured feedback the body writers use so
+    // callers can repair the exact lines without a follow-up read.
+    if ((parseSummary.unparsedItemLines ?? 0) > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'invalid_plan_content',
+              reason: 'unparsed_item_lines',
+              slug,
+              message:
+                'plans:new refused to create the plan because one or more item-looking lines do not match the canonical P-NNN item grammar.',
+              parseFeedback: parseSummary,
+              ...parseSummary,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
@@ -469,10 +506,6 @@ export default defineTool({
       args.rationale,
       harnessSlug ? { harnessSlug } : {},
     );
-    // Capture the exact bytes written so we can run the parser over them for
-    // the parse-feedback block (itemsParsed / echoed items / unparsed-item
-    // detection) after the lock releases.
-    let writtenBody: string | null = null;
     const result = await withPlanLock<NewPlanValue>(
       ctx as never,
       {
@@ -487,15 +520,6 @@ export default defineTool({
           // Slug collision — leave existing untouched, signal via value.
           return { newBody: null, value: { ok: false, code: 'slug_exists' } };
         }
-        const renderedBody = buildTemplate({
-          slug,
-          title: args.title,
-          status,
-          owner: args.ownerEmail ?? null,
-          date,
-          ...(body != null ? { body } : {}),
-        });
-        writtenBody = renderedBody;
         return { newBody: renderedBody, value: { ok: true, slug } };
       },
     );
@@ -577,18 +601,6 @@ export default defineTool({
       harnessSlug: result.scope.harnessSlug,
       planSlug: value.slug,
       ownerId: creatorOwnerId,
-    });
-
-    // Parse the just-written body so the caller gets item-parse feedback in the
-    // SAME call — itemsParsed + the parsed items echoed (no follow-up plans:get)
-    // + a grammar hint routing to plans:set-content when list-like lines look
-    // like items but did not parse (the silent 0-item trap this change closes).
-    const parseSummary = summarizeItemParse(writtenBody ?? '', {
-      bodyProvided: body != null && body.trim().length > 0,
-      // A fresh plan whose provided body yielded 0 items is almost always a
-      // formatting miss — nudge. (set-content/-chunk pass false: a prose-only
-      // rewrite legitimately has 0 items.)
-      hintOnZeroItems: true,
     });
 
     return {
