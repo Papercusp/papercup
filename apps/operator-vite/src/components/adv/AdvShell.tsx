@@ -139,8 +139,8 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'hud', label: 'HUD', icon: Gauge, accent: CATEGORICAL.teal300.hex, accentRgb: CATEGORICAL.teal300.rgb },
   // Secondary-only: normal in-app access lives under More, while Quick Panel
   // remains the fast global doorway to this same per-pot workspace.
-  { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
-  { id: 'plans', label: 'Create', icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
+  { id: 'brainstorm', label: ADV_MORE_LABELS.brainstorm, icon: Lightbulb, accent: 'var(--accent)', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
+  { id: 'plans', label: ADV_MORE_LABELS.plans, icon: ListChecks, accent: CATEGORICAL.amber500.hex, accentRgb: CATEGORICAL.amber500.rgb },
   // Workflows — one workspace-wide identity and control surface for triggered
   // plans, AI routines, and deterministic system tasks. Replaces the fragmented
   // Agents/System/Spend middle-pane catalogs; live agent attention remains HUD
@@ -150,7 +150,7 @@ export const ADV_TABS: ReadonlyArray<{
   // (scheduled-recurring-plans-2026-06-16 P-019). Next to Create (D-001: no separate
   // routines tab — plans are just optionally-scheduled). Workspace-scoped (aggregates
   // every pot's scheduled plans), so it also lives in WORKSPACE_TAB_IDS.
-  { id: 'calendar', label: 'Calendar', icon: CalendarClock, accent: CATEGORICAL.teal400.hex, accentRgb: CATEGORICAL.teal400.rgb },
+  { id: 'calendar', label: ADV_MORE_LABELS.calendar, icon: CalendarClock, accent: CATEGORICAL.teal400.hex, accentRgb: CATEGORICAL.teal400.rgb },
   // Label "Work" (owner ask 2026-07-26; was "Working" 2026-06-11, "Progress"
   // before that): the tab is the live-work view (work items / agents / runs for
   // the selected project). The tab ID stays 'harnesses' — it's serialized in
@@ -160,18 +160,18 @@ export const ADV_TABS: ReadonlyArray<{
   // Health — the read-only at-a-glance system dashboard (system-health-tab-2026-06-15),
   // beside Work. Workspace-scoped (it aggregates the whole running system, not one
   // pot), so it also lives in WORKSPACE_TAB_IDS. Flag-gated (SYSTEM_HEALTH_TAB).
-  { id: 'health', label: 'Health', icon: HeartPulse, accent: CATEGORICAL.rose500.hex, accentRgb: CATEGORICAL.rose500.rgb },
+  { id: 'health', label: ADV_MORE_LABELS.health, icon: HeartPulse, accent: CATEGORICAL.rose500.hex, accentRgb: CATEGORICAL.rose500.rgb },
   // (The Overwatch surface moved to the left sidebar next to Queen — its
   // actionable control + anomaly→action list — and its duplicated health grid
   // was dropped in favour of this Health tab. system-health-tab P-008, 2026-06-15.)
-  { id: 'frames', label: 'Frames', icon: MonitorPlay, accent: 'var(--accent-strong, var(--accent))', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
-  { id: 'git', label: 'Git', icon: GitBranch, accent: CATEGORICAL.green500.hex, accentRgb: CATEGORICAL.green500.rgb },
-  { id: 'stats', label: 'Stats', icon: BarChart3, accent: CATEGORICAL.violet300.hex, accentRgb: CATEGORICAL.violet300.rgb },
-  { id: 'testing', label: 'Tests', icon: FlaskConical, accent: CATEGORICAL.lime500.hex, accentRgb: CATEGORICAL.lime500.rgb },
-  { id: 'docs', label: 'Docs', icon: BookOpen, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
-  { id: 'history', label: 'History', icon: HistoryIcon, accent: CATEGORICAL.emerald400.hex, accentRgb: CATEGORICAL.emerald400.rgb },
-  { id: 'insights', label: 'Insights', icon: TrendingUp, accent: CATEGORICAL.teal500.hex, accentRgb: CATEGORICAL.teal500.rgb },
-  { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: CATEGORICAL.pink500.hex, accentRgb: CATEGORICAL.pink500.rgb },
+  { id: 'frames', label: ADV_MORE_LABELS.frames, icon: MonitorPlay, accent: 'var(--accent-strong, var(--accent))', accentRgb: 'var(--accent-rgb, 56, 189, 248)' },
+  { id: 'git', label: ADV_MORE_LABELS.git, icon: GitBranch, accent: CATEGORICAL.green500.hex, accentRgb: CATEGORICAL.green500.rgb },
+  { id: 'stats', label: ADV_MORE_LABELS.stats, icon: BarChart3, accent: CATEGORICAL.violet300.hex, accentRgb: CATEGORICAL.violet300.rgb },
+  { id: 'testing', label: ADV_MORE_LABELS.testing, icon: FlaskConical, accent: CATEGORICAL.lime500.hex, accentRgb: CATEGORICAL.lime500.rgb },
+  { id: 'docs', label: ADV_MORE_LABELS.docs, icon: BookOpen, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
+  { id: 'history', label: ADV_MORE_LABELS.history, icon: HistoryIcon, accent: CATEGORICAL.emerald400.hex, accentRgb: CATEGORICAL.emerald400.rgb },
+  { id: 'insights', label: ADV_MORE_LABELS.insights, icon: TrendingUp, accent: CATEGORICAL.teal500.hex, accentRgb: CATEGORICAL.teal500.rgb },
+  { id: 'conversations', label: ADV_MORE_LABELS.conversations, icon: MessageCircle, accent: CATEGORICAL.pink500.hex, accentRgb: CATEGORICAL.pink500.rgb },
   // One continuous learning loop: Observe → Improve → Verify → Retain. Signals
   // was folded into this destination so the system's inputs and outcomes share
   // one visual model instead of competing top-level tabs.
@@ -179,8 +179,8 @@ export const ADV_TABS: ReadonlyArray<{
   // Evaluation — the impartial-benchmark surface (impartial-benchmark-suite-2026-06-15
   // D-007). Workspace-scoped (aggregates external benchmark runs across the whole
   // workspace, not one pot), so it also lives in WORKSPACE_TAB_IDS below.
-  { id: 'evals', label: 'Evaluation', icon: Trophy, accent: CATEGORICAL.yellow500.hex, accentRgb: CATEGORICAL.yellow500.rgb },
-  { id: 'settings', label: 'Settings', icon: Settings, accent: CATEGORICAL.orange500.hex, accentRgb: CATEGORICAL.orange500.rgb },
+  { id: 'evals', label: ADV_MORE_LABELS.evals, icon: Trophy, accent: CATEGORICAL.yellow500.hex, accentRgb: CATEGORICAL.yellow500.rgb },
+  { id: 'settings', label: ADV_MORE_LABELS.settings, icon: Settings, accent: CATEGORICAL.orange500.hex, accentRgb: CATEGORICAL.orange500.rgb },
 ] as const;
 
 /**
