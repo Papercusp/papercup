@@ -910,6 +910,21 @@ describe('systemd-run oneshot detach advisory (EI-20235141119412683)', () => {
     expect(advisoryFor(command)).toContain('systemd-run oneshot advisory');
     expectAllow(runGate(bashCmd(command), { ...AGENT, PAPERCUSP_SYSTEMD_ONESHOT_ADVISORY: 'off' }));
   });
+
+  // EI-21971958067151594: `capability_bash` is the SAME shell reached over MCP, and
+  // CLAUDE.md routes agents onto exactly that spelling for long-running launches —
+  // which is this advisory's whole population. Gating on Claude's `Bash` name alone
+  // would exempt the callers most likely to hit it.
+  it.each([
+    ['the MCP spelling', 'mcp__papercusp-su__capability_bash'],
+    ["codex's exec_command", 'exec_command'],
+    ["codex's local_shell", 'local_shell'],
+  ])('reaches %s, not just Claude-native Bash', (_label, tool) => {
+    const out = runGate(bashCmd('systemd-run --user --property=Type=oneshot ./gate.sh', { tool }), AGENT);
+    expect(out.status, describeGateExit(out)).toBe(0);
+    expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext)
+      .toContain('systemd-run oneshot advisory');
+  });
 });
 
 /**

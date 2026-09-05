@@ -2558,8 +2558,14 @@ def _is_blocking_oneshot_systemd_run(cmd):
 
 
 try:
-    if (tool_name.lower() == 'bash'
-            and not ADVISORY
+    # Deliberately NOT gated on `tool_name == 'bash'`. Execution only reaches here
+    # after the `_is_shell_tool` early-allow above, so the tool is already a shell —
+    # and narrowing to Claude's spelling would exempt codex's (exec_command /
+    # local_shell / shell) and `mcp__…__capability_bash`, which is the SAME shell
+    # reached over MCP. That is the spelling-shaped hole EI-21971958067151594 closed
+    # for every deny in this file, and it would bite hardest here: CLAUDE.md routes
+    # agents onto `capability:bash` for exactly the long-running launches this warns about.
+    if (not ADVISORY
             and os.environ.get(
                 'PAPERCUSP_SYSTEMD_ONESHOT_ADVISORY', 'on').strip().lower() not in ('off', '0', 'false', 'no')
             and _is_blocking_oneshot_systemd_run(command)
