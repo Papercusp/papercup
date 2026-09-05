@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { listingManifestDigest, listingManifestSigningBytes, sameListingRelease, validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
+import { listingManifestDigest, listingManifestSigningBytes, sameListingRelease, unsignedListingManifest, validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 
 const manifest = (overrides: Partial<CupboardReleaseManifest> = {}): CupboardReleaseManifest => ({
   schemaVersion: 1, listingKind: 'plugin', listingRef: 'demo', releaseVersion: '1.0.0',
@@ -12,8 +12,8 @@ describe('Cupboard listing/release manifest', () => {
   it('validates the immutable signed release shape and canonical bytes', () => {
     const m = manifest();
     expect(validateListingManifest(m)).toEqual({ ok: true, manifest: m });
-    expect(listingManifestSigningBytes({ ...m, signature: undefined as never })).toBeInstanceOf(Buffer);
-    expect(listingManifestDigest({ ...m, signature: undefined as never })).toMatch(/^[0-9a-f]{64}$/);
+    expect(listingManifestSigningBytes(unsignedListingManifest(m))).toBeInstanceOf(Buffer);
+    expect(listingManifestDigest(unsignedListingManifest(m))).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects malformed hashes, publisher ids, and review states', () => {

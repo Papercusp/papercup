@@ -168,10 +168,10 @@ const vettingCard = (critics: string[]) =>
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
-  classRef: 'plan-class-feature-ship',
+  classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
-    classRef: 'plan-class-feature-ship',
+    classRef: 'plan-class-feature-ship' as const,
     specIds: ['SPEC-003-01'],
     includeDraft: true as const,
   },

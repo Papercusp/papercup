@@ -43,5 +43,6 @@ export function buildEvmBatchSettlementRequest(input: { config: EvmSettlementCon
   if (input.amountMicros <= 0n || input.amountMicros > input.channel.escrowMicros - input.channel.settledMicros) return { ok: false, code: 'amount-invalid', detail: 'amount must be positive and within channel escrow' };
   const body = { amountMicros: input.amountMicros.toString(), channelId: input.channel.channelId, chainId: config.config.chainId, stablecoin: config.config.stablecoin.toLowerCase(), to: config.config.settlementContract.toLowerCase(), voucherDigests: [...input.voucherDigests] };
   const calldata = Buffer.from(canonicalJson(body), 'utf8').toString('hex');
-  return { ok: true, request: { ...body, calldata: `0x${calldata}`, requestHash: createHash('sha256').update(calldata).digest('hex') } };
+  // `body` carries amountMicros as a decimal string for canonical JSON; the request type keeps the bigint.
+  return { ok: true, request: { ...body, amountMicros: input.amountMicros, calldata: `0x${calldata}`, requestHash: createHash('sha256').update(calldata).digest('hex') } };
 }

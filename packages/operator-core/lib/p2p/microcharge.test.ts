@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createMicrochargeChannel, paymentVoucherDigest, paymentVoucherSigningBytes, reserveMicrocharge, settleMicrocharge, type CumulativePaymentVoucher } from './microcharge';
+import { createMicrochargeChannel, paymentVoucherDigest, paymentVoucherSigningBytes, reserveMicrocharge, settleMicrocharge, unsignedVoucher, type CumulativePaymentVoucher } from './microcharge';
 
 const voucher = (overrides: Partial<CumulativePaymentVoucher> = {}): CumulativePaymentVoucher => ({
   channelId: 'channel-1', payer: 'buyer', seller: 'host', releaseRef: 'plugin@1.0.0', usageNonce: 'n-1',
@@ -10,8 +10,8 @@ const voucher = (overrides: Partial<CumulativePaymentVoucher> = {}): CumulativeP
 describe('per-use microcharge vouchers', () => {
   it('uses exact bigint micro-units and binds the complete voucher', () => {
     const v = voucher({ cumulativeClaimMicros: 1_000_000_000_000_001n });
-    expect(paymentVoucherSigningBytes({ ...v, signature: undefined as never })).toBeInstanceOf(Buffer);
-    expect(paymentVoucherDigest({ ...v, signature: undefined as never })).toMatch(/^[0-9a-f]{64}$/);
+    expect(paymentVoucherSigningBytes(unsignedVoucher(v))).toBeInstanceOf(Buffer);
+    expect(paymentVoucherDigest(unsignedVoucher(v))).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('reserves cumulative deltas before execution and settles actual usage', () => {

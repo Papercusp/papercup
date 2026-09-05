@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commerceEventDigest, commerceEventSigningBytes, reduceCommerceEvents, validateCommerceEvent, type CommerceEvent } from './commerce-events';
+import { commerceEventDigest, commerceEventSigningBytes, reduceCommerceEvents, unsignedCommerceEvent, validateCommerceEvent, type CommerceEvent } from './commerce-events';
 
 const event = (overrides: Partial<CommerceEvent> = {}): CommerceEvent => ({
   eventId: 'evt-1', streamId: 'order-1', kind: 'order', version: 1, issuer: 'buyer-1', sequence: 0,
@@ -9,8 +9,8 @@ const event = (overrides: Partial<CommerceEvent> = {}): CommerceEvent => ({
 describe('P2P commerce events', () => {
   it('canonicalizes and validates signed event envelopes', () => {
     const e = event();
-    expect(commerceEventSigningBytes({ ...e, signature: undefined as never })).toBeInstanceOf(Buffer);
-    expect(commerceEventDigest({ ...e, signature: undefined as never })).toMatch(/^[0-9a-f]{64}$/);
+    expect(commerceEventSigningBytes(unsignedCommerceEvent(e))).toBeInstanceOf(Buffer);
+    expect(commerceEventDigest(unsignedCommerceEvent(e))).toMatch(/^[0-9a-f]{64}$/);
     expect(validateCommerceEvent(e)).toEqual({ ok: true, event: e });
     expect(validateCommerceEvent({ ...e, kind: 'not-a-kind' }).ok).toBe(false);
   });

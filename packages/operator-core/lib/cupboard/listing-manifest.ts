@@ -39,6 +39,13 @@ export function listingManifestDigest(manifest: Omit<CupboardReleaseManifest, 's
   return createHash('sha256').update(listingManifestSigningBytes(manifest)).digest('hex');
 }
 
+/** Strip the signature so a signed manifest can be re-digested (TS6 rejects the `signature: undefined as never` spread). */
+export function unsignedListingManifest(manifest: CupboardReleaseManifest): Omit<CupboardReleaseManifest, 'signature'> {
+  const { signature: _signature, ...unsigned } = manifest;
+  void _signature;
+  return unsigned;
+}
+
 export type ListingManifestErrorCode =
   | 'invalid-shape'
   | 'unsupported-version'

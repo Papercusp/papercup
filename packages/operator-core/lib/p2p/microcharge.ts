@@ -23,6 +23,18 @@ export interface CumulativePaymentVoucher {
   readonly signature: string;
 }
 
+/**
+ * Strip the signature so a signed voucher can be fed to the signing-bytes / digest
+ * functions. (The former `{ ...voucher, signature: undefined as never }` spread idiom
+ * is an excess-property error under TypeScript 6 — `Omit<T, 'signature'>` rejects a
+ * literal that names the omitted key.)
+ */
+export function unsignedVoucher(voucher: CumulativePaymentVoucher): Omit<CumulativePaymentVoucher, 'signature'> {
+  const { signature: _signature, ...unsigned } = voucher;
+  void _signature;
+  return unsigned;
+}
+
 function voucherJson(voucher: Omit<CumulativePaymentVoucher, 'signature'>): Record<string, unknown> {
   return {
     channelId: voucher.channelId,
@@ -102,6 +114,6 @@ export function settleMicrocharge(input: { channel: MicrochargeChannel; voucher:
   if (!input.receiptSignature.trim()) return { ok: false, code: 'invalid-voucher', detail: 'signed usage receipt signature is required' };
   const { [input.voucher.usageNonce]: _reserved, ...rest } = input.channel.reservations;
   void _reserved;
-  const receipt: SignedUsageReceipt = { channelId: input.channel.channelId, usageNonce: input.voucher.usageNonce, meterQuantity: input.actualMeterQuantity ?? input.voucher.meterQuantity, amountMicros: actual, voucherDigest: paymentVoucherDigest({ ...input.voucher, signature: undefined as never }), occurredAtMs: input.occurredAtMs, signature: input.receiptSignature };
+  const receipt: SignedUsageReceipt = { channelId: input.channel.channelId, usageNonce: input.voucher.usageNonce, meterQuantity: input.actualMeterQuantity ?? input.voucher.meterQuantity, amountMicros: actual, voucherDigest: paymentVoucherDigest(unsignedVoucher(input.voucher)), occurredAtMs: input.occurredAtMs, signature: input.receiptSignature };
   return { ok: true, channel: { ...input.channel, committedMicros: input.channel.committedMicros + actual, reservations: rest, receipts: { ...input.channel.receipts, [input.voucher.usageNonce]: receipt.voucherDigest } }, receipt };
 }

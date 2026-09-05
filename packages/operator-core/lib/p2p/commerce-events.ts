@@ -44,6 +44,13 @@ export function commerceEventDigest(event: Omit<CommerceEvent, 'signature'>): st
   return createHash('sha256').update(commerceEventSigningBytes(event)).digest('hex');
 }
 
+/** Strip the signature so a signed event can be re-digested (TS6 rejects the `signature: undefined as never` spread). */
+export function unsignedCommerceEvent(event: CommerceEvent): Omit<CommerceEvent, 'signature'> {
+  const { signature: _signature, ...unsigned } = event;
+  void _signature;
+  return unsigned;
+}
+
 export type CommerceEventValidationCode =
   | 'invalid-shape'
   | 'invalid-kind'

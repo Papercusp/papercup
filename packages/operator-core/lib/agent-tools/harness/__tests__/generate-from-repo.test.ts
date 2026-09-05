@@ -48,7 +48,9 @@ vi.mock('../../../harness/from-repo-progress', async (importOriginal) => {
   return { ...actual, recordFromRepoStep: mocks.recordFromRepoStep };
 });
 
-const CTX = { log() {}, workspaceId: 'ws', role: 'operator' } as never;
+// Keep the object-typed base separate: spreading a `never`-typed value is a TS6 error (TS2698).
+const CTX_BASE = { log() {}, workspaceId: 'ws', role: 'operator' };
+const CTX = CTX_BASE as never;
 const run = async (args: Record<string, unknown>, ctx = CTX) => {
   const res = (await tool.handler(args as never, ctx)) as { content: { text: string }[] };
   return JSON.parse(res.content[0].text);
@@ -206,7 +208,7 @@ describe('harness:generate-from-repo', () => {
     });
     mocks.finalizePendingMcpResult.mockResolvedValue(true);
     const ctx = {
-      ...CTX,
+      ...CTX_BASE,
       transport: 'mcp',
       idempotencyKey: 'generate-slow-1',
       uiClientId: 'client-1',
@@ -307,7 +309,7 @@ describe('harness:generate-from-repo', () => {
       }));
     mocks.finalizePendingMcpResult.mockResolvedValue(true);
     const ctx = {
-      ...CTX,
+      ...CTX_BASE,
       transport: 'mcp',
       idempotencyKey: 'generate-retry-1',
       uiClientId: 'client-retry',

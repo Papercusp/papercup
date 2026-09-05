@@ -506,7 +506,9 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('stays within the shared prompt-weight budget', () => {
-    expect(promptWeight(tool)).toBeLessThanOrEqual(BUDGET);
+    // promptWeight takes the loose { description, guidance } shape; a RoleToolDefinition's richer
+    // guidance type is not directly assignable under TS6, so narrow through unknown.
+    expect(promptWeight(tool as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 
   it('resolves every source ref and returns the exact server-captured revision', async () => {

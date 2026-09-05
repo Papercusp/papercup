@@ -1,5 +1,5 @@
 /** Network-neutral batch settlement adapter over cumulative vouchers (P-021). */
-import { paymentVoucherDigest, type CumulativePaymentVoucher } from './microcharge';
+import { paymentVoucherDigest, unsignedVoucher, type CumulativePaymentVoucher } from './microcharge';
 
 export type PaymentRail = 'evm-x402' | 'lightning' | 'custom';
 
@@ -40,7 +40,7 @@ export function settleVoucherBatch(input: {
     if (voucher.channelId !== input.channel.channelId) return { ok: false, code: 'channel-mismatch', detail: 'voucher belongs to a different payment channel' };
     if (!Number.isFinite(input.nowMs) || input.nowMs > voucher.expiresAtMs) return { ok: false, code: 'expired', detail: `voucher '${voucher.usageNonce}' is expired` };
     if (!verify(voucher)) return { ok: false, code: 'invalid-signature', detail: `voucher '${voucher.usageNonce}' signature failed verification` };
-    const digest = paymentVoucherDigest({ ...voucher, signature: undefined as never });
+    const digest = paymentVoucherDigest(unsignedVoucher(voucher));
     if (input.channel.claimedVoucherDigests.includes(digest) || digests.includes(digest)) return { ok: false, code: 'duplicate-claim', detail: `voucher '${voucher.usageNonce}' was already claimed` };
     if (voucher.cumulativeClaimMicros <= cumulative) return { ok: false, code: 'non-monotonic', detail: 'batch vouchers must advance cumulative claims monotonically' };
     cumulative = voucher.cumulativeClaimMicros;

@@ -74,7 +74,7 @@ describe('serializeStoredMcpResult', () => {
     const result: StoredMcpResult = {
       content: [
         { type: 'text', text: 'summary line' },
-        { type: 'resource', uri: 'https://example.com', mimeType: 'text/plain' } as Record<string, unknown>,
+        { type: 'resource', uri: 'https://example.com', mimeType: 'text/plain' } as unknown as StoredMcpResult['content'][number],
       ],
     };
     const parsed = roundTrip(result) as { content: Array<Record<string, unknown>> };
