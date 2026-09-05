@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import { wakeParentOnChildDeath } from './parent-wake';
+import { spawnRowKind, isInProcessLaunchIdentity } from './spawn-row-class';
 import { FEATURE_NON_REQUEUE_STATES, FEATURE_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 
@@ -190,26 +191,19 @@ export async function recordSpawnPid(
      WHERE spawn_id = ${spawnId} AND status IN ('running', 'restarting')`;
 }
 
-export type SpawnRowKind = 'spawn' | 'launch';
-
 /**
- * Classify a nursery row by the process whose liveness its pid represents.
+ * Spawn-row CLASS MEMBERSHIP lives in the leaf module `./spawn-row-class` — the
+ * single source of truth every classifier imports (EI-21344971525195182). It is
+ * re-exported here because this module was its historical home and most callers
+ * (`fixer-liveness.ts`, the integration tests, `pot/placement-watchdog.ts`)
+ * already import it from this path. Change the predicates THERE, never here.
  *
- * Legacy `launch-*` and durable-spawn rows begin life before the /invoke route
- * has started its child. The route's handoff marks the run id `invoke-*` while
- * recording the actual child pid; only then does the same row use the strict
- * child-process probe. Treating every durable/launch row as an in-process launch
- * made a cross-process firing boot id look like a stale launcher and killed fresh
- * release-fixer work before its first turn (EI-20981156698708733).
+ * The handoff UPDATE above (`markSpawnHandoff`) carries the one copy that module
+ * cannot own — the same boundary expressed as SQL `LIKE` patterns. `spawn-row-class.test.ts`
+ * pins the two against each other so they cannot drift apart again.
  */
-export function spawnRowKind(
-  row: { spawnId: string; runId: string | null; pid?: number | null },
-): SpawnRowKind {
-  if ((row.runId ?? '').startsWith('invoke-')) return 'spawn';
-  const launchIdentity = (row.runId ?? '').startsWith('launch-') || row.spawnId.startsWith('durable-spawn:');
-  if (!launchIdentity) return 'spawn';
-  return 'launch';
-}
+export { spawnRowKind, isInProcessLaunchIdentity } from './spawn-row-class';
+export type { SpawnRowKind } from './spawn-row-class';
 
 /**
  * Is the recorded child process still alive on THIS host (EI-85)? Linux /proc
@@ -889,50 +883,20 @@ function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null; pid?
 }
 
 /**
- * Does this row carry an IN-PROCESS-LAUNCH IDENTITY, by its ids alone?
+ * `isInProcessLaunchIdentity` — the ids-only identity predicate — now lives in
+ * `./spawn-row-class` and is re-exported from this module (see the re-export beside
+ * `spawnRowKind` above). Its full rationale, including why it is deliberately NOT
+ * `!isSupervisedBeeRow(row)` and the 71%-of-the-population measurement behind that,
+ * is in that module's docblock.
  *
- * This is deliberately NOT `!isSupervisedBeeRow(row)`, and the difference is
- * load-bearing for any reaper that KILLS. {@link spawnRowKind} short-circuits to
- * `'spawn'` the moment `run_id` starts with `invoke-` — the documented "the /invoke
- * route recorded a real child pid, so treat it as a supervised child from here"
- * handoff — and that check runs BEFORE the `durable-spawn:` test. So a
- * `durable-spawn:*` row whose run_id is `invoke-*` classifies as a supervised bee
- * and is NOT excluded by `isSupervisedBeeRow`.
- *
- * MEASURED, 2026-08-24 (WI-6113), `harness_shared.spawned_agents`, 14-day window:
- * of 79 `durable-spawn:*` rows, 56 (71%) carry an `invoke-*` run_id — so
- * `isSupervisedBeeRow` excludes only 23 of them. The `invoke-` prefix first appears
- * on 2026-08-21; before that the whole class read as `'launch'`. A run_id naming
- * change silently moved most of this population across the class boundary that two
- * killing reapers rely on, and nothing failed.
- *
- * WHY THE HANDOFF'S PREMISE DOES NOT HOLD HERE: the handoff means "a real child is
- * being stdout-supervised". If that were true of these rows some of them would have
- * streamed. NONE have — `last_output_at` is NULL on 79/79 of the class, and on
- * 0-of-5,457 in-process-launch rows table-wide, against 184 supervised rows that do
- * populate it. Whether the defect is in the handoff (no supervisor attached) or in
- * the classification, the consequence for a reaper is identical: the row is treated
- * as a supervised child that has "never emitted output", which is exactly the
- * signature these reapers kill on.
- *
- * Use this ALONGSIDE `isSupervisedBeeRow` — never instead of it — so the filter is
- * the INTERSECTION of both, and can only ever remove rows from a kill list.
- *
- * TWIN, AND THE DIVERGENCE THAT CAUSED THIS BUG: watchdog.ts's `isInProcessLaunchRow`
- * is logically identical to this function, and its docblock says it "mirrors
- * spawn-reclaim.ts's `kind` classifier (the single source of truth)". It does not, and
- * that is precisely how the hole opened: watchdog's copy is ids-only and stayed correct,
- * while the classifier it claims to mirror grew an `invoke-*` short-circuit that moved
- * 71% of the durable-spawn population to the other side of the boundary. The two were
- * only ever kept in step by a comment. Consolidating them is safe from a module-graph
- * standpoint (spawn-reclaim does not import watchdog, and watchdog references
- * spawn-reclaim only in prose) but is deliberately NOT done here — it edits a hot shared
- * file for no behavioural gain, and it is filed as follow-up work instead. Until then:
- * a change to EITHER of these two predicates must be made to BOTH.
+ * WHAT THE CONSOLIDATION FIXED (EI-21344971525195182): watchdog.ts and
+ * pot/placement-watchdog.ts each carried their own hand-copied version of this
+ * boundary, and watchdog's docblock claimed it "mirrors spawn-reclaim.ts's `kind`
+ * classifier (the single source of truth)". It did not — its copy was ids-only and
+ * stayed correct while the classifier it claimed to mirror grew an `invoke-*`
+ * short-circuit. They were kept in step only by that sentence. All three now import
+ * one implementation, and `spawn-row-class.test.ts` fails if a fourth copy appears.
  */
-export function isInProcessLaunchIdentity(row: { spawn_id: string; run_id: string | null }): boolean {
-  return (row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:');
-}
 
 /**
  * The ceiling-jam verdict for ONE candidate row — pure, so {@link

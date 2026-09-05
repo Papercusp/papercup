@@ -36,6 +36,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join as pathJoin, isAbsolute as pathIsAbsolute } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { isInProcessLaunchIdentity } from '../../fleet/spawn-row-class';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, probeAll, recordProbeResults, type ProbeResult } from '../../service-health';
@@ -3736,9 +3737,17 @@ interface CeilingJamRow {
  * Is this a nursery row for an IN-PROCESS loopback launch (a durable-spawn
  * worker, a `launch-*` launch-blueprint — doc-steward / release cadence /
  * git-sync — or a Mug/overwatch wake) rather than a supervised invoke-once
- * bee child? Mirrors spawn-reclaim.ts's `kind` classifier (the single source of
- * truth for this distinction: `run_id` starts with `launch-`, OR `spawn_id`
- * starts with `durable-spawn:`).
+ * bee child? DELEGATES to `fleet/spawn-row-class`'s `isInProcessLaunchIdentity` —
+ * the one implementation of this boundary (EI-21344971525195182).
+ *
+ * This function used to carry its own copy of the prefix test and a docblock
+ * claiming it "mirrors spawn-reclaim.ts's `kind` classifier (the single source of
+ * truth)". It did not: that classifier grew an `invoke-*` short-circuit which moved
+ * 71% of the `durable-spawn:*` population to the other side of the boundary, while
+ * this copy stayed ids-only. Note the delegation target is the IDENTITY predicate,
+ * not `spawnRowKind` — for this detector the ids-only answer is the correct one, and
+ * that distinction is exactly what the old "mirrors the kind classifier" sentence
+ * got wrong.
  *
  * WHY THE CEILING-JAM DETECTOR MUST EXCLUDE THESE (EI-7215). `last_output_at` is
  * stamped ONLY by the child-process stdout supervisor (`operator-spawn.ts` →
@@ -3754,7 +3763,7 @@ interface CeilingJamRow {
  * (spawn-reclaim.ts), not this DB-only detector.
  */
 export function isInProcessLaunchRow(row: { spawn_id: string; run_id?: string | null }): boolean {
-  return (row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:');
+  return isInProcessLaunchIdentity(row);
 }
 /**
  * Pure: classify the workspace's `running`/`restarting` nursery rows into
