@@ -1293,6 +1293,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
   });
 
   it('WI-6500: re-acquires a distinct per-install lease around the bootstrap post-leg', async () => {
+    const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     potGitMode = 'p2p-only';
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
     runGitSyncMock.mockResolvedValue({
@@ -1314,6 +1315,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       .map(([, opts]) => opts as { resource: string; mode: string; owner: string })
       .filter(({ resource }) => resource === 'git-sync:papercup');
     expect(perInstallAcquires).toHaveLength(2);
+    expect(servingWarning).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    servingWarning.mockRestore();
     expect(perInstallAcquires.map(({ mode }) => mode)).toEqual(['exclusive', 'exclusive']);
     expect(perInstallAcquires[1]?.owner).not.toBe(perInstallAcquires[0]?.owner);
     expect(releasedResources()).toEqual([
@@ -2498,6 +2501,7 @@ describe('clean sync outcome', () => {
   it.each(['bridged', 'p2p-only'] as const)(
     "EI-20232774599730947: %s mode makes the superproject truly commit-only while preserving submodule-origin sync",
     async (mode) => {
+      const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       potGitMode = mode;
       registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
       runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
@@ -2522,10 +2526,13 @@ describe('clean sync outcome', () => {
         'complete',
       ]);
       expect(gitSyncActivityPatches()[1]).toMatchObject({ active: true, outcome_status: 'nothing' });
+      expect(servingWarning).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+      servingWarning.mockRestore();
     },
   );
 
   it('EI-20232774599730947: a pre-seeded P2P member stays superproject commit-only and honors its explicit submodule-origin push', async () => {
+    const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     potGitMode = 'bridged';
     registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
     runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
@@ -2534,6 +2541,8 @@ describe('clean sync outcome', () => {
       ...ctx,
       triggerConfig: { push: false, pushSubmoduleOrigins: true },
     });
+    expect(servingWarning).toHaveBeenCalledWith(expect.stringContaining('serving unavailable'));
+    servingWarning.mockRestore();
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
       config: expect.objectContaining({
