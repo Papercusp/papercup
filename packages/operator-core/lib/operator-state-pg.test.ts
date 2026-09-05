@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Map keyed by `<table>:<workspace_id>` → row payload (JSONB-equivalent).
 const store = new Map<string, unknown>();
 
+// Failure injection for the SELECT branch: each queued error rejects ONE SELECT
+// (FIFO) before the store answers again — how the pool-starvation retry is exercised.
+const selectFailures: Error[] = [];
+
 // WI-6796 — capture the sync invalidations a write fans out. notifyOperatorStateSync
 // lazily `await import('./sync-sse')`s inside a try/catch, so without this mock the
 // whole notify leg is silently swallowed and untestable.
@@ -36,6 +40,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
     const key = `${tableName}:${ws}`;
 
     if (/SELECT payload FROM/.test(sqlText)) {
+      const injected = selectFailures.shift();
+      if (injected) return Promise.reject(injected);
       const row = store.get(key);
       return Promise.resolve(row !== undefined ? [{ payload: row }] : []);
     }
@@ -71,15 +77,62 @@ vi.mock('@papercusp/db-org', async (orig) => {
   };
 });
 
-import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { isRetriablePgReadError, readOperatorState, writeOperatorState } from './operator-state-pg';
 
 beforeEach(() => {
   store.clear();
   notified.length = 0;
+  selectFailures.length = 0;
 });
 afterEach(() => {
   store.clear();
   notified.length = 0;
+  selectFailures.length = 0;
+});
+
+/**
+ * 2026-09-05 22:30Z — the papercusp green-checkpoint run judging 92e07dd5 reached its
+ * decision stage and then died in `readOperatorState` on
+ * `PostgresError: query_wait_timeout` (FATAL, SQLSTATE 08P01: pgbouncer gave up waiting
+ * for a server slot, so the SELECT never executed). One transient pooler wait cost a
+ * 60-minute suite its verdict. A read-only SELECT that never reached the server is safe
+ * to re-issue, so the read path retries that shape (and CONNECTION_CLOSED) a bounded
+ * number of times; anything else still surfaces on the first throw.
+ */
+describe('readOperatorState retries pgbouncer pool starvation (2026-09-05 gate crash)', () => {
+  function poolStarvation(): Error {
+    return Object.assign(new Error('query_wait_timeout'), { code: '08P01', severity_local: 'FATAL' });
+  }
+
+  it('classifies the pooler shapes as retriable for a read and nothing else', () => {
+    expect(isRetriablePgReadError(poolStarvation())).toBe(true);
+    expect(isRetriablePgReadError(Object.assign(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'), { code: 'CONNECTION_CLOSED' }))).toBe(true);
+    expect(isRetriablePgReadError(Object.assign(new Error('connect timed out'), { code: 'CONNECT_TIMEOUT' }))).toBe(true);
+    expect(isRetriablePgReadError(Object.assign(new Error('relation "x" does not exist'), { code: '42P01' }))).toBe(false);
+    expect(isRetriablePgReadError(new TypeError('boom'))).toBe(false);
+    expect(isRetriablePgReadError(null)).toBe(false);
+  });
+
+  it('re-issues the SELECT after a query_wait_timeout and returns the row', async () => {
+    store.set('operator_first_run:test-ws', { retried: true });
+    selectFailures.push(poolStarvation());
+    const got = await readOperatorState<{ retried?: boolean }>('operator_first_run');
+    expect(got?.retried).toBe(true);
+    expect(selectFailures).toHaveLength(0);
+  });
+
+  it('does not retry a non-transient error', async () => {
+    const boom = Object.assign(new Error('relation "harness_shared.operator_first_run" does not exist'), { code: '42P01' });
+    selectFailures.push(boom);
+    await expect(readOperatorState('operator_first_run')).rejects.toBe(boom);
+  });
+
+  it('gives up after the bounded retries instead of looping forever', async () => {
+    selectFailures.push(poolStarvation(), poolStarvation(), poolStarvation());
+    await expect(readOperatorState('operator_first_run')).rejects.toThrow(/query_wait_timeout/);
+    // retries:2 ⇒ 3 tries total ⇒ all three injected failures were consumed.
+    expect(selectFailures).toHaveLength(0);
+  }, 10_000);
 });
 
 describe('readOperatorState / writeOperatorState (unencrypted path)', () => {

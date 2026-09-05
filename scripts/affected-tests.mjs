@@ -565,6 +565,51 @@ logLine(
 // (green-checkpoint, deploy-cli): a signal trap is only a real option for a runner
 // whose main loop is genuinely async, and it must still be paired with a SIGKILL
 // escalation upstream. Check the loop before reaching for the trap.
+// ── Transient pgbouncer errors are BOOKKEEPING failures, never a verdict ────────
+// Measured 2026-09-05 22:30Z (papercusp gate run judging 92e07dd5, log
+// 2026-09-05T22-30-02-970Z-base-50ed2739ec71-cand-92e07dd56fa1.log): at lane-pure
+// 2406s, with 5 task exits already OBSERVED, the runner died on
+//   PostgresError: query_wait_timeout  (severity FATAL, SQLSTATE 08P01)
+// delivered from postgres.js's socket `data` handler as an UNHANDLED REJECTION
+// (`triggerUncaughtException(err, true /* fromPromise */)`) with no application frame
+// at all — the pooler gave up waiting for a server slot on a connection the governed
+// admission client (scripts/lib/governed-test-process.mjs → process-wide getOrgPg())
+// holds, so the rejection belonged to nobody's `await`. Node's default disposition
+// turned that into a crash: `AFFECTED_TESTS_RESULT status=aborted
+// reason=exit-without-verdict code=1`, a 60-minute suite lost, no failing-file list.
+// WI-1048027 layer 2 (observedNonzeroExits above) already documents the SAME arrival
+// path (an async postgres.js `Immediate` callback under CONNECTION_CLOSED).
+//
+// The admission/ledger writes are bookkeeping; the VERDICT is this script's job. So
+// swallow ONLY the transient-pg shapes (log + count + continue) and re-throw everything
+// else synchronously, which hands it back to the default uncaught-exception path with
+// its stack intact — registering this listener must not widen what the runner survives.
+// Mirrors `isRetriablePgReadError` in packages/operator-core/lib/operator-state-pg.ts
+// (the orchestrator-side half of the same 2026-09-05 fix); kept local because this
+// script deliberately imports nothing from operator-core.
+let observedTransientPgErrors = 0;
+function isTransientPgError(e) {
+  const x = e && typeof e === "object" ? e : null;
+  const code = x && typeof x.code === "string" ? x.code : "";
+  const msg = x && typeof x.message === "string" ? x.message : String(e ?? "");
+  return (
+    code === "CONNECT_TIMEOUT" ||
+    code === "CONNECTION_CLOSED" ||
+    code === "08P01" ||
+    /\bCONNECT_TIMEOUT\b/.test(msg) ||
+    /\bCONNECTION_CLOSED\b/.test(msg) ||
+    /\bquery_wait_timeout\b/.test(msg)
+  );
+}
+process.on("unhandledRejection", (reason) => {
+  if (!isTransientPgError(reason)) throw reason;
+  observedTransientPgErrors += 1;
+  const msg = reason && typeof reason === "object" && "message" in reason ? reason.message : String(reason);
+  process.stderr.write(
+    `[affected-tests] non-fatal transient pg error (unhandled rejection #${observedTransientPgErrors}, ` +
+      `bookkeeping only — the run continues): ${String(msg).split("\n")[0]}\n`,
+  );
+});
 process.on("exit", (code) => {
   cleanupPreemptReadyMarker();
   cleanupPreemptFinalizationMarker();
