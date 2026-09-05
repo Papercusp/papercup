@@ -76,7 +76,7 @@ export function applyGridColorsFromTokens(): void {
     amber: cssVar(styles, '--warn', FALLBACK.amber),
     red: cssVar(styles, '--bad', FALLBACK.red),
     blue: cssVar(styles, '--accent', FALLBACK.blue),
-    green: cssVar(styles, '--good', FALLBACK.good),
+    green: cssVar(styles, '--good', FALLBACK.green),
     font: cssVar(styles, '--font-sans', FALLBACK.font),
     monoFont: cssVar(styles, '--font-mono', FALLBACK.monoFont),
   });
