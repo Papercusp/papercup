@@ -32,9 +32,9 @@
  * real-dispatch executor later is a drop-in: the loop is executor-agnostic.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applySemanticDelta } from '@papercusp/tooldef';
@@ -60,8 +60,7 @@ import {
   type ResponsesInputItem,
 } from './codex-responses-tool-loop';
 import { captureToolResultEvidence } from '../tool-result-evidence';
-import { renderCoordLegend } from '../../coord-schema';
-import { COORD_LEGEND_MARKER } from '../../desktop-install/splice-tooling-overlay';
+import { renderSuPlaybook } from '../../desktop-install/papercusp-files';
 
 const BEHAVIORS = [
   'harness-scope',
@@ -99,16 +98,17 @@ function sutModel(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Playbook (system prompt) — loaded from SOURCE, cached per process.
+// Playbook (system prompt) — rendered from the same canonical blueprint source
+// as a live SU launch, then cached per process.
 // ---------------------------------------------------------------------------
 
-let _playbookCache: string | undefined;
+let _playbookCache: Promise<string> | undefined;
 
 export function resolvePlaybookPath(): string {
   const override = process.env.PAPERCUSP_SU_PLAYBOOK_PATH?.trim();
   if (override) return override;
   const here = dirname(fileURLToPath(import.meta.url));
-  const rel = join('apps', 'operator', 'prompts', 'papercusp-su-engineer.tools.md');
+  const rel = join('libs', 'papercusp', 'packages', 'harness', 'blueprints', 'base', 'prompts', 'su.md');
   const candidates = [
     // packages/operator-core/lib/llm-testing/targets → repo root (5 up)
     join(here, '..', '..', '..', '..', '..', rel),
@@ -119,31 +119,68 @@ export function resolvePlaybookPath(): string {
     if (existsSync(c)) return c;
   }
   throw new Error(
-    `su target: could not locate the engineer playbook (${rel}). ` +
+    `su target: could not locate the canonical blueprint playbook (${rel}). ` +
       `Set PAPERCUSP_SU_PLAYBOOK_PATH. Tried:\n  ${candidates.join('\n  ')}`,
   );
 }
 
+function resolveOverlayDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const rel = join('apps', 'operator', 'prompts');
+  const candidates = [
+    join(here, '..', '..', '..', '..', '..', rel),
+    join(process.cwd(), rel),
+    join(process.cwd(), '..', '..', rel),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, 'papercusp-su.claude.md'))) return candidate;
+  }
+  throw new Error(
+    `su target: could not locate the SU client overlays (${rel}). Tried:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
 /**
- * The spliced playbook BODY (no framing prefix). Exported for the FB-09
+ * The rendered playbook BODY (no framing prefix). Exported for the FB-09
  * shadow-ablation runner (lib/ablation), which segments + ablates THIS text —
  * the exact body the SUT sees — and re-frames it via SU_PLAYBOOK_FRAMING.
+ *
+ * This deliberately follows the flag-on live launch path instead of reading
+ * `apps/operator/prompts/papercusp-su-engineer.tools.md`, the legacy base. The
+ * canonical blueprint source is first sealed through `composeSuStackSource`,
+ * then `renderSuPlaybook` splices the Claude client overlay and every generated
+ * section. The project guide stays omitted: scenario worlds are hermetic and
+ * must not inherit mutable repository facts unrelated to their fixtures.
+ *
  * Uncached: callers are per-cycle, not per-model-call.
  */
-export function loadPlaybookBody(): string {
-  // The raw source carries generated-section MARKERS (spliced by
-  // renderSuPlaybook at launch). This hermetic target reads the file directly,
-  // so splice the ones that are pure/hermetic, then strip any remainder rather
-  // than leak a literal marker comment into the prompt:
-  //   - COORD-LEGEND: renderCoordLegend() is static (from COORD_LEGEND), so the
-  //     coord-read scenario (SU-S09) sees the SAME legend the real psu prompt
-  //     carries (token-efficient-coord-injection P-011).
-  //   - WIRE-SCHEMAS: needs the live registry + tool projections (not booted in
-  //     this hermetic target), so it stays stripped — the P-013 scenarios carry
-  //     the column schema in the catalog tool schemas instead.
-  return readFileSync(resolvePlaybookPath(), 'utf8')
-    .replace(COORD_LEGEND_MARKER, renderCoordLegend())
-    .replace(/<!-- PAPERCUSP-SU:[A-Z-]+ -->\n*/g, '');
+export async function loadPlaybookBody(): Promise<string> {
+  const baseSource = resolvePlaybookPath();
+  const overlayDir = resolveOverlayDir();
+  let baseText: string | undefined;
+  try {
+    const { composeSuStackSource, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
+    const harnessDir = resolve(baseSource, '..', '..', '..', '..');
+    baseText = composeSuStackSource({
+      harnessDir,
+      binding: suSessionBinding({ fleetRole: null, modes: null }),
+    }).text;
+  } catch (error) {
+    // Match buildSuLaunchSpec's production fallback: an unavailable slot
+    // composer is loud, but the canonical su.md still renders rather than
+    // silently falling back to the unrelated legacy playbook.
+    console.warn(
+      `[llm-testing] SU slot-stack compose failed — rendering canonical su.md unsealed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const rendered = await renderSuPlaybook({
+    agent: 'claude',
+    baseSource,
+    baseText,
+    overlayDir,
+    projectGuideSource: '',
+  });
+  return rendered.text;
 }
 
 /** A thin framing line so the model treats the playbook as ITS operating
@@ -153,9 +190,9 @@ export const SU_PLAYBOOK_FRAMING =
   'You are a Papercusp superuser engineer-collaborator (a `psu` session). ' +
   'The following is your operating playbook — follow it exactly.\n\n';
 
-function loadPlaybook(): string {
+function loadPlaybook(): Promise<string> {
   if (_playbookCache !== undefined) return _playbookCache;
-  _playbookCache = SU_PLAYBOOK_FRAMING + loadPlaybookBody();
+  _playbookCache = loadPlaybookBody().then((body) => SU_PLAYBOOK_FRAMING + body);
   return _playbookCache;
 }
 
@@ -398,7 +435,7 @@ export interface SuTargetOpts {
   behaviors?: string[];
   /** System-prompt loader override (default: the engineer playbook). Returns
    *  the FULL framed prompt text; called lazily per send like loadPlaybook. */
-  loadSystemPrompt?: () => string;
+  loadSystemPrompt?: () => string | Promise<string>;
   /** Injectable Responses transport for hermetic target tests. */
   codexFetch?: typeof fetch;
 }
@@ -413,7 +450,7 @@ export class SuTarget implements ChatTarget {
    *  against ground truth instead of the judge's imperfect memory. */
   readonly toolNames: readonly string[];
   private readonly catalog: BuiltCatalog;
-  private readonly loadSystemPrompt: () => string;
+  private readonly loadSystemPrompt: () => string | Promise<string>;
   private readonly codexFetch?: typeof fetch;
 
   constructor(opts: SuTargetOpts = {}) {
@@ -448,7 +485,7 @@ export class SuTarget implements ChatTarget {
 interface SessionState {
   runId: string;
   catalog: BuiltCatalog;
-  loadSystemPrompt: () => string;
+  loadSystemPrompt: () => string | Promise<string>;
   override?: ToolDispatchOverride;
   /** Variant prompt overlay (P-001) — appended as an uncached system block. */
   promptOverlay?: string;
@@ -526,7 +563,7 @@ class SuSession implements ChatSession {
     // First system block MUST be the Claude Code identifier (auth framing for the
     // Max OAuth rate-limit bucket — see CLAUDE_CODE_IDENTIFIER / buildSuSystemBlocks).
     // Built via the exported helper so the framing invariant is regression-tested.
-    const system = buildSuSystemBlocks(this.state.loadSystemPrompt(), cache, this.state.promptOverlay);
+    const system = buildSuSystemBlocks(await this.state.loadSystemPrompt(), cache, this.state.promptOverlay);
     const tools = this.state.catalog.tools;
 
     const sawCompactionSummary = input.messages.some((m) => (
@@ -640,7 +677,7 @@ class SuSession implements ChatSession {
       finishReason: 'done',
       rawSseTape: [],
     };
-    const instructions = [this.state.loadSystemPrompt(), this.state.promptOverlay]
+    const instructions = [await this.state.loadSystemPrompt(), this.state.promptOverlay]
       .filter((part): part is string => Boolean(part))
       .join('\n\n');
     const replay: ResponsesInputItem[] = messagesToResponsesInput(input.messages);

@@ -24,6 +24,7 @@ import {
   loadPlaybookBody,
   mergeConsecutiveRoles,
   parseSuConfigDelta,
+  resolvePlaybookPath,
 } from '../targets/su';
 import { buildCatalog } from '../targets/su-catalog';
 
@@ -180,10 +181,20 @@ describe('su SUT systemPromptText replacement (self-learning-frontier P-023 / FB
     ).rejects.toThrow(/unsupported variant configDelta key/);
   });
 
-  it('loadPlaybookBody returns the marker-spliced body the ablation runner segments (no framing, no raw markers)', () => {
-    const body = loadPlaybookBody();
+  it('loadPlaybookBody returns the canonical blueprint render the ablation runner segments', async () => {
+    const body = await loadPlaybookBody();
+    expect(resolvePlaybookPath()).toMatch(
+      /libs\/papercusp\/packages\/harness\/blueprints\/base\/prompts\/su\.md$/,
+    );
     expect(body.startsWith(SU_PLAYBOOK_FRAMING)).toBe(false);
     expect(body).not.toMatch(/<!-- PAPERCUSP-SU:[A-Z-]+ -->/);
+    expect(body).toContain('# Superuser engineer-collaborator (su)');
+    // A no-mode stack binding intentionally omits the mode definition tiles;
+    // those are injected from the live mode registry when active. The client
+    // overlay and generated shared sections still belong to this render.
+    expect(body).toContain('You are running under Claude Code');
+    expect(body).toContain('## Coordination glyph legend');
+    expect(body).toContain('## Read the value; say what you want back');
     expect(body.length).toBeGreaterThan(10_000);
   });
 });

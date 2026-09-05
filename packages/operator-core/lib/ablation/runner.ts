@@ -52,8 +52,8 @@ import { insertAblationRun, lastAblatedAtByRule, type InsertAblationRunInput } f
 import { resolveLearningPotSlug } from '../learning/pot-scope';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
-/** The repo-relative playbook identity recorded on every run row. */
-export const SU_PLAYBOOK_REPO_PATH = 'apps/operator/prompts/papercusp-su-engineer.tools.md';
+/** The repo-relative canonical blueprint identity recorded on every run row. */
+export const SU_PLAYBOOK_REPO_PATH = 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md';
 
 /** Reserved arm ids (run-row detail vocabulary). */
 export const SNAPSHOT_BASELINE_VARIANT = 'snapshot-baseline';
@@ -75,7 +75,7 @@ export interface AblationCycleConfig {
 
 /** Injectable seams — every default is the production wiring, every test fakes them. */
 export interface AblationCycleDeps {
-  loadBody?: () => string;
+  loadBody?: () => string | Promise<string>;
   scenarios?: () => Scenario[];
   runScenarioFn?: typeof runScenario;
   /** LLM-capable runner deps for the arms (default shadowRunnerDeps()). */
@@ -204,7 +204,7 @@ export async function runAblationCycle(
   const startedAtMs = nowMs();
 
   // 1. Snapshot + segment.
-  const body = loadBody();
+  const body = await loadBody();
   const playbookHash = hashPlaybookBody(body);
   const rules = extractAblatableRules(body);
 

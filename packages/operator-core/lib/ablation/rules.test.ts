@@ -4,7 +4,7 @@
  * playbook body (the exact text the su target feeds the SUT) pins that the
  * rotation pool stays non-trivial and every unit round-trips ablateRule.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { loadPlaybookBody } from '../llm-testing/targets/su';
 import { ablateRule, extractAblatableRules, hashPlaybookBody, hashRuleText, normalizeRuleText } from './rules';
@@ -95,7 +95,11 @@ describe('ablateRule', () => {
 });
 
 describe('the real SU playbook', () => {
-  const body = loadPlaybookBody();
+  let body = '';
+
+  beforeAll(async () => {
+    body = await loadPlaybookBody();
+  });
 
   it('yields a non-trivial rotation pool with unique keys', () => {
     const rules = extractAblatableRules(body);
