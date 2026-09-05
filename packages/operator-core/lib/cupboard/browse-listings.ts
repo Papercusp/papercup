@@ -10,7 +10,7 @@
  * than throwing.
  */
 import { resolveCupboardBaseUrl } from './base-url';
-import type { ListingKind } from './types';
+import type { ListingKind, ListingVisibility, PricingModel } from './types';
 
 export interface BrowseCupboardListingsInput {
   /** harness | blueprint | plugin | pack | knowledge-pack | template | app | all. */
@@ -23,6 +23,64 @@ export interface BrowseCupboardListingsInput {
   limit?: number;
   /** Opaque pagination cursor from a prior page's next_cursor. */
   cursor?: string;
+
+  // ── Catalog filters (worker migration 018 / shared-pot-dao-cupboard-v1 P-008).
+  // Every one NARROWS the unauthenticated public read, which already sees only
+  // `visibility='public'` rows. There is deliberately NO widening option here:
+  // the route's one widening input (`tenant_scope`) is not reachable from a
+  // query param, because this endpoint is unauthenticated and a widening
+  // `?tenant=` would hand any caller another pot's private catalog. `tenant`
+  // below maps to the route's NARROWING `tenant_ref`. ──
+
+  /** Narrow to one visibility. Omitted ⇒ whatever the public read already allows. */
+  visibility?: ListingVisibility | 'all';
+  /** Narrow to listings owned by one shared pot (narrowing `tenant_ref`; never widening). */
+  tenant?: string;
+  /** Narrow to one pricing model. */
+  pricing?: PricingModel | 'all';
+  /** true ⇒ only listings with a price; false ⇒ only free listings. */
+  paid?: boolean;
+  /** Narrow to listings whose compatibility declares this platform (e.g. 'linux-x86_64'). */
+  platform?: string;
+  /** Narrow to listings whose compatibility declares this runtime (e.g. 'node>=22'). */
+  runtime?: string;
+  /** Narrow to listings that request this install-time permission (e.g. 'fs:read'). */
+  permission?: string;
+}
+
+/**
+ * Query params this client sends for the migration-018 catalog axes. A worker
+ * predating that migration rejects each with `400 invalid_field`, which is
+ * degraded to an EMPTY result rather than an error — see the fail-closed note at
+ * the rejection site.
+ */
+const CATALOG_FILTER_FIELDS = [
+  'visibility',
+  'pricing',
+  'paid',
+  'platform',
+  'runtime',
+  'permission',
+] as const;
+
+/** Whether THIS call actually sent the catalog filter the worker rejected. */
+function sentCatalogFilter(input: BrowseCupboardListingsInput, field: string): boolean {
+  switch (field) {
+    case 'visibility':
+      return input.visibility !== undefined && input.visibility !== 'all';
+    case 'pricing':
+      return input.pricing !== undefined && input.pricing !== 'all';
+    case 'paid':
+      return input.paid !== undefined;
+    case 'platform':
+      return Boolean(input.platform);
+    case 'runtime':
+      return Boolean(input.runtime);
+    case 'permission':
+      return Boolean(input.permission);
+    default:
+      return false;
+  }
 }
 
 export type BrowseCupboardListingsResult =
@@ -45,6 +103,15 @@ export async function browseCupboardListings(
   if (input.project) url.searchParams.set('project', input.project);
   url.searchParams.set('limit', String(input.limit ?? 50));
   if (input.cursor) url.searchParams.set('cursor', input.cursor);
+  if (input.visibility && input.visibility !== 'all') {
+    url.searchParams.set('visibility', input.visibility);
+  }
+  if (input.tenant) url.searchParams.set('tenant', input.tenant);
+  if (input.pricing && input.pricing !== 'all') url.searchParams.set('pricing', input.pricing);
+  if (input.paid !== undefined) url.searchParams.set('paid', input.paid ? '1' : '0');
+  if (input.platform) url.searchParams.set('platform', input.platform);
+  if (input.runtime) url.searchParams.set('runtime', input.runtime);
+  if (input.permission) url.searchParams.set('permission', input.permission);
 
   try {
     const res = await fetch(url.toString(), {
@@ -55,9 +122,23 @@ export async function browseCupboardListings(
       // A worker predating a kind (e.g. 'pack' before its migration) rejects the
       // kind filter with invalid_field:kind — to a browser that's "none of this
       // kind yet", not an error. Mirror the proxy's degradation.
-      if (res.status === 400 && input.kind) {
+      if (res.status === 400) {
         const err = (await res.json().catch(() => null)) as { error?: string; field?: string } | null;
-        if (err?.error === 'invalid_field' && err.field === 'kind') {
+        if (err?.error === 'invalid_field' && input.kind && err.field === 'kind') {
+          return { ok: true, listings: [] };
+        }
+        // A worker predating migration 018 rejects a catalog filter it has no
+        // column for. Degrading to EMPTY is the FAIL-CLOSED choice and the only
+        // safe one: the caller asked to NARROW, so answering with the unfiltered
+        // page would hand back exactly the rows they filtered out. Only degrade
+        // for a field this call actually sent — a rejection naming anything else
+        // is a real error and stays one.
+        if (
+          err?.error === 'invalid_field' &&
+          typeof err.field === 'string' &&
+          (CATALOG_FILTER_FIELDS as readonly string[]).includes(err.field) &&
+          sentCatalogFilter(input, err.field)
+        ) {
           return { ok: true, listings: [] };
         }
       }

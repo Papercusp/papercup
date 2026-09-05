@@ -42,3 +42,104 @@ describe('browseCupboardListings pagination envelope', () => {
     });
   });
 });
+
+describe('browseCupboardListings catalog filters (migration 018 / P-008)', () => {
+  function captureUrl(): { calls: string[]; fetch: typeof fetch } {
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (input: unknown) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ results: [] }));
+    }) as unknown as typeof fetch;
+    return { calls, fetch: fetchImpl };
+  }
+
+  it('passes every catalog axis through as its route query param', async () => {
+    const { calls, fetch: fetchImpl } = captureUrl();
+    global.fetch = fetchImpl;
+
+    await browseCupboardListings({
+      kind: 'app',
+      visibility: 'private',
+      tenant: 'pot-a',
+      pricing: 'per-use',
+      paid: true,
+      platform: 'linux-x86_64',
+      runtime: 'node>=22',
+      permission: 'fs:read',
+    });
+
+    const url = new URL(calls[0]!);
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      kind: 'app',
+      limit: '50',
+      visibility: 'private',
+      tenant: 'pot-a',
+      pricing: 'per-use',
+      paid: '1',
+      platform: 'linux-x86_64',
+      runtime: 'node>=22',
+      permission: 'fs:read',
+    });
+  });
+
+  it("sends no catalog param when a filter is omitted or set to 'all'", async () => {
+    const { calls, fetch: fetchImpl } = captureUrl();
+    global.fetch = fetchImpl;
+
+    await browseCupboardListings({ visibility: 'all', pricing: 'all' });
+
+    const url = new URL(calls[0]!);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ limit: '50' });
+  });
+
+  it('distinguishes paid:false from an omitted paid filter', async () => {
+    const { calls, fetch: fetchImpl } = captureUrl();
+    global.fetch = fetchImpl;
+
+    await browseCupboardListings({ paid: false });
+    expect(new URL(calls[0]!).searchParams.get('paid')).toBe('0');
+
+    await browseCupboardListings({});
+    expect(new URL(calls[1]!).searchParams.has('paid')).toBe(false);
+  });
+
+  it('degrades FAIL-CLOSED to empty when a pre-018 worker rejects a filter we sent', async () => {
+    // The caller asked to NARROW. A worker with no `visibility` column cannot,
+    // so answering with the unfiltered page would return exactly the rows they
+    // filtered out. Empty is the only safe answer.
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'invalid_field', field: 'visibility' }), { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ visibility: 'private' })).toEqual({
+      ok: true,
+      listings: [],
+    });
+  });
+
+  it('does NOT degrade on a rejection naming a filter this call never sent', async () => {
+    // Otherwise any unrelated 400 that happens to name a catalog field would be
+    // silently rendered as "no matches", hiding a real server error.
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'invalid_field', field: 'platform' }), { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ visibility: 'private' })).toEqual({
+      ok: false,
+      status: 400,
+      error: 'cupboard_http_400',
+    });
+  });
+
+  it('keeps a non-catalog 400 an error rather than an empty result', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'invalid_field', field: 'cursor' }), { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ cursor: 'bogus', platform: 'linux-x86_64' })).toEqual({
+      ok: false,
+      status: 400,
+      error: 'cupboard_http_400',
+    });
+  });
+});

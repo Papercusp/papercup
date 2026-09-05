@@ -190,6 +190,43 @@ export function isListingKind(v: unknown): v is ListingKind {
   return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
 }
 
+/**
+ * Catalog visibility (Cupboard worker migration 018 / shared-pot-dao-cupboard-v1
+ * P-008, D-027). Kind-agnostic: every one of the eleven listing kinds carries it.
+ *
+ *   public   → listed in the global catalog. Every pre-018 row backfills to this,
+ *              which is what makes the migration safe to apply to a live D1 while
+ *              the worker is serving.
+ *   unlisted → reachable by direct id/ref, never returned by browse.
+ *   private  → visible only within the owning tenant (`tenant_id`).
+ *
+ * Read paths are FAIL-CLOSED: without a tenant scope only `public` rows are
+ * visible. `tenant_scope` is the one widening read and the unauthenticated public
+ * route never sets it — see `appendCatalogPredicate` in the worker's src/db.ts.
+ * Mirrors LISTING_VISIBILITIES there; the two must stay in step.
+ */
+export const LISTING_VISIBILITIES = ['public', 'unlisted', 'private'] as const;
+export type ListingVisibility = (typeof LISTING_VISIBILITIES)[number];
+
+export function isListingVisibility(v: unknown): v is ListingVisibility {
+  return typeof v === 'string' && (LISTING_VISIBILITIES as readonly string[]).includes(v);
+}
+
+/**
+ * Provider-neutral pricing model (worker migration 018 / P-008, D-025 + D-028).
+ *
+ * Deliberately says nothing about WHO settles the payment: a settlement adapter
+ * maps the listing's opaque `sku_ref` to its own product, so the catalog never
+ * learns which adapter is in use and swapping one changes no schema and no type
+ * here. Mirrors PRICING_MODELS in the worker's src/db.ts.
+ */
+export const PRICING_MODELS = ['free', 'one-time', 'subscription', 'per-use'] as const;
+export type PricingModel = (typeof PRICING_MODELS)[number];
+
+export function isPricingModel(v: unknown): v is PricingModel {
+  return typeof v === 'string' && (PRICING_MODELS as readonly string[]).includes(v);
+}
+
 export type ListingAction = 'view-hive' | 'install' | 'download';
 
 /**
@@ -557,6 +594,87 @@ export interface HarnessListing {
    * one plugin can register many families).
    */
   requires_rubrics?: string | null;
+
+  // ── Catalog fields (worker migration 018 / shared-pot-dao-cupboard-v1 P-008,
+  // D-024/D-025/D-027..D-029). Six axes over the SAME eleven-kind catalog — who
+  // may see a listing, what it costs, what it runs on, what it may do once
+  // installed, and which immutable release it points at. Every field is optional
+  // because pre-018 servers omit them all; a pre-018 ROW backfills to
+  // `visibility: 'public'` with every other field null. ──
+
+  /** public | unlisted | private. Absent ⇒ treat as 'public' (the pre-018 backfill). */
+  visibility?: ListingVisibility | null;
+  /**
+   * Owning shared pot. Null/absent ⇒ the global public catalog. A `private` row
+   * is visible only to callers scoped to this tenant; the unauthenticated public
+   * route can never widen to one.
+   */
+  tenant_id?: string | null;
+
+  /**
+   * Opaque, provider-neutral SKU identifier (D-028). NOT a Stripe price id, a
+   * gateway URL, or any other adapter-specific handle — a settlement adapter
+   * resolves it to its own product, so the catalog stays adapter-agnostic.
+   * Null ⇒ not for sale through any adapter.
+   */
+  sku_ref?: string | null;
+  /** free | one-time | subscription | per-use. Null ⇒ unpriced. */
+  pricing_model?: PricingModel | null;
+  /**
+   * Price in integer minor units scaled by 1e6, so per-use microcharges and
+   * stablecoin amounts are EXACT — float money is never stored or carried.
+   * Null ⇒ no price set.
+   */
+  price_amount_micros?: number | null;
+  /** ISO-4217 code or a stablecoin symbol (e.g. 'USD', 'USDC'). */
+  price_currency?: string | null;
+
+  /**
+   * JSON-encoded `{ runtime?: string, platforms?: string[], architectures?: string[] }`
+   * — e.g. `{"runtime":"node>=22","platforms":["darwin-aarch64"]}`. Mirrors the
+   * P-006 release manifest's compatibility block so the detail page can show
+   * "will this run here?" before install. Null ⇒ compatibility undeclared.
+   */
+  compatibility_json?: string | null;
+  /**
+   * JSON-encoded `string[]` of the permissions the unit REQUESTS at install time
+   * (e.g. `["fs:read","net:fetch"]`). Carried on the listing so the permission
+   * prompt can be shown BEFORE the user clicks Install, not after. Null ⇒
+   * requests no permissions.
+   */
+  required_permissions?: string | null;
+
+  /**
+   * Immutable release identity (D-024). A published release is never mutated or
+   * deleted: republishing the same `release_version` for one
+   * (repo, kind, listing_ref) is a UNIQUE-constraint violation, not an
+   * overwrite — and that holds for the canonical `listing_ref: null` row too.
+   * Null ⇒ nothing published yet.
+   */
+  release_version?: string | null;
+  /**
+   * Content hash of the release payload, `sha256:<64 hex>`. This is content
+   * IDENTITY, never a retrieval URL (D-024/D-025) — which is exactly what lets
+   * the later P2P storage work swap the ArtifactStore adapter without touching
+   * this schema or this type.
+   */
+  release_content_hash?: string | null;
+  /** Digest of the signed release manifest (`listingManifestDigest()`). */
+  release_manifest_digest?: string | null;
+  /** Detached signature over the manifest digest. */
+  release_signature?: string | null;
+  /** Epoch ms the release was published. */
+  release_published_at?: number | null;
+  /**
+   * Yank/revoke are ADDITIVE: the row and its version are kept forever so the
+   * release stays immutable and already-installed copies remain explainable.
+   * A yanked release still occupies its version — it is hidden from new
+   * installs, not erased. Null ⇒ not yanked/revoked.
+   */
+  yanked_at?: number | null;
+  yanked_reason?: string | null;
+  revoked_at?: number | null;
+  revoked_reason?: string | null;
 
   // ── Pre-publication review (worker migration 008 / knowledge-packs D-007).
   // Policy kinds (knowledge-pack, blueprint) publish 'pending'; the server
