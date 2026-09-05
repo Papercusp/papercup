@@ -63,7 +63,15 @@ vi.mock('../../work-items-release-request', () => ({
  * future member of this module cannot silently become `undefined`.
  */
 const getWorkItemCheckpoint = vi.fn();
-const setWorkItemCheckpointM = vi.hoisted(() => vi.fn(async () => 'stored' as string | null));
+// Declared WITH its real parameter list, not `vi.fn(async () => …)`: a zero-arg mock types
+// `mock.calls[0]` as `[]`, so reading the recorded (ref, text) back needs a cast that TS
+// rejects (TS2352) — and casting through `unknown` to silence it would throw away exactly
+// the argument types these assertions depend on.
+const setWorkItemCheckpointM = vi.hoisted(() =>
+  vi.fn(async (_ref: { harness: string | null; workItemId: string; workspaceId?: string }, _text: string) =>
+    'stored' as string | null,
+  ),
+);
 vi.mock('../../work-item-checkpoint', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   getWorkItemCheckpointWithMeta: async (...a: unknown[]) => ({
@@ -156,7 +164,7 @@ describe('work_items:release — (A) records a reason as the next claimant\'s co
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-5001', releaseDispositionRecorded: true });
 
     expect(setWorkItemCheckpointM).toHaveBeenCalledTimes(1);
-    const [ref, text] = setWorkItemCheckpointM.mock.calls[0] as [Record<string, unknown>, string];
+    const [ref, text] = setWorkItemCheckpointM.mock.calls[0];
     expect(ref).toMatchObject({ workItemId: 'WI-5001', workspaceId: 'ws-1', harness: 'papercusp' });
     // The releaser's own words must survive verbatim — that IS the payload.
     expect(text).toContain('wrote migration 824, not yet applied');
@@ -193,6 +201,21 @@ describe('work_items:release — (A) records a reason as the next claimant\'s co
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-5005', released: true });
     expect(b.results[0].error).toBeUndefined();
     // No claim of having recorded something that was not recorded.
+    expect(b.results[0].releaseDispositionRecorded).toBeUndefined();
+  });
+
+  it('never fails the release when the checkpoint write throws SYNCHRONOUSLY', async () => {
+    // The control for the real defect this shipped with. `.catch()` attaches to the promise a
+    // call RETURNS, so it cannot catch a throw from the call ITSELF — and a hand-listed
+    // vi.mock factory that omits the member yields `undefined`, making `undefined(...)` throw
+    // exactly that way. It took release.test.ts down as a TypeError with the release already
+    // performed. Revert the try/catch in release.ts to `.catch(() => null)` and this fails.
+    setWorkItemCheckpointM.mockImplementation(() => {
+      throw new TypeError('setWorkItemCheckpoint is not a function');
+    });
+    const b = await body({ id: 'WI-5007', reason: 'left a note' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-5007', released: true });
+    expect(b.results[0].error).toBeUndefined();
     expect(b.results[0].releaseDispositionRecorded).toBeUndefined();
   });
 

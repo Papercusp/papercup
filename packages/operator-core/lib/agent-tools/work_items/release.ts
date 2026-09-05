@@ -805,19 +805,29 @@ export default defineTool({
         // write's progress-anchor bump is a deliberate no-op (it credits held rows only).
         let releaseDisposition: { releaseDispositionRecorded?: true } = {};
         if (!force && claimHold !== true && wasHeld && reason && !releaseCheckpoint) {
-          const stored = await setWorkItemCheckpoint(
-            {
-              harness: workItem.harness ?? it.harness ?? null,
-              workItemId: it.id,
-              workspaceId: ident.workspaceId ?? undefined,
-            },
-            `## Release disposition — recorded by work_items:release (NOT a worked checkpoint)\n\n` +
-              `${reason}\n\n` +
-              `— released by ${ident.ownerId ?? 'an unrecorded owner'} at ${new Date().toISOString()} without a ` +
-              `checkpoint. This is the releaser's one-line disposition, not a verified resume brief: treat it as a ` +
-              `POINTER to what they were doing and verify it against the repo/ledger before building on it.`,
-          ).catch(() => null);
-          if (stored) releaseDisposition = { releaseDispositionRecorded: true as const };
+          // try/catch, NOT `.catch()`: a `.catch()` only attaches to the promise the call
+          // RETURNS, so it cannot catch a synchronous throw from the call itself. That is not
+          // theoretical — it is how this landed: a hand-listed vi.mock factory that omits this
+          // member yields `undefined`, and `undefined(...)` throws before any promise exists,
+          // taking the whole release down. Production always exports it, but "fail-soft" has
+          // to mean fail-soft, and a release must never fail on its own bookkeeping.
+          try {
+            const stored = await setWorkItemCheckpoint(
+              {
+                harness: workItem.harness ?? it.harness ?? null,
+                workItemId: it.id,
+                workspaceId: ident.workspaceId ?? undefined,
+              },
+              `## Release disposition — recorded by work_items:release (NOT a worked checkpoint)\n\n` +
+                `${reason}\n\n` +
+                `— released by ${ident.ownerId ?? 'an unrecorded owner'} at ${new Date().toISOString()} without a ` +
+                `checkpoint. This is the releaser's one-line disposition, not a verified resume brief: treat it as a ` +
+                `POINTER to what they were doing and verify it against the repo/ledger before building on it.`,
+            );
+            if (stored) releaseDisposition = { releaseDispositionRecorded: true as const };
+          } catch {
+            /* best-effort — never fail the release on this */
+          }
         }
         // EI-16289: a checkpoint/reason records WHY a holder put work down, but a plain
         // release does not make that disposition sticky — it applies only the short

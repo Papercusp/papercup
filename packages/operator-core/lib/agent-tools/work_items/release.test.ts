@@ -23,11 +23,17 @@ vi.mock('../../work-items', () => ({
   commentWorkItem: vi.fn(),
 }));
 
+// EI-21352358541526229: this factory is HAND-LISTED (no importOriginal), so every member
+// release.ts imports must appear here or it resolves to `undefined` and the tool crashes on
+// the call. `setWorkItemCheckpoint` is the release-disposition write; omitting it took this
+// whole suite down with a synchronous TypeError. Add new members here when release.ts grows
+// an import, or switch this factory to the partial (importOriginal) form its siblings use.
 const checkpointStore = vi.hoisted(() => ({
   getWorkItemCheckpointWithMeta: vi.fn(async () => ({
     checkpoint: null as string | null,
     updatedAtMs: null as number | null,
   })),
+  setWorkItemCheckpoint: vi.fn(async () => 'stored' as string | null),
 }));
 vi.mock('../../work-item-checkpoint', () => checkpointStore);
 
