@@ -32,7 +32,7 @@ import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
 import { cspHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
-import { describeMissingBundle } from '../lib/spa-build-status';
+import { describeMissingBundle, readBundleIdentity } from '../lib/spa-build-status';
 import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
 export { hostedBrowserApiMarker };
 export type { HostedBrowserApiMarker } from "../lib/hosted-browser-api";
@@ -252,6 +252,11 @@ async function serveIndexHtml(
   hostedControlPlaneWorkspaceId: string | null,
 ): Promise<Response> {
   let html = readFileSync(indexPath, 'utf-8');
+  // EI-15848: stamp the page with the identity of the bundle it is booting
+  // from, so the running UI can later notice it has gone stale. Hashed from the
+  // file on disk BEFORE the per-request injection below, so a flag flip (which
+  // changes the injected globals, not the build) never reads as a new build.
+  const bootBundleId = readBundleIdentity(SPA_DIST_ROOT);
   const globals = hostedControlPlaneWorkspaceId === null
     ? await localPreHydrationGlobals(req)
     : [
@@ -261,6 +266,7 @@ async function serveIndexHtml(
         // the hosted-browser rollout; both values are the same immutable data.
         `window.__PAPERCUSP_HOSTED_BROWSER_API__=window.__PAPERCUSP_HOSTED_BROWSER__;`,
       ];
+  if (bootBundleId) globals.push(`window.__PAPERCUSP_BUILD_ID__=${scriptSafeJson(bootBundleId)};`);
   const inject = `<script>${globals.join('')}</script>`;
   // Insert right after <head> so it runs before the deferred module bundle.
   html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
@@ -310,6 +316,25 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
   }
 
   const routes = new Hono();
+
+  // EI-15848: the identity of the bundle on disk RIGHT NOW. The running UI
+  // compares this against the `window.__PAPERCUSP_BUILD_ID__` it booted with and
+  // offers a reload when they diverge — the signal that was missing while the
+  // owner's window silently served a stale bundle and re-reported already-fixed
+  // bugs. Registered BEFORE the `*` fallback below, which would otherwise answer
+  // this extension-less path with index.html.
+  //
+  // `no-store` for the same reason the shell is: a cached answer here would
+  // report the build that was current when it was cached, which is precisely the
+  // staleness this endpoint exists to detect.
+  routes.get('/__spa/build-id', (c) =>
+    c.json(
+      { buildId: readBundleIdentity(SPA_DIST_ROOT) },
+      200,
+      { 'cache-control': 'no-store, max-age=0' },
+    ),
+  );
+
   // Final fallback — registered last in `host-handler.ts`, so `/api/*`,
   // `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
   // have all already terminated before a request reaches here.
