@@ -21,7 +21,7 @@ import type { Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { buildAbDeps } from './ab-runner-real';
 import { judgeGymRun, type JudgeLlmCall } from './judge';
-import { proposeCandidate, type WorstTrace } from './proposer';
+import { costUsdOf, proposeCandidate, throwWithCostUsd, type WorstTrace } from './proposer';
 import { insertCycle } from './store';
 import { runWithRatePause } from './rate-pause';
 import { ratePauseEventHooks } from './rate-pause-events';
@@ -172,129 +172,137 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
   let evalSeq = 0;
 
   async function evaluate(variantId: string, overlay: VariantOverlay): Promise<EvaluateResult> {
-    const cycle = evalSeq++;
-    const variant = { variantId, label: variantId, overlay };
-    await ab.store.upsertVariant(variant);
+    let incurredCostUsd = 0;
+    try {
+      const cycle = evalSeq++;
+      const variant = { variantId, label: variantId, overlay };
+      await ab.store.upsertVariant(variant);
 
-    const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+      const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
-    /** One per (task), aggregated over `repeats` runs (P-025: average out judge noise). */
-    interface PerTask {
-      taskId: string;
-      pool: GymTaskPool;
-      composite: number; // mean over repeats
-      rationale: string; // the worst repeat's rationale (most informative for the proposer)
-      distilled: string; // the worst repeat's distilled trace
-      cost: number; // SUM over repeats
-      /**
-       * P-003 — three-state, per task. `not-measured` means at least one repeat's
-       * deterministic signals did not CONTAIN the key at all, which a boolean could
-       * not distinguish from a reported `false`.
-       */
-      regressionStatus: GateStatus;
-      /** Probe pool only; `null` for a task that owes no probe signal. */
-      probeStatus: GateStatus | null;
-      /** Trace refs for this task's runs — the artifact references the verdict cites. */
-      traceRefs: string[];
-    }
-    const perTask: PerTask[] = [];
+      /** One per (task), aggregated over `repeats` runs (P-025: average out judge noise). */
+      interface PerTask {
+        taskId: string;
+        pool: GymTaskPool;
+        composite: number; // mean over repeats
+        rationale: string; // the worst repeat's rationale (most informative for the proposer)
+        distilled: string; // the worst repeat's distilled trace
+        cost: number; // SUM over repeats
+        /**
+         * P-003 — three-state, per task. `not-measured` means at least one repeat's
+         * deterministic signals did not CONTAIN the key at all, which a boolean could
+         * not distinguish from a reported `false`.
+         */
+        regressionStatus: GateStatus;
+        /** Probe pool only; `null` for a task that owes no probe signal. */
+        probeStatus: GateStatus | null;
+        /** Trace refs for this task's runs — the artifact references the verdict cites. */
+        traceRefs: string[];
+      }
+      const perTask: PerTask[] = [];
 
-    for (const task of cfg.tasks) {
-      await ab.store.upsertTask({ ...task, pool: task.pool });
-      const composites: number[] = [];
-      let cost = 0;
-      const traceRefs: string[] = [];
-      // Three accumulators per signal, because "did any repeat regress" and "did every
-      // repeat actually report" are different questions and only the pair of them can
-      // tell a clean run apart from an uninstrumented one.
-      let regressionSeen = false;
-      let regressionReportedEveryRepeat = true;
-      let probeMissed = false;
-      let probeReportedEveryRepeat = true;
-      let worst: { composite: number; rationale: string; distilled: string } | null = null;
+      for (const task of cfg.tasks) {
+        await ab.store.upsertTask({ ...task, pool: task.pool });
+        const composites: number[] = [];
+        let cost = 0;
+        const traceRefs: string[] = [];
+        // Three accumulators per signal, because "did any repeat regress" and "did every
+        // repeat actually report" are different questions and only the pair of them can
+        // tell a clean run apart from an uninstrumented one.
+        let regressionSeen = false;
+        let regressionReportedEveryRepeat = true;
+        let probeMissed = false;
+        let probeReportedEveryRepeat = true;
+        let worst: { composite: number; rationale: string; distilled: string } | null = null;
 
-      for (let repeat = 0; repeat < repeats; repeat++) {
-        const runId = `${variantId}::${task.taskId}::c${cycle}::r${repeat}`;
-        const handle = await ab.runPipeline({
-          variant,
-          task: { ...task, pool: task.pool },
-          repeat,
-          cycle,
-          harnessCommit: cfg.harnessCommit,
-          workspaceId: cfg.workspaceId,
-          scratchRoot: cfg.scratchRoot,
-        });
-        await ab.store.startRun({
-          runId,
-          variantId,
-          taskId: task.taskId,
-          cycle,
-          repeat,
-          harnessSlug: handle.harnessSlug,
-          workflowId: handle.workflowID,
-        });
-        const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
-          handle,
-          task: { ...task, pool: task.pool },
-          maxChars: cfg.maxDistillChars,
-        });
-        await ab.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
-        const score = await runWithRatePause(
-          () =>
-            judgeGymRun(
-              { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric },
-              { llmCall: cfg.judgeCall },
-            ),
-          // P-010 (await-event): pauses emit rate-limit:paused/reset:gym-judge —
-          // awaitable + on the wake meter instead of an invisible in-process sleep.
-          { now, sleep, ...ratePauseEventHooks('gym-judge') },
-        );
-        await ab.store.recordScore(runId, score);
-        const sig = (rawSignals ?? {}) as Record<string, unknown>;
-        composites.push(score.composite);
-        cost += handle.pipelineUsd + score.costUsd;
-        if (typeof traceRef === 'string' && traceRef.length > 0) traceRefs.push(traceRef);
-        // PRESENCE first, value second. `sig.regressions` being falsy is ambiguous —
-        // it is equally "the run reported no regressions" and "the run never reported".
-        // Only `in` separates them, and that separation is the whole point of P-003.
-        if ('regressions' in sig) {
-          if (sig.regressions) regressionSeen = true;
-        } else {
-          regressionReportedEveryRepeat = false;
-        }
-        if (task.pool === 'probe') {
-          if ('planted_bug_caught' in sig) {
-            if (!sig.planted_bug_caught) probeMissed = true;
+        for (let repeat = 0; repeat < repeats; repeat++) {
+          const runId = `${variantId}::${task.taskId}::c${cycle}::r${repeat}`;
+          const handle = await ab.runPipeline({
+            variant,
+            task: { ...task, pool: task.pool },
+            repeat,
+            cycle,
+            harnessCommit: cfg.harnessCommit,
+            workspaceId: cfg.workspaceId,
+            scratchRoot: cfg.scratchRoot,
+          });
+          // Reserve/charge known pipeline spend before any later stage can throw.
+          const pipelineCostUsd = costUsdOf(handle.pipelineUsd);
+          incurredCostUsd += pipelineCostUsd;
+          await ab.store.startRun({
+            runId,
+            variantId,
+            taskId: task.taskId,
+            cycle,
+            repeat,
+            harnessSlug: handle.harnessSlug,
+            workflowId: handle.workflowID,
+          });
+          const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
+            handle,
+            task: { ...task, pool: task.pool },
+            maxChars: cfg.maxDistillChars,
+          });
+          await ab.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
+          const score = await runWithRatePause(
+            () =>
+              judgeGymRun(
+                { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric },
+                { llmCall: cfg.judgeCall },
+              ),
+            // P-010 (await-event): pauses emit rate-limit:paused/reset:gym-judge —
+            // awaitable + on the wake meter instead of an invisible in-process sleep.
+            { now, sleep, ...ratePauseEventHooks('gym-judge') },
+          );
+          // The judge response is billed even if recording the score fails.
+          const judgeCostUsd = costUsdOf(score.costUsd);
+          incurredCostUsd += judgeCostUsd;
+          await ab.store.recordScore(runId, score);
+          const sig = (rawSignals ?? {}) as Record<string, unknown>;
+          composites.push(score.composite);
+          cost += pipelineCostUsd + judgeCostUsd;
+          if (typeof traceRef === 'string' && traceRef.length > 0) traceRefs.push(traceRef);
+          // PRESENCE first, value second. `sig.regressions` being falsy is ambiguous —
+          // it is equally "the run reported no regressions" and "the run never reported".
+          // Only `in` separates them, and that separation is the whole point of P-003.
+          if ('regressions' in sig) {
+            if (sig.regressions) regressionSeen = true;
           } else {
-            probeReportedEveryRepeat = false;
+            regressionReportedEveryRepeat = false;
+          }
+          if (task.pool === 'probe') {
+            if ('planted_bug_caught' in sig) {
+              if (!sig.planted_bug_caught) probeMissed = true;
+            } else {
+              probeReportedEveryRepeat = false;
+            }
+          }
+          if (!worst || score.composite < worst.composite) {
+            worst = { composite: score.composite, rationale: score.rationale, distilled: distilledTrace };
           }
         }
-        if (!worst || score.composite < worst.composite) {
-          worst = { composite: score.composite, rationale: score.rationale, distilled: distilledTrace };
-        }
-      }
 
-      perTask.push({
-        taskId: task.taskId,
-        pool: task.pool,
-        composite: mean(composites), // P-025: per-task reward = mean over repeats
-        rationale: worst?.rationale ?? '',
-        distilled: worst?.distilled ?? '',
-        cost,
-        // A measured failure outranks a gap even within one task: if any repeat
-        // regressed, the task regressed, whatever a sibling repeat failed to report.
-        regressionStatus: regressionSeen ? 'fail' : regressionReportedEveryRepeat ? 'pass' : 'not-measured',
-        probeStatus:
-          task.pool !== 'probe'
-            ? null
-            : probeMissed
-              ? 'fail'
-              : probeReportedEveryRepeat
-                ? 'pass'
-                : 'not-measured',
-        traceRefs,
-      });
-    }
+        perTask.push({
+          taskId: task.taskId,
+          pool: task.pool,
+          composite: mean(composites), // P-025: per-task reward = mean over repeats
+          rationale: worst?.rationale ?? '',
+          distilled: worst?.distilled ?? '',
+          cost,
+          // A measured failure outranks a gap even within one task: if any repeat
+          // regressed, the task regressed, whatever a sibling repeat failed to report.
+          regressionStatus: regressionSeen ? 'fail' : regressionReportedEveryRepeat ? 'pass' : 'not-measured',
+          probeStatus:
+            task.pool !== 'probe'
+              ? null
+              : probeMissed
+                ? 'fail'
+                : probeReportedEveryRepeat
+                  ? 'pass'
+                  : 'not-measured',
+          traceRefs,
+        });
+      }
 
     const train = perTask.filter((r) => r.pool === 'train');
     const devAnchor = perTask.filter((r) => r.pool === 'dev-anchor');
@@ -329,7 +337,12 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
       .slice(0, worstK)
       .map((r) => ({ taskId: r.taskId, composite: r.composite, rationale: r.rationale, distilledTrace: r.distilled }));
 
-    return { evalResult, worstTraces, costUsd: totalCost };
+      return { evalResult, worstTraces, costUsd: totalCost };
+    } catch (error) {
+      // Keep all pipeline/judge charges from completed work visible when a later
+      // task or persistence step aborts the evaluation.
+      throwWithCostUsd(error, incurredCostUsd);
+    }
   }
 
   return {

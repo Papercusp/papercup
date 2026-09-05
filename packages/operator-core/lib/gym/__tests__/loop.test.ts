@@ -51,7 +51,7 @@ function baseDeps(over: Partial<LoopDeps> = {}): { d: LoopDeps; calls: string[] 
     },
     async propose() {
       calls.push('propose');
-      return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker' } as CandidateProposal;
+      return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd: 0 } as CandidateProposal;
     },
     async promote() { calls.push('promote'); },
     async revert() { calls.push('revert'); },
@@ -79,6 +79,46 @@ describe('runOptimizationLoop', () => {
     // baseline eval (1.0) + ~1 candidate cycle (1.0) ≈ budget 2.0
     expect(res.cycles).toBeLessThanOrEqual(2);
     expect(res.spentUsd).toBeGreaterThanOrEqual(2.0);
+  });
+
+  it('charges proposer spend before a successful evaluation is settled', async () => {
+    const { d } = baseDeps({
+      async propose() {
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd: 0.25 };
+      },
+    });
+    const res = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    // baseline evaluation ($1) + proposer ($0.25) + candidate evaluation ($1).
+    expect(res.spentUsd).toBeCloseTo(2.25, 6);
+  });
+
+  it('charges a proposer error that reports burned provider spend', async () => {
+    const { d } = baseDeps({
+      async propose() {
+        throw Object.assign(new Error('proposer failed after dispatch'), { costUsd: 0.35 });
+      },
+    });
+    const res = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    expect(res.skipped).toBe(1);
+    expect(res.spentUsd).toBeCloseTo(1.35, 6);
+  });
+
+  it('charges partial evaluator spend when the candidate evaluation throws', async () => {
+    const { d } = baseDeps({
+      async propose() {
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd: 0.25 };
+      },
+      async evaluate(variantId) {
+        if (variantId !== 'baseline') {
+          throw Object.assign(new Error('evaluation failed part-way through'), { costUsd: 0.75 });
+        }
+        return { evalResult: evalOf(variantId, 7.0), worstTraces: [], costUsd: 1.0 };
+      },
+    });
+    const res = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    expect(res.skipped).toBe(1);
+    // baseline ($1) + proposer ($0.25) + partial evaluation ($0.75).
+    expect(res.spentUsd).toBeCloseTo(2.0, 6);
   });
 
   it('trips the circuit-breaker and reverts when the champion drifts below baseline-of-record', async () => {
@@ -147,7 +187,7 @@ describe('runOptimizationLoop', () => {
       async propose() {
         proposeN++;
         if (proposeN === 2) throw rateLimited(1_000_000_000); // far reset → no pause, skip cycle 2
-        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker' } as CandidateProposal;
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd: 0 } as CandidateProposal;
       },
     });
     const res = await runOptimizationLoop(config, d); // maxCycles 3
@@ -182,7 +222,7 @@ describe('runOptimizationLoop', () => {
       async propose() {
         proposeN++;
         if (proposeN === 1) throw new Error('proposer boom');
-        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker' } as CandidateProposal;
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker', costUsd: 0 } as CandidateProposal;
       },
     });
     const res = await runOptimizationLoop(config, d);
@@ -221,7 +261,7 @@ describe('runOptimizationLoop', () => {
           // does not dominate baseline → the frontier keeps both members.
           return { evalResult: { variantId, trainAgg: 7.5, trainVector: [9, 5], devAnchorAgg: 7.2, meanCost: 1.0, regressionEvidence: MEASURED_PASS, probeEvidence: MEASURED_PASS }, worstTraces: [], costUsd: 1.0 };
         },
-        async propose() { return { overlay: { promptOverrides: { worker: 'v' } }, rationale: 'x', diffFromParent: 'worker' } as CandidateProposal; },
+        async propose() { return { overlay: { promptOverrides: { worker: 'v' } }, rationale: 'x', diffFromParent: 'worker', costUsd: 0 } as CandidateProposal; },
         async promote() {},
         async revert() {},
         async persistCycle(rec) { parents.push(rec.parentId); },

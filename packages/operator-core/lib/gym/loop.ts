@@ -20,6 +20,7 @@ import { appendChangelog } from './changelog';
 import { circuitBreakerTripped } from './circuit-breaker';
 import { runWithRatePause } from './rate-pause';
 import type { VariantOverlay } from './variant-overlay';
+import { costUsdOf } from './proposer';
 import type { CandidateProposal, WorstTrace } from './proposer';
 import type { ArchiveCandidateRecord } from './qd/niche';
 
@@ -332,8 +333,12 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     let evalRes: EvaluateResult;
     try {
       proposal = await runWithRatePause(() => deps.propose(parent.overlay, parent.worstTraces, changelog), { now, sleep });
+      // Charge the proposer as soon as its response arrives. This must happen
+      // before evaluation so a later failure cannot erase the proposer spend.
+      spentUsd += costUsdOf(proposal.costUsd);
       candidateId = deps.newVariantId(cycle);
       evalRes = await runWithRatePause(() => deps.evaluate(candidateId, proposal.overlay), { now, sleep });
+      spentUsd += costUsdOf(evalRes.costUsd);
     } catch (err) {
       // Rate-limited past the bounded pause, or a non-rate failure → skip this cycle and
       // continue (the loop's progress is preserved). WI-5674: a silently-swallowed skip
@@ -342,12 +347,15 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
       // skipReasons via its own logger + the run report (the loop stays effect-injected —
       // it never writes to console itself). This is a diagnosis surface, not a control-flow
       // change: the loop still preserves its champion/frontier/accepts and continues.
+      // A thrown attempt may have burned provider tokens, or an evaluator may
+      // attach the cost of work completed before its failure. Count it even
+      // though no candidate record can be produced for this cycle.
+      spentUsd += costUsdOf(err);
       const reason = err instanceof Error ? (err.stack ?? err.message) : String(err);
       skipReasons.push(`cycle ${cycle}: ${reason}`);
       skipped++;
       continue;
     }
-    spentUsd += evalRes.costUsd;
     variants.set(candidateId, { evalResult: evalRes.evalResult, overlay: proposal.overlay, worstTraces: evalRes.worstTraces });
     // P-010: offer the evaluated candidate to the QD archive (insert-if-better per niche).
     await recordArchive({
