@@ -517,18 +517,29 @@ export default defineTool({
           { sourceRanges, mappings },
           async (ranges, cap) => {
             if (ranges.length === 0) return [];
+            const sourceKinds = ranges.map((range) => range.sourceKind);
+            const sessionIds = ranges.map((range) => range.sessionId);
             const rows = await sql<
               Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; text: string }>
             >`
-              SELECT source_kind, session_id, turn_idx, speaker, text
-                FROM harness_shared.session_turns
-               WHERE workspace_id = ${workspaceId}
-                 AND (source_kind, session_id) IN ${sql(
-                   ranges.map((range) => [range.sourceKind, range.sessionId] as const),
-                 )}
-                 AND turn_idx BETWEEN ${Math.min(...ranges.map((r) => r.fromTurn))}
-                                  AND ${Math.max(...ranges.map((r) => r.toTurn))}
-               ORDER BY source_kind, session_id, turn_idx
+              SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker, turns.text
+                FROM harness_shared.session_turns AS turns
+               WHERE turns.workspace_id = ${workspaceId}
+                 -- Do not interpolate an array of tuples with sql(...): postgres-js emits
+                 -- "IN ($1,$2),($3,$4)" instead of a parenthesized tuple list. Paired
+                 -- unnest preserves the source-kind/session-id relationship safely.
+                 AND EXISTS (
+                   SELECT 1
+                     FROM unnest(
+                       ${sql.array(sourceKinds)}::text[],
+                       ${sql.array(sessionIds)}::text[]
+                     ) AS wanted(source_kind, session_id)
+                    WHERE wanted.source_kind = turns.source_kind
+                      AND wanted.session_id = turns.session_id
+                 )
+                 AND turns.turn_idx BETWEEN ${Math.min(...ranges.map((r) => r.fromTurn))}
+                                        AND ${Math.max(...ranges.map((r) => r.toTurn))}
+               ORDER BY turns.source_kind, turns.session_id, turns.turn_idx
                LIMIT ${cap}`;
             // Over-fetches across gaps between ranges of the SAME session; detectUnderRead
             // filters to the declared set, so the extra rows change no count.
@@ -565,16 +576,28 @@ export default defineTool({
             ]),
           ).values(),
         ];
+        const sourceKinds = sessionKeys.map(([sourceKind]) => sourceKind);
+        const sessionIds = sessionKeys.map(([, sessionId]) => sessionId);
         const extents = sessionKeys.length === 0
           ? []
           : (
               await sql<Array<{ source_kind: string; session_id: string; min_turn: number; max_turn: number }>>`
-                SELECT source_kind, session_id,
-                       MIN(turn_idx) AS min_turn, MAX(turn_idx) AS max_turn
-                  FROM harness_shared.session_turns
-                 WHERE workspace_id = ${workspaceId}
-                   AND (source_kind, session_id) IN ${sql(sessionKeys.map((key) => [key[0], key[1]] as const))}
-                 GROUP BY source_kind, session_id`
+                SELECT turns.source_kind, turns.session_id,
+                       MIN(turns.turn_idx) AS min_turn, MAX(turns.turn_idx) AS max_turn
+                  FROM harness_shared.session_turns AS turns
+                 WHERE turns.workspace_id = ${workspaceId}
+                   -- Keep the two key columns paired; a pair of independent ANY
+                   -- predicates would admit cross-session combinations.
+                   AND EXISTS (
+                     SELECT 1
+                       FROM unnest(
+                         ${sql.array(sourceKinds)}::text[],
+                         ${sql.array(sessionIds)}::text[]
+                       ) AS wanted(source_kind, session_id)
+                      WHERE wanted.source_kind = turns.source_kind
+                        AND wanted.session_id = turns.session_id
+                   )
+                 GROUP BY turns.source_kind, turns.session_id`
             ).map((row) => ({
               sourceKind: row.source_kind,
               sessionId: row.session_id,
