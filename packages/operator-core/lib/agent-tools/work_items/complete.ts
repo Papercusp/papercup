@@ -2426,8 +2426,44 @@ async function completeOne(
   // intent can be inferred from completion.status after the schema has parsed.
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+
+  // ---- CONTRACT-GATE ACCUMULATION (EI-20286699547467039) ---------------------------
+  // Every gate from here to the self-review gate below answers the SAME question — "is
+  // this completion record complete enough to close on?" — and each is computed from
+  // `existing` + `it` + `ident` alone, never from an earlier gate having passed. They
+  // used to be sequential early-returns, so a caller violating three of them learned
+  // about them across THREE round-trips, each costing a full model turn. (Five agents
+  // filed that friction on 2026-08-12 alone; the coverage gate's own comment below
+  // records the same pattern from the other side.) They now ACCUMULATE: every gate is
+  // evaluated, and ONE refusal names all of them.
+  //
+  // Why this is nearly free — the argument that decides the design: every gate must
+  // PASS for the call to succeed, so the SUCCESS path already evaluates all of them.
+  // Accumulation therefore costs NOTHING on the happy path; it adds work only on the
+  // refusal path, where it trades a few local gate evaluations for N-1 model
+  // round-trips. That is why this beats adding a separate read-only preview verb: a
+  // preview only helps callers who already know the contract well enough to look for
+  // it, while fixing the refusal shape reaches every caller with zero discovery burden.
+  //
+  // The tiers ABOVE this block deliberately still short-circuit, and must stay that way:
+  //   - existence (`!existing`) — nothing below is computable without the row.
+  //   - authority (remote-authored, assignee-mismatch close) — when the caller may not
+  //     complete this item AT ALL, appending evidence defects is worse than noise: it
+  //     coaches them toward landing a close on someone else's work.
+  //
+  // INVARIANT this block preserves: when exactly ONE gate fails, the returned `error` is
+  // BYTE-IDENTICAL to what that gate returned before and its typed side-field is set
+  // exactly as before. Only a 2+-gate refusal changes shape, and that message still
+  // CONTAINS each gate's verbatim text. That is what keeps the existing
+  // complete.*.test.ts assertions — and any agent that learned a message by heart —
+  // valid. Keep each gate's message verbatim when editing one.
+  const gateRefusals: Array<{ error: string; fields?: Record<string, unknown> }> = [];
+  const refuseGate = (error: string, fields?: Record<string, unknown>): void => {
+    gateRefusals.push(fields ? { error, fields } : { error });
+  };
+
   if (closeIntentRequested && it.assumptions === undefined) {
-    return { ok: false, id: it.id, error: ASSUMPTIONS_REQUIRED_MESSAGE };
+    refuseGate(ASSUMPTIONS_REQUIRED_MESSAGE);
   }
 
   // EI-18793465701838962: successful defect closes need a falsifiable causal
@@ -2462,12 +2498,7 @@ async function completeOne(
       'distinguishingTest: "if H1 then observable A; if H2 then observable B", testResult } so the ' +
       'record preserves what would have looked different if the claimed cause were wrong. No completion ' +
       'record or state transition was written.';
-    return {
-      ok: false,
-      id: it.id,
-      error: rootCauseVerificationError,
-      rootCauseVerificationError,
-    };
+    refuseGate(rootCauseVerificationError, { rootCauseVerificationError });
   }
 
   // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
@@ -2527,32 +2558,31 @@ async function completeOne(
               })),
             }))
           : undefined;
-        return {
-          ok: false,
-          id: it.id,
-          error:
-            `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
+        refuseGate(
+          `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
             'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. No completion record or state transition was written.',
-          specAdequacy: {
-            applicable: true,
-            retryable: true,
-            checked: gate.checked,
-            ...(gate.impactReport ? { impactReport: gate.impactReport } : {}),
-            ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
+          {
+            specAdequacy: {
+              applicable: true,
+              retryable: true,
+              checked: gate.checked,
+              ...(gate.impactReport ? { impactReport: gate.impactReport } : {}),
+              ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
+            },
           },
-        };
+        );
+      } else {
+        // Only reachable when the gate PASSED, so these success-path values can never be
+        // populated from a failed verdict now that the refusal above no longer returns.
+        specAdequacyImpactReport = gate.impactReport;
+        if (gate.applicable) specAdequacyChecked = gate.checked;
       }
-      specAdequacyImpactReport = gate.impactReport;
-      if (gate.applicable) specAdequacyChecked = gate.checked;
     } catch (error) {
-      return {
-        ok: false,
-        id: it.id,
-        error:
-          `refusing terminal completion for '${it.id}': spec-test-adequacy gate could not establish a current verdict (${error instanceof Error ? error.message : String(error)}). ` +
+      refuseGate(
+        `refusing terminal completion for '${it.id}': spec-test-adequacy gate could not establish a current verdict (${error instanceof Error ? error.message : String(error)}). ` +
           'This is retryable; no completion record or state transition was written.',
-        specAdequacy: { applicable: true, retryable: true, checked: [] },
-      };
+        { specAdequacy: { applicable: true, retryable: true, checked: [] } },
+      );
     }
   }
 
@@ -2594,16 +2624,13 @@ async function completeOne(
     );
 
     if (outcome.status === 'unsatisfied' && outcome.enforced) {
-      return { ok: false, id: it.id, error: renderDesignEvidenceRefusal(it.id, outcome) };
+      refuseGate(renderDesignEvidenceRefusal(it.id, outcome));
     }
     if (outcome.status === 'unavailable' && outcome.enforced) {
-      return {
-        ok: false,
-        id: it.id,
-        error:
-          `refusing terminal completion for '${it.id}': ${outcome.report}. ` +
+      refuseGate(
+        `refusing terminal completion for '${it.id}': ${outcome.report}. ` +
           'This is retryable; no completion record or state transition was written.',
-      };
+      );
     }
     if (outcome.status !== 'not-applicable') designEvidenceReport = outcome.report;
   }
@@ -2695,12 +2722,7 @@ async function completeOne(
   // Match every other preflight refusal above: no `completion`/`workItem` fields means
   // the intrinsic completion emit predicate also remains false.
   if (verificationCoverageError) {
-    return {
-      ok: false,
-      id: it.id,
-      error: verificationCoverageError,
-      verificationCoverageError,
-    };
+    refuseGate(verificationCoverageError, { verificationCoverageError });
   }
 
   // ---- Arm-B pilot self-review gate (D-020 / D-021) --------------------------------
@@ -2787,12 +2809,32 @@ async function completeOne(
     selfReviewError = selfReviewRefusal(selfReviewJudgement, it.id);
   }
   if (selfReviewError) {
-    return {
-      ok: false,
-      id: it.id,
-      error: selfReviewError,
-      selfReviewError,
-    };
+    refuseGate(selfReviewError, { selfReviewError });
+  }
+
+  // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------
+  // The last contract gate is above; emit the accumulated verdict here, still BEFORE any
+  // completion record or state write. That preserves the atomicity each individual gate
+  // guaranteed on its own (EI-20962416980274656: a late rejection produced a recorded
+  // completion plus a still-open item — a non-atomic half-write needing a second call),
+  // and it keeps the completion-emit predicate false, since no `completion`/`workItem`
+  // field is set on this result.
+  if (gateRefusals.length > 0) {
+    const mergedFields: Record<string, unknown> = Object.assign({}, ...gateRefusals.map((r) => r.fields ?? {}));
+    // A SINGLE unmet gate returns exactly what it returned before accumulation — same
+    // `error` bytes, same typed side-field, same absent extras — so every existing
+    // caller, test, and memorised message is untouched. Only a 2+-gate refusal takes the
+    // combined shape, and it still carries each gate's verbatim text (numbered, so the
+    // caller can see the set is complete rather than guessing whether an N+1 is waiting).
+    if (gateRefusals.length === 1) {
+      return { ok: false, id: it.id, error: gateRefusals[0]!.error, ...mergedFields };
+    }
+    const error =
+      `REJECTED — ${gateRefusals.length} completion requirements for ${it.id} are unmet. This is the ` +
+      'COMPLETE set as evaluated on this call, not just the first failure: fix all of them and re-send ' +
+      'once. No completion record or state transition was written.\n\n' +
+      gateRefusals.map((r, i) => `(${i + 1}/${gateRefusals.length}) ${r.error}`).join('\n\n');
+    return { ok: false, id: it.id, error, ...mergedFields, unmetGateCount: gateRefusals.length };
   }
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
