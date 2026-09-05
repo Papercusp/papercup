@@ -26,6 +26,7 @@ import { lineagePartyKeys } from './acceptance-author-identity';
 import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from './acceptance-grading-authority';
 import { parseWorkedByHistory } from './work-item-prior-work';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
+import { requirementSections } from './requirement-contract';
 import {
   ACCEPTANCE_BAR_CONTRACT_EPOCH,
   MAX_BAR_PROJECTION_EDGES,
@@ -171,6 +172,9 @@ export interface AcceptanceBarContractSnapshotInput {
 export interface AcceptanceBarTrace {
   barKey: string;
   criterionKey: string;
+  /** Additive read fields; older cached snapshots may omit them. */
+  title?: string;
+  requirement?: ReturnType<typeof requirementSections>;
   barHash: string | null;
   model: string;
   method: string;
@@ -191,6 +195,7 @@ export interface AcceptanceBarTrace {
     planItemId: string;
     planItemStatus: string | null;
     specId: string;
+    sourceValId?: string | null;
     specRevision: number;
     specContentHash: string;
     sourceBarHash: string | null;
@@ -207,6 +212,11 @@ export interface AcceptanceBarTrace {
   }>;
   proof: {
     state: 'current' | 'stale' | 'missing' | 'truncated';
+    history?: Array<Pick<AcceptanceBarEvidenceSource,
+      'id' | 'workItemId' | 'specId' | 'specRevision' | 'specFingerprint' | 'evidenceKind' |
+      'evidenceRef' | 'testRunId' | 'observedAt' | 'createdBy' | 'details' | 'currentness'> & {
+        matchesCurrentSpec: boolean;
+      }>;
     currentEvidence: number;
     staleEvidence: number;
     kinds: string[];
@@ -222,6 +232,13 @@ export interface AcceptanceBarTrace {
   };
   grading: {
     state: 'pass' | 'not-pass' | 'stale' | 'missing' | 'truncated';
+    history?: Array<{
+      scorecardId: string; createdAt: string; createdBy: string | null; rubricRevision: number | null;
+      role: 'author' | 'implementer' | 'independent' | 'unattributed';
+      authoritative: boolean; currentRevision: boolean; complete: boolean; retracted: boolean;
+      supersedes: string | null; supersededBy: string | null; selectedVia: SelectionVia | null;
+      rating: string | null; evidence: string | null; authorVerdict: string | null; reasoning: string | null;
+    }>;
     scorecardId: string | null;
     rubricRevision: number | null;
     gradedBy: string | null;
@@ -289,6 +306,10 @@ export interface AcceptanceBarContractSnapshot {
       state: 'accepted' | 'rejected' | 'stale' | 'missing';
       scorecardId: string | null;
       verdict: string | null;
+      createdBy?: string | null;
+      rubricRevision?: number | null;
+      supersedes?: string | null;
+      reasoning?: string | null;
     };
   };
   bars: AcceptanceBarTrace[];
@@ -381,7 +402,8 @@ function partyOf(identity: string | null | undefined, parties: ReadonlyMap<strin
 }
 
 function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric: Rubric | null) {
-  if (!rubric) return { card: undefined, via: null as SelectionVia | null, authorVerdict: undefined };
+  if (!rubric) return { card: undefined, via: null as SelectionVia | null, authorVerdict: undefined,
+    roleOf: (_card: ScorecardRow) => 'unattributed' as const };
   const allComplete = input.scorecards.rows.filter(completeScorecard);
   const author = rubric.createdBy ?? rubric.proposedBy ?? null;
   const authorParty = partyOf(author, input.partyByIdentity);
@@ -417,6 +439,9 @@ function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric:
     card,
     via: card ? gradingViaOf(card, input.graderSelectionVia) : null,
     authorVerdict,
+    roleOf: (candidate: ScorecardRow) => !candidate.createdBy ? 'unattributed' as const
+      : holdsAuthorAuthority(candidate) ? 'author' as const
+        : isPrincipal(candidate) ? 'implementer' as const : 'independent' as const,
   };
 }
 
@@ -718,6 +743,7 @@ export function projectAcceptanceBarContractSnapshot(
       planItemId: clause.planItemId,
       planItemStatus: itemStatus.get(clause.planItemId) ?? null,
       specId: clause.specId,
+      sourceValId: clause.sourceValId ?? null,
       specRevision: clause.revision,
       specContentHash: clause.contentHash,
       sourceBarHash: clause.sourceBar?.barHash ?? null,
@@ -836,6 +862,8 @@ export function projectAcceptanceBarContractSnapshot(
     bars.push({
       barKey,
       criterionKey: criterion.key,
+      title: criterion.title,
+      requirement: requirementSections(criterion),
       barHash: criterion.barHash ?? null,
       model: criterion.model ?? criterion.bar ?? '',
       method: criterion.method ?? '',
@@ -854,6 +882,15 @@ export function projectAcceptanceBarContractSnapshot(
       workContracts: contracts,
       proof: {
         state: proofState,
+        history: evidence.slice().sort((a, b) =>
+          `${a.observedAt}\0${a.id}`.localeCompare(`${b.observedAt}\0${b.id}`)).map((row) => ({
+          id: row.id, workItemId: row.workItemId, specId: row.specId, specRevision: row.specRevision,
+          specFingerprint: row.specFingerprint, evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
+          testRunId: row.testRunId, observedAt: row.observedAt, createdBy: row.createdBy,
+          details: row.details, currentness: row.currentness,
+          matchesCurrentSpec: clauses.some((clause) => clause.specId === row.specId &&
+            clause.revision === row.specRevision && clause.contentHash === row.specFingerprint),
+        })),
         currentEvidence: currentEvidence.length,
         staleEvidence: staleEvidence.length,
         kinds: normalized(evidence.map((row) => row.evidenceKind)),
@@ -888,6 +925,23 @@ export function projectAcceptanceBarContractSnapshot(
       },
       grading: {
         state: gradingState,
+        history: input.scorecards.rows
+          .filter((card) => card.ratings[criterion.key] || scorecardAcceptance(card))
+          .slice().sort((a, b) => `${a.createdAt}\0${a.issueId}`.localeCompare(`${b.createdAt}\0${b.issueId}`))
+          .map((card) => {
+            const entry = card.ratings[criterion.key];
+            const acceptance = scorecardAcceptance(card);
+            return {
+              scorecardId: card.issueId, createdAt: card.createdAt, createdBy: card.createdBy,
+              rubricRevision: card.rubricRevision ?? null, role: grading.roleOf(card),
+              authoritative: card.issueId === grading.card?.issueId || card.issueId === grading.authorVerdict?.issueId,
+              currentRevision: card.rubricRevision === rubricRevision, complete: completeScorecard(card),
+              retracted: Boolean(card.retracted), supersedes: card.supersedes ?? null,
+              supersededBy: card.supersededBy ?? null, selectedVia: gradingViaOf(card, input.graderSelectionVia),
+              rating: entry?.rating ?? null, evidence: entry?.evidence ?? null,
+              authorVerdict: acceptance?.verdict ?? null, reasoning: acceptance?.reasoning ?? null,
+            };
+          }),
         scorecardId: grading.card?.issueId ?? null,
         rubricRevision: grading.card?.rubricRevision ?? null,
         gradedBy: grading.card?.createdBy ?? null,
@@ -1054,6 +1108,10 @@ export function projectAcceptanceBarContractSnapshot(
         state: authorVerdictState,
         scorecardId: grading.authorVerdict?.issueId ?? null,
         verdict: authorAcceptance?.verdict ?? null,
+        createdBy: grading.authorVerdict?.createdBy ?? null,
+        rubricRevision: grading.authorVerdict?.rubricRevision ?? null,
+        supersedes: grading.authorVerdict?.supersedes ?? null,
+        reasoning: authorAcceptance?.reasoning ?? null,
       },
     },
     bars,
@@ -1267,6 +1325,7 @@ async function defaultReadScorecards(rubric: Rubric): Promise<BoundedAcceptanceB
   const page = await listScorecardPage({
     rubricRef: rubric.rubricId,
     includeSuperseded: true,
+    includeRetracted: true,
     limit: ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
   });
   return {

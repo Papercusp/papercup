@@ -283,6 +283,52 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('projects unified sections with shared validation links and preserves absent legacy intent', () => {
+    const input = provedFixture(2);
+    const rubric = input.rubrics.rows[0]!;
+    const first = rubric.criteria[0]!;
+    first.intent = { request: 'Export every selected record.', rationale: 'An incomplete export loses work.',
+      constraints: ['Include attachments.'], sourceRefs: ['request:export'] };
+    first.barHash = computeAcceptanceBarHash(first);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows.forEach((clause, index) => {
+      clause.sourceValId = 'VAL-SHARED';
+      clause.sourceBar!.barHash = rubric.criteria[index]!.barHash!;
+      clause.sourceBar!.barSetHash = barSetHash;
+    });
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]).toMatchObject({ title: first.title, criterionKey: first.key,
+      requirement: { intent: first.intent,
+        acceptance: { condition: first.model, falsifier: first.driftMarkers, requiredTestLayers: ['integration'] },
+        verification: { method: first.method, check: first.check } } });
+    expect(snapshot.bars[1]!.requirement!.intent).toBeNull();
+    expect(snapshot.bars.map((bar) => bar.mappings[0]!.sourceValId)).toEqual(['VAL-SHARED', 'VAL-SHARED']);
+    expect(snapshot.bars[0]!.workContracts[0]).toMatchObject({ workItemId: 'WI-1', specRevision: 1 });
+  });
+
+  it('exposes earlier failed grades and implementer reports separately from independent grading and author acceptance', () => {
+    const input = provedFixture(1);
+    input.scorecards.rows.push(scorecard({ issueId: 'SC-OLD', rubricRevision: 1,
+      createdAt: '2026-09-03T13:00:00.000Z', supersededBy: 'SC-GRADE',
+      ratings: { 'r-1': { rating: 'broken', evidence: 'Export omitted an attachment.' } } }),
+    scorecard({ issueId: 'SC-SELF', createdBy: 'su-impl',
+      ratings: { 'r-1': { rating: 'healthy', evidence: 'Implementation report.' } } }));
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.grading).toMatchObject({ scorecardId: 'SC-GRADE', state: 'pass' });
+    expect(snapshot.bars[0]!.grading.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorecardId: 'SC-OLD', rating: 'broken', currentRevision: false,
+        authoritative: false, supersededBy: 'SC-GRADE' }),
+      expect.objectContaining({ scorecardId: 'SC-SELF', role: 'implementer', authoritative: false }),
+      expect.objectContaining({ scorecardId: 'SC-GRADE', role: 'independent', authoritative: true }),
+      expect.objectContaining({ scorecardId: 'SC-AUTHOR', role: 'author', authorVerdict: 'accept',
+        supersedes: 'SC-GRADE', reasoning: 'Independent evidence is sound.' }),
+    ]));
+    expect(snapshot.grading.authorVerdict).toMatchObject({ createdBy: 'su-author', rubricRevision: 2,
+      supersedes: 'SC-GRADE', scorecardId: 'SC-AUTHOR', state: 'accepted' });
+  });
+
   it('keeps historical contracts visible without letting them invalidate a current discharge', () => {
     const input = fixture(1);
     const prior = { ...input.workContracts.rows[0]! };
@@ -382,6 +428,11 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.proof.evidencePlanes).toEqual(['tree']);
     expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
     expect(snapshot.bars[0]!.proof.staleEvidence).toBe(1);
+    expect(snapshot.bars[0]!.proof.history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidenceRef: 'old-live-failure', specRevision: 0, matchesCurrentSpec: false,
+        details: { evidencePlane: 'live', adequacy: { outcome: 'failed' } } }),
+      expect.objectContaining({ specRevision: 1, matchesCurrentSpec: true, currentness: { ...input.evidence.rows[0]!.currentness } }),
+    ]));
   });
 
   it('fails source completeness when BAR meaning no longer matches the server hash', () => {
