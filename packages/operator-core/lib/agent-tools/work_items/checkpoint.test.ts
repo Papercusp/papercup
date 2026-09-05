@@ -1232,6 +1232,100 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(retry[2].transform).toBeTypeOf('function');
     });
 
+    /**
+     * EI-20745229385305334 — the WI-39655 repro. The preserve-by-default is inverted for a
+     * checkpoint that RETRACTS its own prior conclusion: a correction is systematically
+     * shorter than the investigation it supersedes, so the shrink guard fires hardest
+     * exactly when appending resurrects a directive the author was withdrawing.
+     */
+    const RETRACTED_DIRECTIVE =
+      'do NOT re-apply the ornith backfill until a real stopped-unit request serves a completion';
+
+    /** The two-phase guard→append mock the autoAppend path needs, parameterised by prior. */
+    const arrangeAutoAppend = (prior: string) => {
+      let stored: string | null = prior;
+      let calls = 0;
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          incoming: string | null | undefined,
+          opts?: {
+            guard?: (priorNote: string | null, priorLength: number) => string | null;
+            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+          },
+        ) => {
+          calls += 1;
+          if (calls === 1) {
+            const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+            return Promise.resolve({ stored: prior, priorLength: prior.length, blockedReason });
+          }
+          const next = opts?.transform ? opts.transform(prior, incoming) : incoming;
+          stored = (next ?? '').trim() || null;
+          return Promise.resolve({ stored, priorLength: prior.length });
+        },
+      );
+      getWorkItemCheckpoint.mockImplementation(async () => stored);
+      return () => stored;
+    };
+
+    it('EI-20745229385305334: an auto-append that PRESERVES a standing directive says so in retraction terms', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-39655', harness: 'papercup' });
+      const prior = `${'the detailed prior forensic investigation. '.repeat(40)}\n${RETRACTED_DIRECTIVE}`;
+      arrangeAutoAppend(prior);
+
+      // The retraction: shorter than the investigation, which is what trips the guard.
+      const r = await one({
+        id: 'WI-39655',
+        checkpoint: 'Backfill APPLIED: a real stopped-unit request served a completion.',
+      });
+
+      expect(r).toMatchObject({ ok: true, autoAppended: true });
+      // The joined reading — not a generic tagging nit, but "you resurrected an instruction".
+      expect(r.autoAppendedNote).toContain('STANDING DIRECTIVE');
+      expect(r.autoAppendedNote).toContain(RETRACTED_DIRECTIVE);
+      expect(r.autoAppendedNote).toContain('confirmShrink:true');
+      // Structured sibling, so a caller need not parse the prose.
+      expect(r.autoAppendedRetainedDirectives).toEqual([
+        expect.objectContaining({ line: RETRACTED_DIRECTIVE, kind: 'bare-gate-imperative' }),
+      ]);
+    });
+
+    it('EI-20745229385305334 CALIBRATION: an auto-append preserving only narrative gets NO directive warning', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-39656', harness: 'papercup' });
+      // Same shape and length as the case above, minus the imperative — so a passing
+      // assertion there cannot be the warning simply always firing on an auto-append.
+      const prior = `${'the detailed prior forensic investigation. '.repeat(40)}\nthe backfill remains reverted for now.`;
+      arrangeAutoAppend(prior);
+
+      const r = await one({
+        id: 'WI-39656',
+        checkpoint: 'Backfill APPLIED: a real stopped-unit request served a completion.',
+      });
+
+      expect(r).toMatchObject({ ok: true, autoAppended: true });
+      expect(r.autoAppendedNote).not.toContain('STANDING DIRECTIVE');
+      expect(r.autoAppendedRetainedDirectives).toBeUndefined();
+    });
+
+    it('EI-20745229385305334: a directive the CALLER re-supplied is not reported as resurrected history', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-39657', harness: 'papercup' });
+      const prior = `${'the detailed prior forensic investigation. '.repeat(40)}\n${RETRACTED_DIRECTIVE}`;
+      arrangeAutoAppend(prior);
+
+      // Carrying the directive FORWARD deliberately is the opposite of retracting it.
+      // retainedProvenanceText subtracts by exact trimmed LINE, so the directive must be
+      // re-supplied as its own line to be recognised as re-stated rather than inherited —
+      // re-stating it mid-sentence leaves the prior's standalone line genuinely retained,
+      // and it is still reported (measured, not assumed).
+      const r = await one({
+        id: 'WI-39657',
+        checkpoint: `Still blocked.\n${RETRACTED_DIRECTIVE}`,
+      });
+
+      expect(r).toMatchObject({ ok: true, autoAppended: true });
+      expect(r.autoAppendedRetainedDirectives).toBeUndefined();
+    });
+
     it('the guard callback passed to setWorkItemCheckpointWithPrior blocks only a >50% shrink off a substantial (>500 char) prior', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'short new note', priorLength: 20000 });
