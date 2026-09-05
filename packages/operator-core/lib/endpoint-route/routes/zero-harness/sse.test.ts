@@ -50,24 +50,14 @@ type SseRoute = { handler: (req: Request) => Promise<Response> };
 async function optsForUrl(url: string): Promise<SubscribeOpts> {
   const mod = await import('./sse');
   const route = mod.default as unknown as SseRoute;
-  // sseResponse is mocked, so `setup` never runs — call it the way the real
-  // helper would, by reaching for the route's own subscribe wiring instead.
-  const realSseResponse = vi.mocked(await import('@papercusp/sse')).sseResponse;
-  let capturedSetup: ((sink: unknown) => Promise<void>) | null = null;
-  vi.mocked(realSseResponse).mockImplementationOnce(((opts: {
-    setup: (sink: unknown) => Promise<void>;
-  }) => {
-    capturedSetup = opts.setup;
-    return new Response('stream');
-  }) as never);
 
+  capturedSse = null;
   await route.handler(new Request(url));
-  if (!capturedSetup) throw new Error('sseResponse was never called — route wiring changed');
-  await (capturedSetup as (sink: unknown) => Promise<void>)({
-    closed: false,
-    event: () => {},
-    onClose: () => {},
-  });
+  if (capturedSse === null) throw new Error('sseResponse was never called — route wiring changed');
+
+  // The mocked sseResponse never runs `setup` on its own; drive it the way the
+  // real helper does, so the route's actual subscribe() call is exercised.
+  await capturedSse.setup({ closed: false, event: () => {}, onClose: () => {} });
 
   const call = subscribeMock.mock.calls.at(-1);
   if (!call) throw new Error('subscribe was never called');
