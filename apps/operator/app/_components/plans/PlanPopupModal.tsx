@@ -38,6 +38,15 @@ import "./plans-pane.css";
 const POPUP_VIEWS = ["plan", "sessions"] as const;
 export type PlanPopupView = (typeof POPUP_VIEWS)[number];
 
+/** A not-yet-attached ref and an idle Fullscreen API are both null during
+ * hydration. They must not compare as an active fullscreen relationship. */
+export function isPopupSurfaceFullscreen(
+  fullscreenElement: Element | null,
+  surface: HTMLElement | null,
+): boolean {
+  return surface !== null && fullscreenElement === surface;
+}
+
 export default function PlanPopupModal({
   planSlug,
   harnessSlug,
@@ -124,7 +133,12 @@ export default function PlanPopupModal({
       return;
     }
     const sync = () => {
-      setIsFullscreen(document.fullscreenElement === popupSurfaceRef.current);
+      setIsFullscreen(
+        isPopupSurfaceFullscreen(
+          document.fullscreenElement,
+          popupSurfaceRef.current,
+        ),
+      );
     };
     document.addEventListener("fullscreenchange", sync);
     sync();
