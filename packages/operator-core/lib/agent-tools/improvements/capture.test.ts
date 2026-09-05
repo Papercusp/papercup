@@ -1736,6 +1736,13 @@ describe('improvements:capture — cheapExperiment gap is report-only (P-007/D-0
     expect(body.experimentGap).toMatchObject({ missing: ['falsifiableSignal'] });
   });
 
+  it('names the actual payload repair path for an existing item', async () => {
+    const note = ((await bodyOf({ title: 'an unbettable idea', kind: 'feature' })).experimentGap as { note: string })
+      .note;
+    expect(note).toContain('work_items:update { id, payload: { ideation: { cheapExperiment:');
+    expect(note).not.toContain('amend with ideation.cheapExperiment');
+  });
+
   it('is scoped to where a supplied block would be PERSISTED — never other kinds or the observation lane', async () => {
     // capture.ts only stores ideation for kind:'feature' outside the observation lane, so
     // nudging anywhere else would demand a field the handler would discard anyway.
@@ -1879,6 +1886,8 @@ describe('improvements:capture — lens attribution is report-only (WI-38065)', 
     expect(note).toMatch(/excluded from every per-lens statistic/i);
     expect(note).toMatch(/diversity floor/i);
     expect(note).toMatch(/ideation\.lens/);
+    expect(note).toContain('work_items:update { id, payload: { ideation: { lens:');
+    expect(note).not.toContain('amend with `ideation.lens`');
   });
 
   // ── P-006 (blender-loop-repair-and-opus5-xhigh-2026-08-16) / EI-10607: groundingGap ──
@@ -1894,6 +1903,9 @@ describe('improvements:capture — lens attribution is report-only (WI-38065)', 
       // The nudge must name the exact repair — field AND where the refs come from.
       expect((body.groundingGap as { note: string }).note).toMatch(/ideation\.addressesPatternRefs/);
       expect((body.groundingGap as { note: string }).note).toMatch(/observationsImpact\.patterns\[\]\.ref/);
+      expect((body.groundingGap as { note: string }).note).toContain(
+        'work_items:update { id, payload: { ideation: { addressesPatternRefs:',
+      );
     });
 
     it('DECLARED refs report nothing (absent, not empty) and land on the ledger row', async () => {

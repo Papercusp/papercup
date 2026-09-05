@@ -223,9 +223,11 @@ export function describeExperimentGap(args: {
     note:
       'Filed — this is a report, not a rejection. This idea carries no complete `ideation.cheapExperiment`, ' +
       'so it cannot be compiled into a probe and stays invisible to the idea-fitness loop (it is also ranked ' +
-      'below bettable ideas in triage). To make it bettable, re-file or amend with ideation.cheapExperiment: ' +
+      'below bettable ideas in triage). To make it bettable, re-file with `ideation.cheapExperiment`: ' +
       '{ hypothesis: what is true if this has merit, method: the cheap first test, falsifiableSignal: the ' +
-      'observable that would prove it WRONG }.',
+      'observable that would prove it WRONG }. For an existing item, update its persisted payload with ' +
+      '`work_items:update { id, payload: { ideation: { cheapExperiment: { hypothesis: ..., method: ..., ' +
+      'falsifiableSignal: ... } } } }`.',
   };
 }
 
@@ -292,7 +294,8 @@ export function describeLensAttribution(
       "recorded under the 'su-ideate' sentinel and earns NO per-lens learning: sentinel rows are excluded " +
       'from every per-lens statistic, so this idea will not inform the win-rates that steer which stance ' +
       'future passes sample, and it cannot be kept alive by the diversity floor. To attribute it, re-file ' +
-      'or amend with `ideation.lens` — you already know which stance produced it.',
+      'with `ideation.lens` or update the existing item via `work_items:update { id, payload: { ideation: { ' +
+      'lens: "<stance>" } } }` — you already know which stance produced it.',
   };
 }
 
@@ -318,7 +321,8 @@ export function describeGroundingGap(
       "(the observation→pattern→idea→shipped arc joins on that field), and it won't feed the grounding " +
       'metrics that show which observations earn ideas. The refs come back from blender:ideation-feedback ' +
       "as observationsImpact.patterns[].ref (e.g. 'wi:EI-10587') — pass the pattern(s) the idea actually " +
-      'builds on next time, or amend this one.',
+      'builds on next time, or update the existing item via `work_items:update { id, payload: { ideation: { ' +
+      'addressesPatternRefs: ["<ref>", ...] } } }`.',
   };
 }
 
