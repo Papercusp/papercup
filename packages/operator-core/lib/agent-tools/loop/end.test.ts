@@ -99,7 +99,7 @@ import {
   windDownDispositionGateEnabled,
   evaluateGoalAcceptanceGate,
 } from '../../goals/wind-down-disposition';
-import endTool, { survivingAwaitsNote } from './end';
+import endTool, { isKeepaliveInboxWake, survivingAwaitsNote } from './end';
 
 const deactivateLoopMock = deactivateLoop as unknown as ReturnType<typeof vi.fn>;
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
@@ -657,5 +657,59 @@ describe('the surviving-awaits receipt (EI-21349668185386229)', () => {
     expect(note).toContain('#1009 key-9');
     expect(note).not.toContain('#1010 key-10');
     expect(note).toContain('+2 more');
+  });
+});
+
+describe('the keepalive exclusion is by SHAPE, not key prefix (WI-2146110 / EI-22395297051930111)', () => {
+  // The reported defect: loop:end excluded EVERY `coord:inbox-wake:` await by key
+  // prefix, so an await the caller had DELIBERATELY registered on that key
+  // (timeout_sec 3600, on_timeout:'wake') was filtered out — and the receipt then
+  // claimed "no independent event awaits remain active for this owner" while it was
+  // live. It woke the session ~16s later.
+  const INBOX_KEY = 'coord:inbox-wake:su-c2e1f693-ebc1-4fa9-bc0d-3efd769127d9';
+
+  it('classifies the always-armed keepalive (unbounded + expires) as plumbing', () => {
+    // Measured 2026-09-05: all 83 then-active coord:inbox-wake:* rows had exactly
+    // this shape — timeout_behavior='expire', expires_ts IS NULL.
+    expect(isKeepaliveInboxWake({ eventKey: INBOX_KEY, expiresTs: null, timeoutBehavior: 'expire' })).toBe(true);
+  });
+
+  it('does NOT classify a DELIBERATE bounded wake-on-timeout await on the same key as plumbing', () => {
+    expect(
+      isKeepaliveInboxWake({ eventKey: INBOX_KEY, expiresTs: '2026-09-05T05:42:26.895Z', timeoutBehavior: 'wake' }),
+    ).toBe(false);
+  });
+
+  it('leaves an ordinary non-inbox-wake key alone whatever its shape', () => {
+    expect(isKeepaliveInboxWake({ eventKey: 'claim:released:EI-123', expiresTs: null, timeoutBehavior: 'expire' })).toBe(
+      false,
+    );
+  });
+
+  it('still excludes an UNBOUNDED await on the keepalive key (indistinguishable by shape, and guarantees no wake)', () => {
+    expect(isKeepaliveInboxWake({ eventKey: INBOX_KEY, expiresTs: null, timeoutBehavior: 'wake' })).toBe(true);
+  });
+
+  it('treats a missing timeoutBehavior as the store default of wake', () => {
+    expect(isKeepaliveInboxWake({ eventKey: INBOX_KEY, expiresTs: '2026-09-05T05:42:26.895Z' })).toBe(false);
+  });
+
+  it('END-TO-END: the deliberate await SURFACES in survivingAwaits and the receipt stops claiming none remain', async () => {
+    listActiveAwaitsMock.mockResolvedValue([
+      // The keepalive — still filtered.
+      { id: 90000, eventKey: INBOX_KEY, expiresTs: null, timeoutBehavior: 'expire' },
+      // The reporter's actual await (#150975) — MUST be reported.
+      { id: 150975, eventKey: INBOX_KEY, expiresTs: '2026-09-05T05:42:26.895Z', timeoutBehavior: 'wake' },
+    ]);
+    const got = await run({});
+    expect(got.ended).toBe(true);
+    expect(got.survivingAwaits).toEqual([
+      { await_id: 150975, event_key: INBOX_KEY, expires_ts: '2026-09-05T05:42:26.895Z' },
+    ]);
+    const note = String(got.note);
+    // The precise false statement the filing observed must no longer be emitted.
+    expect(note).not.toMatch(/no independent event awaits remain/);
+    expect(note).toMatch(/1 independent event await\(s\) remain active/);
+    expect(note).toContain('#150975');
   });
 });
