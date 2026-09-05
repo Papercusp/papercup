@@ -7,7 +7,8 @@
       "preserve-insufficient-evidence": 26,
       "preserve-no-candidate-signal": 160,
       "preserve-hard-floor": 40,
-      "candidate-shared-root-consolidation": 48
+      "preserve-distinct-required": 13,
+      "candidate-shared-root-consolidation": 35
     },
     "exceptions": 77,
     "backlogMutations": 0
@@ -1424,42 +1425,42 @@
       "id": "EI-21109974659073335",
       "sourceSha256": "e622c89e9dbabb39e9e3922d2c02905fec93a9a43a7b25f124eadff98df6babf",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 11-row S-04 subcase: coord:send premises supplied as objects although the live contract requires citation-reference strings. EI-21109974659073335 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 11-row S-04 subcase: coord:send premises supplied as objects although the live contract requires citation-reference strings. 10 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolMessageFamily; groupIds=tool-error-class-004|tool-message-family-002.",
         "Row-specific report: premises must be an ARRAY of REF STRINGS, not an array of objects.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:coord:send:caller:premises-must-be-an-array-of; messageFingerprint=premises-must-be-an-array-of; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 11 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 11 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 10 distinct dependent result entries propose EI-21109974659073335; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21109974659073335",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21109974659073335 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 10 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
       "id": "EI-21110757689132784",
       "sourceSha256": "396feaad661707699ff3be72213472d7ee03eba568fa27dc9fa039d8c0ac5280",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: ptool forwards an explicitly empty harness value and plans:get rejects the empty string. EI-21110757689132784 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: ptool forwards an explicitly empty harness value and plans:get rejects the empty string. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolMessageFamily; groupIds=tool-error-class-024|tool-message-family-029.",
         "Row-specific report: harness: Too small: expected string to have >=1 characters; triggered by ptool --harness=\"\" forwarding an empty string.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:plans:get:caller:harness-too-small-expected-string-to; messageFingerprint=harness-too-small-expected-string-to; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21110757689132784; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21110757689132784",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21110757689132784 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -1688,21 +1689,21 @@
       "id": "EI-21156829236585716",
       "sourceSha256": "dd5be713ac679fb8b5fd227482d34931ce7aa289a3ef75f903a1bddc4b139acc",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 6-row S-04 subcase: coord:send rejects a structured body when the required top-level summary is omitted. EI-21156829236585716 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 6-row S-04 subcase: coord:send rejects a structured body when the required top-level summary is omitted. 5 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-004|tool-field-family-003|tool-message-family-002.",
         "Row-specific report: coord:send needs summary: a one-line headline of the message; body is optional long-form text and does not satisfy summary.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:coord:send:caller:coord-send-needs-summary-a-one; messageFingerprint=coord-send-needs-summary-a-one; reporters=24.",
-        "Programmatic full-body/payload comparison covered all 6 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 6 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 5 distinct dependent result entries propose EI-21156829236585716; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21156829236585716",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21156829236585716 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 5 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -1915,21 +1916,21 @@
       "id": "EI-21212590668981223",
       "sourceSha256": "164dce44eebc58014f75c6b53558c1428a8edb801f0c89083e578b4d70d7d824",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: sessions:read enforces a context maximum of 50 only at invocation time. EI-21212590668981223 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: sessions:read enforces a context maximum of 50 only at invocation time. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolMessageFamily; groupIds=tool-error-class-014|tool-message-family-018.",
         "Row-specific report: context: Too big: expected number to be <=50.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:sessions:read:caller:context-too-big-expected-number-to; messageFingerprint=context-too-big-expected-number-to; reporters=2.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21212590668981223; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21212590668981223",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21212590668981223 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2105,21 +2106,21 @@
       "id": "EI-21308190767815462",
       "sourceSha256": "904f8e79b5987c078d597ecbc1c330f45000d7f34590d69e66801f215b1f2b00",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: sessions:read exact turn references reject an additional order argument. EI-21308190767815462 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: sessions:read exact turn references reject an additional order argument. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-014|tool-field-family-086|tool-message-family-052.",
         "Row-specific report: ref already fixes source/session/turn; combine it only with context and/or limit.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:sessions:read:caller:ref-already-fixes-source-session-turn; messageFingerprint=ref-already-fixes-source-session-turn; reporters=3.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21308190767815462; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21308190767815462",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21308190767815462 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2326,21 +2327,21 @@
       "id": "EI-21359916962830079",
       "sourceSha256": "71073a3a129205d61d382c74218e56018f5f7c59dc2a03adcb5989ca9ea40994",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: coord:send requires the recipient field as an array and rejects a scalar recipient. EI-21359916962830079 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: coord:send requires the recipient field as an array and rejects a scalar recipient. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolMessageFamily; groupIds=tool-error-class-004|tool-message-family-002.",
         "Row-specific report: to: coord:send needs `to`: at least one recipient id; scalar owner id rejected.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:coord:send:caller:to-coord-send-needs-to-at; admissionSignalKey=repeated-tool-error:coord:send:caller:to-coord-send-needs-to-at; messageFingerprint=to-coord-send-needs-to-at; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21359916962830079; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21359916962830079",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21359916962830079 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2363,21 +2364,21 @@
       "id": "EI-21371384604789314",
       "sourceSha256": "0b40714bf7cc5cc04d0f5e71a65b494b4cfb2722cabd3847cd7f2dc96455eac7",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: plans:get batch decision selection requires decisions rather than an array-valued decisionId/decisionIds key. EI-21371384604789314 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: plans:get batch decision selection requires decisions rather than an array-valued decisionId/decisionIds key. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-024|tool-field-family-023|tool-message-family-029.",
         "Row-specific report: Caller used decisionId:[D-039..D-042]; live schema requires decisions:[...] for batch and decisionId only for one string. Corrected immediately..",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:plans:get:caller:caller-used-decisionid-d-d-live; admissionSignalKey=repeated-tool-error:plans:get:caller:caller-used-decisionid-d-d-live; messageFingerprint=caller-used-decisionid-d-d-live; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21371384604789314; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21371384604789314",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21371384604789314 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2405,21 +2406,21 @@
       "id": "EI-21379859918527562",
       "sourceSha256": "737ef1a433a8dfabbd8bf9a6f1084e2e5488ae795d6220c04c87eb0f7e0ce186",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 3-row S-04 subcase: rubrics:get uses rubricRef/rubricRefs rather than a generic id/ref selector. EI-21379859918527562 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 3-row S-04 subcase: rubrics:get uses rubricRef/rubricRefs rather than a generic id/ref selector. 2 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolMessageFamily; groupIds=tool-error-class-031|tool-message-family-075.",
         "Row-specific report: Unrecognized key id; accepted keys are rubricRef and rubricRefs.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:rubrics:get:caller:unrecognized-key-id-accepted-keys-are; messageFingerprint=unrecognized-key-id-accepted-keys-are; reporters=2.",
-        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 2 distinct dependent result entries propose EI-21379859918527562; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21379859918527562",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21379859918527562 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 2 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2569,42 +2570,42 @@
       "id": "EI-21512180410024920",
       "sourceSha256": "d614845f90355338a4ac007ff33adf5f3a302d455ef13b37a69af1efcf7e5b7a",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: sessions:timeline requires owner and rejects the intuitive session argument. EI-21512180410024920 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: sessions:timeline requires owner and rejects the intuitive session argument. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass; groupIds=tool-error-class-067.",
         "Row-specific report: Unrecognized key session; required owner string.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:sessions:timeline:caller:unrecognized-key-session-required-owner-string; admissionSignalKey=repeated-tool-error:sessions:timeline:caller:unrecognized-key-session-required-owner-string; messageFingerprint=unrecognized-key-session-required-owner-string; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21512180410024920; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21512180410024920",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21512180410024920 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
       "id": "EI-21525856155555727",
       "sourceSha256": "2d6f719aec0b5832907a70292de4fdedb6ee6c644861d1515ff749d423362456",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 3-row S-04 subcase: sessions:read tail already fixes order and limit, so combining tail with order/limit is rejected. EI-21525856155555727 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 3-row S-04 subcase: sessions:read tail already fixes order and limit, so combining tail with order/limit is rejected. 2 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-014|tool-field-family-013|tool-message-family-052.",
         "Row-specific report: tail:N already means order:'desc', limit:N; do not combine tail with order or limit.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:sessions:read:caller:tail-n-already-means-order-desc; admissionSignalKey=repeated-tool-error:sessions:read:caller:tail-n-already-means-order-desc; messageFingerprint=tail-n-already-means-order-desc; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 2 distinct dependent result entries propose EI-21525856155555727; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21525856155555727",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21525856155555727 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 2 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -2988,21 +2989,21 @@
       "id": "EI-21722702586177473",
       "sourceSha256": "d3788f8469a3d9288694814c333bae98debd47399d764160e4542bb9a6f4f1e9",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 2-row S-04 subcase: rubrics:get rejects a harness argument even when invoked from harness-scoped work. EI-21722702586177473 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 2-row S-04 subcase: rubrics:get rejects a harness argument even when invoked from harness-scoped work. 1 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-031|tool-field-family-035|tool-message-family-075.",
         "Row-specific report: Unrecognized key harness; accepts rubricRef,rubricRefs,ref,slug.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:rubrics:get:caller:unrecognized-key-harness-accepts-rubricref-rubricrefs; admissionSignalKey=repeated-tool-error:rubrics:get:caller:unrecognized-key-harness-accepts-rubricref-rubricrefs; messageFingerprint=unrecognized-key-harness-accepts-rubricref-rubricrefs; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 2 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 1 distinct dependent result entry proposes EI-21722702586177473; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21722702586177473",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21722702586177473 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 1 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -3062,21 +3063,21 @@
       "id": "EI-21829560133262939",
       "sourceSha256": "677d986b3af8287d306e64e1f2853ab59d5834312254a6b5a1ff8daad60051fd",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 3-row S-04 subcase: coord:send structured provenance/recipient context must be present inside a body section. EI-21829560133262939 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 3-row S-04 subcase: coord:send structured provenance/recipient context must be present inside a body section. 2 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-004|tool-field-family-003|tool-message-family-002.",
         "Row-specific report: forYouBecause and couldNotDetermine must be nested inside a body section, not placed on the message envelope.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:coord:send:caller:foryoubecause-and-couldnotdetermine-must-be-nested; admissionSignalKey=repeated-tool-error:coord:send:caller:foryoubecause-and-couldnotdetermine-must-be-nested; messageFingerprint=foryoubecause-and-couldnotdetermine-must-be-nested; reporters=1.",
-        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 3 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 2 distinct dependent result entries propose EI-21829560133262939; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-21829560133262939",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-21829560133262939 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 2 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
@@ -3474,21 +3475,21 @@
       "id": "EI-22040416365929974",
       "sourceSha256": "ad980994b703a80bef1b1baabde48fb1ef3509ac96c7a0d971b61e570dd9d1df",
       "reviewStatus": "fleet-reviewed",
-      "outcome": "candidate-shared-root-consolidation",
-      "confidence": "medium",
-      "reason": "Full-record comparison aligns this row with a 8-row S-04 subcase: coord:send rejects directed action/answer bodies above the 600-character inbox cap. EI-22040416365929974 is the proposed survivor, subject to P-004 identity and reference checks.",
+      "outcome": "preserve-distinct-required",
+      "confidence": "high",
+      "reason": "Preserve this row as the canonical survivor for the 8-row S-04 subcase: coord:send rejects directed action/answer bodies above the 600-character inbox cap. 7 genuine dependent proposal(s) point to it; the survivor itself is not a mutation candidate and must remain the stable P-004 destination.",
       "evidence": [
         "Complete frozen record read and SHA-256 verified; kind=change, state=open, origin=local, assignee=<none>.",
         "Candidate-union signals: reasons=root:toolErrorClass|root:toolFieldFamily|root:toolMessageFamily; groupIds=tool-error-class-004|tool-field-family-003|tool-message-family-002.",
         "Row-specific report: body was 644 characters, exceeding the 600-character default inbox cap for expects:action; nothing sent.",
         "Producer/occurrence identity retained for P-004: watchdogKey=repeated-tool-error:coord:send:caller:body-was-characters-exceeding-the-character; messageFingerprint=body-was-characters-exceeding-the-character; reporters=2.",
-        "Programmatic full-body/payload comparison covered all 8 members; this is a shared-root proposal, not an exact-body claim."
+        "Programmatic full-body/payload comparison covered all 8 members; this is a shared-root proposal, not an exact-body claim.",
+        "Canonical-survivor rationale: 7 distinct dependent result entries propose EI-22040416365929974; preserving this row prevents a self-mutation proposal and retains a stable destination for any P-004-validated consolidation."
       ],
-      "proposedCanonical": "EI-22040416365929974",
       "requiredBeforeMutation": [
-        "P-004: re-read the current row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before any mutation.",
-        "P-004: compare all rows proposed to EI-22040416365929974 against current code and full completion evidence and confirm that the proposed survivor covers the whole shared root without erasing a distinct subcase.",
-        "P-004: preserve every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference through the canonical mechanism; if that cannot be proven, preserve the rows separately."
+        "P-004: re-read the current survivor row, full body, state, assignee, origin, claims, holds, blockers, plan/code/completion lineage, and both reference directions before merging any dependent into it.",
+        "P-004: compare all 7 dependent proposal(s) against this preserved survivor and confirm that it covers their shared root without erasing a distinct subcase.",
+        "P-004: preserve this survivor plus every stable signal/watchdog/admission identity, reporter/occurrence history, unique evidence, hold, and inbound/outbound reference; if canonical transfer cannot retain all of them, preserve the dependent rows separately."
       ]
     },
     {
