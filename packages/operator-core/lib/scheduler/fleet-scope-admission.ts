@@ -1536,6 +1536,10 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     // a fleet-stamped plan lane is admissible to its owning fleet, and a spec that
     // explicitly references `fleet` authorizes the matching stamped lane itself.
     const claimSpecReferencesFleet = claimSpecReferencesField(spec, 'fleet');
+    // EI-21398324268952860: and the same for `goal`. This MUST be derived here too, or this
+    // diagnostic reports `reserved_plan_lane` for rows the claim would now hand over — the
+    // exact false `claimable=0` that filing was opened for, just moved into the read side.
+    const claimSpecReferencesGoal = claimSpecReferencesField(spec, 'goal');
     const cooldownAssignee = args.cooldownAssignee === null
       ? undefined
       : args.cooldownAssignee ?? args.scope.ownerId;
@@ -1547,6 +1551,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       rigAvailable: args.rigAvailable,
       claimantFleetSlug: args.scope.fleetSlug,
       claimSpecReferencesFleet,
+      claimSpecReferencesGoal,
     });
     const filter = compileFilter(sql, filterNode);
     const states = [...(args.states ?? spec.states ?? ['open'])];
@@ -1558,6 +1563,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     const reservationEligible = reservedPlanLaneExclusionSql(sql, cooldownAssignee ?? '', 'payload', {
       claimantFleetSlug: args.scope.fleetSlug,
       claimSpecReferencesFleet,
+      claimSpecReferencesGoal,
     });
     const rows = await sql<{ matched: number; claimable: number; reserved_plan_lane: number }[]>`
       SELECT count(*) FILTER (WHERE ${filter})::int AS matched,
