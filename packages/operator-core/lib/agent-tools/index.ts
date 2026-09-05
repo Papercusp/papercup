@@ -868,6 +868,7 @@ import './coordination/tools/conversations-supersede';
 import './improvements/capture';
 import './improvements/agent-review';
 import './improvements/digest';
+import './improvements/filing-classes';
 import './improvements/triage';
 import './improvements/resolve';
 import './improvements/watchdog-status';
