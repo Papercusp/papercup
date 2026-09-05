@@ -105,3 +105,80 @@ describe('hitDisplayHtml', () => {
     expect(hitDisplayHtml({ highlight: null, excerpt: 'only excerpt' })).toBe('only excerpt');
   });
 });
+
+/**
+ * FALSIFIABILITY CONTROLS — proof that the assertions above have teeth against
+ * the SHIPPED `headlineToSafeHtml`, not merely against themselves.
+ *
+ * WHY THIS BLOCK EXISTS. The original falsifiability evidence for this
+ * mechanism was an out-of-tree probe (`/tmp/wi2144848-probe/probe.mjs`) that
+ * hand-copied the escaper inline — `const escape = (h) => h.replaceAll(...)` —
+ * and labelled it "the shipped escaper". It never imported this module, so
+ * mutating it proved a COPY was falsifiable and established nothing about
+ * `headlineToSafeHtml`. Grading audit EI-22385441244195816 rated that binding
+ * `re-runnable-evidence = FAIL`, and it was right. The probe was also
+ * session-local: a `/tmp` path that dies with the box and carries no
+ * fingerprint of its own.
+ *
+ * WHY THE CONTROLS LIVE HERE rather than in a mutation probe. `CLAUDE.md`
+ * ("Proving a guard is falsifiable") routes a MODULE you `import` to a
+ * deliberately-wrong implementation kept permanently in the test file, never to
+ * mutating production code. The repo's copy-out tier needs the subject path to
+ * be injectable (`--test '… {}'`); these cases import `./search-highlight` by
+ * relative specifier, so there is no path to substitute and copy-out cannot
+ * reach them.
+ *
+ * Each control is a plausible-but-wrong escaper — the two ways this actually
+ * gets written by hand — and each must FAIL a vector the shipped function
+ * neutralises. The CALIBRATION case asserts the shipped function PASSES that
+ * same battery, so the controls cannot be passing merely because the property
+ * itself is broken.
+ */
+describe('headlineToSafeHtml falsifiability controls', () => {
+  const IMG_VECTOR = 'the <mark>deploy</mark> ran <img src=x onerror="alert(1)">';
+  const FAKE_MARK_VECTOR = 'a <mark onmouseover="alert(1)">hostile</mark> mark';
+
+  const hasLiveImgTag = (html: string) => /<img/i.test(html);
+  const hasLiveMarkWithAttribute = (html: string) => /<mark\s+[^>]/i.test(html);
+  const openMarkCount = (html: string) => (html.match(/<mark>/g) ?? []).length;
+
+  /** CONTROL A — the classic naive filter: strip `<script>`, pass everything else. */
+  const stripScriptOnly = (headline: string): string =>
+    headline.replace(/<script[\s\S]*?<\/script>/gi, '');
+
+  /**
+   * CONTROL B — right pieces, WRONG ORDER: hold the engine's `<mark>` tags out
+   * of the escape pass and restore them verbatim. This is the inversion
+   * `search-highlight.ts` warns about in its own header: the regex meant to
+   * protect the delimiter also matches the attacker's tag, so a hostile
+   * `<mark onmouseover=…>` is preserved instead of escaped.
+   */
+  const permissiveMarkRestore = (headline: string): string =>
+    headline
+      .split(/(<\/?mark[^>]*>)/gi)
+      .map((piece, index) =>
+        index % 2 === 1
+          ? piece
+          : piece.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+      )
+      .join('');
+
+  it('CALIBRATION: the shipped escaper passes the whole battery the controls must fail', () => {
+    const img = headlineToSafeHtml(IMG_VECTOR);
+    expect(hasLiveImgTag(img)).toBe(false);
+    expect(openMarkCount(img)).toBe(1);
+
+    const fakeMark = headlineToSafeHtml(FAKE_MARK_VECTOR);
+    expect(hasLiveMarkWithAttribute(fakeMark)).toBe(false);
+  });
+
+  it('CONTROL A (strip-<script>-only) lets through the img vector the shipped escaper kills', () => {
+    expect(hasLiveImgTag(stripScriptOnly(IMG_VECTOR))).toBe(true);
+    expect(hasLiveImgTag(headlineToSafeHtml(IMG_VECTOR))).toBe(false);
+  });
+
+  it('CONTROL B (restore-marks-by-regex) lets through the attribute vector the shipped escaper kills', () => {
+    expect(hasLiveMarkWithAttribute(permissiveMarkRestore(FAKE_MARK_VECTOR))).toBe(true);
+    expect(hasLiveMarkWithAttribute(headlineToSafeHtml(FAKE_MARK_VECTOR))).toBe(false);
+  });
+});
