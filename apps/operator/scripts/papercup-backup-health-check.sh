@@ -145,7 +145,11 @@ fi
 #
 # An explicitly-set BACKUP_DUMP_DIR still wins, which the self-test cases below rely on
 # (they pass BACKUP_DUMP_DIR="$t/dump" to judge a temp tree instead of live state).
-BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/data/Backup/db-dumps}}"
+# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
+# note in papercusp-db-backup.sh. This script's own header (line ~139) already
+# records what the stale fallback did here: it tailed a db-backup.log frozen on
+# "backup FAILED", so the alarm could never clear and was blind to real failures.
+BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}}"
 BACKUP_ARTIFACTS="${BACKUP_ARTIFACTS:-pg/papercusp pg/restart}"
 # Unquoted on purpose at the loop below so the glob expands per workspace; an
 # unmatched glob stays literal, which then reads as "absent" and is silent.

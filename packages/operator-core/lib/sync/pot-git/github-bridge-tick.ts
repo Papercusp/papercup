@@ -78,6 +78,9 @@ export const BRIDGE_CANONICAL_REF = 'refs/hive/staging';
 export const BRIDGE_REMOTE_STAGING_REF = 'refs/heads/staging';
 
 export interface BridgeTickInput {
+  /** P517 single owning-hive publication authority (ingress remains readable by peers). */
+  scope?: import('./signed-context').SignedProtocolScope;
+  authority?: import('./hive-effect-authority').HiveEffectAuthority | null;
   potHomeSlug: string;
   workspaceId: string;
   /** The member repo key under the pot-git root (usually the member slug). */
@@ -202,7 +205,8 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
     try {
       if (!(await input.deps.isBridgeWriter())) return { ...empty, skipped: 'not_bridge_writer' };
     } catch (e) {
-      errors.push(`isBridgeWriter seam failed (proceeding — FF-only egress is race-safe): ${e instanceof Error ? e.message : e}`);
+      errors.push(`isBridgeWriter seam failed: ${e instanceof Error ? e.message : e}`);
+      return { ...empty, skipped: 'not_bridge_writer' };
     }
   }
 
@@ -293,6 +297,8 @@ export async function runGithubBridgeTick(input: BridgeTickInput): Promise<Bridg
         }
       }
       egress = await (input.deps?.egress ?? egressCanonicalRefs)({
+        scope: input.scope,
+        authority: input.authority,
         repoPath,
         remoteUrl: target.remote,
         refs: [{ sha: canonicalSha, remoteRef: BRIDGE_REMOTE_STAGING_REF }],

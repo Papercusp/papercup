@@ -37,6 +37,7 @@
  */
 
 import { verifyEd25519 } from '../../identity/ed25519';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
 import { type RunGit, defaultRunGit, readNamespaceRef, writeNamespaceRef } from './storage';
 
 /** The within-namespace ref the integrator publishes the green-gated release at. */
@@ -210,7 +211,7 @@ export type PromoteReleaseResult =
       promoted: false;
       /** The (unchanged) current release sha, null when none exists. */
       release: string | null;
-      reason: 'malformed-rule' | 'threshold-not-met' | 'unknown-sha' | 'non-fast-forward' | 'already-current';
+      reason: 'malformed-rule' | 'threshold-not-met' | 'unknown-sha' | 'non-fast-forward' | 'already-current' | 'missing-hive-authority';
       validSigners?: string[];
     };
 
@@ -234,7 +235,7 @@ export async function promoteRelease(
   stagingSha: string,
   greenProof: readonly GreenAttestation[],
   rule: ReleaseRule,
-  opts: { runGit?: RunGit } = {},
+  opts: { runGit?: RunGit; hiveId?: string; authority?: HiveEffectAuthority | null } = {},
 ): Promise<PromoteReleaseResult> {
   const runGit = opts.runGit ?? defaultRunGit;
   const current = await readNamespaceRef(repoPath, integratorDevicePubkeyBase64, RELEASE_REF, runGit);
@@ -258,6 +259,12 @@ export async function promoteRelease(
 
   // CAS against what we read — a concurrent promoter loses cleanly (update-ref
   // exits nonzero) instead of silently clobbering.
+  try {
+    await requireHiveEffectAuthority(opts.authority, { hive_id: opts.hiveId ?? '', repo_key: repoKey },
+      ['promote-release', repoPath, integratorDevicePubkeyBase64, stagingSha]);
+  } catch {
+    return { promoted: false, release: current, reason: 'missing-hive-authority' };
+  }
   await writeNamespaceRef(
     repoPath,
     integratorDevicePubkeyBase64,

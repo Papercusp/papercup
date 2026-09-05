@@ -34,6 +34,8 @@ import { buildCloneUrl } from '../../harness/clone-url';
 import { openForkPr, type OpenForkPrOpts, type OpenForkPrResult } from '../../harness/open-fork-pr';
 import { type RunGit, defaultRunGit, deviceNamespaceKey } from './storage';
 import { egressCanonicalRefs } from './github-egress';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
+import type { SignedProtocolScope } from './signed-context';
 import type { IntegrationRequestState } from './integration-requests';
 
 /** The deterministic fork branch for a ratified (device, sha) request. */
@@ -51,6 +53,8 @@ export interface ForkEgressRequest {
 }
 
 export interface ForkEgressInput {
+  scope?: SignedProtocolScope;
+  authority?: HiveEffectAuthority | null;
   /** The pot-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
   potSlug: string;
@@ -96,6 +100,12 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
   if (req.state !== 'ratified') {
     return { ok: false, refused: 'not_ratified', error: `request state is '${req.state}', only ratified heads egress` };
   }
+  try {
+    await requireHiveEffectAuthority(input.authority, input.scope ?? { hive_id: '', repo_key: '' },
+      ['fork-pr', input.upstreamOwner, input.upstreamRepo, req.headSha]);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
   const have = await runGit(['cat-file', '-e', `${req.headSha}^{commit}`], input.repoPath);
   if (have.code !== 0) {
     return { ok: false, refused: 'sha_missing', error: `head ${req.headSha} not present in the pot-git store` };
@@ -126,6 +136,8 @@ export async function egressRatifiedRequestAsForkPr(input: ForkEgressInput): Pro
     pushFn: async (args) => {
       // The P-001 egress path IS the push: FF-only, un-forced, secrets-gated.
       const egress = await egressCanonicalRefs({
+        scope: input.scope,
+        authority: input.authority,
         repoPath: args.repoPath,
         remoteUrl: forkPushUrl(args.forkFullName, args.token),
         refs: [{ sha: req.headSha, remoteRef: `refs/heads/${args.branch}` }],

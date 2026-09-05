@@ -46,6 +46,9 @@ export const WORK_REF = 'refs/heads/work';
 /** The within-namespace ref the integrator publishes the computed staging at. */
 export const STAGING_REF = 'refs/heads/staging';
 
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
+import type { SignedProtocolScope } from './signed-context';
+
 export interface MemberHead {
   /** The member device's namespace key (hex). */
   deviceHex: string;
@@ -116,7 +119,7 @@ export async function integrateMemberHeads(
   repoPath: string,
   integratorDevicePubkeyBase64: string,
   memberHeads: MemberHead[],
-  opts: { runGit?: RunGit } = {},
+  opts: { runGit?: RunGit; scope?: SignedProtocolScope; authority?: HiveEffectAuthority | null } = {},
 ): Promise<IntegrationResult> {
   const runGit = opts.runGit ?? defaultRunGit;
   const base = await readNamespaceRef(repoPath, integratorDevicePubkeyBase64, STAGING_REF, runGit);
@@ -163,13 +166,15 @@ export async function integrateMemberHeads(
 
   const advanced = staging !== base && staging !== null;
   if (advanced) {
+    await requireHiveEffectAuthority(opts.authority, opts.scope ?? { hive_id: '', repo_key: '' },
+      ['integrate-staging', repoPath, integratorDevicePubkeyBase64, staging!]);
     await writeNamespaceRef(
       repoPath,
       integratorDevicePubkeyBase64,
       STAGING_REF,
       staging as string,
       runGit,
-      base ?? undefined,
+      base ?? '0'.repeat(40),
     );
   }
   return { staging, advanced, integrated, skippedConflicts };

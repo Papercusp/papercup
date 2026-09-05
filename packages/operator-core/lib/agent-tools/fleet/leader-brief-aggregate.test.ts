@@ -23,6 +23,7 @@ function laneHealth(claimable: number | null): FleetLaneHealth {
       matchedBy: 'fleet',
       harness: 'papercusp',
       assigneeScoped: null,
+      planScoped: false,
     },
   };
 }
@@ -33,6 +34,7 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
       fleet: 'observability-fleet',
       requestedHarness: 'papercusp',
       laneHealth: laneHealth(5),
+      fleetPaused: false,
     });
 
     expect(aggregate).toMatchObject({
@@ -46,6 +48,11 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
       },
     });
     expect(aggregate).not.toHaveProperty('unknown');
+    expect(aggregate.interpretation).toMatchObject({
+      state: 'claimable',
+      exactness: { status: 'exact' },
+      evidence: { fleetPaused: false },
+    });
     expect(aggregate.population.note).toContain('caller-neutral FLEET population');
     expect(aggregate.population.note).toContain('assigneeScoped:null');
     expect(aggregate.population.note).toContain('release-cooldown and reserved-plan-lane floors');
@@ -57,6 +64,7 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
       fleet: 'observability-fleet',
       requestedHarness: 'papercusp',
       laneHealth: laneHealth(null),
+      fleetPaused: false,
     });
 
     expect(aggregate).toMatchObject({
@@ -67,6 +75,7 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
         basis: 'issue+feature-family',
       },
       unknown: { code: 'not-measured', detail: expect.stringContaining('do not read') },
+      interpretation: { state: 'unknown', exactness: { status: 'unknown' } },
     });
   });
 
@@ -76,6 +85,7 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
         fleet: 'observability-fleet',
         requestedHarness: 'papercusp',
         laneHealth: null,
+        fleetPaused: false,
       }),
     ).toMatchObject({
       value: null,
@@ -87,6 +97,79 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
         basis: null,
       },
       unknown: { code: 'not-measured' },
+      interpretation: { state: 'unknown', exactness: { status: 'unknown' } },
     });
+  });
+
+  it.each([
+    {
+      name: 'an intentionally empty non-plan spec',
+      planScoped: false,
+      matchedByFilter: 0,
+      excluded: {},
+      fleetPaused: false,
+      state: 'spec-empty',
+    },
+    {
+      name: 'an empty exact-plan lane',
+      planScoped: true,
+      matchedByFilter: 0,
+      excluded: {},
+      fleetPaused: false,
+      state: 'drained',
+    },
+    {
+      name: 'a floor-gated lane',
+      planScoped: false,
+      matchedByFilter: 5,
+      excluded: { claimHold: 5 },
+      fleetPaused: false,
+      state: 'floor-gated',
+    },
+    {
+      name: 'a paused lane even when rows would otherwise be claimable',
+      planScoped: false,
+      matchedByFilter: 5,
+      excluded: {},
+      fleetPaused: true,
+      state: 'paused',
+    },
+  ])('makes $name machine-distinct', ({ planScoped, matchedByFilter, excluded, fleetPaused, state }) => {
+    const lane = laneHealth(0);
+    lane.spec.planScoped = planScoped;
+    lane.effective = {
+      claimable: fleetPaused ? 3 : 0,
+      matchedByFilter,
+      excluded: excluded as Record<string, number>,
+      basis: 'issue+feature-family',
+    };
+    const aggregate = buildClaimableNowAggregate({
+      fleet: 'observability-fleet',
+      requestedHarness: 'papercusp',
+      laneHealth: lane,
+      fleetPaused,
+    });
+
+    expect(aggregate.interpretation).toMatchObject({
+      state,
+      exactness: { status: 'exact' },
+      evidence: { fleetPaused, matchedByFilter, excluded },
+    });
+  });
+
+  it('refuses to invent a floor cause when zero has no active exclusion evidence', () => {
+    const lane = laneHealth(0);
+    lane.effective = {
+      claimable: 0,
+      matchedByFilter: 3,
+      excluded: {},
+      basis: 'issue+feature-family',
+    };
+    const aggregate = buildClaimableNowAggregate({
+      fleet: 'observability-fleet',
+      laneHealth: lane,
+      fleetPaused: false,
+    });
+    expect(aggregate.interpretation).toMatchObject({ state: 'unknown', exactness: { status: 'unknown' } });
   });
 });

@@ -6,10 +6,10 @@
  * the duplicate count, and not told that the pre-2026-07-01 old-key question is
  * open.
  *
- * This arm is EXPECTED to fail `no-duplicate-rederivation` — it has to
- * re-derive what it was never told. That failure rate is the point: it is the
- * magnitude ceiling on what an asymmetry marker could ever save. It is not a
- * defect of the agent, and it must not be read as one.
+ * This arm is EXPECTED to hit `no-duplicate-rederivation` — it has to re-derive
+ * what it was never told. That warning rate is the point: it is the magnitude
+ * ceiling on what an asymmetry marker could ever save. It is not a defect of
+ * the agent, and it must not make the canonical SU regression suite red.
  *
  * See `_S31-asymmetry-world.ts` for the full experimental design and the
  * pre-registered decision rule.

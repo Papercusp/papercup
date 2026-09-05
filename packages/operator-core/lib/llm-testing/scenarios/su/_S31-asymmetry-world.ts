@@ -60,6 +60,12 @@
  *                               against the peer's verified finding?
  *   3. asymmetry-targeting    — did it surface the genuinely-undetermined C?
  *
+ * These are EXPERIMENT METRICS, not regression gates. A metric hit is emitted
+ * as a WARN finding so it remains queryable per arm without making the
+ * canonical `llm-test --target su` suite permanently red on the control
+ * behavior the experiment explicitly expects. Real runner/infrastructure
+ * errors and the shared `cost_under` assertion remain gating (EI-22442499170227708).
+ *
  * The scenario `description` is fed verbatim to the judge, so it is shared
  * IDENTICALLY across all three arms (see SHARED_DESCRIPTION). Only the world
  * differs. Anything else would smuggle the arm into the prompt.
@@ -444,11 +450,11 @@ export const SHARED_CAPS = { maxTurns: 5, maxWallSecs: 300, maxCostUsd: 2.0 };
 /**
  * METRIC 1 — duplicate re-derivation.
  *
- * ERROR when the engineer re-establishes KNOWN-A (reads the guard source / the
+ * WARN when the engineer re-establishes KNOWN-A (reads the guard source / the
  * key test / greps for the key) or KNOWN-B (re-runs a COUNT over the dupes).
  * In arms B and C both facts were handed to it; in arm A neither was, so arm A
- * is EXPECTED to fail this — that failure rate is the magnitude ceiling, not a
- * defect of the agent.
+ * is EXPECTED to hit this metric — that hit rate is the magnitude ceiling, not
+ * a defect of the agent and therefore not a canonical-suite failure.
  */
 export const ASSERT_NO_REDERIVATION = {
   kind: 'custom' as const,
@@ -486,7 +492,7 @@ export const ASSERT_NO_REDERIVATION = {
     return [
       {
         assertKind: 'custom:no-duplicate-rederivation',
-        severity: 'error' as const,
+        severity: 'warn' as const,
         claim:
           'The engineer re-established facts the peer had already settled and reported: ' +
           `${[...new Set(rederived)].join('; ')}. This is the duplicated work P-011 predicts the ` +
@@ -502,7 +508,7 @@ export const ASSERT_NO_REDERIVATION = {
 /**
  * METRIC 2 — contradiction of the peer's verified finding.
  *
- * ERROR when the engineer lands on an id-keyed backfill. Uses an affirmative
+ * WARN when the engineer lands on an id-keyed backfill. Uses an affirmative
  * check so "NOT keyed on id" does not read as a contradiction.
  */
 export const ASSERT_NO_CONTRADICTION = {
@@ -521,7 +527,7 @@ export const ASSERT_NO_CONTRADICTION = {
           return [
             {
               assertKind: 'custom:no-contradiction-of-peer-finding',
-              severity: 'error' as const,
+              severity: 'warn' as const,
               evidenceTurnIdx: i,
               claim:
                 `The engineer proposed an id-keyed backfill ("${m[0]}") — contradicting the peer's ` +
@@ -543,7 +549,7 @@ export const ASSERT_NO_CONTRADICTION = {
 /**
  * METRIC 3 — did the genuinely-undetermined question get surfaced?
  *
- * ERROR when the engineer never raises the pre-2026-07-01 old-key question,
+ * WARN when the engineer never raises the pre-2026-07-01 old-key question,
  * nor goes after the archived logs. This is the metric the asymmetry field's
  * `couldNotDetermine` half is supposed to move: an unresolved thing that is
  * invisible unless the writer says it is unresolved.
@@ -580,7 +586,7 @@ export const ASSERT_SURFACES_UNDETERMINED = {
     return [
       {
         assertKind: 'custom:surfaces-the-undetermined-question',
-        severity: 'error' as const,
+        severity: 'warn' as const,
         claim:
           'The engineer never surfaced the one genuinely-unresolved question — whether the reconciler ' +
           'ever ran under the OLD key before 2026-07-01 (answerable only from the archived logs) — and ' +
@@ -597,7 +603,7 @@ export const ASSERT_SURFACES_UNDETERMINED = {
 export function makeAsymmetryArm(armId: string, handoff: string): Scenario {
   return {
     id: armId,
-    version: 1,
+    version: 2,
     target: 'su',
     transport: 'in-process',
     description: SHARED_DESCRIPTION,

@@ -1,4 +1,8 @@
-import type { FleetLaneHealth } from '../../fleet/lane-health';
+import {
+  interpretFleetClaimability,
+  type FleetClaimabilityInterpretation,
+  type FleetLaneHealth,
+} from '../../fleet/lane-health';
 
 export interface ClaimableNowPopulation {
   kind: 'fleet-claim-spec';
@@ -12,6 +16,8 @@ export interface ClaimableNowPopulation {
     matchedBy: string;
     /** null is load-bearing: this is a fleet population, not one reader's lane. */
     assigneeScoped: string | null;
+    /** Distinguishes an empty plan lane from a non-plan spec matching zero rows. */
+    planScoped?: boolean;
   } | null;
   basis: FleetLaneHealth['effective']['basis'] | null;
   matchedByFilter: number | null;
@@ -27,6 +33,7 @@ export interface ClaimableNowPopulation {
 export interface ClaimableNowAggregate {
   value: number | null;
   population: ClaimableNowPopulation;
+  interpretation: FleetClaimabilityInterpretation;
   /** Present exactly when `value` is unknown. A null without a reason is forbidden. */
   unknown?: {
     code: 'not-measured';
@@ -44,6 +51,8 @@ export function buildClaimableNowAggregate(input: {
   fleet: string;
   requestedHarness?: string | null;
   laneHealth: FleetLaneHealth | null;
+  /** null means the control-state read was unavailable; false is a measured active state. */
+  fleetPaused?: boolean | null;
 }): ClaimableNowAggregate {
   const { fleet, laneHealth } = input;
   const population: ClaimableNowPopulation = laneHealth
@@ -56,6 +65,7 @@ export function buildClaimableNowAggregate(input: {
           revision: laneHealth.spec.revision,
           matchedBy: laneHealth.spec.matchedBy,
           assigneeScoped: laneHealth.spec.assigneeScoped,
+          ...(laneHealth.spec.planScoped !== undefined ? { planScoped: laneHealth.spec.planScoped } : {}),
         },
         basis: laneHealth.effective.basis,
         matchedByFilter: laneHealth.effective.matchedByFilter,
@@ -86,10 +96,18 @@ export function buildClaimableNowAggregate(input: {
       };
 
   const value = laneHealth?.effective.claimable ?? null;
+  const interpretation = interpretFleetClaimability({
+    claimable: value,
+    matchedByFilter: laneHealth?.effective.matchedByFilter ?? null,
+    excluded: laneHealth?.effective.excluded ?? null,
+    fleetPaused: input.fleetPaused ?? null,
+    planScoped: laneHealth?.spec.planScoped ?? null,
+  });
   if (value == null) {
     return {
       value: null,
       population,
+      interpretation,
       unknown: {
         code: 'not-measured',
         detail:
@@ -98,5 +116,5 @@ export function buildClaimableNowAggregate(input: {
       },
     };
   }
-  return { value, population };
+  return { value, population, interpretation };
 }

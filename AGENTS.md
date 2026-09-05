@@ -548,8 +548,16 @@ and every later run RESUMES that exact candidate rather than a newer tip. Turnin
 "restores the pre-D-001 re-cut-at-tip stream — the treadmill D-007 diagnosed, where each new cut
 re-admits the whole sweep and imports breakage faster than fixes land."
 
-So when the gate is red: **fix the frozen candidate's reds so the fixes land ON TOP of it**
-(advancing `repairHead`) — the queue re-tests that sha itself. Do NOT fire
+So when the gate is red: **author the fix on the shared staging checkout as normal — there is NO
+repair worktree (D-010) — wait for git-sync to commit it, then land it on the frozen lineage BY
+PATH: `release:repair-queue { op: 'admit', paths: [...] }`**, naming exactly the files you changed
+(a dry run by default; `confirm: true` publishes). That lands your fix ON TOP of the frozen
+candidate (advancing `repairHead`); the queue re-tests that head itself, and the immutable
+candidate never moves. Admission is hunk-exact (D-008): only YOUR ledgered hunks for each path
+ride in — a peer's concurrent edit in the same file stays out — and the PostToolUse edit hook
+prints this exact command the moment you touch a file in the repair radius. An admission whose
+file imports a sibling you did not name is refused `admission-incomplete` naming that path
+(P-004): admit it too — **the tip is NEVER widened for you.** Do NOT fire
 `release:checkpoint-run` to "try again": it always cuts a FRESH candidate at the current tip
 (`candidateSource: tip`, and it exposes no candidate arg), which silently restarts the treadmill
 on a tree where ~100 agents commit continuously. Do not hand-pin with `--candidate` either —

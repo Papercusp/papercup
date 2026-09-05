@@ -50,6 +50,8 @@ import {
 } from './storage';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
+import type { SignedProtocolScope } from './signed-context';
 
 /** Per-tick BUDGET on delta blobs scanned for secrets per egressed ref.
  *  WI-5738: this used to be a cliff — exceeding it blocked the ref outright
@@ -80,6 +82,9 @@ export interface EgressTag {
 }
 
 export interface EgressInput {
+  /** Trusted runtime scope and live owner signer; missing authority fails closed. */
+  scope?: SignedProtocolScope;
+  authority?: HiveEffectAuthority | null;
   /** The pot-git bare repo (storage.ts hiveGitRepoPath). */
   repoPath: string;
   /**
@@ -452,6 +457,19 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     errors: [],
   };
 
+  const authorize = async (effect: string[]): Promise<boolean> => {
+    try {
+      await requireHiveEffectAuthority(input.authority, input.scope ?? { hive_id: '', repo_key: '' }, effect);
+      return true;
+    } catch (error) {
+      res.ok = false;
+      res.errors.push(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  };
+  // Refuse before network preflight, then revalidate at each actual push.
+  if (!(await authorize(['egress', input.repoPath]))) return res;
+
   for (const spec of input.refs) {
     // 1. Where is the remote now?
     const remote = await lsRemote(input.repoPath, input.remoteUrl, spec.remoteRef, runGit);
@@ -585,6 +603,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     //    non-FF and lands in rejectedNonFF for the next tick to reconcile.
     //    Generous network timeout — a genuine bulk transfer, not a local op
     //    (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
+    if (!(await authorize(['push-ref', input.repoPath, spec.remoteRef, pushSha]))) continue;
     const push = await runGit(
       ['push', input.remoteUrl, `${pushSha}:${spec.remoteRef}`],
       input.repoPath,
@@ -648,6 +667,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       res.tagsRejected.push({ name: tag.name, reason: 'tag exists on remote with a different sha — tags never move' });
       continue;
     }
+    if (!(await authorize(['push-tag', input.repoPath, tagRef, tag.sha]))) continue;
     const push = await runGit(
       ['push', input.remoteUrl, `${tag.sha}:${tagRef}`],
       input.repoPath,

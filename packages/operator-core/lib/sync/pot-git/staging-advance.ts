@@ -33,6 +33,7 @@
 
 import { verifyEd25519 } from '../../identity/ed25519';
 import { type RunGit, defaultRunGit } from './storage';
+import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
 import {
   SIGNED_PROTOCOL_SCHEMA_VERSION,
   isSignedProtocolContext,
@@ -45,6 +46,8 @@ import {
 /** Wire schema version for the staging-advance envelope. */
 export const STAGING_ADVANCE_SCHEMA_VERSION = 1;
 export const STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT = SIGNED_PROTOCOL_SCHEMA_VERSION;
+/** F6: device signature plus the single owning hive's countersignature. */
+export const STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY = 3;
 
 /**
  * Domain-separation tag mixed into the signed bytes (the hive-policy idiom,
@@ -87,6 +90,8 @@ export interface StagingAdvancePayload extends EpochSeq {
 export interface SignedStagingAdvance extends StagingAdvancePayload {
   /** base64 Ed25519 signature over stagingAdvanceSigningBytes(payload). */
   sig: string;
+  /** Required for v3, verified against the receiver's pinned hive identity. */
+  hive_sig?: string;
 }
 
 function isNonNegInt(x: unknown): x is number {
@@ -106,10 +111,11 @@ function isStagingAdvancePayload(x: unknown): x is StagingAdvancePayload {
     typeof s.staging_sha === 'string' &&
     SHA_RE.test(s.staging_sha) &&
     typeof s.ts === 'number' &&
-    (s.v === STAGING_ADVANCE_SCHEMA_VERSION || s.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT)
+    (s.v === STAGING_ADVANCE_SCHEMA_VERSION || s.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT ||
+      s.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY)
   );
   if (!baseOk) return false;
-  return s.v !== STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT || isSignedProtocolContext(s);
+  return s.v === STAGING_ADVANCE_SCHEMA_VERSION || isSignedProtocolContext(s);
 }
 
 export function isSignedStagingAdvance(x: unknown): x is SignedStagingAdvance {
@@ -130,7 +136,7 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
     staging_sha: payload.staging_sha,
     ts: payload.ts,
   };
-  if (payload.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT) {
+  if (payload.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT) {
     ordered.hive_id = payload.hive_id;
     ordered.repo_key = payload.repo_key;
     ordered.store_generation = payload.store_generation;
@@ -144,11 +150,11 @@ export function stagingAdvanceSigningBytes(payload: StagingAdvancePayload): Buff
  * tests: `bytes => signWithPrivateKeyDer(der, bytes)`).
  */
 export async function signStagingAdvance(
-  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number; context?: SignedProtocolContext },
+  fields: { devicePubkeyBase64: string; epoch: number; seq: number; stagingSha: string; nowMs: number; context?: SignedProtocolContext; authority?: HiveEffectAuthority },
   sign: (bytes: Buffer) => Promise<Buffer>,
 ): Promise<SignedStagingAdvance> {
   const payload: StagingAdvancePayload = {
-    v: fields.context ? STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT : STAGING_ADVANCE_SCHEMA_VERSION,
+    v: fields.authority ? STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY : fields.context ? STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT : STAGING_ADVANCE_SCHEMA_VERSION,
     device_pubkey: fields.devicePubkeyBase64,
     epoch: fields.epoch,
     seq: fields.seq,
@@ -160,7 +166,29 @@ export async function signStagingAdvance(
     throw new Error('pot-git: signStagingAdvance called with a malformed payload');
   }
   const sig = (await sign(stagingAdvanceSigningBytes(payload))).toString('base64');
+  if (fields.authority) {
+    if (!fields.context) throw new Error('pot-git: owner authorization requires signed context');
+    await requireHiveEffectAuthority(fields.authority, fields.context, ['staging-announce', fields.stagingSha]);
+    const signed = { ...payload, sig };
+    const hive_sig = (await fields.authority.sign(stagingAuthoritySigningBytes(signed))).toString('base64');
+    if (!verifyStagingAuthority({ ...signed, hive_sig }, fields.context.hive_id)) {
+      throw new Error('pot-git: invalid owning hive countersignature');
+    }
+    return { ...signed, hive_sig };
+  }
   return { ...payload, sig };
+}
+
+function stagingAuthoritySigningBytes(signed: SignedStagingAdvance): Buffer {
+  return Buffer.concat([Buffer.from('papercusp-hive-staging-authority-v1\n'),
+    stagingAdvanceSigningBytes(signed), Buffer.from('\n' + signed.sig)]);
+}
+
+function verifyStagingAuthority(signed: SignedStagingAdvance, hiveId: string): boolean {
+  try {
+    return signed.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY && typeof signed.hive_sig === 'string' &&
+      verifyEd25519(stagingAuthoritySigningBytes(signed), hiveId, Buffer.from(signed.hive_sig, 'base64'));
+  } catch { return false; }
 }
 
 /**
@@ -200,6 +228,7 @@ export type StagingAdvanceAcceptance =
         | 'malformed'
         | 'wrong-device'
         | 'bad-signature'
+        | 'missing-hive-authority'
         | 'ungranted-epoch'
         | 'stale-epoch-seq'
         | 'non-fast-forward'
@@ -239,7 +268,7 @@ export interface AcceptStagingAdvanceOpts {
    * authority) it is optional — only that authority can sign at all.
    */
   maxGrantedEpoch?: number;
-  /** Expected v2 context. V1 is accepted only when allowLegacy is true. */
+  /** Expected context pins the owner key as well as the repository. */
   expectedContext?: ExpectedSignedProtocolContext;
   allowLegacy?: boolean;
   /** Generations already accepted through this device's signed snapshots. */
@@ -265,7 +294,7 @@ export function acceptStagingAdvance(
       (opts.allowLegacy !== true || opts.knownStoreGenerations?.[incoming.device_pubkey])) {
     return { ok: false, reason: 'legacy-version' };
   }
-  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&
+  if (incoming.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&
       (!opts.expectedContext || !signedProtocolContextMatches(incoming, opts.expectedContext))) {
     return { ok: false, reason: 'context-mismatch' };
   }
@@ -275,7 +304,13 @@ export function acceptStagingAdvance(
     return { ok: false, reason: 'wrong-device' };
   }
   if (!verifyStagingAdvance(incoming)) return { ok: false, reason: 'bad-signature' };
-  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && opts.knownStoreGenerations) {
+  // Legacy negotiation is explicit. Production never enables it; membership
+  // alone cannot authorize canonical advances, even at a newer local epoch.
+  if ((incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_AUTHORITY || opts.allowLegacy !== true) &&
+      (!opts.expectedContext || !verifyStagingAuthority(incoming, opts.expectedContext.hive_id))) {
+    return { ok: false, reason: 'missing-hive-authority' };
+  }
+  if (incoming.v >= STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT && opts.knownStoreGenerations) {
     const known = opts.knownStoreGenerations[incoming.device_pubkey];
     if (known !== incoming.store_generation) {
       const oldOrdinal = storeGenerationOrdinal(known);

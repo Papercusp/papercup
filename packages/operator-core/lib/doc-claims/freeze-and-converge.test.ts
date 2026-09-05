@@ -13,9 +13,53 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { judgeFreezeAndConverge, stripComments } from './freeze-and-converge';
+import { readCorpus } from './corpus-subject';
+// The hook is plain-Node .mjs with a hand-kept .d.mts beside it (P-019 parity test imports it the same way).
+import { warningFor } from '../../../../apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+// P-012 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ROUTE the prose
+// prescribes — author on staging, then admit BY PATH — and its two in-code counterparts: the
+// edit hook that prints the command, and the door that refuses an incomplete admission.
+const HOOK = join(ROOT, 'apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs');
+const DOOR = join(ROOT, 'packages/operator-core/lib/agent-tools/release/repair-queue.ts');
+const FROZEN_HEADING = '⛔ **A RED CANDIDATE IS FROZEN ON PURPOSE';
+
+/** The frozen-candidate section of the corpus: from its heading to the next section or the freeze-read box. */
+function frozenSection(text: string): string {
+  const start = text.indexOf(FROZEN_HEADING);
+  if (start < 0) return '';
+  const rest = text.slice(start);
+  const end = rest.search(/\n## |\n✅ \*\*"Is the freeze ON/);
+  return (end < 0 ? rest : rest.slice(0, end)).trim();
+}
+
+/**
+ * What the route prose must say, and what it must never say again. Each REQUIRED clause names
+ * a mechanism that exists in code (checked below); each FORBIDDEN one is a retired route that
+ * an agent would follow straight into the treadmill the freeze exists to stop.
+ */
+function routeViolations(body: string): string[] {
+  const required: Array<[string, RegExp]> = [
+    ['author on the shared staging checkout', /author the fix on the shared staging checkout/],
+    ['no repair worktree (D-010)', /NO\s+repair worktree/],
+    ['the admit door, by path', /release:repair-queue \{ op:\s*'admit', paths:/],
+    ['repairHead is what advances', /advancing `repairHead`/],
+    ['hunk-exact admission (D-008)', /hunk-exact/],
+    ['completeness refusal (P-004)', /`admission-incomplete`/],
+    ['the tip is never widened', /tip is NEVER widened/],
+  ];
+  const forbidden: Array<[string, RegExp]> = [
+    ['a converge-to-tip route', /converge (?:repairHead )?(?:to|with|onto) (?:the )?(?:staging )?tip/i],
+    ['fixing in the repair worktree', /(?:fix|author|edit)[^.]{0,40}\bin the repair worktree/i],
+    ['the retired converge op', /op:\s*'converge'/],
+  ];
+  return [
+    ...required.filter(([, re]) => !re.test(body)).map(([label]) => `missing: ${label}`),
+    ...forbidden.filter(([, re]) => re.test(body)).map(([label]) => `forbidden: ${label}`),
+  ];
+}
 const QUEUE = join(ROOT, 'packages/operator-core/lib/release/frozen-candidate-repair-queue.ts');
 // P-001 / D-010 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the ONE door a
 // fix enters the frozen lineage through. `converge-repair-head.ts` (the fast-forward plan) is
@@ -83,5 +127,53 @@ describe('the live claim', () => {
     // The prose half of the pair: if this wording goes, CLAUDE.md's claim has lost its
     // in-code counterpart and the next reader has only the doc to trust.
     expect(readFileSync(QUEUE, 'utf8')).toMatch(/immutable/i);
+  });
+});
+
+describe('P-012: the route prose is "author on staging, then admit BY PATH" — pinned to the hook and the door', () => {
+  describe('fixture controls', () => {
+    it('fires on the pre-D-010 wording that never named the door', () => {
+      const old =
+        "So when the gate is red: **fix the frozen candidate's reds so the fixes land ON TOP of it** " +
+        '(advancing `repairHead`) — the queue re-tests that sha itself.';
+      expect(routeViolations(old)).toContain('missing: the admit door, by path');
+    });
+    it('fires on a converge-to-tip sentence and on "fix in the repair worktree", even beside the right command', () => {
+      const bad =
+        "author the fix on the shared staging checkout (or in the repair worktree), then converge repairHead to the staging tip: " +
+        "`release:repair-queue { op: 'admit', paths: [...] }`";
+      const v = routeViolations(bad);
+      expect(v).toContain('forbidden: a converge-to-tip route');
+      expect(v).toContain('forbidden: fixing in the repair worktree');
+    });
+  });
+
+  it('the projected corpus carries the section and every required clause, and none of the retired routes', () => {
+    const section = frozenSection(readCorpus());
+    expect(section.length).toBeGreaterThan(200);
+    expect(routeViolations(section)).toEqual([]);
+  });
+
+  it('the edit hook prints the admit command the prose promises — never converge, never a worktree', () => {
+    const marker = {
+      candidate: 'a'.repeat(40),
+      repairHead: 'b'.repeat(40),
+      phase: 'awaiting-fixer',
+      failingPaths: ['packages/x/lib/a.test.ts'],
+      legs: [],
+    };
+    const msg = warningFor(marker, 'packages/x/lib/a.test.ts') ?? '';
+    expect(msg).toMatch(/release:repair-queue \{ op:\s*'admit', paths:/);
+    expect(msg).not.toMatch(/converge|worktree/i);
+    expect(warningFor(marker, 'packages/x/lib/other.ts')).toBeNull();
+    // and the file the prose points at is the one that prints it
+    expect(readFileSync(HOOK, 'utf8')).toMatch(/export function warningFor/);
+  });
+
+  it('the door refuses `admission-incomplete` and says there is no repair worktree — the prose names real mechanisms', () => {
+    const door = readFileSync(DOOR, 'utf8');
+    expect(door).toMatch(/admission-incomplete/);
+    expect(door).toMatch(/there is no repair worktree/i);
+    expect(readFileSync(ADMIT, 'utf8')).toMatch(/'admission-incomplete'/);
   });
 });

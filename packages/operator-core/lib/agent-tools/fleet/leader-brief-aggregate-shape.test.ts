@@ -18,6 +18,15 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
           },
           claimable_now: {
             value: null,
+            interpretation: {
+              state: 'unknown',
+              exactness: { status: 'unknown', reason: 'family-complete count unavailable' },
+              evidence: {
+                fleetPaused: false,
+                matchedByFilter: null,
+                excluded: null,
+              },
+            },
             population: {
               kind: 'fleet-claim-spec',
               fleet: 'observability-fleet',
@@ -27,6 +36,7 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
                 revision: 4,
                 matchedBy: 'fleet',
                 assigneeScoped: null,
+                planScoped: false,
               },
               basis: 'issue+feature-family',
               matchedByFilter: null,
@@ -52,6 +62,11 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
       summary: {
         claimable_now: {
           value: null,
+          interpretation: {
+            state: 'unknown',
+            exactness: { status: 'unknown' },
+            evidence: { fleetPaused: false, matchedByFilter: null, excluded: null },
+          },
           population: {
             kind: 'fleet-claim-spec',
             fleet: 'observability-fleet',
@@ -60,6 +75,7 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
               ref: 'observability-fleet@4',
               revision: 4,
               assigneeScoped: null,
+              planScoped: false,
             },
             basis: 'issue+feature-family',
           },

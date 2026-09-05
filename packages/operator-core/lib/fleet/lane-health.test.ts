@@ -116,6 +116,7 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
         }),
       }),
     );
+    expect(health?.spec.planScoped).toBe(true);
   });
 
   it('fails closed to UNKNOWN when the required feature-family read fails', async () => {
