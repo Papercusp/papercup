@@ -18,8 +18,43 @@ vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'm
 vi.mock('../conversations', () => ({ openConversation: vi.fn(), postReply: vi.fn() }));
 
 import { openConversation, postReply } from '../conversations';
+import type { OpenConversationResult } from '../conversations-core';
+import type { ConversationRow } from '../conversations-store';
+import { mockResolvedTyped } from '../../../testing/typed-mock';
 const openM = vi.mocked(openConversation);
 const replyM = vi.mocked(postReply);
+
+/** A complete conversation row, so `openConversation`'s resolved fixture is checked
+ *  against the real `OpenConversationResult` instead of being cast through `never`. */
+const convRow = (id: string): ConversationRow => ({
+  id,
+  kind: 'discussion',
+  scope: 'operator',
+  harness_slug: null,
+  asker_id: 'me',
+  title: null,
+  body: '',
+  state: 'open',
+  accepted_answer: null,
+  accepted_post_id: null,
+  capture_target: null,
+  promoted_issue_id: null,
+  producer: null,
+  superseded_by: null,
+  created_ts: '2026-01-01T00:00:00.000Z',
+  updated_ts: '2026-01-01T00:00:00.000Z',
+  resolved_ts: null,
+  superseded_ts: null,
+});
+const opened = (id: string, over: Partial<Omit<OpenConversationResult, 'conversation'>> = {}): OpenConversationResult => ({
+  conversation: convRow(id),
+  thread_id: `conv:${id}`,
+  topics: [],
+  delivered: 0,
+  unrouted: false,
+  direct_to: [],
+  ...over,
+});
 const tool = (await import('./conversations-post')).default;
 
 type Out = { content: { text: string }[] };
@@ -62,7 +97,7 @@ describe('conversations:post reply path', () => {
 
 describe('conversations:post new-discussion path', () => {
   it('starts a routed discussion and reports topics + how many agents it actually reached', async () => {
-    openM.mockResolvedValue({ conversation: { id: 'c9' }, topics: ['arch'], unrouted: false, delivered: 2 } as never);
+    mockResolvedTyped(openM, opened('c9', { topics: ['arch'], unrouted: false, delivered: 2 }));
     const b = body(await call({ title: 'how to X', topics: ['arch'] }));
     expect(openM).toHaveBeenCalledTimes(1);
     expect(b).toMatchObject({
@@ -80,7 +115,7 @@ describe('conversations:post new-discussion path', () => {
   });
 
   it('warns when a new discussion is unrouted (no topics → direct subscribers only)', async () => {
-    openM.mockResolvedValue({ conversation: { id: 'c10' }, topics: [], unrouted: true, delivered: 0 } as never);
+    mockResolvedTyped(openM, opened('c10', { topics: [], unrouted: true, delivered: 0 }));
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: true, unrouted: true });
     expect(String(b.hint)).toMatch(/NO topics|Add topics/i);

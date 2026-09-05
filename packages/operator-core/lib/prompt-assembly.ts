@@ -253,8 +253,19 @@ export interface AssembledPrompt {
 
 export type PromptProfile = 'default' | 'pui-loop';
 
-/** Profile-local ceiling for the injected project guide. */
-export const PUI_LOOP_PROJECT_GUIDE_MAX_CHARS = 96_000;
+/**
+ * Profile-local ceiling for the injected project guide.
+ *
+ * A SAFETY BOUND against runaway growth, not a target: the guide is the repo `CLAUDE.md`,
+ * projected from `harness_shared.harness_doc_parts`, and the pui-loop profile is meant to
+ * deliver it WHOLE (`prompt-profile.test.ts` pins `projectGuideTruncated === false` on the
+ * real file — a truncated guide silently drops rules for the owned loop). The previous
+ * 96_000 was crossed by ordinary doc-part growth (measured 117,866 chars on 2026-09-05),
+ * which red-pinned the fleet gate on a budget nobody had adjudicated. Sized with ~35%
+ * headroom over that measurement; raise it again deliberately when the guide grows, or
+ * trim doc parts — never let the truncation path become the steady state.
+ */
+export const PUI_LOOP_PROJECT_GUIDE_MAX_CHARS = 160_000;
 
 export interface AssembleOptions {
   role: Role;

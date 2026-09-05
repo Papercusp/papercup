@@ -1,13 +1,49 @@
 /** P-016: plan-item push assignment respects the target member's fleet scope. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StableAgentTargetState } from '../coordination/actionable-work-item-dispatch';
+import type { WorkItem } from '../../work-items';
 
 const admission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   linkedDecision: { allowed: false, scoped: true } as any,
   notify: vi.fn(),
-  findLinked: vi.fn(async () => null),
+  findLinked: vi.fn(async (): Promise<WorkItem | null> => null),
 }));
+
+/** A complete WorkItem row for the linked-implementation lookup — typed, so the
+ *  fixture is checked against the real shape instead of cast through `never`. */
+const linkedWi = (id: string): WorkItem => ({
+  id,
+  state: 'open',
+  kind: 'bug',
+  family: 'issue',
+  harness: 'papercusp',
+  title: 't',
+  summary: 's',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  parent: null,
+  payload: null,
+  origin: 'local',
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  goalId: null,
+});
 const agentNames = vi.hoisted(() => ({
   bestEffortOwnerUser: vi.fn(() => 'avi'),
   agentNameOwner: vi.fn(async () => 'avi' as string | null),
@@ -113,7 +149,7 @@ describe('plan_items:assign fleet admission', () => {
       reason: 'plan subject is outside the exact-id fleet scope',
       scope: { fleetSlug: 'exact-id', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'exact-id', revision: 3 } } },
     };
-    admission.findLinked.mockResolvedValue({ id: 'WI-2024456', harness: 'papercusp' } as never);
+    admission.findLinked.mockResolvedValue(linkedWi('WI-2024456'));
     admission.linkedDecision = { allowed: true, scoped: true, scope: admission.decision.scope };
 
     const b = await body({ plan: 'ops', item: 'P-001', assignee: 'builder' });
@@ -138,7 +174,7 @@ describe('plan_items:assign fleet admission', () => {
       reason: 'plan subject is outside the fleet scope',
       scope: { fleetSlug: 'exact-id', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'exact-id', revision: 3 } } },
     };
-    admission.findLinked.mockResolvedValue({ id: 'WI-out-of-scope', harness: 'papercusp' } as never);
+    admission.findLinked.mockResolvedValue(linkedWi('WI-out-of-scope'));
     admission.linkedDecision = {
       allowed: false,
       scoped: true,
@@ -170,7 +206,7 @@ describe('plan_items:assign fleet admission', () => {
       reason: 'member has no authored claim spec',
       scope: { fleetSlug: 'unconfigured', ownerId: 'su-member', fleetRole: 'member', record: { spec: { specId: 'unconfigured', revision: 1 } } },
     };
-    admission.findLinked.mockResolvedValue({ id: 'WI-2024456', harness: 'papercusp' } as never);
+    admission.findLinked.mockResolvedValue(linkedWi('WI-2024456'));
     admission.linkedDecision = { allowed: true, scoped: true, scope: admission.decision.scope };
 
     const b = await body({ plan: 'ops', item: 'P-001', assignee: 'builder' });

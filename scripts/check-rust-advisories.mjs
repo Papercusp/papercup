@@ -61,6 +61,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = join(ROOT, 'scripts', 'rust-advisories-baseline.json');
@@ -554,7 +555,7 @@ function finish(r, has) {
 }
 
 // Only run as a CLI; importing for tests must not execute.
-if (process.argv[1] && process.argv[1].endsWith('check-rust-advisories.mjs')) {
+if (isCliEntry(import.meta.url)) {
   main().catch((err) => {
     console.error(err.message);
     process.exit(2);

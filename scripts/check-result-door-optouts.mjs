@@ -215,7 +215,10 @@ function main() {
 
   if (argv.includes('--json')) {
     console.log(JSON.stringify({ population: every, baselineSize: BASELINE.size, violations, stale }, null, 2));
-    process.exit(violations.length > 0 ? 1 : 0);
+    // The JSON dump is unbounded and gets piped: a process.exit() right after console.log can
+    // truncate it mid-write (check-undrained-stdout-exit). Set the code and let the loop drain.
+    process.exitCode = violations.length > 0 ? 1 : 0;
+    return;
   }
 
   if (argv.includes('--list')) {

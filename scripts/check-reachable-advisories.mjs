@@ -48,6 +48,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 /**
  * `semver` is loaded through createRequire, NOT a static import, on purpose.
@@ -748,4 +749,4 @@ function main() {
 }
 
 // Only run as a CLI; importing for tests must not execute.
-if (process.argv[1] && process.argv[1].endsWith('check-reachable-advisories.mjs')) main();
+if (isCliEntry(import.meta.url)) main();

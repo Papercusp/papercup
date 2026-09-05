@@ -33,4 +33,12 @@ export const ProxyAgent = new Proxy(function ProxyAgent() {
 export const Socks5ProxyAgent = new Proxy(function Socks5ProxyAgent() {
   serverOnly();
 }, trap) as never;
+/**
+ * `buildConnector` is imported by `operator-core/lib/agent-tools/capability/fetch-policy.ts`
+ * (server-side egress TLS/connect policy). Same server-only contract as the agents above:
+ * resolvable so Rolldown can link the chunk, throws if a browser path ever calls it.
+ */
+export const buildConnector = new Proxy(function buildConnector() {
+  serverOnly();
+}, trap) as never;
 export default new Proxy({}, trap) as never;

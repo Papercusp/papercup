@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Rubric } from '../../rubrics';
 import type { ScorecardRow } from '../../scorecards';
 import type { ScorecardReleaseGateBinding } from '../../harness/improvements/observation-types';
+import type { EngineerIssue } from '../../issues-engineer';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -116,17 +118,52 @@ const listScorecardsM = vi.mocked(listScorecards);
 const releaseBindingM = vi.mocked(resolveScorecardReleaseGateBinding);
 const captureM = vi.mocked(captureImprovement);
 
+/** The issue row `captureImprovement` resolves with — a complete EngineerIssue so the
+ *  fixture is checked against the real result type rather than cast through `never`. */
+const RELEASE_ISSUE: EngineerIssue = {
+  id: 'EI-release-card',
+  kind: 'change',
+  scope: 'operator',
+  title: 'release-gate scorecard',
+  body: '',
+  severity: 'minor',
+  source: 'su',
+  state: 'open',
+  assignee: null,
+  assignedBy: null,
+  assignedAt: null,
+  lastProgressAt: null,
+  payload: null,
+  parent: null,
+  origin: null,
+  foundDuring: null,
+  linkedFeatureId: null,
+  createdBy: null,
+  signalOrigin: 'organic',
+  assigneeRank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  completionAuthority: null,
+  featureOrder: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  goalId: null,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   getRubricM.mockResolvedValue(RELEASE_RUBRIC);
   listScorecardsM.mockResolvedValue([]);
   releaseBindingM.mockResolvedValue(bound());
-  captureM.mockResolvedValue({
+  mockResolvedTyped(captureM, {
     ok: true,
     created: true,
-    issue: { id: 'EI-release-card' },
+    issue: RELEASE_ISSUE,
     possibleDuplicates: [],
-  } as never);
+  });
 });
 
 describe('scorecards:evaluate release-gate binding', () => {
