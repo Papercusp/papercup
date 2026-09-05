@@ -607,7 +607,7 @@ export default defineTool({
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
     let successorBrief: string | null = null;
-    let reconcileSuccessor: (() => Promise<string | null>) | null = null;
+    const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
     let fork = !!args.fork;
     const notes: string[] = [];
     if (sourceAction) {
@@ -708,7 +708,7 @@ export default defineTool({
         // and turn a dead predecessor into `recorded`, defeating bootstrap's
         // otherwise-correct fail-closed conflict guard. Reconcile the original
         // binding first, never an arbitrary row currently attached to the owner.
-        reconcileSuccessor = async () => {
+        successorPreparation.reconcile = async () => {
           const binding = target.binding;
           if (!binding || binding.coordOwnerId !== target.ownerId) {
             return 'Cannot start successor: the exact predecessor binding is unavailable. No process was opened.';
@@ -723,14 +723,16 @@ export default defineTool({
           if (current.live || findLiveHost(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during preparation. No process was opened.';
           }
-          if (hasAdvSessionTerminalEvidence(current)) return null;
-          const verdicts = await resolveSessionStates(
-            [{ ownerId: binding.coordOwnerId }],
-            { hydratePerId: true },
-          );
-          const state = verdicts.get(binding.coordOwnerId)?.sessionState;
-          if (state !== 'ended' && state !== 'suspect') {
-            return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
+          if (current.endedAt != null) return null;
+          if (!hasAdvSessionTerminalEvidence(current)) {
+            const verdicts = await resolveSessionStates(
+              [{ ownerId: binding.coordOwnerId }],
+              { hydratePerId: true },
+            );
+            const state = verdicts.get(binding.coordOwnerId)?.sessionState;
+            if (state !== 'ended' && state !== 'suspect') {
+              return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
+            }
           }
           if (findLiveHost(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during reconciliation. No process was opened.';
@@ -1342,15 +1344,15 @@ export default defineTool({
       };
     }
 
-    if (reconcileSuccessor) {
+    if (successorPreparation.reconcile) {
       let failure: string | null;
       try {
-        failure = await reconcileSuccessor();
+        failure = await successorPreparation.reconcile();
       } catch (e) {
         failure = `Cannot start successor: predecessor reconciliation failed (${(e as Error)?.message ?? e}). No process was opened.`;
       }
       if (failure) {
-        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey, launchedBy: callerOwnerId });
+        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(failure);
       }
     }
