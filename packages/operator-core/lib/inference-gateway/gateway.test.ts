@@ -5196,9 +5196,7 @@ test('POST /admin/readmit clears a live in-memory pool pause and reports fresh h
   const pool: AccountPool = {
     active: () => A,
     onExhausted: () => null,
-    readmit: (id) => {
-      paused.delete(id);
-    },
+    readmit: (id) => paused.delete(id),
     healthyCount: () => 2 - paused.size,
     entries: () => [A, B],
   };
@@ -5235,7 +5233,7 @@ test('POST /admin/readmit clears a live in-memory pool pause and reports fresh h
 /** A pool whose serviceable count is 0 — the live 2026-07-09 condition (healthyAccounts:0). */
 function zeroHealthyPool(): AccountPool {
   const A: ActiveAccount = { accountId: 'A', token: async () => 'tA', invalidateToken: () => {} };
-  return { active: () => A, onExhausted: () => null, readmit: () => {}, healthyCount: () => 0, entries: () => [A] };
+  return { active: () => A, onExhausted: () => null, readmit: () => false, healthyCount: () => 0, entries: () => [A] };
 }
 
 test('serviceable recommendation is non-binding: a 0-serviceable pool does not shrink controller admission', async () => {
@@ -5351,7 +5349,7 @@ test('an override does NOT lift the clamp for a pool that has real capacity (rec
   const pool: AccountPool = {
     active: () => A,
     onExhausted: () => null,
-    readmit: () => {},
+    readmit: () => false,
     healthyCount: () => 8,
     entries: () => [A],
   };
