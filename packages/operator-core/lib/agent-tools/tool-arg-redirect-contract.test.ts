@@ -21,14 +21,35 @@ import './index';
 import { listAllProjectedTools } from '@papercusp/tooldef';
 
 import { MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
-import {
+import type { RedirectScannableTool } from './tool-arg-redirect-contract';
+
+/**
+ * FALSIFIABILITY SEAM (P-005) — the one line that makes this file's own
+ * falsifiability provable without touching the shared tree.
+ *
+ * The controls below prove the scanner REPORTS on synthetic bad input. They
+ * cannot, by themselves, prove that a BROKEN scanner turns this suite red —
+ * that is a claim about the wiring between the two, and reading the code is not
+ * measuring it. `scripts/mutation-probe.sh` measures it by mutating a COPY of
+ * the module outside the tracked tree and pointing this specifier at the copy,
+ * so the REAL assertions run against a deliberately broken scanner and must
+ * fail. Without this indirection the only way to run that probe would be to
+ * mutate the module in place, which the git-sync sweep can commit mid-run even
+ * when nothing goes wrong (CLAUDE.md, "Proving a guard is falsifiable").
+ *
+ * Unset — every ordinary run, CI included — this resolves to the real module,
+ * so the guard's behaviour is unchanged.
+ */
+const contract: typeof import('./tool-arg-redirect-contract') = await import(
+  process.env.REDIRECT_CONTRACT_MODULE ?? './tool-arg-redirect-contract'
+);
+const {
   scanArgRedirects,
   toRedirectScannableTool,
   formatRedirectIssues,
   REDIRECT_TOOL_FLOOR,
   REDIRECT_DECLARATION_FLOOR,
-  type RedirectScannableTool,
-} from './tool-arg-redirect-contract';
+} = contract;
 
 function liveScannableTools(): RedirectScannableTool[] {
   const catalog = listAllProjectedTools();
