@@ -589,7 +589,11 @@ fn run_census() -> Vec<Row> {
             let (mut app, cell) = build(tab, state);
             let body = render_body(&mut app, tab);
             let body_nonblank = nonblank(&body);
-            assert!(body_nonblank > 0, "{tab:?}×{}: body rendered blank", state.name());
+            assert!(
+                body_nonblank > 0,
+                "{tab:?}×{}: body rendered blank",
+                state.name()
+            );
             if let Cell::Exercised { marker, fixture } = &cell {
                 assert!(
                     body.contains(marker),
@@ -682,7 +686,9 @@ fn cell_md(cell: &Cell) -> String {
     match cell {
         Cell::Exercised { marker, .. } => format!("✓ `{}`", marker.replace('|', "\\|")),
         Cell::NotApplicable { reason } => format!("n/a — {}", reason.replace('|', "\\|")),
-        Cell::NotExercised { reason } => format!("✗ NOT EXERCISED — {}", reason.replace('|', "\\|")),
+        Cell::NotExercised { reason } => {
+            format!("✗ NOT EXERCISED — {}", reason.replace('|', "\\|"))
+        }
     }
 }
 
@@ -710,7 +716,9 @@ fn artifact_markdown(rows: &[Row], non_strip: &[NonStripRow]) -> String {
         "## Public destinations (`Tab::ALL`, {}) × states\n\n",
         Tab::ALL.len()
     ));
-    md.push_str("| tab | loading | empty | error | populated | keyboard |\n|---|---|---|---|---|---|\n");
+    md.push_str(
+        "| tab | loading | empty | error | populated | keyboard |\n|---|---|---|---|---|---|\n",
+    );
     for tab in Tab::ALL {
         let mut line = format!("| {tab:?} |");
         for state in State::ALL {
@@ -726,9 +734,18 @@ fn artifact_markdown(rows: &[Row], non_strip: &[NonStripRow]) -> String {
         md.push_str(&line);
     }
 
-    let exercised = rows.iter().filter(|r| matches!(r.cell, Cell::Exercised { .. })).count();
-    let na = rows.iter().filter(|r| matches!(r.cell, Cell::NotApplicable { .. })).count();
-    let nx: Vec<&Row> = rows.iter().filter(|r| matches!(r.cell, Cell::NotExercised { .. })).collect();
+    let exercised = rows
+        .iter()
+        .filter(|r| matches!(r.cell, Cell::Exercised { .. }))
+        .count();
+    let na = rows
+        .iter()
+        .filter(|r| matches!(r.cell, Cell::NotApplicable { .. }))
+        .count();
+    let nx: Vec<&Row> = rows
+        .iter()
+        .filter(|r| matches!(r.cell, Cell::NotExercised { .. }))
+        .collect();
     md.push_str(&format!(
         "\n**Totals:** {} cells — {exercised} exercised · {na} not-applicable (reason recorded) · {} not-exercised.\n\n",
         rows.len(),
@@ -741,7 +758,11 @@ fn artifact_markdown(rows: &[Row], non_strip: &[NonStripRow]) -> String {
     } else {
         for r in &nx {
             if let Cell::NotExercised { reason } = &r.cell {
-                md.push_str(&format!("- **{:?} × {}** — {reason}\n", r.tab, r.state.name()));
+                md.push_str(&format!(
+                    "- **{:?} × {}** — {reason}\n",
+                    r.tab,
+                    r.state.name()
+                ));
             }
         }
         md.push('\n');
@@ -868,7 +889,12 @@ fn census_every_public_destination_renders_in_every_state() {
         match &r.cell {
             Cell::Exercised { marker, .. } => assert!(!marker.is_empty()),
             Cell::NotApplicable { reason } | Cell::NotExercised { reason } => {
-                assert!(reason.len() > 20, "{:?}×{}: reason too thin", r.tab, r.state.name())
+                assert!(
+                    reason.len() > 20,
+                    "{:?}×{}: reason too thin",
+                    r.tab,
+                    r.state.name()
+                )
             }
         }
     }
