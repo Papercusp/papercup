@@ -33,12 +33,23 @@ import {
   type InstallDoorGateDeps,
   type InstallDoorOperation,
 } from './install-door-gate';
+import { createOpenArtifactSeam, type PrivateArtifactAccess } from './install-open-artifact';
 import { resolveListingByKind } from './resolve-listing-by-kind';
 import type { ListingKind } from './types';
 
 export type DoorListingFactsResult =
   | { readonly ok: true; readonly listing: DoorListingFacts }
   | { readonly ok: false; readonly error: string; readonly status: number };
+
+/**
+ * What the gate's collaborators are built FOR — the recipient identity of this
+ * one install. It is a parameter rather than process state because the
+ * decrypt seam is addressed to a recipient (D-045 §3b): a wrapped key issued to
+ * one buyer must not open under another's install.
+ */
+export interface InstallDoorContext {
+  readonly subject: string;
+}
 
 export interface InstallDoorSources {
   /** Resolves the commerce facts the gate decides on. Defaults to `loadDoorListingFacts`. */
@@ -47,7 +58,7 @@ export interface InstallDoorSources {
     kind: ListingKind,
   ) => Promise<DoorListingFactsResult> | DoorListingFactsResult;
   /** Builds the gate's collaborators. Defaults to `installDoorGateDeps`. */
-  readonly gateDeps?: () => InstallDoorGateDeps;
+  readonly gateDeps?: (context: InstallDoorContext) => InstallDoorGateDeps;
 }
 
 const installIoState = pinModuleState('@papercusp/operator-core.cupboard.install-door-io', () => ({
@@ -128,7 +139,7 @@ export const loadReleaseChain = async (
  * door. Every default here is fail-closed — an empty provider registry serves no
  * bytes, and an unresolvable publisher key verifies nothing.
  */
-export function installDoorGateDeps(): InstallDoorGateDeps {
+export function installDoorGateDeps(context: InstallDoorContext): InstallDoorGateDeps {
   return {
     loadReleaseChain,
     runner: {
@@ -145,6 +156,33 @@ export function installDoorGateDeps(): InstallDoorGateDeps {
       // unexpected chain refuses as unverified rather than accepting bytes whose
       // signature nothing checked.
       verifySignature: () => false,
+    },
+    // D-045 §3b: the decrypt step for an ENCRYPTED release. Supplying it is what
+    // gives `openRetrievedArtifact` a production caller — and it is supplied
+    // unconditionally so the refusal an encrypted release meets is the real
+    // crypto one (`not-entitled` / `key-revoked` / `no-wrapped-key`) rather than
+    // the gate's generic "no seam configured" throw.
+    openArtifact: createOpenArtifactSeam(defaultPrivateArtifactAccess(), context),
+  };
+}
+
+/**
+ * Production access for the encrypted-apply path.
+ *
+ * Every member is fail-closed for the same measured reason `loadReleaseChain`
+ * returns null: no production writer publishes distribution state, so no key
+ * provider is registered and no ciphertext is retrievable. Naming them here
+ * rather than leaving the seam absent is what makes an encrypted install refuse
+ * with the missing collaborator NAMED, instead of applying ciphertext or
+ * crashing a door.
+ */
+export function defaultPrivateArtifactAccess(): PrivateArtifactAccess {
+  return {
+    wrapAdapter: null,
+    deliveryAdapter: null,
+    readCiphertext: () => null,
+    applyPlaintext: () => {
+      throw new Error('no artifact apply is wired at the install door yet');
     },
   };
 }
@@ -191,7 +229,7 @@ export async function gateInstallDoor(request: DoorGateRequest): Promise<Install
     };
   }
 
-  return gateCupboardInstall((installIoState.sources?.gateDeps ?? installDoorGateDeps)(), {
+  return gateCupboardInstall((installIoState.sources?.gateDeps ?? installDoorGateDeps)({ subject: request.subject }), {
     listing: facts.listing,
     subject: request.subject,
     ...(request.operation ? { operation: request.operation } : {}),

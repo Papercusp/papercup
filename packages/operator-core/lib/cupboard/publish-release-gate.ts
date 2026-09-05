@@ -48,7 +48,13 @@ import {
   type PinningPolicy,
 } from '../p2p/artifact-distribution';
 import { validatePublishableRelease } from '../p2p/artifact-package';
-import { publishPrivateArtifact, type KeyWrapAdapter, type WrappedKey } from '../p2p/artifact-encryption';
+import {
+  deliverWrappedKeys,
+  publishPrivateArtifact,
+  type KeyWrapAdapter,
+  type WrappedKey,
+  type WrappedKeyDeliveryAdapter,
+} from '../p2p/artifact-encryption';
 import type { CupboardReleaseManifest } from './listing-manifest';
 import type { ListingVisibility } from './types';
 
@@ -81,6 +87,17 @@ export interface PrivateReleaseInput {
   readonly keyVersion: number;
   readonly recipientIds: readonly string[];
   readonly adapter: KeyWrapAdapter;
+  /**
+   * Out-of-band delivery for the wrapped keys (D-045 §3b).
+   *
+   * REQUIRED, not optional: the wrapped keys are the ONLY way an entitled
+   * recipient reaches the content key, and they are deliberately absent from the
+   * manifest. A private release published without delivering them is ciphertext
+   * that every buyer's `openRetrievedArtifact` refuses as `no-wrapped-key` — an
+   * undecryptable artifact in the catalog, discovered at install time by the
+   * buyer rather than at publish time by the publisher.
+   */
+  readonly deliveryAdapter: WrappedKeyDeliveryAdapter;
   readonly sign: ManifestSigner;
   readonly pinning?: PinningPolicy;
   readonly chunkSizeBytes?: number;
@@ -93,7 +110,13 @@ export type ReleaseGateCode =
   /** The manifest is not a publishable release (shape, or the D-041 root check). */
   | 'release-not-publishable'
   /** Encrypt/package/wrap failed — e.g. the plaintext does not address to the declared contentHash. */
-  | 'private-publication-failed';
+  | 'private-publication-failed'
+  /**
+   * The wrapped keys could not be delivered out of band, so no entitled
+   * recipient could ever open the ciphertext. Refused at publish time rather
+   * than shipped as an undecryptable artifact.
+   */
+  | 'key-delivery-failed';
 
 export interface PreparedRelease {
   readonly ok: true;
@@ -103,6 +126,12 @@ export interface PreparedRelease {
   readonly ciphertext: Buffer | null;
   /** Out-of-band key material. Never part of the manifest, never sent to the Cupboard. */
   readonly wrappedKeys: readonly WrappedKey[];
+  /**
+   * The wrapped-key IDENTIFIERS actually handed to the delivery provider —
+   * evidence that the ciphertext is openable, never the material itself. Empty
+   * on the public path, where there is nothing to deliver.
+   */
+  readonly deliveredKeyIds: readonly string[];
 }
 
 export type ReleaseGateResult =
@@ -129,7 +158,7 @@ function preparePublicRelease(input: PublicReleaseInput): ReleaseGateResult {
   if (!validated.ok) {
     return { ok: false, code: 'release-not-publishable', detail: `${validated.code}: ${validated.detail}` };
   }
-  return { ok: true, manifest: validated.manifest, ciphertext: null, wrappedKeys: [] };
+  return { ok: true, manifest: validated.manifest, ciphertext: null, wrappedKeys: [], deliveredKeyIds: [] };
 }
 
 async function preparePrivateRelease(input: PrivateReleaseInput): Promise<ReleaseGateResult> {
@@ -179,10 +208,60 @@ async function preparePrivateRelease(input: PrivateReleaseInput): Promise<Releas
     return { ok: false, code: 'release-not-publishable', detail: `${validated.code}: ${validated.detail}` };
   }
 
+  // Deliver LAST, and only once the manifest we built has validated: handing a
+  // recipient the key to bytes that were then refused would leave key material
+  // in circulation for an artifact that was never published.
+  let deliveredKeyIds: readonly string[];
+  try {
+    deliveredKeyIds = await deliverWrappedKeys({
+      wrappedKeys: publication.wrappedKeys,
+      adapter: input.deliveryAdapter,
+    });
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'key-delivery-failed',
+      detail: `wrapped-key delivery failed: ${(e as Error).message.slice(0, 300)}`,
+    };
+  }
+
+  // READ BACK what was delivered. `deliverWrappedKeys` reports the ids it handed
+  // to the adapter, which a no-op adapter satisfies without storing anything —
+  // so the ids alone cannot distinguish "delivered" from "dropped on the floor",
+  // and that difference is invisible until a buyer's install refuses with
+  // `no-wrapped-key`. Fetching each key back is the same call
+  // `openRetrievedArtifact` makes, so a pass here means the retrieval path can
+  // actually find them.
+  for (const key of publication.wrappedKeys) {
+    let readBack: Buffer | null;
+    try {
+      readBack = await input.deliveryAdapter.fetch({
+        wrappedKeyId: key.wrappedKeyId,
+        recipientId: key.recipientId,
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        code: 'key-delivery-failed',
+        detail: `wrapped-key read-back failed for ${key.recipientId}: ${(e as Error).message.slice(0, 300)}`,
+      };
+    }
+    if (!readBack) {
+      return {
+        ok: false,
+        code: 'key-delivery-failed',
+        detail:
+          `wrapped key ${key.wrappedKeyId} was accepted for delivery but cannot be fetched back — ` +
+          `${key.recipientId} could never open this release`,
+      };
+    }
+  }
+
   return {
     ok: true,
     manifest: validated.manifest,
     ciphertext: publication.ciphertext,
     wrappedKeys: publication.wrappedKeys,
+    deliveredKeyIds,
   };
 }
