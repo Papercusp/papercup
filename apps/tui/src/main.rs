@@ -15,6 +15,10 @@ mod app;
 mod bee;
 mod brain_view;
 mod card_view;
+/// Surface × state coverage census (P-007 / WI-573215) — test-only: renders
+/// every `Tab::ALL` destination in every state and pins the census table.
+#[cfg(test)]
+mod census;
 mod chat_tags;
 mod client;
 mod companion;
