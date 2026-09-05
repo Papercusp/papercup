@@ -29,14 +29,12 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
  *  never be what decides an outcome. */
 export const ACCEPTANCE_GRADING_SWEEP_INTERVAL_SEC = 600;
 
-export const ACCEPTANCE_GRADING_SWEEP_ACTOR = 'system:acceptance-grading-sweep';
-
 registerSystemAction('acceptance-grading-sweep', async () => {
   const [
     { getOrgPg },
     { RUBRIC_TEMPLATE_NAME },
     { evaluatePlanAcceptanceGate },
-    { acceptanceGraderLabelPrefix, resolveAcceptanceGrader },
+    { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, resolveAcceptanceGrader },
     { listTasks },
     { upsertConditionWorkItem },
     {
