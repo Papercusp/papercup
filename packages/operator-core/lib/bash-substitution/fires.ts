@@ -48,9 +48,25 @@ export const GATE_TOOL_NAME = 'locks:check_command';
  * comparison lands on the hook rather than on whatever the agent did next —
  * whether or not the agent complied. Measured 2026-09-05, before this predicate
  * existed: of 71,086 resolved fires exactly 5 recorded `complied = true` (0.007%),
- * and hook-origin rows were 189,576 of 301,133 invocations (63%) in one day. A
- * metric whose true value is unreachable reads as damning evidence about agents
- * when it is really a statement about instrument placement.
+ * and hook-origin rows were 189,576 of 301,133 invocations (63%) in one day.
+ *
+ * DO NOT cite this exclusion as having EXPLAINED that near-zero — an earlier
+ * revision of this comment did, and it was wrong. Recomputing the corrected
+ * predicate read-only over 7,599 fires since 2026-09-03: 7,430 had a next
+ * agent-chosen call and 6 complied = 0.081%, against 0.007% on the stored
+ * column. That is real and it is ~10x — of a ~1000x gap. Hook interposition was
+ * a confound ON the instrument, not the cause of the reading.
+ *
+ * The dominant cause is adoption surface, and it makes most of the volume
+ * unmeasurable rather than merely low: every bucket whose named tool has a
+ * CLIENT-NATIVE equivalent reads ~0 (`capability:read` and `capability:git`
+ * together are 89% of fire volume), because `tool_invocations` records MCP
+ * calls ONLY — the native Read/Bash an agent actually reached for leaves no row
+ * at all. Absence of a compliant call in this ledger is therefore not evidence
+ * of non-compliance for those buckets. See
+ * `bash-substitution-reachable-ceiling-2026-08-01#D-076`, which restricts
+ * reporting to the MCP-only buckets and records the rest as
+ * UNMEASURABLE-BY-CONSTRUCTION rather than as 0% compliance.
  *
  * Filter on the COLUMN, not on a list of tool names: `call_origin = 'hook'` is
  * DECLARED by the emitting hook (`call_origin_source = 'declared'`), whereas
