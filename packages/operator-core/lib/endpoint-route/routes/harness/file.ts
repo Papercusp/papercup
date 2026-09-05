@@ -11,7 +11,8 @@
  * `root` is an explicit grant, not a caller-selected path. Without it the
  * canonical harness checkout is the only permitted root.
  *
- * Ported from app/api/harness/[slug]/file/route.ts. `auth: 'public'`.
+ * Ported from app/api/harness/[slug]/file/route.ts. `auth: 'loopback'` keeps
+ * local configuration contents off network-exposed operator binds.
  */
 import { constants, promises as fs, existsSync } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
@@ -279,7 +280,7 @@ function fileErrorResponse(error: unknown, rel: string, operation: 'read' | 'wri
 const get = defineTool({
   method: 'GET',
   path: '/harness/:slug/file',
-  auth: 'public',
+  auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug as string;
     const url = new URL(req.url);
