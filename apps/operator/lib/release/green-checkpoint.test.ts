@@ -880,6 +880,135 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls).not.toContain("runGreen");
   });
 
+  // P-027 (D-014): the run reads the queue once, then a suite runs for up to an hour. An
+  // admission that lands in that window used to be overwritten by the run-end write-back of
+  // the run-start snapshot (measured 2026-09-05 17:41Z). With the CAS transition wired, the
+  // verdict is applied to the FRESH row and only for the head the run judged.
+  function p027Queue(frozen: string, ready: string): FrozenCandidateRepairQueue {
+    const now = Date.now();
+    return {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+      convergenceRounds: [],
+    };
+  }
+  function wireP027Transition(
+    deps: CheckpointDeps,
+    cell: { queue: FrozenCandidateRepairQueue | null },
+  ): { writes: FrozenCandidateRepairQueue[]; transitions: string[] } {
+    const writes: FrozenCandidateRepairQueue[] = [];
+    const transitions: string[] = [];
+    deps.readFrozenRepairQueue = async () => cell.queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      if (next) writes.push(next);
+      cell.queue = next;
+    };
+    deps.transitionFrozenRepairQueue = async (transition) => {
+      if (!cell.queue) return { status: "absent", queue: null };
+      const next = transition(cell.queue);
+      if (next === cell.queue) {
+        transitions.push("unchanged");
+        return { status: "unchanged", queue: cell.queue };
+      }
+      transitions.push("written");
+      writes.push(next);
+      cell.queue = next;
+      return { status: "written", queue: next };
+    };
+    return { writes, transitions };
+  }
+
+  it("P-027 (D-014): an admission that lands while the suite runs is preserved — the run's red for the superseded head is never written over it", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const cell = { queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null };
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    const { writes, transitions } = wireP027Transition(deps, cell);
+    let admitted = null as string | null;
+    const runGreen = deps.runGreen;
+    deps.runGreen = async (...args) => {
+      // While the suite runs, a peer lands a fix through the one door: the PERSISTED row
+      // advances to the admission commit and carries its ledger row. The gate's snapshot
+      // still says `frozen`.
+      admitted = await commit("b", "fixed on staging", "admitted onto lineage");
+      const atMs = Date.now();
+      cell.queue = cell.queue && {
+        ...cell.queue,
+        repairHead: admitted,
+        phase: "ready-to-verify",
+        updatedAtMs: atMs,
+        admissions: [
+          {
+            atMs,
+            actor: "su-peer",
+            source: { ref: "staging", sha: admitted },
+            fromRepairHead: frozen,
+            toRepairHead: admitted,
+            paths: ["b"],
+            unchanged: [],
+            blobs: {},
+          },
+        ],
+      };
+      return runGreen(...args);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).toContain(`setup:${frozen.slice(0, 7)}`);
+    expect(result.candidate).toBe(frozen);
+    // The admission SURVIVED: the row still carries the peer's head and its ledger entry, stays
+    // ready-to-verify (the newer head is unjudged), and no red round was appended for the head
+    // the run measured. The write-back that used to clobber it never happened.
+    expect(cell.queue?.repairHead).toBe(admitted);
+    expect(cell.queue?.admissions).toHaveLength(1);
+    expect(cell.queue?.phase).toBe("ready-to-verify");
+    expect(cell.queue?.convergenceRounds ?? []).toEqual([]);
+    expect(transitions).toContain("unchanged");
+    expect(
+      writes.some((w) => w.repairHead === frozen && w.phase === "awaiting-fixer"),
+    ).toBe(false);
+    expect(
+      logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
+    ).toBe(true);
+  });
+
+  it("P-027 CONTROL: with no mid-run admission the same run records its red at exactly the head it judged", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const cell = { queue: p027Queue(frozen, ready) as FrozenCandidateRepairQueue | null };
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    const { transitions } = wireP027Transition(deps, cell);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).toContain(`setup:${frozen.slice(0, 7)}`);
+    expect(result.candidate).toBe(frozen);
+    expect(cell.queue?.repairHead).toBe(frozen);
+    expect(cell.queue?.phase).toBe("awaiting-fixer");
+    expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([frozen]);
+    expect(transitions).toContain("written");
+    expect(transitions).not.toContain("unchanged");
+    expect(
+      logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
+    ).toBe(false);
+  });
+
   it("WI-212675: a dead fixer that changed nothing at an ADMITTED, never-verified head moves the queue to ready-to-verify and runs the suite there instead of re-dispatching", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
