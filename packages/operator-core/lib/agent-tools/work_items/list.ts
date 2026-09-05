@@ -294,7 +294,21 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "Persisted item provenance only: rows produced or stamped by this plan. It does NOT include ad-hoc work merely performed while a session/fleet declared that plan; scheduler `plan` predicates are item-provenance filters too.",
+        "Persisted item provenance only: rows produced or stamped by this plan. It does NOT include ad-hoc work merely performed while a session/fleet declared that plan; scheduler `plan` predicates are item-provenance filters too. Alias: `plan` (alias-group:sourcePlanSlug|plan).",
+      ),
+    // EI-21592729279587188 (tool-contract-repair-2026-09-05 P-008): `plan` is the name
+    // callers reach for, and this tool's OWN describe text above says "scheduler `plan`
+    // predicates" — so the schema rejected the very word its documentation uses. The
+    // filing is the symptom; the missing alias is the defect (plan Framing). Same
+    // shape as work_items:create/update's body↔summary pair (_body-alias.ts): one
+    // logical filter under either name, with a differing-pair conflict rejected loudly
+    // rather than silently picking a winner.
+    plan: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        "Alias for `sourcePlanSlug` (alias-group:sourcePlanSlug|plan) — the SAME item-provenance filter. Passing both with different values is rejected.",
       ),
     assignee: z
       .string()
@@ -381,6 +395,21 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const q = args.q?.trim() || undefined;
+    // EI-21592729279587188: resolve the sourcePlanSlug/plan alias pair ONCE, here, so
+    // every downstream site (the cache key AND the store filter) sees the same value.
+    // Resolving per-site is how an alias half-lands: the filter would narrow while the
+    // cache key stayed null, so one caller's `plan` read could be served to another
+    // caller's unfiltered read from cache — a wrong-rows bug, not a missing-filter one.
+    if (
+      args.sourcePlanSlug !== undefined &&
+      args.plan !== undefined &&
+      args.sourcePlanSlug !== args.plan
+    ) {
+      throw new Error(
+        "`plan` and `sourcePlanSlug` are the SAME filter (alias-group:sourcePlanSlug|plan) — pass only one. You passed both with different values, so which one wins would be ambiguous.",
+      );
+    }
+    const sourcePlanSlug = args.sourcePlanSlug ?? args.plan;
     // WI-42508: the result shaper runs AFTER the handler, so a trimmed/standard
     // response must choose a lean SQL projection BEFORE postgres-js materializes
     // rows.  No ctx tier is the UI/sync path and intentionally keeps the historical
@@ -442,7 +471,7 @@ export default defineTool({
           notTerminal: args.notTerminal === true,
           createdSince: args.createdSince ?? null,
           updatedSince: args.updatedSince ?? null,
-          sourcePlanSlug: args.sourcePlanSlug ?? null,
+          sourcePlanSlug: sourcePlanSlug ?? null,
           assignee: assignee ?? null,
           assignedBy: args.assignedBy ?? null,
           parent: args.parent ?? null,
@@ -476,7 +505,7 @@ export default defineTool({
           notTerminal: args.notTerminal,
           createdSince: args.createdSince,
           updatedSince: args.updatedSince,
-          sourcePlanSlug: args.sourcePlanSlug,
+          sourcePlanSlug,
           assignee,
           assignedBy: args.assignedBy,
           parent: args.parent,

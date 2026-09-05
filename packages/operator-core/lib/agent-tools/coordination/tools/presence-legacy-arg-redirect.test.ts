@@ -89,4 +89,23 @@ describe('coord:presence guidance.argRedirects', () => {
     expect(redirects.hive).toBe('pot');
     expect(redirects.agent).toBe('owner');
   });
+
+  it('answers the `items` collection-key guess with the bounded `owners` selector', () => {
+    // EI-21480522630558604 passed `items:[<ownerIds>]` for a bounded multi-owner lookup.
+    // `items` is not a legacy coord:presence key, so the description-derived drift guard
+    // above cannot reach it — it is a FOREIGN key borrowed from the work_items family,
+    // and it needs its own pin.
+    expect(presenceTool.guidance?.argRedirects?.items).toBe('owners');
+  });
+
+  it('POSITIVE CONTROL: `items` really is rejected and `owners` really is declared', () => {
+    // Without this the assertion above could pass while pointing callers at a key that
+    // does not exist (the second-rejection failure the `harness`/`scope` test pins), or
+    // while `items` had quietly become valid and needed no redirect at all. Both halves
+    // are checked through the tool's own parsed schema, never a substring of the rendered
+    // arg summary — the plan's standing rule, and the check that caught a false ABSENT
+    // reading of capability:read's `byte_limit`.
+    expect(presenceTool.args.safeParse({ items: ['su-abc'] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ owners: ['su-abc'] }).success).toBe(true);
+  });
 });
