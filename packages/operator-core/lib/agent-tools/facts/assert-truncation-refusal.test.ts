@@ -51,16 +51,21 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
 });
 vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.boundedOrgTxn }));
 
+import { z } from 'zod';
 import assertTool, { normalizeMeasurementInput } from './assert';
 import { FACT_BODY_MAX_CHARS, clampFactBody } from '../../agent-facts/store';
 
 type AssertSchemaField = { description?: string };
 
 const assertSchemaField = (name: string): AssertSchemaField => {
-  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-  const field = options.map((option) => option.shape[name]).find(Boolean);
+  // EI-22064465906366039: read the PUBLISHED JSON Schema, not zod internals (the
+  // old form reached into the root union's branch list, which no longer exists).
+  const json = z.toJSONSchema(assertTool.args as never) as {
+    properties?: Record<string, AssertSchemaField>;
+  };
+  const field = json.properties?.[name];
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
-  return field as AssertSchemaField;
+  return field;
 };
 
 const ctx = { isSuperuser: true, uiClientId: 'su-test-truncation-refusal' } as never;
