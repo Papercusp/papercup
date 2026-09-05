@@ -369,6 +369,36 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 [ "$snap_age" -gt "$MAX_SNAP_AGE_S" ] \
   && fail "last kopia snapshot $(dur "$snap_age") ago ($LATEST) — dumps are not leaving this machine"
 
+# ── 2c. THE DUMP DIRECTORY MUST ACTUALLY BE A KOPIA SOURCE (WI-2146225) ──────
+# THE DETECTOR WHOSE ABSENCE HID A SECOND SILENT OUTAGE. On 2026-09-05 the
+# Postgres dumps had ZERO offsite coverage: WI-2145150 relocated them to
+# /mnt/backup/db-dumps (because /mnt/data hit 97%) and kopia's source list still
+# named /mnt/data/Backup/db-dumps. snapshot-all.sh discovers sources by asking
+# kopia which ones ALREADY HAVE a snapshot, so the new directory could never
+# enter the sweep on its own — a self-perpetuating blind spot with no time bound.
+#
+# EVERY EXISTING CHECK IN THIS FILE STAYED GREEN THROUGH IT, and that is the
+# point of adding this one rather than tightening an existing bar:
+#   * check 1 asserts the dump is fresh and restorable — it reads LOCAL files and
+#     is true whether or not the dump ever leaves this machine.
+#   * check 2 takes the newest snapshot across ALL sources, so 16 healthy
+#     sources kept it green while this one was absent entirely.
+#   * check 2b covers $HOME specifically, not the dump directory.
+# The dump can therefore be perfect, hourly, and validated, and simultaneously
+# not backed up anywhere — which is precisely the EI-10733 shape this file
+# exists to end, one layer further out.
+#
+# ABSENCE is the condition, so it must be asserted directly. Exact suffix match
+# on the unindented header line, not a substring: a parent source would
+# otherwise satisfy a check for its child and re-create the same false green.
+if ! sudo -n /usr/bin/kopia snapshot list --all 2>/dev/null \
+     | awk -v want=":$DUMP" '
+         /^[^[:space:]]/ && length($0) >= length(want) &&
+         substr($0, length($0) - length(want) + 1) == want { found = 1 }
+         END { exit found ? 0 : 1 }'; then
+  fail "the Postgres dump directory $DUMP is NOT a kopia source — it has never been snapshotted, so the dumps are NOT leaving this machine. Local dumps can be fresh and restorable while this is true (checks 1/2/2b all stay green), which is how this hid. snapshot-all.sh now force-includes it via REQUIRED_SOURCES; if this is still failing, that union is not reaching kopia."
+fi
+
 # ── 2b. PER-SOURCE RECENCY: the DAILY curated home source ────────────────────
 # Check 2 above takes the newest snapshot across ALL sources (`--all -n 1 | sort -r |
 # head -1`), so the 30-minute hot sweep keeps it green no matter what happens to any
