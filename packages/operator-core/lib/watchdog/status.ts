@@ -128,7 +128,7 @@ export function classifyScheduledWatchdogStatus(
           args: {
             mode: 'grade',
             enabled: true,
-            reason: 'watchdog:status found eligible su-ideate filings after a zero-evaluation sweep; grade them through the SU GRADE path.',
+            reason: 'watchdog:status found eligible ungraded filings after a zero-evaluation sweep; grade them through the SU GRADE path.',
           },
           reason:
             'The Mug grading path is retired. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
@@ -145,7 +145,7 @@ export function classifyScheduledWatchdogStatus(
           args: {
             mode: 'grade',
             enabled: true,
-            reason: 'watchdog:status found eligible su-ideate filings with no matching nudge; grade them through the SU GRADE path.',
+            reason: 'watchdog:status found eligible ungraded filings with no matching nudge; grade them through the SU GRADE path.',
           },
           reason:
             'The Mug grading path is retired. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
