@@ -251,6 +251,12 @@ pub enum Event {
         fleet: String,
         result: Result<FleetLeaderBrief, String>,
     },
+    /// Terminal result from one y-confirmed leader-cockpit mutation. The fleet
+    /// label is retained for the durable/audited outcome line and refresh.
+    FleetControlFinished {
+        fleet: String,
+        result: Result<String, String>,
+    },
     /// A manual-mode agent's staged wakes (hive-agent-tabs P-009) — the result of
     /// `FetchWakeQueue` (and the auto-refresh after a release/skip). Carries the
     /// agent so a stale response never paints another agent's review overlay.

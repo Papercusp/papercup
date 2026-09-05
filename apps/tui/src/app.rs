@@ -372,6 +372,12 @@ pub enum Action {
     /// Fetch whole-fleet assignments for the default Swarm dossier
     /// (pui-dock-consolidation-2026-06-07 #2) → `Event::FleetAssignments`.
     FetchFleetAssignments,
+    /// Execute one already-confirmed Fleet cockpit mutation through the audited
+    /// run-tool bridge. The concrete member/gate target was captured when the
+    /// first key armed the action; this arm only follows a separate `y` press.
+    RunFleetControl {
+        intent: crate::fleet::FleetControlIntent,
+    },
     /// Join every member harness of a discovered hive (p2p-hive-directory P-006):
     /// POST each `links` entry to `/api/harness/join-link`. `slug` is the hive id.
     JoinHive {
@@ -4841,6 +4847,48 @@ impl App {
         self.visible_roster().get(self.fleet.agent_sel).copied()
     }
 
+    /// Resolve and arm one cockpit mutation. Targets are copied now, before the
+    /// confirmation modal opens, so roster/SSE movement cannot make `y` act on
+    /// a different member or gate than the prompt named.
+    fn arm_fleet_control(&mut self, kind: crate::fleet::FleetControlKind) -> Action {
+        let Some((member, brief)) = crate::fleet::control_target(self) else {
+            return Action::None;
+        };
+        let fleet = brief.summary.fleet.clone();
+        let member_id = member.owner_id.clone();
+        let member_label = if member.label.trim().is_empty() {
+            short_owner(&member.owner_id)
+        } else {
+            member.label.clone()
+        };
+        let gate = matches!(
+            kind,
+            crate::fleet::FleetControlKind::Bench | crate::fleet::FleetControlKind::FireGate
+        )
+        .then(|| crate::fleet::first_unfired_gate(brief).map(|gate| gate.event.clone()))
+        .flatten();
+        if matches!(
+            kind,
+            crate::fleet::FleetControlKind::Bench | crate::fleet::FleetControlKind::FireGate
+        ) && gate.is_none()
+        {
+            self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
+                ok: false,
+                message: "no unfired announced gate is available".into(),
+            });
+            return Action::Render;
+        }
+        self.fleet.control_pending = Some(crate::fleet::FleetControlIntent {
+            kind,
+            fleet,
+            member: member_id,
+            member_label,
+            gate,
+        });
+        self.fleet.control_outcome = None;
+        Action::Render
+    }
+
     pub fn selected_feature(&self) -> Option<&HarnessFeature> {
         self.features.get(self.feat_sel)
     }
@@ -7285,6 +7333,31 @@ impl App {
                 }
                 Action::Render
             }
+            Event::FleetControlFinished { fleet, result } => {
+                self.fleet.control_running = None;
+                match result {
+                    Ok(message) => {
+                        self.status = message.clone();
+                        self.last_error = None;
+                        self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
+                            ok: true,
+                            message,
+                        });
+                    }
+                    Err(error) => {
+                        let message = format!("fleet control ({fleet}): {error}");
+                        self.last_error = Some(message.clone());
+                        self.fleet.control_outcome = Some(crate::fleet::FleetControlOutcome {
+                            ok: false,
+                            message,
+                        });
+                    }
+                }
+                // Every terminal action result re-reads the roster/frontier and
+                // the acting leader brief, so the mutation's visible aftermath
+                // comes from server truth rather than an optimistic local edit.
+                Action::FetchFleetAssignments
+            }
             Event::Hives(rows) => {
                 // The federated p2p roster landed (the Hives tab). Raw rows;
                 // per-device grouping happens at render (hives::group_hives).
@@ -8716,6 +8789,44 @@ impl App {
         if code == KeyCode::Char('q') || ctrl_c {
             self.should_quit = true;
             return Action::Quit;
+        }
+        // P-010 leader cockpit: a mutation key only ARMS a concrete intent.
+        // This modal owns the next key so execution requires a distinct `y`;
+        // n/Esc cancels without touching the server.
+        if let Some(intent) = self.fleet.control_pending.clone() {
+            return match code {
+                KeyCode::Char('y') => {
+                    self.fleet.control_pending = None;
+                    self.fleet.control_running = Some(intent.clone());
+                    Action::RunFleetControl { intent }
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.fleet.control_pending = None;
+                    Action::Render
+                }
+                _ => Action::Render,
+            };
+        }
+        // These five contextual keys win before P-008's legacy `w` wake-mode
+        // toggle, but only while a current acting-leader brief and same-fleet
+        // roster target exist. Outside that cockpit the established bindings
+        // keep their old behavior.
+        if self.tab == Tab::Fleet
+            && !self.operator_dock_focused
+            && self.fleet.control_running.is_none()
+            && crate::fleet::control_target(self).is_some()
+        {
+            let kind = match code {
+                KeyCode::Char('b') => Some(crate::fleet::FleetControlKind::Bench),
+                KeyCode::Char('w') => Some(crate::fleet::FleetControlKind::Wake),
+                KeyCode::Char('r') => Some(crate::fleet::FleetControlKind::Relaunch),
+                KeyCode::Char('g') => Some(crate::fleet::FleetControlKind::FireGate),
+                KeyCode::Char('s') => Some(crate::fleet::FleetControlKind::BumpSpec),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                return self.arm_fleet_control(kind);
+            }
         }
         // P-008 (hive-agent-tabs): flag-on, 'w' on the Fleet tab toggles the SELECTED
         // agent's wake mode (auto↔manual) via coord:wake-mode — the owner-driven
