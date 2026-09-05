@@ -18,6 +18,8 @@ import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
+import type { SessionActivation } from '@papercusp/orchestrator/blueprint';
+import { normalizeSessionActivation } from '../../session-activation';
 import {
   readGoalHolderAuthority,
   type GoalHolderAuthority,
@@ -33,6 +35,8 @@ const MAX_ID_CHARS = 120;
 
 export interface ControlAnchorState {
   modes: string[];
+  /** D-030/P-040: explicit desired/prepared/applied activation truth. */
+  activation?: SessionActivation;
   /**
    * identities-v1 P-012 — the session's STACK BINDING: the identity layers bound beyond
    * the kernel, as `slot:id` refs (`fleet-posture:su.fleet-leader`). DERIVED from the
@@ -251,8 +255,10 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
       }
     : undefined;
   const stack = [...new Set((input.stack ?? []).map(String))].sort().map((v) => v.slice(0, MAX_ID_CHARS));
+  const activation = normalizeSessionActivation(input.activation);
   return {
     modes: [...new Set(input.modes.map(String))].sort().map((v) => v.slice(0, 40)),
+    ...(activation ? { activation } : {}),
     // P-012: spread-when-present — an unbound session carries no `stack` key at all.
     ...(stack.length ? { stack } : {}),
     loop: {
@@ -576,6 +582,65 @@ export async function preparePendingControlTransition(
   });
 }
 
+/** Persist the prepared phase after the complete stack/render validation succeeds. */
+export async function markControlTransitionPrepared(
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  revision: SessionActivation['desired'],
+  sql: Sql = getOrgPg().sql,
+): Promise<boolean> {
+  const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
+  const rows = await sql<Array<{ control_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_state = jsonb_set(
+         jsonb_set(
+           jsonb_set(control_state, '{activation,prepared}', ${rev}::jsonb, true),
+           '{activation,status}', '"prepared"'::jsonb, true
+         ),
+         '{activation,failure}', 'null'::jsonb, true
+       )
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_generation = ${generation}
+       AND control_delivered_generation < ${generation}
+       AND control_state->'activation'->'desired' = ${rev}::jsonb
+    RETURNING control_generation
+  `;
+  return rows.length > 0;
+}
+
+/** Persist a render/delivery failure while retaining the previous applied revision. */
+export async function failControlTransitionActivation(
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  revision: SessionActivation['desired'],
+  failure: string,
+  sql: Sql = getOrgPg().sql,
+): Promise<boolean> {
+  if (!failure.trim()) return false;
+  const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
+  const reason = JSON.stringify(failure.trim());
+  const rows = await sql<Array<{ control_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_state = jsonb_set(
+         jsonb_set(
+           jsonb_set(control_state, '{activation,prepared}', 'null'::jsonb, true),
+           '{activation,status}', '"failed"'::jsonb, true
+         ),
+         '{activation,failure}', ${reason}::jsonb, true
+       )
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_generation = ${generation}
+       AND control_delivered_generation < ${generation}
+       AND control_state->'activation'->'desired' = ${rev}::jsonb
+    RETURNING control_generation
+  `;
+  return rows.length > 0;
+}
+
 /**
  * Backwards-compatible name for callers that still use the original
  * one-shot-delivery vocabulary. The operation is now deliberately a
@@ -600,17 +665,37 @@ export async function acknowledgeControlTransition(
   workspaceId: string,
   generation: number,
   sql: Sql = getOrgPg().sql,
+  activationRevision?: SessionActivation['desired'],
 ): Promise<boolean> {
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
-  const rows = await sql<Array<{ control_delivered_generation: number | string }>>`
-    UPDATE harness_shared.session_briefs
-       SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
-     WHERE owner_id = ${ownerId}
-       AND workspace_id = ${workspaceId}
-       AND control_generation >= ${generation}
-       AND control_delivered_generation < ${generation}
-    RETURNING control_delivered_generation
-  `;
+  const rows = activationRevision
+    ? await sql<Array<{ control_delivered_generation: number | string }>>`
+        UPDATE harness_shared.session_briefs
+           SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation}),
+               control_state = jsonb_set(
+                 jsonb_set(
+                   jsonb_set(control_state, '{activation,applied}', ${JSON.stringify(activationRevision)}::jsonb, true),
+                   '{activation,prepared}', 'null'::jsonb, true
+                 ),
+                 '{activation,status}', '"applied"'::jsonb, true
+               )
+         WHERE owner_id = ${ownerId}
+           AND workspace_id = ${workspaceId}
+           AND control_generation >= ${generation}
+           AND control_delivered_generation < ${generation}
+           AND control_state->'activation'->'desired' = ${JSON.stringify(activationRevision)}::jsonb
+           AND control_state->'activation'->'prepared' = ${JSON.stringify(activationRevision)}::jsonb
+        RETURNING control_delivered_generation
+      `
+    : await sql<Array<{ control_delivered_generation: number | string }>>`
+        UPDATE harness_shared.session_briefs
+           SET control_delivered_generation = GREATEST(control_delivered_generation, ${generation})
+         WHERE owner_id = ${ownerId}
+           AND workspace_id = ${workspaceId}
+           AND control_generation >= ${generation}
+           AND control_delivered_generation < ${generation}
+        RETURNING control_delivered_generation
+      `;
   return rows.length > 0;
 }
 

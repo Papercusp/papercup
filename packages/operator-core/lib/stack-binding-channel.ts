@@ -30,6 +30,7 @@
  * layer render must never block the prompt, exactly like the control anchor itself.
  */
 import type { ControlAnchorState, ControlTransition } from './agent-tools/coordination/control-anchor';
+import type { StackMutationActivation, StackActivationContext } from '@papercusp/orchestrator/blueprint';
 
 /**
  * The su posture layer refs. Inlined here (see the lazy-import note above) and PINNED
@@ -98,6 +99,13 @@ export interface StackTransitionContextOptions {
   harnessDir?: string;
   /** DI seam: the orchestrator blueprint module (tests pass the real one loaded eagerly). */
   blueprint?: Pick<Blueprint, 'stackBindingFromRefs' | 'emptyStackBinding' | 'diffStackBindings' | 'composeSuStackMutation'>;
+  /** Optional desired revision to stamp on a prepared mutation payload. */
+  activation?: {
+    specificationRevision: string;
+    stateRevision: string;
+    idempotencyKey?: string;
+    context?: Partial<StackActivationContext>;
+  };
   /** Where a compose failure is reported (default: console.warn). */
   warn?: (message: string) => void;
 }
@@ -107,6 +115,8 @@ export interface StackTransitionContextResult {
   text: string;
   /** False only when rendering threw and the caller should retain the transition. */
   rendered: boolean;
+  /** Prepared activation, acknowledged separately after host acceptance. */
+  activation?: StackMutationActivation;
 }
 
 /**
@@ -130,13 +140,21 @@ export async function renderStackTransitionContextResult(
     const from = before == null ? bp.emptyStackBinding() : bp.stackBindingFromRefs(before);
     const to = bp.stackBindingFromRefs(after);
     const parts: string[] = [];
+    let preparedActivation: StackMutationActivation | undefined;
     let cursor = from;
     for (const m of bp.diffStackBindings(from, to)) {
-      const applied = bp.composeSuStackMutation({ harnessDir, binding: cursor, op: m.op, layer: { slot: m.slot, id: m.id } });
+      const applied = bp.composeSuStackMutation({
+        harnessDir,
+        binding: cursor,
+        op: m.op,
+        layer: { slot: m.slot, id: m.id },
+        activation: opts.activation,
+      });
       if (applied.injection) parts.push(applied.injection);
+      if (applied.activation) preparedActivation = applied.activation;
       cursor = applied.runtimeBinding;
     }
-    return { text: parts.join('\n\n'), rendered: true };
+    return { text: parts.join('\n\n'), rendered: true, ...(preparedActivation ? { activation: preparedActivation } : {}) };
   } catch (e) {
     warn(`[stack-binding-channel] stack transition not delivered (${JSON.stringify(before ?? null)} → ${JSON.stringify(after)}): ${e instanceof Error ? e.message : String(e)}`);
     return { text: '', rendered: false };
