@@ -354,6 +354,27 @@ export const ACKNOWLEDGED_UNGATEABLE = new Map([
   // `main` for the whole fleet. green-checkpoint.test.ts pins it shut on purpose, and
   // that test is the enforcement of this entry.
   ['lint:cell-matrix', 'needs live operators on :3170/:3070; green-checkpoint.test.ts pins it OUT of the gate by design'],
+
+  // Surfaced 2026-09-05 as a gate red (WI-212675). The behavioural-strands detector is
+  // an EDIT-TIME instrument by design: it AST-diffs the working tree against the
+  // pre-edit commit to find a new call to an injected collaborator, and only the
+  // PostToolUse hook that fires at the edit ever holds that diff. In the checkpoint tree
+  // the candidate is a committed sha and `--base HEAD` is an EMPTY diff — measured in
+  // gate mode 2026-09-05: exit 2 "NOT CHECKED", the script's own verdict that it saw
+  // nothing, which is not a clean bill and must never be quoted as one. Wiring it would
+  // add a leg that structurally cannot fire (or, with `--base <last-green main>`, one
+  // that ranks the whole ~1,500-commit sweep). `:run` is the same script with `--run`.
+  ['lint:behavioural-strands', 'edit-time diff instrument by design; in the checkpoint tree `--base HEAD` is an empty diff and it exits 2 NOT CHECKED — only the PostToolUse hook holds the pre-edit base'],
+  ['lint:behavioural-strands:run', 'same script as lint:behavioural-strands with --run; edit-time by design, an empty diff in the checkpoint tree'],
+
+  // Surfaced 2026-09-05 as a gate red (WI-212675). The base guard `lint:lockfile-census`
+  // IS wired repo-wide (scripts/affected-tests.mjs); `:sbom` is its syft-emitting
+  // sibling, which `emitSbom` makes REFUSE LOUDLY when the syft binary is absent —
+  // deliberately, so a missing inventory can never read as a clean one. syft is a
+  // dev-box tool, not a pipeline dependency, so in the checkpoint tree that refusal is
+  // the guaranteed outcome: wiring it would red-pin every host without syft on the
+  // absence of a tool, not on a defect. The census half it shares is already enforced.
+  ['lint:lockfile-census:sbom', 'syft emission; refuses by design when the dev-box syft binary is absent, which the checkpoint tree guarantees — its census half (lint:lockfile-census) is wired'],
 ]);
 
 /**
@@ -522,7 +543,12 @@ export const ENFORCING_TEST_RE =
  * many npm aliases point at it — so a base guard that IS wired makes its `:strict`
  * sibling enforced too, and a base guard that is not shows up once, not twice.
  */
-const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update|check|typecheck)$/;
+// `list` joined 2026-09-05: `lint:foo:list` is the MEASURING form of `lint:foo` (the
+// `--list` run the SHRINK-ONLY baselines are re-seeded from — never from a hand-run
+// grep), the same relation `:report`/`:census` already express. Left out, the census
+// counted `lint:test-timing-budgets:list` as a second unwired guard beside its base and
+// asked for a wiring that would run the measurement twice.
+const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update|check|typecheck|list)$/;
 
 /**
  * The OTHER guard family in this repo: `gen:<artifact>:check`, the drift check for a
