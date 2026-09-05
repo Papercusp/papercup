@@ -127,6 +127,34 @@ function lineOf(text, index) {
 }
 
 /**
+ * True when `index` falls inside a quoted string on its own line.
+ *
+ * Found by running this guard against its OWN test: the fixtures there are the tight
+ * budgets, written as string literals, and a textual scanner cannot tell a fixture from
+ * live code. Any file that DOCUMENTS or TESTS this pattern hits the same thing, so the
+ * fix belongs here rather than in a BASELINE entry — baselining the guard's own test
+ * would have exempted that file permanently and hidden every real budget later added
+ * to it.
+ *
+ * Counts unescaped quotes before the match on the same line: an odd count for any
+ * quote style means the match sits inside one. Line-scoped on purpose — a budget
+ * assertion is a single line, so this cannot be confused by a multi-line template
+ * elsewhere in the file.
+ */
+function insideStringLiteral(text, index) {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1;
+  const prefix = text.slice(lineStart, index);
+  for (const q of ["'", '"', '`']) {
+    let count = 0;
+    for (let i = 0; i < prefix.length; i += 1) {
+      if (prefix[i] === q && (i === 0 || prefix[i - 1] !== '\\')) count += 1;
+    }
+    if (count % 2 === 1) return true;
+  }
+  return false;
+}
+
+/**
  * Every elapsed-wall-clock upper bound in `text`, literal or named.
  * Returns `{ line, budgetMs, raw, named }`; `budgetMs` is null for a named constant.
  */
@@ -134,6 +162,7 @@ export function findWallClockBudgets(text) {
   const found = [];
 
   for (const m of text.matchAll(DIRECT_RE)) {
+    if (insideStringLiteral(text, m.index ?? 0)) continue;
     const ms = literalMs(m[1]);
     found.push({ line: lineOf(text, m.index ?? 0), budgetMs: ms, raw: m[1], named: ms === null });
   }
@@ -147,6 +176,7 @@ export function findWallClockBudgets(text) {
       'g',
     );
     for (const m of text.matchAll(twoStep)) {
+      if (insideStringLiteral(text, m.index ?? 0)) continue;
       const ms = literalMs(m[1]);
       found.push({ line: lineOf(text, m.index ?? 0), budgetMs: ms, raw: m[1], named: ms === null });
     }

@@ -74,6 +74,18 @@ describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () =
     expect(hasTightLiteralBudget(src)).toBe(false);
   });
 
+  it('does NOT flag an assertion QUOTED inside a string literal (this very file)', () => {
+    // Found by running the guard against this test: the fixtures above ARE tight budgets,
+    // written as strings, and a textual scanner cannot tell a fixture from live code. The
+    // guard would have flagged its own test file — and the tempting fix, a BASELINE entry,
+    // would have exempted this file permanently and hidden every real budget later added
+    // to it. Skipping quoted matches is the honest fix; this pins it.
+    const src = "const fixture = 'expect(Date.now() - started).toBeLessThan(80);';";
+    expect(hasTightLiteralBudget(src)).toBe(false);
+    // …while the same assertion UNQUOTED on a line is still caught.
+    expect(hasTightLiteralBudget('expect(Date.now() - started).toBeLessThan(80);')).toBe(true);
+  });
+
   it('reports the parsed budget and distinguishes literal from named', () => {
     const found = findWallClockBudgets(
       ['expect(Date.now() - a).toBeLessThan(80);', 'expect(Date.now() - b).toBeLessThan(DEADLINE_MS);'].join('\n'),
