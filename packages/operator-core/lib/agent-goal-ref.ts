@@ -258,6 +258,31 @@ export function planItemRef(planSlug: string, itemId: string): string | null {
   return `${slug}#${item}`;
 }
 
+/**
+ * The plan-DECISION ref form — `<planSlug>#D-NNN`.
+ *
+ * WHY this exists rather than calling `planItemRef` with a `D-NNN`: the two
+ * share a shape but not an identity. `planItemRef` is pinned byte-for-byte to
+ * `coord_links.dst_ref` for the corroboration join (see its note above), so a
+ * future change made to satisfy that join must NOT silently move decision refs
+ * with it. Same convention, separate namespace, separate reason to change.
+ *
+ * WHY a qualified form is the default a caller should cite: `D-NNN` is
+ * allocated per-plan, so the number alone is not a reference at all. Measured
+ * 2026-09-05 on harness `papercusp`: 9,088 decisions across 927 plans collapse
+ * onto just 298 distinct numbers — `D-001` is defined by 904 different plans,
+ * `D-002` by 792, `D-003` by 705. A bare `D-001` in a carry-note or a code
+ * comment therefore names ~904 candidate rulings, and the reader has no way to
+ * tell which. Handing the caller the qualified ref is what stops the bare form
+ * being copied onward; see `plans:add-decision`.
+ */
+export function planDecisionRef(planSlug: string, decisionId: string): string | null {
+  const slug = (planSlug ?? '').trim();
+  const decision = (decisionId ?? '').trim();
+  if (!slug || !decision) return null;
+  return `${slug}#${decision}`;
+}
+
 /** The fleet-mission ref form. Namespaced so a reader can tell a MISSION from a
  *  task at a glance — the two warrant very different responses. */
 export function fleetMissionRef(fleetSlug: string): string | null {
