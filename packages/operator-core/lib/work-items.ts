@@ -47,6 +47,15 @@ import {
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+// Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
+// `assessSourceCoverage`: this consumer is not a registered `SearchSource`, and
+// SEARCH_SOURCE_SURFACES is asserted exhaustive in both directions against
+// SEARCH_SOURCES (coverage-gate.test.ts), so adding a key there would fail the suite.
+import {
+  assessSurfaceCoverage,
+  type CoverageSnapshot,
+  type SourceCoverageAssessment,
+} from './search/coverage-gate';
 import { activeWorkspaceId } from './workspace-registry';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
@@ -2063,6 +2072,33 @@ async function featuresByIds(ids: string[]): Promise<WorkItem[]> {
   return rows.map(featureRowToWorkItem);
 }
 
+/** The label this consumer's coverage verdict is reported under (WI-9393). */
+const WORK_ITEM_SEARCH_COVERAGE_SOURCE = 'work_items:search';
+/**
+ * The vector surfaces this search actually reads — ONE, despite two families.
+ *
+ * VERIFIED against the catalog rather than assumed: the feature-family source
+ * selects from `harness_shared.harness_features_consolidated`, which is a VIEW
+ * (`pg_class.relkind='v'`) defined as
+ *   `SELECT …, embedding, embedding_mode, … FROM harness_shared.work_items
+ *      WHERE item_kind <> ALL (ARRAY['bug','change','task'])`
+ * — the SAME physical table and the SAME `embedding` column the issue-family
+ * source reads. So one surface honestly covers both legs.
+ *
+ * This is why the surface list is NOT the two-element union the call sites
+ * suggest. `assessSurfaceCoverage` resolves a multi-surface list to its BEST
+ * leg (the P-034 parent+chunk union, where a row is findable if EITHER carries
+ * its vector). That is the wrong operator for two INDEPENDENT corpora — it
+ * would report the healthier table and mask a blind one. Here the question does
+ * not arise, because there is only one table.
+ *
+ * The view is a filtered SUBSET, so a table-level percentage is strictly an
+ * approximation for the feature leg; measured 2026-09-05 the split is immaterial
+ * (feature-family 3470/3520 = 98.6%, issue-family 166798/173392 = 96.2%, table
+ * 96.3%). Re-measure before relying on that if the families ever diverge.
+ */
+const WORK_ITEM_SEARCH_SURFACES = ['harness_shared.work_items.embedding'] as const;
+
 /** What a work-item search reports — the matches AND how they were ranked. */
 export interface WorkItemSearchResult {
   items: WorkItem[];
@@ -2077,6 +2113,22 @@ export interface WorkItemSearchResult {
   legs: SearchLegs;
   /** P-017: which engine-level ranking defaults were in force for this search. */
   applied: AppliedDefaults;
+  /**
+   * WI-9393 / D-018: whether the CORPUS this search ranked against is actually
+   * embedded — the other half of the honesty `legs` above provides.
+   *
+   * `legs` answers "did the semantic leg RUN"; it cannot answer "did it run over
+   * a fully-embedded corpus". The docstring on `legs` already names "embeddings
+   * not backfilled" as a degradation it exists to expose, but a leg that runs
+   * perfectly against a 60%-embedded table reports `status:'ran'` and looks
+   * healthy — which is exactly the silent miss this field closes.
+   *
+   * Absent when the semantic leg was never wanted (a deliberate lexical-only
+   * search is healthy, not un-assessed) and when the assessment could not be
+   * attempted at all. An `unknown` verdict is the distinct statement "we looked
+   * and the sampler knows nothing" — never collapse the two.
+   */
+  coverage?: SourceCoverageAssessment;
   /**
    * A stable, process-local retry receipt while the query embedder is warming.
    * The lexical result remains usable for availability, but callers must not
@@ -2156,6 +2208,12 @@ export async function searchWorkItems(
      * include raw observations in search results.
      */
     includeObservations?: boolean;
+    /**
+     * Test seam for the WI-9393 coverage assessment, mirroring `embedderResolver`.
+     * Injecting it also OPTS IN under vitest, where the assessment is otherwise
+     * inert (see `loadWorkItemSearchCoverage`).
+     */
+    loadCoverage?: () => Promise<CoverageSnapshot>;
   } = {},
 ): Promise<WorkItemSearchResult> {
   const limit = Math.min(opts.limit ?? 50, 200);
@@ -2267,7 +2325,68 @@ export async function searchWorkItems(
   for (const w of [...issueRows, ...featureRows]) byId.set(w.id, w);
   const items = results.map((r) => byId.get(r.source_id)).filter((w): w is WorkItem => w !== undefined);
 
-  return { items, legs, applied, ...(retry ? { retry } : {}) };
+  // WI-9393 / D-018. DELIBERATELY after the search and in its own try/catch: coverage is
+  // a diagnostic ABOUT the ranking, so it must never be able to cost a caller a result.
+  //
+  // Assessed ONLY when the semantic leg was wanted. A deliberate lexical-only search is
+  // healthy — the same reason `summariseLegs` does not flag `status:'not-run'` as
+  // degraded — so attaching a corpus verdict to one would be noise rather than honesty.
+  let coverage: SourceCoverageAssessment | undefined;
+  if (embedder !== null) {
+    try {
+      const snapshot = await loadWorkItemSearchCoverage(opts.loadCoverage);
+      // `null` = do not assess at all (no key). An EMPTY map is the DIFFERENT statement
+      // "we looked and the sampler knows nothing", which the shared logic renders as
+      // `unknown`. Collapsing the two would make a skipped assessment read as a measured
+      // one; keep them distinct exactly as the dupe guard does.
+      if (snapshot !== null) {
+        coverage = assessSurfaceCoverage(
+          WORK_ITEM_SEARCH_COVERAGE_SOURCE,
+          WORK_ITEM_SEARCH_SURFACES,
+          snapshot,
+        );
+      }
+    } catch {
+      // Leave undefined: not assessed. Never a hand-written verdict object, which could
+      // drift from the shared logic that owns what healthy/degraded/unknown mean.
+    }
+  }
+
+  return {
+    items,
+    legs,
+    applied,
+    ...(coverage ? { coverage } : {}),
+    ...(retry ? { retry } : {}),
+  };
+}
+
+/** The snapshot for {@link WORK_ITEM_SEARCH_SURFACES}. A failed READ yields an EMPTY
+ *  map, which `assessSurfaceCoverage` already renders as `unknown` — never as healthy.
+ *  `null` means "do not assess at all", which is a different statement entirely. */
+async function loadWorkItemSearchCoverage(
+  seam?: () => Promise<CoverageSnapshot>,
+): Promise<CoverageSnapshot | null> {
+  if (seam) {
+    try {
+      return await seam();
+    } catch {
+      return new Map();
+    }
+  }
+  // Inert under vitest unless a test injects the seam. `searchWorkItems` already holds an
+  // org PG handle, so this is not about affording the connection — it is that adding an
+  // always-present result key silently broke a pre-existing whole-result assertion when
+  // the dupe guard was wired (consumer A), and the honest fix there was to leave existing
+  // test paths untouched rather than to loosen their assertions.
+  if (process.env.VITEST) return null;
+  try {
+    const { loadCoverageSnapshotCached } = await import('./search/coverage-gate');
+    const { sql } = getOrgPg();
+    return await loadCoverageSnapshotCached(sql, activeWorkspaceId());
+  } catch {
+    return new Map();
+  }
 }
 
 // ── Writes ─────────────────────────────────────────────────────────────────────────

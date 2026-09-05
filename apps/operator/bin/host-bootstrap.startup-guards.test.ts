@@ -137,17 +137,20 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()');
     const failureGuard = bootSrc.indexOf('if (!migrationResult || migrationResult.failed.length > 0)', apply);
     const withheld = bootSrc.indexOf('BACKGROUND STARTUP WITHHELD', failureGuard);
+    const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', failureGuard);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
     const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
 
     expect(apply).toBeGreaterThan(-1);
     expect(failureGuard).toBeGreaterThan(apply);
     expect(withheld).toBeGreaterThan(failureGuard);
+    expect(routingFailure).toBeGreaterThan(withheld);
     expect(requestGate).toBeGreaterThan(withheld);
     expect(backgroundStartup).toBeGreaterThan(requestGate);
 
     const guardBody = bootSrc.slice(failureGuard, requestGate);
     expect(guardBody).toMatch(/BACKGROUND STARTUP WITHHELD[\s\S]*?return;/);
+    expect(guardBody).toMatch(/markSubstrateBootRoutingFailed[\s\S]*?return;/);
   });
 });
 

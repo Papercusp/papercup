@@ -886,6 +886,34 @@ with `cat`/`tail`/`wc -c` (1,120), and bare `sleep` (1,082, and what follows a
 sleep is overwhelmingly another poll). None of that is recoverable by swapping
 the poll command, because the fix is one step earlier:
 
+## Scratch probes: name the file `.mts`, not `.ts`
+
+A one-off probe that imports repo modules belongs in the in-tree, gitignored
+`.papercusp/scratch/` — it resolves workspace imports, where `/tmp` does not. **Name it
+`.mts`.** Neither location sits under a `package.json` declaring `"type": "module"`, so
+tsx/esbuild compiles a bare `.ts` there as **CJS**, and any top-level `await` — the
+natural way to write `const { fn } = await import('file:///.../module.ts')` to measure
+something against the real implementation — dies at transform time with:
+
+```
+ERROR: Top-level await is currently not supported with the "cjs" output format
+```
+
+⚠ **The error names the OUTPUT FORMAT, not the fix.** It reads as a problem with your
+code, so the natural next moves are all wrong ones: hunt for an esbuild/tsconfig knob,
+or restructure the probe into an `async main()` with a `.catch`. Nothing in the code is
+wrong. Rename `probe.ts` → `probe.mts` and it runs unchanged. Measured 2026-09-05: that
+directory holds 34 `.mts` files beside 52 `.ts` — the workaround is being rediscovered
+one agent at a time, which is what this note exists to stop.
+
+Pinned by `packages/operator-core/lib/doc-claims/scratch-probe-module-format.test.ts`:
+if a `"type": "module"` package.json is ever dropped over the scratch tree — a real fix
+that makes a bare `.ts` work — that test fails, so this guidance gets corrected instead
+of silently rotting into a lie.
+
+
+## Long jobs: background them at the LAUNCH, don't poll for them afterwards
+
 > For anything that runs longer than ~1–2 min, start it with
 > **`capability:bash { run_in_background: true }`** and read it with
 > **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only

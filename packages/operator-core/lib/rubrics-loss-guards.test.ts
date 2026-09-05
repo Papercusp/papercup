@@ -20,6 +20,7 @@ import {
   normalizeAcceptanceRubricProposal,
   normalizeAcceptanceBarCriterion,
   computeAcceptanceBarHash,
+  normalizeRubricCompositionRefs,
   REPLICATION_DRILL_MARKER,
   METHOD_SHRINK_GUARD_MIN_CHARS,
   type Rubric,
@@ -530,6 +531,26 @@ describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan
     });
     expect('kind' in out).toBe(false);
     expect('subjectPlan' in out).toBe(false);
+  });
+
+  it('preserves unpinned composition refs through a prose amendment', () => {
+    const stored = rubric([crit({ key: 'k1' })], {
+      composes: ['goal-mode-e2e', 'pot-coordination-health'],
+    });
+    const out = applyRubricAmendment(stored, { rubricId: stored.rubricId, methodRef: 'updated-runbook' });
+    expect(out.composes).toEqual(['goal-mode-e2e', 'pot-coordination-health']);
+  });
+
+  it('normalizes an explicit composition replacement without revision pins', () => {
+    expect(normalizeRubricCompositionRefs([' goal-mode-e2e ', 'goal-mode-e2e', 'pot-coordination-health'])).toEqual([
+      'goal-mode-e2e',
+      'pot-coordination-health',
+    ]);
+    const out = applyRubricAmendment(rubric([crit({ key: 'k1' })]), {
+      rubricId: 'su-agent-behavior',
+      composes: [' goal-mode-e2e ', 'goal-mode-e2e'],
+    });
+    expect(out.composes).toEqual(['goal-mode-e2e']);
   });
 });
 

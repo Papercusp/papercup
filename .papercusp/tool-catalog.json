@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 848,
+  "count": 849,
   "tools": [
     {
       "name": "ablation:report",
@@ -20738,6 +20738,80 @@
       }
     },
     {
+      "name": "plans:migrate-acceptance-bars",
+      "http": {
+        "path": "/api/agent-tools/plans/migrate-acceptance-bars",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run one bounded, cursor-resumable acceptance BAR cohort migration page. Terminal history is skipped, drafts use strict post-epoch seeding, legacy Requirements use legacy-backfilled seeding, and untrusted sources are refused. Each plan writes through the canonical transactional BAR seed writer and rolls back independently on refusal. Run with dryRun:true first.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Adopting the acceptance BAR contract for existing plans after the gate/writer rollout; repeat with the returned nextCursor until complete.",
+        "notWhen": "Routine plan edits, rubric amendments, or a plan that is already fully seeded. This is a bounded migration door.",
+        "chaining": "plans:migrate-acceptance-bars { dryRun:true } → repeat with nextCursor → plans:get / plans:items to verify the seeded rubric and projections."
+      }
+    },
+    {
       "name": "plans:new",
       "http": {
         "path": "/api/agent-tools/plans/new",
@@ -26089,7 +26163,7 @@
           "POST"
         ]
       },
-      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title) and/or set the rubric-level methodRef — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title), set the rubric-level methodRef, and/or replace unpinned composition refs — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). Composition refs must name existing standard rubrics and are resolved at write time; omit composes to preserve the stored list. For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
       "capabilities": [
         "coord:write"
       ],

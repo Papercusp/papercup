@@ -40,3 +40,25 @@ papercusp-desktop/src-tauri/env-sidecars/
 # Composed rig-VM sidecar — build OUTPUT (already gitignored; listed so a local
 # build that predates that entry cannot leak into search either).
 .rig-sidecar-current/
+
+# Generated JUnit test reports (EI-19481872980439245).
+#
+# HONEST SCOPE: this is smaller than the bundles above and does NOT fit the
+# context-blowout case in the header. Measured 2026-09-05: the 9 copies still
+# reachable total 41,716 B with a 313-char worst line — de-noising, not rescue.
+# (The item that asked for this also named llms-small.txt / llms-full.txt, whose
+# 508,384-char lines WERE the blowout case; those were fixed via .gitignore on
+# 2026-08-24 and 2026-08-30 and no longer appear in ripgrep's traversal set.)
+#
+# WHY IT MUST LIVE HERE AND NOT IN .gitignore: the root .gitignore already has
+# `**/junit.xml`, and that correctly covers packages/operator-core/junit.xml. But
+# a .gitignore cannot cross a nested git-repo boundary, so every copy inside a
+# submodule (libs/papercusp, libs/generic/*, libs/agent-chat, libs/papercusp-shared)
+# stayed in ripgrep's traversal set. This file is applied from the search root
+# down and DOES cross those boundaries — verified by the sidecar rule above, which
+# suppresses files inside papercusp-desktop, itself a separate git repo.
+#
+# SAFE TO IGNORE: no consumer discovers these by scanning. They are WRITTEN by
+# libs/test-config/src/vitest-config.ts and parsed by explicit path in
+# libs/testing-shell/src/junit.ts; nothing locates them via rg/fd.
+junit.xml

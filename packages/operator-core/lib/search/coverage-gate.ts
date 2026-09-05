@@ -316,7 +316,17 @@ export function assessSourceCoverage(
 /**
  * The surface-level half of {@link assessSourceCoverage}, for consumers that run a
  * cosine query but are NOT a `SearchSource` — the work-item dupe guard, work-item
- * similarity, plan semantic-dedup, memory recall (WI-9393 / D-018).
+ * similarity, and plan semantic-dedup (WI-9393 / D-018).
+ *
+ * ⚠ MEMORY RECALL IS NOT ONE OF THEM, AND THIS LINE USED TO SAY IT WAS. Injection's
+ * corpus leg reads REGISTERED sources (`CORPUS_SOURCE_NAMES` = session_turn +
+ * work_item), so it is already assessed through the SOURCE-level door:
+ * `assessSearchCoverage(CORPUS_GATE_SOURCES, …)` in `memory/injection.ts`, feeding
+ * `memory/corpus-coverage-gate.ts` — which can DEGRADE or SUPPRESS the injected
+ * block, not merely annotate it. Wiring it here as well would fork one honesty
+ * signal into two, which is precisely the duplication the next paragraph forbids.
+ * The tell that it belongs there and not here: its surfaces are reachable from
+ * `SEARCH_SOURCE_SURFACES` by source name, so it never needs to pass its own.
  *
  * Those consumers must NOT be added to `SEARCH_SOURCE_SURFACES`: that map is asserted
  * exhaustive in both directions against `SEARCH_SOURCES` (coverage-gate.test.ts), so a

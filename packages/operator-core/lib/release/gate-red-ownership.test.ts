@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  composeGateRedOwnership,
   describeGateRedOwnership,
   gateFailureSignature,
+  projectGateRepairOwner,
   type GateRedOwnershipState,
 } from './gate-red-ownership';
+import { assessGateOwnership, unownedCell, type CellOwnership } from '../coord/gate-ownership';
+import { CRITICAL_CLAIM_PROGRESS_LEASE_MS } from '../agent-tools/work_items/release-force-guard';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import type { ConditionClaimState } from '../coord/condition-object';
 
 describe('gateFailureSignature — the one derivation the dispatcher and the renderer share', () => {
   it('is order-independent, so the same failure set on a later run keys the same', () => {
@@ -214,7 +220,15 @@ describe('describeGateRedOwnership — surfacing the owner the dispatcher alread
       'owner-gone': 'UNOWNED',
       'owned-live': 'OWNED',
       'owned-unknown': 'OWNED',
+      // P-008. Declared here so a new state is still a COMPILE error on this map, but
+      // listed in COMPOSITE_ONLY below because this function cannot produce it: it is
+      // reachable only through composeGateRedOwnership, which the next suite exercises.
+      'owned-by-repair-holder': 'OWNED',
     };
+    // States the DESCRIBE path cannot reach. Kept as an explicit, named subtraction rather
+    // than by trimming the map: the map's exhaustiveness is what makes a newly-added state
+    // fail to compile, and an unreachable state must be justified here, not deleted.
+    const COMPOSITE_ONLY: readonly GateRedOwnershipState[] = ['owned-by-repair-holder'];
     const cases: Array<Parameters<typeof describeGateRedOwnership>[0]> = [
       { currentSignature: 'x', nowMs: NOW },
       { ownerSignature: 'a', currentSignature: 'b', nowMs: NOW },
@@ -230,6 +244,336 @@ describe('describeGateRedOwnership — surfacing the owner the dispatcher alread
       expect(o.label.startsWith(expectedPrefix[o.state]), `${o.state}: ${o.label}`).toBe(true);
     }
     // Every declared state is actually exercised above — otherwise the map silently rots.
-    expect([...seen].sort()).toEqual(Object.keys(expectedPrefix).sort());
+    const describeReachable = (Object.keys(expectedPrefix) as GateRedOwnershipState[]).filter(
+      (s) => !COMPOSITE_ONLY.includes(s),
+    );
+    expect([...seen].sort()).toEqual(describeReachable.sort());
+    // And the subtraction itself is checked: a state listed as composite-only must really
+    // be unreachable here, or the exemption is hiding a gap instead of documenting one.
+    expect(COMPOSITE_ONLY.filter((s) => seen.has(s))).toEqual([]);
+  });
+});
+
+/**
+ * P-008 — the automated fixer and the live singleton work-item holder are TWO owners, and
+ * the trace must never emit a bare `owner-gone` while the second one holds the item.
+ *
+ * The failure these pin down is not hypothetical: on 2026-08-23 a trace named a 32h-dead
+ * release-fixer as the reason to claim a red that `dev:pipeline_position` showed was held by
+ * a live owner in the same minute (EI-21271478314960803), and the false invitation that
+ * produces is what let 37 distinct agents take 97 stints on ONE gate item on 2026-08-26.
+ */
+const cell = (over: Partial<CellOwnership>): CellOwnership => {
+  const base = unownedCell('gate-red-streak:papercusp');
+  const merged = { ...base, ...over };
+  return {
+    ...merged,
+    assessment: assessGateOwnership({
+      claimState: merged.claimState,
+      holderSessionState: merged.holderSessionState,
+      duplicates: merged.duplicates,
+    }),
+  };
+};
+
+const heldBy = (takenBy: string, session: SessionState, progressAgeMs = 60_000): CellOwnership =>
+  cell({
+    workItem: 'WI-40086',
+    claimState: 'held',
+    takenBy,
+    takenAt: new Date(NOW - 30 * 60_000).toISOString(),
+    lastProgressAt: new Date(NOW - progressAgeMs).toISOString(),
+    holderSessionState: session,
+  });
+
+/** The six fixer verdicts, by the input that produces each. */
+const FIXER_CASES: Record<GateRedOwnershipState, Parameters<typeof describeGateRedOwnership>[0] | null> = {
+  unowned: { currentSignature: 'x', nowMs: NOW },
+  'stale-signature': { ownerSignature: 'a', currentSignature: 'b', spawnId: 's-1', dispatchedAtMs: mins(90), nowMs: NOW },
+  'owner-gone': {
+    ownerSignature: 'x',
+    currentSignature: 'x',
+    spawnId: 's-dead',
+    dispatchedAtMs: mins(32 * 60),
+    fixerAlive: false,
+    nowMs: NOW,
+  },
+  'owned-live': { ownerSignature: 'x', currentSignature: 'x', spawnId: 's-2', fixerAlive: true, nowMs: NOW },
+  'owned-unknown': { ownerSignature: 'x', currentSignature: 'x', fixerAlive: null, nowMs: NOW },
+  'verdict-stale': { ownerSignature: 'x', currentSignature: 'x', fixerAlive: true, verdictStale: true, nowMs: NOW },
+  // Composite-only: produced BY the composer, never fed INTO it as a fixer verdict.
+  'owned-by-repair-holder': null,
+};
+
+describe('composeGateRedOwnership — the fixer and the repair owner are two owners, not one', () => {
+  it('never emits a bare owner-gone while a live repair owner holds the item', () => {
+    // THE acceptance criterion, stated directly. `owner-gone` is the state whose prose is
+    // "UNOWNED — claim it before investigating", which is actively false here.
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-ccd31f35', 'live'), NOW),
+    });
+
+    expect(composed.state).toBe('owned-by-repair-holder');
+    expect(composed.covered).toBe(true);
+    expect(composed.label).toMatch(/^OWNED/);
+    expect(composed.label).not.toMatch(/Claim it before investigating/);
+    expect(composed.label).toContain('WI-40086');
+    expect(composed.label).toContain('su-ccd31f35');
+    // The fixer's death is PRESERVED, not erased — it is the actionable half.
+    expect(composed.fixerState).toBe('owner-gone');
+    expect(composed.spawnId).toBe('s-dead');
+    expect(composed.label).toMatch(/CONFIRMED GONE/);
+    expect(composed.label).toMatch(/does NOT mean this red is unowned/);
+  });
+
+  it.each(['live', 'parked', 'recorded'] as const)(
+    'treats a %s holder as covering the red — the oracle allowlist, not a hand-rolled one',
+    (session) => {
+      const composed = composeGateRedOwnership({
+        fixer: describeGateRedOwnership(FIXER_CASES.unowned!),
+        repairOwner: projectGateRepairOwner(heldBy('su-a', session), NOW),
+      });
+      expect(composed.state).toBe('owned-by-repair-holder');
+      expect(composed.covered).toBe(true);
+      expect(composed.repairOwner?.live).toBe(true);
+    },
+  );
+
+  it.each(['draining', 'suspect', 'ended'] as const)(
+    'does NOT promote a %s holder, but still NAMES the claim so the refusal is never bare',
+    (session) => {
+      const composed = composeGateRedOwnership({
+        fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+        repairOwner: projectGateRepairOwner(heldBy('su-b', session), NOW),
+      });
+      // Standing agents down on an absence of evidence is the opposite failure, so the
+      // state stays the fixer's. But the label must not pretend no claim exists.
+      expect(composed.state).toBe('owner-gone');
+      expect(composed.covered).toBe(false);
+      expect(composed.repairOwner?.live).toBe(false);
+      expect(composed.label).toContain('WI-40086');
+      expect(composed.label).toContain('su-b');
+      expect(composed.label).toMatch(/not POSITIVELY live/);
+      expect(composed.label).toMatch(/absence of evidence/);
+    },
+  );
+
+  it('keeps a live fixer as the state and appends the live holder rather than displacing it', () => {
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owned-live']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-c', 'live'), NOW),
+    });
+    expect(composed.state).toBe('owned-live');
+    expect(composed.fixerState).toBe('owned-live');
+    expect(composed.covered).toBe(true);
+    expect(composed.label).toContain('ALSO:');
+    expect(composed.label).toContain('su-c');
+  });
+
+  it('leaves verdict-stale untouched — gate-stop-chasing-the-tip is unchanged', () => {
+    // A stale verdict means the failure names may already be fixed, so "who owns it" is the
+    // wrong question. A live holder must not dress that up as covered ownership.
+    const fromFixer = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['verdict-stale']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-d', 'live'), NOW),
+    });
+    expect(fromFixer.state).toBe('verdict-stale');
+    expect(fromFixer.label).toMatch(/^STALE VERDICT/);
+
+    // ...and the CALLER's independent staleness verdict suppresses promotion identically.
+    const fromCaller = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-d', 'live'), NOW),
+      verdictStale: true,
+    });
+    expect(fromCaller.state).toBe('owner-gone');
+    expect(fromCaller.covered).toBe(false);
+  });
+
+  it('surfaces STALE PROGRESS without demoting a live holder to unowned', () => {
+    const stale = projectGateRepairOwner(
+      heldBy('su-quiet', 'live', CRITICAL_CLAIM_PROGRESS_LEASE_MS + 60_000),
+      NOW,
+    );
+    expect(stale?.progressStale).toBe(true);
+
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: stale,
+    });
+    // Demoting a quiet holder to "unowned" would re-create the 97-stint pile-on. The
+    // staleness is surfaced structurally and named in prose; cover is unchanged.
+    expect(composed.state).toBe('owned-by-repair-holder');
+    expect(composed.covered).toBe(true);
+    expect(composed.repairOwner?.progressStale).toBe(true);
+    expect(composed.label).toMatch(/QUIET for/);
+    expect(composed.label).toMatch(/coordinate/);
+  });
+
+  it('reports fresh progress as fresh, and an unmeasurable anchor as UNMEASURED not fresh', () => {
+    const fresh = projectGateRepairOwner(heldBy('su-e', 'live', 5 * 60_000), NOW);
+    expect(fresh?.progressStale).toBe(false);
+    expect(fresh?.progressAgeMs).toBe(5 * 60_000);
+
+    const noAnchor = projectGateRepairOwner(
+      cell({ workItem: 'WI-1', claimState: 'held', takenBy: 'su-f', holderSessionState: 'live' }),
+      NOW,
+    );
+    expect(noAnchor?.progressAgeMs).toBeNull();
+    // Fails closed: an unread lease is not an expired one.
+    expect(noAnchor?.progressStale).toBe(false);
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES.unowned!),
+      repairOwner: noAnchor,
+    });
+    expect(composed.label).toMatch(/UNMEASURED/);
+    expect(composed.label).toMatch(/not a fresh one/);
+  });
+
+  it('follows a CLAIM RELEASE back to the fixer verdict instead of stranding stale cover', () => {
+    const held = projectGateRepairOwner(heldBy('su-g', 'live'), NOW);
+    expect(
+      composeGateRedOwnership({ fixer: describeGateRedOwnership(FIXER_CASES.unowned!), repairOwner: held }).covered,
+    ).toBe(true);
+
+    // The holder released it: the condition object survives, the lease does not.
+    const released = projectGateRepairOwner(
+      cell({ workItem: 'WI-40086', claimState: 'claimable', takenBy: null, holderSessionState: null }),
+      NOW,
+    );
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES.unowned!),
+      repairOwner: released,
+    });
+    expect(composed.state).toBe('unowned');
+    expect(composed.covered).toBe(false);
+    // Still not bare: the reader is told a work-item exists to claim, not that nothing does.
+    expect(composed.label).toContain('WI-40086');
+  });
+
+  it('follows a HANDOFF to the new holder', () => {
+    const before = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-first', 'live'), NOW),
+    });
+    expect(before.label).toContain('su-first');
+
+    const after = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-second', 'live'), NOW),
+    });
+    expect(after.state).toBe('owned-by-repair-holder');
+    expect(after.covered).toBe(true);
+    expect(after.label).toContain('su-second');
+    expect(after.label).not.toContain('su-first');
+  });
+
+  it('reads a MEASURED no-object as no claim, and a NULL block as unread — never the same thing', () => {
+    const measuredAbsence = projectGateRepairOwner(unownedCell('gate-red-streak:papercusp'), NOW);
+    expect(measuredAbsence?.claimState).toBe('no-object');
+    const composed = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: measuredAbsence,
+    });
+    // A measured "nobody owns it" must NOT invent a claim to name.
+    expect(composed.state).toBe('owner-gone');
+    expect(composed.label).not.toContain('gate singleton');
+
+    // And an unread one degrades to the fixer verdict with the block explicitly null.
+    const unread = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(null, NOW),
+    });
+    expect(unread.repairOwner).toBeNull();
+    expect(unread.state).toBe('owner-gone');
+  });
+
+  it('is idempotent — composing twice cannot promote a composite into the fixer verdict', () => {
+    const once = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-h', 'live'), NOW),
+    });
+    const twice = composeGateRedOwnership({
+      fixer: once,
+      repairOwner: projectGateRepairOwner(heldBy('su-h', 'live'), NOW),
+    });
+    expect(twice.fixerState).toBe('owner-gone');
+    expect(twice.state).toBe('owned-by-repair-holder');
+    expect(twice.label).toBe(once.label);
+  });
+
+  it('applies an executor cover only when nothing else covered, and never masks a holder', () => {
+    const executorCover = { label: 'OWNED — the live checkpoint run-lock is held by the canonical gate executor.' };
+
+    // Nothing else covers ⇒ the run-lock does.
+    const bare = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: null,
+      executorCover,
+    });
+    expect(bare.covered).toBe(true);
+    expect(bare.label).toBe(executorCover.label);
+    expect(bare.fixerState).toBe('owner-gone');
+
+    // A live holder outranks it — the specific owner is more actionable than "a run is up".
+    const withHolder = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['owner-gone']!),
+      repairOwner: projectGateRepairOwner(heldBy('su-i', 'live'), NOW),
+      executorCover,
+    });
+    expect(withHolder.state).toBe('owned-by-repair-holder');
+    expect(withHolder.label).toContain('su-i');
+
+    // And a stale verdict outranks BOTH.
+    const stale = composeGateRedOwnership({
+      fixer: describeGateRedOwnership(FIXER_CASES['verdict-stale']!),
+      repairOwner: null,
+      executorCover,
+    });
+    expect(stale.state).toBe('verdict-stale');
+  });
+
+  it('covers EVERY fixer-verdict x holder-liveness combination without ever losing the fixer state', () => {
+    // The exhaustive matrix the acceptance asks for. Two invariants hold in all 30 cells,
+    // and they are the two the substitution implementation broke:
+    //   1. fixerState always survives the composition.
+    //   2. `covered` is true iff the fixer covered OR a positively-live holder exists
+    //      (with verdict-stale short-circuiting to the fixer's own answer).
+    const holders: Array<[string, CellOwnership | null]> = [
+      ['none', null],
+      ['no-object', unownedCell('gate-red-streak:papercusp')],
+      ['held-live', heldBy('su-x', 'live')],
+      ['held-ended', heldBy('su-x', 'ended')],
+      ['held-suspect', heldBy('su-x', 'suspect')],
+      ['lease-expired', cell({ workItem: 'WI-9', claimState: 'lease-expired', takenBy: 'su-x' })],
+    ];
+    const fixerStates = (Object.keys(FIXER_CASES) as GateRedOwnershipState[]).filter(
+      (s) => FIXER_CASES[s] !== null,
+    );
+    expect(fixerStates).toHaveLength(6);
+
+    for (const fs of fixerStates) {
+      const fixer = describeGateRedOwnership(FIXER_CASES[fs]!);
+      expect(fixer.state, `fixture for ${fs} produces ${fixer.state}`).toBe(fs);
+
+      for (const [name, ownership] of holders) {
+        const repairOwner = projectGateRepairOwner(ownership, NOW);
+        const composed = composeGateRedOwnership({ fixer, repairOwner });
+        const label = `${fs} x ${name}`;
+
+        expect(composed.fixerState, label).toBe(fs);
+        const holderLive = repairOwner?.live === true;
+        const expectedCovered = fs === 'verdict-stale' ? fixer.covered : fixer.covered || holderLive;
+        expect(composed.covered, `${label}: covered`).toBe(expectedCovered);
+
+        // The headline invariant: an UNCOVERED verdict may never read as a bare
+        // claim-it invitation while a live holder is on the item.
+        if (holderLive && fs !== 'verdict-stale') {
+          expect(composed.label, `${label}: label`).not.toMatch(/Claim it before investigating/);
+          expect(composed.label, `${label}: label`).not.toMatch(/Claim this red before investigating/);
+        }
+      }
+    }
   });
 });

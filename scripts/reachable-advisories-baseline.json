@@ -1,0 +1,96 @@
+{
+  "$comment": [
+    "SHRINK-ONLY baseline for scripts/check-reachable-advisories.mjs (plan",
+    "security-boundary-remediation-and-usability-2026-09-04, P-007).",
+    "",
+    "`accepted` is the flat list the analyzer reads: a shipping high/critical advisory",
+    "listed here does not fail --strict. `entries` carries the REASON for each, which is",
+    "the part a reviewer needs and the derivation cannot supply.",
+    "",
+    "This list may only SHRINK. Fixing an advisory removes its entry (the gate reports a",
+    "still-listed-but-resolved entry as STALE). A NEW shipping high/critical advisory must",
+    "be patched, not appended — appending is how a gate becomes a parking lot. Re-seed only",
+    "from `node scripts/check-reachable-advisories.mjs --list`, never from a hand grep.",
+    "",
+    "Seeded 2026-09-05 from a measured run: 99 total advisories, 9 gating, 22 non-shipping",
+    "only, 12 unattributed (failed closed as shipping)."
+  ],
+  "seededAt": "2026-09-05",
+  "seededFrom": "npm audit --omit=dev --json + npm ls --omit=dev --all --json, attributed by workspace",
+  "accepted": [
+    "@browserbasehq/stagehand",
+    "d3",
+    "d3-color",
+    "js-yaml",
+    "langsmith",
+    "lodash-es",
+    "markmap-view",
+    "nanoid",
+    "style-dictionary"
+  ],
+  "entries": {
+    "@browserbasehq/stagehand": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "npm reports a patch-compatible fix. Queued for the P-007 patch pass; no semver-major upgrade required.",
+      "owners": ["@papercusp/testing-shell", "@papercusp/web"]
+    },
+    "langsmith": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "owners": ["@papercusp/testing-shell", "@papercusp/web"]
+    },
+    "lodash-es": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "owners": ["@papercusp/web"]
+    },
+    "style-dictionary": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "Patch-compatible fix available. Queued for the P-007 patch pass.",
+      "owners": ["@papercusp/token-kit"]
+    },
+    "d3": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "Only fix is d3@7.9.0, a semver-major upgrade. P-007 explicitly excludes forced feature-removing upgrades, so this is deferred pending a compatibility assessment of the chart/graph surfaces.",
+      "owners": ["@papercusp/web"]
+    },
+    "d3-color": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "Transitive via d3; same semver-major upgrade as d3. Resolves when d3 is assessed.",
+      "owners": ["@papercusp/web"]
+    },
+    "js-yaml": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "Only fix routes through @mdxeditor/editor@4.2.3, a semver-major editor upgrade. Deferred: the editor surface is feature-bearing and P-007 forbids forcing it.",
+      "owners": [
+        "@papercupai/operator-docs",
+        "@papercusp/docs-engine",
+        "@papercusp/operator-core",
+        "@papercusp/web"
+      ]
+    },
+    "markmap-view": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "Only fix is markmap-view@0.18.12, semver-major. Deferred pending mindmap-rendering compatibility assessment.",
+      "owners": ["@papercusp/web"]
+    },
+    "nanoid": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "Only fix routes through @excalidraw/excalidraw@0.17.6, semver-major. Deferred; excalidraw is a feature-bearing canvas surface.",
+      "owners": [
+        "@papercup/marketplace-public-ui",
+        "@papercusp/operator-core",
+        "@papercusp/web"
+      ]
+    }
+  }
+}

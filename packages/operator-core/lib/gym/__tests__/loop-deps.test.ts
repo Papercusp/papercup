@@ -145,6 +145,24 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
     expect(worstTraces.map((w) => w.taskId)).toEqual(['t-train-lo', 't-train-hi']);
   });
 
+  it('attaches all known pipeline and judge spend to a partial evaluation error', async () => {
+    let judgeCalls = 0;
+    const judgeCall: JudgeLlmCall = async (opts) => {
+      judgeCalls++;
+      if (judgeCalls === 2) {
+        throw Object.assign(new Error('judge failed after dispatch'), { costUsd: 0.07 });
+      }
+      return fakeJudge(opts);
+    };
+    const { deps } = makeDeps({ judgeCall });
+
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toMatchObject({
+      // First task completed ($0.50 pipeline + $0.10 judge), then the second
+      // task's pipeline ran ($0.50) before its $0.07 judge failure.
+      costUsd: PIPELINE_USD + JUDGE_USD + PIPELINE_USD + 0.07,
+    });
+  });
+
   it('probe evidence FAILS when a probe task does not catch its planted bug', async () => {
     const { deps } = makeDeps({}, { ...ALL_MEASURED, 't-probe': { regressions: false, planted_bug_caught: false } });
     const { evalResult } = await deps.evaluate('baseline', { promptOverrides: {} });

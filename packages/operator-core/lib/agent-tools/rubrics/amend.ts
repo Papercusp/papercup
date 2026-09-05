@@ -18,7 +18,7 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Amend ONE criterion prose field (model | method | driftMarkers | replication | title) and/or set the rubric-level methodRef — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+    "Amend ONE criterion prose field (model | method | driftMarkers | replication | title), set the rubric-level methodRef, and/or replace unpinned composition refs — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). Composition refs must name existing standard rubrics and are resolved at write time; omit composes to preserve the stored list. For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
   guidance: {
     when: "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
     notWhen:
@@ -52,6 +52,14 @@ export default defineTool({
         "set one criterion's grading class (P-008). UPGRADE-ONLY here: tagging 'violatable' tightens grading, so it keeps status + ratifier; downgrading a stored 'violatable' is refused — use rubrics:propose with classDowngradeReason",
       ),
     methodRef: z.string().max(200).optional().describe('set/replace the agent-insights runbook slug for the rubric-level method'),
+    composes: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(16)
+      .optional()
+      .describe(
+        'replace the unpinned composition refs with existing standard-kind rubric ids; omit to preserve the current list (revision pins are intentionally not supported)',
+      ),
     allowMethodShrink: z
       .boolean()
       .optional()
@@ -93,6 +101,7 @@ export default defineTool({
       ...(args.criterion ? { criterion: args.criterion } : {}),
       ...(args.criterionClass ? { criterionClass: args.criterionClass } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
+      ...(args.composes !== undefined ? { composes: args.composes } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
       ...(args.shrinkReason !== undefined ? { shrinkReason: args.shrinkReason } : {}),
       ...(args.reason !== undefined ? { reason: args.reason } : {}),

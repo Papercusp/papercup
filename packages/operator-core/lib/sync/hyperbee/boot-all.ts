@@ -44,6 +44,7 @@ import {
 } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
 import type { MergeCursorStore } from './read-merge';
+import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
 import { refreshOutboxEpochEncryptForHarness, wireOutboxForHarness } from './wire-outbox';
 import { wirePresenceAnnounceForHarness } from './wire-presence';
@@ -192,15 +193,40 @@ let defaultMergeCursorStoreFactory: ((workspaceId: string, harnessSlug: string) 
 const SUBSTRATE_ROUTING_WAIT_MS = 300_000;
 let routingDecisionPending: Promise<void> | null = null;
 let resolveRoutingDecision: (() => void) | null = null;
+// A migration-gated host can decide that substrate routing is unavailable
+// before `bootSubstrateWithFallback()` ever runs. Keep that decision separate
+// from the pending promise: otherwise every standalone boot waits the full
+// five-minute timeout and then silently takes the in-process path with no
+// durable cursor store (the WI-2144760 failure mode).
+let routingDecisionFailure: string | null = null;
 
 /** Arm the routing latch. Call ONLY from a process that will later run
  *  `bootSubstrateWithFallback` (which settles it via setSubstrateBootDefaults),
  *  BEFORE any subsystem that could issue a bootSingleHarness starts. */
 export function markSubstrateBootRoutingPending(): void {
+  // A failed migration gate is terminal for this boot. Do not let a late
+  // dynamic import of the normal pending marker resurrect the latch and put
+  // callers back into the five-minute timeout path.
+  if (routingDecisionFailure) return;
   if (routingDecisionPending) return;
   routingDecisionPending = new Promise<void>((resolve) => {
     resolveRoutingDecision = resolve;
   });
+}
+
+/**
+ * Mark substrate routing unavailable for the current host boot.
+ *
+ * `host-bootstrap` withholds all schema-dependent background machinery when a
+ * migration is pending or fails. Any standalone `bootSingleHarness` caller
+ * arriving in that window must fail closed immediately; waiting for the
+ * timeout and booting in-process would both duplicate a possible sidecar and
+ * bypass WI-3297's PG merge-cursor injection.
+ */
+export function markSubstrateBootRoutingFailed(reason: string): void {
+  const detail = reason.trim() || 'substrate routing was not decided because boot migrations did not complete';
+  routingDecisionFailure = detail;
+  settleSubstrateBootRouting();
 }
 
 function settleSubstrateBootRouting(): void {
@@ -226,6 +252,9 @@ export function setSubstrateBootDefaults(opts: {
    *  the sidecar host constructs its own store on its side of the IPC. */
   mergeCursorStoreFactory?: ((workspaceId: string, harnessSlug: string) => MergeCursorStore) | null;
 }): void {
+  // A later successful routing decision (for example, a retry after the
+  // migration is repaired) supersedes the fail-closed marker.
+  routingDecisionFailure = null;
   if (opts.bootHarness !== undefined) defaultBootHarness = opts.bootHarness;
   if (opts.skipSendSideWiring !== undefined) defaultSkipSendSideWiring = opts.skipSendSideWiring;
   if (opts.mergeCursorStoreFactory !== undefined) defaultMergeCursorStoreFactory = opts.mergeCursorStoreFactory;
@@ -239,6 +268,7 @@ export function _resetSubstrateBootDefaultsForTests(): void {
   defaultBootHarness = null;
   defaultSkipSendSideWiring = false;
   defaultMergeCursorStoreFactory = null;
+  routingDecisionFailure = null;
   settleSubstrateBootRouting();
 }
 
@@ -820,6 +850,19 @@ export async function bootSingleHarness(
   } = {},
 ): Promise<BootSingleResult> {
   const k = key(workspaceId, harnessSlug);
+  let routingTimedOut = false;
+  // A failed migration gate is an explicit routing decision, not an invitation
+  // to wait out SUBSTRATE_ROUTING_WAIT_MS. The host has withheld the
+  // schema-dependent background plane; starting a local engine here could
+  // duplicate a sidecar and would run without the durable cursor contract.
+  if (!opts.bootHarness && routingDecisionFailure) {
+    return {
+      workspaceId,
+      harnessSlug,
+      state: 'failed',
+      error: `substrate routing unavailable: ${routingDecisionFailure}`,
+    };
+  }
   // WI-2105: a boot arriving before this process's substrate routing is decided
   // (host-bootstrap armed the latch; bootSubstrateWithFallback hasn't installed
   // the defaults yet) WAITS — defaulting to in-process here is exactly the
@@ -833,11 +876,24 @@ export async function bootSingleHarness(
       }),
     ]);
     if (outcome === 'timeout') {
+      routingTimedOut = true;
       console.error(
         `[boot-all] substrate routing still undecided after ${SUBSTRATE_ROUTING_WAIT_MS}ms — ` +
           `booting ${k} IN-PROCESS (duplicate-engine risk; check bootSubstrateWithFallback)`,
       );
     }
+  }
+  // The failure can be published while the caller was waiting on the latch.
+  // Re-check after the await so a migration error cannot fall through to the
+  // timeout fallback merely because this call started a few milliseconds
+  // earlier than the failure notification.
+  if (!opts.bootHarness && routingDecisionFailure) {
+    return {
+      workspaceId,
+      harnessSlug,
+      state: 'failed',
+      error: `substrate routing unavailable: ${routingDecisionFailure}`,
+    };
   }
   // SUBSTRATE_SIDECAR routing: an explicit per-call opt wins; else the process-global
   // default (set by bootSubstrateWithFallback). In sidecar mode this is the remote
@@ -945,6 +1001,12 @@ export async function bootSingleHarness(
   const frozenGraceMs =
     opts.frozenGraceMs ?? (Number.isFinite(envFrozenGraceMs) && envFrozenGraceMs > 0 ? envFrozenGraceMs : undefined);
   const resolver = opts.resolveSwarmBinding ?? defaultResolveSwarmBinding;
+  // If the routing latch itself timed out, this is the documented last-resort
+  // in-process path. Preserve WI-3297's restart durability there as well: the
+  // normal wrapper could not install its process-global factory because it was
+  // the component that failed to reach this decision point. The factory is
+  // only used for the timeout fallback and remains opt-out when a caller has
+  // explicitly installed a different factory.
   // WI-1892: keep a reference to the RAW boot promise (not the raced one) so a
   // boot that outlives the timeout can be ADOPTED instead of zombified — see the
   // catch below. Without this, the detached boot keeps the corestore lock + the
@@ -956,9 +1018,11 @@ export async function bootSingleHarness(
     // WI-3297: durable merge-cursor for the DEFAULT in-process engine only. An
     // explicit override or an installed sidecar factory builds/owns its own
     // (or deliberately goes without — tests), so it is never injected there.
+    const mergeCursorStoreFactory =
+      defaultMergeCursorStoreFactory ?? (routingTimedOut ? createPgMergeCursorStore : null);
     const mergeCursorStore =
-      bootHarness === bootHarnessSubstrate && defaultMergeCursorStoreFactory
-        ? defaultMergeCursorStoreFactory(workspaceId, harnessSlug)
+      bootHarness === bootHarnessSubstrate && mergeCursorStoreFactory
+        ? mergeCursorStoreFactory(workspaceId, harnessSlug)
         : undefined;
     rawBoot = bootHarness({
       workspaceRoot,

@@ -161,6 +161,14 @@ export const rubricsProposeArgs = z.object({
     .describe(
       'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
     ),
+  composes: z
+    .array(z.string().trim().min(1))
+    .min(1)
+    .max(16)
+    .optional()
+    .describe(
+      'unpinned composition refs: reusable standard-kind rubrics this rubric composes; each ref is resolved at write time and each rubric evolves independently (omit revision pins)',
+    ),
   characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
   title: hardText(LIMITS.SHORT_TITLE),
   description: hardText(8000).optional(),
@@ -327,6 +335,7 @@ export default defineTool({
       ...(args.subjectPlan ? { subjectPlan: args.subjectPlan } : {}),
       ...(args.subjectGoal ? { subjectGoal: args.subjectGoal } : {}),
       ...(args.classRef ? { classRef: args.classRef } : {}),
+      ...(args.composes !== undefined ? { composes: args.composes } : {}),
       characteristic: args.characteristic,
       title: args.title,
       description: args.description,

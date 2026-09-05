@@ -108,6 +108,23 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
     if (parsed.success) expect(parsed.data.methodRef).toBeNull();
   });
 
+  it('accepts unpinned standard-rubric composition refs and rejects revision-shaped refs', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      composes: [' goal-mode-e2e ', 'pot-coordination-health'],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.composes).toEqual([' goal-mode-e2e ', 'pot-coordination-health']);
+
+    expect(
+      rubricsProposeArgs.safeParse({
+        ...base,
+        composes: [{ rubricRef: 'goal-mode-e2e', revision: 37 }],
+      }).success,
+    ).toBe(false);
+    expect(rubricsProposeArgs.safeParse({ ...base, composes: [] }).success).toBe(false);
+  });
+
   it('accepts the light acceptance profile only with a falsifier and structured check', () => {
     const parsed = rubricsProposeArgs.safeParse({
       ...base,

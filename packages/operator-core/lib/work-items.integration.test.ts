@@ -2553,6 +2553,94 @@ describe('unified work_items surface (real PG)', () => {
     expect(res.legs.warning).toContain('semantic leg blocked');
   });
 
+  // ── WI-9393 / D-018: corpus-coverage honesty ────────────────────────────────
+  //
+  // `legs` answers "did the semantic leg RUN". It cannot answer "did it run over a
+  // corpus that is actually embedded" — a leg running perfectly against a 60%-embedded
+  // table reports `status:'ran'` and is byte-indistinguishable from a healthy search.
+  // That is the residual silent miss these pin.
+  //
+  // The seam makes them deterministic: they assert the WIRING, never live coverage
+  // numbers, so a backfill landing overnight cannot turn them red.
+  //
+  // ⚠ CALIBRATION SET — the three below are each other's controls and differ in ONE
+  // input each. Do not "simplify" any away: make `searchWorkItems` always attach
+  // coverage and the lexical-only control fails; make it never attach and the first
+  // fails; make an unavailable read render healthy and the third fails.
+  const COVERAGE_SURFACE = 'harness_shared.work_items.embedding';
+  const coverageSnapshot = (pct: number) =>
+    new Map([
+      [
+        COVERAGE_SURFACE,
+        {
+          surface: COVERAGE_SURFACE,
+          observedAt: new Date(),
+          eligibleRows: 1000,
+          embeddedRows: Math.round(pct * 1000),
+          pct,
+          recentPct: null,
+          stale: false,
+          ageMs: 0,
+        },
+      ],
+    ]);
+
+  it('reports corpus coverage on a WANTED semantic leg — independently of whether the leg could run', async () => {
+    await wi.createWorkItem({ kind: 'bug', title: 'zharquid coverage', harness: 'papercup', createdBy: 'agA' });
+
+    // Deliberately a BLOCKED embedder: the two honesty signals are independent, and
+    // pinning that here also keeps this test off the ONNX model.
+    const res = await wi.searchWorkItems('zharquid', {
+      semantic: true,
+      embedderResolver: async () => null,
+      loadCoverage: async () => coverageSnapshot(0.6),
+    });
+
+    expect(res.legs.semantic.blocked).toBeTruthy();
+    // ...and SEPARATELY, the corpus itself is reported as under-embedded.
+    expect(res.coverage).toBeDefined();
+    expect(res.coverage?.verdict).toBe('degraded');
+    expect(res.coverage?.source).toBe('work_items:search');
+    // The surface asked about is the one the SQL actually reads. Both families resolve
+    // here: `harness_features_consolidated` is a VIEW over `harness_shared.work_items`
+    // sharing this very `embedding` column, so one surface covers both legs.
+    expect(res.coverage?.surfaces.map((s) => s.surface)).toEqual([COVERAGE_SURFACE]);
+  });
+
+  it('attaches NO coverage to a deliberate lexical-only search', async () => {
+    await wi.createWorkItem({ kind: 'bug', title: 'zharquid lexonly', harness: 'papercup', createdBy: 'agA' });
+
+    // The single differing input: the semantic leg was never wanted. Such a search is
+    // healthy by construction, so a corpus verdict on it would be noise, not honesty —
+    // the same reason `summariseLegs` does not flag `status:'not-run'` as degraded.
+    const res = await wi.searchWorkItems('zharquid', {
+      semantic: false,
+      loadCoverage: async () => coverageSnapshot(0.6),
+    });
+
+    expect(res.items.some((w) => w.title === 'zharquid lexonly')).toBe(true);
+    expect(res.coverage).toBeUndefined();
+  });
+
+  it('renders an unavailable coverage read as UNKNOWN — never as healthy', async () => {
+    await wi.createWorkItem({ kind: 'bug', title: 'zharquid unknown', harness: 'papercup', createdBy: 'agA' });
+
+    // A throwing read yields an EMPTY snapshot, which is the statement "we looked and
+    // know nothing" — distinct from "not assessed" (no key at all). D-018's binding
+    // constraint is that absence of evidence must never render as `healthy`.
+    const res = await wi.searchWorkItems('zharquid', {
+      semantic: true,
+      embedderResolver: async () => null,
+      loadCoverage: async () => {
+        throw new Error('coverage sampler unavailable');
+      },
+    });
+
+    expect(res.coverage?.verdict).toBe('unknown');
+    expect(res.coverage?.verdict).not.toBe('healthy');
+    expect(res.coverage?.unknownSurfaces).toContain(COVERAGE_SURFACE);
+  });
+
   it('cold semantic search returns lexical results, single-flights warmup, and reuses the warm embedder', async () => {
     await wi.createWorkItem({
       kind: 'bug',

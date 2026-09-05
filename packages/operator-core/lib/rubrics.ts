@@ -1610,7 +1610,9 @@ function buildRubricTemplateData(
     ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
-    ...(input.composes ? { composes: [...new Set(input.composes)] } : {}),
+    ...(input.composes !== undefined
+      ? { composes: normalizeRubricCompositionRefs(input.composes) }
+      : {}),
     ...(input.barSetHash ? { barSetHash: input.barSetHash } : {}),
     ...(input.barContract ? { barContract: input.barContract } : {}),
     characteristic: input.characteristic,
@@ -1657,6 +1659,68 @@ export interface AcceptanceLinkResolution {
   /** The resolved standard class, used to inherit its vocabulary for class-only
    * acceptance rubrics and to validate its current revision in read-side hashes. */
   classRubric: Pick<Rubric, 'ratingScale' | 'revision'> | null;
+}
+
+/**
+ * Normalize the unpinned composition list at the canonical rubric write boundary.
+ * The wire schema checks that entries are non-empty strings, but it deliberately
+ * does not rewrite them; keeping this tiny pure helper here makes every writer
+ * (propose, amend, and first-party seed) agree on whitespace and duplicate
+ * handling before the refs are persisted.
+ */
+export function normalizeRubricCompositionRefs(refs: readonly string[] | undefined): string[] | undefined {
+  if (refs === undefined) return undefined;
+  return [...new Set(refs.map((ref) => ref.trim()))];
+}
+
+/**
+ * Resolve and validate a rubric's composition edges before persisting them.
+ * Composition is intentionally UNPINNED: the edge stores only a rubric id, and
+ * the referenced rubric's current definition is read when grading. The target
+ * still must exist and be a reusable STANDARD rubric; acceptance rubrics are
+ * per-plan contracts and cannot be used as shared composition parents.
+ *
+ * This is kept separate from the acceptance-link guard because a standard rubric
+ * may compose another standard rubric without having a subject plan/goal. The
+ * helper fails closed when a read cannot resolve (getRubric returns null), so a
+ * malformed/dangling edge can never be written as if it were valid.
+ */
+async function assertRubricCompositionLinksResolve(
+  input: Pick<ProposeRubricInput, 'rubricId' | 'composes'>,
+): Promise<void> {
+  const refs = normalizeRubricCompositionRefs(input.composes);
+  if (!refs || refs.length === 0) return;
+
+  const rubricId = input.rubricId.trim();
+  const selfRef = refs.find((ref) => ref === rubricId);
+  if (selfRef) {
+    throw new Error(
+      `invalid_args: proposeRubric: rubric '${input.rubricId}' cannot compose itself ('${selfRef}') — ` +
+        'composition edges must point to a different reusable standard rubric',
+    );
+  }
+
+  const resolved = await Promise.all(refs.map(async (ref) => ({ ref, rubric: await getRubric(ref) })));
+  const missing = resolved.filter(({ rubric }) => !rubric).map(({ ref }) => ref);
+  if (missing.length > 0) {
+    throw new Error(
+      `invalid_args: proposeRubric: rubric '${input.rubricId}' composes unknown rubric(s): ${missing
+        .map((ref) => `'${ref}'`)
+        .join(', ')}. Each composition ref must resolve to an existing standard-kind rubric.`,
+    );
+  }
+
+  const nonStandard = resolved
+    .filter(({ rubric }) => rubric !== null && rubric.kind !== 'standard')
+    .map(({ ref, rubric }) => `${ref} (${rubric!.kind})`);
+  if (nonStandard.length > 0) {
+    throw new Error(
+      `invalid_args: proposeRubric: rubric '${input.rubricId}' composes non-standard rubric(s): ${nonStandard
+        .map((ref) => `'${ref}'`)
+        .join(', ')}. Composition refs must point to reusable standard-kind rubrics; acceptance rubrics are ` +
+        'subject-bound contracts, not composition parents.',
+    );
+  }
 }
 
 /**
@@ -2099,6 +2163,11 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // subjectPlan would never gate anything, silently.
   const links = kind === 'acceptance' ? await assertAcceptanceLinksResolve(input) : null;
   const stored = await getRubric(input.rubricId);
+  // Composition edges are unpinned, but they are not unchecked strings: every
+  // target must resolve to a reusable standard rubric before this document can
+  // be written. Keep this beside the acceptance-link guard so both identity
+  // edges fail before any plan lock/write side effect.
+  await assertRubricCompositionLinksResolve(input);
   // P-003: once a subject plan has adopted the BAR contract, the canonical
   // rubric writer also consults the shared snapshot before replacing it. The
   // pre-start phase intentionally permits METHOD-empty bars; it still refuses
@@ -2273,6 +2342,12 @@ export interface AmendRubricInput {
   };
   /** Set/replace the rubric-level runbook slug (agent-insights). */
   methodRef?: string;
+  /**
+   * Replace the rubric's unpinned composition references. Omit to preserve the
+   * stored composition. The refs are normalized (trimmed + de-duplicated) and
+   * validated against live standard-kind rubrics before the write.
+   */
+  composes?: string[];
   allowMethodShrink?: boolean;
   shrinkReason?: string;
   /** Authenticated actor for a BAR amendment; distinct from rubric authorship (`by`). */
@@ -2300,8 +2375,8 @@ export interface AmendRubricInput {
  * throws teaching errors on an unknown criterion key / an empty amendment.
  */
 export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): ProposeRubricInput {
-  if (!input.criterion && !input.criterionClass && input.methodRef === undefined) {
-    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, and/or methodRef');
+  if (!input.criterion && !input.criterionClass && input.methodRef === undefined && input.composes === undefined) {
+    throw new Error('amendRubric: nothing to amend — pass criterion, criterionClass, methodRef, and/or composes');
   }
 
   let criteria = stored.criteria;
@@ -2350,6 +2425,11 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
     ...(stored.subjectGoal ? { subjectGoal: stored.subjectGoal } : {}),
     ...(stored.classRef ? { classRef: stored.classRef } : {}),
+    ...(input.composes !== undefined
+      ? { composes: normalizeRubricCompositionRefs(input.composes) }
+      : stored.composes
+        ? { composes: [...stored.composes] }
+        : {}),
     ...(stored.barSetHash ? { barSetHash: stored.barSetHash } : {}),
     ...(stored.barContract ? { barContract: stored.barContract } : {}),
     characteristic: stored.characteristic,
@@ -2514,6 +2594,7 @@ async function amendAcceptanceBarRubric(
 
       const amended = applyRubricAmendment(stored, input);
       const built = buildRubricTemplateData(amended);
+      await assertRubricCompositionLinksResolve(amended);
       const actorId = (input.actorId ?? input.by ?? stored.createdBy ?? '').trim();
       const reason = (input.reason ?? `rubrics:amend ${input.rubricId}`).trim();
       const oldRubricRevision = Number(rubricRow.version);
@@ -2938,6 +3019,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       // as the read-modify-write itself.
       const amended = applyRubricAmendment(stored, input);
       const builtTemplateData = buildRubricTemplateData(amended);
+      await assertRubricCompositionLinksResolve(amended);
       const templateData = builtTemplateData.data;
       compatibilityAudit.current = builtTemplateData.compatibility;
       if (amended.kind === 'acceptance') {

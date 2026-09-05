@@ -7,8 +7,11 @@
  */
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
-import type { GateRedOwnership } from './release/gate-red-ownership';
-import { ownershipHeldByLiveHolder } from './coord/gate-ownership';
+import {
+  composeGateRedOwnership,
+  projectGateRepairOwner,
+  type GateRedOwnership,
+} from './release/gate-red-ownership';
 import { classifyReleaseParity } from './release-parity';
 
 export interface ReleaseTraceGate {
@@ -499,47 +502,53 @@ function manualCheckpointRunWithheld(
 }
 
 /**
- * Prefer the canonical gate owner over a historical release-fixer record.
+ * Compose the canonical gate owner WITH the historical release-fixer record.
  *
  * `gate.redOwner` comes from `last_fixer`, which is useful lineage for the
  * fixer-dispatch dedupe but can outlive that fixer.  The gate singleton and the
  * live run lock are the current execution authorities: when either says a live
  * red is already being handled, an obsolete fixer must not make this trace tell
  * every reader to claim the red again.
+ *
+ * ⚠ P-008 — this used to SUBSTITUTE, and that was the remaining half of the bug.
+ * It returned a synthetic `{ state:'owned-live', spawnId:null, ageMs:null }`, so a
+ * reader who learned "someone is on it" simultaneously lost "and the dispatched
+ * fixer is dead" — the actionable half, since a dead fixer beside a live holder is
+ * one that needs re-dispatching. It also fired ONLY on a positively-live holder, so
+ * a held claim whose holder read draining/suspect/unmeasured fell through to a BARE
+ * `owner-gone` naming no holder at all. Both are now decided by the one pure
+ * composer in `gate-red-ownership.ts`, which every gate-red surface calls, so this
+ * trace and the gate-red alert cannot render contradictory truth about one red.
  */
 function canonicalRedOwner(input: ReleaseTraceInput): GateRedOwnership | null {
-  if (input.gate.verdictStale || input.gate.consecutiveReds <= 0) return null;
+  const fixer = input.gate.redOwner ?? null;
+  if (!fixer || input.gate.consecutiveReds <= 0) return null;
 
-  const ownership = input.position.gate.ownership;
-  const canonicalHolderLive =
-    ownership?.eventKey.startsWith('gate-red-streak:') === true && ownershipHeldByLiveHolder(ownership);
   const checkpointRun = input.position.gate.checkpointRunInFlight;
   const checkpointRunLive =
     checkpointRun?.active === true &&
     (checkpointRun.activeSource === 'run-lock' || checkpointRun.activeSource === 'process-authority');
-  if (!canonicalHolderLive && !checkpointRunLive) return null;
-
-  const ownerText = canonicalHolderLive
-    ? `canonical gate singleton ${ownership?.workItem ?? '(work-item unavailable)'} is held by live ${
-        ownership?.takenBy ?? 'owner'
-      }`
-    : checkpointRun?.activeSource === 'process-authority'
+  const executorText =
+    checkpointRun?.activeSource === 'process-authority'
       ? 'the gate-authorized checkpoint process is live in its cgroup before candidate publication'
       : 'the live checkpoint run-lock is held by the canonical gate executor';
-  const runText = checkpointRunLive
-    ? `; checkpoint run is active${checkpointRun?.candidate ? ` on ${checkpointRun.candidate}` : ''}`
-    : '';
 
-  return {
-    state: 'owned-live',
-    covered: true,
-    spawnId: null,
-    ownerSignature: ownership?.eventKey ?? null,
-    ageMs: null,
-    label:
-      `OWNED — ${ownerText}${runText}. Do NOT start a parallel diagnosis; ` +
-      'await the canonical gate owner’s verdict via checkpoint:await and re-read release:trace.',
-  };
+  return composeGateRedOwnership({
+    fixer,
+    repairOwner: projectGateRepairOwner(input.position.gate.ownership, Date.now()),
+    // Independent of the fixer record's own staleness leg — see the composer's
+    // `verdictStale` doc for why the caller's verdict also suppresses promotion.
+    verdictStale: input.gate.verdictStale === true,
+    executorCover: checkpointRunLive
+      ? {
+          label:
+            `OWNED — ${executorText}; checkpoint run is active${
+              checkpointRun?.candidate ? ` on ${checkpointRun.candidate}` : ''
+            }. Do NOT start a parallel diagnosis; await the canonical gate owner’s verdict via ` +
+            'checkpoint:await and re-read release:trace.',
+        }
+      : null,
+  });
 }
 
 export function classifyReleaseWake(

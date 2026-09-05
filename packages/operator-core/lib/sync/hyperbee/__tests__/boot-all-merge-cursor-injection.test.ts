@@ -47,6 +47,8 @@ vi.mock('../boot', async (importOriginal) => {
 import { bootHarnessSubstrate } from '../boot';
 import {
   bootSingleHarness,
+  markSubstrateBootRoutingFailed,
+  markSubstrateBootRoutingPending,
   setSubstrateBootDefaults,
   _resetSubstrateBootDefaultsForTests,
   _resetHandleMapForTests,
@@ -75,6 +77,42 @@ afterEach(() => {
 });
 
 describe('WI-3297 merge-cursor-store injection (in-process boot path)', () => {
+  it('fails closed immediately when the migration-gated routing decision fails', async () => {
+    markSubstrateBootRoutingPending();
+    markSubstrateBootRoutingFailed('migration gate failed: 1111-acceptance-bar-contract-seed.sql');
+
+    const r = await bootSingleHarness('ws-migration-failed', 'harness-migration-failed', bootOpts);
+    expect(r.state).toBe('failed');
+    expect(r.error).toContain('migration gate failed');
+    // No in-process engine may start while host-bootstrap has withheld the
+    // schema-dependent background plane.
+    expect(bootSpy).not.toHaveBeenCalled();
+  });
+
+  it('routing-latch timeout fallback still injects a durable PG cursor store', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      markSubstrateBootRoutingPending();
+      const pending = bootSingleHarness('ws-routing-timeout', 'harness-routing-timeout', bootOpts);
+
+      // SUBSTRATE_ROUTING_WAIT_MS is intentionally 300s in production. Drive
+      // that exact timeout here so the regression covers the last-resort path
+      // without sleeping in the suite.
+      await vi.advanceTimersByTimeAsync(300_000);
+      const r = await pending;
+      expect(r.state).toBe('booted');
+      expect(bootSpy).toHaveBeenCalledTimes(1);
+      expect(bootSpy.mock.calls[0]![0].mergeCursorStore).toBeDefined();
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('substrate routing still undecided after 300000ms'),
+      );
+    } finally {
+      vi.useRealTimers();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('injects the installed factory into the default in-process boot', async () => {
     const store = fakeStore();
     const factory = vi.fn((_ws: string, _slug: string) => store);

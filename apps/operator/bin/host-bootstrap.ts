@@ -1501,6 +1501,28 @@ export function runBootstrap(): void {
             'The request plane may still start after its bounded gate timeout, but schema-dependent background machinery will stay off. ' +
             'Repair/apply the migration, then restart this host.',
         );
+        // WI-2144760: resolve the substrate-routing latch explicitly when the
+        // migration gate fails. Without this, an early standalone
+        // bootSingleHarness waits the full 300s latch timeout and then falls
+        // back to an in-process engine before bootSubstrateWithFallback can
+        // install WI-3297's durable PG merge-cursor factory (and can race a
+        // sidecar). The background plane is withheld, so fail closed and let
+        // the next host boot retry after the migration is repaired.
+        try {
+          const { markSubstrateBootRoutingFailed } = await import(
+            '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
+          );
+          markSubstrateBootRoutingFailed(`migration gate failed: ${failureSummary}`);
+        } catch (e) {
+          // The migration failure is already being surfaced above. Keep this
+          // secondary routing notification best-effort so a module-load issue
+          // cannot turn the request-plane fail-soft boot into an unhandled
+          // rejection.
+          console.warn(
+            '[boot-migrate] failed to publish substrate routing failure (non-fatal):',
+            e instanceof Error ? e.message : e,
+          );
+        }
         return;
       }
       // WI-5441/WI-5764 (public-release boot-window federation-capture-hole

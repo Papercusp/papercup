@@ -34,6 +34,20 @@ import { resolvePlanScope, type PlanSourceOpts } from './source';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
+// Embedding-coverage awareness (WI-9393). The SURFACE-level door, deliberately not
+// `assessSourceCoverage`: this classifier is not a `SearchSource`, and
+// SEARCH_SOURCE_SURFACES is asserted exhaustive in both directions against
+// SEARCH_SOURCES (coverage-gate.test.ts), so adding a key there would fail the suite.
+import {
+  assessSurfaceCoverage,
+  type CoverageSnapshot,
+  type SourceCoverageAssessment,
+} from '../../search/coverage-gate';
+
+/** The label this consumer's coverage verdict is reported under. */
+const PLAN_DEDUP_COVERAGE_SOURCE = 'plans:semantic-dedup';
+/** The one vector surface `querySimilaritiesReal`'s SQL reads. */
+const PLAN_DEDUP_SURFACES = ['harness_shared.harness_plans.embedding'] as const;
 /** Below this cosine similarity a token-flagged candidate is considered a
  *  DIFFERENT effort and cleared from the similar_exists refusal.
  *
@@ -58,6 +72,9 @@ export interface PlanConfirmDeps {
   resolveEmbedder: () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
   /** slug → similarity for the given slugs that HAVE a vector in `mode`'s space. */
   querySimilarities: (vec: number[], mode: string, slugs: string[], opts: PlanSourceOpts) => Promise<Map<string, number>>;
+  /** Test seam for the WI-9393 coverage assessment; injecting it also opts in
+   *  under vitest, where the assessment is otherwise inert. */
+  loadCoverage?: () => Promise<CoverageSnapshot>;
 }
 
 async function querySimilaritiesReal(
@@ -97,6 +114,21 @@ export interface ConfirmResult<T> {
   verdict: boolean;
   kept: Array<T & { similarity?: number }>;
   dropped: Array<T & { similarity: number }>;
+  /**
+   * WI-9393 / D-018: whether `harness_shared.harness_plans.embedding` — the column
+   * this classifier's SQL reads — is actually populated.
+   *
+   * NOTE THE DEGRADATION DIRECTION, which is the OPPOSITE of the dupe-guard's and
+   * work-item search's. A candidate with no stored vector is KEPT (see the header),
+   * so low coverage here never lets a duplicate plan through; it makes the refusal
+   * STICK when cosine could have cleared it. The failure is over-blocking — an agent
+   * told "a similar plan exists" for a plan that is genuinely distinct — so the
+   * verdict's value is explaining WHY a refusal could not be lifted.
+   *
+   * Absent when no assessment was attempted; an `unknown` verdict is the distinct
+   * statement "we looked and the sampler knows nothing".
+   */
+  coverage?: SourceCoverageAssessment;
 }
 
 /**
@@ -108,6 +140,61 @@ export interface ConfirmResult<T> {
  * embedder health.
  */
 export async function confirmSimilarPlans<T extends { slug: string }>(
+  proposed: { title: string; body?: string | null },
+  candidates: T[],
+  opts: PlanSourceOpts = {},
+  deps?: PlanConfirmDeps,
+): Promise<ConfirmResult<T>> {
+  const result = await confirmSimilarPlansCore(proposed, candidates, opts, deps);
+  // An empty candidate list asked no question, so there is nothing to explain.
+  if (candidates.length === 0) return result;
+  // DELIBERATELY outside the classifier and in its own try/catch: coverage is a
+  // diagnostic ABOUT the verdict and must never be able to cost us one. Note it is
+  // attached to the fail-open `verdict:false` results TOO — those are exactly the
+  // cases where the caller most needs to know whether the corpus was the problem.
+  try {
+    const snapshot = await loadPlanDedupCoverage(deps?.loadCoverage);
+    // `null` = do not assess at all (no key); an EMPTY map is the different statement
+    // "we looked and know nothing", which the shared logic renders as `unknown`.
+    if (snapshot === null) return result;
+    return {
+      ...result,
+      coverage: assessSurfaceCoverage(PLAN_DEDUP_COVERAGE_SOURCE, PLAN_DEDUP_SURFACES, snapshot),
+    };
+  } catch {
+    return result;
+  }
+}
+
+/** The snapshot for {@link PLAN_DEDUP_SURFACES}. A failed READ yields an EMPTY map,
+ *  which `assessSurfaceCoverage` already renders as `unknown` — never as healthy, and
+ *  never as a hand-written verdict object that could drift from the shared logic. */
+async function loadPlanDedupCoverage(
+  seam?: () => Promise<CoverageSnapshot>,
+): Promise<CoverageSnapshot | null> {
+  if (seam) {
+    try {
+      return await seam();
+    } catch {
+      return new Map();
+    }
+  }
+  // Inert under vitest unless a test injects the seam — same reasoning as the ONNX
+  // guard below: unrelated tool tests must not pay for a live org-PG read.
+  if (process.env.VITEST) return null;
+  try {
+    const [{ loadCoverageSnapshotCached }, { getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('../../search/coverage-gate'),
+      import('@papercusp/db-org'),
+      import('../../workspace-registry'),
+    ]);
+    return await loadCoverageSnapshotCached(getOrgPg().sql, activeWorkspaceId());
+  } catch {
+    return new Map();
+  }
+}
+
+async function confirmSimilarPlansCore<T extends { slug: string }>(
   proposed: { title: string; body?: string | null },
   candidates: T[],
   opts: PlanSourceOpts = {},
