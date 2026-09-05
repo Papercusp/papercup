@@ -26,6 +26,7 @@ import { toolReachabilityHint } from '../_tool-reachability';
 import {
   assumptionsArg,
   hasAssumptionDeclaration,
+  normalizePersistedAssumptionDeclaration,
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
   TERMINAL_CLOSE_RECOVERY_HINT,
@@ -143,7 +144,7 @@ const terminalItem = itemBase.extend({
   // that already carries `completionRef`, so BOTH requirements render in the one
   // schema shape the model sees — evidence for the claim, and the assumptions the
   // claim rests on. Non-terminal writes carry neither field at all.
-  assumptions: assumptionsArg,
+  assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg),
 }).superRefine((it, ctx) => {
   rejectCompletionRefAliasConflict(it, ctx);
   if (resolveCompletionRefAlias(it) === undefined) {
@@ -210,8 +211,8 @@ export default defineTool({
       // own per-item value. The requirement for the inline / ids[] shorthand is closed
       // by the refine below — without it the gate would MOVE to the shorthand, which is
       // the cheaper call and would therefore carry all the traffic.
-      assumptions: assumptionsArg
-        .optional()
+      assumptions: z
+        .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
         .describe('assumption declaration applied to the inline id / every id in `ids` (see itemSpec.assumptions)'),
       force: z
         .boolean()
