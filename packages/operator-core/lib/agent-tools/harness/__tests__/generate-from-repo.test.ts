@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   resolveUpstreamRepoSource: vi.fn(),
   mutateHarnessRegistry: vi.fn(),
   seedGitSyncRoutineForMember: vi.fn(),
+  claimPendingMcpResult: vi.fn(),
+  finalizePendingMcpResult: vi.fn(),
+  recordFromRepoStep: vi.fn(),
 }));
 
 vi.mock('../create', () => ({ default: { handler: mocks.createHandler } }));
@@ -32,12 +35,25 @@ vi.mock('../../../harness-registry', () => ({
 vi.mock('../../../harness/git-sync/git-sync-routine', () => ({
   seedGitSyncRoutineForMember: mocks.seedGitSyncRoutineForMember,
 }));
+vi.mock('../../../endpoint-route/routes/transport/_mcp-result-replay', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    claimPendingMcpResult: mocks.claimPendingMcpResult,
+    finalizePendingMcpResult: mocks.finalizePendingMcpResult,
+  };
+});
+vi.mock('../../../harness/from-repo-progress', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, recordFromRepoStep: mocks.recordFromRepoStep };
+});
 
 const CTX = { log() {}, workspaceId: 'ws', role: 'operator' } as never;
-const run = async (args: Record<string, unknown>) => {
-  const res = (await tool.handler(args as never, CTX)) as { content: { text: string }[] };
+const run = async (args: Record<string, unknown>, ctx = CTX) => {
+  const res = (await tool.handler(args as never, ctx)) as { content: { text: string }[] };
   return JSON.parse(res.content[0].text);
 };
+const flushImmediate = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const created: string[] = [];
 function fixture(files: Record<string, string>): string {
@@ -161,5 +177,167 @@ describe('harness:generate-from-repo', () => {
       },
       joinerSide: false,
     });
+  });
+
+  it('accepts an idempotent MCP create before async detection/test verification completes', async () => {
+    const root = fixture({
+      'package.json': JSON.stringify({
+        name: 'slow-mobile',
+        scripts: { test: 'node -e "setTimeout(() => {}, 150)"' },
+      }),
+      'package-lock.json': '',
+    });
+    const dispatchTool = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      expect(name).toBe('harness:create');
+      expect(args).toMatchObject({ slug: 'slow-mobile', path: root });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ ok: true, slug: 'slow-mobile', path: root, provisioning: { ok: true } }),
+          },
+        ],
+      };
+    });
+    let pending: Record<string, unknown> | undefined;
+    mocks.claimPendingMcpResult.mockImplementation(async (input: { result: Record<string, unknown> }) => {
+      pending = input.result;
+      return { claimed: true, pending: true, result: input.result };
+    });
+    mocks.finalizePendingMcpResult.mockResolvedValue(true);
+    const ctx = {
+      ...CTX,
+      transport: 'mcp',
+      idempotencyKey: 'generate-slow-1',
+      uiClientId: 'client-1',
+      spawnId: 'spawn-1',
+      dispatchTool,
+      emit: vi.fn(),
+      progress: vi.fn(),
+    } as never;
+
+    const startedAt = Date.now();
+    const r = await run(
+      { slug: 'slow-mobile', path: root, dryRun: false, runTests: true, testTimeoutMs: 300_000 },
+      ctx,
+    );
+
+    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(r).toMatchObject({
+      ok: true,
+      accepted: true,
+      status: 'in_progress',
+      slug: 'slow-mobile',
+    });
+    expect(typeof r.progressId).toBe('string');
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(mocks.claimPendingMcpResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerKey: 'client-1',
+        idempotencyKey: 'generate-slow-1',
+        toolName: 'harness:generate-from-repo',
+        workspaceId: 'ws',
+        result: expect.objectContaining({
+          _meta: expect.objectContaining({
+            state: 'pending',
+            progressId: r.progressId,
+          }),
+        }),
+      }),
+    );
+
+    const completionDeadline = Date.now() + 3_000;
+    while (!mocks.finalizePendingMcpResult.mock.calls.length && Date.now() < completionDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(pending).toBeDefined();
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+    expect(mocks.finalizePendingMcpResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerKey: 'client-1',
+        idempotencyKey: 'generate-slow-1',
+        toolName: 'harness:generate-from-repo',
+        workspaceId: 'ws',
+        result: expect.objectContaining({
+          content: [
+            expect.objectContaining({
+              text: expect.stringContaining('"ok":true'),
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(mocks.recordFromRepoStep).toHaveBeenCalledWith(
+      r.progressId,
+      'detect',
+      'running',
+      expect.any(Object),
+    );
+    expect(mocks.recordFromRepoStep).toHaveBeenCalledWith(
+      r.progressId,
+      'seed',
+      'done',
+      expect.any(Object),
+    );
+  });
+
+  it('does not launch a duplicate background create when the same idempotency key is retried while pending', async () => {
+    const root = fixture({
+      'package.json': JSON.stringify({ name: 'retry-mobile', scripts: { test: 'true' } }),
+      'package-lock.json': '',
+    });
+    const dispatchTool = vi.fn(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ ok: true, slug: 'retry-mobile', path: root, provisioning: { ok: true } }),
+        },
+      ],
+    }));
+    const pendingResults: Record<string, unknown>[] = [];
+    mocks.claimPendingMcpResult
+      .mockImplementationOnce(async (input: { result: Record<string, unknown> }) => {
+        pendingResults.push(input.result);
+        return { claimed: true, pending: true, result: input.result };
+      })
+      .mockImplementationOnce(async () => ({
+        claimed: false,
+        pending: true,
+        result: pendingResults[0],
+      }));
+    mocks.finalizePendingMcpResult.mockResolvedValue(true);
+    const ctx = {
+      ...CTX,
+      transport: 'mcp',
+      idempotencyKey: 'generate-retry-1',
+      uiClientId: 'client-retry',
+      spawnId: 'spawn-retry',
+      dispatchTool,
+      emit: vi.fn(),
+      progress: vi.fn(),
+    } as never;
+
+    const first = await run(
+      { slug: 'retry-mobile', path: root, dryRun: false, runTests: false, testTimeoutMs: 300_000 },
+      ctx,
+    );
+    const second = await run(
+      { slug: 'retry-mobile', path: root, dryRun: false, runTests: false, testTimeoutMs: 300_000 },
+      ctx,
+    );
+
+    expect(first).toMatchObject({ accepted: true, status: 'in_progress' });
+    expect(second).toMatchObject({ accepted: true, status: 'in_progress', progressId: first.progressId });
+    expect(dispatchTool).not.toHaveBeenCalled();
+
+    await flushImmediate();
+    await flushImmediate();
+    const completionDeadline = Date.now() + 2_000;
+    while (!mocks.finalizePendingMcpResult.mock.calls.length && Date.now() < completionDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+    expect(mocks.claimPendingMcpResult).toHaveBeenCalledTimes(2);
+    expect(mocks.finalizePendingMcpResult).toHaveBeenCalledTimes(1);
   });
 });
