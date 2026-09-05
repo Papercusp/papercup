@@ -21,6 +21,8 @@
  * the fix for the hole D-045 found: a PAID listing can no longer be installed
  * without an entitlement check, because it is refused outright.
  */
+import { pinModuleState } from '@papercusp/module-singleton';
+
 import { createProviderRegistry } from '../p2p/artifact-package';
 import { memoryArtifactStore } from './artifact-store';
 import {
@@ -37,6 +39,42 @@ import type { ListingKind } from './types';
 export type DoorListingFactsResult =
   | { readonly ok: true; readonly listing: DoorListingFacts }
   | { readonly ok: false; readonly error: string; readonly status: number };
+
+export interface InstallDoorSources {
+  /** Resolves the commerce facts the gate decides on. Defaults to `loadDoorListingFacts`. */
+  readonly loadListingFacts?: (
+    idOrRef: string,
+    kind: ListingKind,
+  ) => Promise<DoorListingFactsResult> | DoorListingFactsResult;
+  /** Builds the gate's collaborators. Defaults to `installDoorGateDeps`. */
+  readonly gateDeps?: () => InstallDoorGateDeps;
+}
+
+const installIoState = pinModuleState('@papercusp/operator-core.cupboard.install-door-io', () => ({
+  sources: null as InstallDoorSources | null,
+}));
+
+/**
+ * Register where this process's install doors read listings and entitlements.
+ *
+ * The commerce-side twin of `configureCommerceIo`, and it exists for the same
+ * reason: `installDoorGateDeps()` builds REAL-but-empty collaborators (see its
+ * header), so every install door's entitlement branch is unreachable in a test
+ * that drives the door rather than the gate. Registering here lets P-012 run the
+ * purchase -> entitlement -> install -> refund -> revoke -> install-refused
+ * journey through the actual door handlers instead of re-implementing them.
+ *
+ * `null` restores the production default; a test teardown MUST pass it, because
+ * the pin is process-wide.
+ */
+export function configureInstallDoorSources(sources: InstallDoorSources | null): void {
+  installIoState.sources = sources;
+}
+
+/** The sources currently registered, or null when the default is in force. */
+export function installDoorSources(): InstallDoorSources | null {
+  return installIoState.sources;
+}
 
 /**
  * Read the commerce facts the gate decides on from the listing row.
@@ -137,7 +175,10 @@ export async function gateInstallDoor(request: DoorGateRequest): Promise<Install
     };
   }
 
-  const facts = await loadDoorListingFacts(key, request.kind);
+  const facts = await (installIoState.sources?.loadListingFacts ?? loadDoorListingFacts)(
+    key,
+    request.kind,
+  );
   if (!facts.ok) {
     // The listing could not be read, so its price is unknown. The door's own
     // `*-io` core resolves the SAME listing and fails on the same condition, so
@@ -150,7 +191,7 @@ export async function gateInstallDoor(request: DoorGateRequest): Promise<Install
     };
   }
 
-  return gateCupboardInstall(installDoorGateDeps(), {
+  return gateCupboardInstall((installIoState.sources?.gateDeps ?? installDoorGateDeps)(), {
     listing: facts.listing,
     subject: request.subject,
     ...(request.operation ? { operation: request.operation } : {}),
