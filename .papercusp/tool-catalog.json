@@ -20967,7 +20967,7 @@
           "POST"
         ]
       },
-      "description": "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } if the plan was never started (op_status is null).",
+      "description": "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } when the plan is not operationally started — either never started (op_status null) or already finished on that axis (op_status 'done'); neither is re-entered.",
       "capabilities": [
         "plans:write"
       ],
