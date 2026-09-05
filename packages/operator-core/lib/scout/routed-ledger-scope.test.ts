@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ rendered: [] as string[] }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: ((strings: TemplateStringsArray, ...values: unknown[]) => {
       h.rendered.push(strings.reduce((acc, text, index) => acc + text + (index < values.length ? JSON.stringify(values[index] ?? null) : ''), ''));
