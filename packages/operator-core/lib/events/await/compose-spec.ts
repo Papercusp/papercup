@@ -145,6 +145,40 @@ export function normalizeRoot(spec: ComposedSpec): ComposedSpec {
   return c.kind === 'leaf' ? { all: [spec] } : spec;
 }
 
+/** Canonical JSON: object keys sorted so two equivalent values differing only in key order
+ *  serialize identically. Array order is PRESERVED (position is meaning in a `when` filter). */
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/**
+ * A stable identity for a spec: two specs that MEAN the same thing produce the same string.
+ * Used to supersede a caller's own prior pending registration on re-arm (EI-14793), the same
+ * way `cancelAwaitsForSubscribersOnKeys` keys the single-key path off the exact event key.
+ *
+ * Semantic, not syntactic, on the two axes that are genuinely free: sibling ORDER does not
+ * matter (`{any:[A,B]}` ≡ `{any:[B,A]}`, so child identities are sorted) and `when` key order
+ * does not matter (canonicalJson). The combinator's kind and threshold ARE part of the
+ * identity — `{any:[A,B]}` and `{all:[A,B]}` wait for different things and must never merge.
+ *
+ * Deliberately conservative on one axis: the leaf's event string is compared AS WRITTEN, not
+ * macro-expanded via resolveLeafKey. So `@plan:p` and its expansion read as different specs
+ * and fail to supersede each other. That is the safe failure direction — it degrades to
+ * today's behaviour (an extra live registration) rather than cancelling a wait the caller
+ * still needs, which would silently lose a wake.
+ */
+export function specIdentity(spec: ComposedSpec): string {
+  const c = classifyNode(spec);
+  if (c.kind === 'leaf') return `leaf:${JSON.stringify(c.event)}:${canonicalJson(c.when)}`;
+  return `${c.op}/${c.required}:[${c.children.map(specIdentity).sort().join(',')}]`;
+}
+
 /** Depth of a node (leaf = 1; combinator = 1 + max child depth). */
 export function specDepth(spec: ComposedSpec): number {
   const c = classifyNode(spec);

@@ -201,7 +201,7 @@ export default defineTool({
       'events:emit (the counterpart — fire the event a peer awaits)',
       'events:cancel (retract a pending await)',
       'watch:create (a standing watch instead of a one-shot await)',
-      'EI-14225: re-awaiting the SAME exact key auto-retires your own prior pending registration on it (see `superseded` in the response) — a repeated idle-park loop never has to call events:cancel first.',
+      'EI-14225/EI-14793: re-awaiting the SAME exact key — or re-registering the SAME composed `spec` — auto-retires your own prior pending registration on it (see `superseded` in the response), so a repeated idle-park loop never has to call events:cancel first.',
     ],
   },
   capability: 'coord:write',
@@ -359,6 +359,12 @@ export default defineTool({
                 depth: res.depth,
                 on_timeout: args.on_timeout ?? 'wake',
                 wake_handle: handleNote,
+                ...(res.superseded > 0
+                  ? {
+                      superseded: res.superseded,
+                      superseded_advice: `Retired ${res.superseded} of your own prior pending composed tree(s) on this identical spec — one-shot semantics mean only the NEWEST registration stays live, so an earlier tree can no longer fire a duplicate wake for the same underlying event.`,
+                    }
+                  : {}),
                 advice:
                   'Registered a composed threshold tree. End your turn now — you will be woken ONCE when the combination is satisfied (or at the deadline). The wake reports consumed:true because the whole tree is one-shot: an `any` match consumes and voids every sibling. Do not mix frequent/non-terminal events with rare/terminal events unless the first match is intentionally terminal; split those waits or use an explicit threshold. Re-register for the next occurrence. Cancel the whole tree with events:cancel { root_id }.',
               }),

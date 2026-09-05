@@ -9,6 +9,7 @@ import {
   normalizeRoot,
   resolveLeafKey,
   specDepth,
+  specIdentity,
   validateSpec,
   type ComposedSpec,
 } from './compose-spec';
@@ -124,5 +125,93 @@ describe('composedWakeSummary', () => {
   it('distinguishes a satisfied trip from a timeout', () => {
     expect(composedWakeSummary({ satisfied: true, firedCount: 2, leafCount: 3 })).toMatch(/consumed.*satisfied — 2\/3/);
     expect(composedWakeSummary({ satisfied: false, firedCount: 1, leafCount: 3 })).toMatch(/consumed.*timed out — only 1\/3/);
+  });
+});
+
+/**
+ * EI-14793: `specIdentity` is what lets a composed re-arm supersede the caller's own prior
+ * tree. Two directions matter and they fail differently, so both are pinned here:
+ *
+ *  - too NARROW (equivalent specs read as different) → no supersede → the reported bug
+ *    survives: roots accumulate and one event fires N wakes.
+ *  - too WIDE (different specs collide) → a re-arm cancels a tree the caller still needs
+ *    and a wake is LOST — silent, and strictly worse than the bug being fixed.
+ */
+describe('specIdentity', () => {
+  it('is stable across two separately-constructed but identical specs', () => {
+    // The reporter's actual idle-park spec, built twice.
+    const a: ComposedSpec = { any: [{ event: 'work-item:created:*' }, { event: 'work-item:unblocked:*' }] };
+    const b: ComposedSpec = { any: [{ event: 'work-item:created:*' }, { event: 'work-item:unblocked:*' }] };
+    expect(specIdentity(a)).toBe(specIdentity(b));
+  });
+
+  it('ignores sibling ORDER — {any:[a,b]} and {any:[b,a]} wait for the same thing', () => {
+    const ab: ComposedSpec = { any: [{ event: 'work-item:created:*' }, { event: 'work-item:unblocked:*' }] };
+    const ba: ComposedSpec = { any: [{ event: 'work-item:unblocked:*' }, { event: 'work-item:created:*' }] };
+    expect(specIdentity(ab)).toBe(specIdentity(ba));
+  });
+
+  it('ignores `when` KEY ORDER but not its content', () => {
+    const k1: ComposedSpec = { event: 'x', when: { 'args.a': 1, 'args.b': 2 } as never };
+    const k2: ComposedSpec = { event: 'x', when: { 'args.b': 2, 'args.a': 1 } as never };
+    expect(specIdentity(k1)).toBe(specIdentity(k2));
+
+    const different: ComposedSpec = { event: 'x', when: { 'args.a': 1, 'args.b': 99 } as never };
+    expect(specIdentity(k1)).not.toBe(specIdentity(different));
+  });
+
+  // ── the too-WIDE direction: each of these MUST stay distinct, or a re-arm eats a live wait
+  it('distinguishes combinator KIND — any is not all', () => {
+    const leaves: ComposedSpec[] = [{ event: 'a' }, { event: 'b' }];
+    expect(specIdentity({ any: leaves })).not.toBe(specIdentity({ all: leaves }));
+  });
+
+  it('distinguishes the some{} THRESHOLD', () => {
+    const of: ComposedSpec[] = [{ event: 'a' }, { event: 'b' }, { event: 'c' }];
+    expect(specIdentity({ some: { require: 2, of } })).not.toBe(specIdentity({ some: { require: 3, of } }));
+  });
+
+  it('distinguishes different leaf events, and a bare leaf from a filtered one', () => {
+    expect(specIdentity({ event: 'a' })).not.toBe(specIdentity({ event: 'b' }));
+    expect(specIdentity({ event: 'a' })).not.toBe(specIdentity({ event: 'a', when: { 'args.k': 'v' } as never }));
+  });
+
+  it('distinguishes a SUBSET from a superset — an extra branch is a different wait', () => {
+    const two: ComposedSpec = { any: [{ event: 'a' }, { event: 'b' }] };
+    const three: ComposedSpec = { any: [{ event: 'a' }, { event: 'b' }, { event: 'c' }] };
+    expect(specIdentity(two)).not.toBe(specIdentity(three));
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL (permanent, not a probe): a deliberately-weak identity that keys
+   * only on the SET of leaf events, ignoring combinator kind and threshold — the most likely
+   * way to write this function wrong. It must COLLIDE on exactly the cases the tests above
+   * separate. Without this, those `not.toBe` assertions could be passing for a reason no one
+   * has checked; with it, the cases are proven to discriminate rather than assumed to.
+   */
+  const leafSetIdentity = (spec: ComposedSpec): string =>
+    flattenLeaves(spec)
+      .map((l) => l.event)
+      .sort()
+      .join(',');
+
+  it('CONTROL: a leaf-set-only identity collides where specIdentity correctly separates', () => {
+    const leaves: ComposedSpec[] = [{ event: 'a' }, { event: 'b' }];
+    const of: ComposedSpec[] = [{ event: 'a' }, { event: 'b' }, { event: 'c' }];
+
+    // The weak implementation cannot tell these apart...
+    expect(leafSetIdentity({ any: leaves })).toBe(leafSetIdentity({ all: leaves }));
+    expect(leafSetIdentity({ some: { require: 2, of } })).toBe(leafSetIdentity({ some: { require: 3, of } }));
+
+    // ...and the real one does. If this pair ever agrees, the assertions above are vacuous.
+    expect(specIdentity({ any: leaves })).not.toBe(specIdentity({ all: leaves }));
+    expect(specIdentity({ some: { require: 2, of } })).not.toBe(specIdentity({ some: { require: 3, of } }));
+  });
+
+  it('agrees with normalizeRoot: a bare leaf and its wrapped form are one identity', () => {
+    // compose.ts computes identity on the NORMALIZED spec, so these must not diverge —
+    // otherwise a bare-leaf re-arm would never supersede its own prior registration.
+    const bare: ComposedSpec = { event: 'work-item:claimable' };
+    expect(specIdentity(normalizeRoot(bare))).toBe(specIdentity({ all: [bare] }));
   });
 });

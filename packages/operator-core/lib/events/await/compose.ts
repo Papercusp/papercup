@@ -20,15 +20,18 @@ import {
   flattenLeaves,
   normalizeRoot,
   resolveLeafKey,
+  specIdentity,
   validateSpec,
   type ComposedLeafSpec,
   type ComposedSpec,
 } from './compose-spec';
 import {
+  cancelComposedTree,
   insertComposedLeaf,
   insertInteriorNode,
   insertRootAnchor,
   insertRootNode,
+  listActiveComposedRoots,
 } from './compose-store';
 import { AWAIT_DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC, type TimeoutBehavior, type WakeHandle } from './types';
 
@@ -47,7 +50,16 @@ export interface RegisterComposedInput {
 }
 
 export type RegisterComposedResult =
-  | { registered: true; rootId: number; anchorAwaitId: number; leafCount: number; depth: number }
+  | {
+      registered: true;
+      rootId: number;
+      anchorAwaitId: number;
+      leafCount: number;
+      depth: number;
+      /** EI-14793: how many of the caller's OWN prior pending trees on this identical spec
+       *  were retired by this re-arm. 0 on a first registration. */
+      superseded: number;
+    }
   | { registered: false; alreadySatisfied: true; fired: Array<{ event: string }> };
 
 /** Birth state of a spec node, computed bottom-up before any row is written. */
@@ -120,6 +132,39 @@ export async function registerComposedAwait(input: RegisterComposedInput): Promi
     throw new Error('registerComposedAwait: normalized root is not a combinator');
   }
 
+  // ── EI-14793: retire the CALLER'S OWN prior pending tree(s) on this IDENTICAL spec before
+  // registering a new one — the composed half of the idempotent re-arm EI-14225 gave the
+  // single-key path. That fix landed in the tool surface (agent-tools/events/await.ts), which
+  // supersedes via cancelAwaitsForSubscribersOnKeys keyed on the exact event key; the composed
+  // `spec` branch returns to the caller BEFORE reaching it, so re-arming a tree left every
+  // earlier root live. Reported repro: an idle-park loop re-registering
+  // {any:[work-item:created:*, work-item:unblocked:*]} each wake accumulated roots 34/35/36/37,
+  // and ONE matching event then fired all four across 3 separate wake turns — three full turns
+  // re-reading session context for one underlying event.
+  //
+  // Same shape as the single-key fix on purpose: reuses the existing cancelComposedTree
+  // primitive (what events:cancel { root_id } already calls) rather than adding a mechanism,
+  // and runs only on the path about to register a fresh row — a born-satisfied spec returned
+  // above, so a tree the caller still needs is never cancelled in favour of nothing.
+  // Best-effort: a retirement failure must never block the new registration.
+  let superseded = 0;
+  try {
+    const identity = specIdentity(spec);
+    for (const prior of await listActiveComposedRoots(input.subscriberId)) {
+      if (prior.spec == null) continue;
+      let priorIdentity: string;
+      try {
+        priorIdentity = specIdentity(prior.spec as ComposedSpec);
+      } catch {
+        continue; // an unparseable stored spec is not a match — never a reason to cancel it
+      }
+      if (priorIdentity !== identity) continue;
+      if (await cancelComposedTree({ rootId: prior.id, subscriberId: input.subscriberId })) superseded += 1;
+    }
+  } catch {
+    /* best-effort — never let a retirement failure block the new registration */
+  }
+
   const timeoutSec = clampTimeout(input.timeoutSec);
   const root = await insertRootNode({
     subscriberId: input.subscriberId,
@@ -142,7 +187,7 @@ export async function registerComposedAwait(input: RegisterComposedInput): Promi
   // already counted in the seeded fired_count above / on each interior node below).
   await insertOpenChildren(birth.children, root.id, root.id, input.subscriberId, input.note ?? null);
 
-  return { registered: true, rootId: root.id, anchorAwaitId, leafCount: leaves.length, depth };
+  return { registered: true, rootId: root.id, anchorAwaitId, leafCount: leaves.length, depth, superseded };
 }
 
 async function insertOpenChildren(
