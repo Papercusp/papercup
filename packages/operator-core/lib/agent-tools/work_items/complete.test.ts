@@ -267,6 +267,85 @@ beforeEach(() => {
   attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
 });
 
+// ── EI-20286699547467039: unmet completion gates accumulate into ONE refusal ──────────
+// The contract gates used to be sequential early-returns, so a caller violating three of
+// them learned about them across three round-trips — one full model turn each. They now
+// all evaluate and report together. The three tests below are a matched set and should
+// stay that way: the accumulation test proves the feature, the CONTROL pins the
+// byte-identical single-gate invariant that keeps every pre-existing caller valid, and the
+// CALIBRATION proves the accumulator still lets a good completion through (without it, a
+// gate that refused unconditionally would pass the first two tests).
+describe('EI-20286699547467039 — unmet completion gates accumulate into one refusal', () => {
+  const bug = { id: 'WI-acc', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(bug);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'done' }));
+  });
+
+  it('names BOTH unmet gates in one refusal instead of only the first', async () => {
+    // `oneRaw` does not inject `assumptions` (unlike `one`), so this successful bug close
+    // leaves TWO independent gates unmet on the same call: assumptions and the causal record.
+    const r = await oneRaw({
+      id: 'WI-acc',
+      state: 'resolved',
+      completion: { summary: 'fixed the cache', tests: '5 green' },
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.unmetGateCount).toBe(2);
+    // Each gate's message survives VERBATIM, so the caller learns the whole contract in one
+    // turn and any consumer matching on a specific message still matches.
+    expect(r.error).toMatch(/a terminal close requires `assumptions`/);
+    expect(r.error).toMatch(/completion\.rootCauseVerification is missing/);
+    // The header must say the set is COMPLETE — otherwise the caller still cannot tell
+    // whether an N+1 gate is waiting behind the ones named, which is the whole defect.
+    expect(r.error).toMatch(/COMPLETE set as evaluated on this call/);
+    // Typed side-fields still travel individually, so structured consumers are unaffected.
+    expect(r.rootCauseVerificationError).toMatch(/completion\.rootCauseVerification is missing/);
+    // Still atomic: accumulating must not push the refusal past the write boundary.
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(r).not.toHaveProperty('completion');
+    expect(r).not.toHaveProperty('workItem');
+  });
+
+  it('CONTROL — a single unmet gate refuses byte-identically to before accumulation', async () => {
+    const r = await oneRaw({
+      id: 'WI-acc',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'fixed the cache', tests: '5 green' },
+    });
+
+    expect(r.ok).toBe(false);
+    // Exactly one gate unmet ⇒ `error` IS that gate's message, with no combined header and
+    // no count field. This is what keeps every existing caller, test, and memorised
+    // message valid; a regression here is a silent breaking change to the refusal contract.
+    expect(r.error).toBe(r.rootCauseVerificationError);
+    expect(r.unmetGateCount).toBeUndefined();
+    expect(r.error).not.toMatch(/COMPLETE set as evaluated on this call/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('CALIBRATION — a completion meeting both gates still closes', async () => {
+    const r = await oneRaw({
+      id: 'WI-acc',
+      state: 'resolved',
+      assumptions: 'none',
+      completion: {
+        summary: 'fixed the cache',
+        verifiedHow: 'automated-test',
+        testsRun: 'vitest complete.test.ts',
+        testResult: '5 green',
+        rootCauseVerification: ROOT_CAUSE_VERIFICATION_FIXTURE,
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.unmetGateCount).toBeUndefined();
+  });
+});
+
 describe('EI-18793465701838962 — contrastive root-cause verification gate', () => {
   const bug = { id: 'WI-root', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup' };
 
