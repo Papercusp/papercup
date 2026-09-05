@@ -281,10 +281,29 @@ function durableChangeRating(input: TerminalCriteriaInput, applies: boolean): Ad
  * verification and the criterion stands down. Measured on that population: catches 835,
  * false positives 0.
  *
- * Note what is deliberately NOT here: corroboration via `addedTests` (measured empty on all
- * 851 — it would be dead code resting on an assumption) and a filler-token stoplist for
- * `already passing tests` (no such value exists; the distribution is bare-token or genuinely
- * qualified, with nothing between). Both were designed, then killed by the measurement.
+ * Note what is deliberately NOT here, and WHY — the two reasons are different, and an
+ * earlier version of this comment got the first one wrong:
+ *
+ * - Corroboration via `addedTests` is NOT BUILT — a scope decision, NOT an impossibility.
+ *   ⚠ This comment previously claimed the field was "measured empty on all 851", i.e. that
+ *   the criterion would be dead code. That is RETRACTED and false. Measured 2026-09-05 over
+ *   closes carrying `payload->'_completionEvidence'` (harness papercusp, non-observation
+ *   lane, terminal-success, 14d, positive control passed): `addedTests` is `true` on 3,611
+ *   and `false` on 3,435 of 10,844 — populated on ~65%. The original probe read
+ *   `_completionEvidence->'verification'->'addedTests'`, which is NULL on 100% of rows
+ *   because the field lands TOP-LEVEL; an empty result there is an artifact of the path,
+ *   indistinguishable from a real absence. Whether to build the cross-check is therefore a
+ *   REOPENED design question, not a settled one. Full retraction + numbers:
+ *   plan `machine-enforced-terminal-criteria-2026-09-05` D-021.
+ * - A filler-token stoplist for `already passing tests` is not here because no such value
+ *   exists: the distribution is bare-token or genuinely qualified, with nothing between.
+ *   This second finding is independent of the `addedTests` error above and was not
+ *   re-measured during that retraction — treat it as unverified rather than confirmed.
+ *
+ * The general lesson, since this file is where it was learned: an empty result is a claim
+ * about the INSTRUMENT before it is a claim about the world. Run a positive control before
+ * recording an absence — especially when the absence is what lets you skip building
+ * something, which is exactly when it is most welcome and least examined.
  */
 function forbiddenEvidenceModeRating(
   input: TerminalCriteriaInput,
