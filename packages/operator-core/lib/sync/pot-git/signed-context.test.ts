@@ -78,6 +78,8 @@ describe('signed pot-git generation contract (P-513/F2)', () => {
     expect(acceptRefAnnouncement(a, { priorVersion: null, allowLegacy: true }).ok).toBe(true);
     expect(acceptFetchedSigrefs(s, key.pubkeyBase64, null, { allowLegacy: true }).ok).toBe(true);
     expect(acceptStagingAdvance(adv, null, { allowLegacy: true }).ok).toBe(true);
+    expect(acceptStagingAdvance(adv, null, { allowLegacy: true, knownStoreGenerations: { [key.pubkeyBase64]: generation(1) } }))
+      .toEqual({ ok: false, reason: 'legacy-version' });
     expect(acceptRefAnnouncement(a, { priorVersion: null, allowLegacy: true, replayFloor: floor() })).toMatchObject({ ok: false, reason: 'legacy-version' });
     expect(acceptFetchedSigrefs(s, key.pubkeyBase64, null, { allowLegacy: true, replayFloor: floor() })).toEqual({ ok: false, reason: 'legacy-version' });
   });

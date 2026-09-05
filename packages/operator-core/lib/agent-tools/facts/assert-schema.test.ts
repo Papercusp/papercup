@@ -38,37 +38,58 @@ describe('facts:assert settledBy modality contract', () => {
     expect(assertTool.args.safeParse({ ...base, kind: 'conclusion' }).success).toBe(true);
   });
 
-  it('publishes the conditional relationship as two JSON-schema branches', () => {
+  it('publishes all four modalities and states the settledBy coupling (EI-22064465906366039)', () => {
+    // Replaces an assertion that the schema carried TWO UNION BRANCHES. That
+    // shape was the defect, not the contract: the projection flattened the
+    // 3x2 union and published `kind: { const: 'undecidable' }`, advertising the
+    // one modality as the only legal value (EI-21968656043579751) while the
+    // runtime accepted all four. The contract worth guarding is the OUTCOME —
+    // every modality visible, and the coupling stated where a caller reads it.
     const json = z.toJSONSchema(assertTool.args as never) as {
-      anyOf?: Array<{
-        required?: string[];
-        properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }>;
-        anyOf?: unknown[];
-        oneOf?: unknown[];
-      }>;
-      oneOf?: Array<{
-        required?: string[];
-        properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }>;
-        anyOf?: unknown[];
-        oneOf?: unknown[];
-      }>;
+      properties?: Record<string, { enum?: unknown[]; const?: unknown; description?: string }>;
+      required?: string[];
     };
-    const unionLeaves = (node: {
-      anyOf?: Array<unknown>;
-      oneOf?: Array<unknown>;
-    }): Array<{ required?: string[]; properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }> }> => {
-      const nested = node.anyOf ?? node.oneOf;
-      if (!nested) return [node as { required?: string[]; properties?: Record<string, { const?: unknown; enum?: unknown[]; not?: unknown }> }];
-      return nested.flatMap((branch) => unionLeaves(branch as { anyOf?: Array<unknown>; oneOf?: Array<unknown> }));
-    };
-    const branches = unionLeaves(json);
+    const props = json.properties ?? {};
 
-    const undecidable = branches.find((branch) => branch.properties?.kind?.const === 'undecidable');
-    const other = branches.find((branch) => branch.properties?.kind?.enum?.includes('conclusion'));
-    expect(undecidable?.required).toContain('settledBy');
-    expect(other?.required ?? []).not.toContain('settledBy');
-    expect(other?.properties?.settledBy).toMatchObject({ not: expect.anything() });
+    expect(props.kind?.enum).toEqual(
+      expect.arrayContaining(['conclusion', 'assumption', 'convention', 'undecidable']),
+    );
+    // The regression that made this test necessary: a single modality published
+    // as the only permissible one.
+    expect(props.kind?.const).toBeUndefined();
+    // The coupling has to be READABLE, since it is no longer structural.
+    expect(props.settledBy?.description ?? '').toMatch(/undecidable/i);
+    expect(props.kind?.description ?? '').toMatch(/undecidable/i);
+    // settledBy is conditionally required, so it must not be unconditionally so.
+    expect(json.required ?? []).not.toContain('settledBy');
   });
+
+  it('rejects ONE mistake with ONE targeted issue, never a six-branch dump (EI-22064465906366039)', () => {
+    // The reported failure mode: a 3x2 z.union answered a single mistake with
+    // every branch's unmet requirements — measured at 6 distinct complaints,
+    // mutually contradictory (a correct kind:'undecidable' was told it must be
+    // one of conclusion|assumption|convention, and elsewhere kind must be
+    // 'undecidable' while settledBy must be `never`). Agents obeyed the dump and
+    // landed in the next rejection; facts:assert carried 26.4% invalid_input.
+    const single = [
+      { input: { ...base, kind: 'undecidable' }, path: 'settledBy' },
+      { input: { ...base, kind: 'conclusion', settledBy: 'a probe' }, path: 'settledBy' },
+      { input: { ...base, shareable: true }, path: 'harness' },
+    ] as const;
+
+    for (const { input, path } of single) {
+      const result = assertTool.args.safeParse(input);
+      expect(result.success).toBe(false);
+      if (result.success) continue;
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]?.path.join('.')).toBe(path);
+      // No issue may contradict a field the caller already got right.
+      const text = JSON.stringify(result.error.issues);
+      expect(text).not.toMatch(/expected one of "conclusion"/);
+      expect(text).not.toMatch(/expected never/);
+    }
+  });
+
 });
 
 describe('facts:assert shareable federation contract', () => {
@@ -87,10 +108,17 @@ describe('facts:assert shareable federation contract', () => {
   });
 
   it('publishes the shareable discriminator and harness prerequisite', () => {
-    const json = JSON.stringify(z.toJSONSchema(assertTool.args as never));
-    expect(json).toContain('shareable');
-    expect(json).toContain('Concrete federation harness required');
-    expect(json).toContain('const":true');
+    // EI-22064465906366039: the prerequisite used to be published as a
+    // branch-local `const: true` override plus a branch-local harness
+    // description. With the root union retired, the same contract is carried by
+    // the two field descriptions that a caller actually reads — which is where
+    // it was needed, since the branch form was flattened away in projection.
+    const props = (z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, { description?: string; type?: string }>;
+    }).properties ?? {};
+    expect(props.shareable?.type).toBe('boolean');
+    expect(props.shareable?.description ?? '').toMatch(/harness/i);
+    expect(props.harness?.description ?? '').toMatch(/shareable/i);
   });
 });
 
@@ -148,10 +176,10 @@ describe('facts:assert supersedes contract', () => {
 
 describe('facts:assert cap-admission contract', () => {
   it('documents refusal of destructive cross-author verified eviction and exempt slots', () => {
-    const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-    const dryRun = options
-      .map((option) => option.shape.dryRun as { description?: string } | undefined)
-      .find(Boolean)?.description;
+    const publishedProps = (z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    }).properties ?? {};
+    const dryRun = publishedProps.dryRun?.description;
 
     expect(dryRun).toMatch(/refused before write/i);
     expect(dryRun).toMatch(/another author.*verified fact/i);
@@ -221,9 +249,10 @@ describe('facts:assert volatile-measurement contract', () => {
   });
 
   it('publishes the clamp verdict on ttlSec instead of a refusal it does not perform', () => {
-    const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
-    const describedOn = (field: string) =>
-      options.map((option) => option.shape[field] as { description?: string } | undefined).find(Boolean)?.description ?? '';
+    const publishedProps = (z.toJSONSchema(assertTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    }).properties ?? {};
+    const describedOn = (field: string) => publishedProps[field]?.description ?? '';
 
     const ttlSec = describedOn('ttlSec');
     expect(ttlSec).toMatch(/clamped/i);

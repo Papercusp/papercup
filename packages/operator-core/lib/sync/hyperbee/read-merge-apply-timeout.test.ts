@@ -17,7 +17,12 @@
  * (today's pre-WI-3896 behavior, preserved as an explicit opt-out).
  */
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from './read-merge';
+import {
+  createMergeCursor,
+  DEFAULT_MERGE_APPLY_CONCURRENCY,
+  mergeAdmittedLogsIncremental,
+  type AdmittedLog,
+} from './read-merge';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 
@@ -110,5 +115,38 @@ describe('WI-3896 — incremental merge apply-TIMEOUT recovery (bounded hang, no
 
     expect(result.applied).toBe(1);
     expect(applied).toEqual(['k1']);
+  });
+
+  it('bounds physical projection writes across concurrent harness merge loops', async () => {
+    const callers = DEFAULT_MERGE_APPLY_CONCURRENCY + 1;
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    const apply = vi.fn(async (): Promise<boolean> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return true;
+    });
+
+    const merges = Array.from({ length: callers }, (_, i) =>
+      mergeAdmittedLogsIncremental(
+        [memLog(`log-${i}`, [put(`k-${i}`, 1000 + i, { id: `k-${i}` })])],
+        createMergeCursor(),
+        { applyImpl: apply, getTimeoutMs: 0, applyTimeoutMs: 5_000 },
+      ),
+    );
+
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(DEFAULT_MERGE_APPLY_CONCURRENCY));
+    expect(maxActive).toBe(DEFAULT_MERGE_APPLY_CONCURRENCY);
+
+    releases.shift()!();
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledTimes(callers));
+    while (releases.length > 0) releases.shift()!();
+
+    const results = await Promise.all(merges);
+    expect(results.every((result) => result.applied === 1)).toBe(true);
+    expect(maxActive).toBe(DEFAULT_MERGE_APPLY_CONCURRENCY);
   });
 });

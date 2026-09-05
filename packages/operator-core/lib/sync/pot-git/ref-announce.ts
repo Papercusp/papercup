@@ -518,18 +518,24 @@ export async function handleRefAnnouncement(
   const localOid = isSignedRefAnnouncement(incoming)
     ? await readNamespaceRef(repoPath, device, SIGREFS_REF, runGit)
     : null;
+  const exactAcceptedSnapshot = opts.replayFloor && incoming.version === opts.replayFloor.version &&
+    incoming.sigrefs_oid === opts.replayFloor.sigrefs_oid && signedProtocolContextMatches(incoming, opts.replayFloor);
+  // A receiver may lose its Git mirror while retaining its PG floor. Rebuild
+  // exactly that accepted snapshot without lowering or discarding the floor.
+  const rematerialize = !!exactAcceptedSnapshot && (localOid !== incoming.sigrefs_oid || !prior ||
+    (await reconcileFetchedHeads(repoPath, device, prior, runGit)).length !== 0);
 
   const acceptance = acceptRefAnnouncement(incoming, {
     selfDevice: opts.selfDevice,
     allowedDevices: opts.allowedDevices,
-    priorVersion,
+    priorVersion: rematerialize ? null : priorVersion,
     expectedContext: opts.expectedContext,
     allowLegacy: opts.allowLegacy,
-    replayFloor: opts.replayFloor,
+    replayFloor: rematerialize ? null : opts.replayFloor,
     budget: opts.budget ? { state: opts.budget.state, nowMs: opts.nowMs, config: opts.budget.config } : undefined,
   });
   if (!acceptance.ok) return { action: 'rejected', reason: acceptance.reason, budgetState: acceptance.budgetState };
-  const needsFetch = shouldFetchOnAnnouncement(incoming, localOid);
+  const needsFetch = rematerialize || shouldFetchOnAnnouncement(incoming, localOid);
   if (!needsFetch && incoming.v === REF_ANNOUNCE_SCHEMA_VERSION) {
     return { action: 'noop', budgetState: acceptance.budgetState };
   }
@@ -564,8 +570,8 @@ export async function handleRefAnnouncement(
     return { action: 'already-in-flight', budgetState: acceptance.budgetState };
   }
   const res = coalesced.result;
-  if ('action' in res) {
-    return { ...res, budgetState: acceptance.budgetState };
+  if ('action' in res && res.action === 'fetch-failed') {
+    return { action: 'fetch-failed', stderr: res.stderr, timedOut: res.timedOut, code: res.code, budgetState: acceptance.budgetState };
   }
   if (res.code !== 0) {
     return {
@@ -586,10 +592,10 @@ export async function handleRefAnnouncement(
       budgetState: acceptance.budgetState,
     };
   }
-  const verdict = acceptFetchedSigrefs(fetched, device, priorVersion, {
+  const verdict = acceptFetchedSigrefs(fetched, device, rematerialize ? null : priorVersion, {
     expectedContext: opts.expectedContext,
     allowLegacy: opts.allowLegacy,
-    replayFloor: opts.replayFloor,
+    replayFloor: rematerialize ? null : opts.replayFloor,
   });
   const fetchedOid = await readNamespaceRef(repoPath, device, SIGREFS_REF, runGit);
   if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT &&

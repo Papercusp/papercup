@@ -863,6 +863,90 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
+  it('names the missing staged VM source root instead of emitting ERR_MODULE_NOT_FOUND', () => {
+    // EI-20407955869521811. The staged root reaches the scenario ONLY as
+    // HIVE_GIT_PHYSICAL_VM_SOURCE on the probe's single invocation, and the
+    // probe's EXIT trap removes /tmp/hive-git-physical-source.* on every run,
+    // so a post-interruption caller has nothing to inherit. Before this guard
+    // an unset value was pasted into VM_PRODUCER as the absolute nonsense path
+    // '/packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts',
+    // which the VM reported as ERR_MODULE_NOT_FOUND — an error that reads as a
+    // broken VM dev-source tree and sends the reader hunting there. Measured
+    // 2026-09-05: the VM's dev-source tree and its tsx loader are both PRESENT,
+    // so that reading was always a misdiagnosis of a missing input.
+    expect(physicalScenario).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE is unset');
+    expect(physicalScenario).toContain('hive-git-physical-probe.sh');
+    expect(physicalScenario).toContain("require_absolute 'HIVE_GIT_PHYSICAL_VM_SOURCE' \"$VM_SOURCE\"");
+
+    // The shape check pins the same staging contract the probe's own cleanup
+    // guard enforces, so a hand-supplied root (notably the installed dev-source
+    // tree, which carries no producer at all) is refused by name.
+    expect(physicalScenario).toContain('/tmp/hive-git-physical-source.[0-9]*) ;;');
+    expect(physicalScenario).toContain('is not a probe-staged source root');
+    expect(physicalProbe).toContain("case '$remote_source' in /tmp/hive-git-physical-source.[0-9]*)");
+
+    // The absolute-path helper must be DEFINED before the VM_SOURCE gate calls
+    // it; bash resolves functions at call time, so the reverse order fails with
+    // a bare "command not found" and defeats the diagnostic entirely.
+    expect(physicalScenario.indexOf('require_absolute() {')).toBeLessThan(
+      physicalScenario.indexOf("require_absolute 'HIVE_GIT_PHYSICAL_VM_SOURCE'"),
+    );
+
+    // The destructive-execution grant is the safety gate and must speak first:
+    // a caller with no grant has to be told about the grant, not about an input
+    // this driver would never have used.
+    expect(
+      physicalScenario.indexOf('destructive physical run requires HIVE_GIT_PHYSICAL_EXECUTE'),
+    ).toBeLessThan(physicalScenario.indexOf('HIVE_GIT_PHYSICAL_VM_SOURCE is unset'));
+
+    // The refusal must name a mode that exists, or it reproduces the very
+    // misdirection it was added to remove.
+    expect(physicalScenario).toContain('--observe-phase-a');
+    expect(physicalProbe).toContain("--observe-phase-a");
+  });
+
+  it('refuses a resumed physical scenario with no staged VM source root', () => {
+    // Behavioural half of the guard above. The unset leg fires before the ssh
+    // probe, so this runs hermetically on any box — no VM required.
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'hive-git-vm-source-'));
+    try {
+      const towerIdentity = join(fixtureRoot, 'tower-identity.json');
+      const vmIdentity = join(fixtureRoot, 'vm-identity.json');
+      writeFileSync(towerIdentity, '{}');
+      writeFileSync(vmIdentity, '{}');
+
+      const result = spawnSync(
+        physicalScenarioPath,
+        [join(fixtureRoot, 'unsigned-evidence.json'), towerIdentity, vmIdentity],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
+            // The grant is the safety gate and speaks first, so it must be
+            // present for the run to reach the VM_SOURCE gate at all. Nothing
+            // destructive executes: the refusal below is the next statement.
+            HIVE_GIT_PHYSICAL_EXECUTE: 'p2p-git-live-activation-2026-07-09',
+            HIVE_GIT_PHYSICAL_VM_SOURCE: '',
+          },
+        },
+      );
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE is unset');
+      // The recovery action must be in the refusal itself, not left to be
+      // rediscovered: this is the whole point of the diagnostic.
+      expect(result.stderr).toContain('hive-git-physical-probe.sh');
+      // The pre-fix symptom must be gone.
+      expect(result.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+      expect(result.stderr).not.toContain(
+        '/packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts',
+      );
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('overlays packages declared only by a nested workspace registry', () => {
     expect(sourceOverlayMatch).not.toBeNull();
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'hive-git-source-overlay-'));

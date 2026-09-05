@@ -82,6 +82,8 @@ export interface AcceptanceBarSeedBuildInput {
   actorId: string;
   declaredAt: string;
   cohort: AcceptanceBarCohort;
+  /** Server-owned late-authoring provenance; independent of enforcement cohort. */
+  backfilled?: boolean;
   adoptionEpoch: number;
   subjectPlanRevision: number;
   rubricSlug: string;
@@ -310,7 +312,7 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
 function seededCriterion(
   bar: ParsedRequirementBar,
   mapping: ParsedBarMapping,
-  input: Pick<AcceptanceBarSeedBuildInput, 'actorId' | 'declaredAt' | 'cohort'>,
+  input: Pick<AcceptanceBarSeedBuildInput, 'actorId' | 'declaredAt' | 'cohort' | 'backfilled'>,
 ): ProposeRubricCriterion {
   const criterion = normalizeAcceptanceBarCriterion({
     key: bar.barKey.toLowerCase(),
@@ -326,7 +328,7 @@ function seededCriterion(
     evidencePlane: mapping.evidencePlane,
     passRatings: ['healthy'],
     barProvenance: {
-      lifecycle: input.cohort === 'post-epoch' ? 'pre-implementation' : 'legacy-backfilled',
+      lifecycle: input.cohort === 'post-epoch' && !input.backfilled ? 'pre-implementation' : 'legacy-backfilled',
       declaredAt: input.declaredAt,
       declaredBy: input.actorId,
     },
@@ -488,6 +490,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   planVersion: number;
   adoptionEpoch: number;
   cohort: AcceptanceBarCohort;
+  /** Only the canonical migration adapter sets this from its classified action. */
+  backfilled?: boolean;
   actorId: string;
   now: Date;
 }
@@ -595,6 +599,7 @@ export async function seedAcceptanceBarsInTransaction(
     actorId: input.actorId,
     declaredAt: seedInstant,
     cohort: input.cohort,
+    backfilled: input.backfilled,
     adoptionEpoch: input.adoptionEpoch,
     subjectPlanRevision: input.planVersion,
     rubricSlug,

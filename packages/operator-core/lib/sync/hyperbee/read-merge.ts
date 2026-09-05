@@ -27,6 +27,8 @@ import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
 import { encodeHlc } from '@papercusp/locks-core';
+import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { logIfStageStalls } from './stage-stall-log';
 import {
   isSnapshotOp,
@@ -369,6 +371,13 @@ export type MergeApplyOutcome =
   | { kind: 'applied'; changed: boolean }
   | { kind: 'rejected' | 'dependency-waiting' | 'retryable'; reason: string; errorCode?: string };
 
+interface PendingMergeApply {
+  /** Resolves after FIFO admission, immediately before the physical write starts. */
+  started: Promise<void>;
+  /** Keeps the admission slot until the physical write settles, even after a timeout. */
+  result: Promise<boolean | MergeApplyOutcome>;
+}
+
 /** The FIRST unresolved entry in a log. Its bytes and all later entries remain
  * in Hypercore behind the held durable cursor; no payload is copied into PG. */
 export interface MergeApplyFailure {
@@ -413,7 +422,7 @@ export interface MergeCursor {
   applyFailures?: Map<string, MergeApplyFailure>;
   /** Reuse a timed-out write while it is still in flight, rather than starting
    * another unbounded PG operation on every merge tick. */
-  pendingApplies?: Map<string, Promise<boolean | MergeApplyOutcome>>;
+  pendingApplies?: Map<string, PendingMergeApply>;
   /**
    * WI-2003: per-position CONSECUTIVE read-throw counter (`${log.keyHex}:${pos}`
    * → count), the READ-side mirror of `applyThrows`. `readOpBoundedDetailed`
@@ -1022,6 +1031,31 @@ function opIdent(groupKey: string, env: OpEnvelope): string {
 export const MERGE_APPLY_TIMEOUT_MS = 45_000;
 
 /**
+ * Maximum physical projection writes across every booted harness in this process.
+ *
+ * Each harness serializes its own merge pass, but a bg-host can keep 100+ harnesses
+ * resident. Without a process-wide boundary, one merge tick per harness can enter
+ * `applyHyperbeeOpToPg` together and exhaust the shared org pool even though every
+ * individual harness is behaving correctly. Four mirrors the send-side outbox gate:
+ * on the 16-core bg-host it leaves the 28-slot org pool enough room for the 16 DBOS
+ * workers and routine/control traffic instead of making them queue behind merges.
+ */
+export const DEFAULT_MERGE_APPLY_CONCURRENCY = 4;
+
+interface MergeApplyAdmissionState {
+  /** Optional so a process retaining a pre-fix pinned object upgrades in place. */
+  gate?: ConcurrencyGate;
+}
+
+const mergeApplyAdmissionState = pinModuleState<MergeApplyAdmissionState>(
+  '@papercusp/operator-core.hyperbeeMergeApplyAdmission',
+  () => ({ gate: createConcurrencyGate(DEFAULT_MERGE_APPLY_CONCURRENCY) }),
+);
+mergeApplyAdmissionState.gate ??= createConcurrencyGate(DEFAULT_MERGE_APPLY_CONCURRENCY);
+mergeApplyAdmissionState.gate.setLimit(DEFAULT_MERGE_APPLY_CONCURRENCY);
+const mergeApplyAdmission = mergeApplyAdmissionState.gate;
+
+/**
  * Thrown when a single apply exceeds its bound. A timeout is retryable, never
  * proof of poison: keep the cursor held and reuse the pending write next pass.
  */
@@ -1128,17 +1162,28 @@ async function applyRecordingWinner(
   const ident = opIdent(groupKey, env);
   let outcome: MergeApplyOutcome;
   try {
-    const pending = (cursor.pendingApplies ??= new Map<string, Promise<boolean | MergeApplyOutcome>>());
-    let write = pending.get(ident);
-    if (!write) {
-      write = logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => apply(env)));
-      pending.set(ident, write);
-      const current = write;
-      void write.finally(() => {
+    const pending = (cursor.pendingApplies ??= new Map<string, PendingMergeApply>());
+    let physical = pending.get(ident);
+    if (!physical) {
+      let markStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const result = mergeApplyAdmission.run(async () => {
+        // Queue time is safe backpressure, not a slow PG write. Start both the
+        // named-stage clock and the hard apply timeout only after admission.
+        markStarted();
+        return logIfStageStalls(scope, `merge-apply (${groupKey})`, Promise.resolve().then(() => apply(env)));
+      });
+      physical = { started, result };
+      pending.set(ident, physical);
+      const current = physical;
+      void result.finally(() => {
         if (pending.get(ident) === current) pending.delete(ident);
       }).catch(() => {});
     }
-    const result = await raceApplyTimeout(groupKey, write, applyTimeoutMs);
+    await physical.started;
+    const result = await raceApplyTimeout(groupKey, physical.result, applyTimeoutMs);
     outcome = typeof result === 'boolean' ? { kind: 'applied', changed: result } : result;
   } catch (err) {
     const code = (err as { code?: unknown } | null)?.code;

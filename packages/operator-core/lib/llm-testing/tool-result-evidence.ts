@@ -4,7 +4,10 @@ import {
   type ToolResultEvent,
 } from '@papercusp/testing-shell/llm';
 
-import { redactSensitiveText } from '../sensitive-text';
+import {
+  redactSensitiveText,
+  redactStructuredSensitiveValue,
+} from '../sensitive-text';
 
 const TRUNCATION_SUFFIX = '\n[tool result truncated]';
 const TOOL_NAME_MAX_CHARS = 200;
@@ -21,6 +24,14 @@ function boundedOutput(output: string): { output: string; truncated: boolean } {
   };
 }
 
+function redactToolResultOutput(rawOutput: string): string {
+  try {
+    return JSON.stringify(redactStructuredSensitiveValue(JSON.parse(rawOutput)));
+  } catch {
+    return redactSensitiveText(rawOutput);
+  }
+}
+
 /**
  * Convert one raw dispatcher result into the only form allowed to cross the
  * TurnResult/judge/persistence boundary: secret-scrubbed and size-bounded.
@@ -30,7 +41,7 @@ export function captureToolResultEvidence(
   rawOutput: string,
   isError: boolean,
 ): ToolResultEvent {
-  const redacted = redactSensitiveText(rawOutput);
+  const redacted = redactToolResultOutput(rawOutput);
   const bounded = boundedOutput(redacted);
   return {
     name: redactSensitiveText(name).slice(0, TOOL_NAME_MAX_CHARS),
@@ -54,7 +65,7 @@ export function normalizeToolResultEvidence(value: unknown): ToolResultEvent[] {
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.name !== 'string' || typeof candidate.output !== 'string') continue;
 
-    const redacted = redactSensitiveText(candidate.output);
+    const redacted = redactToolResultOutput(candidate.output);
     const bounded = boundedOutput(redacted);
     const sourceChars =
       typeof candidate.sourceChars === 'number' &&

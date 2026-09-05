@@ -27,6 +27,20 @@ describe('tool-result evidence safety boundary', () => {
     expect(evidence.truncated).toBe(false);
   });
 
+  it('preserves benign colon prose in structured output across persistence normalization', () => {
+    const raw = JSON.stringify({
+      title: 'Design token: brand-accent contrast',
+      token: 'opaque-real-secret',
+    });
+
+    const captured = captureToolResultEvidence('work_items:list', raw, false);
+    const [normalized] = normalizeToolResultEvidence([captured]);
+
+    expect(normalized?.output).toContain('Design token: brand-accent contrast');
+    expect(normalized?.output).not.toContain('opaque-real-secret');
+    expect(normalized?.output).not.toContain('[redacted]]');
+  });
+
   it('bounds each excerpt and marks the retained fragment as truncated', () => {
     const raw = 'x'.repeat(TOOL_RESULT_EVIDENCE_MAX_CHARS + 500);
 

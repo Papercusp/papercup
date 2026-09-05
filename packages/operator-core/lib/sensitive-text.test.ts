@@ -5,6 +5,7 @@ import {
   redactSelfIdentifyingSecrets,
   redactSensitiveText,
   redactSensitiveValue,
+  redactStructuredSensitiveValue,
 } from './sensitive-text';
 
 describe('sensitive diagnostic text', () => {
@@ -19,6 +20,11 @@ describe('sensitive diagnostic text', () => {
     expect(output).toContain('--api-key=[redacted]');
     expect(output).toContain('Authorization: Bearer [redacted]');
     expect(output).not.toContain('opaque-value');
+  });
+
+  it('is idempotent when a key-directed value is already redacted', () => {
+    const once = redactSensitiveText('token=opaque-value-123');
+    expect(redactSensitiveText(once)).toBe(once);
   });
 
   it('redacts explicitly known opaque bearers without guessing from their shape', () => {
@@ -79,5 +85,20 @@ describe('sensitive diagnostic text', () => {
       },
     });
     expect(input.accessToken).toBe('opaque-access-token-value');
+  });
+
+  it('preserves ordinary colon prose inside structured values while redacting real keys', () => {
+    const providerToken = `sk-${'q'.repeat(24)}`;
+    expect(redactStructuredSensitiveValue({
+      title: 'Design token: brand-accent contrast',
+      apiKey: 'opaque-api-key-value',
+      note: `provider returned ${providerToken}`,
+      command: 'curl --token=opaque-command-token',
+    })).toEqual({
+      title: 'Design token: brand-accent contrast',
+      apiKey: '[redacted]',
+      note: 'provider returned [redacted]',
+      command: 'curl --token=[redacted]',
+    });
   });
 });

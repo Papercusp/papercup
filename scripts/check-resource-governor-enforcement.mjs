@@ -1441,6 +1441,62 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/ensure-playwright-browsers.mjs: its only detected start is a single spawnSync('npx playwright install <browsers>') installer call, synchronous and awaited to completion before the function returns; it runs at most once per missing-browser check, creates no independent resident queue, and must remain runnable so e2e setup is not itself gated behind admission.",
   },
+  {
+    path: "scripts/check-behavioural-strands.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-behavioural-strands.mjs: its detected starts are execFileSync('git', ...) diff/blame plumbing reads and one spawnSync('npm', ['run','test:file',...]) that re-runs the specific stranded test files it names — each synchronous, awaited, and bounded by the finite strand set it just computed; this is a one-shot PostToolUse/CI lint invocation that creates no independent resident queue and must remain runnable so the guard is not itself gated behind admission.",
+  },
+  {
+    path: "scripts/check-identity-keyed-classification.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-identity-keyed-classification.mjs: its only detected start is a single spawnSync('npx', ['vitest','run', CENSUS_TEST_REL]) that runs one fixed census test file, synchronous and awaited to completion; it is a one-shot CI lint check, creates no independent resident queue, and must remain runnable so the guard is not itself gated behind admission.",
+  },
+  {
+    path: "scripts/check-lockfile-census.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-lockfile-census.mjs: its detected start is execFileSync(<sbom scanner>, ['scan', ...], { maxBuffer }) invoked once per lockfile subject over a finite subject list, synchronous and awaited; it is a one-shot CI census check, creates no independent resident queue, and must remain runnable so the guard is not itself gated behind admission.",
+  },
+  {
+    path: "scripts/check-reachable-advisories.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-reachable-advisories.mjs: its detected start is execFileSync('npm', args, { maxBuffer }) run once to enumerate advisories, synchronous and awaited; it is a one-shot CI reachability check, creates no independent resident queue, and must remain runnable so the guard is not itself gated behind admission.",
+  },
+  {
+    path: "scripts/p2p-witness-manifest.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/p2p-witness-manifest.mjs: every detected start is execFileSync('git', ['-C', repoRoot, ...]) cheap plumbing metadata reads that print and exit, synchronous and awaited; the manifest builder spawns no worker, creates no independent resident queue, and must remain runnable so manifest generation is not itself gated behind admission.",
+  },
+  {
+    path: "packages/operator-core/lib/sync/hyperbee/read-merge.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for packages/operator-core/lib/sync/hyperbee/read-merge.ts: its MergeCursor Maps (positions, winners, applyThrows, readThrows, readStalls, lateReadResults) are finite per-merge correlation state keyed by the active logs and positions being merged, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight merge workload and start no independent resident work.",
+  },
+  {
+    path: "scripts/lib/stale-swap-leftovers.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/stale-swap-leftovers.mjs: its `pending` array is a depth-first directory-walk worklist consumed to completion within a single synchronous scan of a finite tree, not a resident resource queue; it holds no work across calls and starts no independent resident work.",
+  },
+  {
+    path: "scripts/lib/tracked-files.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/lib/tracked-files.mjs: its `pending` directory-walk worklist in the filesystem fallback is consumed within one synchronous enumeration and is hard-bounded by FALLBACK_MAX_ENTRIES (it throws rather than continue past the bound), so it is finite traversal state, not a resident resource queue, and starts no independent resident work.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [

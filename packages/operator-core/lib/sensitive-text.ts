@@ -51,10 +51,14 @@ export function redactKnownSecrets(
 
 /** Scrub opaque values identified by a credential key/header next to them. */
 export function redactKeyDirectedSecrets(text: string): string {
-  return text.replace(KEY_DIRECTED_SECRET_RE, (_match, ...groups: unknown[]) => {
+  return text.replace(KEY_DIRECTED_SECRET_RE, (match, ...groups: unknown[]) => {
     // Groups are [key1, value1, key2, value2, key3, value3, offset, input].
     for (let i = 0; i < 6; i += 2) {
-      if (typeof groups[i] === 'string') return `${groups[i]}[redacted]`;
+      if (typeof groups[i] !== 'string') continue;
+      // The value regex intentionally stops before `]`; preserve an existing
+      // marker rather than turning a second scrub into `[redacted]]`.
+      if (groups[i + 1] === '[redacted' || groups[i + 1] === '[redacted]') return match;
+      return `${groups[i]}[redacted]`;
     }
     return '[redacted]';
   });
@@ -83,10 +87,49 @@ export function redactSensitiveValue(
   value: unknown,
   seen = new WeakSet<object>(),
 ): unknown {
-  if (typeof value === 'string') return redactSensitiveText(value);
+  return redactSensitiveValueWith(value, redactSensitiveText, seen);
+}
+
+const STRUCTURED_STRING_SECRET_SIGNAL_RE = new RegExp(
+  [
+    String.raw`\b(?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key(?:[_-]?id)?|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential|database[_-]?url)\s*=`,
+    String.raw`\b(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)\s+`,
+    String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----`,
+  ].join('|'),
+  'i',
+);
+
+function redactStructuredString(text: string): string {
+  const selfIdentifyingRedacted = redactSelfIdentifyingSecrets(text);
+  return STRUCTURED_STRING_SECRET_SIGNAL_RE.test(selfIdentifyingRedacted)
+    ? redactKeyDirectedSecrets(selfIdentifyingRedacted)
+    : selfIdentifyingRedacted;
+}
+
+/**
+ * Redact parsed JSON-shaped data without treating ordinary prose inside a
+ * string value (for example, "Design token: brand-accent") as a secret key.
+ * Actual sensitive object keys, provider-shaped tokens, assignments, auth
+ * headers, and private-key blocks remain protected.
+ */
+export function redactStructuredSensitiveValue(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): unknown {
+  return redactSensitiveValueWith(value, redactStructuredString, seen);
+}
+
+function redactSensitiveValueWith(
+  value: unknown,
+  redactString: (text: string) => string,
+  seen: WeakSet<object>,
+): unknown {
+  if (typeof value === 'string') return redactString(value);
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((entry) => redactSensitiveValue(entry, seen));
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveValueWith(entry, redactString, seen));
+  }
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) return '[circular]';
   seen.add(value);
@@ -95,7 +138,7 @@ export function redactSensitiveValue(
     result[key] =
       SENSITIVE_VALUE_KEY_RE.test(key) && !SAFE_REFERENCE_KEY_RE.test(key)
         ? '[redacted]'
-        : redactSensitiveValue(entry, seen);
+        : redactSensitiveValueWith(entry, redactString, seen);
   }
   seen.delete(value);
   return result;

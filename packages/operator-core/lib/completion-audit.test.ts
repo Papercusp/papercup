@@ -29,6 +29,7 @@ import {
   WORKED_THEN_ABANDONED_STALE_DAYS,
   citedImagePaths,
   citesAssertionBearingRun,
+  citesBrowserDriveEvidence,
   citesScreenshotArtifact,
   citesWebProbeEvidence,
   classifyTerminalOwner,
@@ -572,7 +573,94 @@ describe('citesScreenshotArtifact (WI-5891)', () => {
 
 // WI-5891 — the completion-boundary hard gate itself: the exact WI-5874/P-001 shape
 // (verifiedHow:'live-drove-ui' citing only vitest runs) must fail this check.
+/**
+ * EI-20411096292493737 — a real Playwright drive of a deployed WEB app had no truthful
+ * label, because the accepted-artifact set was Tauri-shaped. The filed harm is NOT the
+ * rejection: it is that `'unit'`/`'integration'`/`'manual'` were all FALSE for that
+ * close, so the cheapest way past the gate was to write a wrong `verifiedHow` into the
+ * ledger the gate exists to protect. Mislabels are silent; rejections are not.
+ *
+ * The negative cases below are the load-bearing half — they pin that this is a widening
+ * along the ORIGINAL falsifiability principle (an asserting run that could have exited
+ * non-zero), not a hole.
+ */
+describe('citesBrowserDriveEvidence — web live-drive (EI-20411096292493737)', () => {
+  it('ACCEPTS a recorded playwright invocation against a live http(s) target', () => {
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        testsRun: 'npx playwright test e2e/dockview.spec.ts --reporter=line',
+        testResult: '13/13 checks green against https://sidestage.buyrestart.com',
+      }),
+    ).toBe(true);
+  });
+
+  it('ACCEPTS a verdict check naming the URL it drove', () => {
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        summary: 'verdict check https://example.com/pricing — sash drag asserted, exit 0',
+      }),
+    ).toBe(true);
+  });
+
+  it('REJECTS prose that merely NAMES the tool, even with a URL present', () => {
+    // The exact shape a wider window would have wrongly accepted. `playwright` is an
+    // ordinary word in completion narrative; the binary name alone proves nothing ran.
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        summary: 'we use Playwright for e2e coverage of https://example.com these days',
+      }),
+    ).toBe(false);
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        summary: 'a 13-check Playwright suite exercises https://example.com',
+      }),
+    ).toBe(false);
+  });
+
+  it('REJECTS a real driver invocation with NO live target — a local fixture run is not a live drive', () => {
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        testsRun: 'npx playwright test e2e/dockview.spec.ts',
+        testResult: '13/13 passed',
+      }),
+    ).toBe(false);
+  });
+
+  it('REJECTS a bare URL with no driver invocation (that is the web-probe path, which needs a status)', () => {
+    expect(
+      citesBrowserDriveEvidence({
+        verifiedHow: 'live-drove-ui',
+        summary: 'looked at https://example.com and it seemed fine',
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('isBackedLiveDroveUiClaim (WI-5891)', () => {
+  it('is BACKED by a recorded browser-driver run against a live URL (EI-20411096292493737)', () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        testsRun: 'npx playwright test e2e/dockview.spec.ts',
+        testResult: '13/13 green against https://sidestage.buyrestart.com',
+      }),
+    ).toBe(true);
+  });
+
+  it('stays UNBACKED when the driver is only named in prose (EI-20411096292493737)', () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        summary: 'a 13-check Playwright suite covers https://sidestage.buyrestart.com',
+      }),
+    ).toBe(false);
+  });
+
   it("the WI-5874/P-001 shape — verifiedHow:'live-drove-ui' backed by nothing but vitest runs — is UNBACKED", () => {
     expect(
       isBackedLiveDroveUiClaim({

@@ -823,6 +823,10 @@ export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidenc
   // naturally has no image file to name at all. citesWebProbeEvidence is defined below
   // in this module as a `function` declaration, so it is hoisted and safe to call here.
   if (citesWebProbeEvidence(evidence)) return true;
+  // EI-20411096292493737: a recorded browser-driver run against an http(s) target is the
+  // web counterpart of `tauri-agent-tools check` — it asserts, so it could have failed.
+  // Defined below as a `function` declaration, hoisted, same as citesWebProbeEvidence.
+  if (citesBrowserDriveEvidence(evidence)) return true;
   return false;
 }
 
@@ -1045,6 +1049,50 @@ export function citesWebProbeEvidence(evidence: CompletionVerificationEvidence |
 }
 
 /**
+ * EI-20411096292493737 — the WEB-target counterpart of `tauri-agent-tools check`.
+ *
+ * A recorded browser-driver run (`npx playwright test e2e/x.spec.ts`, `verdict check …`)
+ * is falsifiable for exactly the reason {@link citesAssertionBearingRun} accepts `check`
+ * and rejects `screenshot`/`capture`: it ASSERTS, so it exits non-zero when the assertion
+ * does not hold. Citing one proves a real browser drove a real target and the assertions
+ * held — which is the whole factual content of the `live-drove-ui` label.
+ *
+ * WHY THIS EXISTS AT ALL. Before it, the accepted-artifact set was Tauri-shaped, so an
+ * agent who genuinely drove a deployed WEB app had no truthful label: the gate's own
+ * message offered `'unit'` (false — a real browser ran), `'integration'` (false — no
+ * integration harness) and `'manual'` (false — nothing was hand-driven). A taxonomy whose
+ * only reachable labels are all wrong does not produce rejections; it produces quietly
+ * mislabelled `verifiedHow` values, corrupting the exact ledger the gate exists to
+ * protect. The filer's own words: "the taxonomy hole rewards mislabelling."
+ *
+ * DELIBERATELY NOT A WEAKENING. Both halves are required, in the same evidence:
+ *  - a driver INVOCATION — the run subcommand must IMMEDIATELY follow the driver name,
+ *    so `npx playwright test e2e/x.spec.ts` matches while the ordinary prose sentences
+ *    that name the tool ("we use Playwright for e2e", "a 13-check Playwright suite") do
+ *    not. A wider window was tried first and is wrong: `playwright` is a common word in
+ *    completion narrative, unlike the `tauri-agent-tools` binary, so a loose match would
+ *    accept any close that merely MENTIONS the tool; and
+ *  - an `http(s)://` target, so a driver run against a local fixture — which asserts
+ *    structure, not a live deployment — is not silently upgraded to a live-drive claim.
+ * A `screenshot`-only browser run still has to cite its image, exactly as before.
+ */
+const BROWSER_DRIVE_RUN_PATTERN = /\b(?:playwright|puppeteer|verdict)\b\s+(?:test|check|run|e2e|spec)\b/i;
+
+export function citesBrowserDriveEvidence(
+  evidence: CompletionVerificationEvidence | null | undefined,
+): boolean {
+  if (!evidence) return false;
+  const texts = [
+    evidence.summary,
+    evidence.testsRun,
+    evidence.testResult,
+    ...(evidence.filesChanged ?? []),
+  ].filter((text): text is string => !!text);
+  if (!texts.some((text) => BROWSER_DRIVE_RUN_PATTERN.test(text))) return false;
+  return texts.some((text) => /https?:\/\//i.test(text));
+}
+
+/**
  * EI-18822892068318552 — why a relative citation gets MORE than one candidate base.
  *
  * Agents write paths the way this repo writes paths: repo-relative
@@ -1168,6 +1216,10 @@ export async function verifyLiveDroveUiArtifacts(
   if (citesAssertionBearingRun(evidence)) return { ok: true, basis: 'assertion', artifacts: [] };
   // Same logic, web-deploy shaped: a URL + HTTP status is falsifiable too (EI-18855312333744373).
   if (citesWebProbeEvidence(evidence)) return { ok: true, basis: 'url', artifacts: [] };
+  // Same logic again, browser-driver shaped: an asserting run against a live URL could
+  // have exited non-zero, so it stands on its own with no image to inspect
+  // (EI-20411096292493737). Reported as `assertion` because that is what it is.
+  if (citesBrowserDriveEvidence(evidence)) return { ok: true, basis: 'assertion', artifacts: [] };
 
   const paths = citedImagePaths(evidence);
   if (paths.length === 0) {

@@ -31,7 +31,10 @@ describe('acceptance BAR cohort migration policy (P-010)', () => {
     expect(classifyAcceptanceBarMigration(plan())).toMatchObject({ action: 'legacy-backfill' });
     expect(classifyAcceptanceBarMigration(plan({ acceptanceBarCohort: 'post-epoch' }))).toMatchObject({
       action: 'legacy-backfill',
-      cohort: 'legacy-backfilled',
+      cohort: 'post-epoch',
+    });
+    expect(classifyAcceptanceBarMigration(plan({ acceptanceBarEpoch: 1 }))).toMatchObject({
+      action: 'legacy-backfill', cohort: 'post-epoch',
     });
     expect(
       classifyAcceptanceBarMigration(

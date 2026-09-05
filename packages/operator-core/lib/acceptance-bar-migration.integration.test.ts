@@ -138,6 +138,31 @@ async function insertPlan(slug: string, content: string, status: string) {
 }
 
 describe('runAcceptanceBarMigrationInDatabase', () => {
+  it('keeps a post-epoch executable plan in its cohort while recording honestly backfilled BARs', async () => {
+    await insertPlan('strict-late-bars', validContent('strict-late-bars', 'active'), 'active');
+    await db.sql`UPDATE harness_shared.harness_plans
+      SET acceptance_bar_epoch=1, acceptance_bar_cohort='post-epoch' WHERE plan_slug='strict-late-bars'`;
+    const result = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-migration-test',
+      planSlug: 'strict-late-bars', now: new Date('2026-09-05T15:00:00Z'),
+    });
+    expect(result.outcomes[0]).toMatchObject({ status: 'applied', decision: { cohort: 'post-epoch' } });
+    const [plan] = await db.sql`SELECT acceptance_bar_cohort, acceptance_bar_set_hash
+      FROM harness_shared.harness_plans WHERE plan_slug='strict-late-bars'`;
+    expect(plan.acceptance_bar_cohort).toBe('post-epoch');
+    expect(plan.acceptance_bar_set_hash).toMatch(/^[a-f0-9]{64}$/);
+    const [rubric] = await db.sql`SELECT template_data FROM harness_shared.harness_plans
+      WHERE plan_slug='acceptance-strict-late-bars'`;
+    expect(rubric.template_data.barContract.cohort).toBe('post-epoch');
+    expect(rubric.template_data.criteria[0].barProvenance).toMatchObject({
+      lifecycle: 'legacy-backfilled', declaredBy: 'su-migration-test', declaredAt: '2026-09-05T15:00:00.000Z',
+    });
+    const replay = await runAcceptanceBarMigrationInDatabase({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-migration-test', planSlug: 'strict-late-bars',
+    });
+    expect(replay.outcomes).toEqual([]);
+  });
+
   it('dry-runs, applies through the canonical writer, and converges on rerun', async () => {
     const content = validContent('migration-target');
     await insertPlan('migration-target', content, 'draft');

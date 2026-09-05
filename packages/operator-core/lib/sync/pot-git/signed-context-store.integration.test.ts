@@ -71,7 +71,7 @@ describe('P-513 persisted store generation and physical Git receiver', () => {
     const ann = await publish();
     const out = await receive(ann, {});
     expect(out.results[0]!.result).toMatchObject({ action: 'fetched', sigrefs: { accepted: true }, mismatches: [] });
-    await db.sql`UPDATE harness_shared.routines SET metadata = metadata || jsonb_build_object('accepted', ${db.sql.json(out.replayFloors)}) WHERE workspace_id='w'`;
+    await db.sql`UPDATE harness_shared.routines SET metadata = metadata || jsonb_build_object('accepted', ${JSON.stringify(out.replayFloors)}::text::jsonb) WHERE workspace_id='w'`;
     const rows = await db.sql`SELECT metadata->'accepted' AS accepted FROM harness_shared.routines WHERE workspace_id='w'`;
     const resumed = await receive(ann, rows[0]!.accepted);
     expect(resumed.results[0]!.result).toMatchObject({ action: 'rejected', reason: 'stale-version' });
@@ -97,18 +97,39 @@ describe('P-513 persisted store generation and physical Git receiver', () => {
     const poisoned = await buildSigrefs(producer, key.pubkeyBase64, sign, { nowMs: 10, version: 999 });
     expect(poisoned.v).toBe(1);
     await defaultRunGit(['fetch', producer, '+refs/namespaces/*:refs/namespaces/*'], receiver);
+    await writeNamespaceRef(producer, key.pubkeyBase64, SIGREFS_REF, ann.sigrefs_oid);
     const after = await receive(ann, accepted.replayFloors);
-    expect(after.results[0]!.result).toMatchObject({ action: 'rejected', reason: 'stale-version' });
+    expect(after.results[0]!.result).toMatchObject({ action: 'fetched', sigrefs: { accepted: true } });
     expect(after.replayFloors).toEqual(accepted.replayFloors);
+    expect(await readNamespaceRef(receiver, key.pubkeyBase64, SIGREFS_REF)).toBe(ann.sigrefs_oid);
   });
 
   it('re-signs unchanged refs when the stored snapshot predates the scoped protocol', async () => {
     const context = await resolve();
+    await buildSigrefs(producer, key.pubkeyBase64, sign, { nowMs: 10, version: 999 });
     const priorOid = await readNamespaceRef(producer, key.pubkeyBase64, SIGREFS_REF);
     const out = await runRefAnnouncePublishTick({ repoPath: producer, devicePubkeyBase64: key.pubkeyBase64, sign, nowMs: 20, context });
     expect(out.errors).toEqual([]);
     expect(out.announcement).toMatchObject({ v: 2, version: 1, store_generation: context.store_generation });
     expect(out.announcement?.sigrefs_oid).not.toBe(priorOid);
+  });
+
+  it('rebuilds a deleted receiver mirror without forgetting its accepted generation', async () => {
+    const ann = await publish();
+    const accepted = await receive(ann, {});
+    await rm(receiver, { recursive: true, force: true });
+    receiver = await ensurePotGitRepo('renamed-local-hive-b', 'local-b');
+    const rebuilt = await receive(ann, JSON.parse(JSON.stringify(accepted.replayFloors)));
+    expect(rebuilt.results[0]!.result).toMatchObject({ action: 'fetched', sigrefs: { accepted: true } });
+    expect(rebuilt.replayFloors).toEqual(accepted.replayFloors);
+  });
+
+  it('reannounces after signing succeeded but durable publication was lost', async () => {
+    const context = await resolve();
+    const signedButUnpublished = await buildSigrefs(producer, key.pubkeyBase64, sign, { nowMs: 30, context });
+    const out = await runRefAnnouncePublishTick({ repoPath: producer, devicePubkeyBase64: key.pubkeyBase64, sign, nowMs: 40, context, versionFloor: signedButUnpublished.version - 1 });
+    expect(out.errors).toEqual([]);
+    expect(out.announcement?.version).toBe(signedButUnpublished.version + 1);
   });
 
   it('refuses signing when its durable routine owner is missing', async () => {

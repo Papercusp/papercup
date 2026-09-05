@@ -70,11 +70,16 @@ export function classifyAcceptanceBarMigration(plan: AcceptanceBarMigrationPlan)
       reason: 'drafts receive the durable epoch marker and strict BAR seeding',
     };
   }
+  // Enforcement membership and when these BARs were authored are independent.
+  // Backfilling a strict plan must not make it disappear from the adoption census.
+  const cohort = plan.acceptanceBarCohort === 'post-epoch' ||
+    (plan.acceptanceBarEpoch != null && plan.acceptanceBarCohort !== 'legacy-backfilled')
+    ? 'post-epoch' : 'legacy-backfilled';
   if (hasRequirementBars(plan.content)) {
     return {
       planSlug: plan.planSlug,
       action: 'legacy-backfill',
-      cohort: 'legacy-backfilled',
+      cohort,
       reason: 'Requirements contains explicit R-N source bars',
     };
   }
@@ -82,7 +87,7 @@ export function classifyAcceptanceBarMigration(plan: AcceptanceBarMigrationPlan)
     return {
       planSlug: plan.planSlug,
       action: 'legacy-backfill',
-      cohort: 'legacy-backfilled',
+      cohort,
       reason: 'caller supplied an explicit current criterion and verified a live mapping',
     };
   }
@@ -266,7 +271,9 @@ export async function runAcceptanceBarMigrationInDatabase(
            FOR UPDATE`;
         const current = currentRows[0];
         if (!current) throw new Error(`plan_not_found:${plan.planSlug}`);
-        if (current.content !== plan.content || Number(current.version) !== Number(plan.version)) {
+        if (current.content !== plan.content || Number(current.version) !== Number(plan.version) ||
+            current.acceptance_bar_cohort !== plan.acceptanceBarCohort ||
+            Number(current.acceptance_bar_epoch ?? 0) !== Number(plan.acceptanceBarEpoch ?? 0)) {
           throw new Error(`plan_changed_retry:${plan.planSlug}`);
         }
         const cohort = decision.cohort ?? (decision.action === 'seed-strict' ? 'post-epoch' : 'legacy-backfilled');
@@ -297,6 +304,7 @@ export async function runAcceptanceBarMigrationInDatabase(
           planVersion: Number(current.version),
           adoptionEpoch: Number(current.acceptance_bar_epoch ?? 1),
           cohort,
+          backfilled: decision.action === 'legacy-backfill',
           actorId: options.actorId,
           now,
         });

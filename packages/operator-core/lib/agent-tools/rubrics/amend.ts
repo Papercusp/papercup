@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { amendRubric, rubricCompleteness, AMENDABLE_CRITERION_FIELDS } from '../../rubrics';
+import { amendRubric, previewAcceptanceBarAmendment, rubricCompleteness, AMENDABLE_CRITERION_FIELDS, type AmendRubricInput } from '../../rubrics';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import { trackDetached } from '../../detached-imports';
 
@@ -18,7 +18,7 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    "Amend ONE criterion prose field (model | method | driftMarkers | replication | title), set the rubric-level methodRef, and/or replace unpinned composition refs — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). Composition refs must name existing standard rubrics and are resolved at write time; omit composes to preserve the stored list. For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+    "Amend one criterion prose field, structural evidence plane, rubric methodRef, or unpinned composition refs. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
   guidance: {
     when: "A targeted rubric improvement: fold a new replication-drill variant into one criterion, sharpen one model/driftMarkers paragraph, or point methodRef at a runbook — without resubmitting the whole document.",
     notWhen:
@@ -31,6 +31,9 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     rubricRef: z.string().min(1).max(120).describe('the rubric ref/slug to amend'),
+    dryRun: z.boolean().optional().describe('preview a BAR meaning amendment without writing; returns exact approval JSON for an outside-lineage reviewer to post through work_items:comment or another authenticated Threadable verb'),
+    criterionEvidencePlane: z.object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
+      .optional().describe('change one acceptance criterion structural evidence plane through the canonical BAR amendment transaction'),
     criterion: z
       .object({
         key: z.string().min(1).describe('the criterion key (must exist — keys are identity, not amendable)'),
@@ -69,9 +72,9 @@ export default defineTool({
     expectedRubricRevision: z.number().int().positive().optional().describe('optimistic CAS for the acceptance-rubric plan revision'),
     expectedSubjectPlanRevision: z.number().int().positive().optional().describe('optimistic CAS for the subject-plan revision'),
     idempotencyKey: z.string().min(1).max(200).optional().describe('stable replay token for a started-BAR amendment'),
-    approvalRef: z.string().min(1).max(240).optional().describe('approval event/record proving an outside-lineage reviewer approved the amendment'),
-    approvedBy: z.string().min(1).max(200).optional().describe('authenticated outside-lineage approver identity'),
-    approvedAt: z.string().datetime({ offset: true }).optional().describe('approval event timestamp'),
+    approvalRef: z.string().min(1).max(240).optional().describe('thread-post:<id> containing the preview approval JSON, authored by an authenticated outside-lineage reviewer'),
+    approvedBy: z.string().min(1).max(200).optional().describe('optional assertion of the reviewer identity; must match the approval post author'),
+    approvedAt: z.string().datetime({ offset: true }).optional().describe('legacy hint; authoritative approval time is always read from the post'),
     faultInjection: z.enum(['after-decision', 'after-rubric', 'after-projection', 'after-rebind']).optional().describe('test-only rollback probe'),
   }),
   async handler(args, ctx) {
@@ -96,10 +99,11 @@ export default defineTool({
     // (The deeper defect — that proposedBy/ratifiedBy are unrepresentable because all three
     // identities collapse onto plan.owner, making D-012 unauditable — is tracked separately.)
     const identity = resolveAgentIdentity(ctx); // authz/identity side-effects + a clear failure if unidentified
-    const rubric = await amendRubric({
+    const input: AmendRubricInput = {
       rubricId: args.rubricRef,
       ...(args.criterion ? { criterion: args.criterion } : {}),
       ...(args.criterionClass ? { criterionClass: args.criterionClass } : {}),
+      ...(args.criterionEvidencePlane ? { criterionEvidencePlane: args.criterionEvidencePlane } : {}),
       ...(args.methodRef !== undefined ? { methodRef: args.methodRef } : {}),
       ...(args.composes !== undefined ? { composes: args.composes } : {}),
       ...(args.allowMethodShrink !== undefined ? { allowMethodShrink: args.allowMethodShrink } : {}),
@@ -113,7 +117,12 @@ export default defineTool({
       ...(args.approvedAt !== undefined ? { approvedAt: args.approvedAt } : {}),
       ...(args.faultInjection !== undefined ? { faultInjection: args.faultInjection } : {}),
       actorId: identity.ownerId,
-    });
+    };
+    if (args.dryRun) {
+      const preview = await previewAcceptanceBarAmendment(input);
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: preview !== null, dryRun: true, preview }) }] };
+    }
+    const rubric = await amendRubric(input);
     if (!rubric) {
       return {
         content: [

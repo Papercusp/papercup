@@ -261,7 +261,8 @@ export function acceptStagingAdvance(
   opts: AcceptStagingAdvanceOpts = {},
 ): StagingAdvanceAcceptance {
   if (!isSignedStagingAdvance(incoming)) return { ok: false, reason: 'malformed' };
-  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION && opts.allowLegacy !== true) {
+  if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION &&
+      (opts.allowLegacy !== true || opts.knownStoreGenerations?.[incoming.device_pubkey])) {
     return { ok: false, reason: 'legacy-version' };
   }
   if (incoming.v === STAGING_ADVANCE_SCHEMA_VERSION_CONTEXT &&

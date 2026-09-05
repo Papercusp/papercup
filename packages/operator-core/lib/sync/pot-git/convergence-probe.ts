@@ -61,6 +61,8 @@
  *  called NOT CONVERGED. ~3 ticks at the ~5-min git-sync cadence: long enough
  *  that a normally-advancing cold join never trips it, short enough that a
  *  genuinely stuck mirror is named within a quarter hour rather than a week. */
+import { compareGenerationVersion, storeGenerationOrdinal } from './signed-context';
+
 export const DEFAULT_CONVERGENCE_PERSISTENCE_MS = 15 * 60 * 1000;
 
 /**
@@ -289,9 +291,28 @@ export function judgeReleaseConsistency(input: JudgeReleaseConsistencyInput): Re
         entry.receiverSequence !== null,
       )
       .sort((a, b) => b.receiverSequence - a.receiverSequence);
-    const latest = receiverOrdered[0] ?? null;
+    const lastObserved = receiverOrdered[0] ?? null;
+    // Modern generations have a signed total order. Receiver arrival order
+    // remains only the legacy fallback and a tie-breaker for observations.
+    const latest = [...receiverOrdered].sort((a, b) => {
+      const aModern = storeGenerationOrdinal(a.announcement.storeGeneration) !== null;
+      const bModern = storeGenerationOrdinal(b.announcement.storeGeneration) !== null;
+      if (aModern !== bModern) return aModern ? -1 : 1;
+      if (aModern) {
+        const order = compareGenerationVersion(
+          { version: a.announcement.version, store_generation: a.announcement.storeGeneration },
+          { version: b.announcement.version, store_generation: b.announcement.storeGeneration },
+        );
+        if (order !== null && order !== 0) return -order;
+      }
+      return b.receiverSequence - a.receiverSequence;
+    })[0] ?? null;
     const local = localByDevice.get(devicePubkeyBase64) ?? null;
     const peerIssues: ReleaseConsistencyIssue[] = [];
+    if (latest && lastObserved && latest !== lastObserved && latest.receiverSequence < lastObserved.receiverSequence) {
+      addIssue(peerIssues, devicePubkeyBase64, 'replayed-announcement',
+        'the newest receiver event replays an older signed generation or sequence');
+    }
 
     if (!latest) {
       addIssue(
@@ -361,7 +382,7 @@ export function judgeReleaseConsistency(input: JudgeReleaseConsistencyInput): Re
           ({ announcement: candidate }) =>
             safeNonNegativeInteger(candidate.version) !== null && candidate.version > announcedVersion,
         );
-        const exactSignedReplay = sameGeneration.slice(1).some(({ announcement: candidate }) =>
+        const exactSignedReplay = sameGeneration.filter(({ announcement: candidate }) => candidate !== announcement).some(({ announcement: candidate }) =>
           candidate.version === announcedVersion &&
           candidate.sigrefsOid === announcedSigrefsOid &&
           candidate.signedAtMs === signedAtMs,

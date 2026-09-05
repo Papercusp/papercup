@@ -50,7 +50,7 @@ import { Duplex } from 'node:stream';
 import { defaultRunGit, type RunGit, listNamespaceRefs, type NamespaceRef, deviceNamespaceKey } from './storage';
 import { DEFAULT_FETCH_TIMEOUT_MS } from './fetch-transport';
 import { deriveNamespaceGenesisBaseline } from './namespace-genesis-baseline';
-import { SIGREFS_REF, buildSigrefs, readSigrefs, type SignedSigrefs } from './sigrefs';
+import { SIGREFS_REF, SIGREFS_SCHEMA_VERSION_CONTEXT, buildSigrefs, readSigrefs, type SignedSigrefs } from './sigrefs';
 import {
   buildRefAnnouncement,
   handleRefAnnouncement,
@@ -60,7 +60,7 @@ import {
   type RefAnnounceHandleResult,
   type SignedRefAnnouncement,
 } from './ref-announce';
-import { signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolContext, type ExpectedSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
+import { compareGenerationVersion, signedProtocolContextMatches, isSignedProtocolContext, type SignedProtocolContext, type ExpectedSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 import {
   checkPublishGuard,
   describePublishRefusal,
@@ -184,7 +184,8 @@ export async function runRefAnnouncePublishTick(
     );
   }
   if (prior && (!input.context || signedProtocolContextMatches(prior, input.context)) &&
-      sameRefs(prior.refs, currentRefs) && prior.version >= (input.versionFloor ?? 0)) {
+      sameRefs(prior.refs, currentRefs) &&
+      (input.versionFloor === undefined || prior.version === input.versionFloor)) {
     return { ran: true, changed: false, announcement: null, refused: null, errors };
   }
 
@@ -344,7 +345,8 @@ export async function runRefAnnounceReceiveTick(
   const errors: string[] = [];
   const nowMs = input.nowMs ?? Date.now();
   const budgetStates = new Map(input.budgetStates ?? []);
-  const replayFloors = { ...input.replayFloors };
+  const replayFloors = Object.fromEntries(Object.entries(input.replayFloors ?? {})
+    .filter(([, floor]) => !input.expectedContext || signedProtocolContextMatches(floor, input.expectedContext)));
   const results: RefAnnounceReceiveResult[] = [];
   if (input.pending.length === 0) return { ran: false, results, budgetStates, replayFloors, errors };
 
@@ -390,6 +392,7 @@ export async function runRefAnnounceReceiveTick(
     try {
       const result = await handleRefAnnouncement(input.repoPath, incoming, opts);
       if (result.action === 'fetched' && result.sigrefs.accepted && result.mismatches.length === 0 &&
+          result.sigrefs.snapshot.v === SIGREFS_SCHEMA_VERSION_CONTEXT &&
           isSignedProtocolContext(result.sigrefs.snapshot)) {
         replayFloors[device] = {
           hive_id: result.sigrefs.snapshot.hive_id,
@@ -489,16 +492,18 @@ export function mergeParkedIntoReceiveBatch(
   parked: Readonly<ParkedRefAnnouncements>,
   fresh: readonly RefAnnounceReceiveBatchRow[],
 ): RefAnnounceReceiveBatchRow[] {
-  const newestFreshVersion = new Map<string, number>();
+  const newestFreshVersion = new Map<string, SignedRefAnnouncement>();
   for (const row of fresh) {
     const d = row.announcement.device_pubkey;
-    newestFreshVersion.set(d, Math.max(newestFreshVersion.get(d) ?? -1, row.announcement.version));
+    const previous = newestFreshVersion.get(d);
+    if (!previous || compareGenerationVersion(row.announcement, previous) === 1) newestFreshVersion.set(d, row.announcement);
   }
   const parkedRows: RefAnnounceReceiveBatchRow[] = [];
   for (const p of Object.values(parked)) {
     if (!p?.announcement) continue;
     const superseding = newestFreshVersion.get(p.announcement.device_pubkey);
-    if (superseding !== undefined && superseding >= p.announcement.version) continue;
+    const order = superseding ? compareGenerationVersion(superseding, p.announcement) : null;
+    if (order === 1 || order === 0) continue;
     parkedRows.push({ rowId: p.rowId, announcement: p.announcement, parked: true });
   }
   parkedRows.sort((a, b) => a.rowId - b.rowId);
@@ -556,7 +561,9 @@ export function decideRefAnnounceReceiveCursor(
     const res = results[i];
     const device = row.announcement.device_pubkey;
     const action = res?.result.action ?? null;
-    lastByDevice.set(device, { row, action });
+    const previous = lastByDevice.get(device);
+    const order = previous ? compareGenerationVersion(row.announcement, previous.row.announcement) : 1;
+    if (order === 1 || order === 0) lastByDevice.set(device, { row, action });
     if (res?.result.action === 'fetch-failed') {
       // WI-6277: carry the discriminators, not just stderr — a SIGKILLed git
       // (the ceiling path) writes no stderr, so stderr alone renders the one

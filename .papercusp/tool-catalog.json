@@ -26313,7 +26313,7 @@
           "POST"
         ]
       },
-      "description": "Amend ONE criterion prose field (model | method | driftMarkers | replication | title), set the rubric-level methodRef, and/or replace unpinned composition refs — the small-edit path that replaces nothing else (vs rubrics:propose's whole-document replace). Composition refs must name existing standard rubrics and are resolved at write time; omit composes to preserve the stored list. For a started acceptance BAR, changing model/driftMarkers requires approvalRef + approvedBy from an outside-lineage reviewer and commits the subject-plan Decision, BAR/spec revisions, and open-contract rebind atomically; old evidence and grades remain auditable but become revision-ineligible. mode:'append' adds a paragraph and is never guarded; mode:'replace' swaps the field and inherits the shrink loss-guard (allowMethodShrink + shrinkReason when it guts a procedure). Preserves the stored status — amending an active rubric never demotes it.",
+      "description": "Amend one criterion prose field, structural evidence plane, rubric methodRef, or unpinned composition refs. A started BAR meaning change uses dryRun:true to preview exact hashes; an outside-lineage reviewer posts the returned approval JSON through work_items:comment, then apply with approvalRef:'thread-post:<id>'. Reviewer identity and timestamp are read from that authenticated post, never supplied by the caller. The subject Decision, every BAR/spec revision, and open-contract rebind commit atomically. Old proof and grades remain audit history but become revision-ineligible. METHOD append/replace edits retain the existing shrink guard. Stored lifecycle status is preserved.",
       "capabilities": [
         "coord:write"
       ],

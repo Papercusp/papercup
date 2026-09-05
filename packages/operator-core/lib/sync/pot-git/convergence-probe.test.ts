@@ -71,6 +71,20 @@ function judgeExact(over: Partial<Parameters<typeof judgeReleaseConsistency>[0]>
 }
 
 describe('judgeReleaseConsistency — fail-closed exact release acceptance', () => {
+  it('never promotes a later-arriving replay over the signed store-generation order', () => {
+    const old = `sg2-1-${'a'.repeat(40)}`;
+    const current = `sg2-2-${'b'.repeat(40)}`;
+    const verdict = judgeExact({
+      announced: [
+        { devicePubkeyBase64: PEER, version: 999, sequence: 12, sigrefsOid: SIGREFS_OID, storeGeneration: old, observedAtMs: NOW, signedAtMs: NOW },
+        { devicePubkeyBase64: PEER, version: 1, sequence: 11, sigrefsOid: NEXT_SIGREFS_OID, storeGeneration: current, observedAtMs: NOW, signedAtMs: NOW },
+      ],
+      local: [{ devicePubkeyBase64: PEER, version: 999, sigrefsOid: SIGREFS_OID, storeGeneration: old }],
+    });
+    expect(verdict.state).not.toBe('current');
+    expect(verdict.issues).toContainEqual(expect.objectContaining({ code: 'replayed-announcement' }));
+    expect(verdict.issues).toContainEqual(expect.objectContaining({ code: 'store-generation-mismatch' }));
+  });
   it('is CURRENT only when every expected peer has a fresh exact generation/sequence/snapshot match', () => {
     const verdict = judgeExact();
     expect(verdict).toMatchObject({

@@ -10,7 +10,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign, createPrivateKey, type KeyObject } from 'node:crypto';
-import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef } from './storage';
+import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef, readNamespaceRef } from './storage';
+import { buildSigrefs, SIGREFS_REF } from './sigrefs';
+import { makeSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 import { WORK_REF, readStaging } from './integrator';
 import { verifyStagingAdvance } from './staging-advance';
 import { runIntegratorTick } from './integrator-tick';
@@ -101,6 +103,38 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     expect(out.ran).toBe(false);
     expect(out.skipped).toBe('not-integrator');
     expect(out.announcement).toBeNull();
+  });
+
+  it('P-513 integrates only a scoped snapshot matching the durable accepted floor and current heads', async () => {
+    const scopedRepo = await ensurePotGitRepo('hive-i', 'scoped-admission');
+    const scope = { hive_id: 'hive-public-key', repo_key: 'scoped-admission' };
+    const own = makeSignedProtocolContext(scope.hive_id, scope.repo_key, `sg2-4-${'a'.repeat(40)}`);
+    const peer = makeSignedProtocolContext(scope.hive_id, scope.repo_key, `sg2-3-${'b'.repeat(40)}`);
+    const sha = await commit(scopedRepo, { 'accepted.txt': 'one' });
+    await writeNamespaceRef(scopedRepo, devA.pubBase64, WORK_REF, sha);
+    const signed = await buildSigrefs(scopedRepo, devA.pubBase64, devA.sign, { nowMs: 1, context: peer });
+    const oid = (await readNamespaceRef(scopedRepo, devA.pubBase64, SIGREFS_REF))!;
+    const invoke = (acceptedSnapshots: Record<string, SignedSnapshotFloor>) => runIntegratorTick({
+      potHomeSlug: 'hive-i', workspaceId: 'ws-1', repoKey: 'scoped-admission',
+      memberDevicePubkeysBase64: [devA.pubBase64], integratorDevicePubkeyBase64: integrator.pubBase64,
+      epoch: 1, priorSeq: 0, context: own, acceptedSnapshots, sign: integrator.sign, resolveTier: () => 'steer',
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
+    });
+    const missing = await invoke({});
+    expect(missing.gated?.integrated).toBe(0);
+    expect(missing.announcement).toBeNull();
+    const floor = { ...peer, version: signed.version, sigrefs_oid: oid };
+    const wrongOid = await invoke({ [devA.pubBase64]: { ...floor, sigrefs_oid: 'c'.repeat(40) } });
+    expect(wrongOid.gated?.integrated).toBe(0);
+    const accepted = await invoke({ [devA.pubBase64]: floor });
+    expect(accepted.errors).toEqual([]);
+    expect(accepted.gated?.integrated).toBe(1);
+    expect(accepted.announcement).toMatchObject({ v: 2, ...own, staging_sha: sha });
+    const unsigned = await commit(scopedRepo, { 'unsigned.txt': 'two' }, sha);
+    await writeNamespaceRef(scopedRepo, devA.pubBase64, WORK_REF, unsigned);
+    const tampered = await invoke({ [devA.pubBase64]: floor });
+    expect(tampered.gated?.integrated).toBe(0);
+    expect(await readStaging(scopedRepo, integrator.pubBase64)).toBe(sha);
   });
 
   it('as the lease holder: integrates steer-tier heads and signs a valid staging-advance', async () => {

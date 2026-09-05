@@ -69,6 +69,24 @@ const row = (rowId: number, device: string, version = 1): RefAnnounceReceiveBatc
 });
 const NOW = 1_700_000_000_000;
 
+describe('generation ordering in receive queues (P-513)', () => {
+  const generated = (rowId: number, generation: number, version: number): RefAnnounceReceiveBatchRow => ({
+    rowId, announcement: { ...ann('B', version), store_generation: `sg2-${generation}-${'a'.repeat(40)}` },
+  });
+  it('supersedes a parked old generation even when its sequence is much higher', () => {
+    const old = generated(1, 1, 999);
+    const fresh = generated(2, 2, 1);
+    const parked = { B: { ...old, parkedSinceMs: NOW, attempts: 1 } };
+    expect(mergeParkedIntoReceiveBatch(parked, [fresh])).toEqual([fresh]);
+  });
+  it('keeps a failed current generation when a late older-generation row follows it', () => {
+    const current = generated(1, 2, 1);
+    const old = generated(2, 1, 999);
+    const decision = decideRefAnnounceReceiveCursor([failed('B'), ok('B')], [current, old], 2, {}, NOW);
+    expect(decision.parked.B?.announcement).toEqual(current.announcement);
+  });
+});
+
 describe('decideRefAnnounceReceiveCursor (EI-15335 → P-203 Leg A parking)', () => {
   it('advances the cursor fully when every fetch succeeded, parking nothing', () => {
     const d = decideRefAnnounceReceiveCursor([ok('A'), ok('B'), ok('C')], [row(10, 'A'), row(11, 'B'), row(12, 'C')], 12, {}, NOW);
