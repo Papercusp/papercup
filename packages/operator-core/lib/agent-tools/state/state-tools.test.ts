@@ -59,7 +59,9 @@ vi.mock('../coordination/identity', async (importOriginal) => {
 });
 
 import readTool from './read';
-import subscribeTool from './subscribe';
+import subscribeTool, { STATE_SUBSCRIBE_GC_HORIZON_SEC } from './subscribe';
+import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
+import { CHECKPOINT_MAX_RUNTIME_SEC } from '../../release-checkpoint-launch';
 import { SU_ROLES } from '@papercusp/agent-mcp';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from '../../cell-registry';
 // The REAL comparator, so the P-005 semantic-transition property is proven against the
@@ -791,5 +793,53 @@ describe('state:subscribe — refusal codes are queryable (P-004)', () => {
       expect(c).toMatch(/^[a-z][a-z0-9_]*$/);
     }
     expect(new Set(codes).size).toBe(codes.length);
+  });
+});
+
+/**
+ * EI-20037590613603206 — the `once` registration must OUTLIVE the wait this tool's own
+ * See-also prescribes.
+ *
+ * `state:subscribe` deliberately withholds `timeout_sec`/`on_timeout` (events:await owns
+ * those), so a caller cannot raise the expiry even knowing it is wrong. Inheriting
+ * watch:create's generic 30min default therefore expired the subscription mid-suite on
+ * exactly the wait the repo guide sends agents here for — and since the registration
+ * wakes with a TIMEOUT marker, a routine gate run read as "the thing I am waiting on has
+ * STALLED".
+ *
+ * The `once:false` half is asserted too, because the tempting one-line fix (make the
+ * once-path expiry null) would delete the ONLY reaper for never-firing watches:
+ * predicate-watch.ts GCs a predicate watch precisely when its paired `event_awaits` row
+ * is gone (`cancelled/consumed/expired`). So the contract has two halves — `once` keeps
+ * an expiry, and it is larger than the generic default.
+ */
+describe('state:subscribe — the once-watch expiry is a GC horizon, not a wait budget (EI-20037590613603206)', () => {
+  it('registers the once path with an explicit expiry, NOT watch:create\'s generic default', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { once: boolean; timeout_sec?: number };
+    expect(sent.once).toBe(true);
+    expect(sent.timeout_sec).toBe(STATE_SUBSCRIBE_GC_HORIZON_SEC);
+  });
+
+  // The CALIBRATION for the assertion above: it is only load-bearing while the value it
+  // overrides is genuinely shorter. If watch:create's generic default is ever raised past
+  // this horizon, the override stops being a fix and this test says so instead of passing
+  // vacuously alongside a regression.
+  it('the horizon is strictly longer than the generic default it overrides, and covers the suite ceiling', () => {
+    expect(AWAIT_DEFAULT_TIMEOUT_SEC).toBeLessThan(STATE_SUBSCRIBE_GC_HORIZON_SEC);
+    expect(STATE_SUBSCRIBE_GC_HORIZON_SEC).toBeGreaterThan(CHECKPOINT_MAX_RUNTIME_SEC);
+  });
+
+  it('a STANDING watch (once:false) still carries NO expiry — it is not on the GC contract', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell', once: false } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { once: boolean; timeout_sec?: number };
+    expect(sent.once).toBe(false);
+    expect(sent.timeout_sec).toBeUndefined();
   });
 });
