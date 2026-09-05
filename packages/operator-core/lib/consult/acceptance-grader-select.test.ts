@@ -114,13 +114,31 @@ describe('selectAcceptanceGrader (D-009)', () => {
     expect(out.escalation).toBeUndefined();
     // The router received the FULL exclusion set: computed + extras, no nulls.
     const call = route.mock.calls[0][0];
-    expect(call.excludeOwners).toEqual(
-      expect.arrayContaining(['su-implementer', 'su-author', 'su-shipper']),
-    );
+    expect(call.excludeOwners).toEqual(expect.arrayContaining(['su-implementer', 'su-author', 'su-shipper']));
     expect(call.excludeOwners).not.toContain(null);
     // Synthetic requester — never a real owner id.
     expect(call.requesterId).toBe('acceptance-gate:a-plan');
     expect(out.excluded).toEqual(expect.arrayContaining(['su-implementer', 'su-author', 'su-shipper']));
+  });
+
+  it('excludes a candidate in the same party as a work-item vetting critic while retaining an unrelated grader', async () => {
+    const criticAlias = candidate('su-critic-respawn', 'live', 0.95);
+    const independent = candidate('su-independent', 'live', 0.8);
+    const out = await selectAcceptanceGrader(
+      { ...params, extraExclusions: ['su-work-item-critic'] },
+      {
+        getSql: () => fakeSql([]),
+        getPartyKeys: partyLookup([['su-work-item-critic', 'su-critic-respawn']]),
+        getCandidateRoles: roleLookup({ 'su-critic-respawn': 'reviewer', 'su-independent': 'reviewer' }),
+        // The routing stub deliberately returns the critic's rebound identity:
+        // raw excludeOwners cannot recognize it, so the party filter must.
+        route: async () => routed([criticAlias, independent]),
+      },
+    );
+
+    expect(out.graders.map((grader) => grader.candidate.ownerId)).toEqual(['su-independent']);
+    expect(out.excluded).toEqual(expect.arrayContaining(['su-work-item-critic', 'su-critic-respawn']));
+    expect(out.routing?.candidates.map((candidate) => candidate.ownerId)).toEqual(['su-independent']);
   });
 
   it('selects up to the policy MAX (2), best first, all via floor', async () => {
@@ -174,7 +192,10 @@ describe('selectAcceptanceGrader (D-009)', () => {
       getSql: () => fakeSql([]),
       getPartyKeys: noParties,
       getCandidateRoles: roleLookup({ 'su-good': 'reviewer', 'su-weak': 'reviewer' }),
-      route: async () => ({ ...routed([qualified]), snapshot: { ...routed([qualified]).snapshot, candidates: [qualified, below] } }),
+      route: async () => ({
+        ...routed([qualified]),
+        snapshot: { ...routed([qualified]).snapshot, candidates: [qualified, below] },
+      }),
     });
     expect(out.graders.map((g) => g.candidate.ownerId)).toEqual(['su-good']);
   });
@@ -304,9 +325,7 @@ describe('independence invariants hold for the whole MENU, not the head (P-005)'
     );
     expect(out.graders[0]?.via).toBe('minimum');
     expect(route).toHaveBeenCalledTimes(1);
-    expect(route.mock.calls[0][0].excludeOwners).toEqual(
-      expect.arrayContaining(['su-implementer', 'su-author']),
-    );
+    expect(route.mock.calls[0][0].excludeOwners).toEqual(expect.arrayContaining(['su-implementer', 'su-author']));
   });
 
   it('two ownerIds of ONE party yield ONE menu entry, not a two-grader menu', async () => {
@@ -441,12 +460,12 @@ describe('collapseToDistinctParties', () => {
 
 describe('computeGraderExclusions', () => {
   it('dedupes computed rows with extras and drops null/undefined extras', async () => {
-    const out = await computeGraderExclusions(
-      fakeSql([{ owner: 'su-a' }, { owner: 'su-b' }]),
-      'ws',
-      'a-plan',
-      ['su-b', 'su-c', null, undefined],
-    );
+    const out = await computeGraderExclusions(fakeSql([{ owner: 'su-a' }, { owner: 'su-b' }]), 'ws', 'a-plan', [
+      'su-b',
+      'su-c',
+      null,
+      undefined,
+    ]);
     expect([...out].sort()).toEqual(['su-a', 'su-b', 'su-c']);
   });
 });

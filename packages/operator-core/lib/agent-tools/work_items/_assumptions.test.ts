@@ -15,7 +15,10 @@ vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(),
 }));
 
-import { resolveDeclaredAssumptions } from './_assumptions';
+import {
+  normalizePersistedAssumptionDeclaration,
+  resolveDeclaredAssumptions,
+} from './_assumptions';
 import { assumptionSelectorsFor } from '../../agent-facts/assumptions';
 import { getWorkItem } from '../../work-items';
 
@@ -182,5 +185,35 @@ describe('resolveDeclaredAssumptions — the ["none"] container fumble (EI-19339
     ).rejects.toThrow(/contradictory/i);
 
     expect(selectorsFor).not.toHaveBeenCalled();
+  });
+});
+
+describe('normalizePersistedAssumptionDeclaration — read→retry shape (EI-22404076241784390)', () => {
+  it('unwraps the stored explicit-none declaration and drops the server timestamp', () => {
+    expect(
+      normalizePersistedAssumptionDeclaration({
+        declared: 'none',
+        resolvedAt: '2026-09-05T21:00:00.000Z',
+      }),
+    ).toBe('none');
+  });
+
+  it('recovers the original keys from resolved assumption entries', () => {
+    expect(
+      normalizePersistedAssumptionDeclaration({
+        declared: [
+          { declared: 'gate-red-is-flake', condition: 'live', ref: 'fact:workspace:gate-red-is-flake@v1' },
+          { declared: 'fact:owner:su-1:staging-is-current', condition: 'lapsed', ref: null },
+        ],
+        resolvedAt: '2026-09-05T21:00:00.000Z',
+      }),
+    ).toEqual(['gate-red-is-flake', 'fact:owner:su-1:staging-is-current']);
+  });
+
+  it('leaves malformed or ordinary caller values untouched', () => {
+    const malformed = { declared: [{ condition: 'live' }], resolvedAt: '2026-09-05T21:00:00.000Z' };
+    expect(normalizePersistedAssumptionDeclaration(malformed)).toBe(malformed);
+    const native = ['gate-red-is-flake'];
+    expect(normalizePersistedAssumptionDeclaration(native)).toBe(native);
   });
 });

@@ -143,6 +143,37 @@ export function hasAssumptionDeclaration(v: unknown): boolean {
   return Array.isArray(v) && v.length > 0 && v.every((k) => typeof k === 'string' && k.trim().length > 0);
 }
 
+/**
+ * Normalize the server-stamped shape returned under `payload._assumptions` back
+ * to the caller-facing declaration accepted by terminal writers.
+ *
+ * A read→retry naturally hands `work_items:complete` / `work_items:set_state`
+ * the stored `{ declared, resolvedAt }` object. `resolvedAt` is server metadata
+ * and resolved entries carry the original key under their own `declared` field;
+ * neither belongs in the input union. Only the unmistakable persisted shape is
+ * rescued. Other objects remain untouched so malformed caller input still gets
+ * the normal schema refusal.
+ */
+export function normalizePersistedAssumptionDeclaration(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.resolvedAt !== 'string' || !record.resolvedAt.trim() || !('declared' in record)) {
+    return raw;
+  }
+
+  const declared = record.declared;
+  if (declared === NO_ASSUMPTIONS) return NO_ASSUMPTIONS;
+  if (!Array.isArray(declared) || declared.length === 0) return raw;
+  if (declared.every((entry) => typeof entry === 'string')) return declared;
+
+  const keys = declared.map((entry) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+    const original = (entry as Record<string, unknown>).declared;
+    return typeof original === 'string' && original.trim().length > 0 ? original : undefined;
+  });
+  return keys.every((key): key is string => typeof key === 'string') ? keys : raw;
+}
+
 /** The refusal for a declaration that names the sentinel ALONGSIDE real keys. */
 export const ASSUMPTIONS_CONTRADICTION_MESSAGE =
   `assumptions names both the literal "${NO_ASSUMPTIONS}" and real fact key(s). Those are contradictory ` +

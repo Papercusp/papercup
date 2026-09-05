@@ -9,8 +9,9 @@
  *   - the watchdog's event-driven captures (the hard feed-in, D-003).
  *
  * It owns the capture semantics:
- *   - **search-first dedup** (D-001): surfaces likely-existing items and declines
- *     to create a near-duplicate unless `force` — a nudge + good search, NOT a gate.
+ *   - **dedup verdict annotation** (P-002/D-001): surfaces likely-existing items and
+ *     records the verdict on the created row; normal filing is never declined. The
+ *     explicit `checkDuplicatesOnly` probe is the non-persisting path.
  *   - **native `kind`** (close-loop D-002): writes the real `engineer_issues.kind`
  *     column (bug | change). The title-prefix convention is RETIRED. `feature`
  *     captures (net-new, rare) store as kind='change' + `payload.improvementKind:
@@ -99,7 +100,7 @@ export const CAPTURE_LEXICAL_SEARCH_BUDGET_MS = 1_500;
 /**
  * Fraction of the SHORTER title that must be covered for a candidate to be SURFACED as a
  * containment hit (knowledge-at-symptom-time-2026-08-09 P-007). Advisory-only: a
- * containment hit is never eligible to decline a capture — see `blockEligible` below.
+ * containment hit is never eligible to carry a blocking dedup verdict — see `blockEligible`.
  */
 export const CONTAINMENT_THRESHOLD = 0.9;
 
@@ -126,8 +127,8 @@ export interface CaptureImprovementInput {
    *  monitoring floor can never be broken by the gate. */
   enforcePoorRatingDisposition?: boolean;
   /** Caller asserts distinctness: suppresses the payload.dedupVerdict annotation
-   *  and the burst-admission coalesce (P-002 — the search-first DECLINE this flag
-   *  used to override is retired; every filing is accepted either way). */
+   *  and the burst-admission coalesce (P-002 — the former search-first decline this
+   *  flag used to override is retired; every filing is accepted either way). */
   force?: boolean;
   /**
    * DRAIN admission rail — measurement-only since P-002 (D-001): the degraded-
@@ -174,7 +175,7 @@ export interface CaptureImprovementInput {
    * `payload.watchdogKey` so cross-tick dedup is an exact indexed lookup instead
    * of a fuzzy title match. For a NON-observation capture this sharpens the title
    * net: a candidate carrying a DIFFERENT watchdogKey is a different signal and
-   * never declines this capture (kills the subset-title false-dedup edge — a
+   * never carries a blocking verdict for this capture (kills the subset-title false-dedup edge — a
    * nested-path red-test title token-subsetting another).
    *
    * For an `lane:'observation'` capture (EI-15448), this field does something
@@ -315,7 +316,7 @@ export interface PossibleDuplicate {
   /** P-011: present when this candidate arrived via the EMBEDDING net (its
    *  title never crossed the lexical DUP_THRESHOLD — a differently-worded
    *  refile). `similarity` is then the cosine, not titleSimilarity. 'hard'
-   *  may decline the capture like a lexical dup; 'soft' is advisory-only. */
+   *  may carry the blocking verdict annotation like a lexical dup; 'soft' is advisory-only. */
   semantic?: 'hard' | 'soft';
   /** P-007 (knowledge-at-symptom-time-2026-08-09): present when this candidate arrived via
    *  the CONTAINMENT net — your (shorter) title is almost entirely covered by this one, but
@@ -1216,7 +1217,7 @@ export async function captureImprovement(
   input: CaptureImprovementInput,
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult> {
-  // Search-first dedup (D-001): full-text search, then a title-similarity pass.
+  // Dedup search (D-001/P-002): full-text search, then a title-similarity pass.
   // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
@@ -1287,7 +1288,7 @@ export async function captureImprovement(
 
   // P-013: the invocation-ledger watchdog (or a caller with deterministic
   // reproduction evidence) corroborates an exact-key probation observation.
-  // Promote THAT row in place before fuzzy dedup can decline it against itself.
+  // Promote THAT row in place before fuzzy dedup can misclassify it against itself.
   // EI-20484430331973864: fetched ONCE and used TWICE — to promote a probation
   // observation (immediately below), and as a first-class BLOCKING dedup source further
   // down. Previously an exact-key hit that matched no probation row was simply DISCARDED,
@@ -1529,9 +1530,9 @@ export async function captureImprovement(
       }
     }
   }
-  // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
+  // Observations skip the dedup search entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a
-  // recurring observation re-files rather than being declined as a duplicate.
+  // recurring observation re-files without a duplicate verdict.
   let lexicalLeg: DedupCoverage['lexical'] = isObservation ? 'skipped' : 'unavailable';
   let searched: EngineerIssue[] = [];
   if (!isObservation) {
@@ -1558,8 +1559,8 @@ export async function captureImprovement(
   // hydrate the hits into full EngineerIssues, and let them ride the SAME
   // origin / watchdogKey / dedupScope / alreadyDecided rails as lexical
   // candidates. Fail-open (null verdict ⇒ lexical-only) and vitest-inert via
-  // the guard itself. A 'hard' hit may DECLINE like a lexical dup; 'soft' is
-  // advisory-only (surfaced, never blocks).
+  // the guard itself. A 'hard' hit may carry the verdict annotation; 'soft' is
+  // advisory-only (surfaced, never contributes to the verdict).
   const semanticBand = new Map<string, { similarity: number; band: 'hard' | 'soft' }>();
   // P-007: track whether the embedding leg actually produced a verdict. It fails OPEN
   // (null on timeout / embedder down / disabled), so without this the caller cannot tell
@@ -1712,7 +1713,7 @@ export async function captureImprovement(
   }
   // Key-aware title net (watchdog-audit P-004 / D-001): a candidate carrying a
   // DIFFERENT watchdogKey is a different signal — nested-path red-test titles
-  // token-subset each other and used to false-decline. A candidate WITHOUT a key
+  // token-subset each other and used to false-classify. A candidate WITHOUT a key
   // stays in the net (legacy items + agent captures).
   const candidateById = new Map(candidates.map((i) => [i.id, i]));
   const candidateKeyOf = (id: string): string | null => {
@@ -1827,7 +1828,7 @@ export async function captureImprovement(
   // trades a missed duplicate for a LOST filing, which is the more expensive failure —
   // and containment is asymmetric, so a broad stored title covers many narrow real ones.
   // `semanticBlockBand:'soft'` (Scout's port only — see the option's doc) opts INTO
-  // letting a soft hit decline. Containment stays advisory in BOTH modes: it is
+  // letting a soft hit carry the verdict. Containment stays advisory in BOTH modes: it is
   // asymmetric (a broad stored title covers many narrow real ones), so it is not a
   // similarity band and widening it would not be the same trade.
   const softMayBlock = input.semanticBlockBand === 'soft';

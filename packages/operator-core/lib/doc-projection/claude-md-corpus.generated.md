@@ -2046,8 +2046,16 @@ the first line of the next call is free insurance — never assume.
 **The dual, for a `cd` that STAYS in the tree: don't leave one behind.** Scope it to a
 subshell so your own cwd never moves — `( cd packages/<pkg> && <cmd> )` — or, when a
 later call must run a ROOT script, re-anchor first:
-`cd "$(git rev-parse --show-toplevel)" || exit 1`. Either line is free, and either one
-removes the `Missing script` misdirection above at its source.
+```bash
+cd "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" 2>/dev/null ||
+  cd "$(git rev-parse --show-toplevel)" || exit 1
+```
+`--show-superproject-working-tree` prints the superproject path from inside a submodule
+but prints an empty string (with exit status 0) from the superproject itself, so the first
+`cd` is intentionally allowed to fail and the fallback handles the root case. The
+non-empty-aware fallback matters: `git rev-parse --show-superproject-working-tree ||
+git rev-parse --show-toplevel` can return an empty path without invoking the fallback.
+This re-anchor removes the `Missing script` misdirection above at its source.
 
 
 ## Scratch probes: name the file `.mts`, not `.ts`

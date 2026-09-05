@@ -375,8 +375,7 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
  * P-014 — the activation↔completion JOIN, at the gate level. The pure rules live in
  * plan-requirement-realization.test.ts; these cases prove the WIRING: that the gate
  * actually reads the activation audit, that a violation reaches the caller as
- * `requirement_unrealized`, and that the join is force-waivable like its code-truth
- * siblings rather than silently exempt.
+ * `requirement_unrealized`, including when a caller tries to force a shipment.
  */
 describe('requirement_unrealized (the activation↔completion join)', () => {
   /** A covered mapping routed at P-001. */
@@ -460,14 +459,17 @@ describe('requirement_unrealized (the activation↔completion join)', () => {
     expect(verdict.code).not.toBe('requirement_unrealized');
   });
 
-  it('is force-waivable, and records itself in forcedPast like its code-truth siblings', async () => {
+  it('refuses an unrealized requirement even when a leader calls it a future seam and forces shipment', async () => {
     mockEffectiveAudits.mockResolvedValue([docOnlyP001()]);
     mockPlanItems.mockResolvedValue(itemDone());
     mockActivationAudit.mockResolvedValue(activationAudit([coveredAtP001()]));
 
-    const verdict = await evaluatePlanAcceptanceGate(PLAN, { force: { reason: 'requirement tracked elsewhere' } });
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, {
+      force: { reason: 'D-045: the required capability is a tested seam; a follow-on plan will supply its consumer' },
+    });
 
-    expect(verdict.satisfied).toBe(true);
-    expect(verdict.forcedPast?.checks).toContain('requirement_unrealized');
+    expect(verdict).toMatchObject({ satisfied: false, code: 'requirement_unrealized' });
+    expect(verdict.forcedPast).toBeUndefined();
+    expect(verdict.message).not.toContain('To ship anyway');
   });
 });

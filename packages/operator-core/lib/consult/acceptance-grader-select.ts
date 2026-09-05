@@ -382,18 +382,37 @@ export async function selectAcceptanceGrader(
   // looking like a clean "no duplicate parties found".
   let partyKeys: ReadonlyMap<string, string> | null = null;
   try {
-    partyKeys = await deps.getPartyKeys(
-      params.workspaceId,
-      coordCapableEligible.map((candidate) => candidate.ownerId),
-    );
+    partyKeys = await deps.getPartyKeys(params.workspaceId, [
+      ...new Set([...excluded, ...coordCapableEligible.map((candidate) => candidate.ownerId)]),
+    ]);
   } catch {
     partyKeys = null;
   }
+  // An exclusion names a PARTY, not merely one of its owner ids. The router
+  // applies the raw ids before returning candidates; this second pass removes
+  // a launched/rebound identity of an excluded implementer or vetting critic.
+  // Put exclusions first in the party lookup so each excluded group receives
+  // its excluded id as the stable key.
+  const excludedParties = partyKeys ? new Set(excluded.map((ownerId) => partyKeys!.get(ownerId) ?? ownerId)) : null;
+  const partyEligibleCandidates = excludedParties
+    ? coordCapableEligible.filter(
+        (candidate) => !excludedParties.has(partyKeys!.get(candidate.ownerId) ?? candidate.ownerId),
+      )
+    : coordCapableEligible;
+  const partyQualifiedCandidates = excludedParties
+    ? coordCapableQualified.filter(
+        (candidate) => !excludedParties.has(partyKeys!.get(candidate.ownerId) ?? candidate.ownerId),
+      )
+    : coordCapableQualified;
+  const partyExcluded = coordCapableEligible
+    .filter((candidate) => !partyEligibleCandidates.includes(candidate))
+    .map((candidate) => candidate.ownerId);
+  const appliedExcluded = [...new Set([...excluded, ...partyExcluded])];
   const parties = partyKeys
-    ? collapseToDistinctParties(coordCapableEligible, coordCapableQualified, partyKeys)
+    ? collapseToDistinctParties(partyEligibleCandidates, partyQualifiedCandidates, partyKeys)
     : null;
-  const eligibleCandidates = parties?.eligible ?? coordCapableEligible;
-  const qualifiedCandidates = parties?.qualified ?? coordCapableQualified;
+  const eligibleCandidates = parties?.eligible ?? partyEligibleCandidates;
+  const qualifiedCandidates = parties?.qualified ?? partyQualifiedCandidates;
   const partyCollapsed = parties ? { partyCollapsed: parties.collapsed } : {};
 
   const eligibility: GraderEligibility = {
@@ -404,16 +423,21 @@ export async function selectAcceptanceGrader(
       ? { reason: 'zero_eligible' as const }
       : {}),
   };
-  const escalation: GraderEscalation | undefined = eligibility.reason
-    ? { code: eligibility.reason }
-    : undefined;
+  const escalation: GraderEscalation | undefined = eligibility.reason ? { code: eligibility.reason } : undefined;
 
   // UNMEASURED is not below-floor. D-002 replaces below-floor fresh-mint with
   // minimum-fill, but a fill is a pick from a RANKING — with no embedder there
   // is no ranking to fill from, only an arbitrary row order. Minting fresh here
   // is the honest outcome, not a survival of the overturned asymmetry.
   if (route.snapshot.degraded === 'embed-unavailable' || route.verdict === 'relevance_unmeasured') {
-    return { verdict: 'fresh', graders: [], excluded, ...partyCollapsed, eligibility, freshReason: 'degraded' };
+    return {
+      verdict: 'fresh',
+      graders: [],
+      excluded: appliedExcluded,
+      ...partyCollapsed,
+      eligibility,
+      freshReason: 'degraded',
+    };
   }
 
   // D-001 [owner]: bounds from the shared registry, algorithm from the shared
@@ -434,7 +458,7 @@ export async function selectAcceptanceGrader(
     return {
       verdict: 'fresh',
       graders: [],
-      excluded,
+      excluded: appliedExcluded,
       ...partyCollapsed,
       eligibility,
       ...(escalation ? { escalation } : {}),
@@ -453,7 +477,7 @@ export async function selectAcceptanceGrader(
       candidates: eligibleCandidates,
       selection: selectionSnapshot(bounds.min, bounds.max, graders),
     },
-    excluded,
+    excluded: appliedExcluded,
     ...partyCollapsed,
     eligibility,
   };

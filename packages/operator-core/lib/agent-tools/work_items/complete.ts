@@ -36,6 +36,7 @@ import { loadHarnessRegistry, resolveHarnessContentPath, type HarnessRegistry } 
 import {
   assumptionsArg,
   ASSUMPTIONS_REQUIRED_MESSAGE,
+  normalizePersistedAssumptionDeclaration,
   resolveDeclaredAssumptions,
   TERMINAL_CLOSE_RECOVERY_HINT,
 } from './_assumptions';
@@ -44,7 +45,7 @@ import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records'
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
-import { COORD_ROLES } from '../coordination/roles';
+import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
 // Imported from the LEAF module, not from '../../work-items': this file's unit tests
 // mock that module wholesale, which would make the guard `undefined` exactly here.
@@ -537,7 +538,7 @@ const itemSpec = z.object({
    * without an assumption declaration. The handler enforces the required declaration
    * once it knows the effective state, including the issue-family status inference.
    */
-  assumptions: assumptionsArg.optional(),
+  assumptions: z.preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional()),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -4231,7 +4232,7 @@ export default defineTool({
   // the completion ledger and finish legs await can exhaust the org-app pool and
   // strand an otherwise verified completion behind the 45s acquisition deadline.
   skipWorkspaceTx: true,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES],
   // INTRINSIC emission (D-002/D-004): a completion always auto-broadcasts its
   // structured record as a coord notification. The desugar registers this as an
   // event-reaction rule (`emits:work_items:complete#completion`); the render
@@ -4380,8 +4381,8 @@ export default defineTool({
             /** Current per-clause proof attestation for spec-covered terminal closes. */
             specAdequacy: specAdequacyCompletionSpec.optional(),
             /** Required only when this single item requests a terminal close. */
-            assumptions: assumptionsArg
-              .optional()
+            assumptions: z
+              .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
               .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
@@ -4414,8 +4415,8 @@ export default defineTool({
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
             outputPayload: z.unknown().optional(),
-            assumptions: assumptionsArg
-              .optional()
+            assumptions: z
+              .preprocess(normalizePersistedAssumptionDeclaration, assumptionsArg.optional())
               .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
             items: z
               .array(itemSpec)
