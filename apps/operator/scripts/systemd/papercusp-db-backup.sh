@@ -287,8 +287,25 @@ rm_tmp() {
   }
 }
 
-for db in $DBS; do
-  out="$PGOUT/$db"
+# dump_one <db> <label> [extra pg_dump args...]
+#
+# WHY A FUNCTION (WI-2146225). This body carries every safety property the
+# EI-10733 family cost us to learn: the space precondition, the postgres->service
+# chown/chmod that keeps the artifact readable by BOTH the archiver and
+# pg_restore, the pg_restore -l validation that refuses to trust an exit code,
+# the atomic swap that leaves last-known-good intact on failure, and the stderr
+# capture that makes a failure diagnosable. The tiered dumps below need ALL of
+# them. Copying the body would have produced a second dump path that silently
+# drifts out of those guarantees — which is the exact shape of every bug in the
+# header comment.
+#
+# Returns 0 dumped, 1 failed, 2 skipped for space. The CALLER records the
+# outcome, because different callers must account for failure differently (see
+# the tier pass: a tier failure must not redden a healthy authoritative dump).
+dump_one() {
+  local db="$1" label="$2"; shift 2
+  local out="$PGOUT/$label"
+  local prev_gb prev_kb need_gb avail_gb dumperr rc sz detail
   rm_tmp "$out.tmp"
 
   # Per-database precondition. The previous successful dump of THIS database is
@@ -309,15 +326,14 @@ for db in $DBS; do
   need_gb=$(( prev_gb * PC_BACKUP_SPACE_SAFETY / 100 ))
   avail_gb=$(fs_avail_gb)
   if [ "$prev_gb" -gt 0 ] && [ "$avail_gb" -lt $(( need_gb + PC_BACKUP_MIN_FREE_GB )) ]; then
-    FAILED+=("$db")
-    log "$db SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
-    continue
+    log "$label SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
+    return 2
   fi
 
-  dumperr=$(mktemp -t "pcbackup-$db-XXXXXX.err")
+  dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
   if run_bounded_watched "$TIMEOUT_SEC" timeout --kill-after=20s "$TIMEOUT_SEC" \
         sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
-        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none -f "$out.tmp" "$db" 2>"$dumperr"; then
+        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
     # dump is UNREADABLE BY KOPIA (which runs as the backup service user), so it would never
@@ -348,10 +364,10 @@ for db in $DBS; do
     # family is "reported success while producing nothing usable", so a dump is
     # only 'ok' if pg_restore can actually read its table of contents.
     if ! pg_restore -l "$out.tmp" >/dev/null 2>&1; then
-      rm_tmp "$out.tmp"; FAILED+=("$db")
-      log "$db FAIL — dump completed but is NOT a valid archive (pg_restore -l could not read it); previous dump left intact"
+      rm_tmp "$out.tmp"
+      log "$label FAIL — dump completed but is NOT a valid archive (pg_restore -l could not read it); previous dump left intact"
       rm -f "$dumperr"
-      continue
+      return 1
     fi
 
     # Atomic swap, NO local ".prev". A previous version of this kept "$out.prev"
@@ -366,12 +382,12 @@ for db in $DBS; do
     rm -rf "$out"
     mv -f "$out.tmp" "$out"
     sz=$(du -sb "$out" 2>/dev/null | cut -f1)
-    DUMPED+=("$db")
-    log "$db ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
+    log "$label ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
+    rm -f "$dumperr"
+    return 0
   else
     rc=$?
     rm_tmp "$out.tmp"
-    FAILED+=("$db")
     # Say WHY. The old line logged "timeout ${TIMEOUT_SEC}s or dump error" and
     # discarded pg_dump's stderr entirely, so a failure was undiagnosable after
     # the fact — the same detector gap that let EI-10733 rot silently for 30
@@ -379,13 +395,102 @@ for db in $DBS; do
     # actual error text.
     detail=$(tr '\n' ' ' <"$dumperr" 2>/dev/null | tail -c 400)
     if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-      log "$db FAIL — TIMEOUT after ${TIMEOUT_SEC}s (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
+      log "$label FAIL — TIMEOUT after ${TIMEOUT_SEC}s (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
     else
-      log "$db FAIL — pg_dump exit $rc; previous dump left intact${detail:+ — stderr: $detail}"
+      log "$label FAIL — pg_dump exit $rc; previous dump left intact${detail:+ — stderr: $detail}"
     fi
+    rm -f "$dumperr"
+    return 1
   fi
-  rm -f "$dumperr"
+}
+
+for db in $DBS; do
+  if dump_one "$db" "$db"; then DUMPED+=("$db"); else FAILED+=("$db"); fi
 done
+
+# ── tiered dumps (WI-2146225) — ADDITIVE PHASE ──────────────────────────────
+# MEASURED 2026-09-05 on the live 93 GiB papercusp dump, by attributing every
+# -Fd data member to its table via the archive TOC: SIX append-only
+# transcript/telemetry tables are 73 GiB of it (78%), and the state that
+# actually has to come back to restart this system is the other 20 GiB.
+#
+#   session_archive_files 42G · session_turns 9.1G · tool_invocations 8.3G
+#   session_turn_chunks 7.3G · session_turn_parts 5.6G · route_invocations 3.1G
+#
+# WHY THE SPLIT LIVES HERE AND NOT IN KOPIA. It was ratified as a kopia
+# exclusion first; that is not expressible. A -Fd dump names its data members by
+# pg_dump's internal dumpId, and dumpIds DRIFT between dump sets (measured:
+# session_archive_files was 30053 in the live set and 30016 in a frozen one, +37
+# on every row) while only the pg OID is stable. A filename exclusion would keep
+# matching — silently, with no error — a DIFFERENT table on the next run. The
+# producer is the only layer that can name a table by name.
+#
+# ADDITIVE-FIRST, DELIBERATELY. The undifferentiated "$db" dump above is still
+# the authoritative artifact and is untouched by this pass. These tiers are
+# written ALONGSIDE it and must be restore-verified before the undifferentiated
+# dump is retired (which is the change that actually banks the win). Until then
+# this costs disk — /mnt/backup is a separate 1.2T volume at 19% used, which is
+# what makes paying it for one changeover affordable.
+#
+# TIER FAILURES DO NOT REDDEN THE BACKUP, for the same reason the oddsmith leg
+# below does not: while the authoritative dump is healthy, raising
+# ALERT-BACKUP-FAILING over a redundant artifact is a false alarm, and this file
+# already warns twice that a false alarm is how a real one stops being believed.
+# They get their own status fields and their own staleness assertion instead.
+PC_BACKUP_TIERS_ENABLED="${PC_BACKUP_TIERS_ENABLED:-1}"
+PC_BACKUP_TIER_DBS="${PC_BACKUP_TIER_DBS:-papercusp}"
+PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.session_archive_files harness_shared.session_turns harness_shared.tool_invocations harness_shared.session_turn_chunks harness_shared.session_turn_parts harness_shared.route_invocations}"
+TIER_DUMPED=()
+TIER_FAILED=()
+
+if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
+  for db in $PC_BACKUP_TIER_DBS; do
+    # Only tier a database this run actually dumped. Tiering one whose
+    # authoritative dump just failed would spend the whole dump budget again on
+    # a database we already know is in trouble.
+    case " ${DUMPED[*]} " in *" $db "*) ;; *)
+      log "$db-state/$db-transcript SKIPPED — authoritative $db dump did not succeed this run"
+      continue ;;
+    esac
+
+    # VERIFY EVERY CONFIGURED TABLE EXISTS FIRST — this is the recurrence guard
+    # for the failure this split can have, and it is silent in BOTH directions:
+    # `pg_dump --exclude-table-data=<pattern>` does NOT error when the pattern
+    # matches nothing. A renamed or mistyped table therefore produces a "state"
+    # tier that still carries the 42 GiB table, exits 0, validates under
+    # pg_restore -l, and reports ok — while `--table=<same pattern>` produces a
+    # transcript tier MISSING it. So one typo silently un-splits the state tier
+    # and silently drops rows from the transcript tier at the same time, and
+    # every signal downstream stays green. Size alone cannot catch it either:
+    # both tiers are expected to change size run to run.
+    # NOTE the connection: $PSQL is pinned to -d postgres, and to_regclass is
+    # resolved per-DATABASE, so asking it there would report every table missing
+    # and disable the tiers permanently. Ask the database being dumped.
+    missing=""
+    for t in $PC_BACKUP_TRANSCRIPT_TABLES; do
+      [ "$(sudo -n -u postgres psql -h /var/run/postgresql -d "$db" -tAc \
+             "SELECT to_regclass('$t') IS NOT NULL" 2>/dev/null | tr -d ' ')" = "t" ] \
+        || missing="${missing:+$missing }$t"
+    done
+    if [ -n "$missing" ]; then
+      TIER_FAILED+=("$db-state" "$db-transcript")
+      log "$db tiers SKIPPED — configured transcript table(s) do not exist: $missing. Refusing to dump: pg_dump ignores a table pattern that matches nothing, so proceeding would silently leave those rows in the state tier AND out of the transcript tier."
+      continue
+    fi
+
+    ex=(); inc=()
+    for t in $PC_BACKUP_TRANSCRIPT_TABLES; do
+      # --exclude-table-data keeps the DDL and drops the rows, so the state tier
+      # restores to a working schema with empty transcript tables rather than to
+      # a database missing them entirely.
+      ex+=("--exclude-table-data=$t")
+      inc+=("--table=$t")
+    done
+
+    if dump_one "$db" "$db-state" "${ex[@]}"; then TIER_DUMPED+=("$db-state"); else TIER_FAILED+=("$db-state"); fi
+    if dump_one "$db" "$db-transcript" "${inc[@]}"; then TIER_DUMPED+=("$db-transcript"); else TIER_FAILED+=("$db-transcript"); fi
+  done
+fi
 
 reap_own_stragglers   # nothing of ours may outlive this script holding locks
 
@@ -535,6 +640,15 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
+  # WI-2146225 tiered dumps. Reported SEPARATELY from dumped/failed for the same
+  # reason the oddsmith fields are: during the additive phase these are redundant
+  # copies of an authoritative dump that is already green, so folding a tier
+  # failure into "ok" would raise ALERT-BACKUP-FAILING on a healthy backup.
+  # A consumer that wants to assert on them has its own named fields to do it
+  # with, rather than inferring tier health from a whole-cluster boolean.
+  printf '  "tiersEnabled": %s,\n' "$([ "$PC_BACKUP_TIERS_ENABLED" = 1 ] && echo true || echo false)"
+  printf '  "tierDumped": [%s],\n' "$(json_arr ${TIER_DUMPED[@]+"${TIER_DUMPED[@]}"})"
+  printf '  "tierFailed": [%s],\n' "$(json_arr ${TIER_FAILED[@]+"${TIER_FAILED[@]}"})"
   # WI-39502: the oddsmith embedded PG (5544) reports SEPARATELY from the system
   # cluster above — see the leg's comment for why coupling them would be a bug.
   # healthcheck.sh asserts oddsmithLastSuccessEpoch on its own threshold.
