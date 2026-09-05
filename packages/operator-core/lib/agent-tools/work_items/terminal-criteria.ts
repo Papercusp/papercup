@@ -24,8 +24,20 @@
  */
 import type { AdequacyRatingEntry } from '../plans/spec-test-adequacy';
 
-export const TERMINAL_CRITERION_KEYS = ['durable-change'] as const;
+export const TERMINAL_CRITERION_KEYS = ['durable-change', 'forbidden-evidence-mode'] as const;
 export type TerminalCriterionKey = (typeof TERMINAL_CRITERION_KEYS)[number];
+
+/**
+ * Default forbidden evidence-only mode, as folded comparison keys (see {@link dispositionKey}).
+ *
+ * `already-passing` means "the pre-existing tests were green" — which, for a recurrence
+ * defect, is the one observation guaranteed to be true WHILE THE BUG IS LIVE. As the sole
+ * stated verification it is therefore not evidence of a fix at all.
+ *
+ * A parameter rather than a hardcode, for the same reason as
+ * {@link DEFAULT_REMEDIATING_KINDS}: widening it owes its own measurement.
+ */
+export const DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES: readonly string[] = ['already-passing'];
 
 /**
  * Kinds whose SUCCESSFUL close implies a durable change should have landed.
@@ -117,6 +129,20 @@ export interface TerminalCriteriaInput {
   treeStamp?: TerminalCriteriaTreeStamp | null;
   /** Override for {@link DEFAULT_REMEDIATING_KINDS}; an item-level tightening may widen it. */
   remediatingKinds?: readonly string[];
+  /**
+   * The close's stated verification mode, verbatim as the caller wrote it.
+   *
+   * FREE TEXT, not an enum — D-007 measured `unit+integration`, `unit and integration`,
+   * `typecheck`, `live` and whole paragraphs in the live population. Never compare it with
+   * `===` against a canonical value; see {@link forbiddenEvidenceModeRating}.
+   */
+  verifiedHow?: string | null;
+  /**
+   * Modes that may not stand as the SOLE verification, from
+   * {@link resolveTerminalCriteria}. Defaults to
+   * {@link DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES}; pass `[]` to disable the criterion.
+   */
+  forbiddenEvidenceOnlyModes?: readonly string[];
 }
 
 export interface TerminalCriteriaResult {
@@ -233,6 +259,90 @@ function durableChangeRating(input: TerminalCriteriaInput, applies: boolean): Ad
 }
 
 /**
+ * Is the close's ONLY stated verification a mode that may not stand alone? (P-006)
+ *
+ * The comparison rule is the whole point of this function, and it is measured, not chosen
+ * by taste (D-014). Of 851 closes whose `verifiedHow` mentions `already-passing`, **835
+ * (98.1%) are the bare token** and the other 16 are each a one-off of the form
+ * `already-passing<sep><a second, real verification>` — `already-passing + live database
+ * predicate reproduction`, `already-passing; focused unit suite re-run at current HEAD`.
+ *
+ * So the two obvious strategies both fail, in opposite directions:
+ *
+ * - **Substring** (`includes(mode)`) rates all 16 qualified closes `fail`. Those are the
+ *   closers who did MORE and said so; firing on exactly them teaches that describing extra
+ *   verification is punished, and catches nothing the strict rule misses.
+ * - **Raw equality** misses `ALREADY_PASSING` / `already passing` / `Already-Passing.` —
+ *   this module already shipped that bug once with `WONT_FIX`.
+ *
+ * The rule that survives both is FOLDED WHOLE-STRING EQUALITY: fold away case and every
+ * separator with {@link dispositionKey}, then require the entire folded `verifiedHow` to
+ * equal the folded mode. Any substantive text beyond the token means the closer named other
+ * verification and the criterion stands down. Measured on that population: catches 835,
+ * false positives 0.
+ *
+ * Note what is deliberately NOT here: corroboration via `addedTests` (measured empty on all
+ * 851 — it would be dead code resting on an assumption) and a filler-token stoplist for
+ * `already passing tests` (no such value exists; the distribution is bare-token or genuinely
+ * qualified, with nothing between). Both were designed, then killed by the measurement.
+ */
+function forbiddenEvidenceModeRating(
+  input: TerminalCriteriaInput,
+  applies: boolean,
+): AdequacyRatingEntry {
+  if (!applies) {
+    return {
+      rating: 'not-applicable',
+      evidence: 'Close does not claim remediation, so no verification mode is required of it.',
+    };
+  }
+
+  const forbidden = new Set(
+    (input.forbiddenEvidenceOnlyModes ?? DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES)
+      .map(dispositionKey)
+      .filter(Boolean),
+  );
+  if (forbidden.size === 0) {
+    return {
+      rating: 'not-applicable',
+      evidence: 'No evidence-only mode is forbidden for this close.',
+    };
+  }
+
+  const stated = dispositionKey(input.verifiedHow);
+  if (!stated) {
+    // A close that states NO mode cannot have a forbidden one as its sole mode. Whether a
+    // mode must be stated at all is a different criterion; rating `fail` here would smuggle
+    // that requirement in under this one and manufacture failures across the population.
+    return {
+      rating: 'not-applicable',
+      evidence: 'Close states no verifiedHow, so there is no sole verification mode to test.',
+    };
+  }
+
+  if (forbidden.has(stated)) {
+    return {
+      rating: 'fail',
+      evidence:
+        `Close states verifiedHow='${String(input.verifiedHow).trim()}' and nothing else. ` +
+        'That mode may not stand as the sole verification: for a recurrence defect, ' +
+        'pre-existing tests being green is the one observation guaranteed to hold WHILE THE ' +
+        'BUG IS LIVE, so it cannot distinguish a fix from no fix.',
+      suggestion:
+        'State what was verified BEYOND the pre-existing suite — a test that fails without ' +
+        'the change, a reproduction re-run, or a live probe — and record it in verifiedHow.',
+    };
+  }
+
+  return {
+    rating: 'pass',
+    evidence:
+      `verifiedHow='${String(input.verifiedHow).trim().slice(0, 120)}' is not a forbidden ` +
+      'evidence-only mode.',
+  };
+}
+
+/**
  * Evaluate the item-scoped terminal criteria for one close.
  *
  * Pure and side-effect free by design: it is the FILTER, and D-003 requires that an unmet
@@ -243,6 +353,7 @@ export function evaluateTerminalCriteria(input: TerminalCriteriaInput): Terminal
   const applies = claimsRemediation(input);
   const ratings: Record<TerminalCriterionKey, AdequacyRatingEntry> = {
     'durable-change': durableChangeRating(input, applies),
+    'forbidden-evidence-mode': forbiddenEvidenceModeRating(input, applies),
   };
   const wouldBlock = TERMINAL_CRITERION_KEYS.filter((key) =>
     ['fail', 'unknown'].includes(ratings[key].rating),
@@ -383,4 +494,175 @@ export function collectApplicableDeclarations(input: CriteriaSourcesInput): Term
     applicable.push(input.decisionDeclaration);
   }
   return applicable;
+}
+
+/* -------------------------------------------------------------------------- *
+ * Close-time composition (P-007, per D-003 / D-010 / D-015).
+ * -------------------------------------------------------------------------- */
+
+/** Key under `work_items.payload` holding an item-level declaration (D-010: no new column). */
+export const ITEM_TERMINAL_CRITERIA_PAYLOAD_KEY = 'terminalCriteria';
+
+function readFloor(value: unknown): ProofFloor | undefined {
+  const token = normalizeToken(value);
+  return token === 'none' || token === 'l3' || token === 'l4' ? token : undefined;
+}
+
+/**
+ * Read an item-level declaration out of a work-item's free-form `payload`.
+ *
+ * Defensive by construction: `payload` is written by many callers and is not schema-bound,
+ * so every field is validated and anything unrecognised is DROPPED rather than coerced. A
+ * malformed declaration must never be able to weaken a close or break one — this is the
+ * completion hot path, and D-003 requires a refused close to still be RECORDED.
+ */
+export function readItemTerminalCriteriaDeclaration(
+  payload: unknown,
+  sourceRef: string,
+): TerminalCriteriaDeclaration | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const raw = (payload as Record<string, unknown>)[ITEM_TERMINAL_CRITERIA_PAYLOAD_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+
+  const declaration: TerminalCriteriaDeclaration = { source: 'item', sourceRef };
+  if (typeof record.requireDurableChange === 'boolean') {
+    declaration.requireDurableChange = record.requireDurableChange;
+  }
+  const floor = readFloor(record.minProofFloor);
+  if (floor) declaration.minProofFloor = floor;
+  if (Array.isArray(record.forbiddenEvidenceOnlyModes)) {
+    const modes = record.forbiddenEvidenceOnlyModes.filter(
+      (mode): mode is string => typeof mode === 'string' && mode.trim().length > 0,
+    );
+    if (modes.length > 0) declaration.forbiddenEvidenceOnlyModes = modes;
+  }
+
+  const declaredSomething =
+    declaration.requireDurableChange !== undefined ||
+    declaration.minProofFloor !== undefined ||
+    declaration.forbiddenEvidenceOnlyModes !== undefined;
+  return declaredSomething ? declaration : null;
+}
+
+export interface TerminalCriteriaCloseInput
+  extends Omit<TerminalCriteriaInput, 'forbiddenEvidenceOnlyModes' | 'remediatingKinds'> {
+  /** The work-item row's `payload`, verbatim — the item declaration is read out of it (D-010). */
+  payload?: unknown;
+  /** Reference used to attribute an item-level declaration (normally the work-item id). */
+  itemRef?: string;
+  /** The item's `source_plan_slug`; gates decision-scope per D-010. */
+  sourcePlanSlug?: string | null;
+  classDeclaration?: TerminalCriteriaDeclaration | null;
+  decisionDeclaration?: TerminalCriteriaDeclaration | null;
+}
+
+export interface TerminalCriteriaCloseOutcome {
+  result: TerminalCriteriaResult;
+  resolved: ResolvedTerminalCriteria;
+  /**
+   * Whether this close should be DOWNGRADED to `proposed`.
+   *
+   * D-015: `fail` only — never `unknown`. An `unknown` rating is a MEASUREMENT failure (no
+   * tree stamp observed, a path that could not be read), and this module says so in its own
+   * rating comments: blaming the closer for a resolution bug is the defect
+   * `headBlobUnresolvable` exists to prevent. It also matches the sibling gate in
+   * `complete.ts`, whose claims-falsification downgrade is deliberately silent on anything
+   * the server could not decide, because absence of judgement is never judged-clean — and,
+   * symmetrically, never judged dirty.
+   */
+  downgrade: boolean;
+  /** Every criterion rated `fail`, in {@link TERMINAL_CRITERION_KEYS} order. */
+  unmet: TerminalCriterionKey[];
+  /** Caller-facing sentence naming every unmet criterion; undefined when none is unmet. */
+  warning?: string;
+  /** A dropped item declaration that would have LOWERED the effective floor (D-002). */
+  refusedDeclaration?: string;
+}
+
+/**
+ * Evaluate one close against its resolved terminal criteria.
+ *
+ * Composition order is D-009's: collect the declarations that APPLY (D-010 drops
+ * decision-scope for the ~94.66% of items with no `source_plan_slug`), resolve them
+ * monotonically, then rate. Pure and total — it returns a verdict and never throws, so the
+ * caller can treat an unmet criterion as a downgrade rather than a lost completion record.
+ *
+ * Which resolved fields are LOAD-BEARING here, stated plainly so no reader assumes more:
+ * `forbiddenEvidenceOnlyModes` feeds the forbidden-mode criterion, and
+ * `requireDurableChange` forces the durable-change criterion onto a kind outside
+ * {@link DEFAULT_REMEDIATING_KINDS} (the only way a declaration can widen it). `minProofFloor`
+ * resolves and is REPORTED but has NO consumer yet — no criterion reads a proof floor. It is
+ * surfaced rather than silently dropped so a later criterion can consume it; treating it as
+ * enforced today would be a claim this code does not honour.
+ */
+export function evaluateCloseTerminalCriteria(
+  input: TerminalCriteriaCloseInput,
+): TerminalCriteriaCloseOutcome {
+  const itemRef = input.itemRef?.trim() || 'item';
+  const itemDeclaration = readItemTerminalCriteriaDeclaration(input.payload, itemRef);
+
+  // Resolve the baseline WITHOUT the item declaration first, so a lowering item-level
+  // override is reported rather than silently ignored (D-002: resolve already takes a max,
+  // but a silently-dropped tightening and a silently-dropped loosening look identical).
+  const baseline = resolveTerminalCriteria(
+    collectApplicableDeclarations({
+      classDeclaration: input.classDeclaration,
+      decisionDeclaration: input.decisionDeclaration,
+      sourcePlanSlug: input.sourcePlanSlug,
+    }),
+  );
+  const refusedDeclaration = itemDeclaration
+    ? refuseLoweringDeclaration(itemDeclaration, baseline)
+    : null;
+
+  const resolved = resolveTerminalCriteria(
+    collectApplicableDeclarations({
+      classDeclaration: input.classDeclaration,
+      itemDeclaration: refusedDeclaration ? null : itemDeclaration,
+      decisionDeclaration: input.decisionDeclaration,
+      sourcePlanSlug: input.sourcePlanSlug,
+    }),
+  );
+
+  const remediatingKinds = resolved.requireDurableChange
+    ? [...DEFAULT_REMEDIATING_KINDS, normalizeToken(input.itemKind)].filter(Boolean)
+    : DEFAULT_REMEDIATING_KINDS;
+
+  const result = evaluateTerminalCriteria({
+    itemKind: input.itemKind,
+    status: input.status,
+    terminalReason: input.terminalReason,
+    filesChanged: input.filesChanged,
+    filesDeleted: input.filesDeleted,
+    treeStamp: input.treeStamp,
+    verifiedHow: input.verifiedHow,
+    remediatingKinds,
+    ...(resolved.forbiddenEvidenceOnlyModes.length > 0
+      ? { forbiddenEvidenceOnlyModes: resolved.forbiddenEvidenceOnlyModes }
+      : {}),
+  });
+
+  const unmet = TERMINAL_CRITERION_KEYS.filter((key) => result.ratings[key].rating === 'fail');
+  const warning =
+    unmet.length > 0
+      ? `${unmet.length} terminal criteri${unmet.length === 1 ? 'on' : 'a'} unmet: ` +
+        unmet
+          .map((key) => {
+            const entry = result.ratings[key];
+            return `${key} — ${entry.evidence}${entry.suggestion ? ` Fix: ${entry.suggestion}` : ''}`;
+          })
+          .join(' | ') +
+        (resolved.sources.length > 0 ? ` (criteria from ${resolved.sources.join(', ')})` : '') +
+        '. The completion is RECORDED either way; only its authority is downgraded.'
+      : undefined;
+
+  return {
+    result,
+    resolved,
+    downgrade: unmet.length > 0,
+    unmet: [...unmet],
+    ...(warning ? { warning } : {}),
+    ...(refusedDeclaration ? { refusedDeclaration } : {}),
+  };
 }

@@ -375,3 +375,125 @@ describe('collectApplicableDeclarations — decision scope needs a plan (D-010)'
     expect(resolveTerminalCriteria(applicable).minProofFloor).toBe('l4');
   });
 });
+
+/* -------------------------------------------------------------------------- *
+ * P-006 — forbidden evidence-only modes (D-013, D-014).
+ * -------------------------------------------------------------------------- */
+
+/**
+ * The residual this criterion actually buys. Measured (D-014): of the 835 closes stating
+ * the bare token `already-passing`, 87 DECLARE changed paths — so they pass
+ * `durable-change` and are invisible to it. Something landed; the only stated verification
+ * is that pre-existing tests were already green.
+ */
+const closeLandedButOnlyAlreadyPassing: TerminalCriteriaInput = {
+  ...closeThatSurvived,
+  verifiedHow: 'already-passing',
+};
+
+describe('forbidden evidence-only modes (P-006)', () => {
+  it('catches a close that LANDED code but states only already-passing — the case durable-change cannot see', () => {
+    const result = evaluateTerminalCriteria(closeLandedButOnlyAlreadyPassing);
+    expect(result.ratings['durable-change'].rating).toBe('pass');
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('fail');
+    expect(result.wouldBlock).toEqual(['forbidden-evidence-mode']);
+    expect(result.verdict).toBe('fail');
+  });
+
+  // The WONT_FIX bug, one criterion over: a hyphen-preserving or case-sensitive comparison
+  // silently admits every one of these. Table-driven so a new spelling is one line.
+  it.each([
+    'already-passing',
+    'ALREADY_PASSING',
+    'Already Passing',
+    'already passing',
+    'already-passing.',
+    '  already-passing  ',
+    'AlreadyPassing',
+  ])('folds the separator/case variant %j onto the forbidden key', (verifiedHow) => {
+    const result = evaluateTerminalCriteria({ ...closeThatSurvived, verifiedHow });
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('fail');
+  });
+
+  /**
+   * THE ANTI-OVER-FIRE GUARD, and the reason the rule is equality rather than substring.
+   * These are the REAL values measured in the live population (D-014) — each occurred
+   * exactly once, and each names a second, genuine verification beside the token. A
+   * substring rule rates all of them `fail`, punishing precisely the closers who did more
+   * and said so.
+   */
+  it.each([
+    'already-passing; focused unit suite re-run at current HEAD after the ledger freshness warn',
+    'already-passing + live database predicate reproduction',
+    'already-passing source audit plus focused regression suite',
+    'already-passing; live schema and rev47 resolution probes',
+    'already-passing; current-source writer inspection plus focused unit tests',
+    'already-passing; focused in-process proxy fixtures plus dev:pipeline_position',
+    'already-passing: direct :3070 coord:presence found no live/ended owner row',
+  ])('ADMITS the qualified real-world close %j — it named other verification', (verifiedHow) => {
+    const result = evaluateTerminalCriteria({ ...closeThatSurvived, verifiedHow });
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('pass');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it('rates a close stating NO verifiedHow not-applicable, never fail', () => {
+    // Requiring a verifiedHow at all is a DIFFERENT criterion. Failing here would smuggle
+    // it in under this one and manufacture failures across the whole population.
+    const result = evaluateTerminalCriteria({ ...closeThatSurvived, verifiedHow: null });
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('not-applicable');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it('rates a non-remediating close not-applicable even when it states the forbidden token', () => {
+    const result = evaluateTerminalCriteria({
+      itemKind: 'bug',
+      status: 'done',
+      terminalReason: 'WONT_FIX',
+      verifiedHow: 'already-passing',
+      filesChanged: [],
+      treeStamp: null,
+    });
+    expect(result.claimsRemediation).toBe(false);
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('not-applicable');
+    expect(result.verdict).toBe('pass');
+  });
+
+  it('is disabled by an empty forbidden set, and driven by the resolved set when supplied', () => {
+    const off = evaluateTerminalCriteria({
+      ...closeLandedButOnlyAlreadyPassing,
+      forbiddenEvidenceOnlyModes: [],
+    });
+    expect(off.ratings['forbidden-evidence-mode'].rating).toBe('not-applicable');
+
+    // A tightening declaration can forbid a mode the default set does not.
+    const widened = evaluateTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'typecheck',
+      forbiddenEvidenceOnlyModes: resolveTerminalCriteria([
+        { source: 'item', sourceRef: 'EI-1', forbiddenEvidenceOnlyModes: ['typecheck'] },
+      ]).forbiddenEvidenceOnlyModes,
+    });
+    expect(widened.ratings['forbidden-evidence-mode'].rating).toBe('fail');
+  });
+
+  it('applies to bug kind — D-013: rootCauseVerification reads a DISJOINT field and cannot cover this', () => {
+    // D-011 would have exempted bugs on the premise that the live rootCause gate already
+    // covers them. That gate tests the PRESENCE of completion.rootCauseVerification and
+    // never reads verifiedHow, so a close carrying a valid contrastive record and this
+    // token passes it untouched. Exempting bugs would leave the largest remediating kind
+    // outside the only check that reaches the case.
+    expect(DEFAULT_REMEDIATING_KINDS).toContain('bug');
+    const result = evaluateTerminalCriteria({ ...closeLandedButOnlyAlreadyPassing, itemKind: 'bug' });
+    expect(result.ratings['forbidden-evidence-mode'].rating).toBe('fail');
+  });
+
+  it('FALSIFIABILITY CONTROL: an honest close passes, so the criterion is not vacuously failing', () => {
+    const honest = evaluateTerminalCriteria({
+      ...closeThatSurvived,
+      verifiedHow: 'unit+integration; added a regression test that fails without the change',
+    });
+    expect(honest.ratings['forbidden-evidence-mode'].rating).toBe('pass');
+    expect(honest.wouldBlock).toEqual([]);
+    expect(honest.verdict).toBe('pass');
+  });
+});
