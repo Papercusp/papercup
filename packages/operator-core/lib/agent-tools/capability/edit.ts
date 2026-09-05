@@ -5,7 +5,7 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -50,7 +50,7 @@ export default defineTool({
         return err('read_failed', e instanceof Error ? e.message : String(e));
       }
       const count = occurrences(raw, args.old_string);
-      if (count === 0) return err('not_found', `old_string not found in ${abs}.`);
+      if (count === 0) return err('not_found', `old_string not found in ${abs}.${diagnoseMiss(raw, args, abs)}`);
       if (count > 1 && !args.replace_all) {
         return err('not_unique', `old_string matches ${count} times; pass replace_all or add surrounding context to make it unique.`);
       }
@@ -83,6 +83,76 @@ export default defineTool({
     return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy, outcome.reader);
   },
 });
+
+/** Below this, a write is recent enough that a peer edit since the caller's read is plausible. */
+const RECENT_WRITE_SEC = 120;
+
+/**
+ * EI-20225459009961868 — a bare "old_string not found" leaves the caller holding two
+ * hypotheses it cannot separate: "a peer edited this shared file after I read it" or
+ * "my old_string was simply wrong". On a ~100-agent shared checkout the first is real,
+ * so callers assume it — they re-read and retry even when the file has not been touched
+ * in days and the string was never right, and they re-apply an edit that already landed.
+ *
+ * Every signal needed to separate them is already in hand at the miss (the current
+ * content, both strings, and the file's own mtime), so spend it here instead of making
+ * the caller guess. This is FAILURE-PATH ONLY: it never renders on a successful edit and
+ * adds nothing to the always-on tool schema, so it costs no prompt weight.
+ */
+function diagnoseMiss(raw: string, args: { old_string: string; new_string: string }, abs: string): string {
+  const notes: string[] = [];
+
+  if (args.new_string !== '' && raw.includes(args.new_string)) {
+    // Leads, because it is the one reading where RETRYING IS THE HARMFUL MOVE: the
+    // change may already be in the file (an earlier attempt that landed, or a peer
+    // making the same fix), so warn before anything suggests re-applying.
+    notes.push(
+      'new_string is ALREADY present, so this edit may have been applied already (by an earlier attempt of yours, or by a peer) — re-read before retrying rather than re-applying.',
+    );
+  } else {
+    const near = occurrences(squashWhitespace(raw), squashWhitespace(args.old_string));
+    if (near > 0) {
+      notes.push(
+        `a whitespace-insensitive match exists (${near}×), so the text IS present but its exact spacing/indentation/line-endings differ — re-read the hunk with capability:read and copy it verbatim.`,
+      );
+    }
+  }
+
+  const age = secondsSinceWrite(abs);
+  if (age !== null) {
+    // Both directions are load-bearing. A recent write points at a peer race; an OLD
+    // one RULES IT OUT, and that negative is the reading that stops a fruitless hunt
+    // for a peer who never touched the file. Neither branch asserts who wrote it —
+    // mtime cannot tell us that, and a confident wrong attribution is worse than none.
+    notes.push(
+      age <= RECENT_WRITE_SEC
+        ? `the file was last written ${formatAge(age)} ago — if that write was not your own, a peer changed it after you read it; re-read the exact hunk.`
+        : `the file has not been written for ${formatAge(age)}, so a peer edit since your read is unlikely — check old_string itself.`,
+    );
+  }
+
+  return notes.length > 0 ? ` ${notes.join(' ')}` : '';
+}
+
+/** Collapse every whitespace run to a single space, so indentation drift stops mattering. */
+function squashWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+function secondsSinceWrite(abs: string): number | null {
+  try {
+    return Math.max(0, (Date.now() - statSync(abs).mtimeMs) / 1000);
+  } catch {
+    return null;
+  }
+}
+
+function formatAge(sec: number): string {
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  if (sec < 172800) return `${Math.round(sec / 3600)}h`;
+  return `${Math.round(sec / 86400)}d`;
+}
 
 function occurrences(haystack: string, needle: string): number {
   if (needle === '') return 0;
