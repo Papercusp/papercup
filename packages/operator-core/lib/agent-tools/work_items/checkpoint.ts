@@ -142,7 +142,11 @@ import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import {
+  setWorkItemCheckpointWithPrior,
+  getWorkItemCheckpoint,
+  attestWorkItemCheckpointUnchanged,
+} from '../../work-item-checkpoint';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
@@ -182,6 +186,7 @@ import {
   withCarryNoteChecks,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { describeUnreadRun } from '../../carry-note-unread-run';
 import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { postLearnedAtLevel, describeCaptureGaps } from '../../effort-thread';
 
@@ -785,6 +790,27 @@ const itemSpec = z.object({
   checks: checksSpec(),
   learned: learnedSpec(),
   learnedLevel: learnedLevelSpec(),
+  unchanged: looseBoolean().describe(
+    'P-007/R-06: ATTEST that the stored checkpoint is still current instead of rewriting it. Refreshes the ' +
+      'checkpoint\'s freshness — clearing the flush gate\'s stale-checkpoint tripwire — while leaving the body ' +
+      'byte-identical, so a parked or blocked agent stops paying a prose rewrite for state that has not moved. ' +
+      'REQUIRES `contentHash` (the hash this tool returned on the write you are attesting to; work_items:get ' +
+      'also carries it). Mutually exclusive with checkpoint/clear/append/checks/dependsOn — an attestation writes ' +
+      'no text by construction. It is BOUNDED and cannot conceal changed state: it refuses if the hash does not ' +
+      'match what is stored (attestation_hash_mismatch), if the work-item row itself moved after the body was ' +
+      'written (attestation_state_changed), or once the chain/age budget is spent (attestation_exhausted) — at ' +
+      'which point a real checkpoint is required. A genuine write resets the budget.',
+  ),
+  contentHash: z
+    .string()
+    .min(6)
+    .max(64)
+    .optional()
+    .describe(
+      'The stored checkpoint hash you are attesting to (the `contentHash` a prior write returned). Required with ' +
+        '`unchanged:true` and ignored otherwise. Binds the attestation to a body you have actually read, so a ' +
+        'checkpoint someone else replaced fails the check instead of being silently re-blessed.',
+    ),
 });
 
 // EI-21035020852712365: a terminal work-item is no longer an active work lane.
@@ -800,14 +826,25 @@ export default defineTool({
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
     'Checkpoints preserve successor continuity across task boundaries; replace-on-write by default, `append:true` joins prior text. ' +
     'Writes verify-read and block suspicious shrink; peer-held/terminal-item writes are refused while explicit clears remain allowed. ' +
-    'An uncovered absence premise returns advisory `absenceLint`; a matching stored check row suppresses it. ' +
+    // P-011: the `absenceLint` sentence that used to sit here was a verbatim
+    // duplicate of the `guidance.returns` line below, and `returns` is NOT counted
+    // against the 1500-char prompt budget while `description` is. Dropping the copy
+    // cleared a 15-char overage at zero cost to the reader — response documentation
+    // belongs in `returns`, demand-loaded via tools:find rather than baked into
+    // every system prompt (the WI-9334 move).
     '`rowsMode:"merge"` adds check rows while replacing the body; `"replace"` retires rows. ' +
     'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
       'next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. ' +
-      'Declare `dependsOn` for a real freshness verdict.',
+      'Declare `dependsOn` for a real freshness verdict. ' +
+      // EI-19455262557905604: the write-time `unreadRunLint` below cannot reach the
+      // sharper of the two recorded misses — an su READING this tool, writing no
+      // checkpoint at all, concluded the VERIFIED/PREDICTED distinction did not exist
+      // and filed to build it. Only a read-time line reaches that reader. Paid for by
+      // the description trim above, which took the tool from 1515 to 1411 of 1500.
+      'An unmeasured claim goes in `checks:[{claim,recheck}]`; no `verified` ⇒ ? PREDICTED.',
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
       "channel: use work_items:update for the body, work_items:comment for a note. The terminal-only `assumptions` " +
@@ -819,6 +856,9 @@ export default defineTool({
     returns:
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
       'A body that asserts a missing surface without a matching stored check returns `absenceLint { flagged, claims }`; the write is kept. ' +
+      'A body reporting a run you LAUNCHED BUT HAVE NOT READ (in-flight wording plus a log/bash_id reference) while storing no check rows ' +
+      'returns `unreadRunLint { flagged, note, signals }` — pass `checks:[{ claim, recheck }]` and OMIT `verified` so the row renders ' +
+      '? PREDICTED and your successor re-measures instead of trusting the prose; any stored check row suppresses it. Advisory, never a refusal. ' +
       'Every write is verify-read: a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
       'and every refusal carries `errorCode` + recovery args. ' +
       'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
@@ -889,6 +929,22 @@ export default defineTool({
       dependsOn: dependsOnSpec(),
       learned: learnedSpec(),
       learnedLevel: learnedLevelSpec(),
+      // P-007/R-06. These MUST exist on the single shorthand, not only on the items[]
+      // entry: the whole point of an attestation is the one-item call an agent makes
+      // at a compaction boundary, and this object is `.strict()`, so declaring them
+      // only on the batch shape makes the documented `{ id, unchanged, contentHash }`
+      // call fail Zod validation before the tool body ever runs — a feature that reads
+      // as shipped and is unreachable.
+      unchanged: looseBoolean().describe(
+        'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
+          'is still current instead of rewriting it. Requires `contentHash`.',
+      ),
+      contentHash: z
+        .string()
+        .min(6)
+        .max(64)
+        .optional()
+        .describe('single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id, checkpoint? } for one, or items:[{ id, checkpoint? }] for many',
@@ -919,6 +975,14 @@ export default defineTool({
             dependsOn: args.dependsOn,
             learned: args.learned,
             learnedLevel: args.learnedLevel,
+            // P-007/R-06: declaring these on the schema is not enough — the shorthand
+            // is normalized into a one-entry items[] here, and a field missing from
+            // this projection is silently dropped, so the call falls through to the
+            // ordinary write path and refuses with `checkpoint_required`. That reads
+            // like "you forgot the checkpoint text", which is the opposite of what an
+            // attestation is asking for.
+            unchanged: args.unchanged,
+            contentHash: args.contentHash,
           },
         ];
     const env = await runBulk(
@@ -980,7 +1044,15 @@ export default defineTool({
         // erase a live successor note. Preserve the intentional metadata-only PATCH
         // forms (`checks`/`dependsOn`) and the explicit clear flag; reject every other
         // body-less call before even reading or touching the item.
+        // P-007/R-06: an ATTESTATION is body-less BY CONSTRUCTION — that is the whole
+        // feature — so it must be exempt here or it never reaches its own branch below
+        // and refuses with `checkpoint_required`, which reads as "you forgot the text"
+        // to the one caller who deliberately sent none. This is the SECOND place the
+        // same shape bites (the first was the single-shorthand projection): a guard
+        // written to catch an omitted body cannot tell a mistake from a new intent
+        // unless the new intent is named in it.
         if (
+          it.unchanged !== true &&
           !wantsClear &&
           suppliedCheckpoint === undefined &&
           !wantsAppend &&
@@ -1130,6 +1202,91 @@ export default defineTool({
                   'Reopen the terminal item explicitly, then claim it before writing active checkpoint state.',
               },
             },
+          };
+        }
+        // P-007/R-06: the UNCHANGED ATTESTATION branch. Deliberately placed HERE —
+        // after the not_holder and terminal_item guards, before any write path — so an
+        // attestation is subject to exactly the same authority checks as a real write
+        // and can never be a cheaper door into someone else's item.
+        if (it.unchanged === true) {
+          const contentHash = (it.contentHash ?? '').trim();
+          const conflicting = (
+            [
+              ['checkpoint', it.checkpoint !== undefined],
+              ['clear', it.clear === true],
+              ['append', it.append === true],
+              ['checks', it.checks !== undefined],
+              ['dependsOn', it.dependsOn !== undefined],
+            ] as const
+          )
+            .filter(([, present]) => present)
+            .map(([name]) => name);
+          if (conflicting.length > 0) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                `attestation_conflicting_args — \`unchanged:true\` attests that the STORED body is still current, ` +
+                `so it writes no text; ${conflicting.join(', ')} would change it. Send the attestation alone, or ` +
+                'drop `unchanged` and write the checkpoint you actually mean.',
+              errorCode: 'attestation_conflicting_args',
+            };
+          }
+          if (contentHash.length === 0) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                'attestation_hash_required — `unchanged:true` requires `contentHash`, the hash of the stored ' +
+                'checkpoint you are attesting to. Without it the attestation would be about a body you have not ' +
+                "read. Get it from a prior write's `contentHash`, or from work_items:get { id }.",
+              errorCode: 'attestation_hash_required',
+            };
+          }
+          const att = await attestWorkItemCheckpointUnchanged(
+            { harness, workItemId: it.id, workspaceId },
+            { contentHash },
+          );
+          if (att.ok) {
+            return {
+              ok: true as const,
+              id: it.id,
+              harness,
+              attested: true as const,
+              contentHash: att.currentHash,
+              attestedCount: att.attestedCount,
+              remainingAttestations: att.remainingAttestations,
+              bodyAgeMinutes: att.bodyAgeMs === null ? null : Math.round(att.bodyAgeMs / 60_000),
+              note:
+                `Checkpoint freshness refreshed; body unchanged. ${att.remainingAttestations} attestation(s) ` +
+                'left against this body — a real checkpoint write resets the budget.',
+            };
+          }
+          // Every refusal names the remedy, because the whole point of this branch is
+          // to stop an agent bouncing at a boundary without knowing what to do next.
+          const remedy: Record<string, string> = {
+            attestation_no_checkpoint:
+              'Nothing is stored for this item, so there is nothing to attest — write a real checkpoint: ' +
+              'work_items:checkpoint { id, checkpoint }.',
+            attestation_hash_mismatch:
+              `The stored checkpoint is ${att.currentHash ?? 'unreadable'}, not ${contentHash} — it changed under ` +
+              'you. Re-read it (work_items:get { id }) and either attest the current hash or write a real checkpoint.',
+            attestation_state_changed:
+              'The work-item row itself moved after this checkpoint body was written, so "unchanged" is not true ' +
+              'of it. Write a real checkpoint covering what changed.',
+            attestation_exhausted:
+              'The attestation budget for this body is spent (chain limit or maximum body age reached). An ' +
+              'attestation can defer a flush, never replace one — write a real checkpoint now.',
+          };
+          const reason = att.refusedReason ?? 'attestation_no_checkpoint';
+          return {
+            ok: false as const,
+            id: it.id,
+            error: `${reason} — ${remedy[reason] ?? 'Write a real checkpoint.'}`,
+            errorCode: reason,
+            storedContentHash: att.currentHash,
+            attestedCount: att.attestedCount,
+            bodyAgeMinutes: att.bodyAgeMs === null ? null : Math.round(att.bodyAgeMs / 60_000),
           };
         }
         let checkpointToStore = checkpoint;
@@ -2030,6 +2187,35 @@ export default defineTool({
                     },
                   }
                 : {};
+            } catch {
+              return {};
+            }
+          })(),
+          /**
+           * EI-19455262557905604: `checks` carries the VERIFIED-vs-PREDICTED
+           * distinction and has done since 2026-08-02 — but 8.8% of the 10,475
+           * work-item carry-notes here use it, and only 6.75% of the last 14 days',
+           * so adoption is not rising. The field is not missing; it is INVISIBLE at
+           * the moment it is actionable (an su read this very tool 40h after it
+           * shipped, concluded the distinction did not exist, and filed to build it).
+           *
+           * So surface it exactly where D-098 surfaced `loop:arm`'s `blockedOn`: at
+           * the one write whose prose is a PREDICTION wearing measurement's clothes —
+           * a run the writer says is still in flight, with the output living in a log
+           * they have not read, and no check row to mark it unverified. Measured
+           * firing rate 132/10,475 = 1.26%, which is what keeps it readable rather
+           * than the every-write advisory D-004 warns about.
+           *
+           * Advisory + fail-open, like its siblings above; the write is never lost to
+           * a lint fault, and absent when nothing was flagged so the common result
+           * shape is unchanged.
+           */
+          ...(() => {
+            try {
+              if (stored === null || typeof checkpoint !== 'string' || !checkpoint.trim()) return {};
+              const submittedBody = splitCarryNoteChecks(checkpoint).body;
+              const advisory = describeUnreadRun(submittedBody, splitCarryNoteChecks(stored).checks.length);
+              return advisory ? { unreadRunLint: advisory } : {};
             } catch {
               return {};
             }
