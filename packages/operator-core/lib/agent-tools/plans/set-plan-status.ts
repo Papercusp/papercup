@@ -37,7 +37,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate, type CitationDeployment } from '../../plan-acceptance-gate';
-import { launchAcceptanceGrader, resolveAcceptanceGrader, type AcceptanceGraderLifecycle } from '../../acceptance-grader';
+import {
+  ACCEPTANCE_GRADING_SWEEP_ACTOR,
+  launchAcceptanceGrader,
+  resolveAcceptanceGrader,
+  type AcceptanceGraderLifecycle,
+} from '../../acceptance-grader';
 import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { checkPlanAdmission } from './plan-admission-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
@@ -299,7 +304,35 @@ export async function launchAcceptanceGraderForGate(
   // The tool accepts a per-call harness override. Keep the scoping at this
   // launch seam so the acceptance grader cannot accidentally resolve the plan
   // against the caller's ambient harness (EI-20482865818772113).
-  return launch(slug, harnessScopedCtx(harness, ctx));
+  const scopedCtx = harnessScopedCtx(harness, ctx);
+  const workspaceId = scopedCtx.workspaceId?.trim();
+  if (!workspaceId || workspaceId === '*') {
+    // A system principal needs a concrete workspace. Preserve the existing
+    // caller path when scope is unavailable; launchAcceptanceGrader's lineage
+    // guard will still fail closed for an author rather than fabricating scope.
+    return launch(slug, scopedCtx);
+  }
+
+  // Automatic gate recruitment is a SYSTEM effect, not the rubric author's
+  // personal launch. If the discovery menu is empty, the fresh judge must be
+  // descended from this independent system actor; otherwise the launch-side
+  // lineage guard correctly rejects it as the author's child. The same actor
+  // owns the periodic recovery sweep, so immediate and recovery paths share one
+  // auditable origin instead of weakening the direct-author guard.
+  return launch(slug, {
+    ...scopedCtx,
+    uiClientId: null,
+    isSuperuser: false,
+    isPowerUser: false,
+    principal: {
+      kind: 'system',
+      slug: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+      workspaceId,
+    },
+    ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+    ownerLabel: 'acceptance grading sweep',
+    userId: null,
+  } as never);
 }
 
 export default defineTool({
