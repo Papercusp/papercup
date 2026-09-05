@@ -515,7 +515,7 @@ describe('release:repair-queue', () => {
           sigVerifiedSpawn: true,
         } as never,
       ),
-    ).rejects.toThrow(/requires operator, architect, mug, su/);
+    ).rejects.toThrow(/requires an operator-config write role, su/);
     expect(mocks.admit).not.toHaveBeenCalled();
     expect(mocks.write).not.toHaveBeenCalled();
   });

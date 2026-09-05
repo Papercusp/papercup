@@ -548,7 +548,7 @@ export default defineTool({
         callerAuthorization.authorized !== true
       ) {
         throw new Error(
-          'release:repair-queue admit requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
+          'release:repair-queue admit requires an operator-config write role, su, or the exact signed release-fixer delegated by this queue',
         );
       }
       const identity = readIdentity(ctx);
@@ -864,7 +864,7 @@ export default defineTool({
         callerAuthorization.authorized !== true
       ) {
         throw new Error(
-          'release:repair-queue claim-leg requires operator, architect, mug, su, or the exact signed release-fixer delegated by this queue',
+          'release:repair-queue claim-leg requires an operator-config write role, su, or the exact signed release-fixer delegated by this queue',
         );
       }
       if (!queue.manifest) {
@@ -975,7 +975,7 @@ export default defineTool({
       });
     }
     if (ctx.role !== 'su' && !isOperatorConfigWriteRole(ctx.role)) {
-      throw new Error('release:repair-queue retire requires operator, architect, mug, or su authority');
+      throw new Error('release:repair-queue retire requires an operator-config write role or su authority');
     }
     if (!inspected.queue || !inspected.diagnostic) {
       return json({ ok: true, op: 'retire', retired: false, alreadyClear: true, target: inspected.target });
