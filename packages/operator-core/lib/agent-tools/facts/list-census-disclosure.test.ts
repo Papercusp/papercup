@@ -8,10 +8,18 @@
  *
  * Why that is worth a guard rather than a nicer label: agents are instructed to
  * read standing facts BEFORE asserting, so the dedup check saw ~1.5% of the
- * population and could not find the key it was looking for. The duplicate assert
- * that follows EVICTS a peer's still-valid fact, because the busy scopes sit
- * permanently at FACTS_PER_SCOPE_CAP. The read side was quietly driving avoidable
- * destructive writes on the write side.
+ * population and could not find the key it was looking for, and asserted a
+ * duplicate over a key that was already there.
+ *
+ * ⚠ DATED MECHANISM, corrected 2026-09-05 (EI-20741282378585673). This comment
+ * used to end "...EVICTS a peer's still-valid fact, because the busy scopes sit
+ * permanently at FACTS_PER_SCOPE_CAP". That was true when FACTS_PER_SCOPE_CAP
+ * was 200; it is not true now. The cap is 5000 and is a REFUSAL ceiling rather
+ * than an eviction bound, and the largest bucket on the box measured 513/5000
+ * (10.3%), so an ordinary assert evicts nothing. The dedup harm is now a racing
+ * or duplicated write, not a destroyed peer fact — which is why the note this
+ * file guards no longer threatens eviction. The page-vs-census defect itself is
+ * unchanged and still worth pinning.
  *
  * The store-level parity between page and census lives in
  * agent-facts/store.integration.test.ts (real PG). THIS file pins the half a
@@ -164,5 +172,42 @@ describe('facts:list distinguishes the page from the census (WI-38910)', () => {
     ];
     expect(selector.scope).toBe('workspace');
     expect(selector.scopeRef).toBeNull();
+  });
+
+  /**
+   * EI-20741282378585673 residue. The truncation note's remedy was an
+   * unconditional "to enumerate the complete population, pass `all:true`" —
+   * true only while a scope fits in FACTS_LIST_ALL_LIMIT (200). Measured
+   * 2026-09-05, `workspace` held 513 live facts, so following that instruction
+   * returned 200 of 513 and truncated AGAIN, with the same note pointing at the
+   * same dead end. A remedy that cannot work is worse than none: it reads as
+   * the authoritative way to get the whole population.
+   */
+  it('does NOT offer all:true as the remedy when the scope is larger than all:true can return', async () => {
+    listFactsSpy.mockResolvedValue(page(FACTS_LIST_ALL_LIMIT));
+    countLiveFactsSpy.mockResolvedValue(513);
+
+    const data = await listWorkspace({ all: true });
+    const note = String(data.note_truncated ?? '');
+
+    expect(data.truncatedByLimit).toBe(true);
+    // It must say the population outruns the ceiling, naming both numbers.
+    expect(note).toContain('513');
+    expect(note).toContain(String(FACTS_LIST_ALL_LIMIT));
+    expect(note).toContain('NOT a way to enumerate');
+    // ...and must NOT send the caller back to the remedy that just failed.
+    expect(note).not.toContain('To enumerate the complete population');
+  });
+
+  it('still offers all:true when the whole scope genuinely fits inside it', async () => {
+    listFactsSpy.mockResolvedValue(page(4));
+    countLiveFactsSpy.mockResolvedValue(FACTS_LIST_ALL_LIMIT - 1);
+
+    const data = await listWorkspace();
+    const note = String(data.note_truncated ?? '');
+
+    expect(data.truncatedByLimit).toBe(true);
+    expect(note).toContain('To enumerate the complete population');
+    expect(note).not.toContain('NOT a way to enumerate');
   });
 });
