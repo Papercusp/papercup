@@ -358,6 +358,30 @@ describe('evaluatePlanAcceptanceGate', () => {
       blockingBars: [], nextRepair: null, message: codes.length ? 'BAR proof or grading is incomplete' : null,
     });
 
+    it('requires original contract adoption for legacy Requirements even with an as-built rubric and force', async () => {
+      mockPg.mockReturnValue(sqlReturning([{
+        plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null,
+        acceptance_bar_epoch: null,
+        content: '## Requirements\n- Users can bind a wallet and pay for usage.\n\n## Decisions\nD-045: modules are tested seams for a follow-on plan.',
+      }]));
+      mockBarLifecycle.mockResolvedValue({ ...verdict('ship', []), applicable: false });
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([scorecard()]);
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'seams disclosed' } });
+      expect(result).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'ship', { expectedApplicable: true });
+      expect(mockRubrics).not.toHaveBeenCalled();
+    });
+
+    it('keeps contract read failure blocking even when independent grading would pass', async () => {
+      mockBarLifecycle.mockRejectedValue(new Error('contract source unavailable'));
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([scorecard()]);
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'retry later' } }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+      expect(mockRubrics).not.toHaveBeenCalled();
+    });
+
     it('exposes the existing ungraded refusal after pre-grading is ready', async () => {
       mockRubric.mockResolvedValue(acceptanceRubric());
       mockScorecards.mockResolvedValue([]);
@@ -902,13 +926,14 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
   });
 
-  it('exemption-read failure degrades toward NOT exempt (falls through to the rubric check)', async () => {
+  it('a failed plan read cannot establish whether the original requirements are fulfilled', async () => {
     mockPg.mockImplementation(() => {
       throw new Error('pg down');
     });
     mockRubric.mockResolvedValue(null);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
-    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready' });
+    expect(v.message).toContain('pg down');
   });
 });
 

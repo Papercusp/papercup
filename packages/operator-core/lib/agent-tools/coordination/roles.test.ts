@@ -11,7 +11,7 @@
  * failing `role_not_allowed` for a bee-role-scoped URL with no other signal. Pin it.
  */
 import { describe, test, expect } from 'vitest';
-import { COORD_ROLES, QUEEN_PLACEMENT_ROLES } from './roles';
+import { COORD_ROLES, QUEEN_PLACEMENT_ROLES, WORK_ITEM_LIFECYCLE_ROLES } from './roles';
 
 describe('COORD_ROLES', () => {
   test('bee is a coord role (P-001 — improvements:capture + work_items:* resolve for a bee URL)', () => {
@@ -97,12 +97,13 @@ describe('COORD_ROLES', () => {
   );
 
   test(
-    'the dedicated acceptance judge gets only the explicit read-only evidence tools',
+    'the dedicated acceptance judge stays outside general coordination while gaining its narrow lifecycle lane',
     { timeout: 60_000 },
     async () => {
       // The judge role is intentionally NOT a general coordination role. Its
-      // acceptance-rubric method needs these four read surfaces, but adding it
-      // to COORD_ROLES would also expose unrelated coordination tools.
+      // acceptance-rubric method needs these explicit evidence surfaces plus
+      // the narrow work-item lifecycle writer lane; adding it to COORD_ROLES
+      // would also expose unrelated coordination tools.
       const { default: workItemsGet } = await import('../work_items/get.js');
       const { default: searchFulltext } = await import('../search/fulltext.js');
       const { default: scorecardsEvaluate } = await import('../scorecards/evaluate.js');
@@ -116,6 +117,7 @@ describe('COORD_ROLES', () => {
       ] as const) {
         expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
       }
+      expect(WORK_ITEM_LIFECYCLE_ROLES).toContain('judge');
       expect(COORD_ROLES).not.toContain('judge');
     },
   );

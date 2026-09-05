@@ -63,6 +63,7 @@ import {
 import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 import { citationDeploymentForPaths, type CitationDeployment } from './deployment-position';
 import { readAndEvaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { splitPlanSections } from './agent-tools/plans/plan-sections';
 
 export type { CitationDeployment };
 
@@ -440,9 +441,24 @@ export async function evaluatePlanAcceptanceGate(
     // a post-epoch BAR-only, divergent, unreadable, or wrong-plane contract cannot
     // be mistaken for an ordinary rubric/acceptance verdict.
     if (rubricGate) {
+      // A historical plan may predate the adoption marker and still contain
+      // promises. Its as-built rubric must not silently replace those promises
+      // with a checklist of tested seams. Require explicit contract adoption at
+      // ship; empty/absent Requirements retain their existing legacy behavior.
+      const hasRequirements = splitPlanSections(planContent ?? '').some(
+        (section) => section.heading.trim().toLowerCase() === 'requirements' && section.body.trim().length > 0,
+      );
+      const expectedApplicable = hasRequirements || rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null);
       const barLifecycle = await readAndEvaluateAcceptanceBarLifecycle(planSlug, 'ship', {
-        expectedApplicable: rows.some((r) => r.plan_slug === planSlug && r.acceptance_bar_epoch != null),
+        expectedApplicable,
       });
+      if (expectedApplicable && !barLifecycle.applicable) {
+        return {
+          satisfied: false, code: 'acceptance_bar_contract_not_ready',
+          message: `plan '${planSlug}' has original requirements but no verifiable requirement contract. ` +
+            'Adopt the complete original requirement set and its work mappings before shipment; an as-built rubric or disclosure cannot replace it. This is not waived by force.',
+        };
+      }
       if (!barLifecycle.satisfied) {
         const refusal: PlanAcceptanceGateVerdict = {
           satisfied: false,
@@ -462,8 +478,13 @@ export async function evaluatePlanAcceptanceGate(
         if (!preGrading.satisfied) return refusal;
       }
     }
-  } catch {
-    /* not exempt — fall through to the rubric check */
+  } catch (error) {
+    // An unreadable original contract is not evidence of a fulfilled promise.
+    // Falling through used to let later rubric success erase this failure.
+    if (rubricGate) return {
+      satisfied: false, code: 'acceptance_bar_contract_not_ready',
+      message: `plan '${planSlug}' requirement contract could not be verified: ${error instanceof Error ? error.message : String(error)}. Retry the contract read before shipment; force cannot establish fulfillment.`,
+    };
   }
 
   // ── the CODE-TRUTH family (plan-completion-audit-…-2026-08-13) ───────────────
@@ -695,9 +716,8 @@ export async function evaluatePlanAcceptanceGate(
       //
       // Placed last in the code-truth family and still ahead of rubric ceremony, for
       // the same reason as its siblings: a plan whose requirements are not realized
-      // should be sent to realize them, not to author a rubric. `force`-waivable like
-      // the rest of the family — it is an evidence-truth check, not the separate owner
-      // ruling the rubric family encodes.
+      // must be sent to realize them. A generic code-truth waiver cannot make a
+      // missing requirement true or authorize a leader to move it to a later plan.
       //
       // KNOWN LIMIT, stated rather than left to be discovered later:
       // getLatestActivationAudit swallows read errors and returns null, so "no
@@ -731,9 +751,6 @@ export async function evaluatePlanAcceptanceGate(
         // reported, never a violation, so it must survive a SATISFIED verdict.
         requirementDroppedTargets = realization.droppedTargets;
         if (!realization.ok) {
-          if (force) {
-            forcedChecks.push('requirement_unrealized');
-          } else {
             const lines = realization.unrealized.map(describeUnrealized);
             return {
               satisfied: false,
@@ -746,9 +763,9 @@ export async function evaluatePlanAcceptanceGate(
                 `verification (D-008), so a target audited with doc/none is unproven. Either audit the named ` +
                 `item(s) against the real code with plans:audit, or — if the requirement genuinely was not ` +
                 `absorbed — correct its disposition to 'rejected'/'open' via plans:audit { phase:'activation' } ` +
-                `so the record stops claiming otherwise. To ship anyway, pass force:{ reason }.`,
+                `so the record stops claiming otherwise. Unfulfilled requirements are not waived by force; ` +
+                `a follow-on task or disclosure is not fulfillment of the original promise.`,
             };
-          }
         }
       }
     }

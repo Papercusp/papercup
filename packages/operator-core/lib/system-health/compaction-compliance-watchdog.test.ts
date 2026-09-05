@@ -900,6 +900,7 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     // booted the successor but intentionally skipped injectTurnAtPrompt; a solo
     // interactive session with no loop/event wake then parked until Avi typed.
     expect(payload.data).toMatch(/^⟦turn-origin:watchdog nonce:/);
+    expect(payload.data).toContain('ADDRESSED TO hot');
     expect(payload.data).toContain('⟦post-compaction-recovery⟧');
     expect(payload.data).toContain('do not call coord:orient');
     expect(payload.data).toContain('coord:declare-intent { intent, current_plan_slug, items }');
@@ -997,6 +998,7 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
     );
     // Unknown window (no spec resolvable) ⇒ the overshoot bound set forceAt — the
     // note must name THAT, not claim "≈ 1.3 ×" (false math; owner 2026-07-05).
+    expect(payload.data).toContain('ADDRESSED TO hot');
     expect(payload.data).toContain('conservative bound used when the model window is unknown');
     expect(payload.data).toContain('1.2 × your soft limit of 158k');
     expect(payload.data).not.toContain('≈ 1.3 ×');

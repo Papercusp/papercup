@@ -121,6 +121,29 @@ describe('watch routing', () => {
     expect(subscribeTopic).not.toHaveBeenCalled();
   });
 
+  it('EI-22459575798410641: targetKind on a wake:true watch is rejected loudly, not silently dropped', async () => {
+    // The wake path never reads targetKind (it is resolved only inside the wake:false
+    // inject branch), so before the guard these silently registered a plain wake grant
+    // while the caller believed a standing event-key subscription had been created.
+    await expect(call({ pattern: 'work-item:claimable', wake: true, targetKind: 'event' })).rejects.toThrow(/targetKind/);
+    await expect(call({ pattern: 'some-topic', wake: true, targetKind: 'topic' })).rejects.toThrow(/targetKind/);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('EI-22459575798410641: the targetKind refusal names both working forms so the caller is not left guessing', async () => {
+    const err = await call({ pattern: 'work-item:claimable', wake: true, targetKind: 'event' }).catch((e: Error) => e);
+    // The standing-and-re-invoking form is the one a deaf caller actually wants...
+    expect((err as Error).message).toMatch(/wake:true, once:false/);
+    // ...and the inject form is what targetKind was reaching for in the first place.
+    expect((err as Error).message).toMatch(/wake:false, targetKind:"event"/);
+  });
+
+  it('EI-22459575798410641: targetKind:"interest" still routes to the interest path under wake:true', async () => {
+    // Regression guard for the fix's blast radius: 'interest' is explicitly documented as
+    // valid under EITHER wake mode and returns before the new guard, so it must survive.
+    await expect(call({ pattern: 'free text interest', wake: true, targetKind: 'interest' })).resolves.toBeDefined();
+  });
+
   it('verified one-shot wake attaches producer health and derives its first deadline from cadence', async () => {
     const producerHealth = { kind: 'green-checkpoint', pipeline: 'papercusp', expected_cadence_sec: 120 };
     await call({ pattern: 'release:green:papercusp', wake: true, producer_health: producerHealth });

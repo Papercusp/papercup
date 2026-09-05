@@ -54,6 +54,7 @@ import {
 import { bumpSessionEpoch as defaultBumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../../agent-tools/coordination/compaction-recovery';
+import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
 import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
 import { buildLoopWakePrompt, materializeLoop as defaultMaterializeLoop, type MaterializeLoopInput } from './loop';
@@ -296,14 +297,15 @@ function recoveryMaterializeInput(ref: LoopRoutineRef, ownerId: string, now: num
 
 function recoveryFirstPrompt(ownerId: string, spec: RespawnLaunchSpec): string {
   if (spec.firstPrompt?.trim()) return spec.firstPrompt;
+  const recoveryPrompt = addressContinuationToOwner(CONTEXT_OVERFLOW_RECOVERY_PROMPT, ownerId);
   try {
     return tagTurnForInjection({
       sid: ownerId,
       origin: 'watchdog',
-      text: CONTEXT_OVERFLOW_RECOVERY_PROMPT,
+      text: recoveryPrompt,
     }).taggedText;
   } catch {
-    return CONTEXT_OVERFLOW_RECOVERY_PROMPT;
+    return recoveryPrompt;
   }
 }
 

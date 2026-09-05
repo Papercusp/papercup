@@ -45,6 +45,7 @@ import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
 import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
+import { addressContinuationToOwner } from '../carry-respawn-addressing';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -702,11 +703,12 @@ function watchdogCarryContinueNote(reason: 'soft-threshold' | 'context-death'): 
 
 /** Every watchdog-authored first prompt is machine-origin, never owner speech. */
 async function tagWatchdogContinuation(ownerId: string, note: string): Promise<string> {
+  const addressedNote = addressContinuationToOwner(note, ownerId);
   try {
     const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-    return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
+    return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: addressedNote }).taggedText;
   } catch {
-    return note; // provenance must never strand a context boundary
+    return addressedNote; // provenance must never strand a context boundary
   }
 }
 

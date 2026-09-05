@@ -348,6 +348,10 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     );
     const recoveryPayload = (injectPsuHost.mock.calls as unknown as Array<[string, { data?: unknown }]>)[0]?.[1];
     const recoveryPrompt = String(recoveryPayload?.data ?? '');
+    expect(recoveryPrompt).toContain('ADDRESSED TO su-owner');
+    expect(recoveryPrompt.indexOf('ADDRESSED TO su-owner')).toBeLessThan(
+      recoveryPrompt.indexOf('Context-overflow recovery queued'),
+    );
     expect(recoveryPrompt).toContain('⟦post-compaction-recovery⟧');
     expect(recoveryPrompt).toContain('do not call coord:orient');
     expect(recoveryPrompt).toContain('coord:declare-intent { intent, current_plan_slug, items }');

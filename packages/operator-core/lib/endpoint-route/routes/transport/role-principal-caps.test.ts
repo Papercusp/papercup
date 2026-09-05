@@ -201,7 +201,7 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
-    'judge can emit, verify, read evidence, and capture defects without gaining implementation powers',
+    'judge can emit, verify, persist lifecycle evidence, and capture defects without gaining implementation powers',
     { timeout: 60_000 },
     async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
@@ -212,12 +212,13 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('plans:read')).toBe(true);
       expect(caps.has('testing:run')).toBe(true);
       expect(caps.has('operator:write')).toBe(false);
-      expect(caps.has('work_items:write')).toBe(false);
+      expect(caps.has('work_items:write')).toBe(true);
       expect(caps.has('capability:fs-read')).toBe(true);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
 
       const [
+        { COORD_ROLES, WORK_ITEM_LIFECYCLE_ROLES },
         { default: emit },
         { default: run },
         { default: read },
@@ -229,7 +230,13 @@ describe('loadRoleCapabilities', () => {
         { default: evaluateSpecTestAdequacy },
         { default: getWorkItems },
         { default: listWorkItems },
+        { default: comment },
+        { default: checkpoint },
+        { default: complete },
+        { default: createWorkItem },
+        { default: setState },
       ] = await Promise.all([
+        import('../../../agent-tools/coordination/roles.js'),
         import('../../../agent-tools/scorecards/emit.js'),
         import('../../../agent-tools/testing/run.js'),
         import('../../../agent-tools/capability/read.js'),
@@ -241,6 +248,11 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/plans/evaluate-spec-test-adequacy.js'),
         import('../../../agent-tools/work_items/get.js'),
         import('../../../agent-tools/work_items/list.js'),
+        import('../../../agent-tools/work_items/comment.js'),
+        import('../../../agent-tools/work_items/checkpoint.js'),
+        import('../../../agent-tools/work_items/complete.js'),
+        import('../../../agent-tools/work_items/create.js'),
+        import('../../../agent-tools/work_items/set_state.js'),
       ]);
       for (const tool of [
         emit,
@@ -254,9 +266,20 @@ describe('loadRoleCapabilities', () => {
         evaluateSpecTestAdequacy,
         getWorkItems,
         listWorkItems,
+        comment,
+        checkpoint,
+        complete,
       ]) {
         expect(tool.agentRoles).toContain('judge');
       }
+      for (const [name, tool] of [
+        ['work_items:create', createWorkItem],
+        ['work_items:set_state', setState],
+      ] as const) {
+        expect(tool.agentRoles, `${name} must stay outside judge's lifecycle lane`).not.toContain('judge');
+      }
+      expect(WORK_ITEM_LIFECYCLE_ROLES).toContain('judge');
+      expect(COORD_ROLES).not.toContain('judge');
     },
   );
 

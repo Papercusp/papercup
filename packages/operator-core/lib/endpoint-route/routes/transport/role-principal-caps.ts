@@ -62,16 +62,18 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // COORD_ROLES/tool allowlists remain the other dispatch gate. In particular,
   // do not grant filesystem, shell, docs, locks, release, or operator caps.
   'content-fixer': ['coord:read', 'coord:write', 'work_items:read', 'work_items:write'],
-  // Dedicated plan-acceptance judges are evidence-only: they may read the rubric,
-  // prior scorecards, test-run ledger, and work-item completion evidence; emit the
-  // verdict; run the rubric's named checks; read the files those checks cite; and
-  // capture a defect they encounter.
-  // The required tools independently allowlist `judge`, so these capabilities do
-  // not admit the role to broader operator/fs/coord surfaces.
+  // Dedicated plan-acceptance judges are evidence-scoped: they may read the
+  // rubric, prior scorecards, test-run ledger, and work-item completion evidence;
+  // emit the verdict; run the rubric's named checks; read the files those checks
+  // cite; capture a defect they encounter; and persist their own lifecycle
+  // annotation/checkpoint/close. The lifecycle tools independently allowlist
+  // `judge`, so this write cap does not admit the role to broader work-item or
+  // coordination surfaces, and judge remains outside COORD_ROLES.
   judge: [
     'coord:read',
     'coord:write',
     'work_items:read',
+    'work_items:write',
     'operator:read',
     'plans:read',
     'testing:run',

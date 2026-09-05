@@ -417,6 +417,21 @@ export default defineTool({
       };
     }
 
+    // EI-22459575798410641: `targetKind` is only meaningful on the inject path above
+    // ('interest' returned earlier), so anything left here is 'topic' or 'event' — both
+    // documented "wake:false only". Reaching this point used to SILENTLY DROP the arg: no
+    // refusal, no echo, no downgrade marker, so a caller asking for a standing event-key
+    // watch got an unrelated wake grant and believed targetKind had been honoured. Fail
+    // loud instead, and name the two forms that actually work — the same fail-loud
+    // treatment payload_filter and predicate already get on the opposite path.
+    if (args.targetKind) {
+      throw new Error(
+        `watch:create — targetKind:"${args.targetKind}" is not supported with wake:true (it is read only on the wake:false inject path). ` +
+          'For a standing subscription that RE-INVOKES you, drop targetKind and pass { wake:true, once:false } — it never expires and is floored by min_sleep_sec. ' +
+          `For a no-token-cost inbox subscription, pass { wake:false, targetKind:"${args.targetKind}" }.`,
+      );
+    }
+
     // ── Wake preset → the durable re-invoke ladder, floored + coalesced. ──
     startAwaitSweeper();
     const minSleepSec = args.min_sleep_sec ?? (once ? 0 : standingWakeFloorSec());

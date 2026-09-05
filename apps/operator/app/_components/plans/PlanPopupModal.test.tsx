@@ -88,7 +88,7 @@ vi.mock("./PlanSessionsTab", () => ({
   default: () => <div data-testid="plan-sessions" />,
 }));
 
-import PlanPopupModal from "./PlanPopupModal";
+import PlanPopupModal, { isPopupSurfaceFullscreen } from "./PlanPopupModal";
 
 afterEach(() => {
   planRows.value = [];
@@ -273,6 +273,13 @@ describe("PlanPopupModal provenance", () => {
 });
 
 describe("PlanPopupModal fullscreen and target lifecycle", () => {
+  it("does not mistake an unattached ref plus an idle Fullscreen API for fullscreen", () => {
+    const surface = document.createElement("div");
+    expect(isPopupSurfaceFullscreen(null, null)).toBe(false);
+    expect(isPopupSurfaceFullscreen(null, surface)).toBe(false);
+    expect(isPopupSurfaceFullscreen(surface, surface)).toBe(true);
+  });
+
   it("fullscreenes the complete popup surface, restores it, and follows external exit", async () => {
     const fullscreen = installFullscreenApi();
     renderPopup(null, null);

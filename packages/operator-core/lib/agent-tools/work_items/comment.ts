@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { WORK_ITEM_LIFECYCLE_ROLES } from '../coordination/roles';
 import { commentWorkItem, getWorkItem, isSettledWorkItemState } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
@@ -145,7 +145,7 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...WORK_ITEM_LIFECYCLE_ROLES],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-comment shorthand: the work-item id (use with `body`)'),

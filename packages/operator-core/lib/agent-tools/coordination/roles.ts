@@ -84,6 +84,15 @@ export const COORD_ROLES = [
 ] as const;
 
 /**
+ * Work-item lifecycle writers — the general coordination roles plus the
+ * evidence-only acceptance judge. Keep this separate from COORD_ROLES: adding
+ * `judge` to the global coordination set would expose unrelated coordination
+ * and placement/write tools, while judge only needs comment/checkpoint/complete
+ * to persist its evidence.
+ */
+export const WORK_ITEM_LIFECYCLE_ROLES = [...COORD_ROLES, 'judge'] as const;
+
+/**
  * EI-145 (part 2): the Queen/Mug-only PLACEMENT/steering allowlist — COORD_ROLES
  * minus the read-mostly agents (cup/papercup/papercup-deep/kettle) whose caps are
  * read+nudge-only and must never gain a placement/gym/desktop-provisioning tool.
