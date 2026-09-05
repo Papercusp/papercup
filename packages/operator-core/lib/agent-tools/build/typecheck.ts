@@ -803,7 +803,7 @@ export default defineTool({
       .max(MAX_TIMEOUT_MS)
       .optional()
       .describe(
-        `Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so an over-long compile returns an actionable timeout instead of an opaque transport error. A project that needs longer (packages/operator-core is ~104s) must run detached via capability:inspect { run_in_background: true }.`,
+        `Hard budget for the compile. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so an over-long compile returns an actionable timeout instead of an opaque transport error. A project that needs longer (packages/operator-core is ~104s) KEEPS these structured diagnostics via scopeToFiles, or "npm run lint:tsc -- --files=..." for the baseline-gated verdict; a detached capability:inspect { run_in_background: true } run returns a raw LOG, not these diagnostics.`,
       ),
     incremental: z
       .boolean()
