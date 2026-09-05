@@ -11,6 +11,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const {
   admissionPairKey,
   judgedPairsMissingAdjudication,
+  persistAdmissionPlan,
+  readAdmissionMergeSnapshots,
   readPendingBatch,
   readWorkItemAdmissionSnapshot,
   readWorkItemAdmissionProducerPressure,
@@ -39,6 +41,7 @@ const DDL = `
     summary text,
     status text,
     item_kind text,
+    taken_by text,
     admission text,
     admitted_at timestamptz,
     first_claimed_at timestamptz,
@@ -47,6 +50,12 @@ const DDL = `
     lane text,
     payload jsonb,
     see_also text[],
+    origin text NOT NULL DEFAULT 'local',
+    completion_ref jsonb,
+    terminal_completion_ref text,
+    authority text,
+    source_plan_slug text,
+    source_plan_item_ids text[],
     created_ts bigint,
     updated_ts bigint,
     closed_ts bigint,
@@ -55,6 +64,15 @@ const DDL = `
     embedding vector(3),
     embedding_mode text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
+  );
+  CREATE TABLE harness_shared.work_item_deps (
+    workspace_id text NOT NULL,
+    blocked_kind text NOT NULL,
+    blocked_ref text NOT NULL,
+    blocker_kind text NOT NULL,
+    blocker_ref text NOT NULL,
+    dep_type text NOT NULL DEFAULT 'blocks',
+    satisfaction text NOT NULL DEFAULT 'settled'
   );
   CREATE TABLE harness_shared.dedup_edges (
     workspace_id text NOT NULL,
@@ -133,7 +151,7 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup());
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.dedup_edges,
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
     harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
 });
@@ -239,6 +257,264 @@ describe('work-item admission promoter (real Postgres)', () => {
     // zero, so "no samples yet" stays distinguishable from "not measured". If
     // this key ever appears, the block above is reporting absence as data.
     expect(latency[0]?.latency).not.toHaveProperty('unavailable');
+    const identities = await db.sql<
+      Array<{ a_fingerprint: string; b_fingerprint: string; canonical_fingerprint: string }>
+    >`
+      SELECT evidence #>> '{judgmentIdentity,a}' AS a_fingerprint,
+             evidence #>> '{judgmentIdentity,b}' AS b_fingerprint,
+             evidence #>> '{judgmentIdentity,canonical}' AS canonical_fingerprint
+        FROM harness_shared.dedup_adjudications
+       WHERE run_id = 'promoter-clones'
+       ORDER BY a, b`;
+    expect(identities).toHaveLength(15);
+    for (const identity of identities) {
+      expect(identity.a_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(identity.b_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(identity.canonical_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    }
+  }, 60_000);
+
+  it.each([
+    [
+      'claim',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-live-holder', updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'claim hold',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items
+                  SET payload = payload || '{"_claimHold":true,"claim_hold_by":"su-parker"}'::jsonb,
+                      updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'remote origin',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items SET origin = 'remote', updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'remedy and completion evidence',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items
+                  SET summary = 'A newly distinct remedy that must survive',
+                      payload = payload || '{"_completionEvidence":{"verifiedHow":"new proof","testsRun":"new test"}}'::jsonb,
+                      updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'harness scope',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items SET harness_slug = 'moved-after-judge', updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'scope-or-identity-changed',
+    ],
+  ])(
+    'refuses a %s change after judging before any adjudication, link, occurrence, or drop',
+    async (_label, mutate, reason) => {
+      await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: `promoter-drift-${String(_label).replaceAll(' ', '-')}`,
+        sql: db.sql,
+        llmCall: async () => {
+          await mutate();
+          return {
+            text: '',
+            json: {
+              judgements: [
+                { pairKey: 'WI-canonical::WI-loser', verdict: 'r-finding-merge', reason: 'same finding and remedy' },
+              ],
+            },
+            inputTokens: 100,
+            outputTokens: 20,
+          };
+        },
+        now: () => NOW,
+      });
+
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason }] });
+      const rows = await db.sql<Array<{ feature_id: string; status: string; links: string[] }>>`
+      SELECT feature_id, status, COALESCE(see_also, ARRAY[]::text[]) AS links
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ANY(ARRAY['WI-canonical','WI-loser']::text[])
+       ORDER BY feature_id`;
+      expect(rows).toEqual([
+        { feature_id: 'WI-canonical', status: 'open', links: [] },
+        { feature_id: 'WI-loser', status: 'open', links: [] },
+      ]);
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+      expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    },
+    60_000,
+  );
+
+  it.each([
+    [
+      'incoming dependency',
+      async () =>
+        db.sql`INSERT INTO harness_shared.work_item_deps
+                 (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+               VALUES (${WS}, 'issue', 'WI-dependent', 'issue', 'WI-loser', 'blocks', 'settled')`,
+    ],
+    [
+      'incoming see-also reference',
+      async () =>
+        db.sql`INSERT INTO harness_shared.work_items
+                 (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, admission,
+                  lane, payload, see_also, created_ts, updated_ts)
+               VALUES (${WS}, ${HARNESS}, 'WI-referrer', 'Referrer', 'Preserve this incoming reference',
+                       'open', 'bug', 'admitted', NULL, '{}'::jsonb, ARRAY['WI-loser'], ${NOW}, ${NOW})`,
+    ],
+  ])(
+    'invalidates the judgement when an %s appears after judging',
+    async (_label, mutate) => {
+      await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: `promoter-reference-drift-${String(_label).replaceAll(' ', '-')}`,
+        sql: db.sql,
+        llmCall: async () => {
+          await mutate();
+          return {
+            text: '',
+            json: {
+              judgements: [
+                { pairKey: 'WI-canonical::WI-loser', verdict: 'r-finding-merge', reason: 'same finding and remedy' },
+              ],
+            },
+            inputTokens: 100,
+            outputTokens: 20,
+          };
+        },
+        now: () => NOW,
+      });
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'snapshot-drift' }] });
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    },
+    60_000,
+  );
+
+  it('refuses a terminal canonical that has no applicable completion evidence', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-terminal-canonical-without-completion',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+    expect(result).toMatchObject({
+      promoted: 0,
+      merged: 0,
+      held: 1,
+      guardRefusals: [{ reason: 'terminal-canonical-without-completion' }],
+    });
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    const [loser] = await db.sql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
+    expect(loser?.status).toBe('open');
+  }, 60_000);
+
+  it('allows a terminal canonical with applicable completion evidence', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET terminal_completion_ref = 'verified by focused integration suite', authority = 'committed'
+       WHERE feature_id = 'WI-canonical'`;
+    await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-terminal-canonical-with-completion',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, merged: 1, held: 0, guardRefusals: [] });
+    const [loser] = await db.sql<Array<{ status: string; canonical: string | null }>>`
+      SELECT status, payload #>> '{admissionMerge,canonicalId}' AS canonical
+        FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
+    expect(loser).toEqual({ status: 'dropped', canonical: 'WI-canonical' });
+  }, 60_000);
+
+  it('refuses a merge endpoint that already participates in an active dependency', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+      VALUES (${WS}, 'issue', 'WI-dependent', 'issue', 'WI-loser', 'blocks', 'settled')`;
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-active-dependency',
+      sql: db.sql,
+      llmCall: judgementCall('r-finding-merge'),
+      now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'active-dependency' }] });
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+  }, 60_000);
+
+  it('replays the same guarded merge idempotently without duplicating its occurrence or row mutation', async () => {
+    await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
+    const snapshots = await readAdmissionMergeSnapshots(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ids: ['WI-canonical', 'WI-loser'],
+    });
+    const pending = await readPendingBatch(db.sql, WS, HARNESS, 20);
+    const plan = {
+      dispositions: [{ itemId: 'WI-loser', action: 'merge' as const, canonicalId: 'WI-canonical' }],
+      adjudications: [
+        {
+          pairKey: 'WI-canonical::WI-loser',
+          verdict: 'r-finding-merge' as const,
+          reason: 'same finding and remedy',
+          a: 'WI-canonical',
+          b: 'WI-loser',
+          canonical: 'WI-canonical',
+          signals: ['title-key' as const],
+          cosine: 1,
+        },
+      ],
+      relatedPairs: [],
+    };
+    const input = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-idempotent-persist',
+      modelId: 'test-model',
+      nowMs: NOW,
+      pending,
+      plan,
+      snapshots: [...snapshots.values()],
+    };
+
+    const first = await persistAdmissionPlan(db.sql, input);
+    const replay = await persistAdmissionPlan(db.sql, input);
+    expect(first).toMatchObject({ mergedIds: ['WI-loser'], replayedIds: [], uniqueRowsChanged: 1 });
+    expect(replay).toMatchObject({ mergedIds: [], replayedIds: ['WI-loser'], uniqueRowsChanged: 0 });
+    const counts = await db.sql<Array<{ occurrences: number; adjudications: number; links: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.work_item_occurrences) AS occurrences,
+             (SELECT count(*)::int FROM harness_shared.dedup_adjudications) AS adjudications,
+             (SELECT cardinality(COALESCE(see_also, ARRAY[]::text[]))
+                FROM harness_shared.work_items WHERE feature_id = 'WI-canonical') AS links`;
+    expect(counts).toEqual([{ occurrences: 1, adjudications: 1, links: 1 }]);
   }, 60_000);
 
   it('promotes a zero-flag item without any model call', async () => {
