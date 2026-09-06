@@ -32,6 +32,7 @@ import {
   ACTIVATION_REAUDIT_MATERIAL_CHANGES,
   CITATION_KINDS,
   citationBlobSha,
+  citationBlobShaAt,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
@@ -752,6 +753,7 @@ export default defineTool({
       } };
     }
     const deps = citationContext.deps;
+    const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
     const seenItems = new Set<string>();
@@ -844,6 +846,43 @@ export default defineTool({
             storedCitations.push(c);
             continue;
           }
+          if (auditedSha) {
+            if (!deps.blobShaAt) {
+              problems.push({
+                itemId: it.itemId,
+                code: 'citation_audited_sha_unverifiable',
+                detail:
+                  `${c.kind} citation '${c.path ?? ''}' cannot be checked against auditedSha '${auditedSha}' ` +
+                  `because the citation context does not provide a commit-scoped blob resolver`,
+              });
+              storedCitations.push(c);
+              continue;
+            }
+            const auditedBlobSha = citationBlobShaAt(c, auditedSha, deps);
+            if (!auditedBlobSha) {
+              problems.push({
+                itemId: it.itemId,
+                code: 'citation_audited_sha_unresolvable',
+                detail:
+                  `${c.kind} citation '${c.path ?? ''}' resolves in the current tree but not at auditedSha ` +
+                  `'${auditedSha}' (the commit may not contain the cited path or may be unavailable)`,
+              });
+              storedCitations.push(c);
+              continue;
+            }
+            if (auditedBlobSha !== blobSha) {
+              problems.push({
+                itemId: it.itemId,
+                code: 'citation_audited_sha_mismatch',
+                detail:
+                  `${c.kind} citation '${c.path ?? ''}' has current blobSha '${blobSha}' but auditedSha ` +
+                  `'${auditedSha}' carries '${auditedBlobSha}'; re-audit against a commit containing the ` +
+                  `cited bytes`,
+              });
+              storedCitations.push(c);
+              continue;
+            }
+          }
           storedCitations.push({ ...c, blobSha });
         } else {
           storedCitations.push(c);
@@ -915,7 +954,6 @@ export default defineTool({
       } };
     }
 
-    const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
     const auditedAt = new Date().toISOString();
     const previous = await getEffectiveItemAudits(args.slug);
     const effectiveEntries = prepareAuditPassEntries({

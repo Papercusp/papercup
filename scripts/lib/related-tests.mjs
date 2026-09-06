@@ -590,7 +590,13 @@ export function transitiveDeps(index) {
  *                                                  RELATED_WIDEN_THRESHOLD_DEFAULT)
  * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
  * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
- * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number }}
+ * @param {ExecutedMap | null}     [o.executedMap]  P-002: per-test-file executed-source map (see
+ *                                                  pruneWithExecutedMap); absent ⇒ no pruning
+ * @param {string | null}          [o.judgedSha]    P-002: the sha this selection is judged at
+ * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
+ *                                                  paths that changed between them, or null when
+ *                                                  the pair cannot be diffed (⇒ treated as stale)
+ * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
  */
 export function selectRelatedTests({
   rootDir,
@@ -599,13 +605,17 @@ export function selectRelatedTests({
   threshold = resolveRelatedWidenThreshold().threshold,
   fs = defaultFs(),
   index = null,
+  executedMap = null,
+  judgedSha = null,
+  changedBetween = null,
 } = {}) {
+  const noMap = executedMapSummaryInert("not-reached");
   const idx = index ?? buildIndex({ rootDir, aliases, fs });
   const testFiles = idx.files.filter(isTestFile);
   const total = testFiles.length;
 
   if (total === 0) {
-    return { mode: "full", selected: [], total: 0, reason: "no-test-files", threshold };
+    return { mode: "full", selected: [], total: 0, reason: "no-test-files", threshold, executedMap: noMap };
   }
 
   // Only changed paths INSIDE this root can be resolved against this index. A
@@ -621,6 +631,7 @@ export function selectRelatedTests({
       total,
       reason: "no-changed-paths-in-scope",
       threshold,
+      executedMap: noMap,
     };
   }
 
@@ -652,26 +663,232 @@ export function selectRelatedTests({
   if (selected.size === 0) {
     // An in-scope change that reaches NO test is far more likely to be a graph gap
     // than genuine proof that nothing covers it. Run everything.
-    return { mode: "full", selected: [], total, reason: "empty-selection", threshold };
+    return { mode: "full", selected: [], total, reason: "empty-selection", threshold, executedMap: noMap };
   }
+
+  // P-002: the static closure above is the SUPERSET; an executed-source map can only remove
+  // hub-fan-out over-selection from it, and only for a test whose map is provably current.
+  const pruning = pruneWithExecutedMap({
+    selected,
+    changedSet,
+    reach,
+    unresolved: idx.unresolved,
+    executedMap,
+    judgedSha,
+    changedBetween,
+  });
+  const narrowed = pruning.selected;
+
   // P-001: this is a COST rule, not a soundness rail — the selection above is complete at any
   // share. It fires only when the subset is so close to the whole suite that the explicit file
   // list is pure overhead (see RELATED_WIDEN_THRESHOLD_DEFAULT).
-  if (selected.size >= total * threshold) {
+  if (narrowed.size >= total * threshold) {
     return {
       mode: "full",
       selected: [],
       total,
-      reason: `over-threshold(${selected.size}/${total})`,
+      reason: `over-threshold(${narrowed.size}/${total})`,
       threshold,
+      executedMap: pruning.summary,
     };
   }
 
   return {
     mode: "related",
-    selected: [...selected].sort(),
+    selected: [...narrowed].sort(),
     total,
     reason: "ok",
     threshold,
+    executedMap: pruning.summary,
   };
+}
+
+// ── EXECUTED-SOURCE PRUNING (same plan, P-002) ─────────────────────────────────────────
+// The static index over-selects through hubs: a barrel that re-exports half the package puts
+// most tests in the closure of most files, so a one-file change still selects thousands of
+// tests that never load it. vitest knows which modules a test file ACTUALLY executed
+// (`TestModule.diagnostic().importDurations`, recorded per test file by
+// libs/test-config/src/executed-source-map-reporter.ts and persisted in
+// harness_shared.test_executed_sources keyed by workspace + test file + recorded sha). That
+// observation can only ever be used to REMOVE a test from the static selection, and only
+// when three things hold at once:
+//   (a) an executed map exists for the test — and lists the test file itself, which proves the
+//       entry came from a run of THIS file rather than a stale or foreign row;
+//   (b) nothing in the test's static closure (the test included) changed between the sha the
+//       map was recorded at and the sha being judged — otherwise the recorded set may be
+//       missing an import that exists now, and the map is STALE;
+//   (c) the executed set does not intersect the change.
+// Every question the rule cannot answer keeps the test (an unknown drift, a missing entry,
+// an empty or self-less executed set), and a prune that would empty the selection is refused
+// outright — a change every candidate test executes around is far more likely a recording
+// gap than proof that nothing covers it. The summary reports which rail kept what, so a
+// selection that did not narrow can never be silent about why.
+
+/**
+ * @typedef {{ recordedSha: string, executed: Set<string> | string[] }} ExecutedEntry
+ *   `executed` holds ABSOLUTE module paths (the same shape as `changedPaths`).
+ * @typedef {Map<string, ExecutedEntry>} ExecutedMap keyed by ABSOLUTE test-file path
+ * @typedef {(recordedSha: string, judgedSha: string) => Iterable<string> | null} ChangedBetween
+ *   absolute paths changed between the two shas; `null` when the pair cannot be diffed.
+ * @typedef {{
+ *   applied: boolean,
+ *   reason: string | null,
+ *   entries: number,
+ *   pruned: number,
+ *   prunable: number,
+ *   wouldEmpty: boolean,
+ *   kept: { changedTest: number, unresolved: number, noEntry: number, untrusted: number,
+ *           unknownDrift: number, stale: number, intersects: number },
+ * }} ExecutedMapSummary
+ */
+
+/** @param {string} reason @returns {ExecutedMapSummary} */
+function executedMapSummaryInert(reason) {
+  return {
+    applied: false,
+    reason,
+    entries: 0,
+    pruned: 0,
+    prunable: 0,
+    wouldEmpty: false,
+    kept: {
+      changedTest: 0,
+      unresolved: 0,
+      noEntry: 0,
+      untrusted: 0,
+      unknownDrift: 0,
+      stale: 0,
+      intersects: 0,
+    },
+  };
+}
+
+/**
+ * Apply the P-002 pruning rule to a static selection. Pure: every input is a value or a seam.
+ *
+ * @param {object}                        o
+ * @param {Set<string>}                   o.selected       statically selected tests (absolute)
+ * @param {Set<string>}                   o.changedSet     in-scope changed paths (absolute)
+ * @param {(file: string) => Set<string>} o.reach          transitive static closure, excluding the file
+ * @param {Set<string>}                   o.unresolved     files with an unresolved intra-repo import
+ * @param {ExecutedMap | null | undefined} o.executedMap
+ * @param {string | null | undefined}     o.judgedSha
+ * @param {ChangedBetween | null | undefined} o.changedBetween
+ * @returns {{ selected: Set<string>, summary: ExecutedMapSummary }}
+ */
+export function pruneWithExecutedMap({
+  selected,
+  changedSet,
+  reach,
+  unresolved,
+  executedMap,
+  judgedSha,
+  changedBetween,
+}) {
+  if (!executedMap || typeof executedMap.get !== "function" || executedMap.size === 0) {
+    return { selected, summary: executedMapSummaryInert("no-map") };
+  }
+  if (typeof judgedSha !== "string" || judgedSha.length === 0) {
+    return { selected, summary: executedMapSummaryInert("no-judged-sha") };
+  }
+  if (typeof changedBetween !== "function") {
+    return { selected, summary: executedMapSummaryInert("no-drift-seam") };
+  }
+
+  const summary = executedMapSummaryInert(null);
+  summary.applied = true;
+  summary.entries = executedMap.size;
+
+  /** @type {Map<string, Set<string> | null>} */
+  const driftCache = new Map();
+  const driftFor = (recordedSha) => {
+    if (recordedSha === judgedSha) return new Set();
+    if (!driftCache.has(recordedSha)) {
+      let drift = null;
+      try {
+        const raw = changedBetween(recordedSha, judgedSha);
+        drift = raw == null ? null : new Set(raw);
+      } catch {
+        drift = null;
+      }
+      driftCache.set(recordedSha, drift);
+    }
+    return driftCache.get(recordedSha);
+  };
+
+  const kept = new Set();
+  for (const t of selected) {
+    // A changed test always runs — the map has nothing to say about a file that moved.
+    if (changedSet.has(t)) {
+      kept.add(t);
+      summary.kept.changedTest += 1;
+      continue;
+    }
+    // A graph hole is kept by the static rail for a reason the map cannot overrule.
+    if (unresolved.has(t)) {
+      kept.add(t);
+      summary.kept.unresolved += 1;
+      continue;
+    }
+    const entry = executedMap.get(t);
+    if (!entry || typeof entry.recordedSha !== "string" || entry.recordedSha.length === 0) {
+      kept.add(t);
+      summary.kept.noEntry += 1;
+      continue;
+    }
+    const executed = entry.executed instanceof Set ? entry.executed : new Set(entry.executed ?? []);
+    // (a) an entry that does not list the test file itself did not come from a run of it.
+    if (executed.size === 0 || !executed.has(t)) {
+      kept.add(t);
+      summary.kept.untrusted += 1;
+      continue;
+    }
+    // (b) the recorded map must still describe THIS closure.
+    const drift = driftFor(entry.recordedSha);
+    if (drift === null) {
+      kept.add(t);
+      summary.kept.unknownDrift += 1;
+      continue;
+    }
+    if (drift.size > 0) {
+      let stale = drift.has(t);
+      if (!stale) {
+        const closure = reach(t);
+        for (const d of drift) {
+          if (closure.has(d)) {
+            stale = true;
+            break;
+          }
+        }
+      }
+      if (stale) {
+        kept.add(t);
+        summary.kept.stale += 1;
+        continue;
+      }
+    }
+    // (c) a test that executed the change runs, whatever the static closure says.
+    let intersects = false;
+    for (const c of changedSet) {
+      if (executed.has(c)) {
+        intersects = true;
+        break;
+      }
+    }
+    if (intersects) {
+      kept.add(t);
+      summary.kept.intersects += 1;
+      continue;
+    }
+    summary.prunable += 1;
+  }
+
+  if (kept.size === 0) {
+    // Refuse to narrow to nothing: see the rationale above. The static selection stands.
+    summary.wouldEmpty = true;
+    summary.pruned = 0;
+    return { selected, summary };
+  }
+  summary.pruned = summary.prunable;
+  return { selected: kept, summary };
 }

@@ -144,7 +144,35 @@ grep -Eq '"status"[[:space:]]*:[[:space:]]*200' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$PRE_RELOAD_RESULT"
 grep -Eq '"workspace"[[:space:]]*:[[:space:]]*"[^"]+"' <<<"$PRE_RELOAD_RESULT"
 theme_eval 'window.location.reload()' >/dev/null 2>&1 || true
+# An eval that initiates a navigation can return before the new document exists.
+# Wait for the browser's own Navigation Timing record to prove this is the
+# reload document, then wait for its async sync-backed render to quiesce.
+VERIFY_TAURI_DOM_TIMEOUT=90 "$THEME_TAURI_POLL" \
+  --require 'html' \
+  --eval "performance.getEntriesByType('navigation')[0]?.type === 'reload'"
 bash "$VERIFY_TAURI_SETTLE" --timeout 90
+POST_RELOAD_RESULT="$(theme_eval "(async () => {
+  const response = await fetch('/api/profile', { headers: { accept: 'application/json' } });
+  const profile = await response.json().catch(() => null);
+  const nav = performance.getEntriesByType('navigation')[0];
+  const style = document.getElementById('pc-custom-themes');
+  return JSON.stringify({
+    status: response.status,
+    themeId: profile?.theme_id ?? null,
+    injectedThemeId: window.__PAPERCUSP_PREFS__?.theme_id ?? null,
+    workspace: String(window.__PAPERCUSP_WS__ || ''),
+    href: window.location.href,
+    navigationType: nav?.type ?? null,
+    dataTheme: document.documentElement.dataset.theme ?? null,
+    cachedCssMounted: Boolean(style?.textContent?.includes('custom:tauri-aurora'))
+  });
+})()")"
+printf '%s\n' "$POST_RELOAD_RESULT" | tee "$THEME_TAURI_OUT/post-reload.json"
+grep -Eq '"navigationType"[[:space:]]*:[[:space:]]*"reload"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"themeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"injectedThemeId"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"dataTheme"[[:space:]]*:[[:space:]]*"custom:tauri-aurora"' <<<"$POST_RELOAD_RESULT"
+grep -Eq '"cachedCssMounted"[[:space:]]*:[[:space:]]*true' <<<"$POST_RELOAD_RESULT"
 "$THEME_TAURI_POLL" \
   --require 'html[data-theme="custom:tauri-aurora"]' \
   --eval "String(window.__PAPERCUSP_WS__ || '') !== '' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#7c3aed'" \

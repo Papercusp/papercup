@@ -1292,7 +1292,7 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
   /** Compose makeDeps with a recording revive fake. */
   function makeReviveDeps(
     route: RouteResult,
-    reviveResult: { spawned: boolean; verified: boolean | null; detail: string },
+    reviveResult: { spawned: boolean; verified: boolean | null; detail: string; reason?: 'live-collision' },
     opts: { wokeOnReach?: number } = {},
   ) {
     const base = makeDeps(route);
@@ -1414,6 +1414,36 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'live-low', via: 'minimum' });
     expect(sel?.selected?.[0]?.revived).toBeUndefined();
     expect(res.hint).toContain('FAILED to spawn');
+  });
+
+  it('live-collision: a refused in-place resume is treated as a live responder, not no_live_responder', async () => {
+    const { deps, reached, revived } = makeReviveDeps(routeOf([deadExpert], { all: [deadExpert] }), {
+      spawned: false,
+      verified: null,
+      reason: 'live-collision',
+      detail: 'su-dead-expert reads LIVE at the pty host — resume refused',
+    });
+    const res = asOk(await getFeedbackCore(baseReq, deps));
+
+    expect(res.verdict).toBe('routed');
+    expect(res.reason).toBeUndefined();
+    expect(res.responder?.ownerId).toBe('dead-x');
+    expect(res.responder_via).toBe('floor');
+    expect(res.revival).toMatchObject({
+      ownerId: 'dead-x',
+      trigger: 'dead-preempt',
+      spawned: false,
+      reason: 'live-collision',
+    });
+    expect(revived).toHaveLength(1);
+    expect(reached[0]?.responder).toBe('dead-x');
+
+    const row = await stateRow(res.conversation_id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.responder_id).toBe('dead-x');
+    const sel = (row.routing as { selection?: { selected?: Array<Record<string, unknown>> } }).selection;
+    expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'dead-x', via: 'floor', liveness: 'live' });
+    expect(res.hint).toContain('already LIVE');
   });
 
   it('all-dead pool: revival turns the honest no_live_responder into a routed consult', async () => {

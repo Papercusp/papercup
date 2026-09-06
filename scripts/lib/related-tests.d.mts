@@ -182,21 +182,56 @@ export function transitiveDeps(index: any): (file: any) => Set<any>;
  *                                                  RELATED_WIDEN_THRESHOLD_DEFAULT)
  * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
  * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
- * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number }}
+ * @param {ExecutedMap | null}     [o.executedMap]  P-002: per-test-file executed-source map (see
+ *                                                  pruneWithExecutedMap); absent ⇒ no pruning
+ * @param {string | null}          [o.judgedSha]    P-002: the sha this selection is judged at
+ * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
+ *                                                  paths that changed between them, or null when
+ *                                                  the pair cannot be diffed (⇒ treated as stale)
+ * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
  */
-export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, }?: {
+export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, }?: {
     rootDir: string;
     changedPaths: string[];
     aliases?: Record<string, string> | undefined;
     threshold?: number | undefined;
     fs?: RelatedFs | undefined;
     index?: RelatedIndex | null | undefined;
+    executedMap?: ExecutedMap | null | undefined;
+    judgedSha?: string | null | undefined;
+    changedBetween?: ChangedBetween | null | undefined;
 }): {
     mode: "related" | "full";
     selected: string[];
     total: number;
     reason: string;
     threshold: number;
+    executedMap: ExecutedMapSummary;
+};
+/**
+ * Apply the P-002 pruning rule to a static selection. Pure: every input is a value or a seam.
+ *
+ * @param {object}                        o
+ * @param {Set<string>}                   o.selected       statically selected tests (absolute)
+ * @param {Set<string>}                   o.changedSet     in-scope changed paths (absolute)
+ * @param {(file: string) => Set<string>} o.reach          transitive static closure, excluding the file
+ * @param {Set<string>}                   o.unresolved     files with an unresolved intra-repo import
+ * @param {ExecutedMap | null | undefined} o.executedMap
+ * @param {string | null | undefined}     o.judgedSha
+ * @param {ChangedBetween | null | undefined} o.changedBetween
+ * @returns {{ selected: Set<string>, summary: ExecutedMapSummary }}
+ */
+export function pruneWithExecutedMap({ selected, changedSet, reach, unresolved, executedMap, judgedSha, changedBetween, }: {
+    selected: Set<string>;
+    changedSet: Set<string>;
+    reach: (file: string) => Set<string>;
+    unresolved: Set<string>;
+    executedMap: ExecutedMap | null | undefined;
+    judgedSha: string | null | undefined;
+    changedBetween: ChangedBetween | null | undefined;
+}): {
+    selected: Set<string>;
+    summary: ExecutedMapSummary;
 };
 export const RELATED_WIDEN_THRESHOLD_DEFAULT: 0.95;
 export const RELATED_WIDEN_THRESHOLD_ENV: "AFFECTED_RELATED_THRESHOLD";
@@ -239,4 +274,36 @@ export type RelatedIndex = {
      * files carrying an import we could NOT resolve
      */
     unresolved: Set<string>;
+};
+/**
+ * `executed` holds ABSOLUTE module paths (the same shape as `changedPaths`).
+ */
+export type ExecutedEntry = {
+    recordedSha: string;
+    executed: Set<string> | string[];
+};
+/**
+ * keyed by ABSOLUTE test-file path
+ */
+export type ExecutedMap = Map<string, ExecutedEntry>;
+/**
+ * absolute paths changed between the two shas; `null` when the pair cannot be diffed.
+ */
+export type ChangedBetween = (recordedSha: string, judgedSha: string) => Iterable<string> | null;
+export type ExecutedMapSummary = {
+    applied: boolean;
+    reason: string | null;
+    entries: number;
+    pruned: number;
+    prunable: number;
+    wouldEmpty: boolean;
+    kept: {
+        changedTest: number;
+        unresolved: number;
+        noEntry: number;
+        untrusted: number;
+        unknownDrift: number;
+        stale: number;
+        intersects: number;
+    };
 };

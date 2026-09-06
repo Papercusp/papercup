@@ -210,8 +210,10 @@ const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 const {
   configureBgHostRestartFreshnessReaderForTests,
+  configureSystemdDaemonReloaderForTests,
   evaluateBgHostRestartFreshness,
   restartVerificationHint,
+  SYSTEMD_USER_DAEMON_RELOAD,
 } = restartModule;
 
 type Out = { content: { text: string }[] };
@@ -226,11 +228,14 @@ type FreshnessSnapshot = {
 };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
-const freshnessM = vi.fn(async (_integrationRoot: string): Promise<FreshnessSnapshot> => ({
-  bundleMtimeMs: null,
-  newestSourceMtimeMs: null,
-  newestSourcePath: null,
-}));
+const freshnessM = vi.fn(
+  async (_integrationRoot: string): Promise<FreshnessSnapshot> => ({
+    bundleMtimeMs: null,
+    newestSourceMtimeMs: null,
+    newestSourcePath: null,
+  }),
+);
+const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
  *  explicitly-typed stand-in for the real drain+fence primitive (which has
  *  its own coverage elsewhere) so `run` never infers to `never` through the
@@ -257,6 +262,7 @@ beforeEach(() => {
     newestSourcePath: null,
   });
   configureBgHostRestartFreshnessReaderForTests(freshnessM);
+  configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
     released: 1,
     releasedModes: ['exclusive'],
@@ -296,6 +302,7 @@ beforeEach(() => {
 
 afterAll(() => {
   configureBgHostRestartFreshnessReaderForTests();
+  configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
 });
@@ -362,7 +369,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'dev',
-      would_run: 'systemctl --user restart papercusp-dev-api.service',
+      would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-dev-api.service',
     });
     expect(b.note).not.toMatch(/coalesced/);
     expect(acquireM).not.toHaveBeenCalled();
@@ -400,7 +407,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'staging',
-      would_run: 'systemctl --user restart papercusp-staging-api.service',
+      would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-staging-api.service',
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~2min/);
@@ -415,7 +422,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'bg-host',
-      would_run: 'systemctl --user restart papercusp-bg-host.service',
+      would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-bg-host.service',
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~13min/);
@@ -496,7 +503,12 @@ describe('dev:restart dry run', () => {
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
   ] as const)('target:%s dispatches to %s (coalescing note: %s)', async (target, unit, coalesces) => {
     const b = body(await call({ target }));
-    expect(b).toMatchObject({ ok: true, dry_run: true, target, would_run: `systemctl --user restart ${unit}` });
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target,
+      would_run: `systemctl --user daemon-reload && systemctl --user restart ${unit}`,
+    });
     if (coalesces) expect(b.note).toMatch(/coalesced/);
     else expect(b.note).not.toMatch(/coalesced/);
     expect(acquireM).not.toHaveBeenCalled();
@@ -638,7 +650,13 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
     quiesceVerdict({
       quiesced: true,
       blocked: true,
-      marker: { pid: 4242, unit: 'papercusp-bg-host.service', reason: 'release seed cut', since: '2026-09-01T20:00:00Z', log: '/tmp/p101-seed-cut.log' },
+      marker: {
+        pid: 4242,
+        unit: 'papercusp-bg-host.service',
+        reason: 'release seed cut',
+        since: '2026-09-01T20:00:00Z',
+        log: '/tmp/p101-seed-cut.log',
+      },
       note: "bg-host's unit is masked (pid 4242, since 2026-09-01T20:00:00Z: release seed cut) — a P-101 seed cut (or similar) has it deliberately quiesced.",
       ...over,
     });
@@ -711,7 +729,13 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
       quiesced({
         blocked: false,
         overridden: true,
-        marker: { pid: 4242, unit: 'papercusp-bg-host.service', reason: 'release seed cut', since: '2026-09-01T20:00:00Z', log: '/tmp/p101-seed-cut.log' },
+        marker: {
+          pid: 4242,
+          unit: 'papercusp-bg-host.service',
+          reason: 'release seed cut',
+          since: '2026-09-01T20:00:00Z',
+          log: '/tmp/p101-seed-cut.log',
+        },
       }),
     );
     // WI-2140796: same cooldown-claim reasoning as the test above.
@@ -773,6 +797,41 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
 });
 
 describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
+  it('reloads current user-unit bytes before scheduling a systemd restart (EI-22480835928661383)', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(4)) as never);
+    systemdDaemonReloadM.mockImplementationOnce(async () => {
+      expect(spawnM).not.toHaveBeenCalled();
+    });
+
+    const b = body(await call({ confirm: true, authorize: true, reason: 'load changed drop-in', target: 'dev' }));
+
+    expect(SYSTEMD_USER_DAEMON_RELOAD).toEqual({ command: 'systemctl', args: ['--user', 'daemon-reload'] });
+    expect(systemdDaemonReloadM).toHaveBeenCalledTimes(1);
+    expect(spawnM).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true, restarted: true, systemdDaemonReloaded: true });
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details.systemdDaemonReloaded).toBe(true);
+  });
+
+  it('fails closed before scheduling a restart when daemon-reload fails', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(4)) as never);
+    systemdDaemonReloadM.mockRejectedValueOnce(new Error('unit parse failed'));
+
+    const b = body(await call({ confirm: true, authorize: true, reason: 'load changed drop-in', target: 'dev' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      drained: true,
+      restarted: false,
+      reason: 'systemd_daemon_reload_failed',
+    });
+    expect(b.note).toMatch(/unit parse failed/);
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+  });
+
   it('fires a real restart on authorize:true alone (no env var needed) and writes an audit_log row tagged viaAuthorizeArg', async () => {
     guardM.mockImplementation(runGuard(fenceOk(5)) as never);
 
@@ -897,7 +956,12 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
         shared_holders: [],
         fence_seq: 1,
       });
-      gitSyncBarrierM.mockResolvedValue({ acquired: false, resource: 'git-sync', reason: 'drain_timeout', holders: [] });
+      gitSyncBarrierM.mockResolvedValue({
+        acquired: false,
+        resource: 'git-sync',
+        reason: 'drain_timeout',
+        holders: [],
+      });
       const confirmed = body(
         await call({
           confirm: true,
@@ -974,12 +1038,10 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
       undefined,
       expect.objectContaining({ maxDrainSec: 45 }),
     );
-    expect(workspaceTxnM).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.any(Function),
-      { minLockTimeoutMs: 45_000, minStatementTimeoutMs: 45_000 },
-    );
+    expect(workspaceTxnM).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function), {
+      minLockTimeoutMs: 45_000,
+      minStatementTimeoutMs: 45_000,
+    });
   });
 
   it('with NO drain budget the preflight still hard-refuses — the default path is unchanged', async () => {
@@ -1071,17 +1133,15 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
       name: 'WorkspaceContendedError',
       pgCode: '57014',
     });
-    gitSyncBarrierM
-      .mockRejectedValueOnce(contention)
-      .mockResolvedValueOnce({
-        acquired: true,
-        resource: 'git-sync',
-        lockId: 'barrier-retry',
-        owner: 'system:dev-restart:git-sync-barrier:42:retry',
-        coordinationDomain: 'workspace-domain',
-        expiresAt: '2026-08-27T19:00:00.000Z',
-        release: gitSyncBarrierReleaseM,
-      });
+    gitSyncBarrierM.mockRejectedValueOnce(contention).mockResolvedValueOnce({
+      acquired: true,
+      resource: 'git-sync',
+      lockId: 'barrier-retry',
+      owner: 'system:dev-restart:git-sync-barrier:42:retry',
+      coordinationDomain: 'workspace-domain',
+      expiresAt: '2026-08-27T19:00:00.000Z',
+      release: gitSyncBarrierReleaseM,
+    });
 
     const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
 
