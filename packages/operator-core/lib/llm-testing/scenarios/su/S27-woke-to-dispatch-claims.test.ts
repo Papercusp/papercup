@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   S27_DISPATCH_WORLD,
+  S27_SCRIPTED_WAKE,
   SU_S27_WOKE_TO_DISPATCH_CLAIMS,
 } from './S27-woke-to-dispatch-claims';
 
@@ -19,8 +20,20 @@ describe('SU-S27 directed-dispatch world', () => {
   const planItems = ['P-001', 'P-002', 'P-003', 'P-004'];
   const workItems = ['WI-501', 'WI-502', 'WI-503', 'WI-504'];
 
-  it('bumps the scenario after replacing the contradictory revision-1 world', () => {
-    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.version).toBe(3);
+  it('scripts the coordinator wake and keeps follow-up simulation out of the worker role', () => {
+    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.version).toBe(4);
+    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.triggers).toEqual([
+      expect.objectContaining({
+        on: 'after_turn',
+        param: 0,
+        fire: 'user_message',
+        text: S27_SCRIPTED_WAKE,
+      }),
+    ]);
+    expect(S27_SCRIPTED_WAKE).toMatch(/directed dispatch from su-815e2/);
+    expect(S27_SCRIPTED_WAKE).toMatch(/Do not stop at WIP/);
+    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.simUserContext).toMatch(/not the worker/);
+    expect(SU_S27_WOKE_TO_DISPATCH_CLAIMS.simUserContext).toMatch(/not satisfied.*merely claims/s);
   });
 
   it('exposes every dispatched item and the exact plan identity at orientation', async () => {
@@ -34,6 +47,7 @@ describe('SU-S27 directed-dispatch world', () => {
       planSlug,
       planItems,
     });
+    expect(result.inbox.recent[0].summary).toMatch(/consolidating.*fleet-dispatch.*wake-semantics/i);
   });
 
   it('keeps plan, assigned-plan-item, and work-item reads consistent', async () => {

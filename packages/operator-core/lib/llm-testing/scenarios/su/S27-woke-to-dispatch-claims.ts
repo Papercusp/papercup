@@ -61,6 +61,19 @@ const DISPATCH_ITEMS = [
 const DISPATCH_PLAN_ITEM_IDS = DISPATCH_ITEMS.map((item) => item.planItemId);
 const DISPATCH_WORK_ITEM_IDS = DISPATCH_ITEMS.map((item) => item.workItemId);
 
+/**
+ * A directed wake is a system/coord event, not prose the simulator should
+ * improvise. In v3 the simulator spoke from the worker's perspective
+ * ("Claiming ... setting WIP now"), then treated the status flip as success
+ * and ended both arms before the concrete work could start.
+ */
+export const S27_SCRIPTED_WAKE = [
+  '⟦turn-origin:coord-wake⟧ You have just been re-invoked after a directed dispatch from su-815e2.',
+  `Re-orient on ${DISPATCH_PLAN_SLUG} P-001 through P-004, claim the assigned lane, and continue it now.`,
+  'The concrete first deliverable is the consolidated “Fleet dispatch wake clarity” runbook built from the existing fleet-dispatch and wake-semantics pages.',
+  'Do not stop at WIP, ask which item to start, or re-park.',
+].join(' ');
+
 const EXISTING_DISPATCH_DOCS = [
   {
     slug: 'playbook/fleet-dispatch',
@@ -152,7 +165,9 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
           recent: [{
             from: 'su-815e2',
             kind: 'dispatch',
-            summary: `DISPATCH → you: take ${DISPATCH_PLAN_SLUG} P-001..P-004 and work them now (lane assigned to you).`,
+            summary:
+              `DISPATCH → you: take ${DISPATCH_PLAN_SLUG} P-001..P-004 and work them now. ` +
+              'Begin by consolidating playbook/fleet-dispatch and playbook/wake-semantics into the Fleet dispatch wake clarity runbook.',
             planSlug: DISPATCH_PLAN_SLUG,
             planItems: DISPATCH_PLAN_ITEM_IDS,
           }],
@@ -179,7 +194,9 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
         frontmatter: { title: 'Fleet dispatch wake clarity', status: 'active' },
         now: {
           state: 'P-001 through P-004 are assigned to su-self and ready to start.',
-          next: 'Claim the four-item lane and begin P-001 now.',
+          next:
+            'Claim the four-item lane, read playbook/fleet-dispatch and playbook/wake-semantics, ' +
+            'and author the consolidated Fleet dispatch wake clarity runbook now.',
         },
         items: DISPATCH_ITEMS.map((item) => ({
           id: item.planItemId,
@@ -313,7 +330,7 @@ export const S27_DISPATCH_WORLD: ToolDispatchOverride = {
 
 export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
   id: 'su-S27-woke-to-dispatch-claims',
-  version: 3,
+  version: 4,
   target: 'su',
   transport: 'in-process',
   description:
@@ -341,9 +358,18 @@ export const SU_S27_WOKE_TO_DISPATCH_CLAIMS: Scenario = {
       domain: 'admin',
     },
   },
+  // Follow-up simulation must stay in the coordinator role and must not treat
+  // a bare claim/status flip as task completion. The scripted first turn below
+  // is what the SUT receives; this context governs only later sim-user turns.
+  simUserContext:
+    'You are coordinator su-815e2, not the worker. You dispatched fleet-dispatch-wake-clarity P-001..P-004 ' +
+    'to the engineer and woke it. Never say that you are claiming or setting WIP yourself. The assignment ' +
+    'is not satisfied when the engineer merely claims or changes status: it must begin the concrete ' +
+    'consolidated Fleet dispatch wake clarity runbook before you declare success.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 2, variancePolicy: 'flag-if-disagreement' },
+  triggers: [{ on: 'after_turn', param: 0, fire: 'user_message', text: S27_SCRIPTED_WAKE }],
   toolOverride: S27_DISPATCH_WORLD,
   asserts: [
     assertToolMatch(startsClaimingDispatch, {
