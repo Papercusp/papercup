@@ -656,9 +656,18 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
       }
       if (tracked.code !== 0) {
         const inventoryDetail = (tracked.stderr || tracked.stdout || `exit ${tracked.code}`).trim().slice(0, 300);
-        return { status: 'blocked', atomicPaths: [], detail: `${status.detail}; declaration inventory failed: ${inventoryDetail}` };
+        return {
+          status: 'blocked',
+          atomicPaths: [],
+          detail: `${status.detail}; declaration inventory failed: ${inventoryDetail}`,
+        };
       }
-      const trackedPaths = new Set(tracked.stdout.split('\n').map((path) => path.trim()).filter(Boolean));
+      const trackedPaths = new Set(
+        tracked.stdout
+          .split('\n')
+          .map((path) => path.trim())
+          .filter(Boolean),
+      );
       if (!DECLARATIONS_TRACKED_PATHS.every((path) => trackedPaths.has(path))) {
         return { status: 'not-needed', atomicPaths: [] };
       }
@@ -878,7 +887,9 @@ export async function checkToolRoutingBeforeCommit(
       `[git-sync] ${repoPath}: generated tool-routing check passed before commit (${affected.length} routing-affecting dirty path(s))`,
     );
   } catch (e) {
-    log(`[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
+    log(
+      `[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
+    );
   }
 }
 
@@ -910,10 +921,7 @@ export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: st
 
 /** A missing local SSH-config alias for a GitHub account is a transport-plane
  * failure with the same safe HTTPS equivalent as a missing SSH key. */
-export const isGitHubSshAliasResolutionFailure = (result: {
-  stdout: string;
-  stderr: string;
-}): boolean =>
+export const isGitHubSshAliasResolutionFailure = (result: { stdout: string; stderr: string }): boolean =>
   new RegExp(`ssh:\\s*Could not resolve hostname github\\.com-[A-Za-z0-9_-]+:`, 'i').test(
     `${result.stdout}\n${result.stderr}`,
   );
@@ -922,10 +930,8 @@ export const isGitHubSshAliasResolutionFailure = (result: {
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
  *  a different, write-capable automation account, so this is the same credential-plane failure
  *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
-export const isGitHubSshEmailVerificationFailure = (result: {
-  stdout: string;
-  stderr: string;
-}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+export const isGitHubSshEmailVerificationFailure = (result: { stdout: string; stderr: string }): boolean =>
+  /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
 const isGitHubSshRemoteUrl = (url: string): boolean => githubSshInsteadOfPrefix(url) !== null;
 
@@ -1493,11 +1499,7 @@ const isSeedSnapshotRef = (branch: string): boolean => branch.startsWith(SEED_SN
  * not a branch target, and is deliberately excluded — as is a retained
  * installer-seed snapshot ref, which is conversion input, not a branch to follow.
  */
-const remoteBranchesPointingAtHead = async (
-  runGit: RunGit,
-  repo: string,
-  remote: string,
-): Promise<string[]> => {
+const remoteBranchesPointingAtHead = async (runGit: RunGit, repo: string, remote: string): Promise<string[]> => {
   const refs = await runGit(
     ['for-each-ref', '--format=%(refname:strip=3)', '--points-at=HEAD', `refs/remotes/${remote}/`],
     repo,
@@ -1516,10 +1518,7 @@ const remoteBranchesPointingAtHead = async (
 /** Choose only a proved-unambiguous exact-tip branch. The remote default wins
  * when it is one of several aliases; otherwise multiple candidates are a real
  * direction fork and must retain the existing fail-closed path. */
-const preferredRemoteBranchAtHead = (
-  branches: readonly string[],
-  remoteDefault: string | null,
-): string | null => {
+const preferredRemoteBranchAtHead = (branches: readonly string[], remoteDefault: string | null): string | null => {
   if (remoteDefault && branches.includes(remoteDefault)) return remoteDefault;
   return branches.length === 1 ? branches[0] : null;
 };
@@ -1581,10 +1580,7 @@ const ensureBranchAttachedForCommit = async (
         // Compare-and-swap the dormant branch ref. The expected-old argument is
         // load-bearing: if a peer moves the branch after our ancestry read, git
         // refuses instead of overwriting their new tip.
-        const fastForward = await runGit(
-          ['update-ref', `refs/heads/${branch}`, headSha, localSha],
-          repo,
-        );
+        const fastForward = await runGit(['update-ref', `refs/heads/${branch}`, headSha, localSha], repo);
         if (fastForward.code !== 0) {
           return {
             error:
@@ -1595,7 +1591,7 @@ const ensureBranchAttachedForCommit = async (
         }
         log(
           `[git-sync] ${repo}: fast-forwarded dormant '${branch}' from ` +
-          `${localSha.slice(0, 12)} to detached HEAD ${headSha.slice(0, 12)}`,
+            `${localSha.slice(0, 12)} to detached HEAD ${headSha.slice(0, 12)}`,
         );
       } else if (ancestry.code === 1) {
         return {
@@ -2109,13 +2105,15 @@ interface ClearStaleConfigLockDeps {
   staleMs?: number;
 }
 
-/** Clear an orphaned `.git/config.lock` left by a dead config writer (including
- * a sandbox mount-point artifact). Config is more sensitive than the replaceable
- * index: age alone is insufficient evidence. Delete only a zero-byte lock that
- * is old, has no open descriptor, and has not changed during inspection. */
-export async function clearStaleConfigLock(
+/** Clear an orphaned empty Git metadata lock left by a dead writer (including
+ * a sandbox mount-point artifact). These metadata locks are more sensitive than
+ * the replaceable index: age alone is insufficient evidence. Delete only a
+ * zero-byte lock that is old, has no open descriptor, and has not changed during
+ * inspection. */
+export async function clearStaleHolderlessEmptyGitLock(
   runGit: RunGit,
   repoPath: string,
+  lockName: 'config.lock' | 'shallow.lock',
   log: (m: string) => void,
   deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
@@ -2136,20 +2134,20 @@ export async function clearStaleConfigLock(
 
   const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
-  const lockPath = join(gd.stdout.trim(), 'config.lock');
+  const lockPath = join(gd.stdout.trim(), lockName);
   const before = await inspectLock(lockPath);
   if (before === null) return true;
 
   const ageMs = now() - before.mtimeMs;
   if (ageMs < staleMs) {
     log(
-      `[git-sync] ${repoPath}: config.lock is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it`,
+      `[git-sync] ${repoPath}: ${lockName} is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it`,
     );
     return false;
   }
   if (before.size !== 0) {
     log(
-      `[git-sync] ${repoPath}: config.lock is old but NONEMPTY (${before.size} bytes) — cannot prove it is an orphan, not touching it`,
+      `[git-sync] ${repoPath}: ${lockName} is old but NONEMPTY (${before.size} bytes) — cannot prove it is an orphan, not touching it`,
     );
     return false;
   }
@@ -2157,7 +2155,7 @@ export async function clearStaleConfigLock(
   const open = await isOpen(lockPath);
   if (open !== false) {
     log(
-      `[git-sync] ${repoPath}: config.lock is old and empty but ${open ? 'still OPEN' : 'holder state is UNKNOWN'} — not touching it`,
+      `[git-sync] ${repoPath}: ${lockName} is old and empty but ${open ? 'still OPEN' : 'holder state is UNKNOWN'} — not touching it`,
     );
     return false;
   }
@@ -2173,20 +2171,30 @@ export async function clearStaleConfigLock(
     after.dev !== before.dev ||
     after.ino !== before.ino
   ) {
-    log(`[git-sync] ${repoPath}: config.lock changed during orphan inspection — not touching it`);
+    log(`[git-sync] ${repoPath}: ${lockName} changed during orphan inspection — not touching it`);
     return false;
   }
 
   try {
     await unlinkFile(lockPath);
   } catch (e) {
-    log(`[git-sync] ${repoPath}: could not unlink stale config.lock: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[git-sync] ${repoPath}: could not unlink stale ${lockName}: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
   log(
-    `[git-sync] ${repoPath}: cleared STALE empty holderless config.lock (${Math.round(ageMs / 1000)}s old) and retrying canonical submodule URL sync`,
+    `[git-sync] ${repoPath}: cleared STALE empty holderless ${lockName} (${Math.round(ageMs / 1000)}s old) and retrying`,
   );
   return true;
+}
+
+/** Clear an orphaned `.git/config.lock` left by a dead config writer. */
+export async function clearStaleConfigLock(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: ClearStaleConfigLockDeps = {},
+): Promise<boolean> {
+  return clearStaleHolderlessEmptyGitLock(runGit, repoPath, 'config.lock', log, deps);
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -3186,11 +3194,9 @@ async function unstagePreStagedProtectedPaths(
   excludePaths: readonly string[],
   log: (message: string) => void,
 ): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
-  const normalizedExcludes = [...new Set(
-    excludePaths
-      .map((path) => path.trim().replace(/^\.\/+|\/+$/g, ''))
-      .filter(Boolean),
-  )];
+  const normalizedExcludes = [
+    ...new Set(excludePaths.map((path) => path.trim().replace(/^\.\/+|\/+$/g, '')).filter(Boolean)),
+  ];
   if (normalizedExcludes.length === 0) return { ok: true, paths: [] };
 
   const staged = await runGit(['diff', '--cached', '--name-only', '--no-renames', '-z'], repoPath);
@@ -3200,12 +3206,14 @@ async function unstagePreStagedProtectedPaths(
       error: `could not inspect pre-staged protected paths: ${(staged.stderr || staged.stdout).trim().slice(0, 300)}`,
     };
   }
-  const protectedStaged = [...new Set(
-    staged.stdout
-      .split('\0')
-      .filter(Boolean)
-      .filter((path) => normalizedExcludes.some((exclude) => gitSyncPathsOverlap(path, exclude))),
-  )];
+  const protectedStaged = [
+    ...new Set(
+      staged.stdout
+        .split('\0')
+        .filter(Boolean)
+        .filter((path) => normalizedExcludes.some((exclude) => gitSyncPathsOverlap(path, exclude))),
+    ),
+  ];
   if (protectedStaged.length === 0) return { ok: true, paths: [] };
 
   const unstage = await runGit(['reset', '-q', 'HEAD', '--', ...protectedStaged], repoPath);
@@ -3282,9 +3290,12 @@ export async function commitAttributedGroups(
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
-    }
-    else if (!nothingToCommit(c)) {
-      return { committedAny, committedCount, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
+    } else if (!nothingToCommit(c)) {
+      return {
+        committedAny,
+        committedCount,
+        error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+      };
     }
   }
   return { committedAny, committedCount };
@@ -3512,10 +3523,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         if (path.length > 0) byPath.set(path, { ...holding, path });
       }
       protectedHoldings = [...byPath.values()];
-      effectiveExcludePaths = [...new Set([
-        ...o.excludePaths,
-        ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean),
-      ])];
+      effectiveExcludePaths = [
+        ...new Set([...o.excludePaths, ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean)]),
+      ];
     }
     const directSkippedHoldings = protectedHoldings.filter((holding) =>
       dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
@@ -3542,6 +3552,30 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
               .join('; '),
         );
       }
+    }
+    // EI-22485648475962061: a live lock can protect a newly-created module that is
+    // absent from HEAD while a dirty importer remains otherwise stageable. Reuse
+    // the quarantine-import fixed-point guard so the importer (and any importer
+    // chain) is held back too. A tracked dirty dependency remains resolvable from
+    // HEAD and is filtered out by the existing HEAD probe, so this does not turn
+    // ordinary source/test edits into false positives.
+    if (atomicExclusions.paths.length > 0) {
+      const priorQuarantined = [
+        ...new Set([
+          ...preDeletionQuarantined,
+          ...contentErrors.map((error) => error.file),
+          ...atomicExclusions.paths,
+        ]),
+      ];
+      const liveLockImporterErrors = await detectQuarantineImporters({
+        readText: (rel) => o.readText(repoPath, rel),
+        dirtyFiles: dirty,
+        alreadyQuarantined: priorQuarantined,
+        isResolvableAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
+        exclusionLabel: 'live-lock exclusion',
+        log: o.log,
+      });
+      if (liveLockImporterErrors.length > 0) contentErrors = [...contentErrors, ...liveLockImporterErrors];
     }
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
@@ -3726,14 +3760,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }
     if (!catchAllSubjected) commitArgs.push('-m', message);
     let c = await runGit(commitArgs, repoPath);
-    c = await recoverIndexLockContention(
-      c,
-      () => runGit(commitArgs, repoPath),
-      runGit,
-      repoPath,
-      'git commit',
-      o.log,
-    );
+    c = await recoverIndexLockContention(c, () => runGit(commitArgs, repoPath), runGit, repoPath, 'git commit', o.log);
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
@@ -3811,10 +3838,7 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     return { status: 'declined', reason: `${sourceRef} has no merge base with HEAD` };
   }
 
-  const changed = await runGit(
-    ['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`],
-    repoPath,
-  );
+  const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`], repoPath);
   if (changed.code !== 0) {
     return { status: 'error', message: `could not enumerate ${sourceRef}-only paths` };
   }
@@ -3842,10 +3866,7 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     }
   }
 
-  const merge = await runGit(
-    [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef],
-    repoPath,
-  );
+  const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef], repoPath);
   if (merge.code !== 0) {
     await runGit(['merge', '--abort'], repoPath);
     return {
@@ -4198,7 +4219,11 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         await opts.beforePush(args, cwd);
       } catch (error) {
         throwIfAborted();
-        return { code: 1, stdout: '', stderr: `git-sync publication refused: ${error instanceof Error ? error.message : String(error)}` };
+        return {
+          code: 1,
+          stdout: '',
+          stderr: `git-sync publication refused: ${error instanceof Error ? error.message : String(error)}`,
+        };
       }
       throwIfAborted();
     }
@@ -4595,8 +4620,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     // while the former can safely defer the enrolled declaration surface once
     // its tracked paths have been inventoried. Keep those paths out of both
     // attribution and catch-all staging so unrelated work still lands.
-    const deferredDeclarationPaths =
-      declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : [];
+    const deferredDeclarationPaths = declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : [];
     if (declarationRepair.status === 'deferred') {
       log(
         `[git-sync] ${repo}: declaration status census unavailable — deferring ${deferredDeclarationPaths.length} ` +
@@ -4650,7 +4674,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           contentErrors: commitRes.contentErrors,
           skippedPaths: commitRes.skippedPaths,
         }
-      : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+      : {
+          status: 'nothing',
+          ...commitMetrics,
+          oversized: commitRes.oversized,
+          contentErrors: commitRes.contentErrors,
+          skippedPaths: commitRes.skippedPaths,
+        };
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
@@ -4693,17 +4723,24 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         log(`[git-sync] ${repo}: release-main ancestry bridge declined — ${releaseBridge.reason}`);
       }
       const bridged = releaseBridge.status === 'bridged';
-      repoResult = commitRes.committedLocal || bridged
-        ? {
-            status: 'synced',
-            ...commitMetrics,
-            pushed: false,
-            merged: bridged,
-            oversized: commitRes.oversized,
-            contentErrors: commitRes.contentErrors,
-            skippedPaths: commitRes.skippedPaths,
-          }
-        : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
+      repoResult =
+        commitRes.committedLocal || bridged
+          ? {
+              status: 'synced',
+              ...commitMetrics,
+              pushed: false,
+              merged: bridged,
+              oversized: commitRes.oversized,
+              contentErrors: commitRes.contentErrors,
+              skippedPaths: commitRes.skippedPaths,
+            }
+          : {
+              status: 'nothing',
+              ...commitMetrics,
+              oversized: commitRes.oversized,
+              contentErrors: commitRes.contentErrors,
+              skippedPaths: commitRes.skippedPaths,
+            };
     }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
