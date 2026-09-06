@@ -152,9 +152,16 @@ describe('enterAgentReview (abolish-human-review D-003)', () => {
       createdBy: 'su-filer',
       preserveExisting: true,
     }));
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       improvementKind: 'feature',
       agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      implementationReadiness: {
+        schemaVersion: 'implementation-readiness-v1',
+        status: 'unknown',
+        source: 'agent-review',
+        reason: 'awaiting-agent-review',
+        evidence: { review: { submittedBy: 'su-filer', round: 1 } },
+      },
     });
     expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
       harness: 'papercusp',
@@ -318,8 +325,13 @@ describe('agent-review grading lifecycle', () => {
     });
     expect(h.state.issue.state).toBe('open');
     expect(h.state.issue.assignee).toBe('su-filer');
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      implementationReadiness: {
+        status: 'not-ready',
+        reason: 'agent-review-revision-requested',
+        evidence: { review: { submittedBy: 'su-filer', reviewer: 'su-reviewer', round: 1, grade: 2 } },
+      },
     });
     expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
       harness: 'papercusp',
@@ -366,8 +378,12 @@ describe('agent-review grading lifecycle', () => {
     });
 
     // The review itself is still fully recorded — this is a weaker disposition, not a failure.
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      implementationReadiness: {
+        status: 'not-ready',
+        reason: 'agent-review-revision-requested',
+      },
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
 
@@ -432,8 +448,13 @@ describe('agent-review grading lifecycle', () => {
       state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
     });
     expect(h.state.issue.assignee).toBeNull();
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
+      implementationReadiness: {
+        status: 'unknown',
+        reason: 'agent-review-resubmitted',
+        evidence: { review: { submittedBy: 'su-filer', round: 2 } },
+      },
     });
   });
 
@@ -484,8 +505,13 @@ describe('agent-review grading lifecycle', () => {
     });
     expect(h.state.issue.state).toBe('open');
     expect(h.state.issue.assignee).toBeNull();
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'approved', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      implementationReadiness: {
+        status: 'ready',
+        reason: 'agent-review-approved',
+        evidence: { review: { submittedBy: 'su-filer', reviewer: 'su-reviewer', round: 1, grade: 4 } },
+      },
     });
     expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
       harness: 'papercusp',
@@ -598,8 +624,13 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
         resubmitted: true,
         state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
       });
-      expect(h.state.issue.payload).toEqual({
+      expect(h.state.issue.payload).toMatchObject({
         agentReview: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+        implementationReadiness: {
+          status: 'unknown',
+          reason: 'agent-review-resubmitted',
+          evidence: { review: { submittedBy: 'su-newcomer', round: 2 } },
+        },
       });
     },
   );
@@ -613,8 +644,13 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
       state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
     });
     // submittedBy is rebound to the adopter, so the NEXT round's revision reaches someone alive.
-    expect(h.state.issue.payload).toEqual({
+    expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+      implementationReadiness: {
+        status: 'unknown',
+        reason: 'agent-review-resubmitted',
+        evidence: { review: { submittedBy: 'su-newcomer', round: 2 } },
+      },
     });
     expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
   });

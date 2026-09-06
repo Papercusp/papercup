@@ -2,12 +2,41 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentReviewEligibility,
+  createImplementationReadiness,
   hasStrictOwnerAction,
+  IMPLEMENTATION_READINESS_SCHEMA_VERSION,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   isStrictOwnerActionCapability,
   readAgentReviewState,
+  readImplementationReadiness,
   readStructuredOwnerAsk,
 } from './agent-review-policy';
+
+describe('implementation readiness payload', () => {
+  it('round-trips a current three-valued verdict with a stable schema version', () => {
+    const readiness = createImplementationReadiness({
+      status: 'ready',
+      source: 'agent-review',
+      reason: 'agent-review-approved',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+      evidence: { review: { submittedBy: 'su-a', reviewer: 'su-b', round: 2, grade: 5 } },
+    });
+    expect(readiness.schemaVersion).toBe(IMPLEMENTATION_READINESS_SCHEMA_VERSION);
+    expect(readImplementationReadiness({ implementationReadiness: readiness })).toEqual(readiness);
+  });
+
+  it('keeps absent legacy metadata distinct from malformed enrolled metadata', () => {
+    expect(readImplementationReadiness({})).toBeNull();
+    expect(
+      readImplementationReadiness({
+        implementationReadiness: {
+          schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
+          status: 'ready',
+        },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe('readAgentReviewState', () => {
   it('accepts only complete, versionable routing state', () => {

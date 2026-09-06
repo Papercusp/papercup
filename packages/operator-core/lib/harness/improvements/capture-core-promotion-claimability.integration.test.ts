@@ -20,6 +20,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { captureImprovement } = await import('./capture-core');
+const { createImplementationReadiness } = await import('./agent-review-policy');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
 
 let db: OrgTestDb;
@@ -35,7 +36,7 @@ afterAll(async () => {
 });
 
 describe('tool-failure probation promotion → scheduler admission', () => {
-  it('removes payload.lane and makes the same row claimable under an exact-id filter', async () => {
+  it('removes payload.lane but keeps peer-corroboration out of normal pickup until approval', async () => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const title = `tool-failure probation claimability ${suffix}`;
     const watchdogKey = `repeated-tool-error:work_items:get:structural:${suffix}`;
@@ -80,10 +81,12 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     });
 
     const id = first.issue!.id;
-    const storedRows = await db.adminSql<{
-      workspace_id: string;
-      payload: Record<string, unknown>;
-    }[]>`
+    const storedRows = await db.adminSql<
+      {
+        workspace_id: string;
+        payload: Record<string, unknown>;
+      }[]
+    >`
       SELECT workspace_id, payload
         FROM harness_shared.work_items
        WHERE feature_id = ${id}`;
@@ -92,6 +95,13 @@ describe('tool-failure probation promotion → scheduler admission', () => {
     if (!stored) throw new Error(`promoted row ${id} was not persisted`);
     expect(stored.workspace_id).not.toBe('');
     expect(Object.keys(stored.payload)).not.toContain('lane');
+    expect(stored.payload).toMatchObject({
+      implementationReadiness: {
+        schemaVersion: 'implementation-readiness-v1',
+        status: 'unknown',
+        reason: 'corroborated-tool-failure-awaiting-review',
+      },
+    });
 
     const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
     const claimability = await readIssueClaimability(
@@ -106,11 +116,113 @@ describe('tool-failure probation promotion → scheduler admission', () => {
       { limit: 10 },
     );
 
-    expect(claimability.breakdown).toMatchObject({
-      matchedByFilter: 1,
-      claimable: 1,
-      excluded: { observationLane: 0 },
+    expect(claimability.breakdown.matchedByFilter).toBe(1);
+    expect(claimability.breakdown.claimable).toBe(0);
+    expect(claimability.breakdown.excluded.observationLane).toBe(0);
+    expect(claimability.breakdown.excluded.agentReview).toBe(1);
+    expect(claimability.rows).toEqual([]);
+
+    const approved = createImplementationReadiness({
+      status: 'ready',
+      source: 'agent-review',
+      reason: 'agent-review-approved',
+      evidence: { review: { submittedBy: 'su-peer', reviewer: 'su-reviewer', round: 1, grade: 4 } },
     });
-    expect(claimability.rows.map((row) => row.id)).toEqual([id]);
+    await db.adminSql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(payload, '{implementationReadiness}', ${JSON.stringify(approved)}::jsonb, true)
+       WHERE feature_id = ${id}`;
+    const afterApproval = await readIssueClaimability(
+      filter,
+      {
+        harness: 'papercusp',
+        workspaceId: stored.workspace_id,
+        states: ['open'],
+        assignee: 'su-test',
+        client: db.adminSql,
+      },
+      { limit: 10 },
+    );
+    expect(afterApproval.rows.map((row) => row.id)).toEqual([id]);
+  });
+
+  it('keeps a row with no readiness key on the explicit legacy path', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const captured = await captureImprovement({
+      title: `legacy readiness compatibility ${suffix}`,
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      createdBy: 'su-test',
+    });
+    const id = captured.issue!.id;
+    const [row] = await db.adminSql<{ workspace_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) - 'implementationReadiness'
+       WHERE feature_id = ${id}
+      RETURNING workspace_id`;
+    const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
+    const claimability = await readIssueClaimability(
+      filter,
+      {
+        harness: 'papercusp',
+        workspaceId: row!.workspace_id,
+        states: ['open'],
+        assignee: 'su-test',
+        client: db.adminSql,
+      },
+      { limit: 10 },
+    );
+    expect(claimability.rows.map((candidate) => candidate.id)).toEqual([id]);
+  });
+
+  it('preserves only the legacy revision-sentinel exception across the readiness floor', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const captured = await captureImprovement({
+      title: `legacy revision readiness ${suffix}`,
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      createdBy: 'su-test',
+    });
+    const id = captured.issue!.id;
+    const notReady = createImplementationReadiness({
+      status: 'not-ready',
+      source: 'agent-review',
+      reason: 'agent-review-revision-requested',
+    });
+    const [row] = await db.adminSql<{ workspace_id: string }[]>`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
+           'agentReview', jsonb_build_object(
+             'status', 'revision-requested',
+             'submittedBy', 'system:legacy-agent-review',
+             'ledgerIdeaId', ${id}::text,
+             'round', 1
+           ),
+           'implementationReadiness', ${JSON.stringify(notReady)}::jsonb
+         )
+       WHERE feature_id = ${id}
+      RETURNING workspace_id`;
+    const filter: FilterNode = { field: 'id', op: 'in', value: [id] };
+    const read = () =>
+      readIssueClaimability(
+        filter,
+        {
+          harness: 'papercusp',
+          workspaceId: row!.workspace_id,
+          states: ['open'],
+          assignee: 'su-test',
+          client: db.adminSql,
+        },
+        { limit: 10 },
+      );
+    expect((await read()).rows.map((candidate) => candidate.id)).toEqual([id]);
+
+    await db.adminSql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(payload, '{agentReview,submittedBy}', '"su-real"'::jsonb, false)
+       WHERE feature_id = ${id}`;
+    const normalRevision = await read();
+    expect(normalRevision.rows).toEqual([]);
+    expect(normalRevision.breakdown.excluded.agentReview).toBe(1);
   });
 });

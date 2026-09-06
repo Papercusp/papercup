@@ -71,6 +71,7 @@ import {
   type AlreadyDecidedRecall,
 } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
+import { createImplementationReadiness, type ImplementationReadinessState } from './agent-review-policy';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -873,6 +874,45 @@ function toolFailureProbationOf(payload: Record<string, unknown> | null | undefi
     : null;
 }
 
+function initialImplementationReadiness(reviewRequired: boolean): ImplementationReadinessState {
+  return createImplementationReadiness(
+    reviewRequired
+      ? {
+          status: 'unknown',
+          source: 'capture-policy',
+          reason: 'awaiting-agent-review',
+        }
+      : {
+          status: 'ready',
+          source: 'capture-policy',
+          reason: 'existing-immediate-capture-policy',
+        },
+  );
+}
+
+function promotedProbationReadiness(
+  input: CaptureImprovementInput,
+  probation: ToolFailureProbationPayload,
+): ImplementationReadinessState {
+  const trustedPromotion =
+    probation.directEvidence === true ||
+    input.sourceRole === 'system' ||
+    input.createdBy?.startsWith('system:') === true;
+  return createImplementationReadiness(
+    trustedPromotion
+      ? {
+          status: 'ready',
+          source: 'capture-policy',
+          reason: 'trusted-tool-failure-promotion',
+        }
+      : {
+          status: 'unknown',
+          source: 'capture-policy',
+          reason: 'corroborated-tool-failure-awaiting-review',
+        },
+  );
+}
+
 /** Promote one exact-key probation row in place, preserving its history/id. */
 async function promoteToolFailureProbation(
   prior: EngineerIssue,
@@ -903,26 +943,31 @@ async function promoteToolFailureProbation(
   const updated = updatedRaw && 'id' in updatedRaw ? updatedRaw : null;
   if (!updated) return null;
   const promotedAt = new Date().toISOString();
-  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
-    // The probation row may have been keyed by its first report while the
-    // direct-evidence promotion carries a newer message fingerprint. Keep the
-    // canonical top-level identity in sync with the promoted payload so the
-    // next exact-key lookup finds this row instead of minting a sibling.
-    ...(typeof incomingProbation.watchdogKey === 'string' && incomingProbation.watchdogKey
-      ? { watchdogKey: incomingProbation.watchdogKey }
-      : {}),
-    ...(input.paths?.length ? { paths: input.paths } : {}),
-    toolFailureProbation: {
-      ...priorProbation,
-      ...incomingProbation,
-      state: 'promoted',
-      reporters,
-      intendedKind: kind,
-      promotedAt,
-      promotedBy: input.createdBy ?? 'system:improvement-watchdog',
+  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(
+    prior.id,
+    {
+      // The probation row may have been keyed by its first report while the
+      // direct-evidence promotion carries a newer message fingerprint. Keep the
+      // canonical top-level identity in sync with the promoted payload so the
+      // next exact-key lookup finds this row instead of minting a sibling.
+      ...(typeof incomingProbation.watchdogKey === 'string' && incomingProbation.watchdogKey
+        ? { watchdogKey: incomingProbation.watchdogKey }
+        : {}),
+      ...(input.paths?.length ? { paths: input.paths } : {}),
+      toolFailureProbation: {
+        ...priorProbation,
+        ...incomingProbation,
+        state: 'promoted',
+        reporters,
+        intendedKind: kind,
+        promotedAt,
+        promotedBy: input.createdBy ?? 'system:improvement-watchdog',
+      },
+      implementationReadiness: promotedProbationReadiness(input, incomingProbation),
+      ideaLifecycle: initializeIdeaLifecycle(),
     },
-    ideaLifecycle: initializeIdeaLifecycle(),
-  }, { unset: ['lane'] }).catch(() => null);
+    { unset: ['lane'] },
+  ).catch(() => null);
   if (!merged) return null;
   await (deps.tagIssue ?? tagIssue)(prior.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
   await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
@@ -1367,10 +1412,7 @@ export async function captureImprovement(
     // its lane semantics — the pre-existing exact-key BLOCK still covers that case.
     const openKeyPrior = exactKeyIssues.find((i) => {
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
-      return (
-        i.state === 'open' &&
-        payload.lane !== 'observation'
-      );
+      return i.state === 'open' && payload.lane !== 'observation';
     });
     if (openKeyPrior) {
       const priorPayload = (openKeyPrior.payload as Record<string, unknown> | null) ?? {};
@@ -1446,8 +1488,7 @@ export async function captureImprovement(
       // the verdict rail's own fail-open.
       const evidenceMs = input.evidenceAt ? Date.parse(input.evidenceAt) : Number.NaN;
       const resolvedMs = Date.parse(autoResolvedPrior.updatedAt ?? '');
-      const staleLookback =
-        Number.isFinite(evidenceMs) && Number.isFinite(resolvedMs) && resolvedMs >= evidenceMs;
+      const staleLookback = Number.isFinite(evidenceMs) && Number.isFinite(resolvedMs) && resolvedMs >= evidenceMs;
       if (!staleLookback) {
         const reopened = await (deps.setWorkItemStateWithAliasInfo ?? defaultSetWorkItemStateWithAliasInfo)(
           autoResolvedPrior.id,
@@ -1536,14 +1577,11 @@ export async function captureImprovement(
   let lexicalLeg: DedupCoverage['lexical'] = isObservation ? 'skipped' : 'unavailable';
   let searched: EngineerIssue[] = [];
   if (!isObservation) {
-    const lexical = await withBoundedTimeout(
-      () => Promise.resolve().then(() => deps.searchIssues(input.title, 20)),
-      {
-        fallback: [] as EngineerIssue[],
-        timeoutMs: CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
-        label: 'captureImprovement:lexical-dedup',
-      },
-    );
+    const lexical = await withBoundedTimeout(() => Promise.resolve().then(() => deps.searchIssues(input.title, 20)), {
+      fallback: [] as EngineerIssue[],
+      timeoutMs: CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
+      label: 'captureImprovement:lexical-dedup',
+    });
     searched = lexical.value;
     if (!lexical.degraded) lexicalLeg = 'ok';
     // Preserve an empty candidate set, but never mislabel a timed-out or failed
@@ -1575,7 +1613,8 @@ export async function captureImprovement(
       if (sem) {
         semanticLeg = 'ok';
         for (const band of ['hard', 'soft'] as const) {
-          for (const c of sem[band]) if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
+          for (const c of sem[band])
+            if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
         }
         const known = new Set(candidates.map((i) => i.id));
         const fetchIssue = deps.getIssue ?? getIssue;
@@ -1679,7 +1718,10 @@ export async function captureImprovement(
     // An exact watchdogKey match survives regardless of how its TITLE scored — that is the
     // entire point of carrying a key — and sorts FIRST so the top-5 slice can never drop a
     // definitional duplicate in favour of five fuzzy ones.
-    .filter((d) => d.exactKey === true || d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined)
+    .filter(
+      (d) =>
+        d.exactKey === true || d.similarity >= DUP_THRESHOLD || d.semantic !== undefined || d.lexical !== undefined,
+    )
     .sort((a, b) => Number(b.exactKey === true) - Number(a.exactKey === true) || b.similarity - a.similarity)
     .slice(0, 5);
 
@@ -1907,10 +1949,11 @@ export async function captureImprovement(
       })),
     );
     if (pressureCandidate) {
-      queueAdmission = (await (deps.readIssueAdmissionPressure ?? readIssueAdmissionPressure)({
-        canonicalId: pressureCandidate.id,
-        canonicalHarness: pressureCandidate.canonicalHarness,
-      }).catch(() => null)) ?? undefined;
+      queueAdmission =
+        (await (deps.readIssueAdmissionPressure ?? readIssueAdmissionPressure)({
+          canonicalId: pressureCandidate.id,
+          canonicalHarness: pressureCandidate.canonicalHarness,
+        }).catch(() => null)) ?? undefined;
       const decision = decideIssueAdmissionCircuit({
         identity,
         candidates: burstCandidates.map((candidate) => ({
@@ -1997,9 +2040,16 @@ export async function captureImprovement(
       const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
       const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
       const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
-      const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+      const reporters = [
+        ...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])]),
+      ];
       const independentReporter = reporters.some((r) => !priorReporters.includes(r));
-      if (priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+      if (
+        priorProbation?.state === 'probation' &&
+        incomingProbation &&
+        priorReporters.length > 0 &&
+        independentReporter
+      ) {
         const promoted = await promoteToolFailureProbation(prior, input, deps);
         if (promoted) {
           await appendCaptureOccurrence(
@@ -2070,7 +2120,13 @@ export async function captureImprovement(
       // `.catch`), which is the case where the caller's prose was dropped while
       // the call still returned ok — the silent write-loss this item exists for.
       const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
-      const coalescedOnto: CoalesceEffect = buildCoalesceEffect({ finalIssue, prior, input, repeatCount, bodyPersisted });
+      const coalescedOnto: CoalesceEffect = buildCoalesceEffect({
+        finalIssue,
+        prior,
+        input,
+        repeatCount,
+        bodyPersisted,
+      });
       return {
         ok: true,
         created: false,
@@ -2112,9 +2168,7 @@ export async function captureImprovement(
   if (isObservation && !input.watchdogKey && !immutableScorecard) {
     // Fail-open on the flag read exactly like the classifier's own null: a flag
     // service blip must never change what happens to an agent's filing.
-    const foldEnabled = await getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, `observation-fold:${origin}`).catch(
-      () => false,
-    );
+    const foldEnabled = await getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, `observation-fold:${origin}`).catch(() => false);
     const derived = foldEnabled
       ? await classifyDerivedObservationFold({ input, origin, deps }).catch(() => null)
       : null;
@@ -2272,6 +2326,11 @@ export async function captureImprovement(
   if (input.filedByRole) payload.filedByRole = input.filedByRole;
   // Structured-field seam (D-005): the observation's { kind, scope, confidence, refs }.
   if (input.payloadExtra) Object.assign(payload, input.payloadExtra);
+  // P-004: every newly claimable capture enrolls in the shared readiness
+  // contract. Observations stay outside the work queue and therefore carry no
+  // implementation verdict. Existing immediate paths remain ready by policy;
+  // change/feature captures awaiting peer review are explicitly unknown.
+  if (!isObservation) payload.implementationReadiness = initialImplementationReadiness(reviewRequired);
 
   // EI-19450720466036446: generated Scout proposals must resolve their cited
   // work-items before those citations can be treated as incident evidence.
@@ -2384,11 +2443,13 @@ export async function captureImprovement(
   // the create; this is deliberately fail-open so a transient checkpoint-store failure
   // cannot turn a durable capture into a lost filing.
   if (input.assignee && !isObservation && deps.setCheckpoint) {
-    await deps.setCheckpoint(
-      issue.id,
-      'Created and claimed by improvements:capture; no implementation work has started. ' +
-        'Verify the title/body against current HEAD, then reproduce before editing.',
-    ).catch(() => {});
+    await deps
+      .setCheckpoint(
+        issue.id,
+        'Created and claimed by improvements:capture; no implementation work has started. ' +
+          'Verify the title/body against current HEAD, then reproduce before editing.',
+      )
+      .catch(() => {});
   }
   // Push the right Learning-tab feed (operator-learning-tab-2026-06-09 P-002 /
   // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
@@ -2440,9 +2501,7 @@ export async function captureImprovement(
           origin,
           // P-002 pot-scope: a 'harness:<slug>' scope names the owning-pot grain;
           // other scopes (operator/workspace-global) resolve via the env home pot.
-          harnessSlug: input.scope?.startsWith('harness:')
-            ? input.scope.slice('harness:'.length)
-            : null,
+          harnessSlug: input.scope?.startsWith('harness:') ? input.scope.slice('harness:'.length) : null,
         }),
       ),
     ).catch(() => {});

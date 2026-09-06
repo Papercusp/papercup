@@ -161,6 +161,14 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     const result = await captureImprovement(reviewInput, d);
 
     expect(d.created[0]).toMatchObject({ admission: 'pending' });
+    expect(d.created[0].payload).toMatchObject({
+      implementationReadiness: {
+        schemaVersion: 'implementation-readiness-v1',
+        status: 'unknown',
+        source: 'capture-policy',
+        reason: 'awaiting-agent-review',
+      },
+    });
     expect(transitions).toEqual([
       {
         id: 'EI-100',
@@ -223,6 +231,31 @@ describe('captureImprovement — review-required pre-enrollment park', () => {
     await captureImprovement({ ...reviewInput, lane: 'observation' }, d);
 
     expect(writer).not.toHaveBeenCalled();
+    expect(d.created[0].payload).toMatchObject({
+      implementationReadiness: {
+        status: 'ready',
+        reason: 'existing-immediate-capture-policy',
+      },
+    });
+    expect(d.created[1].payload).not.toHaveProperty('implementationReadiness');
+  });
+
+  it('does not mistake a distinct-remedy/force assertion for implementation approval', async () => {
+    const d = deps();
+    d.setWorkItemStateWithAliasInfo = async (id, state) => ({
+      workItem: { id, state },
+      requestedState: state,
+      appliedState: state,
+    });
+
+    await captureImprovement({ ...reviewInput, force: true }, d);
+
+    expect(d.created[0].payload).toMatchObject({
+      implementationReadiness: {
+        status: 'unknown',
+        reason: 'awaiting-agent-review',
+      },
+    });
   });
 });
 
@@ -432,8 +465,12 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(mergeCalls[0]).toMatchObject({
       opts: { unset: ['lane'] },
       patch: {
-      paths: ['packages/operator-core/lib/agent-tools/coordination/tools/send.ts'],
-      toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
+        paths: ['packages/operator-core/lib/agent-tools/coordination/tools/send.ts'],
+        toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
+        implementationReadiness: {
+          status: 'unknown',
+          reason: 'corroborated-tool-failure-awaiting-review',
+        },
       },
     });
     expect(tags).toEqual([IMPROVEMENT_TOPIC]);
@@ -473,6 +510,12 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     );
     expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
     expect(d.created).toHaveLength(0);
+    expect(res.issue?.payload).toMatchObject({
+      implementationReadiness: {
+        status: 'ready',
+        reason: 'trusted-tool-failure-promotion',
+      },
+    });
     expect(d.occurrences).toEqual([
       expect.objectContaining({
         canonicalId: 'EI-PROBATION',
@@ -558,6 +601,10 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         toolFailureProbation: {
           state: 'promoted',
           watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+        },
+        implementationReadiness: {
+          status: 'ready',
+          reason: 'trusted-tool-failure-promotion',
         },
       },
     });

@@ -726,8 +726,9 @@ export function makeCarryRearmController({ acquireInject, waitIdle, waitAtPrompt
  *
  * Pure (injectable clock/sleep + getters); exported for tests.
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
     lastInputAt?: (() => number) | undefined;
+    isQuotaBlocked?: (() => boolean) | undefined;
     quietMs?: number | undefined;
     pollMs?: number | undefined;
     polls?: number | undefined;
@@ -738,9 +739,14 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs
     onExhausted?: (() => void) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
-     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | null;
+     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
      *  exhausted = no output was observed after the maximum resubmits). */
     verify(): Promise<{
+        polls: number;
+        resubmits: number;
+        aborted: string;
+        exhausted: boolean;
+    } | {
         polls: number;
         resubmits: number;
         aborted: string;
@@ -824,15 +830,20 @@ export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes, agent }?: {
+export function makeQuotaBlockDetector({ capBytes, agent, now }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
+    now?: (() => number) | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
      *  without re-deriving state on every chunk. */
     observe(chunk: any): "detected" | "cleared" | null;
     isBlocked: () => boolean;
+    snapshot: () => {
+        quotaBlocked: boolean;
+        quotaBlockedSinceMs: number | null;
+    };
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */

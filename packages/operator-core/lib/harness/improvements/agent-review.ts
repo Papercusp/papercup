@@ -52,9 +52,12 @@ import { boundedOrgTxn } from '../../pg-bounded-txn';
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
+  createImplementationReadiness,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   readAgentReviewState,
+  readImplementationReadiness,
   type AgentReviewState,
+  type ImplementationReadinessState,
 } from './agent-review-policy';
 // The canonical "this session can still act" set, IMPORTED rather than re-derived.
 // Deliberately not a delegation to `rebindIdentity` itself: that migrates ~16 ownerId-keyed
@@ -361,6 +364,45 @@ const defaultDeps: AgentReviewDeps = {
   resolveSubmitterLiveness,
 };
 
+function reviewImplementationReadiness(
+  payload: unknown,
+  input: {
+    status: ImplementationReadinessState['status'];
+    reason: string;
+    submittedBy: string;
+    round: number;
+    reviewer?: string;
+    grade?: number;
+  },
+): ImplementationReadinessState {
+  const existing = readImplementationReadiness(payload);
+  const review = existing?.evidence?.review;
+  if (
+    existing?.source === 'agent-review' &&
+    existing.status === input.status &&
+    existing.reason === input.reason &&
+    review?.submittedBy === input.submittedBy &&
+    review.round === input.round &&
+    review.reviewer === input.reviewer &&
+    review.grade === input.grade
+  ) {
+    return existing;
+  }
+  return createImplementationReadiness({
+    status: input.status,
+    source: 'agent-review',
+    reason: input.reason,
+    evidence: {
+      review: {
+        submittedBy: input.submittedBy,
+        round: input.round,
+        ...(input.reviewer ? { reviewer: input.reviewer } : {}),
+        ...(input.grade == null ? {} : { grade: input.grade }),
+      },
+    },
+  });
+}
+
 export interface EnterAgentReviewInput {
   id: string;
   submittedBy: string;
@@ -403,10 +445,22 @@ export async function enterAgentReview(
     preserveExisting: true,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
   });
-  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
-    harness: harnessSlug,
-    unset: ['needsHuman', 'needsOwnerAction'],
-  });
+  const merged = await deps.mergeWorkItemPayload(
+    workItem.id,
+    {
+      agentReview: next,
+      implementationReadiness: reviewImplementationReadiness(workItem.payload, {
+        status: 'unknown',
+        reason: 'awaiting-agent-review',
+        submittedBy: next.submittedBy,
+        round: next.round,
+      }),
+    },
+    {
+      harness: harnessSlug,
+      unset: ['needsHuman', 'needsOwnerAction'],
+    },
+  );
   if (!merged) throw new Error(`enterAgentReview: work item '${workItem.id}' disappeared during enrollment`);
   if (workItem.assignee) {
     const released = await deps.releaseWorkItem(workItem.id, {
@@ -481,10 +535,22 @@ export async function resubmitAgentReview(
     submittedBy: isLegacyRebind || isOrphanRebind ? input.submittedBy : current.submittedBy,
     round: current.round + 1,
   };
-  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
-    ...(workItem.harness ? { harness: workItem.harness } : {}),
-    unset: ['needsHuman', 'needsOwnerAction'],
-  });
+  const merged = await deps.mergeWorkItemPayload(
+    workItem.id,
+    {
+      agentReview: next,
+      implementationReadiness: reviewImplementationReadiness(workItem.payload, {
+        status: 'unknown',
+        reason: 'agent-review-resubmitted',
+        submittedBy: next.submittedBy,
+        round: next.round,
+      }),
+    },
+    {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
+      unset: ['needsHuman', 'needsOwnerAction'],
+    },
+  );
   if (!merged) throw new Error(`resubmitAgentReview: work item '${workItem.id}' disappeared`);
   if (workItem.assignee) {
     // `expectedAssignee` is a CAS (work-items.ts: `taken_by IS NULL OR taken_by =
@@ -588,10 +654,24 @@ export async function reconcileAgentReviewGrade(
     if (!feedback) throw new Error('agent-review-feedback-required');
     const next: AgentReviewState = { ...current, status: 'revision-requested' };
     const changed = current.status !== next.status;
-    const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
-      ...(workItem.harness ? { harness: workItem.harness } : {}),
-      unset: ['needsHuman', 'needsOwnerAction'],
-    });
+    const merged = await deps.mergeWorkItemPayload(
+      workItem.id,
+      {
+        agentReview: next,
+        implementationReadiness: reviewImplementationReadiness(workItem.payload, {
+          status: 'not-ready',
+          reason: 'agent-review-revision-requested',
+          submittedBy: current.submittedBy,
+          reviewer: gradedBy,
+          round: current.round,
+          grade,
+        }),
+      },
+      {
+        ...(workItem.harness ? { harness: workItem.harness } : {}),
+        unset: ['needsHuman', 'needsOwnerAction'],
+      },
+    );
     if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
     const commentAdded = await ensureComment(
       workItem,
@@ -659,10 +739,24 @@ export async function reconcileAgentReviewGrade(
 
   const next: AgentReviewState = { ...current, status: 'approved' };
   const changed = current.status !== next.status;
-  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
-    ...(workItem.harness ? { harness: workItem.harness } : {}),
-    unset: ['needsHuman', 'needsOwnerAction'],
-  });
+  const merged = await deps.mergeWorkItemPayload(
+    workItem.id,
+    {
+      agentReview: next,
+      implementationReadiness: reviewImplementationReadiness(workItem.payload, {
+        status: 'ready',
+        reason: 'agent-review-approved',
+        submittedBy: current.submittedBy,
+        reviewer: gradedBy,
+        round: current.round,
+        grade,
+      }),
+    },
+    {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
+      unset: ['needsHuman', 'needsOwnerAction'],
+    },
+  );
   if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);
   await ensureComment(workItem, approvalComment(current.round, grade, gradedBy), gradedBy, deps);
   if (workItem.assignee) {

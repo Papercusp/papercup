@@ -34,6 +34,89 @@ export interface AgentReviewState {
   round: number;
 }
 
+/**
+ * Versioned contract consumed by ordinary implementation self-selection.
+ *
+ * `unknown` is not a softer spelling of ready: it means the remaining problem,
+ * its current evidence, or its acceptance check has not yet been established.
+ * `not-ready` is an affirmative contradiction (for example a revision request,
+ * terminal cited evidence, or a repair that is already present but undeployed).
+ * `ready` is reserved for an explicit review approval or an existing immediate
+ * capture-policy path. The `source` + `reason` fields keep those two bases honest.
+ *
+ * Rows without this payload predate the contract and retain the legacy claim
+ * behavior. Presence of the key enrolls a row; malformed/unknown versions are
+ * therefore held by the SQL floor instead of being mistaken for legacy rows.
+ */
+export const IMPLEMENTATION_READINESS_SCHEMA_VERSION = 'implementation-readiness-v1' as const;
+export const IMPLEMENTATION_READINESS_STATUSES = ['unknown', 'not-ready', 'ready'] as const;
+export type ImplementationReadinessStatus = (typeof IMPLEMENTATION_READINESS_STATUSES)[number];
+export const IMPLEMENTATION_READINESS_SOURCES = ['capture-policy', 'agent-review', 'triage-freshness'] as const;
+export type ImplementationReadinessSource = (typeof IMPLEMENTATION_READINESS_SOURCES)[number];
+
+export interface ImplementationReadinessEvidence {
+  review?: {
+    submittedBy?: string;
+    reviewer?: string;
+    round: number;
+    grade?: number;
+  };
+  deployment?: {
+    state: 'current' | 'stale' | 'unknown';
+    toolName?: string;
+    relPath?: string;
+    unknownReason?: string;
+  };
+  citations?: {
+    citedIds: string[];
+    staleIds: string[];
+    unresolvedIds: string[];
+    circularIds: string[];
+    lookupFailedIds: string[];
+  };
+}
+
+export interface ImplementationReadinessState {
+  schemaVersion: typeof IMPLEMENTATION_READINESS_SCHEMA_VERSION;
+  status: ImplementationReadinessStatus;
+  source: ImplementationReadinessSource;
+  reason: string;
+  updatedAt: string;
+  evidence?: ImplementationReadinessEvidence;
+}
+
+export function createImplementationReadiness(
+  input: Omit<ImplementationReadinessState, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
+): ImplementationReadinessState {
+  return {
+    schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
+    status: input.status,
+    source: input.source,
+    reason: input.reason,
+    updatedAt: input.updatedAt ?? new Date().toISOString(),
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+  };
+}
+
+/** Read only a complete current-version payload; malformed enrolled rows stay held in SQL. */
+export function readImplementationReadiness(payload: unknown): ImplementationReadinessState | null {
+  const row = record(record(payload).implementationReadiness);
+  if (row.schemaVersion !== IMPLEMENTATION_READINESS_SCHEMA_VERSION) return null;
+  if (!IMPLEMENTATION_READINESS_STATUSES.includes(row.status as ImplementationReadinessStatus)) return null;
+  if (!IMPLEMENTATION_READINESS_SOURCES.includes(row.source as ImplementationReadinessSource)) return null;
+  if (typeof row.reason !== 'string' || !row.reason.trim()) return null;
+  if (typeof row.updatedAt !== 'string' || !Number.isFinite(Date.parse(row.updatedAt))) return null;
+  const evidence = record(row.evidence);
+  return {
+    schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
+    status: row.status as ImplementationReadinessStatus,
+    source: row.source as ImplementationReadinessSource,
+    reason: row.reason,
+    updatedAt: row.updatedAt,
+    ...(Object.keys(evidence).length > 0 ? { evidence: evidence as ImplementationReadinessEvidence } : {}),
+  };
+}
+
 const STRICT_OWNER_CAPABILITIES = new Set<ExternalBlockerCapability>([
   'credential',
   'physical-device',
@@ -152,17 +235,46 @@ export function agentReviewEligibility(candidate: AgentReviewCandidate):
   return { eligible: true };
 }
 
-/** Normal implementation lane: review work is invisible until approved. */
+/**
+ * Versioned readiness floor for ordinary self-selection. An absent key is the
+ * explicit legacy exception; a present key passes only when this reader knows
+ * its schema and it carries an affirmative ready verdict.
+ */
+export function implementationReadinessNormalExclusionSql(
+  sql: OrgSql,
+  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
+) {
+  const payload = sql.unsafe(payloadCol);
+  return sql`(
+    NOT (COALESCE(${payload}, '{}'::jsonb) ? 'implementationReadiness')
+    OR (
+      COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'ready'
+    )
+  )`;
+}
+
+/** Normal implementation lane: review/readiness work is invisible until approved. */
 export function agentReviewNormalExclusionSql(
   sql: OrgSql,
   payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
 ) {
   const payload = sql.unsafe(payloadCol);
   return sql`(
-    COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
-    AND (
-      COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
-      OR COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+    (
+      COALESCE(
+        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested',
+        FALSE
+      )
+      AND COALESCE(
+        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
+        FALSE
+      )
+    )
+    OR (
+      COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
+      AND COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
+      AND ${implementationReadinessNormalExclusionSql(sql, payloadCol)}
     )
   )`;
 }

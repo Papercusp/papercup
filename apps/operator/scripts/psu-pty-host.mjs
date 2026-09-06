@@ -2171,6 +2171,7 @@ export function makeSubmitVerifier({
   lastOutputAt,
   writeCr,
   lastInputAt = () => 0,
+  isQuotaBlocked = () => false,
   quietMs = SUBMIT_VERIFY_QUIET_MS,
   pollMs = SUBMIT_VERIFY_POLL_MS,
   polls = SUBMIT_VERIFY_POLLS,
@@ -2184,7 +2185,7 @@ export function makeSubmitVerifier({
   const getIn = typeof lastInputAt === 'function' ? lastInputAt : () => 0;
   return {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
-     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | null;
+     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
      *  exhausted = no output was observed after the maximum resubmits). */
     async verify() {
       const inputAtStart = getIn() || 0;
@@ -2194,6 +2195,7 @@ export function makeSubmitVerifier({
       let exhaustionNotified = false;
       let exhausted = false;
       let i = 0;
+      const quotaAbort = () => ({ polls: i, resubmits, aborted: 'quota-blocked', exhausted: false });
       const notifyExhausted = () => {
         // A resubmit can legitimately wake a previously silent turn. Once any
         // output is observed after a resubmit, this verifier must never turn a
@@ -2218,7 +2220,11 @@ export function makeSubmitVerifier({
         }
       };
       for (; i < polls; i++) {
+        if (isQuotaBlocked()) return quotaAbort();
         await sleep(pollMs);
+        // The first submit can itself paint the quota wall. Read the live
+        // detector after each wait, before either retrying or declaring failure.
+        if (isQuotaBlocked()) return quotaAbort();
         const outputAtPoll = getOut() || 0;
         if (
           outputAtLastResubmit != null &&
@@ -2250,6 +2256,7 @@ export function makeSubmitVerifier({
       // If the bounded poll window ends on the final resubmit, there is no
       // following iteration to observe a quiet poll. Treat the window itself as
       // exhausted, but keep the same output-after-resubmit suppression rule.
+      if (isQuotaBlocked()) return quotaAbort();
       if (i >= polls) notifyExhausted();
       return { polls: i, resubmits, aborted: null, exhausted };
     },
@@ -2412,9 +2419,11 @@ const QUOTA_BLOCK_BUFFER_CHARS = 8_192;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent = '' } = {}) {
+export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, agent = '', now = Date.now } = {}) {
   let buffer = '';
   let blocked = false;
+  /** @type {number | null} */
+  let blockedSinceMs = null;
   let lastMatch = { matched: false, pattern: null, excerpt: null };
   return {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
@@ -2427,9 +2436,11 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, ag
       if (hit.matched) lastMatch = hit;
       if (hit.matched === blocked) return null;
       blocked = hit.matched;
+      blockedSinceMs = blocked ? now() : null;
       return blocked ? 'detected' : 'cleared';
     },
     isBlocked: () => blocked,
+    snapshot: () => ({ quotaBlocked: blocked, quotaBlockedSinceMs: blockedSinceMs }),
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
@@ -2439,6 +2450,7 @@ export function makeQuotaBlockDetector({ capBytes = QUOTA_BLOCK_BUFFER_CHARS, ag
     reset() {
       buffer = '';
       blocked = false;
+      blockedSinceMs = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
   };
@@ -4796,7 +4808,7 @@ export function hostThroughPty(o) {
       // json. The tmp name is pid-scoped so two hosts racing the same key never
       // corrupt each other's staging file.
       const tmp = `${metaPath}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot() }));
+      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot() }));
       renameSync(tmp, metaPath);
     } catch {
       /* best-effort — discovery degrades to the base contract */
@@ -5055,6 +5067,7 @@ export function hostThroughPty(o) {
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
+      isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
       writeCr: () => child.write('\r'),
       // WI-2975: NOT OUTPUT_QUIET_MS (that's the busy-gate's short "back at an
       // idle prompt" threshold) — the verifier's own, deliberately-larger quiet
@@ -5093,7 +5106,7 @@ export function hostThroughPty(o) {
           ),
           outputObservedAfterResubmit,
         };
-        if (terminateOnExhaustion) {
+        if (terminateOnExhaustion && !quotaBlockDetector.isBlocked()) {
           terminateSubmitVerifyExhaustion(details);
           return;
         }
@@ -5116,7 +5129,17 @@ export function hostThroughPty(o) {
         }
       },
     });
-    return verifier.verify();
+    const result = await verifier.verify();
+    if (result.aborted === 'quota-blocked') {
+      appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+        label,
+        polls: result.polls,
+        resubmits: result.resubmits,
+        reason: 'quota-blocked',
+        terminated: false,
+      });
+    }
+    return result;
   };
 
   /**
@@ -5231,6 +5254,11 @@ export function hostThroughPty(o) {
             break;
           }
           if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          if (quotaBlockDetector.isBlocked()) {
+            await verifySubmitted(label);
+            dropReason = 'submit-verification-aborted-quota-blocked';
+            break;
+          }
           for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
@@ -5260,7 +5288,7 @@ export function hostThroughPty(o) {
           // deliberately disable generic fatal exhaustion and own the verdict
           // themselves. Only callers that opt into this verifier as authority
           // may turn its negative/unknown result into a delivery drop.
-          const verificationFailure = terminateOnSubmitVerifyExhaustion
+          const verificationFailure = terminateOnSubmitVerifyExhaustion || submitVerification.aborted === 'quota-blocked'
             ? submitVerificationFailureReason(submitVerification)
             : null;
           if (verificationFailure) {
@@ -5400,7 +5428,7 @@ export function hostThroughPty(o) {
           // their submitted session without making a false delivery claim.
           // Production scripted fleet kickoffs are tagged; a missing marker
           // there is authoritative and the fresh, workless child is terminated.
-          if (!proofUnavailable) {
+          if (!proofUnavailable && !quotaBlockDetector.isBlocked()) {
             try { child.kill(); } catch { /* already exited */ }
           }
           return;
@@ -5469,7 +5497,9 @@ export function hostThroughPty(o) {
             error: `session-port seed was not submitted (${r.reason ?? 'unknown'})`,
           });
         } finally {
-          try { child.kill(); } catch { /* already exited */ }
+          if (!quotaBlockDetector.isBlocked()) {
+            try { child.kill(); } catch { /* already exited */ }
+          }
         }
         return;
       }
@@ -5488,7 +5518,9 @@ export function hostThroughPty(o) {
             error: `session-port seed was submitted but not found in the ${env.PAPERCUSP_AGENT} native transcript`,
           });
         } finally {
-          try { child.kill(); } catch { /* already exited */ }
+          if (!quotaBlockDetector.isBlocked()) {
+            try { child.kill(); } catch { /* already exited */ }
+          }
         }
         return;
       }
@@ -5503,7 +5535,9 @@ export function hostThroughPty(o) {
         );
       } catch (error) {
         process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
-        try { child.kill(); } catch { /* already exited */ }
+        if (!quotaBlockDetector.isBlocked()) {
+          try { child.kill(); } catch { /* already exited */ }
+        }
       }
     })().catch((error) => {
       if (!managedKickoff) {
@@ -6096,7 +6130,7 @@ export function hostThroughPty(o) {
           // still proceed even while walled — a walled session still
           // deserves the fresh child the owner asked for, and never letting
           // ANY submit path (including those) be host-fatal while
-          // quota-blocked is WI-1386682 (3), a separate residual item — and
+          // quota-blocked is prevented by the live submit-verifier gate — and
           // mcp-reconnect/raw/osc never reach this branch (already returned
           // above, or ungated).
           if ((msg.mode === 'turn' || msg.mode === 'reset') && quotaBlockDetector.isBlocked()) {
@@ -6651,6 +6685,9 @@ export function hostThroughPty(o) {
       // WI-1386682 (1): feed the quota-wall detector the same raw bytes.
       const quotaTransition = quotaBlockDetector.observe(raw);
       if (quotaTransition) {
+        // Publish the edge immediately. A static quota screen may never emit
+        // another chunk to trigger the ordinary activity refresh.
+        writeMeta();
         // WI-2140984: a bare detected/cleared row cannot distinguish a real
         // wall from a pattern hitting ordinary chrome, which is exactly how a
         // false positive cost a fleet leader an escalation. Carry the agent and
