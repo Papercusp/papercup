@@ -259,4 +259,37 @@ describe('SU S01/S02 populated scenario worlds', () => {
     expect(SU_S07_KEYED_WRITE.version).toBe(2);
     expect(SU_S17_ORIENT_BOOTSTRAP.version).toBe(2);
   });
+
+  it('keeps S17 gateway/retry follow-up reads source-backed after orient', () => {
+    const read = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('capability:read', {
+      file_path: 'packages/operator-core/lib/llm-testing/llm-client.ts',
+    }));
+    const semantic = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('search:semantic', {
+      query: 'gateway retry priority deadline',
+    }));
+    const fulltext = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('search:fulltext', {
+      query: 'inference gateway llm-testing',
+    }));
+    const packed = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('repomix:pack', {
+      path: 'packages/operator-core/lib/llm-testing',
+    }));
+    const batch = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('code:run', {
+      script: 'return await tools.capability.read({ file_path: "packages/operator-core/lib/llm-testing/llm-client.ts" });',
+    }));
+    const missing = textOf(ORIENT_BOOTSTRAP_CONTEXT.override('capability:read', {
+      file_path: 'packages/operator-core/lib/llm-testing/does-not-exist.ts',
+    }));
+
+    expect(read).toContain('source-backed-code-excerpt');
+    expect(read).toContain("priority: opts.priority ?? 'llm-testing'");
+    expect(semantic).toContain('chat-stream.ts');
+    expect(semantic).toContain('retryDeadlineMs');
+    expect(fulltext).toContain('rate-limit-is-usually-account-routing-not-capacity.mdx');
+    expect(packed).toContain('llm-client.ts');
+    expect(packed).toContain('chat-stream.ts');
+    expect(batch).toContain('"status":"completed"');
+    expect(batch).toContain('"defaultPriority":"llm-testing"');
+    expect(missing).toContain('file_not_in_scenario_world');
+    expect(missing).toContain('availablePaths');
+  });
 });
