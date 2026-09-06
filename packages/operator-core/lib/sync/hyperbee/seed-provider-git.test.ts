@@ -173,7 +173,9 @@ describe('git seed provider', () => {
       submodulePaths: ['vendor/sub'],
       log: (m) => syncLogs.push(m),
     });
-    expect(synced.status).toBe('synced');
+    // Carry the git-sync log trail on the assertion: a 'nothing'/'error' here is only
+    // diagnosable from what runGitSync logged (which seed conversion step it took).
+    expect(synced.status, `git-sync log trail:\n${syncLogs.join('\n')}\n${JSON.stringify(synced)}`).toBe('synced');
     expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top v3');
     expect(await g(target, ['status', '--short'])).toBe('');
     expect(Number(await g(target, ['rev-list', '--count', 'HEAD']))).toBeGreaterThan(1);

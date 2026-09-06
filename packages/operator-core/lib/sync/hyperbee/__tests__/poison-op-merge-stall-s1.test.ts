@@ -10,13 +10,20 @@ import type { OpEnvelope } from '../op-envelope-types';
  * WI-255 UPDATE (2026-06-20, su-328af): the "self-heals via winners-dedup (no re-throw)"
  * behavior this test documented was ALSO the data-loss bug — the winner was recorded
  * BEFORE apply, so a VALID op whose apply threw transiently got dedup-skipped forever too,
- * not just a poison NUL. WI-255 records the winner only AFTER a non-throwing apply: a
- * poison op now RE-THROWS up to MAX_APPLY_THROWS (a valid transient recovers in that
- * window) then QUARANTINES (record+skip+log), instead of an immediate silent dedup-skip.
- * Test 2 below is updated to that behavior; the Brief Z finding (poison NUL is dropped
- * consistently across peers → no divergence) is unchanged — only the mechanism (bounded
- * retry→quarantine, not dedup-before-apply) changed. Full NUL-sanitization (zero throws,
- * the it.fails DESIRED) is still a follow-up.
+ * not just a poison NUL. WI-255 recorded the winner only AFTER a non-throwing apply: a
+ * poison op RE-THREW up to MAX_APPLY_THROWS then QUARANTINED (record+skip+log).
+ *
+ * F4 UPDATE (2026-09-05, read-merge `MergeApplyOutcome` / `applyFailures`): processing an
+ * entry is now distinct from materializing it. A throwing apply no longer propagates out
+ * of the merge and is NEVER quarantined: the outcome is `retryable`, the pass stops for
+ * that log, the durable cursor is HELD at the failing position, and the failure is
+ * recorded on `cursor.applyFailures` with a climbing `attempts` count. The entry's bytes
+ * and every later entry stay in Hypercore behind the held cursor — retried every pass,
+ * not lost, not skipped. Tests 1–2 below pin that contract (2026-09-06, su-d424fbb5, gate
+ * fixer for WI-212675 — the prior WI-255 expectations went red at tip once F4 landed).
+ * The Brief Z finding (poison NUL is never stored, identically on every peer → no
+ * divergence) is unchanged. Full NUL-sanitization (the it.fails DESIRED) is still a
+ * follow-up.
  */
 
 /**
@@ -106,56 +113,67 @@ async function buildLog(): Promise<OwnLog> {
 const PASS = { getTimeoutMs: 0, maxOpsPerPass: 0 } as const;
 
 describe('Brief Z Z#4/Z#5 — NUL-bearing federated op (transient throw, self-healing)', () => {
-  it('first pass: a throwing apply propagates out of the merge (uncaught — the transient error)', async () => {
+  it('first pass: a throwing apply is HELD, not thrown — the merge resolves, the cursor stops at the poison op, later ops wait behind it', async () => {
     const log = await buildLog();
     const pg = new Map<string, unknown>();
     const cursor = createMergeCursor();
-    await expect(
-      mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: pgLikeApply(pg) }),
-    ).rejects.toThrow(/invalid byte sequence/);
-    // The cursor did not advance past the poison op this pass; GOOD-2 not yet applied.
-    expect(cursor.positions.get(log.keyHex) ?? 0).toBeLessThanOrEqual(1);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: pgLikeApply(pg) });
+    expect(result.applied).toBe(1); // GOOD-1 materialized
+    expect(result.caughtUp).toBe(false); // the log is NOT caught up — the poison op is unresolved
+
+    // The durable cursor is HELD at the poison op's position (1): GOOD-1 (0) applied, the
+    // poison op and GOOD-2 remain in Hypercore behind the held cursor.
+    expect(cursor.positions.get(log.keyHex)).toBe(1);
     expect(pg.has('queue::GOOD-1')).toBe(true);
-    expect(pg.has('queue::GOOD-2')).toBe(false);
+    expect(pg.has('queue::POISON')).toBe(false); // NUL content never stored (PG can't anyway)
+    expect(pg.has('queue::GOOD-2')).toBe(false); // waits behind the held cursor
+
+    // The failure is RECORDED, not swallowed: first unresolved entry per log.
+    const failure = cursor.applyFailures?.get(log.keyHex);
+    expect(failure).toMatchObject({ position: 1, kind: 'retryable', attempts: 1 });
+    expect(failure?.reason).toContain('invalid byte sequence');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('cursor HELD for replay'),
+      expect.stringContaining('UTF8'),
+    ); // logged on the first occurrence, not silent
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
   });
 
-  it('self-heals via BOUNDED retry → quarantine (WI-255): the poison op re-throws then quarantines, and later good ops apply', async () => {
+  it('every later pass retries the held entry in place: attempts climb, it is never quarantined and never lost, and later good ops stay behind it', async () => {
     const log = await buildLog();
     const pg = new Map<string, unknown>();
     const cursor = createMergeCursor();
     const apply = pgLikeApply(pg);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // WI-255: the winner is NOT recorded after a throw, so the poison op RE-THROWS each
-    // pass (a valid transient would recover in this window — that's the fixed data loss)
-    // until the bounded retry budget QUARANTINES it; later passes converge. Run to settle.
-    let throwingPasses = 0;
-    let settled = false;
-    for (let i = 0; i < 8 && !settled; i++) {
-      try {
-        await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply });
-        settled = true;
-      } catch {
-        throwingPasses++;
-      }
+    const PASSES = 5;
+    for (let i = 0; i < PASSES; i++) {
+      // F4: a pass never throws — the failing entry is re-attempted from its held position.
+      await mergeAdmittedLogsIncremental([log], cursor, { ...PASS, applyImpl: apply });
+      expect(cursor.positions.get(log.keyHex)).toBe(1); // still held at the poison op
+      expect(pg.has('queue::GOOD-2')).toBe(false); // still waiting behind it
     }
-    expect(settled).toBe(true); // BOUNDED — never an infinite retry loop
-    expect(throwingPasses).toBeGreaterThanOrEqual(1); // it DID re-throw (not silently dedup-skipped — the bug)
-    expect(throwingPasses).toBeLessThanOrEqual(3); // MAX_APPLY_THROWS-bounded
-    expect(errSpy).toHaveBeenCalledWith(
-      expect.stringContaining('WI-255 quarantine'),
-      expect.stringContaining('UTF8'),
-    ); // quarantine logged, not silent
-    errSpy.mockRestore();
+    const failure = cursor.applyFailures?.get(log.keyHex);
+    expect(failure).toMatchObject({ position: 1, kind: 'retryable', attempts: PASSES });
+    expect(failure?.firstSeenAt).toBeLessThanOrEqual(failure?.lastSeenAt ?? 0);
 
-    expect(pg.has('queue::GOOD-2')).toBe(true); // recovered — later good ops apply
-    expect(pg.has('queue::POISON')).toBe(false); // NUL content never stored (PG can't anyway) — consistent across peers
-    expect(cursor.positions.get(log.keyHex) ?? 0).toBe(log.length); // caught up
+    // Never quarantined (no record+skip), never dropped: the poison op is still the first
+    // unresolved entry and its content is still not stored.
+    expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('quarantine'), expect.anything());
+    expect(pg.has('queue::POISON')).toBe(false); // consistent across peers — PG can't store it
+    expect(pg.has('queue::GOOD-1')).toBe(true); // applied once on pass 1, deduped after
+    warnSpy.mockRestore();
+    errSpy.mockRestore();
   });
 
-  // The residual robustness gap: a NUL op SHOULD be skipped cleanly with no throw at all
-  // (no transient error / log noise / one-pass co-log delay). it.fails because pass 1
-  // still throws today. Flip to `it` if NUL-sanitization / clean-skip handling lands.
+  // The residual robustness gap: a NUL op SHOULD be sanitized/skipped cleanly so the ops
+  // behind it are not held. it.fails because under F4 the poison op holds the cursor and
+  // GOOD-2 never lands. Flip to `it` if NUL-sanitization / clean-skip handling lands.
   it.fails('DESIRED: a NUL-bearing op is skipped WITHOUT any throw (no transient error)', async () => {
     const log = await buildLog();
     const pg = new Map<string, unknown>();
