@@ -14,17 +14,16 @@
  * dropdown is agent-driveable and survives reloads.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Tooltip } from '../harness/Tooltip';
 import { Popover } from '../harness/Popover';
 import RouteLink from './RouteLink';
 import {
-  fetchCustomThemes,
   themeList,
+  useThemeCatalog,
   useActiveTheme,
   writeActiveTheme,
-  type CustomTheme,
 } from '@/lib/theme';
 
 /** Tiny per-theme accent dot. Scopes `data-theme` so `var(--accent)` resolves
@@ -50,19 +49,8 @@ function ThemeSwatch({ themeId }: { themeId: string }) {
 export default function ThemeSelector() {
   const [open, setOpen] = useQueryState('themeSwitch', parseAsBoolean.withDefault(false));
   const activeTheme = useActiveTheme();
-  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  const { themes: customThemes } = useThemeCatalog();
   const wrapRef = useRef<HTMLSpanElement | null>(null);
-
-  // Load custom themes so they show alongside the built-ins. Fails quietly:
-  // the /api/themes endpoint is unavailable until the operator restarts after
-  // a fresh install; the built-ins still switch.
-  useEffect(() => {
-    let alive = true;
-    fetchCustomThemes()
-      .then((t) => { if (alive) setCustomThemes(t); })
-      .catch(() => { /* built-ins still work */ });
-    return () => { alive = false; };
-  }, []);
 
   const themes = themeList(customThemes);
   const activeLabel = themes.find((t) => t.id === activeTheme)?.label ?? 'Theme';

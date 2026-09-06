@@ -14,17 +14,20 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   listCustomThemes,
+  listThemeCatalog,
   saveCustomTheme,
   deleteCustomTheme,
   CustomThemeValidationError,
 } from '../../../custom-themes';
+import { removeInstalledTheme } from '../../../cupboard/install-theme-io';
+import { notifySyncInvalidate } from '../../../sync-sse';
 
 const list = defineTool({
   method: 'GET',
   path: '/themes',
   auth: 'public',
   async handler() {
-    return Response.json({ themes: await listCustomThemes() });
+    return Response.json({ themes: await listThemeCatalog() });
   },
 });
 
@@ -47,7 +50,9 @@ const put = defineTool({
     // body blindly; the client always PUTs to /themes/<theme.id>.
     const incoming = { ...(body.theme as Record<string, unknown>), id: ctx.params.id };
     try {
-      return Response.json(await saveCustomTheme(incoming));
+      const saved = await saveCustomTheme(incoming);
+      await notifySyncInvalidate('themes.catalog').catch(() => {});
+      return Response.json(saved);
     } catch (err) {
       if (err instanceof CustomThemeValidationError) {
         return Response.json({ error: err.message }, { status: 400 });
@@ -62,7 +67,13 @@ const del = defineTool({
   path: '/themes/:id',
   auth: 'loopback',
   async handler(_req, ctx) {
-    await deleteCustomTheme(ctx.params.id);
+    if (ctx.params.id.startsWith('installed:')) {
+      const removed = await removeInstalledTheme(ctx.params.id);
+      if (!removed.ok) return Response.json({ error: removed.error }, { status: removed.status });
+    } else {
+      await deleteCustomTheme(ctx.params.id);
+    }
+    await notifySyncInvalidate('themes.catalog').catch(() => {});
     return new Response(null, { status: 204 });
   },
 });

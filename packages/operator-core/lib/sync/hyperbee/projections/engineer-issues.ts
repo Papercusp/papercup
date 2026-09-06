@@ -180,11 +180,7 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
     !(Array.isArray(r.source_plan_item_ids) && r.source_plan_item_ids.every((s) => typeof s === 'string'))
   )
     return false;
-  if (
-    r.expected_cost_cents !== undefined &&
-    r.expected_cost_cents !== null &&
-    !Number.isFinite(r.expected_cost_cents)
-  )
+  if (r.expected_cost_cents !== undefined && r.expected_cost_cents !== null && !Number.isFinite(r.expected_cost_cents))
     return false;
   // payload and tags are jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
@@ -268,6 +264,83 @@ async function isRetiredLegacyTwinSource(
          )
     ) AS retired`;
   return rows[0]?.retired === true;
+}
+
+const WATCHDOG_IDENTITY_INDEX = 'work_items_watchdog_identity_uq';
+
+interface WatchdogIdentity {
+  watchdogKey: string;
+  signalOrigin: string;
+  lane: string;
+}
+
+/**
+ * Read the exact identity migration 865 indexes from the incoming wire payload.
+ * Fail closed on a malformed explicit component: PostgreSQL's jsonb `->>` would
+ * stringify it, but the federation path must not guess that a non-string value
+ * denotes the same logical signal as an existing row.
+ */
+function watchdogIdentityFromPayload(payload: unknown): WatchdogIdentity | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.watchdogKey !== 'string') return null;
+
+  const ei = record._ei;
+  const signalOrigin =
+    ei && typeof ei === 'object' && !Array.isArray(ei) ? (ei as Record<string, unknown>).signal_origin : undefined;
+  if (signalOrigin !== undefined && signalOrigin !== null && typeof signalOrigin !== 'string') return null;
+  if (record.lane !== undefined && record.lane !== null && typeof record.lane !== 'string') return null;
+
+  return {
+    watchdogKey: record.watchdogKey,
+    signalOrigin: typeof signalOrigin === 'string' ? signalOrigin : 'organic',
+    lane: typeof record.lane === 'string' ? record.lane : 'improvement',
+  };
+}
+
+/** Only migration 865's arbiter is recoverable; every other 23505 remains fatal. */
+function isWatchdogIdentityConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as Record<string, unknown>;
+  if (String(candidate.code ?? '') !== '23505') return false;
+  if (candidate.constraint === WATCHDOG_IDENTITY_INDEX || candidate.constraint_name === WATCHDOG_IDENTITY_INDEX) {
+    return true;
+  }
+  return [candidate.message, candidate.detail].some(
+    (value) => typeof value === 'string' && value.includes(`"${WATCHDOG_IDENTITY_INDEX}"`),
+  );
+}
+
+/**
+ * Re-read the database arbiter after its named 23505. Returning a winner is
+ * deliberately stricter than merely finding the same watchdogKey: every
+ * component and the partial-index predicate must match, and the winner must be
+ * a different physical row. Migration 865 guarantees at most one such row;
+ * anything else fails closed and leaves the merge cursor retryable.
+ */
+async function findWatchdogIdentityWinner(
+  sql: postgres.Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  incomingIssueId: string,
+  identity: WatchdogIdentity,
+): Promise<string | null> {
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND feature_id <> ${incomingIssueId}
+       AND item_kind IN ('bug', 'change', 'task')
+       AND (status IS NULL OR status <> ALL (
+         ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
+       ))
+       AND payload ->> 'watchdogKey' = ${identity.watchdogKey}
+       AND COALESCE(payload -> '_ei' ->> 'signal_origin', 'organic') = ${identity.signalOrigin}
+       AND COALESCE(payload ->> 'lane', 'improvement') = ${identity.lane}
+     ORDER BY feature_id
+     LIMIT 2`;
+  return rows.length === 1 ? rows[0]!.feature_id : null;
 }
 
 export interface EngineerIssuesProjectionOpts {
@@ -400,8 +473,9 @@ async function writeToPg(
       assigned_by: row.assigned_by ?? null,
     },
   });
-  await sql`
-    INSERT INTO harness_shared.work_items
+  try {
+    await sql`
+      INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
        created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason,
@@ -557,7 +631,36 @@ async function writeToPg(
                           work_items.status, work_items.taken_by, work_items.payload::text,
                           work_items.terminal_owner, work_items.terminal_completion_ref,
                           work_items.terminal_reason, work_items.authority)))
-  `;
+    `;
+  } catch (error) {
+    // The physical-row ON CONFLICT above cannot arbitrate migration 865's
+    // separate partial unique index. A historical terminal row can therefore
+    // receive a stale remote PUT that tries to reopen it while a newer live row
+    // already owns the same watchdog identity. Retrying that deterministic
+    // 23505 forever pins every per-harness merge cursor on the same op.
+    //
+    // Recover only the named index and only after the complete incoming
+    // identity resolves to exactly one different non-terminal row. That row is
+    // the already-coalesced logical signal, so the obsolete physical-row PUT is
+    // a no-op. Any missing/malformed component, lookup failure, or other 23505
+    // rethrows the original error and remains visible to the merge retry path.
+    if (!isWatchdogIdentityConflict(error)) throw error;
+    const identity = watchdogIdentityFromPayload(row.payload);
+    if (!identity) throw error;
+    let winnerId: string | null;
+    try {
+      winnerId = await findWatchdogIdentityWinner(sql, opts.workspaceId, vSlug, row.issue_id, identity);
+    } catch {
+      throw error;
+    }
+    if (!winnerId) throw error;
+    console.warn(
+      `[engineer-issues projection] coalesced stale watchdog replay issue_id=${row.issue_id} ` +
+        `onto existing non-terminal winner=${winnerId} (harness_slug=${vSlug}, ` +
+        `watchdogKey=${identity.watchdogKey}, signal_origin=${identity.signalOrigin}, lane=${identity.lane}); ` +
+        `remote PUT treated as no-op`,
+    );
+  }
 }
 
 async function deleteFromPg(

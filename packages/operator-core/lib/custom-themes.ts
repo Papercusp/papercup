@@ -20,6 +20,7 @@ import {
   CustomThemeValidationError,
   type CustomTheme,
 } from './theme-tokens';
+import { listInstalledThemes } from './cupboard/theme-store';
 
 function themesFile(): string {
   return papercuspPath('themes', 'custom.json');
@@ -52,6 +53,12 @@ export async function listCustomThemes(): Promise<CustomTheme[]> {
     }
   }
   return out;
+}
+
+/** One catalog for every runtime/UI consumer. Locally-authored definitions stay
+ * first and installed packages retain provenance metadata. */
+export async function listThemeCatalog(): Promise<CustomTheme[]> {
+  return [...await listCustomThemes(), ...listInstalledThemes()];
 }
 
 async function writeAll(themes: CustomTheme[]): Promise<void> {

@@ -120,6 +120,30 @@ beforeAll(async () => {
       BEFORE INSERT OR UPDATE ON harness_shared.work_items
       FOR EACH ROW EXECUTE FUNCTION harness_shared.stamp_local_federated_write();
   `);
+  // Migration 865's real partial arbiter. Most rows in this suite carry no
+  // watchdogKey, so installing it globally keeps every test on the production
+  // schema while affecting only the focused identity cases below.
+  await db.sql.unsafe(`
+    CREATE UNIQUE INDEX IF NOT EXISTS work_items_watchdog_identity_uq
+      ON harness_shared.work_items (
+        workspace_id,
+        harness_slug,
+        (payload ->> 'watchdogKey'),
+        (COALESCE(payload -> '_ei' ->> 'signal_origin', 'organic')),
+        (COALESCE(payload ->> 'lane', 'improvement'))
+      )
+      WHERE item_kind IN ('bug', 'change', 'task')
+        AND (status IS NULL OR status <> ALL (
+          ARRAY['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']::text[]
+        ))
+        AND payload ->> 'watchdogKey' IS NOT NULL;
+
+    -- A second partial index gives the negative control teeth: its 23505 must
+    -- still escape the projection rather than being mistaken for migration 865.
+    CREATE UNIQUE INDEX IF NOT EXISTS engineer_issues_projection_unrelated_uq
+      ON harness_shared.work_items (workspace_id, (payload ->> 'projectionTestUnique'))
+      WHERE payload ->> 'projectionTestUnique' IS NOT NULL;
+  `);
 });
 afterAll(async () => {
   await db?.cleanup();
@@ -283,6 +307,87 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
       authorPubkey: 'peer',
     });
     expect((await getIssue('EI-9'))?.title).toBe('v300');
+  });
+
+  it('coalesces a stale reopen onto the exact non-terminal watchdog winner and stays idempotent', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+      const watchdogKey = 'federation-drain-stall:ws-ei-proj:papercup';
+      const payload = { watchdogKey };
+
+      // This is the live position-45293 shape: an older physical issue has
+      // already terminalized, while a newer issue owns its exact effective
+      // (workspace, Pot, watchdogKey, organic, improvement) identity.
+      await p.writeToPg(
+        issueRow({
+          issue_id: 'EI-watchdog-loser',
+          state: 'resolved',
+          title: 'terminal historical signal',
+          payload,
+        }),
+        { ts: 100, fedHlc: '100:00000:peer', origin: 'remote', authorPubkey: 'peer' },
+      );
+      await p.writeToPg(issueRow({ issue_id: 'EI-watchdog-winner', state: 'open', title: 'live signal', payload }), {
+        ts: 200,
+        fedHlc: '200:00000:peer',
+        origin: 'remote',
+        authorPubkey: 'peer',
+      });
+
+      const readPair = () => db.sql<{ feature_id: string; status: string; title: string; fed_ts: number | null }[]>`
+        SELECT feature_id, status, title, fed_ts
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS}
+           AND harness_slug = ${SLUG}
+           AND feature_id IN ('EI-watchdog-loser', 'EI-watchdog-winner')
+         ORDER BY feature_id`;
+      const before = await readPair();
+
+      const staleReopen = issueRow({
+        issue_id: 'EI-watchdog-loser',
+        state: 'open',
+        title: 'stale replay must not reopen or overwrite either row',
+        payload,
+      });
+      const replayProvenance = {
+        ts: 300,
+        fedHlc: '300:00000:peer',
+        origin: 'remote' as const,
+        authorPubkey: 'peer',
+      };
+
+      await p.writeToPg(staleReopen, replayProvenance);
+      expect(await readPair()).toEqual(before);
+
+      // A second fold of the identical poisoned op is the recurrence guard:
+      // it is still a no-op and never becomes a new retryable cursor failure.
+      await p.writeToPg(staleReopen, replayProvenance);
+      expect(await readPair()).toEqual(before);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('winner=EI-watchdog-winner'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not swallow a 23505 from any unique index other than migration 865', async () => {
+    const p = proj();
+    await p.writeToPg(issueRow({ issue_id: 'EI-unrelated-a', payload: { projectionTestUnique: 'same-value' } }), {
+      ts: 100,
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+
+    await expect(
+      p.writeToPg(issueRow({ issue_id: 'EI-unrelated-b', payload: { projectionTestUnique: 'same-value' } }), {
+        ts: 200,
+        origin: 'remote',
+        authorPubkey: 'peer',
+      }),
+    ).rejects.toMatchObject({ code: '23505' });
+    expect(await getIssue('EI-unrelated-a')).not.toBeNull();
+    expect(await getIssue('EI-unrelated-b')).toBeNull();
   });
 
   // EI-16756: two peers race a completion of the SAME issue within the same

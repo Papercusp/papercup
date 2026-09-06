@@ -149,6 +149,18 @@
           let id = valid(injected) ? injected : window.localStorage.getItem(cacheKey);
           if (!valid(id)) id = DEFAULT;
           document.documentElement.dataset.theme = id;
+          if (id.indexOf('custom:') === 0) {
+            try {
+              const metaRaw = window.localStorage.getItem('pc:ws:' + wsId() + ':papercusp.customThemesMeta');
+              const meta = metaRaw ? JSON.parse(metaRaw) : {};
+              const selected = meta[id] || {};
+              document.documentElement.dataset.themeBase = selected.baseTheme || DEFAULT;
+              document.documentElement.style.colorScheme = selected.colorScheme === 'light' ? 'light' : 'dark';
+            } catch (e) {
+              document.documentElement.dataset.themeBase = DEFAULT;
+              document.documentElement.style.colorScheme = 'dark';
+            }
+          }
           // Seed the per-device cache from the injected value so the React lib's
           // synchronous readActiveTheme() agrees with the painted theme even if
           // this device's cache was stale/empty.

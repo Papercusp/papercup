@@ -17,7 +17,8 @@
  * The token contract lives in `lib/theme-tokens.ts` (shared with the server) and
  * is re-exported here so existing `@/lib/theme` importers keep working.
  */
-import { useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { injectedPref, reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import {
@@ -26,6 +27,7 @@ import {
   customThemeCss,
   customThemeSlug,
   DEFAULT_THEME_ID,
+  isCustomThemeId,
   isValidThemeId,
   type CustomTheme,
   type ThemeMeta,
@@ -39,6 +41,10 @@ export const THEME_CHANGE_EVENT = 'papercusp:theme-changed';
  * themes, so the pre-paint boot script can inject it before React/fetch and avoid
  * a flash when a custom theme is active. Kept in sync by {@link applyCustomThemes}. */
 export const CUSTOM_THEMES_CSS_KEY = 'papercusp.customThemesCss';
+export const CUSTOM_THEMES_META_KEY = 'papercusp.customThemesMeta';
+/** Full validated catalog cache. Unlike the CSS cache, this keeps labels and
+ * provenance available to mounted pickers during a transient/offline read. */
+export const CUSTOM_THEMES_CATALOG_KEY = 'papercusp.customThemesCatalog';
 export const CUSTOM_THEMES_STYLE_ID = 'pc-custom-themes';
 
 // ── active-theme selection ────────────────────────────────────────────────
@@ -63,6 +69,21 @@ export function applyTheme(id: string = readActiveTheme()): void {
   if (typeof document === 'undefined') return;
   const safe = isValidThemeId(id) ? id : DEFAULT_THEME_ID;
   document.documentElement.dataset.theme = safe;
+  if (isCustomThemeId(safe) && typeof window !== 'undefined') {
+    try {
+      const raw = window.localStorage.getItem(wsLocalKey(CUSTOM_THEMES_META_KEY));
+      const meta = raw ? JSON.parse(raw) as Record<string, { baseTheme?: string; colorScheme?: string }> : {};
+      const selected = meta[safe];
+      document.documentElement.dataset.themeBase = selected?.baseTheme ?? DEFAULT_THEME_ID;
+      document.documentElement.style.colorScheme = selected?.colorScheme === 'light' ? 'light' : 'dark';
+    } catch {
+      document.documentElement.dataset.themeBase = DEFAULT_THEME_ID;
+      document.documentElement.style.colorScheme = 'dark';
+    }
+  } else {
+    delete document.documentElement.dataset.themeBase;
+    document.documentElement.style.removeProperty('color-scheme');
+  }
 }
 
 /**
@@ -167,10 +188,65 @@ export function applyCustomThemes(themes: CustomTheme[]): void {
   if (typeof window !== 'undefined') {
     try {
       window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_CSS_KEY), css);
+      window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_CATALOG_KEY), JSON.stringify(themes));
+      window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_META_KEY), JSON.stringify(Object.fromEntries(
+        themes.map((theme) => [`${CUSTOM_PREFIX}${theme.id}`, {
+          baseTheme: theme.baseTheme ?? DEFAULT_THEME_ID,
+          colorScheme: theme.colorScheme ?? (theme.baseTheme === 'portal-light' ? 'light' : 'dark'),
+        }]),
+      )));
     } catch {
       /* best effort */
     }
   }
+  applyTheme();
+}
+
+/** Last known-good catalog for cold/offline rendering. The key is workspace
+ * scoped, so switching workspaces cannot leak one workspace's installed layer
+ * into another. Invalid cache data degrades to no custom entries while the
+ * pre-paint CSS cache remains untouched. */
+export function readCachedThemeCatalog(): CustomTheme[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(wsLocalKey(CUSTOM_THEMES_CATALOG_KEY));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((theme): theme is CustomTheme => (
+      theme !== null && typeof theme === 'object' &&
+      typeof (theme as CustomTheme).id === 'string' &&
+      typeof (theme as CustomTheme).label === 'string' &&
+      (theme as CustomTheme).tokens !== null &&
+      typeof (theme as CustomTheme).tokens === 'object'
+    ));
+  } catch {
+    return [];
+  }
+}
+
+/** Live installed+local catalog. The sync invalidation fired after a committed
+ * install/update/remove refreshes every mounted picker. A missing/error result
+ * uses the last known-good workspace cache and, crucially, does not overwrite
+ * the pre-paint CSS with an empty catalog. Once a real result arrives, a stale
+ * active custom id falls back through the canonical preference writer. */
+export function useThemeCatalog(): { themes: CustomTheme[]; error: unknown; invalidate: () => void } {
+  const query = useSyncQuery({ queryName: 'themes.catalog', args: {} });
+  const liveThemes = Array.isArray(query.data) ? query.data as CustomTheme[] : null;
+  const themes = useMemo(
+    () => liveThemes ?? readCachedThemeCatalog(),
+    [query.data],
+  );
+  useEffect(() => {
+    if (liveThemes === null) return;
+    applyCustomThemes(liveThemes);
+    const active = readActiveTheme();
+    const slug = customThemeSlug(active);
+    if (slug && !liveThemes.some((theme) => theme.id === slug)) {
+      writeActiveTheme(DEFAULT_THEME_ID);
+    }
+  }, [liveThemes]);
+  return { themes, error: query.error, invalidate: query.invalidate };
 }
 
 async function themesRequest(path: string, init?: RequestInit): Promise<Response> {

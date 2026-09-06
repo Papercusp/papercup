@@ -2,7 +2,7 @@
  * Do not edit directly, this file was auto-generated.
  */
 
-[data-theme="black"] {
+[data-theme="black"], [data-theme-base="black"] {
   --bg-deepest: #000000; /** Deep surface tiers collapse to pure black on the black page */
   --bg-deeper: #000000;
   --bg-deep: #000000;

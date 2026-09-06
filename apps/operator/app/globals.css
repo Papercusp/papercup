@@ -108,6 +108,11 @@
 
 [data-theme="portal-light"] { color-scheme: light; }
 [data-theme="portal-dark"] { color-scheme: dark; }
+[data-theme-base="portal-light"] { color-scheme: light; }
+[data-theme-base="frost"],
+[data-theme-base="black"],
+[data-theme-base="honeycomb"],
+[data-theme-base="portal-dark"] { color-scheme: dark; }
 
 /* Portal-hosted /adv owns the outer rail and viewport. The operator keeps its
  * left Papercup chat dock, while its route page and AdvShell consume every

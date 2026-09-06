@@ -50,6 +50,17 @@ import {
   MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION,
   type AutomaticCompactionRecovery,
 } from './agent-tools/coordination/compaction-recovery';
+import {
+  FLEET_ENVELOPE_ROLES,
+  PROTECTED_CAPABILITY_GLOBS,
+  ROLE_ENVELOPES,
+  matchesAny,
+} from './capability-envelope/policy';
+import {
+  listAllProjectedTools,
+  roleScopedToolNames,
+  type ProjectedTool,
+} from '@papercusp/tooldef';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -176,6 +187,9 @@ export interface CarryDoc {
   continuation: CarryDocContinuation;
   /** Work-item ids withdrawn from a preceding machine continuation in this tail. */
   retractedContinuationRefs?: string[];
+  /** Role/tool feasibility findings used to keep an impossible carry handoff from
+   *  becoming an executable directive for the successor. */
+  roleSafety?: CarryRoleSafetyReport | null;
 }
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
@@ -245,6 +259,8 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
   getTailFn?: (ownerId: string) => Promise<CarryDocTailTurn[]>;
+  /** Test seam for the live projected-tool catalog used by role-feasibility checks. */
+  projectedToolsFn?: () => readonly ProjectedTool[];
 }
 
 /** Read active modes → the AUTO/owner-directed provenance the successor needs.
@@ -432,6 +448,11 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
   const retractedContinuationRefs = detectRetractedContinuationRefs(tail);
+  const roleSafety = inspectCarryRoleSafety(
+    opts.role,
+    brief,
+    opts.projectedToolsFn?.() ?? listAllProjectedTools(),
+  );
 
   return {
     brief,
@@ -460,6 +481,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       opts.boundarySelfRequested,
     ),
     ...(retractedContinuationRefs.length > 0 ? { retractedContinuationRefs } : {}),
+    roleSafety,
   };
 }
 
@@ -776,6 +798,140 @@ export function isJudgeCarryRole(role?: string | null): boolean {
   return role?.trim().toLowerCase() === 'judge';
 }
 
+type CarryRoleSafetySource = 'held-item' | 'deferred-item' | 'loop' | 'directive';
+
+export interface CarryRoleSafetyReport {
+  role: string;
+  blockedToolNames: string[];
+  heldItemIds: string[];
+  deferredItemIds: string[];
+  sources: CarryRoleSafetySource[];
+}
+
+function projectedToolIsWrite(tool: Pick<ProjectedTool, 'effect' | 'effectForCall'>): boolean {
+  if (tool.effect === 'write') return true;
+  if (tool.effect !== undefined || typeof tool.effectForCall !== 'function') return false;
+  try {
+    return tool.effectForCall({}) === 'write';
+  } catch {
+    return false;
+  }
+}
+
+function roleCanUseProjectedTool(
+  role: string,
+  tool: ProjectedTool,
+  allowedNames: ReadonlySet<string>,
+): boolean {
+  const name = tool.expose?.mcp?.name;
+  if (!name || !allowedNames.has(name)) return false;
+  const envelopeDenies =
+    FLEET_ENVELOPE_ROLES.has(role) &&
+    [...PROTECTED_CAPABILITY_GLOBS, ...(ROLE_ENVELOPES[role]?.denyCapabilities ?? [])];
+  return !(envelopeDenies && tool.capabilities.some((capability) => matchesAny(capability, envelopeDenies)));
+}
+
+function carryTextHasTool(text: string | null | undefined, toolNames: readonly string[]): boolean {
+  if (!text) return false;
+  return toolNames.some((name) => text.includes(name));
+}
+
+interface CarryRoleSafetyText {
+  source: CarryRoleSafetySource;
+  text: string | null | undefined;
+  itemId?: string;
+}
+
+function carryRoleSafetyTexts(brief: CarryBrief): CarryRoleSafetyText[] {
+  const texts: CarryRoleSafetyText[] = [
+    { source: 'loop', text: brief.loop?.goal },
+    { source: 'loop', text: brief.loop?.carryNote },
+    ...brief.directives.map((directive) => ({ source: 'directive' as const, text: directive.verbatimText })),
+    ...brief.heldItems.flatMap((item) => [
+      { source: 'held-item' as const, text: item.title, itemId: item.id },
+      { source: 'held-item' as const, text: item.body, itemId: item.id },
+      { source: 'held-item' as const, text: item.checkpoint, itemId: item.id },
+    ]),
+    ...(brief.deferredItems ?? []).flatMap((item) => [
+      { source: 'deferred-item' as const, text: item.title, itemId: item.id },
+      { source: 'deferred-item' as const, text: item.body, itemId: item.id },
+    ]),
+  ];
+  return texts;
+}
+
+/**
+ * Find write-capable projected-tool references that the successor's role cannot
+ * invoke. The role allowlist and capability envelope are the same authorities
+ * used by dispatch; this deliberately does not maintain a second role/tool list.
+ */
+export function inspectCarryRoleSafety(
+  role: string | null | undefined,
+  brief: CarryBrief,
+  projectedTools: readonly ProjectedTool[] = listAllProjectedTools(),
+): CarryRoleSafetyReport | null {
+  const normalizedRole = role?.trim().toLowerCase();
+  if (!normalizedRole) return null;
+
+  const allowedNames = roleScopedToolNames(projectedTools, normalizedRole);
+  const blockedNames = projectedTools
+    .filter((tool) => projectedToolIsWrite(tool) && !roleCanUseProjectedTool(normalizedRole, tool, allowedNames))
+    .map((tool) => tool.expose?.mcp?.name)
+    .filter((name): name is string => Boolean(name))
+    .sort();
+  if (blockedNames.length === 0) return null;
+
+  const blockedToolNames = new Set<string>();
+  const heldItemIds = new Set<string>();
+  const deferredItemIds = new Set<string>();
+  const sources = new Set<CarryRoleSafetySource>();
+  for (const entry of carryRoleSafetyTexts(brief)) {
+    const matched = blockedNames.filter((name) => carryTextHasTool(entry.text, [name]));
+    if (matched.length === 0) continue;
+    matched.forEach((name) => blockedToolNames.add(name));
+    sources.add(entry.source);
+    if (entry.source === 'held-item' && entry.itemId) heldItemIds.add(entry.itemId);
+    if (entry.source === 'deferred-item' && entry.itemId) deferredItemIds.add(entry.itemId);
+  }
+  if (blockedToolNames.size === 0) return null;
+  return {
+    role: normalizedRole,
+    blockedToolNames: [...blockedToolNames].sort(),
+    heldItemIds: [...heldItemIds].sort(),
+    deferredItemIds: [...deferredItemIds].sort(),
+    sources: [...sources].sort(),
+  };
+}
+
+function renderCarryRoleHandoff(report: CarryRoleSafetyReport): string {
+  const itemIds = [...report.heldItemIds, ...report.deferredItemIds];
+  const subject = itemIds.length > 0 ? `work-item(s) ${itemIds.join(', ')}` : 'carried action text';
+  return (
+    '## Routed/stranded carry handoff (role-infeasible)\n' +
+    `- evaluation role: ${report.role}\n` +
+    `- ${subject} contains ${report.blockedToolNames.length} mutating tool reference(s) this role cannot execute.\n` +
+    '- The suppressed action text is evidence only. Do NOT follow it or mutate work state from this session.\n' +
+    '- Route the live item/diagnosis to an eligible engineering role or fleet leader, then re-read current state before acting.'
+  );
+}
+
+function sanitizeBriefForRole(brief: CarryBrief, report: CarryRoleSafetyReport): CarryBrief {
+  const blocked = report.blockedToolNames;
+  const loopUnsafe = carryTextHasTool(brief.loop?.goal, blocked) || carryTextHasTool(brief.loop?.carryNote, blocked);
+  const directives = brief.directives.filter((directive) => !carryTextHasTool(directive.verbatimText, blocked));
+  const removedDirectives = brief.directives.length - directives.length;
+  return {
+    ...brief,
+    ...(brief.loop && loopUnsafe ? { loop: { ...brief.loop, goal: null, carryNote: null } } : {}),
+    heldItems: brief.heldItems.filter((item) => !report.heldItemIds.includes(item.id)),
+    ...(brief.deferredItems
+      ? { deferredItems: brief.deferredItems.filter((item) => !report.deferredItemIds.includes(item.id)) }
+      : {}),
+    directives,
+    directivesTotalOpen: Math.max(0, brief.directivesTotalOpen - removedDirectives),
+  };
+}
+
 /** Return the role-appropriate post-compaction instruction. Normal su/worker
  * callers keep the historical constant byte-for-byte. */
 export function postCompactionRecoveryInstruction(role?: string | null): string {
@@ -1057,6 +1213,7 @@ const JUDGE_SAFE_SHED_POINTERS = Object.freeze({
  */
 export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: RenderCarryDocOpts = {}): string {
   const judgeSafe = isJudgeCarryRole(doc.identity.role);
+  const roleSafety = doc.roleSafety ?? inspectCarryRoleSafety(doc.identity.role, doc.brief);
   const shedPointers = judgeSafe ? JUDGE_SAFE_SHED_POINTERS : SHED_POINTERS;
   const retractionGuard = renderRetractionGuard(doc.retractedContinuationRefs ?? []);
   const head = [
@@ -1077,6 +1234,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
     renderBuiltAtStamp(now),
     renderIdentity(doc.identity),
     renderSessionMode(doc.sessionMode, doc.brief.awaits.length > 0, doc.identity.role),
+    ...(roleSafety ? [renderCarryRoleHandoff(roleSafety)] : []),
     ...(retractionGuard ? [retractionGuard] : []),
   ];
   // EI-18684357744098956: the carry doc (unlike the bare brief) also carries the
@@ -1085,7 +1243,8 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   // tail-turn timestamp through so a checkpoint the session outgrew (wrote, then
   // kept working past, without the correction landing) renders SUPERSEDED
   // instead of as plain, equally-authoritative fact.
-  const briefBody = renderCarryBriefText(doc.brief, now, {
+  const renderBrief = roleSafety ? sanitizeBriefForRole(doc.brief, roleSafety) : doc.brief;
+  const briefBody = renderCarryBriefText(renderBrief, now, {
     sessionActivityMs: latestTailTurnMs(doc.tail),
   }).trim();
   const briefText = briefBody ? `## Standing carry\n${briefBody}` : null;

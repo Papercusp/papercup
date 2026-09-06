@@ -35,11 +35,29 @@ import { createHash } from 'node:crypto';
 import { open, stat, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
 const MAX_PARTS = 1024;
 const DIRECT_MAX = { 'server.tgz.minisig': 64 * 1024, 'manifest.json': 1024 * 1024 };
+const SENSITIVE_KEY = /(?:access[_-]?token|api[_-]?key|authorization|credential|password|private[_-]?key|secret|signature|token|upload[-_]?id)/i;
+const SENSITIVE_QUERY = /(?:access[_-]?token|api[_-]?key|authorization|credential|password|private[_-]?key|secret|signature|token|upload[-_]?id)/i;
+const SENSITIVE_ASSIGNMENT = new RegExp(
+  `\\b(${SENSITIVE_QUERY.source})\\b\\s*[:=]\\s*(?:Bearer\\s+)?[^\\s,;}]+`,
+  'gi',
+);
+const SENSITIVE_ERROR_FIELDS = [
+  'name',
+  'message',
+  'code',
+  'errno',
+  'syscall',
+  'hostname',
+  'address',
+  'port',
+  'type',
+];
 /**
  * The BRANDED Cupboard host, matching WORKSPACE_HOST_ARTIFACT_ORIGIN in
  * libs/generic/deployment-driver/src/workspace-host-build-manifest.ts — the origin the artifacts
@@ -77,6 +95,65 @@ function resolveToken(explicit) {
   const token = execFileSync('gh', ['auth', 'token'], { encoding: 'utf8' }).trim();
   if (!token) throw new Error('gh auth token returned empty; pass --token');
   return token;
+}
+
+function redactText(value) {
+  return String(value)
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/([?&](?:access[_-]?token|api[_-]?key|authorization|credential|password|private[_-]?key|secret|signature|token|upload[-_]?id)=)[^&#\s]+/gi, '$1[REDACTED]')
+    .replace(SENSITIVE_ASSIGNMENT, (match) => match.replace(/([:=]\s*)(?:Bearer\s+)?[^\s,;}]+$/i, '$1[REDACTED]'));
+}
+
+function redactUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.username) url.username = '[REDACTED]';
+    if (url.password) url.password = '[REDACTED]';
+    for (const key of url.searchParams.keys()) {
+      if (SENSITIVE_KEY.test(key)) url.searchParams.set(key, '[REDACTED]');
+    }
+    return redactText(url.toString());
+  } catch {
+    return redactText(value);
+  }
+}
+
+function serializeError(value, seen = new Set(), depth = 0) {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'string' ? redactText(value) : value;
+  }
+  if (depth >= 4) return '[cause depth limit]';
+  if (seen.has(value)) return '[circular cause]';
+  seen.add(value);
+
+  const result = {};
+  for (const key of SENSITIVE_ERROR_FIELDS) {
+    if (!(key in value)) continue;
+    const field = value[key];
+    if (SENSITIVE_KEY.test(key)) {
+      result[key] = '[REDACTED]';
+    } else if (typeof field === 'string') {
+      result[key] = redactText(field);
+    } else if (
+      field === null ||
+      typeof field === 'number' ||
+      typeof field === 'boolean'
+    ) {
+      result[key] = field;
+    }
+  }
+  if ('cause' in value && value.cause !== undefined) {
+    result.cause = serializeError(value.cause, seen, depth + 1);
+  }
+  if ('errors' in value && Array.isArray(value.errors)) {
+    result.errors = value.errors.map((entry) => serializeError(entry, seen, depth + 1));
+  }
+  seen.delete(value);
+  return Object.keys(result).length > 0 ? result : redactText(Object.prototype.toString.call(value));
+}
+
+export function formatRequestError(stage, url, error) {
+  return `${stage} request failed URL=${redactUrl(url)} error=${JSON.stringify(serializeError(error))}`;
 }
 
 /**
@@ -136,7 +213,7 @@ async function readPart(path, partNumber) {
   }
 }
 
-async function request(url, init, attempts = 4) {
+export async function request(url, init, attempts = 4, stage = 'request') {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -155,7 +232,10 @@ async function request(url, init, attempts = 4) {
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
   }
-  throw lastError ?? new Error('request failed');
+  throw new Error(
+    formatRequestError(stage, url, lastError ?? new Error('request failed')),
+    { cause: lastError },
+  );
 }
 
 async function body(res) {
@@ -213,7 +293,7 @@ async function main() {
   const mp = `${root}/server.tgz/multipart`;
 
   if (args.planOnly) {
-    const probe = await request(`${args.base}/admin/reports`, { headers: auth });
+    const probe = await request(`${args.base}/admin/reports`, { headers: auth }, 4, 'credential preflight');
     console.log(`  credential preflight: HTTP ${probe.status} (200 expected)`);
     console.log('PLAN_ONLY=1 — no writes performed');
     return;
@@ -229,7 +309,7 @@ async function main() {
       'x-artifact-size': String(plan.size),
     },
     body: JSON.stringify({ parts: plan.parts }),
-  });
+  }, 4, 'initiate multipart');
   const init = await body(initRes);
   if (!initRes.ok) fail('initiate', initRes, init);
 
@@ -263,6 +343,8 @@ async function main() {
             },
             body: buf,
           },
+          4,
+          `part ${part.partNumber}`,
         );
         const payload = await body(res);
         if (!res.ok) fail(`part ${part.partNumber}`, res, payload);
@@ -283,7 +365,7 @@ async function main() {
       method: 'POST',
       headers: { ...auth, 'content-type': 'application/json' },
       body: JSON.stringify({ parts: uploaded }),
-    });
+    }, 4, 'complete multipart');
     const comp = await body(compRes);
     if (!compRes.ok) fail('complete', compRes, comp);
     console.log(`  stored sha256 ${comp.sha256 ?? '(unreported)'} bytes ${comp.bytes ?? '?'}`);
@@ -305,13 +387,13 @@ async function main() {
         'x-artifact-size': String(bytes.byteLength),
       },
       body: bytes,
-    });
+    }, 4, `upload ${name}`);
     const payload = await body(res);
     if (!res.ok) fail(name, res, payload);
     console.log(`  ${name}: ${payload.deduped ? 'deduped' : 'stored'} ${sha} (${bytes.byteLength}B)`);
   }
 
-  const finRes = await request(`${root}/finalize`, { method: 'POST', headers: auth });
+  const finRes = await request(`${root}/finalize`, { method: 'POST', headers: auth }, 4, 'finalize');
   const fin = await body(finRes);
   if (!finRes.ok) fail('finalize', finRes, fin);
   console.log(`  finalized manifestSha256 ${fin.manifestSha256}${fin.deduped ? ' (deduped)' : ''}`);
@@ -320,7 +402,7 @@ async function main() {
   // independent check that the object a consumer would fetch actually exists.
   console.log('=== [6/6] verify the PUBLIC object is reachable ===');
   const pub = `${args.base}/artifacts/workspace-host/sha256/${plan.sha256}/server.tgz`;
-  const headRes = await request(pub, { method: 'HEAD' });
+  const headRes = await request(pub, { method: 'HEAD' }, 4, 'public HEAD');
   const len = headRes.headers.get('content-length');
   if (!headRes.ok) throw new Error(`public HEAD failed: HTTP ${headRes.status}`);
   if (len !== null && Number(len) !== plan.size) {
@@ -335,9 +417,11 @@ async function main() {
   console.log(`PUBLIC_URL=${pub}`);
 }
 
-main().catch((error) => {
-  console.error('');
-  console.error(`PUBLISH_VERDICT=FAIL`);
-  console.error(String(error?.stack ?? error));
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    console.error('');
+    console.error(`PUBLISH_VERDICT=FAIL`);
+    console.error(String(error?.stack ?? error));
+    process.exit(1);
+  });
+}

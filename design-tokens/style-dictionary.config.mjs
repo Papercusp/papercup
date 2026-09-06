@@ -83,7 +83,7 @@ export default {
         {
           destination: "_semantic.frost.css",
           format: "css/variables",
-          options: { outputReferences: false, selector: '[data-theme="frost"]' },
+          options: { outputReferences: false, selector: '[data-theme="frost"], [data-theme-base="frost"]' },
           filter: (t) => isSemantic(t) && t.$type === "color",
         },
       ],
@@ -98,7 +98,7 @@ export default {
         {
           destination: "_semantic.black.css",
           format: "css/variables",
-          options: { outputReferences: false, selector: '[data-theme="black"]' },
+          options: { outputReferences: false, selector: '[data-theme="black"], [data-theme-base="black"]' },
           filter: (t) => t.path[0] === "black",
         },
       ],
@@ -112,7 +112,7 @@ export default {
         {
           destination: "_semantic.honeycomb.css",
           format: "css/variables",
-          options: { outputReferences: false, selector: '[data-theme="honeycomb"]' },
+          options: { outputReferences: false, selector: '[data-theme="honeycomb"], [data-theme-base="honeycomb"]' },
           filter: (t) => t.path[0] === "honeycomb",
         },
       ],
@@ -127,7 +127,7 @@ export default {
         {
           destination: "_semantic.portal-light.css",
           format: "css/variables",
-          options: { outputReferences: false, selector: '[data-theme="portal-light"]' },
+          options: { outputReferences: false, selector: '[data-theme="portal-light"], [data-theme-base="portal-light"]' },
           filter: (t) => t.path[0] === "portal-light",
         },
       ],
@@ -139,7 +139,7 @@ export default {
         {
           destination: "_semantic.portal-dark.css",
           format: "css/variables",
-          options: { outputReferences: false, selector: '[data-theme="portal-dark"]' },
+          options: { outputReferences: false, selector: '[data-theme="portal-dark"], [data-theme-base="portal-dark"]' },
           filter: (t) => t.path[0] === "portal-dark",
         },
       ],

@@ -3828,6 +3828,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  'themes.catalog': {
+    argsSchema: z.object({}),
+    resolve: async () => {
+      const { listThemeCatalog } = await import('../custom-themes');
+      return (await listThemeCatalog()) as unknown[];
+    },
+  },
+
   // plansDrafts.bySlug — draft plans for a harness, newest-first.
   // Used by ProposalsPanel (plan-feature-pipeline-unification P-022).
   // Reads from PG (plans went PG-canonical — plans-pg-canonical-migration-2026-06-03)

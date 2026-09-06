@@ -72,6 +72,10 @@ export interface CustomTheme {
    * forged through the ordinary custom-theme PUT route. */
   installed?: boolean;
   packageRef?: string;
+  /** Cupboard discriminator inside the source repository. Present only for an
+   * installed package, so storefronts can identify the installed copy without
+   * trusting a display label or conflating two publishers with the same id. */
+  listingRef?: string;
   version?: string;
   source?: string;
   description?: string;

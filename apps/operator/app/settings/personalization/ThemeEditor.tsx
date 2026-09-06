@@ -76,20 +76,24 @@ export interface ThemeEditorProps {
   seedThemeId: string;
   /** When editing an existing custom theme, its current definition (prefills name + id). */
   existing?: CustomTheme | null;
+  /** Installed themes are immutable packages. Supplying one here seeds an
+   * independent locally-authored copy instead of editing package bytes. */
+  copyOf?: CustomTheme | null;
   onSaved: (theme: CustomTheme) => void;
   onCancel: () => void;
 }
 
-export default function ThemeEditor({ seedThemeId, existing, onSaved, onCancel }: ThemeEditorProps) {
-  const [name, setName] = useState(existing?.label ?? '');
+export default function ThemeEditor({ seedThemeId, existing, copyOf, onSaved, onCancel }: ThemeEditorProps) {
+  const [name, setName] = useState(existing?.label ?? (copyOf ? `${copyOf.label} copy` : ''));
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     const seeded = readThemeTokens(seedThemeId);
     if (existing?.tokens) Object.assign(seeded, existing.tokens);
+    if (copyOf?.tokens) Object.assign(seeded, copyOf.tokens);
     setDraft(seeded);
-  }, [seedThemeId, existing]);
+  }, [seedThemeId, existing, copyOf]);
 
   const previewVars = useMemo(
     () => Object.fromEntries(EDITABLE.map((t) => [`--${t}`, draft[t] ?? ''])) as CSSProperties,
@@ -220,7 +224,7 @@ export default function ThemeEditor({ seedThemeId, existing, onSaved, onCancel }
               opacity: saving ? 0.6 : 1,
             }}
           >
-            {saving ? 'Saving…' : existing ? 'Save changes' : 'Save theme'}
+            {saving ? 'Saving…' : existing ? 'Save changes' : copyOf ? 'Save local copy' : 'Save theme'}
           </button>
           <button
             type="button"

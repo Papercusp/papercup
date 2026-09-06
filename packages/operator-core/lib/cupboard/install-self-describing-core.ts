@@ -71,6 +71,11 @@ export interface InstallSelfDescribingInput {
   githubUrl: string;
   /** Within-repo discriminator — REQUIRED (content always lives in a per-ref subdir). */
   listingRef: string;
+  /** Optional source-qualified local directory name. The source is still read
+   * from listingRef; this only changes the user-layer destination. */
+  targetRef?: string;
+  /** Explicit update path. Default installs remain create-only. */
+  replaceExisting?: boolean;
 }
 
 export interface InstallSelfDescribingDeps {
@@ -157,6 +162,13 @@ export async function installSelfDescribingFromCupboard<TMeta>(
       400,
     );
   }
+  const targetRef = (input.targetRef ?? ref).trim();
+  if (!SAFE_REF_RE.test(targetRef)) {
+    throw new InstallSelfDescribingError(
+      `unsafe local ${spec.label} ref ${JSON.stringify(input.targetRef)}`,
+      400,
+    );
+  }
 
   const cloneDir = join(
     deps.tmpDir(),
@@ -172,7 +184,7 @@ export async function installSelfDescribingFromCupboard<TMeta>(
         422,
       );
     }
-    const meta = spec.readDir(srcDir, ref);
+    const meta = spec.readDir(srcDir, targetRef);
     if (!meta) {
       throw new InstallSelfDescribingError(
         `${spec.label} "${ref}" failed to parse its ${spec.manifestFile}`,
@@ -181,18 +193,41 @@ export async function installSelfDescribingFromCupboard<TMeta>(
     }
 
     const userDir = spec.userDir();
-    const target = join(userDir, ref);
-    assertInside(userDir, target, `${spec.label} ref "${ref}"`);
-    if (existsSync(target)) {
+    const target = join(userDir, targetRef);
+    assertInside(userDir, target, `${spec.label} ref "${targetRef}"`);
+    const targetExists = existsSync(target);
+    if (targetExists && input.replaceExisting !== true) {
       throw new InstallSelfDescribingError(
-        `${spec.label} "${ref}" is already installed at ${target}; refusing to overwrite`,
+        `${spec.label} "${targetRef}" is already installed at ${target}; refusing to overwrite`,
         409,
       );
     }
     await fs.mkdir(userDir, { recursive: true });
-    await copyContentDir(srcDir, target);
+    if (!targetExists) {
+      await copyContentDir(srcDir, target);
+    } else {
+      const suffix = `${process.pid}-${Date.now()}-${Math.floor(performance.now())}`;
+      const incoming = `${target}.incoming-${suffix}`;
+      const backup = `${target}.backup-${suffix}`;
+      try {
+        await copyContentDir(srcDir, incoming);
+        await fs.rename(target, backup);
+        try {
+          await fs.rename(incoming, target);
+        } catch (error) {
+          await fs.rename(backup, target).catch(() => {});
+          throw error;
+        }
+        await fs.rm(backup, { recursive: true, force: true });
+      } finally {
+        await fs.rm(incoming, { recursive: true, force: true }).catch(() => {});
+        if (!existsSync(target) && existsSync(backup)) {
+          await fs.rename(backup, target).catch(() => {});
+        }
+      }
+    }
 
-    return { ok: true, ref, meta, source: url, installedTo: target };
+    return { ok: true, ref: targetRef, meta, source: url, installedTo: target };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
   }

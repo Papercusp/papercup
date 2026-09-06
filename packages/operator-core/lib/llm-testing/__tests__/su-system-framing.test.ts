@@ -18,6 +18,7 @@ import {
   SU_PLAYBOOK_FRAMING,
   SuTarget,
   adaptDeltaToolResultForModel,
+  buildSuTransportHeaders,
   buildSuSystemBlocks,
   defaultToolResultForModel,
   filterCatalog,
@@ -29,6 +30,35 @@ import {
 import { buildCatalog } from '../targets/su-catalog';
 
 const PLAYBOOK = '# Papercusp engineer-collaborator playbook\n...body...';
+
+describe('su SUT inference-gateway attribution', () => {
+  const gateway = 'http://127.0.0.1:8788';
+
+  it('routes OAuth SUT calls through the llm-testing tier with a per-run owner', () => {
+    expect(buildSuTransportHeaders({
+      baseURL: `${gateway}/v1`,
+      authToken: 'oauth-token',
+      headers: { 'anthropic-beta': 'oauth-2025-04-20' },
+    }, 'run-27', gateway)).toEqual({
+      'anthropic-beta': 'oauth-2025-04-20',
+      'x-papercusp-priority': 'llm-testing',
+      'x-papercusp-owner': 'llm-test:run-27',
+    });
+  });
+
+  it('keeps internal gateway headers off direct Anthropic and BYO-key calls', () => {
+    const headers = { 'anthropic-beta': 'oauth-2025-04-20' };
+    expect(buildSuTransportHeaders({
+      baseURL: 'https://api.anthropic.com',
+      authToken: 'oauth-token',
+      headers,
+    }, 'run-direct', gateway)).toBe(headers);
+    expect(buildSuTransportHeaders({
+      baseURL: gateway,
+      headers: {},
+    }, 'run-byo', gateway)).toEqual({});
+  });
+});
 
 describe('su SUT system-prompt framing', () => {
   it('uses the exact canonical Claude Code identifier string', () => {

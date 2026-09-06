@@ -2,7 +2,7 @@
  * Do not edit directly, this file was auto-generated.
  */
 
-[data-theme="frost"] {
+[data-theme="frost"], [data-theme-base="frost"] {
   --bg-deepest: #02060c; /** Surface depth scale — deepest (gradient bottoms, deep shadows). Darker than --bg. */
   --bg-deeper: #030a14; /** Surface depth scale — deep surfaces. Darker than --bg. */
   --bg-deep: #050d18; /** Surface depth scale — sub-base. Just below --bg. */

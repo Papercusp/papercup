@@ -22,7 +22,7 @@ const { theme } = vi.hoisted(() => ({
 vi.mock('@/lib/theme', () => ({
   useActiveTheme: () => theme.active,
   writeActiveTheme: (id: string) => theme.writeActiveTheme(id),
-  fetchCustomThemes: vi.fn(async () => theme.custom),
+  useThemeCatalog: () => ({ themes: theme.custom, error: null, invalidate: vi.fn() }),
   themeList: (custom: { id: string; label: string }[]) => [
     { id: 'dark', label: 'Dark', builtin: true },
     { id: 'light', label: 'Light', builtin: true },

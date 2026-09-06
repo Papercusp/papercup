@@ -6,6 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyTheme,
   themeList,
   findCustomTheme,
   readActiveTheme,
@@ -75,5 +76,23 @@ describe('readActiveTheme', () => {
       location: { href: 'http://127.0.0.1:3070/' },
     });
     expect(readActiveTheme()).toBe(DEFAULT_THEME_ID);
+  });
+});
+
+describe('installed theme base application', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('sets the generated base layer and color scheme from cached package metadata', () => {
+    const html = { dataset: {} as Record<string, string>, style: { colorScheme: '', removeProperty: vi.fn() } };
+    vi.stubGlobal('document', { documentElement: html });
+    vi.stubGlobal('window', {
+      localStorage: { getItem: (key: string) => key.includes('customThemesMeta')
+        ? JSON.stringify({ 'custom:installed:abc': { baseTheme: 'portal-light', colorScheme: 'light' } })
+        : null },
+      location: { href: 'http://127.0.0.1:3070/' },
+    });
+    applyTheme('custom:installed:abc');
+    expect(html.dataset).toMatchObject({ theme: 'custom:installed:abc', themeBase: 'portal-light' });
+    expect(html.style.colorScheme).toBe('light');
   });
 });

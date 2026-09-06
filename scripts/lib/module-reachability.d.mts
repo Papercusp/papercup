@@ -147,6 +147,35 @@ export function findUnreachableModules({ population, importers, pathMentions, ex
     rounds: number;
 };
 /**
+ * Turn the measured graph into the shipment-facing module inventory.
+ *
+ * A module with a live non-test importer is automatically classified as `wired`, and
+ * the importer path is retained as the citation. A module with no production caller
+ * must carry a structured attestation: either an approved `seam` decision plus a test,
+ * or an explicit `dead` disposition with an action/reason. Missing or malformed
+ * attestations remain visible as unclassified rows instead of silently becoming an
+ * allowlist entry.
+ *
+ * @param {{rows: Array<{module:string, dead:boolean, productionImporters?:string[], testImporters?:string[]}>, dispositions?: Map<string, object|string>}} args
+ * @returns {Array<object>} generated shipment inventory rows
+ */
+export function buildShipmentDispositionInventory({ rows, dispositions }: {
+    rows: Array<{
+        module: string;
+        dead: boolean;
+        productionImporters?: string[];
+        testImporters?: string[];
+    }>;
+    dispositions?: Map<string, object | string>;
+}): Array<object>;
+/**
+ * Find modules whose generated inventory has no valid shipment disposition.
+ *
+ * @param {Array<object>} inventory
+ * @returns {Array<object>}
+ */
+export function findUnclassifiedShipmentModules(inventory: Array<object>): Array<object>;
+/**
  * The instrument's positive control. Answers "did this probe actually SEE the tree?"
  * before any verdict derived from it is believed.
  *

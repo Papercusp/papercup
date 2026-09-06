@@ -2,7 +2,7 @@
  * Do not edit directly, this file was auto-generated.
  */
 
-[data-theme="portal-dark"] {
+[data-theme="portal-dark"], [data-theme-base="portal-dark"] {
   --bg-deepest: #11100f;
   --bg-deeper: #141312;
   --bg-deep: #171615;

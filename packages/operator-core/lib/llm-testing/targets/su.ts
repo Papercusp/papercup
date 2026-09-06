@@ -38,7 +38,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applySemanticDelta } from '@papercusp/tooldef';
-import { resolveAnthropicBaseUrl } from '@papercusp/papercusp-shared/agent';
+import { resolveAnthropicBaseUrl, resolveDelegatedGatewayUrl } from '@papercusp/papercusp-shared/agent';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type {
   ChatSession,
@@ -209,6 +209,45 @@ interface Transport {
   apiKey?: string;
   authToken?: string;
   headers: Record<string, string>;
+}
+
+/**
+ * Headers that belong only on the local inference-gateway hop.
+ *
+ * The SU SUT uses its own tool-capable Anthropic client rather than the shared
+ * stateless `llmCall` wrapper. That used to leave these requests anonymous and
+ * unlabeled, so the gateway put them in its tier-5 fallback lane while the
+ * sim-user and judge correctly rode the `llm-testing` lane. Under fleet load a
+ * scenario could therefore spend its entire wallclock budget waiting for turn
+ * zero. A per-run owner also makes a future stall attributable instead of
+ * disappearing from `gateway:owner_report`.
+ *
+ * Keep the internal headers off direct Anthropic/BYO-key requests. Comparing
+ * origins tolerates an SDK base URL with a trailing path while still requiring
+ * the same loopback gateway endpoint.
+ */
+export function buildSuTransportHeaders(
+  transport: Pick<Transport, 'baseURL' | 'authToken' | 'headers'>,
+  runId: string,
+  delegatedGatewayUrl = resolveDelegatedGatewayUrl(),
+): Record<string, string> {
+  let routedThroughGateway = false;
+  try {
+    routedThroughGateway = Boolean(
+      transport.authToken
+      && transport.baseURL
+      && new URL(transport.baseURL).origin === new URL(delegatedGatewayUrl).origin,
+    );
+  } catch {
+    // An invalid URL is rejected by the SDK later; do not attach internal
+    // gateway headers to an endpoint we could not positively identify.
+  }
+  if (!routedThroughGateway) return transport.headers;
+  return {
+    ...transport.headers,
+    'x-papercusp-priority': 'llm-testing',
+    'x-papercusp-owner': `llm-test:${runId}`,
+  };
 }
 
 function readJson<T>(path: string): T | null {
@@ -553,7 +592,7 @@ class SuSession implements ChatSession {
         ...(t.baseURL ? { baseURL: t.baseURL } : {}),
         ...(t.apiKey ? { apiKey: t.apiKey } : {}),
         ...(t.authToken ? { authToken: t.authToken } : {}),
-        defaultHeaders: t.headers,
+        defaultHeaders: buildSuTransportHeaders(t, this.state.runId),
         maxRetries: 2,
       });
     };

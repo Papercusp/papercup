@@ -2,7 +2,7 @@
  * Do not edit directly, this file was auto-generated.
  */
 
-[data-theme="honeycomb"] {
+[data-theme="honeycomb"], [data-theme-base="honeycomb"] {
   --bg-deepest: #030303; /** Near-black depth from the swarm identity demo */
   --bg-deeper: #050504;
   --bg-deep: #080806;

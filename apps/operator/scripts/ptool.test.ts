@@ -816,6 +816,34 @@ describe('ptool result formatting', () => {
     }
   });
 
+  it('emits a leading projection warning on stderr while keeping raw stdout parseable', async () => {
+    const warning =
+      '⚠ pick path(s) matched nothing: this.is.absent — those field(s) are ABSENT from the body below.';
+    const result = {
+      content: [
+        { type: 'text', text: warning },
+        { type: 'text', text: '{"cells":[{"cell":"agent.goal"}]}' },
+      ],
+      _meta: {
+        resultProjection: {
+          applied: true,
+          notes: [warning],
+        },
+      },
+    };
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await printResult(result, { raw: true })).toBe(0);
+      expect(log).toHaveBeenCalledWith('{"cells":[{"cell":"agent.goal"}]}');
+      expect(error).toHaveBeenCalledWith(warning);
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('fails loudly instead of exiting zero with blank stdout for an empty response', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});

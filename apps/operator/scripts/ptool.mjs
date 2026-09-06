@@ -702,6 +702,37 @@ function completeJsonPrefix(text) {
   }
 }
 
+/**
+ * A projected MCP result keeps trust-degrading warnings in a leading text
+ * item, ahead of the JSON payload. Raw ptool output must stay parseable, so
+ * surface that warning on stderr instead of letting raw extraction discard it.
+ * This mirrors result-door's structural projection warning bridge.
+ */
+function leadingProjectionWarning(result) {
+  const projection = result?._meta?.resultProjection;
+  if (projection?.applied !== true) return '';
+  if (!Array.isArray(projection.notes) && projection.notes !== undefined) return '';
+
+  const textParts = Array.isArray(result?.content)
+    ? result.content
+      .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
+      .map((c) => c.text)
+    : [];
+  const jsonItemIndex = textParts.findIndex((text) => {
+    const sanitized = sanitizeJsonText(text);
+    try {
+      JSON.parse(sanitized);
+      return true;
+    } catch {
+      return completeJsonPrefix(sanitized) !== null;
+    }
+  });
+  if (jsonItemIndex <= 0) return '';
+  return textParts
+    .slice(0, jsonItemIndex)
+    .find((text) => text.trimStart().startsWith('⚠')) ?? '';
+}
+
 /** Prefer the complete structured result requested by ptool, then fall back to
  *  flattening an MCP tools/call result's `content[]` into one text blob.
  *  Content text may carry result-door truncation markers and is therefore a
@@ -2280,6 +2311,7 @@ export function stdoutDeliveryError() {
  */
 export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryError, env = process.env } = {}) {
   let text = resultToText(result, { raw });
+  const rawProjectionWarning = raw ? leadingProjectionWarning(result) : '';
   if (raw) {
     const parsed = tryParseJsonObject(text);
     if (parsed) {
@@ -2301,6 +2333,7 @@ export async function printResult(result, { raw, deliveryProbe = stdoutDeliveryE
     console.error(PTOOL_TRUNCATED_RESULT_MESSAGE);
     return 1;
   }
+  if (rawProjectionWarning) console.error(rawProjectionWarning);
   console.log(raw ? safeText : prettyText(safeText));
   const delivery = deliveryProbe();
   if (delivery) {
