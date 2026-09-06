@@ -62,6 +62,89 @@ describe('planDecaySweep — pure grading of resolved+applied items', () => {
     expect(actions[0].recurrences).toBe(1);
   });
 
+  it('marks recurred when differently-worded captures share a stable watchdogKey', () => {
+    const actions = planDecaySweep(
+      [
+        cand({
+          id: 'fixed',
+          title: 'the original free-prose wording',
+          watchdogKey: 'repeated-tool-error:plans:set-status',
+          state: 'resolved',
+          updatedAt: daysAgo(10),
+          ideaLifecycle: applied({ ideaType: 'process-prompt' }),
+        }),
+        cand({
+          id: 'regression',
+          title: 'a completely different wording after the fix',
+          watchdogKey: 'repeated-tool-error:plans:set-status',
+          createdAt: daysAgo(2),
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: 'fixed', kind: 'recurred', recurrences: 1 });
+  });
+
+  it('keeps distinct watchdog keys isolated even when their titles collide', () => {
+    const actions = planDecaySweep(
+      [
+        cand({
+          id: 'fixed',
+          watchdogKey: 'repeated-tool-error:plans:set-status',
+          state: 'resolved',
+          updatedAt: daysAgo(20),
+          ideaLifecycle: applied(),
+        }),
+        cand({
+          id: 'other-signal',
+          watchdogKey: 'repeated-tool-error:plans:set-plan-status',
+          createdAt: daysAgo(2),
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: 'fixed', kind: 'verified' });
+  });
+
+  it('does not skip a keyed candidate whose title has no normalized signature', () => {
+    const actions = planDecaySweep(
+      [
+        cand({
+          id: 'fixed',
+          title: 'is',
+          watchdogKey: 'red-test:packages/example.test.ts',
+          state: 'resolved',
+          updatedAt: daysAgo(10),
+          ideaLifecycle: applied({ ideaType: 'process-prompt' }),
+        }),
+        cand({
+          id: 'regression',
+          title: 'a',
+          watchdogKey: 'red-test:packages/example.test.ts',
+          createdAt: daysAgo(2),
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({ id: 'fixed', kind: 'recurred', recurrences: 1 });
+  });
+
+  it('does not grade a keyless candidate whose title has no normalized signature', () => {
+    const actions = planDecaySweep([
+      cand({
+        id: 'empty',
+        title: 'is',
+        state: 'resolved',
+        updatedAt: daysAgo(20),
+        ideaLifecycle: applied(),
+      }),
+    ], { nowMs: NOW });
+    expect(actions).toHaveLength(0);
+  });
+
   it('PRE-resolution duplicates do NOT count as regression', () => {
     const actions = planDecaySweep(
       [

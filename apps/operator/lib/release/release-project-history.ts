@@ -83,9 +83,12 @@ export function releaseProjectHistory(
 export async function buildReleaseHistoryAssets(outDir: string): Promise<void> {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const assets = path.join(outDir, 'assets');
-  await build({
+  fs.mkdirSync(outDir, { recursive: true });
+  const staged = fs.mkdtempSync(path.join(outDir, '.history-assets-'));
+  try {
+    await build({
     entryPoints: { 'project-history': path.join(here, 'release-project-history-client.tsx') },
-    outdir: assets,
+    outdir: staged,
     bundle: true,
     splitting: true,
     format: 'esm',
@@ -96,16 +99,23 @@ export async function buildReleaseHistoryAssets(outDir: string): Promise<void> {
     legalComments: 'none',
     define: { 'process.env.NODE_ENV': '"production"' },
     loader: { '.woff': 'file', '.woff2': 'file', '.ttf': 'file', '.svg': 'file' },
-  });
-  const require = createRequire(import.meta.url);
-  const vditorDist = path.dirname(require.resolve('vditor/dist/index.min.js'));
-  const mirror = path.join(assets, 'vditor', 'dist');
-  fs.cpSync(vditorDist, mirror, {
+    });
+    const require = createRequire(import.meta.url);
+    const vditorDist = path.dirname(require.resolve('vditor/dist/index.min.js'));
+    const mirror = path.join(staged, 'vditor', 'dist');
+    fs.cpSync(vditorDist, mirror, {
     recursive: true,
     // Development source/maps are not runtime dependencies of the preview.
     filter: (source) => !source.endsWith('.map') && !source.endsWith('.d.ts') && source !== path.join(vditorDist, 'index.js'),
-  });
-  normalizeReleaseHistoryAssets(mirror);
+    });
+    normalizeReleaseHistoryAssets(mirror);
+    // A reused output directory must not retain excluded development files or
+    // old source maps. Replace only this generator's completed asset output.
+    fs.rmSync(assets, { recursive: true, force: true });
+    fs.renameSync(staged, assets);
+  } finally {
+    fs.rmSync(staged, { recursive: true, force: true });
+  }
 }
 
 /** Strip development comments from the third-party runtime before privacy scanning. */

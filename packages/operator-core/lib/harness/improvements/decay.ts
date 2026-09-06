@@ -26,7 +26,7 @@ import { trackDetached } from '../../detached-imports';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import type { ImprovementCandidate } from './policy';
 import { readImprovementItems } from './read-items';
-import { dedupSignature } from './digest';
+import { dedupSignature, recurrenceGroupKey } from './digest';
 import { checkDecayOutcome, type IdeaLifecyclePayload } from './lifecycle';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -67,8 +67,11 @@ export function planDecaySweep(all: ImprovementCandidate[], opts: PlanDecayOpts 
   // Group every candidate by stable signature once.
   const bySig = new Map<string, ImprovementCandidate[]>();
   for (const c of all) {
-    const sig = dedupSignature(c.title);
-    if (!sig) continue;
+    // A KEYLESS candidate whose title normalizes to nothing has no identity to
+    // group on (the original guard). A KEYED one always has one, so it is never
+    // skipped — `recurrenceGroupKey` would otherwise return a truthy bare `sig:`.
+    if (!c.watchdogKey && !dedupSignature(c.title)) continue;
+    const sig = recurrenceGroupKey(c);
     const arr = bySig.get(sig) ?? [];
     arr.push(c);
     bySig.set(sig, arr);
@@ -77,6 +80,7 @@ export function planDecaySweep(all: ImprovementCandidate[], opts: PlanDecayOpts 
   const actions: DecayAction[] = [];
   for (const c of all) {
     if (actions.length >= maxActions) break;
+    if (!c.watchdogKey && !dedupSignature(c.title)) continue;
     const state = c.state ?? 'open';
     if (state === 'open') continue;
 
@@ -101,7 +105,7 @@ export function planDecaySweep(all: ImprovementCandidate[], opts: PlanDecayOpts 
 
     // Post-resolution recurrence: same-signature captures CREATED after this
     // item's resolution (pre-fix duplicates don't count as regression).
-    const members = bySig.get(dedupSignature(c.title)) ?? [];
+    const members = bySig.get(recurrenceGroupKey(c)) ?? [];
     const post = members.filter((m) => {
       if (m.id === c.id) return false;
       const createdMs = m.createdAt ? Date.parse(m.createdAt) : NaN;
