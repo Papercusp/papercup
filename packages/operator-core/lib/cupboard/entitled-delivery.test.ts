@@ -8,11 +8,14 @@ import {
 import type { CommerceEvent } from '../p2p/commerce-events';
 import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
 import { cupboardArtifactKey, memoryArtifactStore } from './artifact-store';
+import type { Entitlement } from './commerce-ledger';
 import {
   authorizeDelivery,
+  bridgeLedgerEntitlements,
   lookupEntitlement,
   planInstall,
   planRollback,
+  projectLedgerEntitlements,
   projectEntitlements,
   releaseRef,
   resolveDependencyOrder,
@@ -172,6 +175,91 @@ describe('projectEntitlements', () => {
     expect(lookupEntitlement(projection, 'buyer-2', REF)?.entitlementId).toBe('e2');
     expect(lookupEntitlement(projection, 'buyer-1', other)?.entitlementId).toBe('e3');
     expect(lookupEntitlement(projection, 'buyer-2', other)).toBeNull();
+  });
+});
+
+describe('projectLedgerEntitlements', () => {
+  const ledgerEntitlement = (over: Partial<Entitlement> = {}): Entitlement => ({
+    entitlementId: 'ent:order-1',
+    orderId: 'order-1',
+    productId: 'product-1',
+    buyerId: 'org-acme',
+    state: 'active',
+    grantedAtMs: 4_000,
+    revokedAtMs: null,
+    revokeReason: null,
+    ...over,
+  });
+  const bridge = {
+    releaseRefForProduct: (productId: string) =>
+      productId === 'product-1' ? REF : null,
+    subjectForBuyer: (buyerId: string) => (buyerId === 'org-acme' ? 'buyer-1' : null),
+  };
+
+  it('maps a reduced ledger entitlement using explicit product and buyer resolvers', () => {
+    const projection = projectLedgerEntitlements(
+      new Map([['ent:order-1', ledgerEntitlement()]]),
+      bridge,
+    );
+
+    expect(lookupEntitlement(projection, 'buyer-1', REF)).toMatchObject({
+      entitlementId: 'ent:order-1',
+      subject: 'buyer-1',
+      releaseRef: REF,
+      grantedAtMs: 4_000,
+      revokedAtMs: null,
+    });
+    expect(projection.unusable).toEqual([]);
+    // Keep the bridge alias covered so callers do not accidentally reach for a
+    // second implementation when naming the cross-layer operation.
+    expect(bridgeLedgerEntitlements(new Map(), bridge).grants.size).toBe(0);
+  });
+
+  it('carries a ledger refund revocation into delivery authorization', () => {
+    const projection = projectLedgerEntitlements(
+      {
+        entitlements: new Map([
+          [
+            'ent:order-1',
+            ledgerEntitlement({
+              state: 'revoked',
+              revokedAtMs: 6_000,
+              revokeReason: 'refunded',
+            }),
+          ],
+        ]),
+      },
+      bridge,
+    );
+
+    const decision = authorizeDelivery({
+      manifest: manifest(),
+      distribution: distribution(),
+      subject: 'buyer-1',
+      entitlements: projection,
+      intent: 'install',
+      nowMs: 10_000,
+    });
+    expect(decision.code).toBe('entitlement-revoked');
+    expect(lookupEntitlement(projection, 'buyer-1', REF)?.revokedReason).toBe('refunded');
+  });
+
+  it('fails closed and records unmapped or colliding ledger entitlements', () => {
+    const projection = projectLedgerEntitlements(
+      [
+        ledgerEntitlement({ entitlementId: 'ent-unmapped', productId: 'product-missing' }),
+        ledgerEntitlement({ entitlementId: 'ent-a' }),
+        ledgerEntitlement({ entitlementId: 'ent-b' }),
+      ],
+      bridge,
+    );
+
+    expect(projection.grants.size).toBe(0);
+    expect(projection.unusable.map((entry) => entry.eventId)).toEqual([
+      'ent-a',
+      'ent-b',
+      'ent-unmapped',
+    ]);
   });
 });
 
