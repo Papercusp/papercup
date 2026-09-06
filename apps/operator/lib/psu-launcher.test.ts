@@ -4104,6 +4104,8 @@ describe("psu-launcher arg parsing", () => {
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: "1",
+      // Console-history preservation: a resumed Claude CLI stays off the alternate screen.
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
       ...contextTrimmingEnv("claude"),
@@ -4207,6 +4209,7 @@ describe("psu-launcher arg parsing", () => {
     expect(buildResumeEnv(session)).toEqual({
       ...resumeEnvFor(session),
       PAPERCUSP_AGENT_SESSION: "1",
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       DISABLE_AUTO_COMPACT: "1",
       DISABLE_COMPACT: "1",
       ...contextTrimmingEnv("claude"),
@@ -4268,6 +4271,8 @@ describe("psu-launcher arg parsing", () => {
     expect(trackedForkEnvelopeEnv(bootstrapEnvelopeEnv)).toEqual({
       ...bootstrapEnvelopeEnv,
       PAPERCUSP_AGENT_SESSION: "1",
+      // Console-history preservation: a forked Claude CLI stays off the alternate screen.
+      CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1",
       // P-022: a fork is a new CLI process — the native-compaction retirement is
       // re-stamped here just like fresh launches and resumes.
       DISABLE_AUTO_COMPACT: "1",
