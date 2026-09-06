@@ -6,7 +6,7 @@
  * (fresh / partial-only / stale, the complete-requires-rubricResolved rule, newest-first selection)
  * without PG. The underlying read has its own suite.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   checkScorecardFreshness,
   interpretOverwatchEmission,
@@ -73,6 +73,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
       withRows([]),
     );
     expect(r.status).toBe('stale');
+    expect(r.rubricKnown).toBe(true);
     expect(r.emitted).toBe(false);
     expect(r.complete).toBe(false);
     expect(r.count).toBe(0);
@@ -80,6 +81,44 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     expect(r.lastCompleteAt).toBeNull();
     expect(r.latestMissingKeys).toEqual([]);
     expect(r.latestExtraKeys).toEqual([]);
+  });
+
+  it('UNKNOWN-RUBRIC: an empty window for a nonexistent rubric is non-actionable, not stale', async () => {
+    const getRubric = vi.fn(async () => null);
+    const builtInCriterionKeysForRubric = vi.fn(() => null);
+    const r = await checkScorecardFreshness(
+      { rubricRef: 'definitely-not-a-rubric', since: SINCE },
+      {
+        listScorecards: async () => [],
+        getRubric,
+        builtInCriterionKeysForRubric,
+      },
+    );
+    expect(r.status).toBe('unknown-rubric');
+    expect(r.rubricKnown).toBe(false);
+    expect(r.emitted).toBe(false);
+    expect(r.complete).toBe(false);
+    expect(r.count).toBe(0);
+    expect(builtInCriterionKeysForRubric).toHaveBeenCalledWith('definitely-not-a-rubric');
+    expect(getRubric).toHaveBeenCalledWith('definitely-not-a-rubric');
+  });
+
+  it('does not resolve the rubric when scorecards are present — rows already prove the reference', async () => {
+    const getRubric = vi.fn(async () => null);
+    const builtInCriterionKeysForRubric = vi.fn(() => null);
+    const r = await checkScorecardFreshness(
+      { rubricRef: 'custom-rubric', since: SINCE },
+      {
+        listScorecards: async () => [
+          row({ issueId: 'EI-PRESENT', createdAt: '2026-06-20T13:00:00.000Z' }),
+        ],
+        getRubric,
+        builtInCriterionKeysForRubric,
+      },
+    );
+    expect(r.rubricKnown).toBe(true);
+    expect(getRubric).not.toHaveBeenCalled();
+    expect(builtInCriterionKeysForRubric).not.toHaveBeenCalled();
   });
 
   it('FRESH picks the newest COMPLETE even when a later partial follows an earlier complete', async () => {
@@ -109,6 +148,7 @@ describe('checkScorecardFreshness — P-014b emission-freshness', () => {
     expect(r.complete).toBe(false); // unresolved → not a confirmable complete
     expect(r.partialCount).toBe(0); // not confirmed-incomplete either
     expect(r.status).toBe('partial-only'); // emitted but no confirmed-complete
+    expect(r.rubricKnown).toBe(true); // non-empty rows avoid an extra resolver lookup
   });
 
   it('treats a scorecard with extra non-rubric keys as partial-only, not complete', async () => {
@@ -185,6 +225,13 @@ describe('interpretOverwatchEmission — WI-1724 self-interpreting freshness ver
     const r = interpretOverwatchEmission('fresh', liveLoop);
     expect(r.verdict).toBe('fresh');
     expect(r.actionable).toBe(false);
+  });
+
+  it('unknown-rubric ⇒ a non-actionable invalid-reference verdict before loop context', () => {
+    const r = interpretOverwatchEmission('unknown-rubric', liveLoop);
+    expect(r.verdict).toBe('unknown-rubric');
+    expect(r.actionable).toBe(false);
+    expect(r.note).toContain('not registered');
   });
 
   it('stale + flag OFF ⇒ overwatch-disabled, NON-actionable (staleness expected — the false-alarm case)', () => {

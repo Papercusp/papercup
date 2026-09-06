@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateEd25519KeypairDer } from '../../identity/ed25519';
 import {
   PHASE_G_INPUT_SCHEMA,
@@ -83,6 +83,22 @@ function validInput(): PostGoReleaseCanaryInput {
 }
 
 describe('post-GO public-release canary readiness', () => {
+  it('does not accept future-dated elapsed time from a caller-supplied receipt', () => {
+    const input = validInput();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(CANARY_FINISH) - 1);
+    try {
+      const premature = validatePostGoReleaseCanary(input);
+      expect(premature.ok).toBe(false);
+      expect(premature.errors).toContain('evaluatedAt cannot be in the future relative to the verifier clock');
+      // The identical receipt becomes eligible only once its stated observation
+      // time is in the past; do not weaken the actual 72-hour duration check.
+      clock.mockReturnValue(Date.parse(EVALUATED_AT));
+      expect(validatePostGoReleaseCanary(input).ok).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('accepts an exact 72-hour post-GO canary followed by validated owner-freeze chaos', () => {
     const verdict = validatePostGoReleaseCanary(validInput());
     expect(verdict).toMatchObject({

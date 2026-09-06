@@ -1,5 +1,5 @@
 /**
- * Pure readiness evaluator for the public-release post-GO sequence.
+ * Readiness evaluator for the public-release post-GO sequence.
  *
  * It deliberately does not start a canary, run chaos, change defaults, or
  * authorize shipment. It consumes already-produced evidence and proves that:
@@ -211,6 +211,13 @@ export function validatePostGoReleaseCanary(
       Number.isFinite(chaosFinishedAt) &&
       evaluatedAt >= chaosFinishedAt,
     'evaluatedAt must be at or after the completed owner-freeze chaos window',
+  );
+  // Ordered timestamps alone admit an entirely future-dated 72-hour receipt.
+  // The verifier's clock, not a value inside that receipt, bounds elapsed time.
+  pushError(
+    errors,
+    Number.isFinite(evaluatedAt) && evaluatedAt <= Date.now(),
+    'evaluatedAt cannot be in the future relative to the verifier clock',
   );
 
   const uniqueErrors = [...new Set(errors)];

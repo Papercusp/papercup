@@ -339,6 +339,17 @@ describe('overwatchScorecardEndCheck', () => {
     expect(captured.fires).toHaveLength(0);
   });
 
+  it('unknown rubric → skipped, no synthesized floor or fire', async () => {
+    const { d, captured } = deps({
+      freshness: (async () => ({ status: 'unknown-rubric' })) as unknown as OverwatchScorecardEndCheckDeps['freshness'],
+    });
+    const res = await overwatchScorecardEndCheck(opts, d);
+    expect(res.outcome).toBe('skipped');
+    expect(res.reason).toContain('unknown');
+    expect(captured.capture).toHaveLength(0);
+    expect(captured.fires).toHaveLength(0);
+  });
+
   it('agent skipped (stale) → synthesizes a complete, synthesized-marked floor + records a fire', async () => {
     const { d, captured } = deps();
     const res = await overwatchScorecardEndCheck(opts, d);

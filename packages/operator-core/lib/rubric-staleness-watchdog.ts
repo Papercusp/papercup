@@ -131,6 +131,14 @@ export function evaluateRubricStaleness(
       reason: `complete scorecard in-window (last at ${freshness.lastCompleteAt ?? 'unknown'})`,
     };
   }
+  if (freshness.status === 'unknown-rubric') {
+    return {
+      stale: false,
+      reason:
+        `rubric '${rubric.rubricId}' is not registered — this is an invalid rubric reference, ` +
+        `not a stale grader or emission gap; repair the reference separately.`,
+    };
+  }
   const hours = Math.max(1, Math.round(thresholdMs / 3_600_000));
   const ungradeable = ungradeableSuffix(rubric.criteria);
   if (freshness.status === 'partial-only') {

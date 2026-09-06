@@ -4,8 +4,8 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "hive-git P2P ops runbook — mode flip/rollback, integrator/epoch, divergence, sigrefs, drill"
-description: "Operational playbook for the per-hive P2P git replication plane (lib/sync/pot-git) — how to flip/rollback hiveGit.mode, what the integrator lease + epoch fencing actually guarantee today, how to triage a github-bridge divergence escalation, the 5 sigrefs rejection reasons, how to re-run the drill, and why the git-sync stall watchdog does not false-alarm under commit-only mode."
+title: "hive-git P2P ops runbook — mode flip, owning-hive authority, divergence, sigrefs, and post-GO canary"
+description: "Operational playbook for hive Git replication: mode flip/rollback, single owning-hive authorization and outage freeze, divergence and sigrefs triage, physical acceptance boundaries, and the actual 72-hour post-GO canary."
 type: Insight
 discovered: 2026-07-09
 tags: ["hive-git", "p2p", "federation", "git-sync", "github-bridge", "integrator", "sigrefs", "runbook", "watchdog"]
@@ -28,6 +28,9 @@ documents:
   - "packages/operator-core/lib/release/git-sync-stall-watchdog.ts"
   - "packages/operator-core/lib/endpoint-route/routes/desktop/git-hive-mode.ts"
   - "papercusp-desktop/bin/hive-git-drill.sh"
+  - "packages/operator-core/lib/sync/pot-git/post-go-release-canary.ts"
+  - "packages/operator-core/lib/sync/pot-git/post-go-release-canary.test.ts"
+  - "packages/operator-core/lib/sync/pot-git/hive-effect-authority.ts"
 plans:
   - "p2p-git-live-activation-2026-07-09"
 updated: 2026-07-17
@@ -51,7 +54,7 @@ does not need special-casing for commit-only members.
 Plan: `p2p-git-live-activation-2026-07-09` (P-501). Design doc:
 `docs/plans/p2p-git-research-2026-07-01.md`.
 
-### Where things actually stand (updated 2026-08-26 — wiring is present; public release remains NO-GO)
+### Historical acceptance record (2026-08-26; not a current release verdict)
 
 **All of P-201..P-205 have landed.** `git-sync-action.ts::handleGitSync` runs
 the following legs, in this order, on every tick of any non-`legacy` hive
@@ -177,60 +180,39 @@ non-null `refused` is the G-10 secrets-guard refusing a publish),
 routine intervals after a flip means the routine hasn't fired yet, not that
 the flip failed — check `metadata->>'last_synced_at'` first.
 
-## Integrator lease + epoch semantics — what's real today, what's a known simplification
+## Single owning-hive authority and publication fencing
 
-The integrator (`lib/sync/pot-git/integrator.ts`, called by
-`runIntegratorLeg`/`runIntegratorTick`) is the mechanism that turns N member
-namespace heads into one `staging` ref:
+The current authority contract is `p2p-public-release-endgame-2026-09-01#D-022`.
+Only the owning hive's signing key authorizes canonical integration, staging
+announcements, release promotion, canonical GitHub pushes, and automatic fork/PR
+publication. Membership elections and `rosterEpoch` are advisory visibility;
+they do not grant these protected effects or transfer the hive private key.
 
-- **Who runs it — the lease-holder gate IS wired:**
-  `runIntegratorTick`'s `isIntegrator` check (default
-  `lockAuthorityForHive(potHomeSlug).isSelf` — `lib/authority/lock-authority.ts`)
-  decides, every tick, whether THIS machine is the current integrator. That
-  authority resolution is a **deterministic election** (lowest live
-  `device_pubkey`, or HRW rendezvous when that mode is on) over the hive's
-  live Swarms/presence rows — not a held token. A non-integrator's tick
-  returns `{ skipped: 'not-integrator' }` and does nothing; only the elected
-  machine actually merges + publishes. On a single machine (no remote Swarms
-  in presence) the check is a no-op-to-self (`isSelf: true` always), which is
-  why a solo dev-box run never notices this gate exists — it matters once a
-  second machine's presence is visible.
-- **Merge policy** (`integrateMemberHeads`, deterministic by device-hex sort):
-  a member head already an ancestor of staging → skip; staging behind the
-  head → fast-forward; heads diverged → bare-repo 3-way merge
-  (`git merge-tree --write-tree`, no worktree) → clean merge commit (2
-  parents) or, on conflict, **skip that head and report it** — a conflicting
-  member's own next publish must rebase onto the new staging. One bad/
-  conflicting head never blocks integrating the others.
-- **Epoch fencing (G-5d) IS wired**: every staging-advance announcement
-  carries `{epoch, seq}`, monotonically increasing, so a stale/duplicate
-  advance is fenced by strict `(epoch, seq)` order at the receiving end.
-- **Epoch GRANTING (G-0/P-505) IS wired, but physical failover is not yet
-  release-proven.** `runIntegratorLeg` calls `deriveIntegratorGrant` before it
-  may publish. A standing authority keeps its epoch; a successor adopts the
-  best verified handoff token and publishes at `token.epoch + 1`; a tokenless
-  crash successor uses its last accepted foreign bridge watermark and seeds a
-  descendant base from the ancestry-maximal observed staging. A blocked base
-  reconciliation stops the tick without minting an epoch. The receiver derives
-  `maxGrantedEpoch` from verified handoff tokens, and retryable
-  `unknown-sha`/`ungranted-epoch` results hold the fed-event cursor rather than
-  being dropped. These paths are covered by the P-505 unit/integration suite.
-  **Do not treat that in-process coverage as proof of cross-machine
-  single-writer safety.** Plan decision D-002 still requires the genuine
-  two-machine kill/takeover/stale-writer drill with zero skips; until it passes,
-  the implementation is wired but the operational failover claim is open.
-- **Storage note:** the integrator publishes to
-  `refs/namespaces/<integratorDeviceHex>/refs/heads/staging` — its OWN
-  namespace, not a shared top-level ref. Now that the lease-holder gate is
-  wired, only the elected machine's namespace carries a *live* staging ref at
-  any moment — a prior integrator's namespace ref simply stops advancing once
-  the election moves off it (no ref is deleted or rewritten on handoff). Every
-  member's worktree-bridge leg (P-204) follows the `hive-git:staging-advance`
-  fed-event, which names the emitting device's namespace explicitly, so a
-  stale-authority's namespace is never mistakenly fetched from once a newer
-  advance has fired. This becomes a real correctness question only in a
-  genuine multi-machine authority HANDOFF mid-flight — see the physical failover
-  acceptance gap above.
+The production Git sinks require a fresh operation-bound owning-hive proof just
+before mutation. `staging-advance.ts` adds the owner's countersignature to the
+device-signed announcement; receivers pin the hive/repository context and check
+the owner proof plus monotonic publication term/sequence. The owner persists
+that publication fence in existing routine metadata, separately from membership
+changes. FF/CAS, scope, generation and replay checks remain required.
+
+`integrateMemberHeads` retains deterministic device-head ordering: ancestral
+heads are skipped, descendants fast-forward, and divergent heads use bare-repo
+three-way merge. A conflicting head is reported and skipped. This merge policy
+is not an authority grant. A local `isIntegrator` choice cannot authorize an
+otherwise unowned canonical mutation.
+
+During owner outage or partition, peers may keep local edits, exchange signed
+device heads, and perform advisory placement. They must freeze fresh canonical
+staging/release and external publication, including automatic fork/PR effects.
+Applying a previously owner-authorized monotonic snapshot is replication and may
+continue. Resume protected effects only after the owning-hive proof is restored;
+do not elect a replacement owner, replicate the private key, or treat a roster
+change as permission. Existing delegated seats keep their separate grant bounds.
+
+The previous election/automatic-takeover description is superseded by D-022.
+Phase G v2 source fixtures cover owner authorization, missing/device-only/stale
+proof refusal, and recovery. They do not establish physical candidate acceptance:
+P-521 still needs the controlled two-machine evidence and independent GO.
 
 ## Divergence triage (github-bridge mode only)
 
@@ -312,7 +294,7 @@ KEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection 
 | D | P-305 | live | integrator computes + publishes canonical staging; a non-steer head lands in the real PG integration-requests queue; the other machine's worktree ff-advances |
 | E | P-306 | **SKIP** | GitHub bridge live under REAL multi-machine wall-clock/network timing — needs the 2nd rig machine; the commit-only watchdog analysis below is static-verified only |
 | F | P-307 | live | G-9 gc keep-work/last-N/departed-member archival + G-10 secrets/oversized-blob guard, real bare repos |
-| G | P-308 | **SKIP** | chaos (integrator-kill mid-advance, PG blip, lease failover) — needs A-F live under ONE genuine multi-machine run first |
+| G | P-308 | **SKIP** | owner outage, protected-effect refusal, and owning-hive recovery (D-022; physical acceptance still required) — needs A-F live under ONE genuine multi-machine run first |
 
 Legs MODE/A-D/F run **single-box, in-process** (real production code paths,
 fake/local transport) — sufficient to prove the mechanics, not sufficient to
@@ -320,6 +302,44 @@ close E/G, which need the actual 2-machine rig
 (`docs/plans/LIVE-1-rig-runbook-2026-07-02.md`). A 2026-08-26 real-rig window supplied supporting peer-link, cold-join, churn, and ref-replication evidence, but it did not complete P-302/P-306/P-308 or the 72-hour P-402 soak. See the plan decisions and signed release map for the current evidence boundary; this table does not supersede them. Do not hand-author a second
 drill script for a leg this one already scaffolds — flip its SKIP to a live
 assert in this same file as rig proof lands.
+
+## Public-release post-GO canary, owner-freeze chaos, and stop criteria
+
+The release sequence is governed by endgame D-022/D-023/D-025/D-026. Preparation
+and unit receipts do not start the canary. First obtain independent GO for the
+exact accepted candidate and retain its reviewer, implementation owner, timestamp
+and attestation reference. Start P-501 only after that GO, keep the same candidate
+through the run, and retain the actual observations for at least 72 hours. Never
+backdate the start, substitute fixture time, or relabel a prior/pre-GO soak.
+
+Stop progression when the candidate identity changes, an acceptance prerequisite
+fails, or the actual observation window is incomplete. A timestamp difference
+alone is not operational evidence of a successful soak. Preserve the receipts and
+failure diagnosis; do not turn a red run green by extending a failed epoch.
+
+After the full P-501 window completes, execute P-502's owner-outage/refusal/recovery
+window against that candidate. During outage require frozen protected effects and
+a refused non-owner attempt (`missing-hive-authority`). After owner recovery,
+require restored owning-hive proof and resumed protected effects. Keep the Phase G
+v2 evidence wholly inside that post-canary chaos window. There is no automatic
+ownership failover. Only after both legs pass may P-503 make its separate defaults
+and automatic-mode decision; that decision is not itself shipment authorization.
+
+The maintained readiness check consumes the recorded input:
+
+```sh
+npx tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts \
+  post-go-canary-verify /path/to/post-go-canary-input.json
+```
+
+`post-go-release-canary.ts` checks candidate identity throughout, GO ordering,
+the minimum 72-hour duration, owner freeze/refusal/recovery, complete Phase G
+evidence, and observation chronology. Its execution-host clock rejects a future
+`evaluatedAt`, so a document containing a future 72-hour span cannot pass early.
+The verifier does not create the underlying observations, independently resolve
+an attestation reference, run chaos, change defaults, or authorize shipment.
+Those remain evidence-producing execution/review steps. Correct local clock
+configuration and the original durable GO/observation receipts are required.
 
 ## Watchdog interplay under commit-only mode — verified, no fix needed
 
@@ -446,6 +466,6 @@ Plan `p2p-git-live-activation-2026-07-09`; design doc
 `integrator.ts`, `integrator-tick.ts`, `ref-announce-tick.ts`,
 `worktree-bridge-tick.ts`, `serve-wiring.ts`, `gc.ts`, `publish-guard.ts`,
 `sigrefs.ts`, `github-divergence.ts`, `lock-authority.ts` (the
-`lockAuthorityForHive` integrator-lease election), `git-sync-stall-watchdog.ts`;
+`lockAuthorityForHive` advisory placement), `git-sync-stall-watchdog.ts`;
 `stage-stall-log.ts` (P-012, named-hop pipeline observability), plan
 `fleet-reliability-verification-2026-07-10`.

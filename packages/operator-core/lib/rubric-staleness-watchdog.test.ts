@@ -27,6 +27,7 @@ const freshness = (over: Partial<ScorecardFreshness> = {}): ScorecardFreshness =
   rubricRef: 'blender-release-readiness',
   since: '2026-07-14T12:00:00.000Z',
   status: 'stale',
+  rubricKnown: true,
   emitted: false,
   complete: false,
   count: 0,
@@ -67,6 +68,17 @@ describe('evaluateRubricStaleness — the pure decider', () => {
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('NONE complete');
     expect(v.reason).toContain('silent truncation');
+  });
+
+  it('UNKNOWN-RUBRIC is healthy/non-actionable rather than a stale grader alert', () => {
+    const v = evaluateRubricStaleness(
+      rubric,
+      freshness({ status: 'unknown-rubric', rubricKnown: false }),
+      SIX_H,
+    );
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('not registered');
+    expect(v.reason).not.toContain('dead grader loop');
   });
 
   it('kill switch (thresholdMs <= 0) is never stale', () => {

@@ -61,6 +61,9 @@ export interface QuarantineImportGuardDeps {
    *  When omitted, the historical conservative behavior treats every quarantined
    *  path as absent from HEAD (useful for the pure guard tests). */
   isResolvableAtHead?: (relPath: string) => Promise<boolean>;
+  /** Human-readable source of the exclusion for the diagnostic; defaults to the
+   *  historical content/deletion guard wording. */
+  exclusionLabel?: string;
   log?: (m: string) => void;
 }
 
@@ -93,7 +96,14 @@ function isScannableCandidate(path: string): boolean {
  * unsafe deletion — no new commit-path plumbing.
  */
 export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps): Promise<ContentOffender[]> {
-  const { readText, dirtyFiles, alreadyQuarantined, isResolvableAtHead, log } = deps;
+  const {
+    readText,
+    dirtyFiles,
+    alreadyQuarantined,
+    isResolvableAtHead,
+    exclusionLabel = 'content/deletion guard',
+    log,
+  } = deps;
   if (alreadyQuarantined.length === 0) return [];
   // A quarantined file that is already present in HEAD is not infectious: the
   // importer committed by this tick still resolves the prior, committed copy.
@@ -158,7 +168,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
           file,
           detectorKey: 'quarantined-importer',
           error:
-            `imports '${spec}' → '${target}', which is EXCLUDED from this commit (content/deletion guard). ` +
+            `imports '${spec}' → '${target}', which is EXCLUDED from this commit (${exclusionLabel}). ` +
             `Committing this file alone would leave an unresolvable import at HEAD (EI-19932544083689229) — ` +
             `holding it back until '${target}' is resolved.`,
           fixerRole: 'content-fixer',

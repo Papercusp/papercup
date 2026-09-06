@@ -17,9 +17,14 @@
  * The caller passes `since` = the Overwatch's last wake (the freshness window). Omitted ⇒ a lookback
  * default that comfortably covers a typical wake interval, so a one-off query still answers usefully.
  */
-import { listScorecards, type ScorecardRow } from './scorecards';
+import {
+  builtInCriterionKeysForRubric,
+  listScorecards,
+  type ScorecardRow,
+} from './scorecards';
+import { getRubric } from './rubrics';
 
-export type ScorecardFreshnessStatus = 'fresh' | 'partial-only' | 'stale';
+export type ScorecardFreshnessStatus = 'fresh' | 'partial-only' | 'stale' | 'unknown-rubric';
 
 export interface ScorecardFreshness {
   rubricRef: string;
@@ -30,8 +35,11 @@ export interface ScorecardFreshness {
    * fresh        — a COMPLETE scorecard landed in-window (the mandate is met).
    * partial-only — scorecard(s) landed but NONE complete (silent truncation — the D-005 case).
    * stale        — nothing landed in-window (silent skip / emission gap — the other D-005 case).
+   * unknown-rubric — no scorecard landed and the requested rubric is not registered.
    */
   status: ScorecardFreshnessStatus;
+  /** Whether the requested rubric is known; empty windows resolve this explicitly. */
+  rubricKnown: boolean;
   /** Any scorecard (complete or not) in-window. */
   emitted: boolean;
   /** A COMPLETE scorecard in-window — the actual mandate. */
@@ -56,6 +64,10 @@ const DEFAULT_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 export interface CheckScorecardFreshnessDeps {
   /** Injectable for hermetic tests; defaults to the real P-013 listScorecards. */
   listScorecards?: typeof listScorecards;
+  /** Injectable rubric resolver; only consulted when the scorecard window is empty. */
+  getRubric?: typeof getRubric;
+  /** Injectable built-in rubric resolver; keeps the owner-mandated fallback visible. */
+  builtInCriterionKeysForRubric?: typeof builtInCriterionKeysForRubric;
 }
 
 export interface CheckScorecardFreshnessFilter {
@@ -107,13 +119,29 @@ export async function checkScorecardFreshness(
 
   const emitted = rows.length > 0;
   const complete = completes.length > 0;
-  const status: ScorecardFreshnessStatus = complete ? 'fresh' : emitted ? 'partial-only' : 'stale';
+  // A non-empty result already proves that this rubric has a scorecard projection, so keep the
+  // hot path free of an extra rubric-store lookup. Empty windows are the only ambiguous case:
+  // distinguish a real rubric with no emission from a typo/nonexistent rubric. The built-in
+  // resolver must be checked alongside the plan-backed resolver because the owner-mandated
+  // pot-coordination-health rubric is intentionally available from the bundled fallback.
+  const rubricKnown =
+    rows.length > 0 ||
+    (deps.builtInCriterionKeysForRubric ?? builtInCriterionKeysForRubric)(filter.rubricRef) !== null ||
+    (await (deps.getRubric ?? getRubric)(filter.rubricRef)) !== null;
+  const status: ScorecardFreshnessStatus = !rubricKnown
+    ? 'unknown-rubric'
+    : complete
+      ? 'fresh'
+      : emitted
+        ? 'partial-only'
+        : 'stale';
 
   return {
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
     since,
     status,
+    rubricKnown,
     emitted,
     complete,
     count: rows.length,
@@ -157,6 +185,7 @@ export interface OverwatchEmissionContext {
  */
 export type FreshnessVerdict =
   | 'fresh' // a complete scorecard landed in-window — mandate met
+  | 'unknown-rubric' // the queried rubric does not exist — do not alarm or synthesize
   | 'overwatch-disabled' // flag off — staleness EXPECTED, ignore
   | 'overwatch-not-started' // enabled but not started (pre-armed) — ignore until start
   | 'turn-in-flight' // launch is still within its bounded completion window — wait for verdict
@@ -185,6 +214,13 @@ export function interpretOverwatchEmission(
   status: ScorecardFreshnessStatus,
   ctx: OverwatchEmissionContext,
 ): FreshnessInterpretation {
+  if (status === 'unknown-rubric') {
+    return {
+      verdict: 'unknown-rubric',
+      actionable: false,
+      note: 'The requested scorecard rubric is not registered — this is an invalid monitor reference, not an emission gap. Ignore for liveness and repair the rubric reference separately.',
+    };
+  }
   if (status === 'fresh') {
     return {
       verdict: 'fresh',

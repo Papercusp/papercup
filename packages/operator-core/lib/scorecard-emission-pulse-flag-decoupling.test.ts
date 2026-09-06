@@ -64,6 +64,7 @@ function staleFreshness(): ScorecardFreshness {
     rubricRef: COORDINATION_RUBRIC_REF,
     since: '2026-08-09T00:00:00Z',
     status: 'stale',
+    rubricKnown: true,
     emitted: false,
     complete: false,
     count: 0,

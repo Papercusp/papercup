@@ -70,6 +70,7 @@ const FRESHNESS_STUB = {
   rubricRef: 'stub',
   since: '2026-01-01T00:00:00Z',
   status: 'fresh' as const,
+  rubricKnown: true,
   emitted: true,
   complete: true,
   count: 1,
@@ -106,6 +107,29 @@ describe('scorecards:freshness — args schema (rubricRef / subjectPlan mutual e
 });
 
 describe('scorecards:freshness — subjectPlan resolution (EI-22084134815763318)', () => {
+  it('passes through unknown-rubric as a non-actionable freshness result', async () => {
+    mockResolvedTyped(checkScorecardFreshnessM, {
+      ...FRESHNESS_STUB,
+      status: 'unknown-rubric',
+      rubricKnown: false,
+      emitted: false,
+      complete: false,
+      count: 0,
+      lastEmittedAt: null,
+      lastCompleteAt: null,
+    });
+    const body = await runTool({ rubricRef: 'missing-rubric' });
+    expect(body).toMatchObject({
+      ok: true,
+      freshness: {
+        status: 'unknown-rubric',
+        rubricKnown: false,
+        emitted: false,
+        complete: false,
+      },
+    });
+  });
+
   it('resolves subjectPlan to the single ACTIVE acceptance rubric and threads it to checkScorecardFreshness', async () => {
     mockResolvedTyped(listRubricsM, [rubric('my-plan-2026-09-01-acceptance')]);
     const body = await runTool({ subjectPlan: 'my-plan-2026-09-01' });

@@ -488,6 +488,12 @@ export async function overwatchScorecardEndCheck(
       // AGENT-only: the floor must never satisfy the agent's own mandate.
       includeSynthesized: false,
     });
+    if (f.status === 'unknown-rubric') {
+      return {
+        outcome: 'skipped',
+        reason: `scorecard rubric '${COORDINATION_RUBRIC_REF}' is unknown — do not synthesize a floor for an invalid reference`,
+      };
+    }
     if (f.status === 'fresh') {
       return { outcome: 'skipped', reason: 'agent emitted a complete scorecard since last wake' };
     }
