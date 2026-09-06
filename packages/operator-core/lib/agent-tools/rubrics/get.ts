@@ -14,9 +14,11 @@
  * as a public argument; emitting it here re-taught the rejected key —
  * EI-22084112133846580). The
  * generic read-tool `ref`, caller-natural `slug`, and legacy `id` spellings are
- * accepted as compatibility aliases for the single-rubric form. An optional
- * `harness` compatibility hint is accepted but does not filter this workspace-wide
- * read.
+ * accepted as compatibility aliases for the single-rubric form. Pass a positive
+ * `revision` to resolve an immutable historical snapshot; a missing or malformed
+ * snapshot fails closed instead of falling back to the current rubric. An
+ * optional `harness` compatibility hint is accepted but does not filter this
+ * workspace-wide read.
  */
 import { z } from 'zod';
 import { defineTool, formatVintageAge, readServerVintage } from '@papercusp/agent-mcp';
@@ -31,11 +33,11 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, method_ref runbook, and canonical acceptance-rubric vetting status. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` or `slug`, and legacy callers may use `id`, as compatibility aliases for one (`rubricRef` wins, then ref, slug, and id). Pass a positive `revision` to select an immutable historical snapshot; successful results expose that snapshot's `rubric.revision` and `rubric.criteriaHash`, while an unavailable snapshot returns an item error without falling back to current. An optional `harness` compatibility hint is accepted but does not filter the workspace-wide rubric read. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricRef, rubric?, vetting? | error }], counts } — correlate by rubricRef, not by position; a missing ref never fails the rest.",
   guidance: {
-    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; legacy single-rubric callers may pass `id`.',
+    when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`; for revision-pinned grading, add the exact positive `revision`; legacy single-rubric callers may pass `id`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
-    chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.",
+    chaining: "rubrics:list → rubrics:get { rubricRefs:[…] } → grade each criterion (observation `ratings` is a Record keyed by criteria[].key) in your observation. For a frozen audit, use `rubrics:get { rubricRef, revision }` and retain the returned `rubric.revision` + `rubric.criteriaHash`. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricRef not position; one failure never fails the rest.",
     seeAlso: [
       'rubrics:list (scan summary rows to find an id)',
       'rubrics:search (keyword lookup)',
@@ -73,6 +75,12 @@ export default defineTool({
         .min(1)
         .optional()
         .describe('Legacy compatibility alias for rubricRef; used after rubricRef, ref, and slug.'),
+      revision: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Read this exact immutable rubric revision; unavailable or malformed history fails closed.'),
       harness: z
         .string()
         .min(1)
@@ -92,13 +100,56 @@ export default defineTool({
     const env = await runBulk(
       ids,
       async (rubricRef) => {
-        const rubric = await getRubric(rubricRef);
+        const rubric =
+          args.revision === undefined ? await getRubric(rubricRef) : await getRubric(rubricRef, args.revision);
         if (rubric) {
           if (rubric.kind === 'acceptance') {
             const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards });
             return { ok: true as const, rubricRef, rubric, vetting };
           }
           return { ok: true as const, rubricRef, rubric };
+        }
+
+        // An explicit revision is an immutable-read contract. Do not reuse the
+        // current-read projection-miss diagnostic here: a current plan-row
+        // revision can exist while the requested historical snapshot is absent
+        // or malformed, and neither case may look like a successful fallback.
+        if (args.revision !== undefined) {
+          const revisionRead = await readRubricPlanRevision(rubricRef);
+          if (!revisionRead.ok) {
+            return {
+              ok: false as const,
+              rubricRef,
+              error: `rubric revision ${args.revision} could not be resolved; the revision read failed`,
+            };
+          }
+          if (revisionRead.revision !== args.revision) {
+            return {
+              ok: false as const,
+              rubricRef,
+              error:
+                revisionRead.revision == null
+                  ? `rubric revision ${args.revision} not found`
+                  : `rubric revision ${args.revision} not found; current revision is ${revisionRead.revision}`,
+            };
+          }
+
+          const vintage = readServerVintage();
+          const vintageHint = vintage
+            ? ` This server is running build ${vintage.buildId ?? 'an unknown build'}, started ${formatVintageAge(vintage.bootedAgoMs)} ago.`
+            : '';
+          const freshCodeEndpoint = vintage?.freshCodeEndpoint?.trim();
+          const freshCodeHint = freshCodeEndpoint
+            ? ` For the current source tree, retry this call against ${freshCodeEndpoint}.`
+            : '';
+          return {
+            ok: false as const,
+            rubricRef,
+            error:
+              `rubric revision ${args.revision} exists, but its immutable snapshot could not be projected.` +
+              vintageHint +
+              freshCodeHint,
+          };
         }
 
         // EI-22439598382266201: getRubric intentionally hides acceptance rubric
