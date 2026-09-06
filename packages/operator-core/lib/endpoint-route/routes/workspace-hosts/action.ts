@@ -26,6 +26,10 @@ import {
   WorkspaceHostProvisioningTransientError,
   type WorkspaceHostDestroyCanaryEvidence,
 } from '../../../workspace-host/provisioning-runner';
+import {
+  defaultWorkspaceHostRequestForwarder,
+  type WorkspaceHostRequestForwarder,
+} from '../../../workspace-host/controller-forwarding';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 
@@ -145,6 +149,7 @@ export interface WorkspaceHostActionRouteDependencies {
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
   startDestroy: (input: StartWorkspaceHostDestroyInput) => ReturnType<typeof startWorkspaceHostDestroyWorkflow>;
   startLifecycle: (input: StartWorkspaceHostLifecycleInput) => ReturnType<typeof startWorkspaceHostLifecycleWorkflow>;
+  forwardRequest?: WorkspaceHostRequestForwarder;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
@@ -207,6 +212,16 @@ export function createWorkspaceHostActionRoute(
         destroyAdmission = { expectedHostId, confirmedBy, confirmedAt, canary };
       }
       if (!dependencies.provisioningAvailable()) {
+        try {
+          const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
+            '/api/workspace-hosts/action',
+            body,
+          );
+          if (forwarded) return forwarded;
+        } catch {
+          // A controller transport failure is reported through the same typed 503
+          // admission response as an undiscovered controller.
+        }
         return requestError('workspace-host provisioning workflow is unavailable on this operator', 503);
       }
 

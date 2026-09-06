@@ -20,6 +20,10 @@ import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../../../workspace-host/provisioning-runner';
+import {
+  defaultWorkspaceHostRequestForwarder,
+  type WorkspaceHostRequestForwarder,
+} from '../../../workspace-host/controller-forwarding';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 
@@ -42,6 +46,7 @@ export interface WorkspaceHostProvisionRouteDependencies {
   startProvisioning: (
     input: StartWorkspaceHostProvisioningInput,
   ) => ReturnType<typeof startWorkspaceHostProvisioningWorkflow>;
+  forwardRequest?: WorkspaceHostRequestForwarder;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostProvisionRouteDependencies = {
@@ -123,6 +128,16 @@ export function createWorkspaceHostProvisionRoute(
         );
       }
       if (!dependencies.provisioningAvailable()) {
+        try {
+          const forwarded = await (dependencies.forwardRequest ?? defaultWorkspaceHostRequestForwarder)(
+            '/api/workspace-hosts/provision',
+            body,
+          );
+          if (forwarded) return forwarded;
+        } catch {
+          // A controller transport failure is reported through the same typed 503
+          // admission response as an undiscovered controller.
+        }
         return Response.json(
           { ok: false, error: 'workspace-host provisioning workflow is unavailable on this operator' },
           { status: 503 },
