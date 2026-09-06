@@ -1,9 +1,9 @@
-import { Link, useRouterState } from '@tanstack/react-router';
-import * as Tabs from '@radix-ui/react-tabs';
-import { FLAGS } from '@papercusp/flags';
-import type { TermKey } from '@papercusp/lexicon';
-import { useFlag } from '@/lib/flag-hooks';
-import { useLexicon } from '@/lib/useLexicon';
+import { Link, useRouterState } from "@tanstack/react-router";
+import * as Tabs from "@radix-ui/react-tabs";
+import { FLAGS } from "@papercusp/flags";
+import type { TermKey } from "@papercusp/lexicon";
+import { useFlag } from "@/lib/flag-hooks";
+import { useLexicon } from "@/lib/useLexicon";
 
 /**
  * Admin section shell — translated from
@@ -28,24 +28,25 @@ const TABS: ReadonlyArray<{
   term?: TermKey;
   flag?: typeof FLAGS.TRIGGERS_ADMIN;
 }> = [
-  { href: '/admin/run', label: 'Run' },
-  { href: '/admin/features', label: 'Features' },
-  { href: '/admin/triggers', label: 'Triggers', flag: FLAGS.TRIGGERS_ADMIN },
-  { href: '/admin/recipes', label: 'Recipes' },
-  { href: '/admin/git', label: 'Git' },
-  { href: '/admin/dogfood-substrate', label: 'Substrate' },
-  { href: '/admin/dbos', label: 'DBOS' },
-  { href: '/admin/schedules', label: 'Schedules' },
+  { href: "/admin/run", label: "Run" },
+  { href: "/admin/features", label: "Features" },
+  { href: "/admin/admission", label: "Admission" },
+  { href: "/admin/triggers", label: "Triggers", flag: FLAGS.TRIGGERS_ADMIN },
+  { href: "/admin/recipes", label: "Recipes" },
+  { href: "/admin/git", label: "Git" },
+  { href: "/admin/dogfood-substrate", label: "Substrate" },
+  { href: "/admin/dbos", label: "DBOS" },
+  { href: "/admin/schedules", label: "Schedules" },
   // Sibling of Schedules by design: that page inventories everything RECURRING,
   // this one everything RUNNING (task-manager-no-escape-2026-07-27 P-018).
-  { href: '/admin/tasks', label: 'Tasks' },
+  { href: "/admin/tasks", label: "Tasks" },
   // WI-2145092: the workspace work-scope policy (which harnesses agents may work).
-  { href: '/admin/work-scope', label: 'Work scope' },
-  { href: '/admin/cupboard-moderation', label: 'Cupboard', term: 'cupboard' },
+  { href: "/admin/work-scope", label: "Work scope" },
+  { href: "/admin/cupboard-moderation", label: "Cupboard", term: "cupboard" },
 ];
 
 export default function AdminShell({
-  title = 'Admin',
+  title = "Admin",
   children,
 }: {
   title?: string;
@@ -53,9 +54,15 @@ export default function AdminShell({
 }) {
   const lex = useLexicon();
   const triggersEnabled = useFlag(FLAGS.TRIGGERS_ADMIN);
-  const tabs = TABS.filter((tab) => tab.flag !== FLAGS.TRIGGERS_ADMIN || triggersEnabled);
-  const pathname = useRouterState({ select: (s) => s.location.pathname }) || '/admin/run';
-  const activeTab = tabs.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? tabs[0];
+  const tabs = TABS.filter(
+    (tab) => tab.flag !== FLAGS.TRIGGERS_ADMIN || triggersEnabled,
+  );
+  const pathname =
+    useRouterState({ select: (s) => s.location.pathname }) || "/admin/run";
+  const activeTab =
+    tabs.find(
+      (t) => pathname === t.href || pathname.startsWith(`${t.href}/`),
+    ) ?? tabs[0];
 
   return (
     <div className="pc-adminshell">
@@ -65,10 +72,20 @@ export default function AdminShell({
           <h1>{title}</h1>
         </div>
         <Tabs.Root value={activeTab.href} className="pc-adminshell__tabs">
-          <Tabs.List className="pc-adminshell__tablist" aria-label="Admin sections">
+          <Tabs.List
+            className="pc-adminshell__tablist"
+            aria-label="Admin sections"
+          >
             {tabs.map((tab) => (
-              <Tabs.Trigger key={tab.href} value={tab.href} asChild className="pc-adminshell__tab">
-                <Link to={tab.href}>{tab.term ? lex(tab.term) : tab.label}</Link>
+              <Tabs.Trigger
+                key={tab.href}
+                value={tab.href}
+                asChild
+                className="pc-adminshell__tab"
+              >
+                <Link to={tab.href}>
+                  {tab.term ? lex(tab.term) : tab.label}
+                </Link>
               </Tabs.Trigger>
             ))}
           </Tabs.List>
