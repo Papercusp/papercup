@@ -38,6 +38,7 @@ import { systemDistinctId } from '../flag-distinct-id';
 import { readSharedSnapshot, writeSharedSnapshot } from '../derived-reads/shared-snapshot';
 import type { RawGatewayStats } from '../inference-gateway/gateway-wedge';
 import type { ClaudeAccount } from '../deployment/account-pool';
+import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 import { accountFull } from '../deployment/account-pool';
 import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
 import { dedupeInFlight } from '../dedupe-in-flight';
@@ -1955,11 +1956,11 @@ async function collectImprovements(ctx: HealthCtx): Promise<HealthPanel<Improvem
     // outright (D-001).
     const digest = buildDigest(items, { nowMs: ctx.now, ownerFullAutonomy, nearDuplicates: false });
     const data: ImprovementsHealth = {
-      open: digest.open,
+      open: digest.window.open,
       autoEligible: digest.autoEligible.length,
       humanQueue: digest.humanQueue.length,
-      byKind: digest.byKind,
-      bySeverity: digest.bySeverity,
+      byKind: digest.window.byKind,
+      bySeverity: digest.window.bySeverity,
     };
     const status = improvementsStatus(data);
     return {
@@ -2532,12 +2533,13 @@ export function overwatchScorecardSkipped(args: {
   alive: boolean | null;
   lastWakeAt: number | null;
   now: number;
-  freshnessStatus: 'fresh' | 'partial-only' | 'stale';
+  freshnessStatus: ScorecardFreshnessStatus;
   graceMs?: number;
 }): boolean {
   const grace = args.graceMs ?? 5 * 60_000;
   if (args.alive === false || args.lastWakeAt == null) return false;
   if (args.now - args.lastWakeAt <= grace) return false; // turn may still be in flight
+  if (args.freshnessStatus === 'unknown-rubric') return false; // invalid reference is not a skipped wake
   return args.freshnessStatus !== 'fresh';
 }
 
