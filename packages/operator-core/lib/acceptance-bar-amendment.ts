@@ -24,6 +24,13 @@ function acceptanceBookkeepingBody(body: string): string {
   return body
     .replace(/^---\r?\n[\s\S]*?\r?\n---/, (frontmatter) =>
       frontmatter.replace(/^updated:.*$/m, 'updated: <bookkeeping>'))
+    // Plan-item progress is execution bookkeeping, not a change to the BAR's
+    // promised outcome.  Keep `dropped` distinct: removing a discharge lane is
+    // a contract change and must make the snapshot stale until it is amended.
+    .replace(
+      /^(-[ \t]+\*\*P-\d+\*\*[ \t]+)`(?:todo|wip|blocked|needs-human|done)`/gm,
+      '$1`<progress>`',
+    )
     .replace(/^(-[ \t]+\*\*P-\d+\*\*[^\r\n]*?) — note: ← (?:WI|EI)-\d+ completed \((?:done|passed|resolved|closed|dropped|deprecated)\)[ \t]*$/gm, '$1');
 }
 
