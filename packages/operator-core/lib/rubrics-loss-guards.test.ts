@@ -516,10 +516,13 @@ describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan
       status: 'active',
       barSetHash: 'a'.repeat(64),
       barContract: {
-        adoptionEpoch: 'test-epoch',
+        schemaVersion: 1,
+        adoptionEpoch: 2,
         cohort: 'post-epoch',
         subjectPlanRevision: 4,
-      } as Rubric['barContract'],
+        seededAt: '2026-09-06T16:59:00.000Z',
+        seededBy: 'original-author',
+      },
     });
     const out = applyRubricAmendment(stored, {
       rubricId: stored.rubricId,
