@@ -40,7 +40,7 @@ import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
-import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
+import { useAgentThinkingStream, type TimelineEntry } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
 import { classifyStreamFreshness, streamFreshnessMessage } from './stream-freshness';
 import { mergeSentEchoes, useSentEchoes } from './sent-message-echo';
@@ -55,6 +55,7 @@ import {
    without forking any of them. Re-exported below for the existing importers. */
 import {
   deliveryFromSendResponse,
+  fetchOwnerHistoryPage,
   resolveOwnerClaudeSession,
   sendToSessionOwner,
   useOwnerSessionChat,
@@ -1023,7 +1024,52 @@ export function LiveSessionChat({
   /** Bumped per rail click so clicking the SAME row twice scrolls twice. */
   jumpNonce?: number | null;
 }) {
-  const { events, status, thinking, anchor, transport, lastSignalAt } = useAgentThinkingStream('', '', '', streamUrl);
+  const { events, status, thinking, anchor, history, transport, lastSignalAt } = useAgentThinkingStream('', '', '', streamUrl);
+  const [earlierEvents, setEarlierEvents] = useState<TimelineEntry[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEarlierEvents([]);
+    setHistoryCursor(null);
+    setHasMoreEarlier(false);
+    setLoadingEarlier(false);
+    setHistoryError(null);
+  }, [streamUrl]);
+
+  useEffect(() => {
+    if (!history || earlierEvents.length > 0) return;
+    setHistoryCursor(history.cursor);
+    setHasMoreEarlier(history.hasMore);
+  }, [history, earlierEvents.length]);
+
+  const ownerPagingEnabled = useMemo(() => {
+    try {
+      return Boolean(new URL(streamUrl, 'http://papercusp.local').searchParams.get('historyOwner'));
+    } catch {
+      return false;
+    }
+  }, [streamUrl]);
+
+  const loadEarlier = useCallback(() => {
+    if (!historyCursor || loadingEarlier || !hasMoreEarlier) return;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    fetchOwnerHistoryPage(streamUrl, historyCursor)
+      .then((page) => {
+        setEarlierEvents((current) => [...page.entries, ...current]);
+        setHistoryCursor(page.cursor);
+        setHasMoreEarlier(page.hasMore);
+      })
+      .catch((error: unknown) => {
+        setHistoryError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setLoadingEarlier(false));
+  }, [streamUrl, historyCursor, loadingEarlier, hasMoreEarlier]);
+
+  const timelineEvents = useMemo(() => [...earlierEvents, ...events], [earlierEvents, events]);
 
   // P-012: the SAME advRoster.list sync query the HUD/Sessions roster read
   // (shared cache, no new endpoint) — narrowed to this session's owner so the
@@ -1054,8 +1100,8 @@ export function LiveSessionChat({
   // pre-fix behavior: a P-ref pill still renders, just stays a static link
   // (ChatMessageContent/HydratedWorkRefPill's existing no-plan-context stance).
   const mapped = useMemo(
-    () => mapSessionTimeline(events, rosterEntry?.currentPlanSlug),
-    [events, rosterEntry?.currentPlanSlug],
+    () => mapSessionTimeline(timelineEvents, rosterEntry?.currentPlanSlug),
+    [timelineEvents, rosterEntry?.currentPlanSlug],
   );
 
   /* P-002: the owner's OWN sends, merged in.
@@ -1186,7 +1232,7 @@ export function LiveSessionChat({
   const freshnessNote = streamFreshnessMessage(freshness);
 
   let banner: ReactNode = null;
-  if (status === 'connecting' && events.length === 0) {
+  if (status === 'connecting' && timelineEvents.length === 0) {
     banner = <div style={BANNER_STYLE}>Connecting to the live session…</div>;
   } else if (status === 'error') {
     banner = <div style={ERROR_BANNER_STYLE}>Lost the live connection — retrying…</div>;
@@ -1205,6 +1251,9 @@ export function LiveSessionChat({
       <div className="pc-conversation-context-layout__chat">
         <OperatorChat
           messages={projectedMessages}
+          onLoadEarlier={ownerPagingEnabled ? loadEarlier : undefined}
+          hasMoreEarlier={hasMoreEarlier}
+          loadingEarlier={loadingEarlier}
           focusAnchor={focusAnchor}
           // The native stream's flat-entry index cannot address projection-only
           // tool rows. Once a projection exists, use the corroborated text anchor
@@ -1220,7 +1269,7 @@ export function LiveSessionChat({
           composerDisabledMessage={composerState.message}
           onSend={onSend}
           banner={banner}
-          error={sendError}
+          error={sendError ?? historyError}
           agentName={agentName}
           renderAvatar={renderAvatar}
           paneIcon={paneIcon}

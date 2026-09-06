@@ -12,6 +12,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSessionStreamUrl,
+  buildOwnerHistoryPageUrl,
+  fetchOwnerHistoryPage,
   deliveryFromSendResponse,
   sessionTargetFromRoster,
   resolveOwnerSession,
@@ -151,6 +153,40 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE, { focusTerm: 'red gate', focusAnchorTs: '2026-08-09T00:00:00Z' }));
     expect(p.get('find')).toBe('red gate');
     expect(p.get('anchorTs')).toBe('2026-08-09T00:00:00Z');
+  });
+});
+
+describe('owner history page loading', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('builds a same-route JSON page URL only from an owner-scoped stream', () => {
+    expect(buildOwnerHistoryPageUrl(
+      '/api/adv/session/thinking?codexRolloutId=current&historyOwner=su-a',
+      'opaque cursor',
+    )).toBe('/api/adv/session/thinking?historyPage=1&historyOwner=su-a&historyCursor=opaque+cursor');
+    expect(buildOwnerHistoryPageUrl('/api/adv/session/thinking?codexRolloutId=current', 'cursor')).toBeNull();
+    expect(buildOwnerHistoryPageUrl('/api/adv/session/thinking?historyOwner=su-a', null)).toBeNull();
+  });
+
+  it('fetches and validates an older timeline page', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      entries: [{ kind: 'prompt', text: 'prior epoch' }],
+      hasMore: false,
+      cursor: null,
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchOwnerHistoryPage(
+      '/api/adv/session/thinking?sessionId=current&historyOwner=su-a',
+      'page-2',
+    )).resolves.toEqual({
+      entries: [{ kind: 'prompt', text: 'prior epoch' }],
+      hasMore: false,
+      cursor: null,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/adv/session/thinking?historyPage=1&historyOwner=su-a&historyCursor=page-2',
+      { headers: { accept: 'application/json' } },
+    );
   });
 });
 

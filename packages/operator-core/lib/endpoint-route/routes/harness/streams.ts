@@ -1194,36 +1194,101 @@ export async function backfillFromSessionTurns(
  */
 export async function backfillFromOwnerSessionTurns(
   owner: string,
-  opts: { cap?: number } = {},
-): Promise<Backfill | null> {
+  opts: { cap?: number; cursor?: OwnerHistoryCursor | null } = {},
+): Promise<OwnerHistoryPage | null> {
   const cap = Math.max(1, opts.cap ?? 200);
+  const cursor = opts.cursor ?? null;
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   const textCap = THINKING_ENTRY_TEXT_CAP + 200;
   const rows = await sql<Array<{
-    ts: string | null; speaker: string | null; text: string | null;
+    event_at: string; source_kind: string; session_id: string; turn_idx: number;
+    speaker: string | null; text: string | null;
   }>>`
-    SELECT ts::text AS ts, speaker, left(text, ${textCap}) AS text
+    SELECT to_json(event_at) #>> '{}' AS event_at,
+           source_kind, session_id, turn_idx, speaker, left(text, ${textCap}) AS text
       FROM (
-        SELECT ts, ingested_at, speaker, text, source_kind, session_id, turn_idx
+        SELECT COALESCE(ts, ingested_at) AS event_at,
+               speaker, text, source_kind, session_id, turn_idx
           FROM harness_shared.session_turns
          WHERE owner = ${owner}
-         ORDER BY COALESCE(ts, ingested_at) DESC,
+           AND (
+             ${cursor?.at ?? null}::timestamptz IS NULL
+             OR (COALESCE(ts, ingested_at), source_kind, session_id, turn_idx)
+                < (${cursor?.at ?? null}::timestamptz,
+                   ${cursor?.sourceKind ?? null}::text,
+                   ${cursor?.sessionId ?? null}::text,
+                   ${cursor?.turnIdx ?? null}::int)
+           )
+         ORDER BY event_at DESC,
                   source_kind DESC, session_id DESC, turn_idx DESC
-         LIMIT ${cap}
+         LIMIT ${cap + 1}
       ) recent
-     ORDER BY COALESCE(ts, ingested_at) ASC,
+     ORDER BY event_at ASC,
               source_kind ASC, session_id ASC, turn_idx ASC
   `;
   if (rows.length === 0) return null;
+  // The query returns the newest cap+1 rows in chronological order. The first
+  // row is the one-row look-behind used only to prove another page exists;
+  // drop it so adjacent pages neither overlap nor exceed the public page cap.
+  const hasMore = rows.length > cap;
+  const selected = hasMore ? rows.slice(1) : rows;
+  const first = selected[0];
   return {
-    entries: rows.map((r) => capEntryText({
+    entries: selected.map((r) => capEntryText({
       kind: sessionTurnEntryKind(r.speaker),
       text: r.text ?? '',
-      ts: r.ts ?? undefined,
+      ts: r.event_at,
     })),
     anchorIndex: null,
+    hasMore,
+    cursor: hasMore && first
+      ? encodeOwnerHistoryCursor({
+          at: first.event_at,
+          sourceKind: first.source_kind,
+          sessionId: first.session_id,
+          turnIdx: first.turn_idx,
+        })
+      : null,
   };
+}
+
+export interface OwnerHistoryCursor {
+  at: string;
+  sourceKind: string;
+  sessionId: string;
+  turnIdx: number;
+}
+
+export interface OwnerHistoryPage extends Backfill {
+  hasMore: boolean;
+  cursor: string | null;
+}
+
+/** Opaque cursor for the complete deterministic owner-history ordering tuple. */
+export function encodeOwnerHistoryCursor(cursor: OwnerHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+/** Fail-closed decoder for a caller-supplied owner-history cursor. */
+export function decodeOwnerHistoryCursor(raw: string): OwnerHistoryCursor | null {
+  if (!raw || raw.length > 800) return null;
+  try {
+    const value = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Partial<OwnerHistoryCursor>;
+    if (
+      typeof value.at !== 'string'
+      || Number.isNaN(Date.parse(value.at))
+      || typeof value.sourceKind !== 'string'
+      || value.sourceKind.length === 0
+      || typeof value.sessionId !== 'string'
+      || value.sessionId.length === 0
+      || !Number.isInteger(value.turnIdx)
+      || value.turnIdx! < 0
+    ) return null;
+    return value as OwnerHistoryCursor;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1346,6 +1411,28 @@ const sessionThinkingStream = defineTool({
     // narrow Claude's on-disk transcript resolver. Search deep-links omit this
     // parameter and therefore keep their exact native-session anchor window.
     const historyOwner = (url.searchParams.get('historyOwner') ?? '').replace(/[^A-Za-z0-9_.-]/g, '') || undefined;
+    const historyPage = url.searchParams.get('historyPage') === '1';
+    const historyCursorRaw = (url.searchParams.get('historyCursor') ?? '').slice(0, 801);
+    const historyCursor = historyCursorRaw ? decodeOwnerHistoryCursor(historyCursorRaw) : null;
+    if (historyPage) {
+      if (!historyOwner) {
+        return Response.json({ ok: false, error: 'historyOwner is required for a history page' }, { status: 400 });
+      }
+      if (historyCursorRaw && !historyCursor) {
+        return Response.json({ ok: false, error: 'invalid historyCursor' }, { status: 400 });
+      }
+      try {
+        const page = await backfillFromOwnerSessionTurns(historyOwner, { cursor: historyCursor });
+        return Response.json({
+          ok: true,
+          entries: page?.entries ?? [],
+          hasMore: page?.hasMore ?? false,
+          cursor: page?.cursor ?? null,
+        });
+      } catch {
+        return Response.json({ ok: false, error: 'owner history unavailable' }, { status: 503 });
+      }
+    }
     // Non-claude backends ("every roster agent has a history"): a codex session
     // streams its rollout jsonl (CODEX_HOME keyed by the adv-session row id),
     // an omp session its ~/.omp/agent/sessions jsonl (keyed by thread id). Same
@@ -1626,8 +1713,11 @@ const sessionThinkingStream = defineTool({
             const fromParts = historyOwner
               ? null
               : await backfillFromSessionParts(corpusKey!, { anchorTs });
-            const fromTurns = historyOwner
+            const ownerPage = historyOwner
               ? await backfillFromOwnerSessionTurns(historyOwner)
+              : null;
+            const fromTurns = historyOwner
+              ? ownerPage
               : await backfillFromSessionTurns(corpusKey!, { anchorTs });
             const backfill = preferHigherFidelityBackfill(fromParts, fromTurns);
             if (!shouldServeDbBackfill(backfill, {
@@ -1638,6 +1728,9 @@ const sessionThinkingStream = defineTool({
               return false;
             }
             sink.event('backfill', backfill.entries);
+            if (historyOwner && ownerPage) {
+              sink.event('history', { hasMore: ownerPage.hasMore, cursor: ownerPage.cursor });
+            }
             if (find) {
               sink.event('anchor', backfill.anchorIndex !== null
                 ? { found: true, index: backfill.anchorIndex }

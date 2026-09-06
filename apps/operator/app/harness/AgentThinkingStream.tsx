@@ -35,6 +35,10 @@ import { TONE } from './theme';
  */
 
 export type TimelineEntry = AgentTimelineEntry;
+export interface TimelineHistoryState {
+  hasMore: boolean;
+  cursor: string | null;
+}
 
 /** How long a run may produce ZERO output before the card flags it as likely
  *  stalled (an upstream gateway stall / rate-limit is the common cause). */
@@ -96,6 +100,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   // `{found:true, index}` = the backfill index of the matched entry (scroll
   // target); `{found:false}` = the term wasn't found (tail backfill shown).
   const [anchor, setAnchor] = useState<{ found: boolean; index?: number } | null>(null);
+  const [history, setHistory] = useState<TimelineHistoryState | null>(null);
   /**
    * Liveness, for the staleness detector (gui-chat-pane-repaint-2026-08-12 P-003).
    *
@@ -150,6 +155,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     setEvents([]);
     setThinking(false);
     setAnchor(null);
+    setHistory(null);
     setTransport('idle');
     lastSignalRef.current = null;
     // The one-shot `backfill` is sent ONCE per connection — if it arrives
@@ -277,6 +283,18 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
         anchor: (data) => {
           try { setAnchor(JSON.parse(data) as { found: boolean; index?: number }); } catch { /* ignore */ }
         },
+        // Stable-owner conversation pagination. Absent on ordinary run streams
+        // and on exact-session search deep-links.
+        history: (data) => {
+          try {
+            const parsed = JSON.parse(data) as Partial<TimelineHistoryState>;
+            if (
+              typeof parsed.hasMore === 'boolean'
+              && (typeof parsed.cursor === 'string' || parsed.cursor === null)
+              && (!parsed.hasMore || Boolean(parsed.cursor))
+            ) setHistory(parsed as TimelineHistoryState);
+          } catch { /* ignore */ }
+        },
         // Flush first: `done` means no further entries are coming, so a buffered
         // tail would otherwise never be committed and the pane would end one
         // burst short of the real transcript.
@@ -288,7 +306,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   }, [slug, phase, runId, streamUrl]);
   // `transport` + `lastSignalAt` are the staleness detector's inputs; callers
   // pass them to `classifyStreamFreshness` rather than re-deriving liveness.
-  return { events, status, thinking, anchor, transport, lastSignalAt: lastSignalRef.current };
+  return { events, status, thinking, anchor, history, transport, lastSignalAt: lastSignalRef.current };
 }
 
 /** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when

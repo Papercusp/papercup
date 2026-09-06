@@ -27,6 +27,10 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-session-handles';
+import {
+  parseAgentTimelineEntries,
+  type AgentTimelineEntry,
+} from '@papercusp/operator-core/lib/cross-boundary-event-contracts';
 import { recordSentEcho, settleSentEcho } from './sent-message-echo';
 
 export type SessionStreamKey = 'sessionId' | 'codexSessionKey' | 'codexRolloutId' | 'ompThreadId';
@@ -290,6 +294,56 @@ export interface SessionStreamFocus {
   focusSessionId?: string | null;
   focusTerm?: string | null;
   focusAnchorTs?: string | null;
+}
+
+export interface OwnerHistoryPageResponse {
+  entries: AgentTimelineEntry[];
+  hasMore: boolean;
+  cursor: string | null;
+}
+
+/** Build the same-route JSON page URL from an ordinary owner-scoped SSE URL. */
+export function buildOwnerHistoryPageUrl(streamUrl: string, cursor: string | null): string | null {
+  if (!cursor) return null;
+  try {
+    const current = new URL(streamUrl, 'http://papercusp.local');
+    const owner = current.searchParams.get('historyOwner');
+    if (!owner) return null;
+    const query = new URLSearchParams({
+      historyPage: '1',
+      historyOwner: owner,
+      historyCursor: cursor,
+    });
+    return `/api/adv/session/thinking?${query.toString()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Load and validate one older stable-owner history page. */
+export async function fetchOwnerHistoryPage(
+  streamUrl: string,
+  cursor: string,
+): Promise<OwnerHistoryPageResponse> {
+  const url = buildOwnerHistoryPageUrl(streamUrl, cursor);
+  if (!url) throw new Error('This conversation has no owner-history cursor');
+  const response = await fetch(url, { headers: { accept: 'application/json' } });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`owner history → ${response.status}: ${text.slice(0, 200)}`);
+  let body: { entries?: unknown; hasMore?: unknown; cursor?: unknown };
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    throw new Error('owner history returned a non-JSON response');
+  }
+  const entries = parseAgentTimelineEntries(body.entries);
+  if (
+    !entries
+    || typeof body.hasMore !== 'boolean'
+    || !(typeof body.cursor === 'string' || body.cursor === null)
+    || (body.hasMore && !body.cursor)
+  ) throw new Error('owner history returned an invalid page');
+  return { entries, hasMore: body.hasMore, cursor: body.cursor };
 }
 
 /**

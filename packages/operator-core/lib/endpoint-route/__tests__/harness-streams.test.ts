@@ -20,10 +20,10 @@ const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   const query = strings.join('');
   if (query.includes('session_turns') && query.includes('WHERE owner =')) {
     return Promise.resolve([
-      { ts: '2026-08-24T03:40:40.424Z', speaker: 'user', text: 'prior epoch prompt' },
-      { ts: '2026-08-24T03:40:42.267Z', speaker: 'assistant', text: 'prior epoch answer' },
-      { ts: '2026-08-25T03:40:40.424Z', speaker: 'user', text: 'current epoch prompt' },
-      { ts: '2026-08-25T03:40:42.267Z', speaker: 'assistant', text: 'current epoch answer' },
+      { event_at: '2026-08-24T03:40:40.424Z', source_kind: 'claude', session_id: 'prior', turn_idx: 0, speaker: 'user', text: 'prior epoch prompt' },
+      { event_at: '2026-08-24T03:40:42.267Z', source_kind: 'claude', session_id: 'prior', turn_idx: 1, speaker: 'assistant', text: 'prior epoch answer' },
+      { event_at: '2026-08-25T03:40:40.424Z', source_kind: 'codex', session_id: 'current', turn_idx: 0, speaker: 'user', text: 'current epoch prompt' },
+      { event_at: '2026-08-25T03:40:42.267Z', source_kind: 'codex', session_id: 'current', turn_idx: 1, speaker: 'assistant', text: 'current epoch answer' },
     ]);
   }
   if (query.includes('session_turn_parts')) return Promise.resolve([]);
@@ -95,6 +95,9 @@ const {
   POSITIONAL_SCAN_CEILING,
   preferHigherFidelityBackfill,
   shouldServeDbBackfill,
+  backfillFromOwnerSessionTurns,
+  decodeOwnerHistoryCursor,
+  encodeOwnerHistoryCursor,
   splitUtf8Chunks,
   batchRawLogLines,
   slimFeatureForStream,
@@ -546,6 +549,51 @@ describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-0
   });
 });
 
+describe('stable-owner history cursor paging', () => {
+  const CURSOR = {
+    at: '2026-08-24T03:40:42.267Z',
+    sourceKind: 'claude',
+    sessionId: 'prior',
+    turnIdx: 1,
+  };
+
+  it('round-trips the complete ordering tuple and rejects malformed cursors', () => {
+    expect(decodeOwnerHistoryCursor(encodeOwnerHistoryCursor(CURSOR))).toEqual(CURSOR);
+    expect(decodeOwnerHistoryCursor('not-base64-json')).toBeNull();
+    expect(decodeOwnerHistoryCursor(Buffer.from(JSON.stringify({ ...CURSOR, turnIdx: -1 })).toString('base64url'))).toBeNull();
+  });
+
+  it('drops the cap+1 look-behind row and returns a cursor for the oldest visible row', async () => {
+    dbSql.mockResolvedValueOnce([
+      { event_at: '2026-08-24T03:40:40.000Z', source_kind: 'claude', session_id: 'old', turn_idx: 9, speaker: 'assistant', text: 'look-behind' },
+      { event_at: CURSOR.at, source_kind: CURSOR.sourceKind, session_id: CURSOR.sessionId, turn_idx: CURSOR.turnIdx, speaker: 'user', text: 'oldest visible' },
+      { event_at: '2026-08-25T03:40:42.267Z', source_kind: 'codex', session_id: 'current', turn_idx: 2, speaker: 'assistant', text: 'newest visible' },
+    ]);
+    const page = await backfillFromOwnerSessionTurns('su-stable', { cap: 2 });
+    expect(page?.entries.map((entry) => entry.text)).toEqual(['oldest visible', 'newest visible']);
+    expect(page?.hasMore).toBe(true);
+    expect(decodeOwnerHistoryCursor(page!.cursor!)).toEqual(CURSOR);
+  });
+
+  it('serves an older page as JSON without opening an SSE follower', async () => {
+    const route = streamRoutes.find((candidate) => candidate.path === '/adv/session/thinking')!;
+    const cursor = encodeOwnerHistoryCursor(CURSOR);
+    const response = await route.handler(
+      new Request(`http://localhost/api/adv/session/thinking?historyPage=1&historyOwner=su-stable&historyCursor=${cursor}`),
+      {} as never,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, hasMore: false, cursor: null });
+    expect(routeProbe.setup).toBeNull();
+    expect(dbSql.mock.calls.at(-1)?.slice(1)).toEqual(expect.arrayContaining([
+      CURSOR.at,
+      CURSOR.sourceKind,
+      CURSOR.sessionId,
+      CURSOR.turnIdx,
+    ]));
+  });
+});
+
 describe('live session DB fallback (WI-41527)', () => {
   it('serves durable turns when a live session has no resolvable transcript file', async () => {
     const route = streamRoutes.find((r) => r.path === '/adv/session/thinking');
@@ -591,6 +639,10 @@ describe('live session DB fallback (WI-41527)', () => {
         { kind: 'prompt', text: 'current epoch prompt', ts: '2026-08-25T03:40:40.424Z' },
         { kind: 'text', text: 'current epoch answer', ts: '2026-08-25T03:40:42.267Z' },
       ],
+    });
+    expect(routeProbe.events).toContainEqual({
+      name: 'history',
+      data: { hasMore: false, cursor: null },
     });
     expect(dbSql.mock.calls.some(([strings]) => strings.join('').includes('WHERE owner ='))).toBe(true);
     expect(dbSql.mock.calls.some(([strings]) =>
