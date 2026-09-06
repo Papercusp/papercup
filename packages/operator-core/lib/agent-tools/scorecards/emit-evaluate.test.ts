@@ -1319,6 +1319,18 @@ describe('evaluateScorecard', () => {
     expect(listM).toHaveBeenCalledWith({ rubricRef: 'test-rubric', sourceHive: undefined, limit: 1 });
   });
 
+  it('empty ratings → returns the grading skeleton with allowed values instead of crashing', async () => {
+    const r = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: {} });
+    expect(r).toMatchObject({
+      ok: true,
+      skeleton: [
+        { key: 'crit-a', allowedRatings: ['pass', 'partial', 'fail'], rating: null, evidence: null },
+        { key: 'crit-b', allowedRatings: ['pass', 'partial', 'fail'], rating: null, evidence: null },
+      ],
+      latest: null,
+    });
+  });
+
   it('rubric not found → ok:false', async () => {
     getRubricM.mockResolvedValue(null);
     const r = await evaluateScorecard({ rubricRef: 'nope' });
