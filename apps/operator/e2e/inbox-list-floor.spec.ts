@@ -19,98 +19,27 @@
  * must hold its floor (≥ 2 whole rows visible) with the controls, not the
  * rows, absorbing any squeeze.
  */
-import { test, expect, assertMounted, type Page } from "./_egress";
+import { test, expect, assertMounted } from "./_egress";
 import { stubSyncQueries } from "./_sync-stub";
+import {
+  INBOX_PAGE,
+  INBOX_TOTAL,
+  mkInboxFirstPage,
+  mkInboxItems,
+  stubInboxFlags,
+} from "./_inbox-fixture";
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
   "http://127.0.0.1:" +
     String(Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055);
 
-const KINDS = [
-  "coord-message",
-  "coord-escalation",
-  "standing-approval",
-  "conversation",
-  "operator-report",
-  "improvement",
-  "scout-grade",
-  "smoke-fail",
-] as const;
-
-const PAGE = 60;
-const TOTAL = 180;
-
-const now = Date.now();
-const items = Array.from({ length: PAGE }, (_, i) => ({
-  id: "floor-" + String(i).padStart(2, "0"),
-  kind: KINDS[i % KINDS.length],
-  source: "coord",
-  harnessSlug: "papercusp",
-  planSlug: null,
-  itemRef: null,
-  title: "Inbox floor row " + i,
-  body: "Body of floor row " + i,
-  status: "open",
-  importance: "normal",
-  // Decision tier + needsHuman: the default "Needs you" chip keeps every row,
-  // and `scopeInboxItems` never age-drops a decision.
-  tier: "decision",
-  needsHuman: true,
-  ownerAgentId: "su-e2e",
-  ownerLabel: "su · su-e2e",
-  occurredAt: new Date(now - i * 60_000).toISOString(),
-  triageState: "untriaged",
-  triageNote: null,
-  triagedBy: null,
-  triagedAt: null,
-  actions: [{ id: "ack", label: "Acknowledge", primary: true }],
-  ref: { kind: "coord-message", msgId: "floor-msg-" + i },
-}));
-
-const firstPage = [
-  {
-    key: "g-floor",
-    kind: "plan",
-    planSlug: "floor-plan",
-    harnessSlug: "papercusp",
-    title: "floor-plan",
-    items,
-    maxImportance: "normal",
-    // The server's page contract (readAttentionPageMeta): hasMore → the
-    // "Showing N of M … Load more" window strip mounts — one more rigid chrome
-    // sibling above the list.
-    _meta: {
-      total: TOTAL,
-      offset: 0,
-      limit: PAGE,
-      returned: PAGE,
-      hasMore: true,
-      nextOffset: PAGE,
-    },
-  },
-];
-
-async function stubFlags(page: Page): Promise<void> {
-  await page.route("**/api/flags/bootstrap", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        flags: { "papercusp-inbox-bulk-resolve": true },
-        evaluatedAt: Date.now(),
-        source: "override",
-      }),
-    });
-  });
-  await page.route("**/api/flags/stream", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "text/event-stream",
-      body: ": inbox-list-floor e2e flags pinned\n\n",
-    });
-  });
-}
+// The shared fixture (`_inbox-fixture.ts`): decision-tier rows, eight kinds,
+// and a paged `_meta` (hasMore → the window strip mounts).
+const PAGE = INBOX_PAGE;
+const TOTAL = INBOX_TOTAL;
+const items = mkInboxItems(PAGE, "floor-");
+const firstPage = mkInboxFirstPage(items, TOTAL);
 
 test.use({ viewport: { width: 1280, height: 720 } });
 
@@ -122,7 +51,7 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   // this spec is small enough to be that first navigation. The budget below is
   // for that cold start only — the assertions themselves are instantaneous.
   test.setTimeout(180_000);
-  await stubFlags(page);
+  await stubInboxFlags(page);
   const sync = await stubSyncQueries(page, (name, args) => {
     if (name === "plans.attention") {
       return Number(args.offset ?? 0) === 0 ? firstPage : [];
@@ -234,10 +163,10 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   expect(at720.paneBottom).toBeLessThanOrEqual(720 + 0.5);
   expect(at720.floor).toBeGreaterThan(0);
   expect(at720.listHeight).toBeGreaterThanOrEqual(at720.floor);
-  // Two WHOLE rows: the fixture's titles are single-line, so a row is ~98px of
-  // pitch here and the 200px floor holds two. (A wrapped title makes a row
-  // taller — the floor is a height guarantee, and this count is the fixture's
-  // reading of it, not a promise about every title.)
+  // Two WHOLE rows: the 200px floor is a HEIGHT guarantee; at the split row's
+  // pitch (~65px since D-004's compact row — ~98px before it) it holds two
+  // with room to spare. `inbox-aside-states.spec.ts` asserts the full count
+  // the spec promises (≥ 8 at 720); this spec only guards the collapse.
   expect(at720.rowsInside).toBeGreaterThanOrEqual(2);
   // ── The window strip + foot (P-004): in the aside, out of the column, and
   // the aside still shows the whole feed block without scrolling at 720.
