@@ -692,7 +692,7 @@ describe("<InboxPane>", () => {
     const aside = screen.getByTestId("inbox-aside");
     // A focus landmark, never tab-reachable (mirrors the master section).
     expect(aside.getAttribute("tabindex")).toBe("-1");
-    expect(aside.contains(screen.getByTestId("inbox-aside-empty"))).toBe(true);
+    expect(aside.contains(screen.getByTestId("inbox-briefing"))).toBe(true);
     expect(screen.queryByTestId("other-detail")).toBeNull();
     expect(screen.queryByTestId("inbox-aside-back")).toBeNull();
     // The list column still holds the master section and its rows.
@@ -714,7 +714,7 @@ describe("<InboxPane>", () => {
     expect(aside.contains(expanded)).toBe(true);
     expect(expanded.contains(detail)).toBe(true);
     expect(detail.getAttribute("data-actions-placement")).toBe("after-body");
-    expect(screen.queryByTestId("inbox-aside-empty")).toBeNull();
+    expect(screen.queryByTestId("inbox-briefing")).toBeNull();
     expect(aside.contains(screen.getByTestId("inbox-aside-back"))).toBe(true);
     // The row stays the disclosure control; its target now lives in the aside.
     const row = screen.getByTestId("inbox-row-d2");
@@ -837,7 +837,7 @@ describe("<InboxPane>", () => {
     const root = screen.getByTestId("inbox-tab");
     const master = screen.getByTestId("inbox-master");
     const column = root.querySelector(".op-inbox__column");
-    const asideEmpty = screen.getByTestId("inbox-aside-empty");
+    const asideEmpty = screen.getByTestId("inbox-briefing");
     const feed = screen.getByTestId("inbox-aside-feed");
     const windowStrip = screen.getByTestId("inbox-attention-window");
     const loadMore = screen.getByTestId("inbox-load-more");
@@ -900,6 +900,45 @@ describe("<InboxPane>", () => {
       order.indexOf("op-inbox__list"),
     );
     expect(order[order.length - 1]).toBe("op-inbox__foot");
+  });
+
+  /* ── The briefing (inbox-three-column-resolver-states-2026-09-06 P-005 / D-002) ── */
+  it("split with no selection: the briefing replaces the empty prompt — scope count, server total, the feed last", () => {
+    seedPagedAttention([mkItem("d1"), mkItem("d2")], 180);
+    renderPane("", { layout: "split" });
+    const aside = screen.getByTestId("inbox-aside");
+    const briefing = screen.getByTestId("inbox-briefing");
+    expect(aside.contains(briefing)).toBe(true);
+    expect(
+      screen.queryByText("Select an item to read and answer it here"),
+    ).toBeNull();
+    // The headline and the "Need you" tile read the pane's scope count; the
+    // "Tracked" tile reads the server total the page meta carries.
+    expect(screen.getByTestId("inbox-briefing-headline").textContent).toBe(
+      "2 items are waiting on you",
+    );
+    expect(screen.getByTestId("inbox-briefing-tile-need-you").textContent).toBe(
+      "2Need you",
+    );
+    expect(screen.getByTestId("inbox-briefing-tile-tracked").textContent).toBe(
+      "180Tracked",
+    );
+    // No persisted run in this fixture: the run tiles show — and no readout.
+    expect(
+      screen.getByTestId("inbox-briefing-tile-still-open").textContent,
+    ).toBe("—Still open");
+    expect(screen.queryByTestId("inbox-briefing-run")).toBeNull();
+    // P-004's feed block rides last inside the briefing.
+    expect(briefing.lastElementChild).toBe(
+      screen.getByTestId("inbox-aside-feed"),
+    );
+  });
+
+  it("stack renders no briefing (D-001)", () => {
+    seedAttention([mkItem("d1")]);
+    renderPane("");
+    expect(screen.queryByTestId("inbox-briefing")).toBeNull();
+    expect(screen.queryByTestId("inbox-briefing-headline")).toBeNull();
   });
 
   /* ── The bulk card (inbox-three-column-resolver-states-2026-09-06 P-003 / D-002) ── */

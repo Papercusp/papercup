@@ -89,6 +89,7 @@ import {
   useInboxAttention,
 } from "./use-inbox-pending";
 import InboxBulkStrip from "./InboxBulkStrip";
+import InboxBriefing from "./InboxBriefing";
 import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
   INBOX_BULK_RUN_PARAM,
@@ -1262,23 +1263,29 @@ export default function InboxPane({
               {renderExpandedDetail(selectedItem)}
             </>
           ) : (
-            <div
-              className="op-inbox__aside-empty"
-              data-testid="inbox-aside-empty"
-            >
-              <InboxIcon size={22} aria-hidden="true" />
-              <span>Select an item to read and answer it here</span>
-              {/* P-004: the feed's window strip ("Showing N of M · Load
-                  more") and the foot ("N shown · Open full queue") live here
-                  in split — the list column keeps only search + sort + rows. */}
-              <div
-                className="op-inbox__aside-feed"
-                data-testid="inbox-aside-feed"
-              >
-                {windowStrip}
-                {foot}
-              </div>
-            </div>
+            /* P-005: the briefing — headline count, four tiles, the last run's
+               readout + grouped rows, the primary action — from state the pane
+               already holds (D-002). P-004's feed block (the window strip
+               "Showing N of M · Load more" and the foot "N shown · Open full
+               queue") rides in last, so the list column keeps only search +
+               sort + rows. */
+            <InboxBriefing
+              needs={counts.needs}
+              tracked={totalItemCount}
+              run={bulkEnabled ? bulk.run : null}
+              runItems={bulkEnabled ? bulk.items : []}
+              isRunning={bulkEnabled ? bulk.isRunning : false}
+              onReview={(runId) => void setBulkRunId(runId)}
+              feed={
+                <div
+                  className="op-inbox__aside-feed"
+                  data-testid="inbox-aside-feed"
+                >
+                  {windowStrip}
+                  {foot}
+                </div>
+              }
+            />
           )}
         </aside>
       ) : null}

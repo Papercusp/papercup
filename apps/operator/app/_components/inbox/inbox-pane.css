@@ -906,27 +906,156 @@
   flex: 0 1 auto;
   min-width: 120px;
 }
-.op-inbox__aside-empty {
+/* ── The briefing (P-005): the aside's unselected state ──────────────────
+   Headline count, the four tiles, the last run's readout with its grouped
+   disposition rows and the primary action, then the feed block (P-004).
+   Left-aligned prose at a readable measure; counts in the mono face so the
+   numbers line up. Replaces the centered "select an item" prompt. */
+.op-inbox__briefing {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
+  gap: 16px;
+  min-width: 0;
+  max-width: 640px;
+  color: var(--fg, #e5e7eb);
+  text-align: left;
+}
+.op-inbox__briefing-title {
+  margin: 0 0 5px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.op-inbox__briefing-lead {
+  margin: 0;
+  max-width: 52ch;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--fg-mute, #8a8a91);
-  font-size: 13px;
-  text-align: center;
+}
+.op-inbox__briefing-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--border, rgba(255, 255, 255, 0.1));
+}
+.op-inbox__briefing-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--bg-2, rgba(0, 0, 0, 0.18));
+}
+.op-inbox__briefing-tile strong {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.op-inbox__briefing-tile span {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-tile.is-em strong {
+  color: var(--warn, #fbbf24);
+}
+.op-inbox__briefing-run {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 11px;
+  background: var(--bg-2, rgba(0, 0, 0, 0.18));
+}
+.op-inbox__briefing-run-head {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 10px;
+}
+.op-inbox__briefing-run-head em {
+  font-style: normal;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent-strong, #7dd3fc);
+}
+.op-inbox__briefing-run-phase {
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-run-elapsed {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-run-line {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.op-inbox__briefing-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.op-inbox__briefing-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-top: 1px solid
+    color-mix(in srgb, var(--border, rgba(255, 255, 255, 0.1)) 72%, transparent);
+  font-size: 11.5px;
+}
+.op-inbox__briefing-row-name {
+  font-weight: 600;
+}
+.op-inbox__briefing-row.is-umbrella .op-inbox__briefing-row-name {
+  color: var(--accent-strong, #7dd3fc);
+}
+.op-inbox__briefing-row-desc {
+  color: var(--fg-mute, #8a8a91);
+}
+.op-inbox__briefing-row-count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+}
+.op-inbox__briefing-review {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #38bdf8) 48%, transparent);
+  border-radius: 8px;
+  color: var(--accent-strong, #7dd3fc);
+  background: color-mix(in srgb, var(--accent, #38bdf8) 12%, transparent);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.op-inbox__briefing-review:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 /* P-004: the feed's window strip + foot, in the aside's unselected state
-   instead of the list column. A left-aligned block under the centered prompt,
-   held to a readable measure; the strip and foot keep their own styling. */
+   instead of the list column; the strip and foot keep their own styling. */
 .op-inbox__aside-feed {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(100%, 440px);
-  margin-top: 6px;
-  text-align: left;
+  width: 100%;
   font-size: 11px;
 }
 .op-inbox__aside-feed .op-inbox__foot {
