@@ -869,6 +869,14 @@
 .op-inbox__rail .op-inbox__facets {
   gap: 5px;
 }
+/* The bulk card (P-003) sits at the FOOT of the rail — `margin-top: auto`
+   parks it there when the rail has room and lets it follow the facets when
+   it does not; the rail scrolls rather than clipping it. */
+.op-inbox__rail-bulk {
+  flex: 0 0 auto;
+  margin-top: auto;
+  min-width: 0;
+}
 .op-inbox__aside {
   display: flex;
   flex-direction: column;

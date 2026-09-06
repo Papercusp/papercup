@@ -811,6 +811,23 @@ export default function InboxPane({
         })}
       </div>
     ) : null;
+  // BULK RESOLVE (D-002: same ops, same persisted run — only WHERE it renders
+  // changes). Stack: the command strip between masthead and controls. Split:
+  // the compact card at the foot of the rail (P-003). Never both.
+  const bulkStripProps = bulkEnabled
+    ? {
+        visible,
+        filterSnapshot: bulkFilterSnapshot,
+        run: bulk.run,
+        items: bulk.items,
+        recommendations: bulk.recommendations,
+        unreached: bulk.unreached,
+        isRunning: bulk.isRunning,
+        isReview: bulk.isReview,
+        onRunStarted: (runId: string) => void setBulkRunId(runId),
+        onReview: (runId: string) => void setBulkRunId(runId),
+      }
+    : null;
   // The "N need you" count — the stack masthead's badge, and the rail head's.
   const needsCount = (
     <span
@@ -861,6 +878,11 @@ export default function InboxPane({
               {kindFacetChips}
             </>
           ) : null}
+          {bulkStripProps ? (
+            <div className="op-inbox__rail-bulk" data-testid="inbox-rail-bulk">
+              <InboxBulkStrip {...bulkStripProps} variant="card" />
+            </div>
+          ) : null}
         </nav>
       ) : null}
       <div className="op-inbox__column">
@@ -897,19 +919,8 @@ export default function InboxPane({
         {/* BULK RESOLVE command strip (P-006, direction A): between the masthead
           and the toolbar — above the filters it acts on, so what it will act on
           is what is on screen when it is pressed. */}
-        {bulkEnabled ? (
-          <InboxBulkStrip
-            visible={visible}
-            filterSnapshot={bulkFilterSnapshot}
-            run={bulk.run}
-            items={bulk.items}
-            recommendations={bulk.recommendations}
-            unreached={bulk.unreached}
-            isRunning={bulk.isRunning}
-            isReview={bulk.isReview}
-            onRunStarted={(runId) => void setBulkRunId(runId)}
-            onReview={(runId) => void setBulkRunId(runId)}
-          />
+        {bulkStripProps && !split ? (
+          <InboxBulkStrip {...bulkStripProps} />
         ) : null}
         <section
           className="op-inbox__controls"
