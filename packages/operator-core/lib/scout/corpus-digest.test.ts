@@ -227,6 +227,88 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(lock.detail).toContain('recurred 2×');
     });
 
+    // ── EI-20587312505064997: FLOW vs STOCK ──────────────────────────────────
+    //
+    // The test above encodes the defect as a FEATURE: EI-3 is excluded because it is
+    // "count=1". That is true of its work_items ROWS and false of the friction — dedup
+    // collapses a repeat onto the canonical row and appends to work_item_occurrences,
+    // so a friction reported 79× is one row. Measured on the live observation lane
+    // 2026-09-06: 582 canonicals reach ≥3 occurrences while being title-singletons
+    // (498 open), and `findLikelyDuplicates` only ever emits clusters of ≥2 rows, so
+    // none of them can be surfaced by any amount of downstream re-ranking.
+    const flowReader = (counts: Record<string, number>) => ({
+      occurrences: async (ids: readonly string[]) =>
+        new Map(ids.filter((id) => counts[id] !== undefined).map((id) => [id, counts[id]] as const)),
+    });
+
+    it('surfaces a ledger-only recurrence: a one-ROW friction reported many times', async () => {
+      const { recurringFriction } = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-3': 5 })),
+        { nowMs: NOW },
+      );
+      const flaky = recurringFriction.find((p) => p.summary === 'flaky vitest timeout in operator core');
+      // Excluded by the stock test above; admitted here purely on ledger evidence.
+      expect(flaky).toBeDefined();
+      expect(flaky!.category).toBe('recurring-friction');
+      expect(flaky!.ref).toBe('wi:EI-3');
+      expect(flaky!.detail).toContain('recurred 5×');
+      // Both axes are named when they disagree, so a one-row group ranked highly is
+      // legible rather than looking like a scoring bug.
+      expect(flaky!.detail).toContain('1 row(s), 5 report(s)');
+    });
+
+    it('floors each member at one report, so a ledger-less row is never counted as zero', async () => {
+      // Only EI-3 is in the ledger. The lock cluster's members have NO occurrence rows —
+      // the live shape for the 15,750 improvement-topic rows that predate the ledger —
+      // and must keep their stock count rather than collapsing to 0 and vanishing.
+      const { recurringFriction } = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-3': 3 })),
+        { nowMs: NOW },
+      );
+      const lock = recurringFriction.find((p) => p.summary === 'lock contention blocks file edits')!;
+      expect(lock.detail).toContain('recurred 2×');
+      // Equal axes ⇒ no disambiguating suffix, so existing lines stay byte-identical.
+      expect(lock.detail).not.toContain('row(s)');
+    });
+
+    it('adds ledger reports to a multi-row cluster too — flow generalizes stock, it does not replace it', async () => {
+      const { recurringFriction } = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-1': 3, 'EI-2': 1 })),
+        { nowMs: NOW },
+      );
+      const lock = recurringFriction.find((p) => p.summary === 'lock contention blocks file edits')!;
+      expect(lock.detail).toContain('recurred 4×'); // 3 reports + 1 report
+      expect(lock.detail).toContain('2 row(s), 4 report(s)');
+    });
+
+    it('degrades to stock counting — never to zero — when the occurrence reader throws', async () => {
+      // A ledger blip may cost this cycle's EXTRA signal; it may not cost the cycle.
+      const { recurringFriction } = await synthesizeStateOfHive(
+        fixtureReaders({
+          occurrences: async () => {
+            throw new Error('ledger unavailable');
+          },
+        }),
+        { nowMs: NOW },
+      );
+      const summaries = recurringFriction.map((p) => p.summary);
+      expect(summaries).toContain('lock contention blocks file edits');
+      expect(summaries).not.toContain('flaky vitest timeout in operator core');
+      const lock = recurringFriction.find((p) => p.summary === 'lock contention blocks file edits')!;
+      expect(lock.detail).toContain('recurred 2×');
+    });
+
+    it('widens ONLY the recurrence lane — rubricGaps still reads the ≥2-row clusters', async () => {
+      // The synthesized one-row groups are passed to buildRecurringFriction alone.
+      // Guards the surgical claim directly, rather than resting on the gap lane's
+      // ≥3-distinct-author trigger happening to reject them.
+      const withFlow = await synthesizeStateOfHive(fixtureReaders(flowReader({ 'EI-3': 9 })), { nowMs: NOW });
+      const withoutFlow = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      expect(withFlow.rubricGaps).toEqual(withoutFlow.rubricGaps);
+      // ...and the widening it is compared against actually happened.
+      expect(withFlow.recurringFriction.length).toBeGreaterThan(withoutFlow.recurringFriction.length);
+    });
+
     it('excludes rubric scorecard observations from friction mining while keeping free-text observations', async () => {
       const scorecardRows: ImprovementCandidate[] = [
         {

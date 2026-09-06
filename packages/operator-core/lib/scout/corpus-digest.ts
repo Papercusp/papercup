@@ -187,6 +187,25 @@ export interface StateOfHiveReaders {
    * stay valid; absent ⇒ no rubrics known ⇒ the gap lane treats all as uncovered.
    */
   rubrics?(): Promise<RubricSummary[]>;
+  /**
+   * OCCURRENCE FLOW per candidate id (EI-20587312505064997) — how many times each
+   * friction was actually REPORTED, from `harness_shared.work_item_occurrences`.
+   *
+   * The friction lane counts STOCK (rows), but capture already records FLOW: dedup
+   * collapses a repeat onto its canonical row and appends a ledger row instead of
+   * creating a second work-item. So a friction reported 79× is ONE row, and every
+   * stock-based measure reads it as a singleton that never recurred.
+   *
+   * Measured on the observation lane 2026-09-06: 113,785 rows, 97.0% singleton by
+   * title; 618 canonicals reach ≥3 occurrences, and **582 of those are BOTH ≥3-flow
+   * AND title-singletons** (498 still open) — invisible to clustering by construction,
+   * because `findLikelyDuplicates` only ever emits clusters of ≥2 rows.
+   *
+   * Optional + fail-soft, exactly like `rubrics?()`: absent (or a failed read) ⇒ an
+   * empty map ⇒ every count floors at one-per-member ⇒ output is byte-identical to
+   * the pre-flow behaviour. That default is what keeps the 4-lane fixtures valid.
+   */
+  occurrences?(ids: readonly string[]): Promise<ReadonlyMap<string, number>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +628,46 @@ function finalize(scored: Scored[], limit: number): MetaPattern[] {
  *  real, distinctly-worded captures). Open recurrence outweighs a quiet one. */
 type DupCluster = ReturnType<typeof findLikelyDuplicates>[number];
 
+/**
+ * How many times a cluster's friction was actually REPORTED (EI-20587312505064997).
+ *
+ * STOCK (`ids.length`) counts work-item ROWS; FLOW counts reports. They diverge
+ * precisely because dedup works: a repeat is collapsed onto its canonical row and
+ * appended to `work_item_occurrences`, so the repetition lives in the ledger and the
+ * row count stays at one.
+ *
+ * Each member FLOORS AT 1, which is what makes this a strict generalization rather
+ * than a replacement: a row with no ledger entry still counts once, so a corpus with
+ * no ledger at all scores exactly as it does today. That floor is load-bearing, not
+ * defensive — measured 2026-09-06, 15,750 of the 30,870 improvement-topic rows predate
+ * the ledger and have no occurrence row, and reading those as zero would DELETE half
+ * the lane's salience.
+ */
+function flowCountOf(cluster: DupCluster, occurrencesById: ReadonlyMap<string, number>): number {
+  return cluster.ids.reduce((sum, id) => sum + Math.max(1, occurrencesById.get(id) ?? 1), 0);
+}
+
+/**
+ * Read the occurrence ledger for exactly the candidates being mined, never the corpus.
+ *
+ * Fail-soft on purpose, and the failure mode is chosen deliberately: an ABSENT or
+ * THROWING reader degrades to stock counting (today's behaviour), which under-reports
+ * recurrence. It must never degrade to zero counts, which would erase the lane. A
+ * digest is a regenerable rollup that rides on Scout's cycle, so a ledger blip may cost
+ * this cycle's extra signal — it may not cost the cycle.
+ */
+async function readOccurrenceFlow(
+  readers: StateOfHiveReaders,
+  candidates: readonly ImprovementCandidate[],
+): Promise<ReadonlyMap<string, number>> {
+  if (!readers.occurrences || candidates.length === 0) return new Map();
+  try {
+    return await readers.occurrences(candidates.map((c) => c.id));
+  } catch {
+    return new Map();
+  }
+}
+
 function buildRecurringFriction(
   clusters: DupCluster[],
   byId: Map<string, ImprovementCandidate>,
@@ -619,6 +678,9 @@ function buildRecurringFriction(
   // ` · via:embed-cluster` origin tag so the flag-gated experiment's patterns are
   // attributable in a downstream idea-grade/outcome comparison.
   clusterOrigin: 'lexical' | 'embed' = 'lexical',
+  // EI-20587312505064997: report FLOW per candidate id. Defaulted to an empty map so
+  // every existing caller (and fixture) keeps the exact stock-counted behaviour.
+  occurrencesById: ReadonlyMap<string, number> = new Map(),
 ): MetaPattern[] {
   const originTag = clusterOrigin === 'embed' ? ' · via:embed-cluster' : '';
   const scored: Scored[] = clusters.map((cluster) => {
@@ -629,12 +691,21 @@ function buildRecurringFriction(
     const lastSeenMs = newest ? lastSeenMsOf(newest) : 0;
     const decayDays = lastSeenMs ? round((nowMs - lastSeenMs) / DAY_MS, 1) : 0;
     const openBoost = openCount > 0 ? 1 + openCount / members.length : 0.5;
+    // Salience and the owner-facing "recurred N×" now read the SAME flow count. They
+    // have to move together: quoting stock in the string while ranking on flow would
+    // make the digest's most salient rows the ones whose number looks least impressive.
+    const recurrence = flowCountOf(cluster, occurrencesById);
     return {
-      salience: members.length * openBoost,
+      salience: recurrence * openBoost,
       pattern: {
         category: 'recurring-friction' as MetaPatternCategory,
         summary: newest ? truncate(newest.title) : cluster.signature,
-        detail: `recurred ${members.length}× (${openCount} open), last ${decayDays}d ago${originTag}`,
+        detail:
+          `recurred ${recurrence}× (${openCount} open), last ${decayDays}d ago${originTag}` +
+          // Name the two axes only when they disagree, so an ordinary multi-row
+          // cluster's line is unchanged and a ledger-only recurrence is legible
+          // rather than looking like a one-row cluster inexplicably ranked first.
+          (recurrence !== members.length ? ` · ${members.length} row(s), ${recurrence} report(s)` : ''),
         ref: newest ? `wi:${newest.id}` : `friction:${cluster.signature.slice(0, 40)}`,
       },
     };
@@ -1055,9 +1126,37 @@ export async function synthesizeStateOfHive(
   const frictionById = new Map(frictionForMining.map((c) => [c.id, c] as const));
   const embedClusters = await clusterFrictionByEmbedding(frictionForMining);
   const clusterOrigin: 'lexical' | 'embed' = embedClusters ? 'embed' : 'lexical';
-  const frictionClusters = (embedClusters ?? findLikelyDuplicates(frictionForMining)).filter((c) => c.ids.length > 1);
+  const allFrictionClusters = embedClusters ?? findLikelyDuplicates(frictionForMining);
+  // Clusters of ≥2 ROWS — the historical set. `rubricGaps` keeps reading exactly this,
+  // so widening the recurrence lane below cannot move the gap lane (its ≥3-distinct-author
+  // trigger would reject a one-row cluster anyway; not relying on that is what makes this
+  // change surgical rather than merely harmless-looking).
+  const frictionClusters = allFrictionClusters.filter((c) => c.ids.length > 1);
 
-  const recurringFriction = buildRecurringFriction(frictionClusters, frictionById, nowMs, limit, clusterOrigin);
+  // EI-20587312505064997 — FLOW, the recurrence the row count cannot show.
+  //
+  // `findLikelyDuplicates` only ever emits clusters of ≥2 rows (every push is guarded by
+  // `ids.length > 1`), so a friction that recurred 79× as ONE deduped row is not merely
+  // ranked low here — it is never emitted as a cluster at all, and no re-ranking or
+  // re-sizing downstream could ever surface it. The fix therefore has to SYNTHESIZE the
+  // one-row groups, not relax a filter.
+  //
+  // Fail-soft: a missing or throwing reader yields an empty map, every count floors at
+  // one-per-member, no singletons are synthesized, and the lane renders exactly as before.
+  const occurrencesById = await readOccurrenceFlow(readers, frictionForMining);
+  const clusteredIds = new Set(allFrictionClusters.flatMap((c) => c.ids));
+  const flowOnlyClusters: DupCluster[] = frictionForMining
+    .filter((c) => !clusteredIds.has(c.id) && (occurrencesById.get(c.id) ?? 1) > 1)
+    .map((c) => ({ signature: `flow:${c.id}`, ids: [c.id] }));
+
+  const recurringFriction = buildRecurringFriction(
+    [...frictionClusters, ...flowOnlyClusters],
+    frictionById,
+    nowMs,
+    limit,
+    clusterOrigin,
+    occurrencesById,
+  );
   const timeTokenSinks = buildTimeTokenSinks(spend, limit);
   const chronicDeferrals = buildChronicDeferrals(deferrals, limit);
   const capabilityGaps = buildCapabilityGaps(frictionForMining, nowMs, limit);

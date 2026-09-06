@@ -344,5 +344,30 @@ export function buildStateOfHiveReaders(opts: BuildStateOfHiveReadersOptions = {
         criteriaTitles: r.criteria.map((c) => c.title),
       }));
     },
+    async occurrences(ids: readonly string[]): Promise<ReadonlyMap<string, number>> {
+      // EI-20587312505064997 — how many times each candidate was actually REPORTED.
+      //
+      // Scoped to the ids being mined, never the corpus: this is one indexed GROUP BY
+      // over ~10³ ids, not a scan of the 114k-row ledger. `canonical_work_item_id` is
+      // the canonical the report was attributed to, so one row per report is exactly
+      // the flow count — the repetition dedup removed from `work_items`.
+      if (ids.length === 0) return new Map();
+      const { sql } = getOrgPg();
+      const rows = await sql<{ id: string; n: string }[]>`
+        SELECT canonical_work_item_id AS id, count(*)::text AS n
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${workspaceId}
+           AND canonical_work_item_id = ANY(${ids as string[]}::text[])
+         GROUP BY 1`;
+      // count(*) arrives as text to dodge the bigint→JS coercion; a NaN here would
+      // poison Math.max and rank a real recurrence as a singleton, so drop unparseable
+      // rows rather than letting one become a silent zero.
+      const out = new Map<string, number>();
+      for (const row of rows) {
+        const n = Number.parseInt(row.n, 10);
+        if (Number.isFinite(n) && n > 0) out.set(row.id, n);
+      }
+      return out;
+    },
   };
 }
