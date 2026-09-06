@@ -204,6 +204,10 @@ describe('buildAgentLaunchCommand', () => {
     expect(() => buildAgentLaunchCommand({ mode: 'fork' })).toThrow(/requires sessionId/);
   });
 
+  it('accepts a tracked resume selector when native sessionId is unavailable', () => {
+    expect(buildAgentLaunchCommand({ mode: 'resume', resumeId: '22661' })).toContain('--resume=22661');
+  });
+
   it('adds --headless (which is what keeps a windowless agent injectable at all)', () => {
     expect(buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', headless: true })).toContain('--headless');
   });
@@ -550,6 +554,7 @@ describe('resolveResumeTarget', () => {
     expect(r).toMatchObject({
       ok: true,
       sessionId: 'earlier-native-uuid',
+      resumeId: 'earlier-native-uuid',
       ownerId: OWNER,
       advSessionId: 20807,
       binding: {
@@ -562,6 +567,30 @@ describe('resolveResumeTarget', () => {
     const fragment = candidateFragmentOf(launchCoreSql.mock.calls as unknown as { 0?: TemplateStringsArray }[]);
     expect(fragment).toBeDefined();
     expect(fragment).not.toContain('harness_shared.adv_sessions');
+  });
+
+  it('uses a tracked Codex adv-session id when the row has no native session uuid', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22661,
+      workspace_id: 'ws-codex',
+      coord_owner_id: OWNER,
+      session_id: null,
+      agent: 'codex',
+      cwd: '/repo',
+      started_at: '2026-09-05T23:16:36.945Z',
+      binding_started_at: '2026-09-05 23:16:36.945123+00',
+      ended_at: null,
+      exit_code: null,
+      ended_by: null,
+    }] as unknown[]);
+
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true,
+      sessionId: null,
+      resumeId: '22661',
+      ownerId: OWNER,
+      advSessionId: 22661,
+    });
   });
 
   it('CONTROL: an agentId lookup still seeds its candidate from adv_sessions', async () => {
@@ -803,6 +832,7 @@ describe('nativeSessionIdFromHost', () => {
   it('returns null when the host does not attest a native resume id', () => {
     expect(nativeSessionIdFromHost({ command: 'codex', args: ['--model', 'gpt-5.6-sol'] })).toBeNull();
     expect(nativeSessionIdFromHost({ command: 'codex' })).toBeNull();
+    expect(nativeSessionIdFromHost({ command: 'codex', args: ['resume', '--last'] })).toBeNull();
   });
 });
 
