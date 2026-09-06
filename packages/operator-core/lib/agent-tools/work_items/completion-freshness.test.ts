@@ -262,6 +262,26 @@ describe('unprovenContentIdentityPaths (EI-21970667079827352)', () => {
     ).toEqual([{ path: 'a.ts', reason: 'missing-from-commit', settles: 'sweep' }]);
   });
 
+  it('classifies documented gitignored scratch paths as never-settling, not sweep-pending', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [
+          {
+            path: './.papercusp\\scratch\\probe.mts',
+            workingTreeBlobSha: sha('c'),
+            headBlobSha: null,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        path: './.papercusp\\scratch\\probe.mts',
+        reason: 'gitignored-scratch-path',
+        settles: 'never',
+      },
+    ]);
+  });
+
   it('two differing blobs is content-mismatch, and a SWEEP settles it', () => {
     expect(
       unprovenContentIdentityPaths({
@@ -364,6 +384,21 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     expect(out).toContain('`typo.ts` (absent-from-both)');
     expect(out).toContain('never a plausible-looking guess');
     expect(out).not.toContain('WAITING SETTLES THIS');
+  });
+
+  it('names gitignored scratch paths as permanently non-committable instead of waitable', () => {
+    const scratch = {
+      path: '.papercusp/scratch/probe.mts',
+      reason: 'gitignored-scratch-path' as const,
+      settles: 'never' as const,
+    };
+    const out = describeUnprovenContentIdentity([scratch], 1)!;
+    expect(out).toContain('WAITING WILL NOT SETTLE THIS');
+    expect(out).toContain('documented gitignored `.papercusp/scratch/` prefix');
+    expect(out).toContain('NO sweep can ever commit it');
+    expect(out).toContain('Remove it from `filesChanged`');
+    expect(out).not.toContain('WAITING SETTLES THIS');
+    expect(out).not.toContain('absent from the working tree');
   });
 
   it('a MIXED set separates the halves — waiting alone must not read as sufficient', () => {

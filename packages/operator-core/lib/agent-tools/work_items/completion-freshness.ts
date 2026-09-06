@@ -22,6 +22,7 @@ import type {
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_PATHS_PROBED = 60;
 const OBJECT_SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+const DOCUMENTED_GITIGNORED_SCRATCH_PREFIX = '.papercusp/scratch/';
 
 /**
  * EI-22344624691081449: a deletion is caller-owned evidence, but the server
@@ -333,6 +334,7 @@ export type UnprovenContentIdentityReason =
   | 'content-mismatch'
   | 'absent-from-both'
   | 'absent-from-working-tree'
+  | 'gitignored-scratch-path'
   | 'deletion-present-in-working-tree'
   | 'deletion-present-in-commit';
 
@@ -364,11 +366,22 @@ export function describeUnprovenContentIdentity(
   const neverSettles = rows.filter((row) => row.settles === 'never');
   const total = declaredPathCount > 0 ? declaredPathCount : rows.length;
   const head = `Content identity was not proven for ${rows.length} of ${total} declared \`filesChanged\` path(s): ${render(rows)}. `;
-  const neverRemedy =
-    `${render(neverSettles)} ${neverSettles.length === 1 ? 'is' : 'are'} absent from the working tree, so NO ` +
-    `sweep can ever commit ${neverSettles.length === 1 ? 'it' : 'them'} — that is a misspelled, renamed, ` +
-    `reverted, or never-created path in your completion evidence. Re-call work_items:complete for this id with ` +
-    `the REAL path(s), never a plausible-looking guess.`;
+  const neverRemedy = neverSettles
+    .map((row) => {
+      const rendered = `\`${row.path}\` (${row.reason})`;
+      if (row.reason === 'gitignored-scratch-path') {
+        return (
+          `${rendered} is under the documented gitignored \`.papercusp/scratch/\` prefix, so NO sweep can ` +
+          `ever commit it. Remove it from \`filesChanged\` or cite durable storage instead.`
+        );
+      }
+      return (
+        `${rendered} is absent from the working tree, so NO sweep can ever commit it — that is a misspelled, ` +
+        `renamed, reverted, or never-created path in your completion evidence. Re-call work_items:complete for ` +
+        `this id with the REAL path(s), never a plausible-looking guess.`
+      );
+    })
+    .join(' ');
   if (neverSettles.length === 0) {
     return (
       head +
@@ -414,10 +427,18 @@ export function unprovenContentIdentityPaths(
         : [{ path: entry.path, reason: 'content-mismatch' as const, settles: 'sweep' as const }];
     }
     if (inTree && !inHead) {
+      const normalizedPath = entry.path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+      if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
+        return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
+      }
       return [{ path: entry.path, reason: 'missing-from-commit' as const, settles: 'sweep' as const }];
     }
     if (!inTree && inHead) {
       return [{ path: entry.path, reason: 'absent-from-working-tree' as const, settles: 'never' as const }];
+    }
+    const normalizedPath = entry.path.replaceAll('\\', '/').replace(/^\.\/+/, '');
+    if (normalizedPath.startsWith(DOCUMENTED_GITIGNORED_SCRATCH_PREFIX)) {
+      return [{ path: entry.path, reason: 'gitignored-scratch-path', settles: 'never' as const }];
     }
     return [{ path: entry.path, reason: 'absent-from-both' as const, settles: 'never' as const }];
   });
