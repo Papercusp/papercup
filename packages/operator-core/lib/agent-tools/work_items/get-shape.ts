@@ -945,7 +945,8 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
           ...(row.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
         };
       }
-      const checkRows = Array.isArray(checks.rows) ? checks.rows : [];
+      const checkEnvelope = checks as Row;
+      const checkRows: unknown[] = Array.isArray(checkEnvelope.rows) ? checkEnvelope.rows : [];
       const claimCap = FIELD_CAPS[tier].checkpointMin;
       const rows = checkRows.slice(0, CARRY_NOTE_MAX_CHECKS).flatMap((entry) => {
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
@@ -956,7 +957,7 @@ function shapeChecksOnly(data: Row, tier: WorkItemsGetTier): unknown {
       return {
         ok: row.ok ?? true,
         id: row.id ?? null,
-        checkpointChecks: { ...checks, rows },
+        checkpointChecks: { ...checkEnvelope, rows },
         checkpointAgeMs: row.checkpointAgeMs ?? null,
         checkpointUpdatedAtMs: row.checkpointUpdatedAtMs ?? null,
         ...(row.checkpointContentHash !== undefined
