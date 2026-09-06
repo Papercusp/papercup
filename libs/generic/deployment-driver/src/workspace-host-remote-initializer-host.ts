@@ -814,15 +814,20 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
           "the bound git credential material is absent from the host",
         );
       }
-      // The material itself remains in the 0700 credential store. Git receives only the helper
-      // path through its environment: never argv, evidence, errors, or logs.
+      // A generation is immutable: credential-store's store/erase actions would rewrite it
+      // after successful/failed authentication. Expose only its read action, and clear any
+      // ambient helpers so Git cannot copy the delivered secret into another credential store.
+      // Quote the path as shell data; Git invokes ! helpers through a shell.
+      const materialPath = `'${binding.materialPath.replaceAll("'", "'\\''")}'`;
       env = {
         GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_COUNT: "2",
+        GIT_CONFIG_COUNT: "3",
         GIT_CONFIG_KEY_0: "credential.helper",
-        GIT_CONFIG_VALUE_0: `store --file=${binding.materialPath}`,
-        GIT_CONFIG_KEY_1: "credential.useHttpPath",
-        GIT_CONFIG_VALUE_1: "true",
+        GIT_CONFIG_VALUE_0: "",
+        GIT_CONFIG_KEY_1: "credential.helper",
+        GIT_CONFIG_VALUE_1: `!f() { if [ "$1" = get ]; then git credential-store --file=${materialPath} get; fi; }; f`,
+        GIT_CONFIG_KEY_2: "credential.useHttpPath",
+        GIT_CONFIG_VALUE_2: "true",
       };
     }
     await this.require("cloneRepository", {

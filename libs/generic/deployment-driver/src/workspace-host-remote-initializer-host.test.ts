@@ -250,7 +250,9 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
         GIT_CONFIG_GLOBAL: configPath,
         ...system.commands[0]!.env,
       };
-      const query = `protocol=https\nhost=github.com\npath=${repositoryPath}\n\n`;
+      // useHttpPath requires a stored path to match a path-bearing request. A host-only
+      // fixture exercises the host-only protocol; it must not authorize arbitrary paths.
+      const query = `protocol=https\nhost=github.com\n${scoped ? `path=${repositoryPath}\n` : ""}\n`;
       const filled = spawnSync("git", ["credential", "fill"], {
         input: query,
         encoding: "utf8",
@@ -261,6 +263,15 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       expect(filled.status, filled.stderr).toBe(0);
       expect(filled.stdout).toContain("username=git-user\n");
       expect(filled.stdout).toContain("password=private-token-value\n");
+      const outsideScope = spawnSync("git", ["credential", "fill"], {
+        input: "protocol=https\nhost=github.com\npath=other/repository.git\n\n",
+        encoding: "utf8",
+        env,
+        cwd: directory,
+        timeout: 5_000,
+      });
+      expect(outsideScope.status).toBe(128);
+      expect(outsideScope.stdout).not.toContain("private-token-value");
       const result = spawnSync("git", ["credential", action], {
         input: filled.stdout + "\n",
         encoding: "utf8",
@@ -316,7 +327,11 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
     expect(command.env).toMatchObject({
       GIT_TERMINAL_PROMPT: "0",
       GIT_CONFIG_KEY_0: "credential.helper",
-      GIT_CONFIG_VALUE_0: `store --file=${MATERIAL_PATH}`,
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "credential.helper",
+      GIT_CONFIG_VALUE_1: expect.stringContaining(`--file='${MATERIAL_PATH}' get`),
+      GIT_CONFIG_KEY_2: "credential.useHttpPath",
+      GIT_CONFIG_VALUE_2: "true",
     });
     expect(JSON.stringify(command.args)).not.toContain(AUTHORIZATION_MATERIAL);
     expect(JSON.stringify(evidence)).not.toContain(MATERIAL_PATH);
@@ -436,8 +451,8 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       destination: "repository",
       credentialChannel: "git",
     });
-    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_0).toBe(
-      `store --file=${generation8Path}`,
+    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_1).toContain(
+      `--file='${generation8Path}' get`,
     );
   });
 
@@ -491,8 +506,8 @@ describe("ProductionWorkspaceHostRemoteInitializerHost private Git credentials",
       destination: "repository",
       credentialChannel: "git",
     });
-    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_0).toBe(
-      `store --file=${generation8Path}`,
+    expect(system.commands.at(-1)?.env?.GIT_CONFIG_VALUE_1).toContain(
+      `--file='${generation8Path}' get`,
     );
   });
 
