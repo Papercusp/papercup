@@ -1135,6 +1135,48 @@ function gitSyncPathsOverlap(a: string, b: string): boolean {
 }
 
 /**
+ * Map root-relative live-lock holdings into one repository's coordinate space.
+ *
+ * The lock plane speaks in superproject-root-relative paths, while `git add`
+ * inside a submodule speaks from that submodule's own root. Keep the mapping
+ * beside the exclusion logic so commit-time refreshes cannot accidentally
+ * reintroduce the old root/submodule path mismatch.
+ */
+export function mapLiveLockHoldingsForRepo(
+  holdings: readonly GitSyncLockHolding[],
+  repoRelPrefix: string,
+  submodulePaths: readonly string[] = [],
+): GitSyncLockHolding[] {
+  const normalizedPrefix = repoRelPrefix.trim().replace(/^\.\/+|\/+$/g, '');
+  const prefix = normalizedPrefix ? `${normalizedPrefix}/` : '';
+  const normalizedSubmodulePaths = submodulePaths
+    .map((path) => path.trim().replace(/^\.\/+|\/+$/g, ''))
+    .filter(Boolean);
+  const normalized = holdings
+    .map((holding) => ({
+      path: holding.path.trim().replace(/^\.\/+|\/+$/g, ''),
+      owner: holding.owner,
+      intent: holding.intent,
+      ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
+    }))
+    .filter((holding) => holding.path.length > 0);
+
+  if (prefix) {
+    return normalized
+      .filter((holding) => holding.path.startsWith(prefix))
+      .map((holding) => ({ ...holding, path: holding.path.slice(prefix.length) }))
+      .filter((holding) => holding.path.length > 0);
+  }
+
+  return normalized.filter(
+    (holding) =>
+      !normalizedSubmodulePaths.some(
+        (submodulePath) => holding.path === submodulePath || holding.path.startsWith(`${submodulePath}/`),
+      ),
+  );
+}
+
+/**
  * Expand a live-lock exclusion to the rest of the same edit cohort.
  *
  * A live file lock is a per-file lease, but an agent's edit is often a coherent
@@ -1308,6 +1350,13 @@ export interface RunGitSyncOpts {
   excludePaths?: string[];
   /** Structured live lock holdings. `excludePaths` remains the staging filter for clean-held paths. */
   liveLockHoldings?: GitSyncLockHolding[];
+  /**
+   * Re-read the live edit-lock plane immediately before staging each dirty repo.
+   * The callback returns superproject-root-relative holdings; runGitSync maps
+   * them into each repo's coordinate space before passing them to commitOneRepo.
+   * A rejected refresh fails closed and prevents that repo from staging.
+   */
+  refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
   /** Override the content-guard detector registry (tests / future extension).
    *  Defaults to DEFAULT_CONTENT_DETECTORS (mdx + smart-quotes). Pass [] to disable. */
   contentDetectors?: ContentDetector[];
@@ -3195,6 +3244,8 @@ interface CommitRepoOpts {
   excludePaths: string[];
   /** Protected paths in this repo's coordinate space, with holder provenance. */
   protectedHoldings: GitSyncLockHolding[];
+  /** Re-read live holdings immediately before staging this repo. */
+  refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
    *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
@@ -3241,6 +3292,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   let committedCount = 0;
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
+  let skippedPaths: GitSyncSkippedPath[] = [];
   // A torn index makes `git status` report an empty census and would therefore
   // strand every working-tree edit. Preflight before the first status call for
   // both the superproject and each submodule. The helper is idempotent, so the
@@ -3260,33 +3312,6 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   }
   const dirty = await dirtyFiles(runGit, repoPath);
   const dirtyPathCount = dirty.length;
-  const directSkippedHoldings = o.protectedHoldings.filter((holding) =>
-    dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
-  );
-  const atomicExclusions = expandAtomicLiveLockExclusions(dirty, o.protectedHoldings, o.attribution);
-  const skippedPaths = directSkippedHoldings
-    .map((holding) => ({
-      scope: o.scope,
-      path: holding.path,
-      owner: holding.owner,
-      intent: holding.intent,
-    }));
-  if (skippedPaths.length > 0) {
-    o.log(
-      `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
-        skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
-    );
-    if (atomicExclusions.groups.some((group) => group.paths.length > 1)) {
-      o.log(
-        `[git-sync] ${o.scope}: keeping ${atomicExclusions.groups.length} live edit cohort(s) atomic ` +
-          `(owner + goal_ref); deferring grouped dirty path(s): ` +
-          atomicExclusions.groups
-            .filter((group) => group.paths.length > 1)
-            .map((group) => `${group.owner}/${group.goalRef} [${group.paths.join(', ')}]`)
-            .join('; '),
-      );
-    }
-  }
   if (await isDirty(runGit, repoPath)) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
     if ('error' in attachment) {
@@ -3387,12 +3412,77 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       });
       if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
     }
+    // The action's initial lock census protects the setup window, but the
+    // submodule and guard phases above can take long enough for a peer to
+    // acquire another edit lock. Refresh as late as possible, before any
+    // attribution add or catch-all staging command, and fail closed if the
+    // lock plane cannot be read.
+    let protectedHoldings = o.protectedHoldings;
+    let effectiveExcludePaths = o.excludePaths;
+    if (o.refreshLiveLockHoldings) {
+      let refreshedHoldings: GitSyncLockHolding[];
+      try {
+        refreshedHoldings = await o.refreshLiveLockHoldings();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        o.log(`[git-sync] ${o.scope}: live lock refresh failed (fail-closed) — ${detail}`);
+        return {
+          committedLocal: false,
+          dirtyPathCount,
+          committedCount,
+          error: `live lock refresh failed (fail-closed): ${detail}`,
+          oversized,
+          contentErrors,
+          skippedPaths,
+        };
+      }
+      // Prefer the latest provenance for a path while retaining the original
+      // snapshot as a conservative fallback if a concurrent lock read is
+      // eventually consistent. New paths are always added to both projections.
+      const byPath = new Map<string, GitSyncLockHolding>();
+      for (const holding of o.protectedHoldings) byPath.set(holding.path, holding);
+      for (const holding of refreshedHoldings) {
+        const path = holding.path.trim();
+        if (path.length > 0) byPath.set(path, { ...holding, path });
+      }
+      protectedHoldings = [...byPath.values()];
+      effectiveExcludePaths = [...new Set([
+        ...o.excludePaths,
+        ...refreshedHoldings.map((holding) => holding.path.trim()).filter(Boolean),
+      ])];
+    }
+    const directSkippedHoldings = protectedHoldings.filter((holding) =>
+      dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
+    );
+    const atomicExclusions = expandAtomicLiveLockExclusions(dirty, protectedHoldings, o.attribution);
+    skippedPaths = directSkippedHoldings.map((holding) => ({
+      scope: o.scope,
+      path: holding.path,
+      owner: holding.owner,
+      intent: holding.intent,
+    }));
+    if (skippedPaths.length > 0) {
+      o.log(
+        `[git-sync] ${o.scope}: excluding live-locked dirty path(s) while committing the unlocked remainder: ` +
+          skippedPaths.map((p) => `${p.path} (${p.owner}: ${p.intent})`).join('; '),
+      );
+      if (atomicExclusions.groups.some((group) => group.paths.length > 1)) {
+        o.log(
+          `[git-sync] ${o.scope}: keeping ${atomicExclusions.groups.length} live edit cohort(s) atomic ` +
+            `(owner + goal_ref); deferring grouped dirty path(s): ` +
+            atomicExclusions.groups
+              .filter((group) => group.paths.length > 1)
+              .map((group) => `${group.owner}/${group.goalRef} [${group.paths.join(', ')}]`)
+              .join('; '),
+        );
+      }
+    }
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
     // still syncs this tick.
     const excludePaths = [
       ...new Set([
-        ...o.excludePaths,
+        ...effectiveExcludePaths,
         // liveLockHoldings is the provenance-rich authority. Keep its paths safe
         // even if a caller omitted the parallel excludePaths projection.
         ...atomicExclusions.paths,
@@ -4095,6 +4185,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       ...(holding.goalRef?.trim() ? { goalRef: holding.goalRef.trim() } : {}),
     }))
     .filter((holding) => holding.path.length > 0);
+  const refreshLiveLockHoldingsForRepo = opts.refreshLiveLockHoldings
+    ? (repoRelPrefix: string, knownSubmodulePaths: readonly string[]) => async (): Promise<GitSyncLockHolding[]> =>
+        mapLiveLockHoldingsForRepo(await opts.refreshLiveLockHoldings!(), repoRelPrefix, knownSubmodulePaths)
+    : undefined;
   const repoO = {
     remote,
     defaultBranch: branch,
@@ -4328,6 +4422,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
             .filter((holding) => holding.path.startsWith(`${s}/`))
             .map((holding) => ({ ...holding, path: holding.path.slice(s.length + 1) }))
             .filter((holding) => holding.path.length > 0),
+          refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.(s, subPaths),
           attribution: attributionMapForRepo(roster, s, repo),
         }),
       );
@@ -4435,6 +4530,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       scope: 'superproject',
       excludePaths: [...superprojectExcludePaths, ...deferredDeclarationPaths],
       protectedHoldings: superprojectProtectedHoldings,
+      refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', submodulePaths),
       attribution: attributionMapForRepo(roster, '', repo),
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
