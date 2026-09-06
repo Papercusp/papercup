@@ -5,8 +5,8 @@
   "shard": 28,
   "shardCount": 50,
   "readOnlyValidation": true,
-  "validationTimestamp": "2026-09-06T05:31:00Z",
-  "validationHead": "20c79ae5f5154ae2c346396f2e859fc08dab5010",
+  "validationTimestamp": "2026-09-06T22:31:19.921Z",
+  "validationHead": "a53a00f9076612b1171b62c66387b84401bf9237",
   "ledger": {
     "path": "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p003-dispositions.json",
     "commit": "f70ea2e6c4be8651b4d6488256d3b4886e83b7b6",
@@ -80,6 +80,82 @@
     "head": "20c79ae5f5154ae2c346396f2e859fc08dab5010",
     "testedPathsClean": true,
     "scope": "Fresh producer-contract verification at current HEAD; the already-terminal events:catalog candidate also carries a separate committed P-004 completion receipt."
+  },
+  "liveRevalidation": {
+    "revalidatedAt": "2026-09-06T22:31:19.921Z",
+    "head": "a53a00f9076612b1171b62c66387b84401bf9237",
+    "ledgerCommitPresent": true,
+    "ledgerSha256Verified": true,
+    "candidateRows": {
+      "count": 5,
+      "states": {
+        "open": 4,
+        "done": 1
+      },
+      "origins": {
+        "local": 5,
+        "remote": 0
+      },
+      "assignees": {
+        "unassigned": 5,
+        "assigned": 0
+      },
+      "claimHolds": 0,
+      "completionEvidence": 1,
+      "allBodiesRead": true
+    },
+    "canonicalRows": {
+      "count": 4,
+      "states": {
+        "open": 4,
+        "done": 0
+      },
+      "origins": {
+        "local": 4,
+        "remote": 0
+      },
+      "assignees": {
+        "unassigned": 4,
+        "assigned": 0
+      },
+      "claimHolds": 0,
+      "completionEvidence": 0,
+      "allBodiesRead": true
+    },
+    "referenceAudit": {
+      "candidateInboundEmpty": true,
+      "candidateOutboundEmpty": true,
+      "canonicalInboundNonEmpty": [
+        {
+          "id": "EI-21561474701768385",
+          "links": [
+            {
+              "rel": "duplicates",
+              "src": "EI-21726598105311174"
+            }
+          ]
+        }
+      ],
+      "canonicalOutboundEmpty": true,
+      "linkedSource": {
+        "id": "EI-21726598105311174",
+        "state": "dropped",
+        "outbound": [
+          "EI-21561474701768385",
+          "EI-21641955545829392"
+        ]
+      }
+    },
+    "focusedTests": {
+      "command": "npm run test:file -- packages/operator-core/lib/agent-tools/work_items/get-shape.test.ts packages/operator-core/lib/agent-tools/work_items/get.checkpoint.test.ts packages/operator-core/lib/agent-tools/plans/search-args.test.ts packages/operator-core/lib/agent-tools/sessions/search.test.ts packages/operator-core/lib/agent-tools/events/catalog.test.ts packages/operator-core/lib/agent-tools/improvements/capture.test.ts packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.test.ts",
+      "result": "PASS",
+      "testFiles": 7,
+      "tests": 322,
+      "skippedTests": 0,
+      "testedPathsClean": true
+    },
+    "disposition": "preserve all five; no feature/change mutation",
+    "evidence": "All five candidate bodies, four canonical survivor bodies, the linked dropped source row, both reference directions, governing P-004/D-003/D-006/D-009/D-010 decisions, current producer code, and the current focused suite were re-read live."
   },
   "entries": [
     {
