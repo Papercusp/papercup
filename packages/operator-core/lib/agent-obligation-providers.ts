@@ -311,7 +311,10 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     return defineAgentObligation({
       ...common,
       title: 'Goal worklist plans have live independent placement',
-      episode: `covered:${portfolio.assembledAt}`,
+      // assembledAt is an observation clock, not a policy generation. Keeping
+      // it out of identity prevents an unchanged satisfied placement from
+      // becoming a brand-new obligation episode on every turn.
+      episode: `covered:${input.sourceGeneration}`,
       status: 'satisfied',
       reason: 'every non-terminal worklist plan is working or independently led with a consistent canonical receipt',
       causalRank: 0,

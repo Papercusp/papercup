@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGENT_OBLIGATION_SCHEMA_VERSION,
   agentObligationId,
+  agentObligationSourceGeneration,
   authorityFromTurnOrigin,
   defineAgentObligation,
   evaluateAgentObligationBoundary,
@@ -57,6 +58,11 @@ function input(overrides: Partial<AgentObligationInput> = {}): AgentObligationIn
 }
 
 describe('agent obligation contract', () => {
+  it('derives a stable source generation independent of object key order', () => {
+    expect(agentObligationSourceGeneration({ b: 2, a: 1 })).toBe(agentObligationSourceGeneration({ a: 1, b: 2 }));
+    expect(agentObligationSourceGeneration({ a: 2 })).not.toBe(agentObligationSourceGeneration({ a: 1 }));
+  });
+
   it('builds a stable episode id independent of scope key insertion order', () => {
     const a = input();
     const b = input({
@@ -76,7 +82,11 @@ describe('agent obligation contract', () => {
       defineAgentObligation(
         input({
           status: 'unknown',
-          measurementFailure: { code: 'report-read-failed', detail: 'report union timed out', retry: 'retry the union' },
+          measurementFailure: {
+            code: 'report-read-failed',
+            detail: 'report union timed out',
+            retry: 'retry the union',
+          },
         }),
       ).status,
     ).toBe('unknown');
@@ -167,9 +177,7 @@ describe('agenda evaluation and ranking', () => {
         episode: 'satisfied',
         status: 'satisfied',
         action: undefined,
-        evidence: [
-          { ref: 'effect:1', observedAt: NOW, freshness: 'current', effect: 'independent verdict recorded' },
-        ],
+        evidence: [{ ref: 'effect:1', observedAt: NOW, freshness: 'current', effect: 'independent verdict recorded' }],
       }),
     );
     const notApplicable = defineAgentObligation(
@@ -282,9 +290,7 @@ describe('bounded projection', () => {
   });
 
   it('honours the conservative 400-token ceiling even with a larger character cap', () => {
-    const veryLong = defineAgentObligation(
-      input({ action: { kind: 'report', summary: 'x'.repeat(1_700) } }),
-    );
+    const veryLong = defineAgentObligation(input({ action: { kind: 'report', summary: 'x'.repeat(1_700) } }));
     const projected = projectAgentObligationAgenda({
       agenda: evaluateAgentObligations([veryLong], NOW),
       sink: 'leader-brief',
@@ -354,7 +360,11 @@ describe('operation/admission parity', () => {
     const obligation = defineAgentObligation(
       input({
         status: 'unknown',
-        measurementFailure: { code: 'telemetry-sparse', detail: 'native activity is not measured', retry: 'read source' },
+        measurementFailure: {
+          code: 'telemetry-sparse',
+          detail: 'native activity is not measured',
+          retry: 'read source',
+        },
         boundary: {
           boundary: 'activity:report',
           refusalCode: 'activity-unmeasured',

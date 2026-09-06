@@ -15,13 +15,7 @@ export const AGENT_OBLIGATION_DEFAULT_MAX_ENTRIES = 3;
 export const AGENT_OBLIGATION_DEFAULT_MAX_ESTIMATED_TOKENS = 400;
 
 export type AgentObligationFamily = 'plan-placement' | 'owner-report' | 'independent-verification';
-export type AgentObligationStatus =
-  | 'due'
-  | 'in-progress'
-  | 'blocked'
-  | 'satisfied'
-  | 'not-applicable'
-  | 'unknown';
+export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';
 
@@ -222,6 +216,15 @@ function digest(value: unknown, chars = 20): string {
   return createHash('sha256').update(stableJson(value)).digest('hex').slice(0, chars);
 }
 
+/**
+ * Stable provider generation over canonical writer values. Callers deliberately
+ * omit observation clocks before calling this: a per-turn timestamp would make
+ * an unchanged agenda look new on every wake and defeat delivery deduplication.
+ */
+export function agentObligationSourceGeneration(value: unknown): string {
+  return digest(value);
+}
+
 export function authorityFromTurnOrigin(sourceRef: string, turnOrigin: SessionTurnOrigin): AgentObligationAuthority {
   if (turnOrigin === 'owner-typed' || turnOrigin === 'owner-dialog') {
     return { kind: 'owner', sourceRef, turnOrigin };
@@ -232,7 +235,9 @@ export function authorityFromTurnOrigin(sourceRef: string, turnOrigin: SessionTu
   return { kind: 'agent', sourceRef, turnOrigin };
 }
 
-export function agentObligationId(input: Pick<AgentObligationInput, 'ruleId' | 'ruleRevision' | 'scope' | 'episode'>): string {
+export function agentObligationId(
+  input: Pick<AgentObligationInput, 'ruleId' | 'ruleRevision' | 'scope' | 'episode'>,
+): string {
   return `obl:${input.ruleId}:${digest({
     revision: input.ruleRevision,
     scope: input.scope,
@@ -428,10 +433,7 @@ export function projectAgentObligationAgenda(input: {
   maxEstimatedTokens?: number;
 }): AgentObligationProjection {
   const maxEntries = Math.max(0, input.maxEntries ?? AGENT_OBLIGATION_DEFAULT_MAX_ENTRIES);
-  const maxEstimatedTokens = Math.max(
-    0,
-    input.maxEstimatedTokens ?? AGENT_OBLIGATION_DEFAULT_MAX_ESTIMATED_TOKENS,
-  );
+  const maxEstimatedTokens = Math.max(0, input.maxEstimatedTokens ?? AGENT_OBLIGATION_DEFAULT_MAX_ESTIMATED_TOKENS);
   const charBudgetFromTokens = maxEstimatedTokens * 4;
   const maxChars = Math.max(0, Math.min(input.maxChars ?? charBudgetFromTokens, charBudgetFromTokens));
   const capped = input.agenda.primary.slice(0, maxEntries);
@@ -506,7 +508,9 @@ export function evaluateAgentObligationBoundary(input: {
       boundary: input.boundary,
       allowed: true,
       warning: Boolean(policy && policy.boundary === input.boundary && agentObligationIsActionable(input.obligation)),
-      reason: policy ? 'advisory obligation does not refuse this operation' : 'obligation does not govern this boundary',
+      reason: policy
+        ? 'advisory obligation does not refuse this operation'
+        : 'obligation does not govern this boundary',
       evidenceRefs,
     };
   }
