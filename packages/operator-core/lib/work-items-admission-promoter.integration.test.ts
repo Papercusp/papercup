@@ -12,6 +12,7 @@ const {
   admissionPairKey,
   judgedPairsMissingAdjudication,
   persistAdmissionPlan,
+  previewReviewedAdmissionCleanup,
   readAdmissionMergeSnapshots,
   readPendingBatch,
   readWorkItemAdmissionSnapshot,
@@ -173,6 +174,7 @@ async function seedItem(input: {
   /** Defaults to the run's own harness/workspace; set to seed a NEIGHBOUR the sweep may or may not reach. */
   harness?: string;
   workspaceId?: string;
+  payload?: Record<string, unknown>;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
@@ -181,7 +183,8 @@ async function seedItem(input: {
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, 'bug',
-            ${input.admission === undefined ? 'pending' : input.admission}, ${input.conditionKey ?? null}, NULL, '{}'::jsonb,
+            ${input.admission === undefined ? 'pending' : input.admission}, ${input.conditionKey ?? null}, NULL,
+            ${JSON.stringify(input.payload ?? {})}::text::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'})`;
@@ -200,6 +203,81 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it('previews reviewed cleanup with current readiness and preserves no-signal/insufficient evidence', async () => {
+    const notReady = {
+      implementationReadiness: {
+        schemaVersion: 'implementation-readiness-v1',
+        status: 'not-ready',
+        source: 'triage-freshness',
+        reason: 'current code still carries the reported gap',
+        updatedAt: '2026-08-26T11:59:00.000Z',
+      },
+    };
+    for (const [id, payload] of [
+      ['WI-a', {}],
+      ['WI-b', {}],
+      ['WI-c', notReady],
+      ['WI-d', {}],
+    ] as const) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:clone', payload });
+    }
+
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals: [
+        {
+          itemId: 'WI-a',
+          action: 'merge',
+          canonicalId: 'WI-b',
+          evidence: { status: 'ready', ref: 'ledger#a', reason: 'current full-body equivalence verified' },
+        },
+        {
+          itemId: 'WI-c',
+          action: 'merge',
+          canonicalId: 'WI-b',
+          evidence: { status: 'ready', ref: 'ledger#c', reason: 'external review proposed merge' },
+        },
+        {
+          itemId: 'WI-d',
+          action: 'preserve',
+          evidence: { status: 'unknown', ref: 'ledger#d', reason: 'no candidate signal' },
+        },
+        {
+          itemId: 'WI-missing',
+          action: 'merge',
+          canonicalId: 'WI-b',
+          evidence: { status: 'ready', ref: 'ledger#missing', reason: 'stale ledger proposal' },
+        },
+      ],
+    });
+
+    expect(preview).toMatchObject({
+      schemaVersion: 'reviewed-admission-cleanup-preview-v1',
+      mutates: false,
+      modelCalled: false,
+      counts: { total: 4, eligible: 1, preserved: 2, unknown: 1 },
+      entries: [
+        {
+          itemId: 'WI-a',
+          outcome: 'eligible',
+          fingerprints: { item: expect.any(String), canonical: expect.any(String) },
+        },
+        {
+          itemId: 'WI-c',
+          outcome: 'preserved',
+          reasons: [{ code: 'implementation-readiness-not-ready', endpointId: 'WI-c' }],
+        },
+        { itemId: 'WI-d', outcome: 'preserved', reasons: [{ code: 'evidence-unknown' }] },
+        { itemId: 'WI-missing', outcome: 'unknown', reasons: [{ code: 'snapshot-missing' }] },
+      ],
+    });
+    expect(preview.inputHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.previewHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    expect(await db.sql`SELECT feature_id FROM harness_shared.work_items WHERE status <> 'open'`).toHaveLength(0);
+  });
+
   it('replays six vitest clones: one promotes and five merge into one canonical', async () => {
     for (let i = 1; i <= 6; i += 1) await seedItem({ id: `WI-${i}`, createdAtMs: NOW - 20_000 + i });
     const llmCall = judgementCall('r-finding-merge');

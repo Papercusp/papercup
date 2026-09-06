@@ -2033,6 +2033,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         planPromoterDispositions(stageItems, input.pairs, judged.judgements),
         input.items,
       );
+      const reviewedReadyIds = plan.dispositions.flatMap((disposition) =>
+        disposition.action === 'merge' ? [disposition.itemId, disposition.canonicalId] : [],
+      );
       let committed:
         | { census: AdmissionCensusRunResult; scopedPairsAfter: number; stage: BulkDedupStageResult }
         | undefined;
@@ -2051,6 +2054,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           withinTransaction: true,
           promoteUnmerged: false,
           mergeAnyAdmission: true,
+          requireImplementationReadiness: true,
+          reviewedReadyIds,
           actor: BULK_DEDUP_ACTOR,
         });
         // A guarded refusal is an intentional no-mutation outcome for the

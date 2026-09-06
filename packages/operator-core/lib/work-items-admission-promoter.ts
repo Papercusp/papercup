@@ -19,7 +19,11 @@ import { z } from 'zod';
 import { activeExternalBlockers } from './external-blockers';
 import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
-import { hasStrictOwnerAction, readAgentReviewState } from './harness/improvements/agent-review-policy';
+import {
+  hasStrictOwnerAction,
+  readAgentReviewState,
+  readImplementationReadiness,
+} from './harness/improvements/agent-review-policy';
 import { selectCanonicalIssue, recordIssueOccurrence } from './issue-occurrence-ledger';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
@@ -148,6 +152,8 @@ export interface AdmissionMergeGuardRefusal {
     | 'claim-held'
     | 'blocked-state'
     | 'review-gated'
+    | 'implementation-readiness-unknown'
+    | 'implementation-readiness-not-ready'
     | 'owner-blocked'
     | 'external-blocked'
     | 'active-dependency'
@@ -168,6 +174,65 @@ export interface AdmissionPlanPersistenceResult {
   adjudicationsInserted: number;
   guardRefusals: AdmissionMergeGuardRefusal[];
   uniqueRowsChanged: number;
+}
+
+export type ReviewedAdmissionEvidenceStatus = 'ready' | 'unknown' | 'not-ready';
+
+export interface ReviewedAdmissionCleanupProposal {
+  itemId: string;
+  action: 'merge' | 'preserve';
+  canonicalId?: string;
+  evidence: {
+    status: ReviewedAdmissionEvidenceStatus;
+    ref: string;
+    reason: string;
+    sourceSha256?: string;
+  };
+}
+
+export interface ReviewedAdmissionPreviewReason {
+  code: AdmissionMergeGuardRefusal['reason'] | 'evidence-unknown' | 'evidence-not-ready' | 'proposal-preserve';
+  detail: string;
+  endpointId?: string;
+}
+
+export interface ReviewedAdmissionRetainedObligations {
+  producer: { conditionKey: string | null; watchdogKey: string | null };
+  sourcePlan: { slug: string; itemIds: string[] } | null;
+  references: { outgoing: string[]; incoming: string[] };
+  activeDependencies: AdmissionMergeDependency[];
+  completion: {
+    authority: string | null;
+    ref: unknown;
+    terminalRef: string | null;
+  };
+  readiness:
+    | { state: 'absent' | 'malformed' }
+    | { state: 'current'; status: ReviewedAdmissionEvidenceStatus; source: string; reason: string };
+}
+
+export interface ReviewedAdmissionCleanupPreview {
+  schemaVersion: 'reviewed-admission-cleanup-preview-v1';
+  workspaceId: string;
+  harnessSlug: string;
+  inputHash: string;
+  previewHash: string;
+  mutates: false;
+  modelCalled: false;
+  counts: { total: number; eligible: number; preserved: number; unknown: number };
+  entries: Array<{
+    itemId: string;
+    action: 'merge' | 'preserve';
+    canonicalId: string | null;
+    outcome: 'eligible' | 'preserved' | 'unknown';
+    evidence: ReviewedAdmissionCleanupProposal['evidence'];
+    reasons: ReviewedAdmissionPreviewReason[];
+    fingerprints: { item: string | null; canonical: string | null };
+    retained: {
+      item: ReviewedAdmissionRetainedObligations | null;
+      canonical: ReviewedAdmissionRetainedObligations | null;
+    };
+  }>;
 }
 
 export interface PromoterPair {
@@ -324,9 +389,9 @@ export function buildAdmissionReviewMetadata(input: {
     retryAttempts: Math.max(0, Math.floor(input.retryAttempts ?? 0)),
     lastRetryAt: input.state === 'pending' ? null : now,
     reviewedAt: reviewed ? now : null,
-    reviewedBy: reviewed ? input.reviewedBy ?? ADMISSION_REVIEW_RETRY_OWNER : null,
+    reviewedBy: reviewed ? (input.reviewedBy ?? ADMISSION_REVIEW_RETRY_OWNER) : null,
     terminalAt: terminal ? now : null,
-    terminalOutcome: terminal ? input.terminalOutcome ?? 'terminal' : null,
+    terminalOutcome: terminal ? (input.terminalOutcome ?? 'terminal') : null,
     alert: {
       key: ADMISSION_REVIEW_ALERT_KEY,
       state: input.alertState ?? (input.state === 'pending' ? 'open' : 'cleared'),
@@ -394,11 +459,7 @@ function finiteMetric(value: unknown): number | null {
 }
 
 function metricUnit(value: unknown): AdmissionRunMetricUnit {
-  return value === 'items' ||
-    value === 'pairs' ||
-    value === 'links' ||
-    value === 'parks' ||
-    value === 'snapshots'
+  return value === 'items' || value === 'pairs' || value === 'links' || value === 'parks' || value === 'snapshots'
     ? value
     : 'unknown';
 }
@@ -442,7 +503,8 @@ export function deriveAdmissionRunOutcome(input: {
   const detail = input.detail ?? {};
   const explicit = detail.outcome;
   const explicitFailureReason = typeof detail.error === 'string' && detail.error ? detail.error : null;
-  const explicitBlockedReason = typeof detail.blockedReason === 'string' && detail.blockedReason ? detail.blockedReason : null;
+  const explicitBlockedReason =
+    typeof detail.blockedReason === 'string' && detail.blockedReason ? detail.blockedReason : null;
   if (explicit && typeof explicit === 'object') {
     return normalizeAdmissionRunOutcome(explicit, {
       failureReason: explicitFailureReason,
@@ -513,11 +575,9 @@ export function deriveAdmissionRunOutcome(input: {
     });
   }
   if (input.runKind === 'bulk-stage') {
-    const attempted =
-      finiteMetric(detail.scopedPairsBefore) ??
-      finiteMetric(detail.pairs) ??
-      input.batchSize;
-    const verdicts = detail.verdicts && typeof detail.verdicts === 'object' ? (detail.verdicts as Record<string, unknown>) : {};
+    const attempted = finiteMetric(detail.scopedPairsBefore) ?? finiteMetric(detail.pairs) ?? input.batchSize;
+    const verdicts =
+      detail.verdicts && typeof detail.verdicts === 'object' ? (detail.verdicts as Record<string, unknown>) : {};
     const successful =
       Object.values(verdicts).reduce<number>((sum, value) => sum + (finiteMetric(value) ?? 0), 0) || null;
     const uniqueRowsChanged = input.merged;
@@ -2191,8 +2251,7 @@ export async function readWorkItemAdmissionSnapshot(opts: {
         held: numberOrNull(row.held),
         autoPromotedUnreviewed: numberOrNull(row.auto_promoted_unreviewed),
       }),
-      outcomeSource:
-        row.detail?.outcome && typeof row.detail.outcome === 'object' ? 'writer' : 'legacy-derived',
+      outcomeSource: row.detail?.outcome && typeof row.detail.outcome === 'object' ? 'writer' : 'legacy-derived',
       detail: row.detail,
     };
   });
@@ -2289,6 +2348,7 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
 function endpointProtection(
   snapshot: AdmissionMergeSnapshot,
   role: MergeEndpointRole,
+  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   const payload = recordValue(snapshot.payload);
   if (snapshot.origin === 'remote') {
@@ -2306,6 +2366,34 @@ function endpointProtection(
   const review = readAgentReviewState(snapshot.payload);
   if (review?.status === 'pending' || review?.status === 'revision-requested') {
     return { reason: 'review-gated', detail: `${role} ${snapshot.id} is agent-review ${review.status}` };
+  }
+  if (options.requireImplementationReadiness && (role === 'loser' || role === 'canonical')) {
+    const enrolled = Object.prototype.hasOwnProperty.call(payload, 'implementationReadiness');
+    const readiness = readImplementationReadiness(snapshot.payload);
+    if (enrolled && !readiness) {
+      return {
+        reason: 'implementation-readiness-unknown',
+        detail: `${role} ${snapshot.id} carries malformed or unsupported implementation readiness`,
+      };
+    }
+    if (readiness?.status === 'unknown') {
+      return {
+        reason: 'implementation-readiness-unknown',
+        detail: `${role} ${snapshot.id} implementation readiness is unknown: ${readiness.reason}`,
+      };
+    }
+    if (readiness?.status === 'not-ready') {
+      return {
+        reason: 'implementation-readiness-not-ready',
+        detail: `${role} ${snapshot.id} is not ready: ${readiness.reason}`,
+      };
+    }
+    if (!readiness && !options.reviewedEvidenceReady) {
+      return {
+        reason: 'implementation-readiness-unknown',
+        detail: `${role} ${snapshot.id} predates implementation readiness and has no current reviewed evidence`,
+      };
+    }
   }
   if (hasStrictOwnerAction(snapshot.payload)) {
     return { reason: 'owner-blocked', detail: `${role} ${snapshot.id} requires a strict owner capability` };
@@ -2395,6 +2483,7 @@ function snapshotIdentityProblem(
   captured: AdmissionMergeSnapshot | undefined,
   live: AdmissionMergeSnapshot | undefined,
   role: MergeEndpointRole,
+  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   if (!captured) return { reason: 'snapshot-missing', detail: `${role} was not captured before judging` };
   if (!live) {
@@ -2411,7 +2500,169 @@ function snapshotIdentityProblem(
         `(${captured.fingerprint.slice(0, 12)} -> ${live.fingerprint.slice(0, 12)})`,
     };
   }
-  return endpointProtection(live, role);
+  return endpointProtection(live, role, options);
+}
+
+function retainedAdmissionObligations(snapshot: AdmissionMergeSnapshot): ReviewedAdmissionRetainedObligations {
+  const payload = recordValue(snapshot.payload);
+  const readiness = readImplementationReadiness(snapshot.payload);
+  const enrolled = Object.prototype.hasOwnProperty.call(payload, 'implementationReadiness');
+  return {
+    producer: {
+      conditionKey: snapshot.conditionKey,
+      watchdogKey: typeof payload.watchdogKey === 'string' ? payload.watchdogKey.trim() || null : null,
+    },
+    sourcePlan: snapshot.sourcePlanSlug
+      ? { slug: snapshot.sourcePlanSlug, itemIds: [...snapshot.sourcePlanItemIds] }
+      : null,
+    references: {
+      outgoing: [...snapshot.seeAlso],
+      incoming: snapshot.incomingSeeAlso.map((entry) => entry.sourceId),
+    },
+    activeDependencies: snapshot.dependencies.filter((dependency) => dependency.active),
+    completion: {
+      authority: snapshot.completionAuthority,
+      ref: snapshot.completionRef,
+      terminalRef: snapshot.terminalCompletionRef,
+    },
+    readiness: readiness
+      ? { state: 'current', status: readiness.status, source: readiness.source, reason: readiness.reason }
+      : { state: enrolled ? 'malformed' : 'absent' },
+  };
+}
+
+/**
+ * Read-only historical-cleanup preflight over an explicitly reviewed ledger.
+ * It deliberately reuses the same endpoint/reference reader and protection
+ * classifier as persistence. A `ready` ledger entry may supply the affirmative
+ * current evidence for a legacy row with no readiness payload, but it can never
+ * override an enrolled unknown/not-ready/malformed verdict.
+ */
+export async function previewReviewedAdmissionCleanup(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    proposals: readonly ReviewedAdmissionCleanupProposal[];
+  },
+): Promise<ReviewedAdmissionCleanupPreview> {
+  const proposals = input.proposals
+    .map((proposal) => ({
+      itemId: proposal.itemId.trim(),
+      action: proposal.action,
+      ...(proposal.canonicalId?.trim() ? { canonicalId: proposal.canonicalId.trim() } : {}),
+      evidence: {
+        status: proposal.evidence.status,
+        ref: proposal.evidence.ref.trim(),
+        reason: proposal.evidence.reason.trim(),
+        ...(proposal.evidence.sourceSha256?.trim() ? { sourceSha256: proposal.evidence.sourceSha256.trim() } : {}),
+      },
+    }))
+    .sort((a, b) => a.itemId.localeCompare(b.itemId));
+  if (proposals.length === 0) throw new Error('reviewed cleanup preview requires at least one proposal');
+  const seen = new Set<string>();
+  for (const proposal of proposals) {
+    if (!proposal.itemId) throw new Error('reviewed cleanup proposal itemId is required');
+    if (seen.has(proposal.itemId)) throw new Error(`reviewed cleanup proposal repeated itemId ${proposal.itemId}`);
+    seen.add(proposal.itemId);
+    if (proposal.action === 'merge' && !proposal.canonicalId) {
+      throw new Error(`reviewed cleanup merge ${proposal.itemId} requires canonicalId`);
+    }
+    if (proposal.action === 'preserve' && proposal.canonicalId) {
+      throw new Error(`reviewed cleanup preserve ${proposal.itemId} must not name canonicalId`);
+    }
+    if (!proposal.evidence.ref || !proposal.evidence.reason) {
+      throw new Error(`reviewed cleanup proposal ${proposal.itemId} requires evidence ref and reason`);
+    }
+  }
+  const ids = proposals.flatMap((proposal) => [
+    proposal.itemId,
+    ...(proposal.canonicalId ? [proposal.canonicalId] : []),
+  ]);
+  const snapshots = await readAdmissionMergeSnapshots(sql, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    ids,
+  });
+  const entries: ReviewedAdmissionCleanupPreview['entries'] = proposals.map((proposal) => {
+    const item = snapshots.get(proposal.itemId);
+    const canonical = proposal.canonicalId ? snapshots.get(proposal.canonicalId) : undefined;
+    const reasons: ReviewedAdmissionPreviewReason[] = [];
+    let outcome: 'eligible' | 'preserved' | 'unknown';
+    if (!item || (proposal.action === 'merge' && !canonical)) {
+      outcome = 'unknown';
+      reasons.push({
+        code: 'snapshot-missing',
+        detail: !item
+          ? `candidate ${proposal.itemId} does not resolve in the requested workspace/harness`
+          : `canonical ${proposal.canonicalId} does not resolve in the requested workspace/harness`,
+        endpointId: !item ? proposal.itemId : proposal.canonicalId,
+      });
+    } else if (proposal.action === 'preserve') {
+      outcome = 'preserved';
+      reasons.push({
+        code:
+          proposal.evidence.status === 'unknown'
+            ? 'evidence-unknown'
+            : proposal.evidence.status === 'not-ready'
+              ? 'evidence-not-ready'
+              : 'proposal-preserve',
+        detail: proposal.evidence.reason,
+        endpointId: proposal.itemId,
+      });
+    } else if (proposal.evidence.status !== 'ready') {
+      outcome = proposal.evidence.status === 'unknown' ? 'unknown' : 'preserved';
+      reasons.push({
+        code: proposal.evidence.status === 'unknown' ? 'evidence-unknown' : 'evidence-not-ready',
+        detail: proposal.evidence.reason,
+        endpointId: proposal.itemId,
+      });
+    } else {
+      const protectionOptions = { requireImplementationReadiness: true, reviewedEvidenceReady: true };
+      const candidateProblem = endpointProtection(item, 'loser', protectionOptions);
+      const canonicalProblem = endpointProtection(canonical!, 'canonical', protectionOptions);
+      const pairProblem = candidateProblem || canonicalProblem ? null : mergePairProtection(item, canonical!);
+      for (const [endpointId, problem] of [
+        [proposal.itemId, candidateProblem],
+        [proposal.canonicalId!, canonicalProblem],
+        [proposal.itemId, pairProblem],
+      ] as const) {
+        if (problem) reasons.push({ ...problem, code: problem.reason, endpointId });
+      }
+      outcome = reasons.length > 0 ? 'preserved' : 'eligible';
+    }
+    return {
+      itemId: proposal.itemId,
+      action: proposal.action,
+      canonicalId: proposal.canonicalId ?? null,
+      outcome,
+      evidence: proposal.evidence,
+      reasons,
+      fingerprints: { item: item?.fingerprint ?? null, canonical: canonical?.fingerprint ?? null },
+      retained: {
+        item: item ? retainedAdmissionObligations(item) : null,
+        canonical: canonical ? retainedAdmissionObligations(canonical) : null,
+      },
+    };
+  });
+  const inputHash = createHash('sha256').update(JSON.stringify(proposals)).digest('hex');
+  const previewHash = createHash('sha256').update(JSON.stringify({ inputHash, entries })).digest('hex');
+  return {
+    schemaVersion: 'reviewed-admission-cleanup-preview-v1',
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    inputHash,
+    previewHash,
+    mutates: false,
+    modelCalled: false,
+    counts: {
+      total: entries.length,
+      eligible: entries.filter((entry) => entry.outcome === 'eligible').length,
+      preserved: entries.filter((entry) => entry.outcome === 'preserved').length,
+      unknown: entries.filter((entry) => entry.outcome === 'unknown').length,
+    },
+    entries,
+  };
 }
 
 interface AdmissionMergeMutableRow {
@@ -2956,6 +3207,10 @@ interface PersistAdmissionPlanInput {
    * WHERE clause only when it actually carries an out-of-batch loser.
    */
   mergeAnyAdmission?: boolean;
+  /** Historical cleanup requires readiness; current reviewed evidence may
+   * supply it only for legacy endpoints where the payload key is absent. */
+  requireImplementationReadiness?: boolean;
+  reviewedReadyIds?: readonly string[];
   actor?: string;
 }
 
@@ -3103,6 +3358,11 @@ async function persistAdmissionPlanInTransaction(
 ): Promise<AdmissionPlanPersistenceResult> {
   const actor = input.actor ?? PROMOTER_ACTOR;
   const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const reviewedReadyIds = new Set(input.reviewedReadyIds ?? []);
+  const protectionOptions = (itemId: string) => ({
+    requireImplementationReadiness: input.requireImplementationReadiness,
+    reviewedEvidenceReady: reviewedReadyIds.has(itemId),
+  });
   const relevantIds = [
     ...new Set(
       input.plan.dispositions
@@ -3148,6 +3408,7 @@ async function persistAdmissionPlanInTransaction(
         capturedById.get(disposition.itemId),
         liveById.get(disposition.itemId),
         'hold',
+        protectionOptions(disposition.itemId),
       );
       if (problem) registerRefusal(disposition.itemId, null, problem);
       else approvedDispositionIds.add(disposition.itemId);
@@ -3158,6 +3419,7 @@ async function persistAdmissionPlanInTransaction(
         capturedById.get(disposition.itemId),
         liveById.get(disposition.itemId),
         'promote',
+        protectionOptions(disposition.itemId),
       );
       if (problem) registerRefusal(disposition.itemId, null, problem);
       else approvedDispositionIds.add(disposition.itemId);
@@ -3170,14 +3432,24 @@ async function persistAdmissionPlanInTransaction(
       replayedIds.add(disposition.itemId);
       continue;
     }
-    const loserProblem = snapshotIdentityProblem(capturedLoser, liveLoser, 'loser');
+    const loserProblem = snapshotIdentityProblem(
+      capturedLoser,
+      liveLoser,
+      'loser',
+      protectionOptions(disposition.itemId),
+    );
     if (loserProblem) {
       registerRefusal(disposition.itemId, disposition.canonicalId, loserProblem);
       continue;
     }
     const capturedCanonical = capturedById.get(disposition.canonicalId);
     const liveCanonical = liveById.get(disposition.canonicalId);
-    const canonicalProblem = snapshotIdentityProblem(capturedCanonical, liveCanonical, 'canonical');
+    const canonicalProblem = snapshotIdentityProblem(
+      capturedCanonical,
+      liveCanonical,
+      'canonical',
+      protectionOptions(disposition.canonicalId),
+    );
     if (canonicalProblem) {
       registerRefusal(disposition.itemId, disposition.canonicalId, canonicalProblem);
       continue;
@@ -3197,6 +3469,7 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.a),
       liveById.get(adjudication.a),
       'reference',
+      protectionOptions(adjudication.a),
     );
     if (aProblem) {
       registerRefusal(adjudication.a, null, aProblem);
@@ -3206,6 +3479,7 @@ async function persistAdmissionPlanInTransaction(
       capturedById.get(adjudication.b),
       liveById.get(adjudication.b),
       'reference',
+      protectionOptions(adjudication.b),
     );
     if (bProblem) {
       registerRefusal(adjudication.b, null, bProblem);
@@ -3727,11 +4001,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
       oldestAgeMs: null,
       sloMs: DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
     };
-    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(
-      sql,
-      opts.workspaceId,
-      opts.harnessSlug,
-    );
+    const promotedToFirstClaim = await readPromotedToFirstClaimForLedger(sql, opts.workspaceId, opts.harnessSlug);
     await finishRun(sql, {
       runId,
       batchSize: autoPromoted.length,

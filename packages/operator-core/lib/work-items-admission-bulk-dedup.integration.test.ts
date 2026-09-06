@@ -266,6 +266,49 @@ async function runBlockedMergeQualityGate(
 }
 
 describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
+  it('preserves a merge endpoint with explicit unknown implementation readiness', async () => {
+    await seed();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_build_object('implementationReadiness', jsonb_build_object(
+           'schemaVersion', 'implementation-readiness-v1',
+           'status', 'unknown',
+           'source', 'triage-freshness',
+           'reason', 'current implementation evidence is absent',
+           'updatedAt', '2026-08-26T11:59:00.000Z'
+         ))
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'b'`;
+
+    await expect(
+      runBulk({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-readiness-unknown',
+        sql: db.sql,
+        census: { chunkCount: 2, targetTokens: 1_000 },
+        llmCall: async () => ({
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure' }] },
+          inputTokens: 100,
+          outputTokens: 20,
+        }),
+      }),
+    ).rejects.toThrow(/merge guard refused 1 endpoint/);
+
+    const [ledger] = await db.sql<Array<{ status: string; reason: string; changed: number }>>`
+      SELECT detail->>'status' AS status,
+             detail #>> '{guardRefusals,0,reason}' AS reason,
+             (detail #>> '{outcome,uniqueRowsChanged}')::int AS changed
+        FROM harness_shared.admission_runs
+       WHERE id = 'bulk-readiness-unknown-stage-1'`;
+    expect(ledger).toEqual({
+      status: 'blocked',
+      reason: 'implementation-readiness-unknown',
+      changed: 0,
+    });
+    expect(await db.sql`SELECT 1 FROM harness_shared.work_items WHERE status = 'dropped'`).toHaveLength(0);
+  }, 60_000);
+
   it('judges the pinned targeted shard, merges the clone, and records converged stage evidence', async () => {
     await seed();
     const result = await runBulk({
