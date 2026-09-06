@@ -64,7 +64,7 @@ const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
   return { id: canonical, created: result.created };
 };
 
-const productionLinkUmbrella: DeltaSweepUmbrellaLinker = async (input) => {
+export const productionLinkUmbrella: DeltaSweepUmbrellaLinker = async (input) => {
   const umbrella = await resolveWorkItemRef(input.umbrellaId, input.harnessSlug);
   if (!umbrella) throw new Error(`delta-sweep umbrella '${input.umbrellaId}' could not be resolved after capture`);
   let written = 0;

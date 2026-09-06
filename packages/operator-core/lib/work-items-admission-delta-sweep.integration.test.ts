@@ -8,8 +8,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { runWorkItemAdmissionDeltaSweep } = await import('./work-items-admission-delta-sweep');
+const { readDeltaSweepContext, runWorkItemAdmissionDeltaSweep } = await import('./work-items-admission-delta-sweep');
 const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
+const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
 
 const WS = 'default';
 const HARNESS = 'papercusp';
@@ -95,12 +96,18 @@ beforeEach(async () => {
     harness_shared.delta_sweep_test_links`;
 });
 
-async function seedItem(input: { id: string; title: string; summary: string; admittedAt: string }): Promise<void> {
+async function seedItem(input: {
+  id: string;
+  title: string;
+  summary: string;
+  admittedAt: string;
+  status?: string;
+}): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
        admission, admitted_at, admitted_by, condition_key, payload)
-    VALUES (${WS}, ${HARNESS}, ${input.id}, ${input.title}, ${input.summary}, 'open', 'bug',
+    VALUES (${WS}, ${HARNESS}, ${input.id}, ${input.title}, ${input.summary}, ${input.status ?? 'open'}, 'bug',
             'admitted', ${input.admittedAt}::timestamptz, 'system:promoter', NULL, NULL)`;
 }
 
@@ -255,6 +262,30 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
     expect(llmCall).toHaveBeenCalledTimes(1);
     expect(fileUmbrella).toHaveBeenCalledTimes(1);
     expect(linkUmbrella).toHaveBeenCalledTimes(1);
+  }, 60_000);
+
+  it('excludes every cross-family terminal state from current and title context', async () => {
+    for (const [index, status] of [...ALL_TERMINAL_STATUSES].entries()) {
+      await seedItem({
+        id: `WI-terminal-${status}`,
+        title: `Terminal ${status} must stay out of delta context`,
+        summary: `A ${status} row is historical evidence, not a current contributor.`,
+        status,
+        admittedAt: `2026-08-26T11:${30 + index}:00Z`,
+      });
+    }
+
+    const context = await readDeltaSweepContext(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      nowMs: NOW,
+      recentWindowMinutes: 60,
+      titleWindowHours: 24,
+      clusterExemplarsPerShard: 2,
+    });
+
+    expect(context.recentItems).toEqual([]);
+    expect(context.last24hTitles).toEqual([]);
   }, 60_000);
 
   /**
