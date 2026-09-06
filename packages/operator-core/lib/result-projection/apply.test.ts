@@ -854,6 +854,57 @@ describe('applyResultProjection — structured-body and custom truncation disclo
     expect(reportOf(out).notes).toHaveLength(1);
   });
 
+  it('warns when pick drops non-empty selection partiality metadata', () => {
+    const body = JSON.stringify({
+      results: [{ decisions: [{ id: 'D-007', title: 'one' }] }],
+      decisionSelection: {
+        requested: ['D-005', 'D-006', 'D-007'],
+        matched: ['D-005', 'D-006', 'D-007'],
+        missing: [],
+        returned: ['D-005', 'D-006'],
+        deferred: ['D-007'],
+      },
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['results[].decisions[].id', 'results[].decisions[].title'] }),
+      { toolName: 'plans:get' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({
+      results: [{ decisions: [{ id: 'D-007', title: 'one' }] }],
+    });
+    const footer = footerOf(out);
+    expect(footer).toContain('partial-result metadata');
+    expect(footer).toContain('$.decisionSelection.deferred');
+    expect(footer).toContain('not a complete population finding');
+    expect(footer).toContain("payloadTier:'full'");
+    expect(reportOf(out).notes.join(' ')).toContain('pick may also have dropped the marker itself');
+  });
+
+  it('does not warn for an empty selection partiality field', () => {
+    const body = JSON.stringify({
+      results: [{ decisions: [{ id: 'D-007', title: 'one' }] }],
+      decisionSelection: {
+        requested: ['D-007'],
+        matched: ['D-007'],
+        missing: [],
+        returned: ['D-007'],
+        deferred: [],
+      },
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['results[].decisions[].id'] }),
+      { toolName: 'plans:get' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({
+      results: [{ decisions: [{ id: 'D-007' }] }],
+    });
+    expect(reportOf(out).notes).toEqual([]);
+  });
+
   it.each([
     {
       name: 'false generic marker',

@@ -7,6 +7,7 @@ import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../../../workspace-host/provisioning-runner';
+import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
 const desired: WorkspaceHostDesiredSpec = {
   hostId: 'host-1',
@@ -93,6 +94,8 @@ describe('POST /workspace-hosts/provision', () => {
   it('fails with a typed 503 before durable reads when the DBOS executor is unavailable', async () => {
     const { dependencies, readConnection, startProvisioning } = harness();
     dependencies.provisioningAvailable = () => false;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+    dependencies.forwardRequest = forwardRequest;
 
     const response = await post(dependencies, {
       connectionId: 'connection-1',
@@ -104,6 +107,44 @@ describe('POST /workspace-hosts/provision', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace-host provisioning workflow is unavailable on this operator',
     });
+    expect(forwardRequest).toHaveBeenCalledWith('/api/workspace-hosts/provision', {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+    });
+    expect(readConnection).not.toHaveBeenCalled();
+    expect(startProvisioning).not.toHaveBeenCalled();
+  });
+
+  it('forwards a valid request to the DBOS controller and returns its response when local DBOS is unavailable', async () => {
+    const { dependencies, readConnection, startProvisioning } = harness();
+    dependencies.provisioningAvailable = () => false;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async (path, body) => {
+      expect(path).toBe('/api/workspace-hosts/provision');
+      expect(body).toEqual({ connectionId: 'connection-1', name: 'Host', desired, operationId: 'op-forward-1' });
+      return Response.json(
+        { ok: true, status: 'succeeded', operationId: 'op-forward-1', hostId: 'host-1' },
+        { status: 201 },
+      );
+    });
+    dependencies.forwardRequest = forwardRequest;
+
+    const requestBody = {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+      operationId: 'op-forward-1',
+    };
+    const response = await post(dependencies, requestBody);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      operationId: 'op-forward-1',
+      hostId: 'host-1',
+    });
+    expect(forwardRequest).toHaveBeenCalledOnce();
     expect(readConnection).not.toHaveBeenCalled();
     expect(startProvisioning).not.toHaveBeenCalled();
   });

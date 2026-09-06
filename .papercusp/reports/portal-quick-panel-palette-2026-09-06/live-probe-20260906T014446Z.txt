@@ -1,0 +1,47 @@
+PROBE_START 20260906T014446Z base=http://127.0.0.1:3081
+backend-3801 pid=1740477 release=releases/fUOvyDt86Wsh3rFfEKtC9-20260906014153337-1682634-fb1aab0b
+health-3081: 200
+=== A deep link ?panel=quick renders the palette in its own frame (D-001)
+url: http://127.0.0.1:3081/?app=home&panel=quick
+panel: {"label":"Quick panel","rect":[442,72,820,600],"vw":1280,"vh":720,"pcqp":true,"pcqpPos":"static","pcqpPadL":"0px","tabs":["Prompts*","Brainstorm","Docs"],"loading":false,"chatSidebar":false,"bodyHasOpChat":false}
+panel-after-wait: {"label":"Quick panel","rect":[442,72,820,600],"vw":1280,"vh":720,"pcqp":true,"pcqpPos":"static","pcqpPadL":"0px","tabs":["Prompts*","Brainstorm","Docs"],"loading":false,"chatSidebar":false,"bodyHasOpChat":false}
+prompts: {"rowgroups":2,"treeitems":2,"empty":[],"search":true}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-prompts.png
+=== B prompts tab reads saved prompts through the sync passthrough (P-004 read)
+sync-read: {"status":200,"count":2}
+=== C brainstorm tab mounts; its key is qp-prefixed (D-003)
+click: clicked:Brainstorm
+url: http://127.0.0.1:3081/?app=home&panel=quick
+brainstorm: {"pane":false,"bsbar":false,"empty":[],"tabs":["Prompts*","Brainstorm","Docs"]}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-brainstorm.png
+=== D docs tab: iframe + /internal/docs/* proxied on this origin (D-004)
+click: clicked:Docs
+url: http://127.0.0.1:3081/?app=home&panel=quick
+docs-frame: NO-IFRAME
+docs-fetch: {"page":200,"pageType":"text/html; charset=utf-8","hasPagefind":true,"asset":200,"assetType":"text/javascript; charset=utf-8"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-docs.png
+=== E trigger beside the launcher opens/closes the panel
+trigger: {"label":"Open quick panel","kbd":"⌘J","order":"after-launcher"}
+url-after-click: http://127.0.0.1:3081/?app=home&panel=quick
+expanded: true
+close: clicked
+url-after-close: http://127.0.0.1:3081/?app=home
+=== F ⌘J chord toggles; from the launcher it SWITCHES (one exclusive slot)
+chord-open: sent
+url: http://127.0.0.1:3081/?app=home&panel=quick
+chord-close: sent
+url: http://127.0.0.1:3081/?app=home
+chord-k-then-j: sent
+url-after-k: http://127.0.0.1:3081/?app=home&panel=launcher
+switch: sent
+url-after-j: http://127.0.0.1:3081/?app=home&panel=quick
+dialogs: ["Quick panel"]
+=== G no key collision: the dev console keeps tab=pg while the palette switches tabs (D-003)
+click: clicked:Brainstorm
+url: http://127.0.0.1:3081/?app=dev&tab=pg&panel=quick
+dev-active: ["PGconnections","Prompts"]
+=== H D-010 write: create + remove a probe prompt node, same-origin AND sibling-origin (WI-2147102 gap)
+write-same-origin: {"create":200,"id":"c08d4882-9691-4c97-b0a9-2be1ee3b6fe8","err":null,"remove":200}
+write-sibling-origin: {"sib":"http://localhost:3081","create":200,"id":"1d1624ed-d9af-453e-8c4a-3a9a0f813c1f","remove":200}
+=== console (errors)
+PROBE_END 20260906T014800Z

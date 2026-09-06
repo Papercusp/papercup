@@ -3,6 +3,7 @@ import { WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION } from '@papercusp/deployment-
 import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostActionRoute, type WorkspaceHostActionRouteDependencies } from './action';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
+import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
 
 const CTX: RouteContext = {
   principal: null,
@@ -151,6 +152,34 @@ const destroyBody = {
 beforeEach(() => vi.clearAllMocks());
 
 describe('POST /workspace-hosts/action destroy', () => {
+  it('forwards a validated destroy request to the DBOS controller when the local executor is unavailable', async () => {
+    const { dependencies, readTarget, readConnection, startDestroy, startLifecycle } = harness();
+    dependencies.provisioningAvailable = () => false;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async (path, body) => {
+      expect(path).toBe('/api/workspace-hosts/action');
+      expect(body).toEqual(destroyBody);
+      return Response.json(
+        { ok: true, status: 'succeeded', operationId: 'op-destroy-1', hostId: 'host-1' },
+        { status: 200 },
+      );
+    });
+    dependencies.forwardRequest = forwardRequest;
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      operationId: 'op-destroy-1',
+    });
+    expect(forwardRequest).toHaveBeenCalledOnce();
+    expect(readTarget).not.toHaveBeenCalled();
+    expect(readConnection).not.toHaveBeenCalled();
+    expect(startDestroy).not.toHaveBeenCalled();
+    expect(startLifecycle).not.toHaveBeenCalled();
+  });
+
   it('admits discard through the stored connection and returns provider-read receipts', async () => {
     const { dependencies, startDestroy } = harness();
     const response = await post(dependencies, destroyBody);
@@ -241,6 +270,26 @@ describe('POST /workspace-hosts/action destroy', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace host already has an operation in progress',
     });
+  });
+
+  it('returns a typed 503 when the DBOS controller cannot be discovered', async () => {
+    const { dependencies, readTarget, readConnection, startDestroy, startLifecycle } = harness();
+    dependencies.provisioningAvailable = () => false;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+    dependencies.forwardRequest = forwardRequest;
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host provisioning workflow is unavailable on this operator',
+    });
+    expect(forwardRequest).toHaveBeenCalledWith('/api/workspace-hosts/action', destroyBody);
+    expect(readTarget).not.toHaveBeenCalled();
+    expect(readConnection).not.toHaveBeenCalled();
+    expect(startDestroy).not.toHaveBeenCalled();
+    expect(startLifecycle).not.toHaveBeenCalled();
   });
 });
 

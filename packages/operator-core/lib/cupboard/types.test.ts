@@ -467,8 +467,8 @@ describe('listingActionFor — the consumer action per listing kind (per-harness
     expect(listingActionFor(makeListing({}))).toBeNull(); // absent kind → harness, no pubkey
   });
 
-  it('blueprint / plugin / pack / knowledge-pack all → install', () => {
-    for (const k of ['blueprint', 'plugin', 'pack', 'knowledge-pack'] as const) {
+  it('installable content kinds, including themes, all → install', () => {
+    for (const k of ['blueprint', 'plugin', 'pack', 'knowledge-pack', 'theme'] as const) {
       expect(listingActionFor(makeListing({ listing_kind: k }))).toBe('install');
     }
     // the interim "tool-pack" alias resolves to pack → install

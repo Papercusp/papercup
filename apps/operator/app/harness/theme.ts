@@ -346,6 +346,11 @@ export const CUPBOARD_LISTING_KIND_TONE: Record<ListingKind, CategoryTone> = {
     bg: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 86%)`,
     border: `color-mix(in srgb, ${CATEGORICAL.orange500.hex}, transparent 74%)`,
   },
+  theme: {
+    fg: CATEGORICAL.pink400.hex,
+    bg: `color-mix(in srgb, ${CATEGORICAL.pink400.hex}, transparent 86%)`,
+    border: `color-mix(in srgb, ${CATEGORICAL.pink400.hex}, transparent 74%)`,
+  },
   goal: {
     fg: CATEGORICAL.blue400.hex,
     bg: `color-mix(in srgb, ${CATEGORICAL.blue400.hex}, transparent 86%)`,

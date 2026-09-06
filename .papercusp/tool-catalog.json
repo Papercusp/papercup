@@ -30745,7 +30745,7 @@
           "POST"
         ]
       },
-      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, or enqueue the durable staged work-item bulk deduplicator. Reviewed preview reads the same full endpoint/reference snapshots and readiness protections as persistence and returns deterministic eligible/preserved/unknown receipts. The run operation creates a fresh pinned census/shard map, applies the duplication-only charter, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true.",
+      "description": "Preview an explicit reviewed historical-cleanup ledger without mutation/model calls, apply that exact preview under a scope-bound hash and transactional revalidation, or enqueue the durable staged work-item bulk deduplicator. Reviewed apply is reserved for the centralized reconciliation owner, merges only still-eligible entries through the shared guarded writer, and records the preview/evidence binding in reversal receipts. The model-backed run keeps its pinned census ratchet. Requires confirm:true.",
       "capabilities": [
         "work_items:write"
       ],
@@ -30770,9 +30770,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
+        "when": "A reviewed historical cohort needs a current evidence/readiness preflight, its centralized owner is applying the exact accepted preview, or a reviewed bulk-dedup plan is ready to execute under the admission census ratchet.",
         "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
-        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → inspect deterministic receipts → centralized owner applies only eligible entries; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the durable model-backed run."
+        "chaining": "work_items:bulk_dedup { op:\"preview-reviewed\", reviewedEntries:[...], harness, confirm:true } → retain previewHash → the centralized reconciliation owner calls op:\"apply-reviewed\" with the unchanged entries + previewHash; ordinary work_items:bulk_dedup { harness, confirm:true } still enqueues the model-backed run."
       }
     },
     {

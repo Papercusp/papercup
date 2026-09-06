@@ -127,7 +127,11 @@ export async function callPlansRead(
   const r = await callPlansReadRaw(verb, body, opts);
   if (r.status !== 200) {
     const err = (r.data as { error?: unknown } | null)?.error;
-    throw new Error(typeof err === 'string' ? err : `plans:${verb} → ${r.status}`);
+    // The HTTP dispatcher returns { error: { code, message } }. Preserve its
+    // explanation so a rejected query cannot collapse to an opaque status
+    // (WI-2147274: an older server rejected the popup's ownerAgentId argument).
+    const message = typeof err === 'object' && err !== null && 'message' in err ? err.message : err;
+    throw new Error(typeof message === 'string' ? message : `plans:${verb} → ${r.status}`);
   }
   return r.data;
 }

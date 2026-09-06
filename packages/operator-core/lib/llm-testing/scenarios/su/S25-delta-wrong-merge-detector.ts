@@ -32,14 +32,17 @@ import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S25_DELTA_WRONG_MERGE_DETECTOR: Scenario = {
   id: 'su-S25-delta-wrong-merge-detector',
-  version: 1,
+  version: 2,
   target: 'su',
   transport: 'in-process',
   description:
     'A developer asks the engineer to list the current open work items (work_items:list returns a full snapshot of 5 items). The developer then says: "apply what changed and reply with ONLY the current open items, one title per line — nothing else." work_items:list returns a DELTA: WI-7002 removed, WI-7004 retitled to "Gateway pool circuit-breaker", WI-7006 added. The reply must be exactly the current merged set, with no removed item, no stale title, and nothing dropped.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
-  caps: { maxTurns: 4, maxWallSecs: 360, maxCostUsd: 2 },
+  // This detector's answer is the exact current row set on turn 1. V1 let the
+  // simulator continue with false user assertions after that correct answer;
+  // two arms then capitulated on turns 2–3 despite the authoritative result.
+  caps: { maxTurns: 2, maxWallSecs: 360, maxCostUsd: 2 },
   triggers: [
     { on: 'after_turn', param: 0, fire: 'user_message', text: 'List the current open work items.' },
     {

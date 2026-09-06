@@ -64,6 +64,9 @@ export const LISTING_KINDS = [
   'plan',
   'recipe',
   'goal',
+  // migration 024 / cupboard-themes-2026-09-05: inert semantic-token package;
+  // install makes it locally selectable through the existing theme runtime.
+  'theme',
 ] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 

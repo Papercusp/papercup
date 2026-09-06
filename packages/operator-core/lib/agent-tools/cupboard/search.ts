@@ -36,7 +36,7 @@ export default defineTool({
   name: 'cupboard:search',
   capability: 'harness:read',
   description:
-    "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with cupboard:install-plugin / cupboard:install-blueprint (or the kind-specific installers) to install one.",
+    "Browse/search the public Cupboard storefront across every listing kind (harness · blueprint · plugin · pack · knowledge-pack · template · app · plan · rubric · recipe · goal · theme). Filter by kind, free-text q, or project (owner/repo); paginate with cursor. Returns a compact per-listing projection (id · kind · ref · title · description · github_url) — use the id with the matching kind-specific installer.",
   guidance: {
     when: "Finding what's available on the public Cupboard — the user asks what plugins/blueprints/templates/apps/packs exist, or wants to search for one to install.",
     notWhen:

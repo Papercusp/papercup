@@ -17,12 +17,18 @@ const H = vi.hoisted(() => ({
   /** When set, the mock returns this JSON as the tool's text envelope for the
    *  next call (else the default `{ ok: true }`). */
   nextResult: null as unknown,
+  nextHttpFailure: null as { status: number; body: unknown } | null,
 }));
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   handleHttpToolRequest: vi.fn(async (req: { pathname: string; body: Record<string, unknown> }) => {
     H.calls.push({ pathname: req.pathname, body: req.body });
+    if (H.nextHttpFailure) {
+      const failure = H.nextHttpFailure;
+      H.nextHttpFailure = null;
+      return failure;
+    }
     const payload = H.nextResult ?? { ok: true };
     H.nextResult = null;
     return {
@@ -36,11 +42,40 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../index', () => ({}));
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 
-import { callPlansReadRaw } from './read-dispatch';
+import { callPlansRead, callPlansReadRaw } from './read-dispatch';
 
 beforeEach(() => {
   H.calls = [];
   H.nextResult = null;
+  H.nextHttpFailure = null;
+});
+
+describe('callPlansRead error propagation (WI-2147274)', () => {
+  it('preserves the structured validation message from the HTTP tool dispatcher', async () => {
+    H.nextHttpFailure = {
+      status: 400,
+      body: {
+        ok: false,
+        error: { code: 'invalid_args', message: 'Unrecognized key: "ownerAgentId"' },
+      },
+    };
+    await expect(
+      callPlansRead('attention', { ownerAgentId: 'su-mine', limit: 100, offset: 0 }),
+    ).rejects.toThrow('Unrecognized key: "ownerAgentId"');
+  });
+
+  it('keeps legacy string errors intact', async () => {
+    H.nextHttpFailure = { status: 403, body: { error: 'Access denied' } };
+    await expect(callPlansRead('attention', {})).rejects.toThrow('Access denied');
+  });
+
+  it.each([null, {}, { error: { code: 'invalid_args' } }, { error: { message: 400 } }])(
+    'retains the verb and HTTP status when the error has no message: %j',
+    async (body) => {
+      H.nextHttpFailure = { status: 400, body };
+      await expect(callPlansRead('attention', {})).rejects.toThrow('plans:attention → 400');
+    },
+  );
 });
 
 describe('callPlansReadRaw payload-tier contract (WI-5078)', () => {

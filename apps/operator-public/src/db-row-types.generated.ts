@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: 3bfdcdab51dbc93f49a9c4a84e26139d041907914a4079c0ffe535fff8318038
+ * Migration digest: e697b6012b7e9564bb7b22dc3326e7128288c39c66d63e6cc05a1f71ee7b385e
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "3bfdcdab51dbc93f49a9c4a84e26139d041907914a4079c0ffe535fff8318038";
+  "e697b6012b7e9564bb7b22dc3326e7128288c39c66d63e6cc05a1f71ee7b385e";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -22,6 +22,7 @@ export const GENERATED_TABLES = [
   "creator_drafts",
   "harnesses",
   "indexer_runs",
+  "payment_channels",
   "prepaid_credit_balances",
   "prepaid_credit_events",
   "prepaid_credit_reservations",
@@ -237,6 +238,30 @@ export interface IndexerRunsRow {
   harnesses_updated: number;
   errors_count: number;
   error_summary: string | null;
+}
+
+export interface PaymentChannelsRow {
+  channel_id: string;
+  principal_id: string;
+  rail: string;
+  chain_id: number;
+  stablecoin_address: string;
+  settlement_contract_address: string;
+  funding_source: string;
+  funding_ref: string;
+  wallet_address: string | null;
+  escrow_micros: number;
+  committed_micros: number;
+  refunded_micros: number;
+  state: string;
+  open_tx_hash: string | null;
+  open_block_number: string | null;
+  close_tx_hash: string | null;
+  close_block_number: string | null;
+  failure_code: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  closed_at_ms: number | null;
 }
 
 export interface PrepaidCreditBalancesRow {

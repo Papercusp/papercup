@@ -175,6 +175,17 @@ function isTruncationKey(key: string): boolean {
   return key === 'truncated' || key === 'payloadTierForced' || TRUNCATION_KEY_REGEX.test(key) || TRUNCATED_BY_KEY_REGEX.test(key);
 }
 
+function hasNonEmptyPartialityValue(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return value === true;
+}
+
+function isSelectionMetadataKey(key: string): boolean {
+  return key === 'selection' || key.endsWith('Selection');
+}
+
 function addBodyTruncationMarker(
   markers: BodyTruncationMarker[],
   path: string,
@@ -226,6 +237,20 @@ function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: 
         (child === true || (markerObject && key !== 'truncated' && Object.keys(child).length > 0))
       ) {
         addBodyTruncationMarker(markers, childPath, key === 'truncated' ? 'truncated=true' : `${key} marker`);
+      }
+      if (isSelectionMetadataKey(key) && markerObject) {
+        for (const partialityKey of ['deferred', 'missing'] as const) {
+          if (hasNonEmptyPartialityValue(child[partialityKey])) {
+            addBodyTruncationMarker(
+              markers,
+              `${childPath}.${partialityKey}`,
+              `non-empty ${partialityKey} selection metadata`,
+            );
+          }
+        }
+      }
+      if (key === 'omittedCount' && hasNonEmptyPartialityValue(child)) {
+        addBodyTruncationMarker(markers, childPath, `omittedCount=${String(child)}`);
       }
 
       visit(child, childPath);
@@ -619,10 +644,11 @@ export function applyResultProjection<T extends ProjectableResult>(
         ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
         : `re-call the tool with payloadTier:'full' (or narrower args)`;
       note(
-        `the tool or its payload shaper marked field-level/custom-shaper truncation before this projection ` +
+        `the tool or its payload shaper marked field-level/custom-shaper truncation or partial-result metadata before this projection ` +
           `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +
-          `retained SAMPLE; omitted fields/items were never serialized, so any filter/count is not a complete ` +
-          `population finding. ${recovery} before concluding a value is absent.`,
+          `retained SAMPLE; the pick may also have dropped the marker itself. omitted fields/items were never ` +
+          `serialized, so any filter/count is not a complete population finding. ${recovery} before ` +
+          `concluding a value is absent.`,
       );
     }
 

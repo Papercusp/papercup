@@ -132,6 +132,12 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it("accepts the popup's exact owner-scoped query without stripping its owner (WI-2147274)", () => {
+    const args = { ownerAgentId: "su-mine", limit: 100, offset: 0 };
+    expect(tool.args.parse(args)).toEqual(args);
+    expect(tool.args.safeParse({ ...args, ownerAgentId: "" }).success).toBe(false);
+  });
+
   it("rejects stale plan filters and accepts the bounded window contract", () => {
     // The caller-facing contract is intentionally narrow: `plans:attention`
     // filters by harness scope and an explicit presentation window. Keep this

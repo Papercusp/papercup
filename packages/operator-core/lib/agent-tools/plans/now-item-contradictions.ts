@@ -134,12 +134,15 @@ const NOW_DECISION_REFERENCE_RE = /\bD-\d{3,}\s+records?\s+$/i;
 const NOW_RESIDUE_REFERENCE_RE =
   /\bresidue\b[^.!?;:\n]{0,100}\b(?:owned\s+by\s+WI-\d+|carries\s+forward\s+under\s+WI-\d+|is\s+carried\s+forward\s+under\s+WI-\d+)\b/i;
 
-// Exhaustive-list wording is intentionally narrow.  These are the two
-// shapes that have caused real successor drops: "only P-002 remains" and
-// "P-002 only" (usually followed by a qualifier such as "and it is blocked").
-// The list itself may contain comma/and-separated P-NNN references, but it
-// must stay within one sentence so an unrelated historical mention cannot
-// satisfy the claim.
+// Exhaustive-list wording is intentionally narrow. These are the shapes that
+// have caused real successor drops: "only P-002 remains", "P-002 only"
+// (usually followed by a qualifier such as "and it is blocked"), and
+// "remaining work is P-002 retirement and P-003 acceptance". The first two
+// forms keep a strict comma/and-separated list grammar; the remaining-work
+// form captures the rest of its sentence and extracts every plan-item
+// reference so ordinary descriptors after each id do not make a later item
+// look omitted. The sentence boundary keeps unrelated later prose from
+// satisfying the claim.
 const NOW_ITEM_LIST = String.raw`(?:P-\d{3,}(?:\s*(?:,|\/|and|&)\s*)?)+`;
 const NOW_ONLY_PREFIX_RE = new RegExp(
   String.raw`\bonly\s+(${NOW_ITEM_LIST})\s+(?:remain(?:s|ing)?|left|outstanding|actionable|todo)\b`,
@@ -149,8 +152,8 @@ const NOW_ONLY_PREFIX_RE = new RegExp(
 // anchor, neutral scope prose such as "the tests cover P-002 only" would be
 // misread as a claim that P-002 is the plan's sole remaining item.
 const NOW_ONLY_SUFFIX_RE = new RegExp(String.raw`^\s*(${NOW_ITEM_LIST})\s+only\b`, 'gi');
-const NOW_REMAINING_LIST_RE = new RegExp(
-  String.raw`\b(?:remaining|outstanding|unfinished|incomplete|open)\s+(?:items?|lanes?|work)\s*(?:are|is|:)\s*(${NOW_ITEM_LIST})`,
+const NOW_REMAINING_CLAUSE_RE = new RegExp(
+  String.raw`\b(?:remaining|outstanding|unfinished|incomplete|open)\s+(?:items?|lanes?|work)\s*(?:are|is|:)\s*([^.!?\n]+)`,
   'gi',
 );
 
@@ -401,7 +404,7 @@ export function detectNowItemOmissions(
     const matches = [
       ...sentence.matchAll(NOW_ONLY_PREFIX_RE),
       ...sentence.matchAll(NOW_ONLY_SUFFIX_RE),
-      ...sentence.matchAll(NOW_REMAINING_LIST_RE),
+      ...sentence.matchAll(NOW_REMAINING_CLAUSE_RE),
     ];
     for (const match of matches) {
       const listed = idsFromList(match[1] ?? '');

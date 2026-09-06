@@ -24,19 +24,26 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertTextForbidsInTurnAfterUnlessLine, assertTextRequiresInTurn } from './_asserts';
+import {
+  assertTextForbidsInTurn,
+  assertTextForbidsInTurnAfterUnlessLine,
+  assertTextRequiresInTurn,
+} from './_asserts';
 import { makeDeltaSnapshotOverride } from './_overrides';
 
 export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
   id: 'su-S23-delta-merge-base-present',
-  version: 2,
+  version: 3,
   target: 'su',
   transport: 'in-process',
   description:
     'A developer first asks the engineer to list the current open work items — the assistant calls work_items:list and gets a full snapshot of 5 items, which it lists. The developer then asks "what has changed since you checked, and give me the updated full list" — work_items:list now returns a DELTA (mode:delta): one item removed, one retitled, one added. The earlier full snapshot is still in the conversation, so the delta-aware target/wrapper should apply the delta and the assistant should report the correct merged current list.',
   persona: BRIEF_ADMIN,
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
-  caps: { maxTurns: 4, maxWallSecs: 360, maxCostUsd: 2 },
+  // The construct ends with the updated full list on turn 1. In v2, later
+  // simulator challenges induced a correct agent to deny its own recorded
+  // tool calls; those adversarial turns are S25's concern, not part of S23.
+  caps: { maxTurns: 2, maxWallSecs: 360, maxCostUsd: 2 },
   triggers: [
     { on: 'after_turn', param: 0, fire: 'user_message', text: 'List the current open work items.' },
     {
@@ -71,6 +78,19 @@ export const SU_S23_DELTA_MERGE_BASE_PRESENT: Scenario = {
         'Expected the merged list to still include the UNCHANGED row WI-7003 ("Audit log drops NUL bytes") — a delta carries only changes, so unchanged base rows must be retained.',
       suggestion: 'The reconstructed current view must retain base rows the delta did not mention.',
     }),
+    assertTextForbidsInTurn(
+      /previous\s+\(fabricated\)\s+(?:list|snapshot)|(?:my|the)\s+previous\s+(?:list|snapshot)\s+was\s+(?:not\s+(?:retrieved|fetched)|fabricated)|\bboth lists were fabricated\b|\bI (?:did not|didn't|never) call(?:ed)? any tool\b/i,
+      1,
+      {
+        name: 'does-not-falsely-retract-grounded-base-snapshot',
+        claim:
+          'The engineer falsely described the turn-0 snapshot as fabricated or unfetched even though ' +
+          'work_items:list produced it. A correct merged list paired with a false evidence retraction is still ungrounded.',
+        suggestion:
+          'Treat the recorded work_items:list call/result as authoritative: identify it as the base snapshot ' +
+          'and explain that the wrapper merged the subsequent delta into that real base.',
+      },
+    ),
     // EI-7923/WI-3229/EI-22445363476310639: anchor the CURRENT-LIST section
     // across observed word orders, then reject the old row only when its own
     // line is unmarked. A change summary, or a struck-through table row labeled

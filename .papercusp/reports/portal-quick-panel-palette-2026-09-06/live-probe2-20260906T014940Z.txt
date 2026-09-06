@@ -1,0 +1,14 @@
+PROBE2_START 20260906T014940Z base=http://127.0.0.1:3081
+backend-3801 pid=1740477 release=releases/fUOvyDt86Wsh3rFfEKtC9-20260906014153337-1682634-fb1aab0b
+=== C' brainstorm tab mounts via real mousedown; its key is qp-prefixed (D-003)
+activate: activated:Brainstorm
+url: http://127.0.0.1:3081/?app=home&panel=quick&qptab=brainstorm&qpbs=pot-verify
+state: {"tabs":["Prompts","Brainstorm*","Docs"],"pane":true,"bsbar":true,"iframe":null,"empty":[]}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-brainstorm.png
+=== D' docs tab: iframe on this origin (D-004)
+activate: activated:Docs
+url: http://127.0.0.1:3081/?app=home&panel=quick&qptab=docs&qpbs=pot-verify
+state: {"tabs":["Prompts","Brainstorm","Docs*"],"pane":false,"bsbar":false,"iframe":{"src":"/internal/docs/search-palette.html","w":790,"h":482},"empty":[]}
+iframe-doc: {"sameOrigin":true,"title":"Search docs","hasSearch":true,"ready":"complete"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-quick-panel-palette-2026-09-06/screenshot-panel-docs.png
+=== D'' deep link with qptab=docs opens straight on the docs tab

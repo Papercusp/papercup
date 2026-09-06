@@ -60,6 +60,28 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect((await res.json() as { field: string }).field).toBe('listing_kind');
   });
 
+  it('migration 024: publishes and filters a theme listing through the ordinary catalog path', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 24, private: false, permissions: { admin: true } } });
+    const res = await publish(api, env, {
+      ...BLUEPRINT_BASE,
+      github_repository_id: 24,
+      listing_kind: 'theme',
+      listing_ref: 'aurora',
+      title: 'Aurora',
+      description: 'A cool light theme',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { listing: { listing_kind: string; review_status: string } };
+    expect(body.listing).toMatchObject({ listing_kind: 'theme', review_status: 'approved' });
+    expect(store.tables.harnesses).toHaveLength(1);
+
+    const filtered = await api.request('/listings?kind=theme', {}, env);
+    expect(filtered.status).toBe(200);
+    expect((await filtered.json() as { results: Array<{ listing_kind: string }> }).results)
+      .toEqual([expect.objectContaining({ listing_kind: 'theme' })]);
+  });
+
   it('POST /listings blueprint requires listing_ref', async () => {
     const { env } = makeEnv();
     stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });

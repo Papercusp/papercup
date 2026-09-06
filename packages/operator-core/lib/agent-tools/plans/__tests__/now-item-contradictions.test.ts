@@ -89,6 +89,16 @@ const EXHAUSTIVE_OMISSION = CURRENT.replace(
   '**Next:** P-002 only, and it is not actionable yet.',
 ).replace('- **P-002** `todo` Open item.', '- **P-002** `todo` Open item.\n- **P-003** `todo` Urgent open item.');
 
+const DESCRIBED_REMAINING_WORK = CURRENT.replace(
+  '**State:** P-001 is done.',
+  '**State:** Remaining work is P-005 retirement and P-007 final acceptance/shipment, held by successor su-455545e0 in owner-directed AUTO.',
+)
+  .replace('**Next:** Continue with P-002.', '**Next:** Read the current checkpoints.')
+  .replace(
+    '- **P-002** `todo` Open item.',
+    '- **P-002** `done` Finished item.\n- **P-005** `blocked` Retirement item.\n- **P-007** `todo` Acceptance and shipment item.',
+  );
+
 describe('detectNowItemContradictions', () => {
   it('flags an action-oriented mention of a terminal item', () => {
     const proposed = parsePlan(
@@ -439,6 +449,21 @@ describe('detectNowItemContradictions', () => {
 });
 
 describe('detectNowItemOmissions', () => {
+  it('counts described plan-item references in exhaustive remaining-work prose', () => {
+    expect(detectNowItemOmissions(parsePlan(DESCRIBED_REMAINING_WORK))).toEqual([]);
+  });
+
+  it('still flags a described remaining-work list that omits an open item', () => {
+    const proposed = DESCRIBED_REMAINING_WORK.replace(
+      'P-005 retirement and P-007 final acceptance/shipment',
+      'P-005 retirement',
+    );
+
+    expect(detectNowItemOmissions(parsePlan(proposed))).toEqual([
+      expect.objectContaining({ listed: ['P-005'], omitted: ['P-007'] }),
+    ]);
+  });
+
   it('flags an exhaustive "only" list that omits a non-terminal item', async () => {
     const parsed = parsePlan(EXHAUSTIVE_OMISSION);
     expect(detectNowItemOmissions(parsed)).toEqual([
