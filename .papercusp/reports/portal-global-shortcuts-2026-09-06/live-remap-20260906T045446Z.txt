@@ -1,0 +1,11 @@
+REMAP_START 20260906T045446Z
+release: releases/PC6v2Yp2Mb50D433LOBFb-20260906042605443-1179462-6fa0f076
+N0 pane: inputs=25 value=mod+comma keys=[]
+N1 listening: press a combo… (Esc cancels)
+N2 recorded: value=mod+alt+s pill=true storage={"key":"pc:ws:default:papercusp.shortcuts.v1","val":"{\"settings.open\":\"mod+alt+s\"}"}
+N3 new chord from home: http://127.0.0.1:3081/?app=home
+N4 default chord from home (expect unchanged): http://127.0.0.1:3081/?app=home
+N5 after reload storage: {"key":"pc:ws:default:papercusp.shortcuts.v1","val":"{\"settings.open\":\"mod+alt+s\"}"}
+N5 new chord after reload: http://127.0.0.1:3081/?app=home
+--- CONTROL PASS 04:58:32Z (prior run timed out before reset) ---
+C0 clear override: []

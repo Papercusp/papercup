@@ -76,7 +76,23 @@
 #   VITE_BUILD_CMD       stand in for the real vite invocation
 #   VITE_BUILD_OUT_ROOT  put dist/ + dist.next/ + the markers in a tmp dir
 set -euo pipefail
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# EI-22462478663416972: a production Vite build can transform the whole graph
+# successfully and still die while copying public assets into dist/ when the
+# filesystem is already under pressure. Refuse before the expensive transform,
+# using the shared reservation-aware guard so concurrent builds cannot consume
+# the last safe bytes together. The 10 GiB floor is the documented operator
+# build precondition; it is overrideable for a deliberately sized host.
+DISK_PREFLIGHT_LIB="${PAPERCUSP_DISK_PREFLIGHT_LIB:-$REPO_ROOT/papercusp-desktop/bin/lib/disk-preflight.sh}"
+if [ ! -f "$DISK_PREFLIGHT_LIB" ]; then
+  echo "ERROR: operator-vite disk preflight helper is missing: $DISK_PREFLIGHT_LIB" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$DISK_PREFLIGHT_LIB"
 
 LOCK="${VITE_BUILD_LOCK:-/tmp/papercup-operator-vite-build.lock}"
 CMD="${VITE_BUILD_CMD:-npx vite build}"
@@ -96,6 +112,19 @@ LOG="${VITE_BUILD_LOG:-$OUT_ROOT/.vite-build.log}"
 # snapshot without racing the next Vite build that updates dist/.
 SNAPSHOT="${VITE_BUILD_SNAPSHOT_DIR:-}"
 SNAPSHOT_TMP="${SNAPSHOT:+$SNAPSHOT.tmp.$$}"
+
+VITE_BUILD_MIN_FREE_GB="${PAPERCUSP_VITE_BUILD_MIN_FREE_GB:-10}"
+if ! [[ "$VITE_BUILD_MIN_FREE_GB" =~ ^[0-9]+$ ]]; then
+  echo "[vite-build-singleflight] invalid PAPERCUSP_VITE_BUILD_MIN_FREE_GB='$VITE_BUILD_MIN_FREE_GB'; using 10" >&2
+  VITE_BUILD_MIN_FREE_GB=10
+fi
+
+# Release the reservation even when the build is interrupted. The shared helper
+# also treats a dead owner as stale, so this is hygiene rather than correctness.
+MKDIR_LOCK=""
+trap 'papercusp_release_disk_reservation 2>/dev/null || true; rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} 2>/dev/null || true' EXIT
+
+papercusp_require_free_gb "$OUT_ROOT" "$VITE_BUILD_MIN_FREE_GB" "operator-vite dist build"
 
 # A retain-regime build never empties dist/ (vite.config: emptyOutDir:false), so
 # it is already crash-safe AND depends on the old chunks still being there.
@@ -139,8 +168,7 @@ exec 9>>"$LOCK"
 # `if !` fires 0s in, and the build dies with a MISLEADING "TIMED OUT after 300s"
 # — exactly what broke the mac release leg on the 2026-07-13 0.0.9 cut.
 LOCKDIR="$LOCK.lockdir"
-MKDIR_LOCK=""   # set to LOCKDIR only when WE created it, so the trap removes only our own
-trap 'rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} 2>/dev/null || true' EXIT
+# Set to LOCKDIR only when WE created it, so the trap removes only our own.
 took_lock=0
 if command -v flock >/dev/null 2>&1; then
   if flock -w "$WAIT_SECS" 9; then took_lock=1; fi
