@@ -619,6 +619,7 @@ export function resolveFleetAgent(opts: {
  *  12 unwanted desktop windows). claimFleetLaunchSlot is one atomic SQL check-and-set shared by
  *  every worker, so exactly ONE call per fleet can win the window. */
 const RELAUNCH_SUPPRESS_MS = 300_000;
+export const FLEET_LAUNCH_CANARY_FRESHNESS_MS = RELAUNCH_SUPPRESS_MS;
 /** EI-20437060078324174: window for the ONE post-wave re-probe of members whose
  *  per-wave verification window expired unconfirmed. The measured false-negative
  *  registered 5.5s past a 25s window; 30s more, measured from launch start by the
@@ -678,6 +679,52 @@ export function deadWaveSlotOverride(opts: {
 }): boolean {
   const minAge = opts.minAgeMs ?? DEAD_WAVE_OVERRIDE_MIN_AGE_MS;
   return opts.liveMembers === 0 && opts.nowMs - opts.priorAtMs >= minAge;
+}
+
+type FleetLaunchRequestedMember = NonNullable<FleetLaunchTransaction['requestedMembers']>[number];
+export type FleetLaunchMemberProfile = Pick<
+  FleetLaunchRequestedMember,
+  'agent' | 'model' | 'account' | 'carry' | 'headless'
+>;
+
+/**
+ * A fresh successful canary is a bounded receipt that this launch route/profile
+ * recently authenticated. It is deliberately narrow: only the prior
+ * transaction's index-0 requested member, explicitly verified in a terminal
+ * state, and an exact profile match can relax a healthyAccounts===0 zero-gate.
+ */
+export function hasFreshSameProfileCanary(opts: {
+  transaction: Pick<
+    FleetLaunchTransaction,
+    'state' | 'updatedAt' | 'requestedMembers' | 'verifiedMemberIds'
+  > | null | undefined;
+  currentProfile: FleetLaunchMemberProfile;
+  nowMs?: number;
+  freshnessWindowMs?: number;
+}): boolean {
+  const transaction = opts.transaction;
+  if (!transaction || (transaction.state !== 'partial' && transaction.state !== 'verified')) return false;
+  const canary = transaction.requestedMembers?.find((member) => member.index === 0);
+  if (!canary || !transaction.verifiedMemberIds.includes(canary.ownerId)) return false;
+  const nowMs = opts.nowMs ?? Date.now();
+  const freshnessWindowMs = opts.freshnessWindowMs ?? FLEET_LAUNCH_CANARY_FRESHNESS_MS;
+  if (
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(transaction.updatedAt) ||
+    !Number.isFinite(freshnessWindowMs) ||
+    freshnessWindowMs < 0 ||
+    transaction.updatedAt > nowMs ||
+    nowMs - transaction.updatedAt > freshnessWindowMs
+  ) {
+    return false;
+  }
+  return (
+    canary.agent === opts.currentProfile.agent &&
+    canary.model === opts.currentProfile.model &&
+    canary.account === opts.currentProfile.account &&
+    canary.carry === opts.currentProfile.carry &&
+    canary.headless === opts.currentProfile.headless
+  );
 }
 
 export interface FleetLaunchCapacityClamp {
@@ -904,11 +951,14 @@ export function clampFleetTopUpToCapacity(
      *  requested member launches — including through a pool reading `healthyAccounts:0`.
      *
      *  This is a real escape hatch, not a footgun: `healthyAccounts` reads the gateway's IN-MEMORY
-     *  exhaustedUntil map, which no store-side tool can clear (accounts:reset-rate is another process;
+    *  exhaustedUntil map, which no store-side tool can clear (accounts:reset-rate is another process;
      *  gateway:reload only drops absent ids). A STALE exhaustion therefore suppressed gateway-routed
      *  launches to ZERO with a full dispatchBudget of free slots, and the only remedy was restarting the
      *  gateway. Default OFF — the clamp remains the safe default. */
     override?: boolean;
+    /** A fresh, successful exact-profile canary receipt. This relaxes only the
+     *  healthyAccounts===0 zero-gate; dispatchBudget remains binding. */
+    freshSameProfileCanary?: boolean;
   },
 ): FleetLaunchCapacityClamp | null {
   const requested = Math.max(0, Math.floor(requestedOpenCount));
@@ -940,8 +990,11 @@ export function clampFleetTopUpToCapacity(
   // clamped 1→0 by a fully-walled pool despite dispatchBudget=13 free slots).
   const gatewayRouted = opts?.gatewayRouted ?? true;
   const override = opts?.override ?? false;
+  const freshSameProfileCanary = opts?.freshSameProfileCanary === true;
   const caps = [dispatchBudget].filter((n): n is number => n != null);
-  if (healthyAccounts === 0 && gatewayRouted) caps.push(0); // no routable gateway account ⇒ suppress the top-up
+  if (healthyAccounts === 0 && gatewayRouted && !freshSameProfileCanary) {
+    caps.push(0); // no routable gateway account ⇒ suppress the top-up
+  }
   if (caps.length === 0) return null; // no concurrency signal ⇒ fail open (never strand on a missing signal)
   const capacityHeadroom = Math.min(...caps);
   // The RECOMMENDATION — what capacity advises, always computed so an override is always legible.
@@ -952,7 +1005,7 @@ export function clampFleetTopUpToCapacity(
   const overridden = override && recommendedOpenCount < requested;
   // ADVISORY only — the weekly budget is tight for this many members, but never a clamp.
   const utilizationTight = recommendedHeadroom != null && recommendedHeadroom < openCount;
-  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (${gatewayRouted ? 'accounts do NOT cap sessions; 0 = nothing can authenticate' : 'pool — does NOT gate this launch: members route on the direct system credential, gateway skipped'})`;
+  const detail = `dispatchBudget=${dispatchBudget ?? 'n/a'} (concurrency — the real cap), recommendedHeadroom=${recommendedHeadroom ?? 'n/a'} (weekly-budget util — ADVISORY, not a cap), healthyAccounts=${healthyAccounts ?? 'n/a'} (${gatewayRouted ? (freshSameProfileCanary ? 'fresh same-profile canary authenticated this route; 0 is treated as stale for this bounded retry' : 'accounts do NOT cap sessions; 0 = nothing can authenticate') : 'pool — does NOT gate this launch: members route on the direct system credential, gateway skipped'})`;
   return {
     requestedOpenCount: requested,
     openCount,
@@ -968,6 +1021,8 @@ export function clampFleetTopUpToCapacity(
       ? `capacity OVERRIDDEN: launching all ${requested} (capacity recommended ${recommendedOpenCount}). The recommendation stands — if it was RIGHT, these members will contend or fail to authenticate; if healthyAccounts=0 is a STALE in-memory exhaustion, probe/readmit the pool (accounts:probe-capacity, POST /admin/readmit) rather than relying on the override (${detail})`
       : clamped
         ? `capacity-clamped top-up ${requested}→${openCount} — pass override to launch all ${requested} anyway (${detail})`
+        : freshSameProfileCanary && healthyAccounts === 0 && gatewayRouted
+          ? `capacity-ok top-up ${requested} — a fresh same-profile canary authenticated this route, so the healthyAccounts=0 signal is treated as stale for this bounded retry (${detail})`
         : utilizationTight
           ? `capacity-ok top-up ${requested}, but weekly-token-budget is tight for this many members (recommendedHeadroom=${recommendedHeadroom}) — they still all launch, may hit the wall sooner (${detail})`
           : `capacity-ok top-up ${requested} (${detail})`,
@@ -3604,9 +3659,29 @@ export default defineTool({
       // defaultMemberAccountRouting selects the direct system credential everywhere).
       const plannedAccount = seatsRequested ? 'auto' : defaultMemberAccountRouting(args.account?.trim() || undefined);
       const gatewayRouted = !!plannedAccount && plannedAccount !== 'default' && plannedAccount !== 'system';
+      const capacityProfileSpec = args.members?.[memberSpecIndexForLaunch(liveMembers, 0)];
+      const freshSameProfileCanary = hasFreshSameProfileCanary({
+        transaction: priorLaunchTransaction,
+        currentProfile: {
+          agent: capacityProfileSpec?.agent ?? agent,
+          model:
+            composeModelSpec(
+              capacityProfileSpec?.model ?? memberModel,
+              capacityProfileSpec?.effort ?? args.effort,
+            ) ?? null,
+          account: seatsRequested
+            ? 'auto'
+            : defaultMemberAccountRouting(
+                capacityProfileSpec?.account ?? (args.account?.trim() || undefined),
+              ) ?? 'default',
+          carry: capacityProfileSpec?.carry ?? args.carry ?? 'warm',
+          headless: capacityProfileSpec?.headless ?? !!args.headless,
+        },
+      });
       capacityClamp = clampFleetTopUpToCapacity(openCount, capacity, {
         gatewayRouted,
         override: args.overrideCapacityClamp ?? false,
+        freshSameProfileCanary,
       });
       if (capacityClamp) openCount = capacityClamp.openCount;
       sizingAdvisory = buildFleetSizingAdvisory(count, capacity) ?? null;
