@@ -3677,6 +3677,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     const buildCarryBriefFn = vi.fn(
       async (ownerId: string): Promise<CarryBrief> => ({
         ownerId,
+        workspaceId: 'ws',
         loop: null,
         heldItems: [
           {
@@ -3685,6 +3686,7 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
             body: null,
             harness: 'papercusp',
             checkpoint: 'watchdog wired; cold anchor next',
+            holderProof: { ownerId, workspaceId: 'ws' },
           },
         ],
         directives: [],
