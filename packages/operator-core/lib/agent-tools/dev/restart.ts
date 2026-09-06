@@ -125,6 +125,34 @@ const runExecFile = (...args: Parameters<ExecFileP>) => {
 };
 
 /**
+ * A restart must consume the unit/drop-in bytes that are on disk NOW. systemd
+ * otherwise restarts from its cached unit definition, so a newly installed
+ * Environment= pin can appear to activate (new PID) while the replacement
+ * process still receives the previous value (EI-22480835928661383).
+ */
+export const SYSTEMD_USER_DAEMON_RELOAD = {
+  command: 'systemctl',
+  args: ['--user', 'daemon-reload'],
+} as const;
+const SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS = 10_000;
+export type SystemdDaemonReloader = () => Promise<void>;
+const defaultSystemdDaemonReloader: SystemdDaemonReloader = async () => {
+  await runExecFile(SYSTEMD_USER_DAEMON_RELOAD.command, [...SYSTEMD_USER_DAEMON_RELOAD.args], {
+    cwd: process.cwd(),
+    timeout: SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS,
+    maxBuffer: 64 * 1024,
+  });
+};
+let systemdDaemonReloader = defaultSystemdDaemonReloader;
+
+/** Test seam: confirmed restart tests must never mutate the real user manager. */
+export function configureSystemdDaemonReloaderForTests(
+  reloader: SystemdDaemonReloader = defaultSystemdDaemonReloader,
+): void {
+  systemdDaemonReloader = reloader;
+}
+
+/**
  * bg-host is the one restart target whose ExecStartPre rebuilds an artifact from
  * the working tree. A recent restart therefore proves only that SOME bundle was
  * built, not that the caller's current tree is in that bundle. Keep this source
@@ -157,9 +185,7 @@ export type BgHostRestartFreshness = BgHostRestartFreshnessSnapshot & {
  * relation rather than restarting eagerly: bg-host restarts can SIGKILL an
  * in-flight git-sync operation, so the temporal throttle remains authoritative.
  */
-export function evaluateBgHostRestartFreshness(
-  snapshot: BgHostRestartFreshnessSnapshot,
-): BgHostRestartFreshness {
+export function evaluateBgHostRestartFreshness(snapshot: BgHostRestartFreshnessSnapshot): BgHostRestartFreshness {
   const bundleMtimeMs =
     snapshot.bundleMtimeMs != null && Number.isFinite(snapshot.bundleMtimeMs) ? snapshot.bundleMtimeMs : null;
   const newestSourceMtimeMs =
@@ -260,8 +286,7 @@ export function configureBgHostRestartFreshnessReaderForTests(
 }
 
 async function readBgHostRestartFreshness(): Promise<BgHostRestartFreshness> {
-  const integrationRoot =
-    process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() || resolve(process.cwd(), '..', '..');
+  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() || resolve(process.cwd(), '..', '..');
   try {
     return evaluateBgHostRestartFreshness(await bgHostRestartFreshnessReader(integrationRoot));
   } catch {
@@ -489,9 +514,7 @@ async function probeGatewayListenerOwnership(pid: number): Promise<GatewayListen
     const sockets = result.sockets;
     const observedPids = [
       ...new Set(
-        sockets.flatMap((socket) =>
-          socket.pids.length > 0 ? socket.pids : socket.pid == null ? [] : [socket.pid],
-        ),
+        sockets.flatMap((socket) => (socket.pids.length > 0 ? socket.pids : socket.pid == null ? [] : [socket.pid])),
       ),
     ];
     const ownerVisible = sockets.some((socket) => socket.ownerVisible);
@@ -558,8 +581,7 @@ async function waitForGatewayRestartReadiness(beforePid: number | null): Promise
   while (Date.now() <= deadline) {
     current = await readCurrent();
     const currentPid = current?.mainPid;
-    const pidChanged =
-      isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== beforePid);
+    const pidChanged = isLiveMainPid(currentPid) && (!previousPidKnown || currentPid !== beforePid);
     if (pidChanged) {
       const listener = await probeGatewayListenerOwnership(currentPid);
       if (!listener.ownedByPid) {
@@ -635,6 +657,8 @@ async function writeRestartAudit(
     /** The atomic legacy-resource barrier intentionally left to expire after
      *  systemctl has crossed the delayed handoff. */
     gitSyncBarrier?: { resource: string; expiresAt: string } | null;
+    /** The user manager consumed current unit/drop-in bytes before restart. */
+    systemdDaemonReloaded: boolean;
     /** WI-2140796: a real restart that deliberately crossed an active bg-host
      *  quiesce (override_quiesce:true) is attributable from the durable audit row. */
     quiesceOverridden?: { marker: QuiesceMarker | null } | null;
@@ -751,7 +775,7 @@ export default defineTool({
       .max(GIT_SYNC_RESTART_BARRIER_DRAIN_SEC)
       .optional()
       .describe(
-        'Seconds to WAIT for in-flight git-sync operations to drain instead of refusing immediately. Use this rather than override_git_sync_collision on a merely BUSY host: git-sync fires hold the barrier only ~5-10s, so a short drain usually succeeds where a one-shot attempt always fails. 0/omitted = today\'s immediate refusal.',
+        "Seconds to WAIT for in-flight git-sync operations to drain instead of refusing immediately. Use this rather than override_git_sync_collision on a merely BUSY host: git-sync fires hold the barrier only ~5-10s, so a short drain usually succeeds where a one-shot attempt always fails. 0/omitted = today's immediate refusal.",
       ),
     /** EI-18661647550414959: restart a target whose tree cannot boot. Only pass when
      *  the restart is itself the remedy — otherwise this hands you the crash-loop the
@@ -803,6 +827,7 @@ export default defineTool({
       target === 'desktop-dev'
         ? 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)'
         : `systemctl --user restart ${cfg.unit}`;
+    const activationCmd = target === 'desktop-dev' ? restartCmd : `systemctl --user daemon-reload && ${restartCmd}`;
     // EI-13307: per-target, not global — computed up front so both the
     // dry-run note and the real debounce path below quote the SAME window.
     const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
@@ -829,7 +854,7 @@ export default defineTool({
           ok: true,
           dry_run: true,
           target,
-          would_run: listenerPreview.ok ? restartCmd : null,
+          would_run: listenerPreview.ok ? activationCmd : null,
           listener_identity: {
             checked: true,
             verified: listenerPreview.ok,
@@ -869,7 +894,7 @@ export default defineTool({
         ok: true,
         dry_run: true,
         target,
-        would_run: restartCmd,
+        would_run: activationCmd,
         boot_integrity: {
           checked: bootPreview.checked,
           would_block: !bootPreview.ok,
@@ -1008,7 +1033,11 @@ export default defineTool({
         reason: 'bg_host_quiesced',
         restarted: false,
         drained: false,
-        quiesce: { quiesced: quiesce.quiesced, probeFailed: quiesce.probeFailed, ...(quiesce.marker ? { marker: quiesce.marker } : {}) },
+        quiesce: {
+          quiesced: quiesce.quiesced,
+          probeFailed: quiesce.probeFailed,
+          ...(quiesce.marker ? { marker: quiesce.marker } : {}),
+        },
         note: `Restart REFUSED — NOTHING was done: no lock taken, no drain, ${cfg.unit} left exactly as it was. ${quiesce.note}`,
       });
     }
@@ -1337,6 +1366,7 @@ export default defineTool({
             gateCollision: null,
             gitSyncCollision: null,
             gitSyncBarrier: null,
+            systemdDaemonReloaded: false,
           });
           return json({
             ok: true,
@@ -1353,6 +1383,25 @@ export default defineTool({
             verifyWith:
               'dev:listening_ports { port: 3270 } (the helper already observed a different owner-visible hono-host listener under dev-operator-ifneeded.sh; this is an independent re-check)',
             note: desktopRestart.note,
+          });
+        }
+        // EI-22480835928661383: systemctl restart does NOT reread changed unit
+        // files or drop-ins. Reload synchronously while our exclusive fence is
+        // current, then schedule the disruptive restart. A reload failure is a
+        // structured, fail-closed result: the still-running service is left
+        // untouched, and the caller cannot mistake a new PID on stale config for
+        // activation of the bytes currently on disk.
+        try {
+          await systemdDaemonReloader();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return json({
+            ok: false,
+            target,
+            drained: true,
+            restarted: false,
+            reason: 'systemd_daemon_reload_failed',
+            note: `Restart ABORTED after the drain because systemctl --user daemon-reload failed: ${detail}. ${cfg.unit} was not restarted.`,
           });
         }
         // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
@@ -1385,6 +1434,7 @@ export default defineTool({
             gitSyncBarrier?.acquired === true
               ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
               : null,
+          systemdDaemonReloaded: true,
           quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
         });
         // Detached + delayed so this response returns before the service dies.
@@ -1423,6 +1473,7 @@ export default defineTool({
             restartedFromPid: before.mainPid ?? null,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
+            systemdDaemonReloaded: true,
             ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
             ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
             ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
@@ -1447,6 +1498,7 @@ export default defineTool({
           restartedFromPid: before.mainPid ?? null,
           enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
           audited: true,
+          systemdDaemonReloaded: true,
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
           ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
@@ -1472,18 +1524,18 @@ export default defineTool({
                 gatewayReadiness.health?.detail ?? 'successfully'
               } after ${gatewayReadiness.waitedMs}ms.`
             : `Restart scheduled (~1s)${
-            resetFailedBeforeRestart
-              ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
-              : ''
-          }${
-            phantomCoalesceBroken
-              ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
-              : ''
-          } — this connection will drop as the operator restarts.${
-            target === 'bg-host'
-              ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
-              : ''
-          }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
+                resetFailedBeforeRestart
+                  ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
+                  : ''
+              }${
+                phantomCoalesceBroken
+                  ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
+                  : ''
+              } — this connection will drop as the operator restarts.${
+                target === 'bg-host'
+                  ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
+                  : ''
+              }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
         });
       },
     ).catch(async (error) => {
