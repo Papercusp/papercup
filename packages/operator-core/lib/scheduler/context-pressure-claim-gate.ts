@@ -46,7 +46,10 @@
  * the caller. That keeps this unit-testable and keeps the gate's semantics in one readable place.
  */
 
-import type { ContextPressureBucket } from '../agent-tools/coordination/context-pressure';
+import type {
+  ContextPressureBucket,
+  ContextPressureRecoveryResolution,
+} from '../agent-tools/coordination/context-pressure';
 
 /** Typed verdict code, named by the filing so a reader can grep the item from the wire. */
 export const CONTEXT_CRITICAL_REFUSAL_CODE = 'claim_refused_context_critical';
@@ -79,19 +82,71 @@ export type ContextPressureGateDecision =
         laneEvaluated: false;
         remedy: string;
         overrideArg: string;
+        recoveryPath: ContextPressureRecoveryResolution['path'] | null;
       };
     };
+
+function contextPressureRemedy(
+  recovery: ContextPressureRecoveryResolution | null | undefined,
+): { label: string; text: string } {
+  switch (recovery?.path) {
+    case 'cold-loop':
+      return {
+        label: recovery.carryNoteVerified
+          ? 'cold-loop settle'
+          : 'checkpoint, then cold-loop settle',
+        text:
+          'write/refresh loop:checkpoint { did, left, insight, next }, then end this turn; the armed COLD loop ' +
+          'is the fresh-context boundary on its next wake' +
+          (recovery.carryNoteVerified
+            ? ' from its verified carry-note.'
+            : ' and the checkpoint creates the carry-note it needs. Do not call session:request-compaction.'),
+      };
+    case 'warm-loop':
+      return {
+        label: 'checkpoint, then warm-loop retune',
+        text:
+          'write/refresh loop:checkpoint { did, left, insight, next }, then call session:request-compaction; ' +
+          'its no-PTY fallback retunes the active WARM loop to COLD before the next wake.',
+      };
+    case 'no-path':
+      return {
+        label: 'checkpoint, arm a fresh-context wake',
+        text:
+          'write/refresh durable checkpoints, arm a COLD loop (or another real fresh-context wake), then end this turn and re-pull; ' +
+          'self-compaction is unavailable to this session.',
+      };
+    case 'unknown':
+      return {
+        label: 'verify a fresh-context recovery path',
+        text:
+          'write/refresh durable checkpoints and establish a verified fresh-context wake before ending this turn; ' +
+          'recovery-path availability could not be read, so do not assume session:request-compaction can succeed.',
+      };
+    case 'self-compaction':
+    default:
+      return {
+        label: 'self-compact, then re-pull',
+        text:
+          'self-compact (session:request-compaction { autoContinue: true }), then re-pull; the work is still there.',
+      };
+  }
+}
 
 /**
  * The refusal text. Shaped like `concurrencyBlockedRefusal`: cause first, explicit
  * "the lane was NOT evaluated" disclaimer, then the remedy — and it names the override so a
  * caller holding a contradicting live gauge is never left without a move.
  */
-function contextCriticalRefusalMessage(overrideArg: string): string {
+function contextCriticalRefusalMessage(
+  overrideArg: string,
+  recovery: ContextPressureRecoveryResolution | null | undefined,
+): string {
+  const remedy = contextPressureRemedy(recovery);
   return (
     'context pressure CRITICAL: your cached context estimate is at/above the critical band, and an ' +
     'agent that compacts mid-task carries in-flight state worst — so no item was served. ' +
-    'REMEDY: self-compact (session:request-compaction { autoContinue: true }), then re-pull; the ' +
+    `REMEDY: ${remedy.text} ` +
     'work is still there. (The claim lane itself was NOT evaluated — this is not a statement about ' +
     'lane contents, and NOT a drain verdict.) ' +
     `If your OWN live context gauge disagrees, it is the better authority — the cached bucket lags it ` +
@@ -113,6 +168,8 @@ export function decideContextPressureGate(input: {
   enabled?: boolean;
   /** Name of the override argument, for the remedy text. */
   overrideArg?: string;
+  /** Optional async-derived remedy facts; omitted preserves the legacy wording. */
+  recovery?: ContextPressureRecoveryResolution | null;
 }): ContextPressureGateDecision {
   const bucket = input.bucket ?? null;
   const overrideArg = input.overrideArg ?? 'ignoreContextPressure';
@@ -127,13 +184,14 @@ export function decideContextPressureGate(input: {
     reason: 'pressure-critical',
     bucket: 'critical',
     code: CONTEXT_CRITICAL_REFUSAL_CODE,
-    error: contextCriticalRefusalMessage(overrideArg),
+    error: contextCriticalRefusalMessage(overrideArg, input.recovery),
     diagnosis: {
       contextPressureBlocked: true,
       contextPressure: 'critical',
       laneEvaluated: false,
-      remedy: 'self-compact, then re-pull',
+      remedy: contextPressureRemedy(input.recovery).label,
       overrideArg,
+      recoveryPath: input.recovery?.path ?? null,
     },
   };
 }
