@@ -307,6 +307,13 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     const lc = deps.merged[0].ideaLifecycle as Record<string, unknown>;
     expect(lc.triageDecision).toBe('gate');
     expect(lc.triageReason).toContain('EVIDENCE-STALENESS GUARD');
+    expect(deps.merged[0].implementationReadiness).toMatchObject({
+      schemaVersion: 'implementation-readiness-v1',
+      status: 'not-ready',
+      source: 'triage-freshness',
+      reason: 'cited-evidence-already-completed',
+      evidence: { citations: { citedIds: ['EI-100'], staleIds: ['EI-100'] } },
+    });
   });
 
   it('leaves place alone when a cited item is still open', async () => {
@@ -338,6 +345,11 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     );
     expect(deps.merged[0].needsHuman).toBeUndefined();
     expect(deps.reviews).toEqual(['i12']);
+    expect(deps.merged[0].implementationReadiness).toMatchObject({
+      status: 'unknown',
+      reason: 'citation-evidence-unresolved',
+      evidence: { citations: { unresolvedIds: ['EI-999999'] } },
+    });
   });
 
   it('downgrades same-role Scout citations because ideas are not incident evidence', async () => {
@@ -352,6 +364,11 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     expect(res.decision).toBe('gate');
     expect(res.evidenceDowngrade?.circularIds).toEqual(['EI-105']);
     expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain('circular evidence');
+    expect(deps.merged[0].implementationReadiness).toMatchObject({
+      status: 'unknown',
+      reason: 'citation-evidence-unresolved',
+      evidence: { citations: { circularIds: ['EI-105'] } },
+    });
   });
 
   it('never downgrades a non-place decision', async () => {
@@ -368,6 +385,10 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     const deps = depsOf(idea);
     const res = await applyTriageDecision({ id: 'i14', decision: 'place', reason: 'x' }, deps);
     expect(res.decision).toBe('place');
+    expect(res.implementationReadiness).toMatchObject({
+      status: 'unknown',
+      reason: 'triage-alone-does-not-establish-readiness',
+    });
   });
 
   it('a lookup failure never blocks the decision (best-effort)', async () => {
@@ -468,6 +489,11 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
     expect(res.deploymentStalenessDivert).toEqual({ requestedDecision: 'place', target: 'land-the-deploy' });
     expect(res.lifecycle?.triageReason).toContain('LAND THE DEPLOY');
     expect(res.lifecycle?.triageReason).toContain('capture.ts');
+    expect(res.implementationReadiness).toMatchObject({
+      status: 'not-ready',
+      reason: 'repair-already-present-but-undeployed',
+      evidence: { deployment: { state: 'stale', toolName: 'improvements:capture' } },
+    });
     // Durable, so "how many filings did the screen keep out of the code-fix lane" is
     // answerable from the rows rather than from a tool result nobody kept.
     const screenPatch = deps.merged.find((p) => 'deploymentStalenessScreen' in p);
@@ -484,7 +510,19 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
   });
 
   it('a CURRENT verdict routes unchanged and records the screen it ran', async () => {
-    const issue = issueOf({ id: 'current-1', kind: 'bug' });
+    const issue = issueOf({
+      id: 'current-1',
+      kind: 'bug',
+      payload: {
+        implementationReadiness: {
+          schemaVersion: 'implementation-readiness-v1',
+          status: 'ready',
+          source: 'agent-review',
+          reason: 'agent-review-approved',
+          updatedAt: '2026-09-05T00:00:00.000Z',
+        },
+      },
+    });
     const deps = depsOf(
       issue,
       {},
@@ -504,6 +542,11 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
     expect(res.decision).toBe('place');
     expect(res.deploymentStalenessDivert).toBeUndefined();
     expect(res.deploymentStaleness).toMatchObject({ state: 'current' });
+    expect(res.implementationReadiness).toMatchObject({
+      status: 'ready',
+      source: 'agent-review',
+      reason: 'agent-review-approved',
+    });
   });
 
   it('an UNKNOWN verdict never diverts and is recorded as unknown, not as current', async () => {
@@ -524,6 +567,11 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
     const res = await applyTriageDecision({ id: 'unknown-1', decision: 'place', reason: 'code-bug' }, deps);
     expect(res.decision).toBe('place');
     expect(res.deploymentStaleness).toMatchObject({ state: 'unknown', unknownReason: 'git-unreadable' });
+    expect(res.implementationReadiness).toMatchObject({
+      status: 'unknown',
+      reason: 'deployment-freshness-unknown',
+      evidence: { deployment: { state: 'unknown', unknownReason: 'git-unreadable' } },
+    });
   });
 
   it('does not pay for the screen on reject or gym — neither routes anyone at a code fix', async () => {

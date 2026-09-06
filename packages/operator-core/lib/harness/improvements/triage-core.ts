@@ -34,6 +34,12 @@ import {
 } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
+import {
+  createImplementationReadiness,
+  readImplementationReadiness,
+  type ImplementationReadinessEvidence,
+  type ImplementationReadinessState,
+} from './agent-review-policy';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
 import {
   deploymentStalenessScreen,
@@ -83,6 +89,8 @@ export interface ApplyTriageResult {
     requestedDecision: TriageDecision;
     target: typeof LAND_THE_DEPLOY_TARGET;
   };
+  /** Shared normal-build verdict persisted on the work-item payload. */
+  implementationReadiness?: ImplementationReadinessState;
   error?: string;
 }
 
@@ -272,6 +280,103 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
     : null;
 }
 
+function triageImplementationReadiness(input: {
+  issue: EngineerIssue;
+  decision: TriageDecision;
+  citations?: EvidenceCitationInspection;
+  deployment?: DeploymentStalenessScreen;
+}): ImplementationReadinessState {
+  const existing = readImplementationReadiness(input.issue.payload);
+  const evidence: ImplementationReadinessEvidence = {};
+  if (input.deployment?.screened) {
+    evidence.deployment = {
+      state: input.deployment.state,
+      toolName: input.deployment.toolName,
+      ...(input.deployment.state === 'unknown'
+        ? { unknownReason: input.deployment.unknownReason }
+        : { relPath: input.deployment.relPath }),
+    };
+  }
+  if (input.citations?.citedIds.length) {
+    evidence.citations = {
+      citedIds: input.citations.citedIds,
+      staleIds: input.citations.staleIds,
+      unresolvedIds: input.citations.unresolvedIds,
+      circularIds: input.citations.circularIds,
+      lookupFailedIds: input.citations.lookupFailedIds,
+    };
+  }
+  const withEvidence = Object.keys(evidence).length > 0 ? { evidence } : {};
+
+  if (input.deployment?.screened && input.deployment.state === 'stale') {
+    return createImplementationReadiness({
+      status: 'not-ready',
+      source: 'triage-freshness',
+      reason: 'repair-already-present-but-undeployed',
+      ...withEvidence,
+    });
+  }
+  if (input.citations?.stale) {
+    return createImplementationReadiness({
+      status: 'not-ready',
+      source: 'triage-freshness',
+      reason: 'cited-evidence-already-completed',
+      ...withEvidence,
+    });
+  }
+  if (input.decision === 'reject') {
+    return createImplementationReadiness({
+      status: 'not-ready',
+      source: 'triage-freshness',
+      reason: 'triage-rejected',
+      ...withEvidence,
+    });
+  }
+  if (
+    input.citations?.unresolvedIds.length ||
+    input.citations?.circularIds.length ||
+    input.citations?.lookupFailedIds.length
+  ) {
+    return createImplementationReadiness({
+      status: 'unknown',
+      source: 'triage-freshness',
+      reason: 'citation-evidence-unresolved',
+      ...withEvidence,
+    });
+  }
+  if (
+    (input.deployment?.screened && input.deployment.state === 'unknown') ||
+    (!input.deployment?.screened && input.deployment?.skipReason === 'screen-unavailable')
+  ) {
+    return createImplementationReadiness({
+      status: 'unknown',
+      source: 'triage-freshness',
+      reason: 'deployment-freshness-unknown',
+      ...withEvidence,
+    });
+  }
+  if (input.decision === 'gate' || input.decision === 'gym') {
+    return createImplementationReadiness({
+      status: 'unknown',
+      source: 'triage-freshness',
+      reason: input.decision === 'gate' ? 'awaiting-agent-review' : 'awaiting-validation',
+      ...withEvidence,
+    });
+  }
+  // A taxonomy placement is routing, not proof that the reported problem still
+  // exists or that an acceptance check is defined. Preserve an existing review
+  // approval/policy readiness; otherwise keep the newly-enrolled row unknown.
+  return (
+    existing ??
+    createImplementationReadiness({
+      status: 'unknown',
+      source: 'triage-freshness',
+      reason: 'triage-alone-does-not-establish-readiness',
+      ...withEvidence,
+    })
+  );
+}
+
 export async function applyTriageDecision(
   input: ApplyTriageInput,
   deps: TriageCoreDeps = defaultDeps,
@@ -301,6 +406,7 @@ export async function applyTriageDecision(
   let decision: TriageDecision = input.decision;
   let reason = input.reason;
   let evidenceDowngrade: ApplyTriageResult['evidenceDowngrade'];
+  let citationInspection: EvidenceCitationInspection | undefined;
 
   // ── P-003: DEPLOYMENT-STALENESS SCREEN, ahead of every other routing step
   // (EI-22450280531836927).
@@ -338,6 +444,7 @@ export async function applyTriageDecision(
   if (decision === 'place') {
     try {
       const check = await inspectEvidenceCitations(issue, deps);
+      citationInspection = check;
       const integrityFailure = check.unresolvedIds.length > 0 || check.circularIds.length > 0;
       if (check.stale || integrityFailure) {
         evidenceDowngrade = {
@@ -387,7 +494,13 @@ export async function applyTriageDecision(
   });
 
   const by = input.by ?? 'improvement-triage';
-  const patch: Record<string, unknown> = { ideaLifecycle: lifecycle };
+  const implementationReadiness = triageImplementationReadiness({
+    issue,
+    decision,
+    citations: citationInspection,
+    deployment: deploymentStaleness,
+  });
+  const patch: Record<string, unknown> = { ideaLifecycle: lifecycle, implementationReadiness };
   // Durable so the divert is auditable and countable after the fact: "how many filings
   // did the screen keep out of the code-fix lane" must be answerable from the rows
   // themselves, not reconstructed from a tool result nobody kept. Recorded whenever the
@@ -450,6 +563,7 @@ export async function applyTriageDecision(
     ...(evidenceDowngrade ? { evidenceDowngrade } : {}),
     ...(deploymentStaleness ? { deploymentStaleness } : {}),
     ...(deploymentStalenessDivert ? { deploymentStalenessDivert } : {}),
+    implementationReadiness,
   };
 }
 
