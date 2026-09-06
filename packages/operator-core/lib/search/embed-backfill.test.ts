@@ -1016,6 +1016,32 @@ describe('embed-backfill drain policy (P-005)', () => {
     // BEHAVIOUR is what we assert.
   });
 
+  it('guards the operator_turns recurrence: a batch abort still isolates rows to per-row embeds', async () => {
+    const operatorTurns = TARGETS.find((target) => target.table === 'harness_shared.operator_turns')!;
+    const rows = [
+      { k0: 'turn-a', body: 'operator turn A' },
+      { k0: 'turn-b', body: 'operator turn B' },
+    ];
+    const { sql } = fakeSql([rows, [], [], [], []]);
+    const embedMany = async () => {
+      throw new Error('This operation was aborted');
+    };
+    const perRow = vi.fn(async () => VEC);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let stats;
+    try {
+      stats = await backfillTable(sql, operatorTurns, perRow, 10, 'gemma', true, embedMany);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(stats.table).toBe('harness_shared.operator_turns');
+    expect(stats.embedded).toBe(2);
+    expect(stats.errors).toBe(0);
+    expect(perRow).toHaveBeenCalledTimes(2);
+  });
+
   it('OFFSETs past rows that persistently FAIL, so they cannot pin the head of an ordered queue', async () => {
     // Row 'bad' always throws; 'good' succeeds. With a stable ORDER BY and no
     // offset, 'bad' would be re-selected in every batch forever.

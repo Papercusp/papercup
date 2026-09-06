@@ -65,7 +65,8 @@ const BATCH_SIZE = getResourceProfile().embedBatchSize;
  * How many texts go to the sidecar in ONE batch call. Deliberately much smaller
  * than BATCH_SIZE, and the gap is the point.
  *
- * `sidecarBatchTimeoutMs` scales the budget by text COUNT (15s + 1s/text), a
+ * `sidecarBatchTimeoutMs` scales the budget by text COUNT (15s + 2s/text after
+ * the first), a
  * figure calibrated on 2026-08-03 against a sidecar measured at 59-75ms/row. The
  * sidecar's cost is dominated by per-text model latency, and under sustained
  * fleet load that is now far above the calibration: measured 2026-09-04 against
@@ -84,7 +85,8 @@ const BATCH_SIZE = getResourceProfile().embedBatchSize;
  * Chunking bounds a breach to ONE chunk and KEEPS what earlier chunks produced,
  * because `batchVectors[i] ?? per-row` below is per-INDEX: a null just sends that
  * one row down the per-row path. 16 keeps the amortised HTTP win while capping
- * the worst-case loss at a 30s budget instead of 142s.
+ * the worst-case loss at a 45s budget instead of 269s (before the shared 180s
+ * ceiling).
  */
 const BATCH_EMBED_CHUNK_SIZE = 16;
 
