@@ -8,6 +8,8 @@
 import {
   defineAgentObligation,
   evaluateAgentObligations,
+  goalPlanPlacementChangedKey,
+  planAcceptanceChangedKey,
   type AgentObligation,
   type AgentObligationAgenda,
   type AgentObligationEvidence,
@@ -207,7 +209,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       sourceRef: 'GoalPortfolioBrief.worklist[].placement+resolveGoalLaunch+classifyGoalPlanFleetCoverage',
     },
     changeSignal: {
-      event: `goal:plan-placement:${input.goalId}`,
+      event: goalPlanPlacementChangedKey(input.goalId),
       cancellationRef: `goal:${input.goalId}`,
     },
     boundary: {
@@ -479,7 +481,10 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
     });
   }
   const reportRef = `goal-owner-report:${input.goalId}:${report.lastReportAt ?? 'baseline'}`;
-  const dueAt = new Date(Date.parse(input.observedAt) + report.dueInMin * 60_000).toISOString();
+  // The watchdog owns the exact reference+floor boundary. Reconstructing it
+  // from rounded display minutes made an unchanged episode's deadline drift by
+  // up to a minute on every read, continually replacing its durable await.
+  const dueAt = report.dueAt;
   if (report.obligation === 'not-due') {
     if (!report.lastReportAt) {
       return defineAgentObligation({
@@ -579,7 +584,7 @@ export function independentVerificationObligation(input: IndependentVerification
       sourceRef: 'evaluatePlanAcceptanceGate',
     },
     changeSignal: {
-      event: `plan:acceptance:${input.planSlug}`,
+      event: planAcceptanceChangedKey(input.planSlug),
       cancellationRef: `plan:${input.planSlug}`,
     },
     boundary: {
@@ -621,7 +626,7 @@ export function independentVerificationObligation(input: IndependentVerification
     return defineAgentObligation({
       ...common,
       title: `Plan ${input.planSlug} has independent acceptance`,
-      episode: `accepted:${gate.rubricId ?? input.sourceGeneration}`,
+      episode: `accepted:${gate.rubricId ?? 'no-rubric'}:${input.sourceGeneration}`,
       status: 'satisfied',
       reason: 'the canonical ship gate is satisfied',
       causalRank: 2,
@@ -646,7 +651,10 @@ export function independentVerificationObligation(input: IndependentVerification
     title: graderGap
       ? `Plan ${input.planSlug} needs an independent grader`
       : `Plan ${input.planSlug} cannot yet be independently certified`,
-    episode: `${code ?? 'gate-unknown'}:${gate.rubricId ?? input.sourceGeneration}`,
+    // A plan can cycle back to the same refusal code/rubric after a revision.
+    // Include the canonical source generation so a fired old episode never
+    // suppresses the new revision's material-change watch.
+    episode: `${code ?? 'gate-unknown'}:${gate.rubricId ?? 'no-rubric'}:${input.sourceGeneration}`,
     status: graderGap ? 'due' : 'blocked',
     reason: gate.message ?? `plan acceptance gate refused with ${code ?? 'an unknown code'}`,
     // Author-owned audit/rubric/spec repair is a prerequisite to asking an

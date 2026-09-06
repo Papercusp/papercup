@@ -14,6 +14,17 @@ export const AGENT_OBLIGATION_SCHEMA_VERSION = 'agent-obligations-v1' as const;
 export const AGENT_OBLIGATION_DEFAULT_MAX_ENTRIES = 3;
 export const AGENT_OBLIGATION_DEFAULT_MAX_ESTIMATED_TOKENS = 400;
 
+/** Awaitable material-change keys shared by policy providers and their existing
+ * routine/write-side producers. Keeping builders here prevents a reminder from
+ * registering a plausible-looking key no writer actually fires. */
+export function goalPlanPlacementChangedKey(goalId: string): string {
+  return `goal:plan-placement:${goalId}`;
+}
+
+export function planAcceptanceChangedKey(planSlug: string): string {
+  return `plan:acceptance:${planSlug}`;
+}
+
 export type AgentObligationFamily = 'plan-placement' | 'owner-report' | 'independent-verification';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';

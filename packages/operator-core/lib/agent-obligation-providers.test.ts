@@ -384,6 +384,12 @@ describe('frozen provider matrix: owner reporting (6 opportunities)', () => {
     ageMin: obligation === 'overdue' ? 75 : 20,
     floorMin: 60,
     dueInMin: obligation === 'overdue' ? -15 : obligation === 'due-now' ? 3 : 40,
+    dueAt:
+      obligation === 'overdue'
+        ? '2026-09-05T18:45:00.000Z'
+        : obligation === 'due-now'
+          ? '2026-09-05T19:03:00.000Z'
+          : '2026-09-05T19:40:00.000Z',
     standing: true,
     obligation,
     instruction: obligation,
@@ -431,6 +437,13 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     expect(result.status).toBe(status);
     expect(result.action?.kind).toBe(action);
   });
+
+  it('mints a fresh episode when the same gate code recurs on a new source generation', () => {
+    const read = known(gate(false, 'acceptance_ungraded'));
+    const first = independentVerificationObligation(verifyInput(read));
+    const second = independentVerificationObligation({ ...verifyInput(read), sourceGeneration: 'generation-2' });
+    expect(first.id).not.toBe(second.id);
+  });
 });
 
 describe('shared agenda composition', () => {
@@ -444,6 +457,7 @@ describe('shared agenda composition', () => {
             ageMin: 75,
             floorMin: 60,
             dueInMin: -15,
+            dueAt: '2026-09-05T18:45:00.000Z',
             standing: true,
             obligation: 'overdue',
             instruction: 'report now',

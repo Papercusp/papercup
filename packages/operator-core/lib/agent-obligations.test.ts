@@ -7,10 +7,19 @@ import {
   defineAgentObligation,
   evaluateAgentObligationBoundary,
   evaluateAgentObligations,
+  goalPlanPlacementChangedKey,
+  planAcceptanceChangedKey,
   formatAgentObligationLine,
   projectAgentObligationAgenda,
   type AgentObligationInput,
 } from './agent-obligations';
+
+describe('obligation material-change event keys', () => {
+  it('keeps producer and provider routes subject-scoped', () => {
+    expect(goalPlanPlacementChangedKey('goal-1')).toBe('goal:plan-placement:goal-1');
+    expect(planAcceptanceChangedKey('plan-a')).toBe('plan:acceptance:plan-a');
+  });
+});
 
 const NOW = '2026-09-05T20:00:00.000Z';
 
