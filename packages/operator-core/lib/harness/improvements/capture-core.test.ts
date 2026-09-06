@@ -326,6 +326,56 @@ describe('Scout evidence citations (EI-19450720466036446)', () => {
     expect(integrity.lookupFailedIds).toEqual(['EI-405']);
   });
 
+  /**
+   * WI-2147241 — the capture-time record resolved citations through the ISSUE-family door,
+   * so a real feature-family `WI-`/`F-` row (which lives in `work_items`, invisible to that
+   * view) was written into `evidenceIntegrity.unresolvedIds` — an audit record asserting
+   * "fabricated" about a citation that resolves fine.
+   */
+  it('records a FEATURE-family citation as resolved via the mixed-family door, scoped to the harness', async () => {
+    const d = deps();
+    // The issue-family door genuinely cannot see feature rows — same as production.
+    d.getIssue = async () => null;
+    const seen: { id: string; harness?: string }[] = [];
+    d.getCitedWorkItem = async (id, harness) => {
+      seen.push({ id, harness });
+      return id === 'WI-2145950' ? { payload: {} } : null;
+    };
+
+    await captureImprovement(
+      {
+        title: 'grounded proposal',
+        kind: 'change',
+        body: 'Grounded in the measurement published as WI-2145950.',
+        sourceRole: 'Scout',
+        scope: 'harness:papercusp',
+      },
+      d,
+    );
+
+    const integrity = (d.created[0].payload as Record<string, unknown>).evidenceIntegrity as Record<string, unknown>;
+    expect(integrity.resolvedIds).toEqual(['WI-2145950']);
+    expect(integrity.unresolvedIds).toEqual([]);
+    // A `WI-<n>` id is unique only within a (workspace, harness) — an unscoped read can
+    // resolve it to a stranger's row, so the citing item's harness must reach the door.
+    expect(seen).toEqual([{ id: 'WI-2145950', harness: 'papercusp' }]);
+  });
+
+  it('STILL records a citation absent from BOTH families as unresolved (fabrication detection preserved)', async () => {
+    const d = deps();
+    d.getIssue = async () => null;
+    d.getCitedWorkItem = async () => null;
+
+    await captureImprovement(
+      { title: 'ungrounded', kind: 'change', body: 'Per WI-999999.', sourceRole: 'Scout', scope: 'harness:papercusp' },
+      d,
+    );
+
+    const integrity = (d.created[0].payload as Record<string, unknown>).evidenceIntegrity as Record<string, unknown>;
+    expect(integrity.unresolvedIds).toEqual(['WI-999999']);
+    expect(integrity.resolvedIds).toEqual([]);
+  });
+
   it('returns no integrity record when a proposal has no work-item citations', async () => {
     const integrity = await validateScoutEvidenceCitations('No prior incident ids are named here.');
     expect(integrity).toBeUndefined();

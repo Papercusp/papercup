@@ -541,6 +541,13 @@ export interface CaptureDeps {
    *  so tests drive the widening without PG or an embedder. */
   findSemanticDupes?: (input: { title: string; summary?: string }) => Promise<SemanticDupeResult | null>;
   getIssue?: (id: string) => Promise<EngineerIssue | null>;
+  /**
+   * WI-2147241 — the MIXED-family citation door for the Scout evidence-integrity record.
+   * Kept SEPARATE from `getIssue` because every other use here is legitimately issue-family;
+   * only the citation check spans both. Optional: when a caller injects neither, the check
+   * falls back to the issue-family door, which is what the pure unit fixtures stub.
+   */
+  getCitedWorkItem?: (id: string, harness?: string) => Promise<CitedRowForIntegrity | null>;
   /** Auto-ratify-on-first-scorecard (WI-5415): OPTIONAL — defaults to the real
    *  rubrics.ts autoRatifyRubricOnFirstScorecard; injectable so tests can assert the
    *  hook fired (and with which args) without touching PG. */
@@ -639,6 +646,13 @@ const defaultDeps: CaptureDeps = {
     if (!dst) throw new Error(`link target '${dstId}' not found`);
     const result = await linkWorkItem(srcId, dst, rel, by ? { by } : {});
     if ('error' in result) throw new Error(result.error);
+  },
+  // Lazy for the same reason as linkIssues: `getWorkItem` is the PG-bound MIXED-family
+  // door (issue view first, then the feature base table), and this core is imported by
+  // pure/vitest paths that must not pull work-items.ts in.
+  getCitedWorkItem: async (id, harness) => {
+    const { getWorkItem } = await import('../../work-items');
+    return getWorkItem(id, harness);
   },
   setWorkItemStateWithAliasInfo: defaultSetWorkItemStateWithAliasInfo,
   // Lazy for the same reason as linkIssues: the stamp reaches the org pool and
@@ -818,10 +832,27 @@ export interface EvidenceIntegrityPayload {
   checked: boolean;
 }
 
-/** Resolve a Scout proposal's cited work-item ids at capture time (best-effort). */
+/**
+ * The only field this check reads off a cited row. FAMILY-NEUTRAL on purpose (WI-2147241):
+ * a `WorkItem` from the canonical `work_items` base table and an `EngineerIssue` from the
+ * issue-family view both satisfy it, so the resolver seam can return either.
+ */
+type CitedRowForIntegrity = { payload?: unknown };
+
+/**
+ * Resolve a Scout proposal's cited work-item ids at capture time (best-effort).
+ *
+ * WI-2147241: `resolveCitation` must be a MIXED-family door. `extractCitedIds` pulls
+ * `EI-`/`WI-`/`F-` indiscriminately, but feature-family rows live in `work_items` and are
+ * invisible to the issue-family view — so resolving through an issue-only door recorded
+ * every real feature-family citation as `unresolvedIds`, i.e. an audit record asserting
+ * "fabricated" about a citation that resolves fine. `harness` scopes the lookup because a
+ * `WI-<n>` id is unique only within a (workspace, harness).
+ */
 export async function validateScoutEvidenceCitations(
   text: string,
-  resolveIssue?: (id: string) => Promise<EngineerIssue | null>,
+  resolveCitation?: (id: string, harness?: string) => Promise<CitedRowForIntegrity | null>,
+  harness?: string,
 ): Promise<EvidenceIntegrityPayload | undefined> {
   const citedIds = extractCitedIds(text);
   if (citedIds.length === 0) return undefined;
@@ -832,13 +863,13 @@ export async function validateScoutEvidenceCitations(
     unresolvedIds: [],
     circularIds: [],
     lookupFailedIds: [],
-    checked: Boolean(resolveIssue),
+    checked: Boolean(resolveCitation),
   };
-  if (!resolveIssue) return result;
+  if (!resolveCitation) return result;
 
   for (const id of citedIds) {
     try {
-      const cited = await resolveIssue(id);
+      const cited = await resolveCitation(id, harness);
       if (!cited) {
         result.unresolvedIds.push(id);
         continue;
@@ -2337,9 +2368,18 @@ export async function captureImprovement(
   // Keep capture fail-open (metadata records resolver failures); triage makes
   // the fresh place→gate decision from the live rows.
   if (!isObservation && sourceRole === 'Scout') {
+    // WI-2147241: prefer the MIXED-family door so a feature-family `WI-`/`F-` citation is
+    // not recorded as fabricated. The `getIssue` link keeps the pure unit fixtures (which
+    // stub only the issue door) resolving exactly as before.
+    const resolveCitation = deps.getCitedWorkItem ?? deps.getIssue;
+    const citationHarness =
+      typeof input.scope === 'string' && input.scope.startsWith('harness:')
+        ? input.scope.slice('harness:'.length) || undefined
+        : undefined;
     const evidenceIntegrity = await validateScoutEvidenceCitations(
       `${input.title}\n${input.body ?? ''}`,
-      deps.getIssue,
+      resolveCitation,
+      citationHarness,
     );
     if (evidenceIntegrity) payload.evidenceIntegrity = evidenceIntegrity;
   }
