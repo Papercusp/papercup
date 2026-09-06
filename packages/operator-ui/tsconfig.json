@@ -36,7 +36,14 @@
     "not re-export it), it is the ONLY file here reaching outside the package, and",
     "the components are already typechecked where they live by lint:tsc's operator",
     "legs and operator-vite's own tsc. The public contract stays surfaces.d.ts,",
-    "whose key-union drift guard still fails at the call site."
+    "whose key-union drift guard still fails at the call site.",
+    "",
+    "`src/shortcuts/index.tsx` is the same shape for the same reason (the shortcut",
+    "kit re-exports operator root components — GlobalFindInPage imports",
+    "`@/app/harness/Tooltip`, ShortcutsCheatSheet's RouteLink imports",
+    "`@/lib/router-compat/*` — and this tsconfig has no `@/` mapping on purpose).",
+    "Measured 2026-09-06: 3 TS2307 errors, all in apps/operator, none in src/. Its",
+    "public contract is shortcuts.d.ts (portal-global-shortcuts-2026-09-06 P-001)."
   ],
-  "exclude": ["src/surfaces/index.tsx"]
+  "exclude": ["src/surfaces/index.tsx", "src/shortcuts/index.tsx"]
 }
