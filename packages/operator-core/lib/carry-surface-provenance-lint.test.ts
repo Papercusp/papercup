@@ -4,6 +4,7 @@ import {
   provenanceLintField,
   PROVENANCE_LINT_NOTE,
   PROVENANCE_LINT_DOWNGRADED_NOTE,
+  TURN_REF_SOURCE_GUIDANCE,
 } from './carry-surface-provenance-lint';
 
 describe('lintCarrySurfaceProvenance', () => {
@@ -553,6 +554,13 @@ describe('provenanceLintField', () => {
     expect(field?.flagged).toBe(true);
     expect(field?.note).toBe(PROVENANCE_LINT_NOTE);
     expect(field?.matches.length).toBeGreaterThan(0);
+  });
+
+  it('names the copy source and rejects constructing refs from wake-pump nonces', () => {
+    expect(PROVENANCE_LINT_NOTE).toContain('turnProvenance.writtenDuring.ref');
+    expect(PROVENANCE_LINT_NOTE).toContain('copy the exact');
+    expect(PROVENANCE_LINT_NOTE).toContain('wake-pump nonce');
+    expect(PROVENANCE_LINT_NOTE).toContain(TURN_REF_SOURCE_GUIDANCE);
   });
 });
 

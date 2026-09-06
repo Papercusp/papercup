@@ -10,7 +10,9 @@ import {
   falsifiedOwnerAnchors,
   hasCurrentTurnSentinel,
   mergeQuoteMismatchesIntoLint,
+  mergeUnresolvedTurnRefsIntoLint,
   OWNER_TURN_VERDICTS,
+  UNRESOLVED_TURN_REF_NOTE,
   UNVERIFIED_OWNER_ATTRIBUTION_MARKER,
   markUnverifiedOwnerAttribution,
   ownerAttributionEnforcement,
@@ -54,26 +56,33 @@ describe('a supplied [turn:…] ref always surfaces, even when verification coul
 
   it('ownerId absent (verification leg skipped entirely) → refs[] still contains one checked:false miss, not an undefined stamp', async () => {
     const stamp = await stampCarrySurfaceProvenance(text, null);
-    expect(stamp).toEqual({
-      refs: [
-        {
-          ref: '[turn:abcd1234@2026-08-01T00:00:00Z]',
-          found: false,
-          verdict: null,
-          origin: null,
-          snippet: null,
-          quote: null,
-          quoteMatch: null,
-          checked: false,
-        },
-      ],
-    });
+    expect(stamp?.refs).toEqual([
+      {
+        ref: '[turn:abcd1234@2026-08-01T00:00:00Z]',
+        found: false,
+        verdict: null,
+        origin: null,
+        snippet: null,
+        quote: null,
+        quoteMatch: null,
+        checked: false,
+      },
+    ]);
+    expect(stamp?.lint?.flagged).toBe(true);
+    expect(stamp?.lint?.note).toBe(UNRESOLVED_TURN_REF_NOTE);
+    expect(stamp?.lint?.matches).toEqual([
+      {
+        line: expect.stringContaining('(found:false; checked:false)'),
+        kind: 'unresolved-turn-ref',
+      },
+    ]);
   });
 
   it('carryProvenanceFields mirrors the same non-vanishing refs entry', async () => {
     const fields = await carryProvenanceFields(text, null);
     expect(fields.turnProvenance?.refs).toHaveLength(1);
     expect(fields.turnProvenance?.refs?.[0]).toMatchObject({ found: false, checked: false });
+    expect(fields.provenanceLint?.matches[0]?.kind).toBe('unresolved-turn-ref');
     expect(fields.turnProvenance?.writtenDuring).toBeUndefined();
   });
 
@@ -88,6 +97,45 @@ describe('a supplied [turn:…] ref always surfaces, even when verification coul
     const stamp = await stampCarrySurfaceProvenance(text, null);
     expect(stamp?.refs).toBeDefined();
     expect(stamp?.refs?.every((v) => v.checked === false && v.found === false)).toBe(true);
+    expect(stamp?.lint?.matches[0]?.kind).toBe('unresolved-turn-ref');
+  });
+});
+
+describe('mergeUnresolvedTurnRefsIntoLint (EI-22458695302531198 — pure)', () => {
+  const unresolved = (checked: boolean): TurnRefVerdict => ({
+    ref: '[turn:wakepump@2026-09-05T21:26:41Z]',
+    found: false,
+    verdict: null,
+    origin: null,
+    snippet: null,
+    quote: null,
+    quoteMatch: null,
+    checked,
+  });
+
+  it('flags an unchecked miss without changing checked:false into a failed lookup', () => {
+    const merged = mergeUnresolvedTurnRefsIntoLint(
+      undefined,
+      'The wake-pump action is recorded at [turn:wakepump@2026-09-05T21:26:41Z].',
+      [unresolved(false)],
+    );
+    expect(merged?.flagged).toBe(true);
+    expect(merged?.note).toBe(UNRESOLVED_TURN_REF_NOTE);
+    expect(merged?.matches[0]).toMatchObject({ kind: 'unresolved-turn-ref' });
+    expect(merged?.matches[0]?.line).toContain('found:false; checked:false');
+  });
+
+  it('also flags a verified-absent timestamp, while keeping the distinction visible', () => {
+    const merged = mergeUnresolvedTurnRefsIntoLint(undefined, undefined, [unresolved(true)]);
+    expect(merged?.matches[0]?.line).toContain('found:false; checked:true');
+  });
+
+  it('leaves clean and resolved verdicts unchanged', () => {
+    const clean = { flagged: true as const, note: 'existing', matches: [{ line: 'x', kind: 'owner-attribution' as const }] };
+    expect(mergeUnresolvedTurnRefsIntoLint(clean, 'x', [])).toEqual(clean);
+    expect(
+      mergeUnresolvedTurnRefsIntoLint(clean, 'x', [{ ...unresolved(false), found: true, checked: true }]),
+    ).toEqual(clean);
   });
 });
 
