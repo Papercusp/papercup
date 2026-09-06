@@ -8331,6 +8331,8 @@ async function tryLongestGreenPrefix(
   budget: SalvageBudget,
 ): Promise<CheckpointResult | null> {
   if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
+  // Narrowed once here: the guard's narrowing does not reach into the async probe closures.
+  const affectedWorkspacesForRange = deps.affectedWorkspacesForRange;
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
   const commits = await deps.commitsInRange(lastReady, candidate); // oldest→newest, full shas
   if (commits.length <= 1) return null; // only the red tip itself — nothing to salvage behind it
@@ -8419,7 +8421,7 @@ async function tryLongestGreenPrefix(
       // the SAME matcher the lineage note uses, so the two cannot drift.
       return matchFailingFilesToChanged(failingPaths, files).length === 0;
     }
-    const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+    const aff = await affectedWorkspacesForRange(lastReady, sha);
     if (!aff) return null; // can't compute this prefix → cannot extend through it
     // clean unless this commit (cumulatively) touches a failing ws
     return !aff.some((w) => failingWs.has(w));
@@ -8492,7 +8494,7 @@ async function tryLongestGreenPrefix(
       declineGranularity = "workspace";
       prefixTip = (
         await longestCleanPrefix(walk, async (sha) => {
-          const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+          const aff = await affectedWorkspacesForRange(lastReady, sha);
           if (!aff) return null;
           return !aff.some((w) => failingWs.has(w));
         })
@@ -17405,7 +17407,24 @@ export function realCheckpointDeps(
       // they do — and declares the red STALE, re-firing the gate green. That would hand a
       // real typecheck/lint/build failure a second false-green path into `main`, defeating
       // the fix above. A non-absorbed run is unchanged: the suite output IS the evidence.
-      const signatureOutput = suiteAbsorbed ? legs.output : fullOutput;
+      //
+      // WI-10000085: the SAME reasoning when the RUNNER absorbed the flake itself. HARDEN-GATE
+      // inside scripts/affected-tests.mjs re-runs a failed file in a fresh process and, when
+      // it passes, exits 0 with `AFFECTED_TESTS_RESULT status=passed` — so `suiteCompleted`
+      // is true, the gate's own absorber above never runs, and `suiteAbsorbed` stays false.
+      // But the raw suite output still carries the FIRST-PASS `FAIL <file>` / `❯ … failed`
+      // rows and the `>>> <ws> FAILED — fresh-process re-run …` bullet, and the runner emits
+      // its canonical AFFECTED_TESTS_FAILING_FILES line only on a FAILED exit. So when a
+      // post-suite leg then turned the run red, scoring the signature against fullOutput
+      // scraped the absorbed file AND its workspace back into the hold set. Measured
+      // 2026-09-06 on the frozen 50ed2739 lineage, runs f3a2f1f2 and 3ce52b07: the suite was
+      // `status=passed tasks=67 failed=0` with su-render-baseline.test.ts absorbed, and
+      // GATE_HELD_BY still listed that file and @papercusp/operator-core beside the lint legs
+      // that were actually red — and the stale-candidate re-triage then re-ran a file that
+      // absorption had already proven passing. A suite whose own terminal verdict is PASSED
+      // contributes nothing to the failing signature: the legs are what is red.
+      const signatureOutput =
+        suiteAbsorbed || suiteCompleted ? legs.output : fullOutput;
       const buildOk = legs.build.status !== "failed";
       let failingTests = checkpointFailureSignature(
         signatureOutput,

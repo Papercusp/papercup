@@ -45,6 +45,7 @@ import {
   createFatalCheckpointFinalizer,
   createFatalProcessHandler,
   emitTerminalCheckpointResult,
+  extractFailingTests,
   GREEN_CHECKPOINT_RESULT_MARKER,
   hasNpmScript,
   acquireCheckpointRunLock,
@@ -2005,6 +2006,83 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     ]);
     const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
     expect(r.green).toBe(false);
+  });
+
+  // ── WI-10000085 ────────────────────────────────────────────────────────────
+  // The RUNNER (scripts/affected-tests.mjs, HARDEN-GATE) can absorb a flake itself: it
+  // re-runs the failed file in a fresh process and, when that passes, exits 0 with
+  // `AFFECTED_TESTS_RESULT status=passed`. The suite then COMPLETED, so the gate's own
+  // absorber never runs and `suiteAbsorbed` stays false — yet the raw output still carries
+  // the first-pass `FAIL <file>` rows and the `>>> <ws> FAILED — fresh-process re-run` bullet,
+  // and the runner's canonical AFFECTED_TESTS_FAILING_FILES line is emitted only on a FAILED
+  // exit. Measured 2026-09-06 (runs f3a2f1f2 and 3ce52b07 on the frozen 50ed2739 lineage): a
+  // `status=passed tasks=67 failed=0` suite with su-render-baseline.test.ts absorbed, a red
+  // lint leg — and GATE_HELD_BY listed the absorbed file and @papercusp/operator-core beside
+  // the leg. The signature must be scored against the LEGS alone, exactly as WI-6053 below
+  // already does for a gate-absorbed suite.
+  describe("WI-10000085: a RUNNER-absorbed green suite contributes nothing to a leg-red signature", () => {
+    // Modelled on the real runner output of run 3ce52b07 (stdout, then the stderr bullets):
+    // first-pass failure rows, the terminal PASSED verdict, then the absorption narration.
+    const RUNNER_ABSORBED_OUTPUT =
+      ">>> @example/fixture-pkg :: npm run test\n" +
+      " FAIL  lib/llm-testing/__tests__/runner-aggregate.test.ts > aggregates\n" +
+      " ❯ lib/llm-testing/__tests__/runner-aggregate.test.ts (8 tests | 1 failed) 204ms\n" +
+      "AFFECTED_TESTS_RESULT status=passed tasks=1 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0\n" +
+      ">>> @example/fixture-pkg FAILED — fresh-process re-run of 1 of 1 failed file(s) (HARDEN-GATE flake absorption): lib/llm-testing/__tests__/runner-aggregate.test.ts\n" +
+      ">>> @example/fixture-pkg failed files passed in a fresh process — counted as a FLAKE, not a failure.\n";
+
+    it("CALIBRATION: the fixture IS the hazardous shape — scraped alone, it names the absorbed file and its workspace", () => {
+      // If this ever stops holding, the test below passes vacuously and guards nothing.
+      const scraped = extractFailingTests(RUNNER_ABSORBED_OUTPUT);
+      expect(scraped).toContain(
+        "lib/llm-testing/__tests__/runner-aggregate.test.ts",
+      );
+      expect(scraped).toContain("@example/fixture-pkg");
+    });
+
+    it("runner-absorbed green suite (exit 0) → FAILING typecheck → RED attributed to the LEG only; the absorbed file and its workspace stay out of failingTests and failingFiles", async () => {
+      // call 0: the suite exits 0 (the runner absorbed the flake itself). call 1: the
+      // typecheck leg FAILS. No gate-side isolation re-run happens — the suite completed.
+      const { exec, calls } = makeExec([
+        { code: 0, stdout: RUNNER_ABSORBED_OUTPUT },
+        { code: 1, stdout: "operator-core/lib/broken.ts: TS2322" },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(
+        typecheckTree,
+        null,
+      );
+
+      expect(r.green).toBe(false);
+      expect(r.failingTests).toEqual(["lint:tsc"]);
+      expect(r.failingTests).not.toContain(
+        "lib/llm-testing/__tests__/runner-aggregate.test.ts",
+      );
+      expect(r.failingTests).not.toContain("@example/fixture-pkg");
+      // The stale-candidate re-triage reads failingFiles: an absorbed file here would be
+      // re-run at tip, found passing (absorption already proved that), and the leg red
+      // declared STALE — a second false-green path for a real typecheck failure.
+      expect(r.failingFiles ?? []).toEqual([]);
+      expect(calls).toHaveLength(2);
+      expect(calls[1].args).toEqual(["run", "lint:tsc"]);
+    });
+
+    it("CONTROL: the same runner-absorbed green suite with all legs PASSING is simply green", async () => {
+      // call 0: suite exit 0. call 1: lint:tsc green. call 2: conflict-marker grep clean
+      // (code 1). call 3: SPA build green.
+      const { exec, calls } = makeExec([
+        { code: 0, stdout: RUNNER_ABSORBED_OUTPUT },
+        { code: 0 },
+        { code: 1 },
+        { code: 0 },
+      ]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(
+        typecheckTree,
+        "base-sha",
+      );
+      expect(r.green).toBe(true);
+      expect(r.failingTests ?? []).toEqual([]);
+      expect(calls).toHaveLength(4);
+    });
   });
 
   // ── WI-6053 ────────────────────────────────────────────────────────────────
