@@ -11,8 +11,8 @@ use crate::models::{
     ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
     FleetLeaderBrief, FleetRateStatus, GoalSummary, HarnessFeature, HarnessIssue, HarnessRef,
     LexiconPackPayload, Notif, OperatorConfig, PipelineStatus, PlanItemStates, PlanSummary,
-    RosterEntry, SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain,
-    TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
+    RosterEntry, SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain, ToolPaletteHit,
+    ToolPaletteRecipe, TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -322,6 +322,24 @@ pub enum Event {
     /// work-item) loaded on selection. Carries the id so a stale fetch never
     /// paints another conversation's detail (the TestingFiles/PluginConfig guard).
     ConversationDetail { id: String, detail: ConvDetail },
+    /// Results for one `:tool <query>` catalog search. Both legs are kept
+    /// independent: recipe suggestions may degrade without hiding valid tool
+    /// matches, while the query guards against an older async result repainting
+    /// a newer search.
+    ToolPaletteSearchFinished {
+        query: String,
+        tools: Result<Vec<ToolPaletteHit>, String>,
+        recipes: Result<Vec<ToolPaletteRecipe>, String>,
+    },
+    /// Terminal result from invoking the selected catalog entry through
+    /// `tools:invoke`. The query + tool name provide the same stale-result guard
+    /// as every other async palette-backed surface.
+    ToolPaletteInvocationFinished {
+        query: String,
+        tool: ToolPaletteHit,
+        args: serde_json::Value,
+        result: Result<serde_json::Value, String>,
+    },
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).
