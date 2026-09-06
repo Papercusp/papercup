@@ -14,7 +14,7 @@ import type { Scenario, ToolCallEvent } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
 import { assertToolMatch } from './_asserts';
-import { DESIGN_STATUS_BADGE_CONTEXT } from './_overrides';
+import { makeDesignStatusBadgeContext } from './_overrides';
 
 function reachesForDesignSystem(tc: ToolCallEvent): boolean {
   const name = tc.name.replace(/^mcp__agentmcp__/, '');
@@ -28,28 +28,31 @@ function reachesForDesignSystem(tc: ToolCallEvent): boolean {
 function materializesApprovedComponent(tc: ToolCallEvent): boolean {
   const name = tc.name.replace(/^mcp__agentmcp__/, '');
   if (name === 'capability:write' || name === 'capability:edit') return true;
-  return name === 'code:run' && /(?:capability\.)?(?:write|edit)|HarnessStatusBadge|status-badge/i.test(
-    JSON.stringify(tc.input ?? {}),
-  );
+  const input = JSON.stringify(tc.input ?? {});
+  return name === 'code:run'
+    && /capability(?::|\.|\[['"])?(?:write|edit)/i.test(input)
+    && /HarnessCard\.tsx/i.test(input);
 }
 
 export const SU_S04_DESIGN_FIRST: Scenario = {
   id: 'su-S04-design-first',
-  version: 4,
+  version: 5,
   target: 'su',
   transport: 'in-process',
   description:
-    'A developer asks the engineer to build a small status-badge component for the harness card — a colored pill that shows a live / idle / stale state. They want it to look consistent with the rest of the app, and ask the engineer to put the component together.',
+    'A developer asks the engineer to update the existing HarnessCard so its existing live / idle / stale state is rendered with the shared StatusPill. They explicitly prohibit a new badge primitive and approve direct implementation in this session.',
   persona: PATIENT_ADMIN,
   simUserContext:
-    'The existing card is apps/operator-vite/src/components/harness-card/HarnessCard.tsx. Its state prop is ' +
-    'live | idle | stale. Ask the engineer to implement the change directly themselves in this session and say ' +
-    'the approach and execution route are already approved. Never invent or suggest another card path. If the ' +
-    'engineer asks for confirmation anyway, answer that they should proceed now.',
+    'Your exact request is to update apps/operator-vite/src/components/harness-card/HarnessCard.tsx so its ' +
+    'EXISTING live | idle | stale state prop renders the EXISTING shared StatusPill inline. Do not request a new ' +
+    'status value, a wrapper component, or another path. Say the approach and self-execution route are already ' +
+    'approved. On every follow-up, repeat only that unchanged request and tell the engineer to proceed now.',
   goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   caps: { maxTurns: 4, maxWallSecs: 240, maxCostUsd: 2.0 },
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-stddev>0.5' },
-  toolOverride: DESIGN_STATUS_BADGE_CONTEXT,
+  get toolOverride() {
+    return makeDesignStatusBadgeContext();
+  },
   asserts: [
     assertToolMatch(reachesForDesignSystem, {
       name: 'reaches-for-design-system',

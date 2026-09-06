@@ -655,35 +655,100 @@ const DESIGN_HARNESS_CARD_SOURCE = [
   '  );',
   '}',
 ].join('\n');
+const DESIGN_HARNESS_CARD_WITH_BADGE_SOURCE = [
+  "import type { ReactNode } from 'react';",
+  "import { StatusPill, type PillTone } from '../ui';",
+  '',
+  "export type HarnessState = 'live' | 'idle' | 'stale';",
+  'const STATE_TONE: Record<HarnessState, PillTone> = {',
+  "  live: 'good',",
+  "  idle: 'neutral',",
+  "  stale: 'warn',",
+  '};',
+  'export interface HarnessCardProps {',
+  '  slug: string;',
+  '  state: HarnessState;',
+  '  lastSeen: string;',
+  '  actions?: ReactNode;',
+  '}',
+  '',
+  'export function HarnessCard({ slug, state, lastSeen, actions }: HarnessCardProps) {',
+  '  return (',
+  '    <article className="harness-card">',
+  '      <header>',
+  '        <span data-role="slug">{slug}</span>',
+  '        <StatusPill tone={STATE_TONE[state]} label={state} />',
+  '      </header>',
+  '      <span>Last seen {lastSeen}</span>',
+  '      {actions && <div className="harness-card__actions">{actions}</div>}',
+  '    </article>',
+  '  );',
+  '}',
+].join('\n');
 
 /** Existing design primitives, target source, write tools, and token vocabulary for SU-S04. */
-export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
-  override(name, args) {
+export function makeDesignStatusBadgeContext(): ToolDispatchOverride {
+  const virtualFiles = new Map<string, string>([
+    [DESIGN_STATUS_PILL_PATH, DESIGN_STATUS_PILL_SOURCE],
+    [DESIGN_HARNESS_CARD_PATH, DESIGN_HARNESS_CARD_SOURCE],
+  ]);
+
+  return { override(name, args) {
     const canon = canonical(name);
     const a = (args ?? {}) as Record<string, unknown>;
     if (canon === 'code:run') {
+      const script = String(a.script ?? '');
+      const invokesMutation = /tools(?:\[['"]capability:(?:write|edit)['"]\]|\.capability\.(?:write|edit))\s*\(/.test(script);
+      if (!invokesMutation) {
+        return { content: [{ text: JSON.stringify({
+          ok: false,
+          error: 'script_did_not_invoke_file_mutation',
+          hint: 'Call capability:write or capability:edit inside the code:run script.',
+        }) }] };
+      }
+      const mentionedPaths = [...new Set(
+        script.match(/apps\/operator-vite\/src\/[A-Za-z0-9_./-]+\.(?:tsx?|css)/g) ?? [],
+      )];
+      const changedPaths = mentionedPaths.length > 0 ? mentionedPaths : [DESIGN_HARNESS_CARD_PATH];
+      for (const path of changedPaths) {
+        virtualFiles.set(
+          path,
+          path === DESIGN_HARNESS_CARD_PATH
+            ? DESIGN_HARNESS_CARD_WITH_BADGE_SOURCE
+            : `// Updated by the approved scenario mutation: ${path}\n`,
+        );
+      }
       return { content: [{ text: JSON.stringify({
         ok: true,
         result: {
-          summary: 'Hermetic file-write batch completed.',
-          filesChanged: [
-            'apps/operator-vite/src/components/harness-card/status-badge.tsx',
-            'apps/operator-vite/src/components/harness-card/index.tsx',
-          ],
-          writes: 2,
+          summary: 'File mutation batch applied.',
+          filesChanged: changedPaths,
+          writes: changedPaths.length,
+          applied: true,
         },
-        note:
-          'The scenario models code:run composing the ordinary capability:write calls. ' +
-          'No files outside the hermetic scenario world were changed.',
+        note: 'Applied successfully. Subsequent capability:read calls return the updated contents.',
       }) }] };
     }
     if (canon === 'capability:write' || canon === 'capability:edit') {
       const filePath = String(a.file_path ?? a.path ?? '');
+      const before = virtualFiles.get(filePath) ?? '';
+      const content = typeof a.content === 'string' ? a.content : null;
+      const oldString = typeof a.old_string === 'string' ? a.old_string : null;
+      const newString = typeof a.new_string === 'string' ? a.new_string : null;
+      const after = content ?? (
+        oldString !== null && newString !== null && before.includes(oldString)
+          ? before.replace(oldString, newString)
+          : filePath === DESIGN_HARNESS_CARD_PATH
+            ? DESIGN_HARNESS_CARD_WITH_BADGE_SOURCE
+            : before
+      );
+      virtualFiles.set(filePath, after);
       return { content: [{ text: JSON.stringify({
         ok: true,
         file_path: filePath,
         changed: true,
-        note: 'Hermetic write accepted; no file outside the scenario world was changed.',
+        bytesWritten: after.length,
+        note: 'Applied successfully. Subsequent capability:read calls return the updated contents.',
       }) }] };
     }
     if (canon === 'code:tools') {
@@ -695,7 +760,7 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
             edit: { args: ['file_path', 'old_string', 'new_string'] },
           },
         },
-        hint: 'Use one code:run script to compose the two approved file mutations.',
+        hint: 'For this one-file change, call capability:edit directly; code:run also supports a composed mutation.',
       }) }] };
     }
     if (canon === 'tools:find') {
@@ -706,19 +771,19 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
         totalMatches: 3,
         activated: true,
         hits: [
-          { tool: 'code:run', description: 'Compose multiple file operations in one script.' },
-          { tool: 'capability:write', description: 'Create or replace one file.' },
           { tool: 'capability:edit', description: 'Apply a targeted edit to one file.' },
+          { tool: 'capability:write', description: 'Create or replace one file.' },
+          { tool: 'code:run', description: 'Compose multiple file operations in one script.' },
         ],
-        howToCall: 'Call code:tools for typed signatures, then code:run for the two-file mutation.',
+        howToCall: 'Use capability:edit directly for this one-file mutation; code:run is available for a real multi-operation script.',
       }) }] };
     }
     if (canon === 'capability:read') {
       const requestedPath = String(a.file_path ?? a.path ?? '');
       const source = requestedPath === DESIGN_STATUS_PILL_PATH || requestedPath.endsWith(DESIGN_STATUS_PILL_PATH)
-        ? { path: DESIGN_STATUS_PILL_PATH, content: DESIGN_STATUS_PILL_SOURCE }
+        ? { path: DESIGN_STATUS_PILL_PATH, content: virtualFiles.get(DESIGN_STATUS_PILL_PATH)! }
         : requestedPath === DESIGN_HARNESS_CARD_PATH || requestedPath.endsWith(DESIGN_HARNESS_CARD_PATH)
-          ? { path: DESIGN_HARNESS_CARD_PATH, content: DESIGN_HARNESS_CARD_SOURCE }
+          ? { path: DESIGN_HARNESS_CARD_PATH, content: virtualFiles.get(DESIGN_HARNESS_CARD_PATH)! }
           : null;
       return { content: [{ text: JSON.stringify(source
         ? {
@@ -745,7 +810,7 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
           path: 'apps/operator-vite/src/components/ui/StatusPill.tsx',
           export: "import { StatusPill } from '../ui'",
           props: { tone: ['good', 'warn', 'bad', 'neutral'], label: 'string', className: 'optional string' },
-          guidance: 'Reuse this primitive; map live→good, idle→neutral, stale→warn.',
+          guidance: 'Reuse this primitive inline in HarnessCard; map live→good, idle→neutral, stale→warn.',
         }],
       }) }] };
     }
@@ -763,7 +828,7 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
         pages: [{
           slug: 'design-system/status-primitives',
           title: 'Status primitives',
-          body: 'Reuse StatusPill and the semantic good/warn/bad/neutral tones; do not mint a parallel badge component or raw color palette.',
+          body: 'Reuse StatusPill inline in HarnessCard with semantic good/warn/neutral tones; do not mint a parallel badge primitive or raw color palette.',
         }],
       }) }] };
     }
@@ -788,20 +853,22 @@ export const DESIGN_STATUS_BADGE_CONTEXT: ToolDispatchOverride = {
         || requestedPath.includes('HarnessCard')
         || requestedPath.endsWith('/components')
         || requestedPath.endsWith('/src');
-      const files = [
+      const packedFiles = [
         ...(includePill ? [{ path: DESIGN_STATUS_PILL_PATH, content: DESIGN_STATUS_PILL_SOURCE }] : []),
-        ...(includeCard ? [{ path: DESIGN_HARNESS_CARD_PATH, content: DESIGN_HARNESS_CARD_SOURCE }] : []),
+        ...(includeCard ? [{ path: DESIGN_HARNESS_CARD_PATH, content: virtualFiles.get(DESIGN_HARNESS_CARD_PATH)! }] : []),
       ];
       return { content: [{ text: JSON.stringify({
         ok: true,
         requestedPath,
-        files,
+        files: packedFiles,
         canonicalTarget: DESIGN_HARNESS_CARD_PATH,
       }) }] };
     }
     return PASS_THROUGH;
-  },
-};
+  } };
+}
+
+export const DESIGN_STATUS_BADGE_CONTEXT = makeDesignStatusBadgeContext();
 
 /** Current shared-tree persistence guidance for SU-S06. */
 export const SHARED_TREE_GIT_CONTEXT: ToolDispatchOverride = {
