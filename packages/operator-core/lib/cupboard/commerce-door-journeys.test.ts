@@ -15,9 +15,9 @@
  *   1. A door that resolves a DIFFERENT collaborator than the one under test,
  *      or marshals its args wrongly on the way in. Both are invisible to a gate
  *      test and fatal to a caller.
- *   2. The purchase leg and the install leg not meeting. They do not, today —
- *      see `journey: the entitlement gap` at the bottom, which is a deliberate
- *      assertion about a real production disconnection rather than an omission.
+ *   2. The production install default staying fail-closed until release-chain
+ *      persistence is wired, while the explicit test seam proves that a real
+ *      ledger entitlement can open — and a refund can close — the managed path.
  *
  * The doors read their state through `configureCommerceIo` /
  * `configureInstallDoorSources`. Those seams exist because the default readers
@@ -47,11 +47,30 @@ import {
 import { reduceLedger, type LedgerEvent, type LedgerState } from './commerce-ledger';
 import type { CreatorProfile, Installation, Organization, SeatPolicy } from './commerce-accounts';
 import { configureCommerceIo, type CommerceIoSources } from './commerce-door-gate-io';
-import { configureInstallDoorSources, installDoorGateDeps } from './install-door-gate-io';
+import {
+  configureInstallDoorSources,
+  gateInstallDoor,
+  installDoorGateDeps,
+} from './install-door-gate-io';
 import type { CommerceSnapshot } from './commerce-door-gate';
 import type { DoorListingFacts, InstallDoorGateDeps } from './install-door-gate';
-import { projectEntitlements } from './entitled-delivery';
+import {
+  projectEntitlements,
+  projectLedgerEntitlements,
+} from './entitled-delivery';
 import type { CupboardReleaseManifest } from './listing-manifest';
+import {
+  buildArtifactPackage,
+  createProviderRegistry,
+  type ArtifactProviderAdapter,
+} from '../p2p/artifact-package';
+import {
+  DEFAULT_PINNING_POLICY,
+  type ArtifactDistributionState,
+  type DistributionSource,
+} from '../p2p/artifact-distribution';
+import { memoryArtifactStore } from './artifact-store';
+import type { InstallRunnerDeps } from './install-runner';
 
 // ---------------------------------------------------------------------------
 // Provider-independent journey fixtures
@@ -569,7 +588,7 @@ describe('journey: the doors with no state registered', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Journey 5 — the install door, and the gap the journey actually has
+// Journey 5 — the install door, with production refusal and bridged ledger path
 // ---------------------------------------------------------------------------
 
 const PAID_LISTING: DoorListingFacts = {
@@ -580,6 +599,10 @@ const PAID_LISTING: DoorListingFacts = {
   priceAmountMicros: 9_000_000,
   releaseVersion: '1.0.0',
 };
+
+const INSTALL_SUBJECT = 'ws-p012';
+const INSTALL_RELEASE_REF = 'plugin:tools:1.0.0';
+const INSTALL_BYTES = Buffer.from('commerce-door-p012-install');
 
 /**
  * A release chain that EXISTS but entitles nobody.
@@ -628,6 +651,106 @@ function chainedGateDeps(): InstallDoorGateDeps {
   };
 }
 
+/**
+ * Build a real managed chain from the ledger snapshot. The chain is entirely
+ * in-memory, but its manifest, artifact, provider, and install runner are the
+ * same collaborators the managed production path composes. Only the release
+ * and buyer mappings are test-owned decisions: the ledger intentionally carries
+ * product/buyer ids rather than delivery release/subject ids.
+ */
+function bridgedGateDeps(ledger: LedgerState, subject = INSTALL_SUBJECT): InstallDoorGateDeps {
+  const pkg = buildArtifactPackage(INSTALL_BYTES);
+  const manifest: CupboardReleaseManifest = {
+    schemaVersion: 1,
+    listingKind: 'plugin',
+    listingRef: 'tools',
+    releaseVersion: '1.0.0',
+    contentHash: pkg.rootHash,
+    signature: 'sig',
+    dependencies: [],
+    compatibility: { runtime: 'node>=22' },
+    permissions: [],
+    capabilities: [],
+    license: 'MIT',
+    publisher: { githubUserId: 42, login: 'alice' },
+    reviewStatus: 'approved',
+  };
+  const source: DistributionSource = {
+    sourceId: 'commerce-door-p012',
+    class: 'pinner',
+    providerId: 'memory',
+    locator: 'commerce-door-p012',
+    advertisedAtMs: NOW_MS - 1_000,
+    expiresAtMs: null,
+  };
+  const distribution = {
+    schemaVersion: 1 as const,
+    release: manifest,
+    rootHash: pkg.rootHash,
+    totalSizeBytes: pkg.totalSizeBytes,
+    chunks: pkg.chunks,
+    visibility: 'public' as const,
+    encryption: null,
+    pinning: { ...DEFAULT_PINNING_POLICY, minReplicas: 1 },
+    signature: 'distribution-sig',
+  };
+  const state: ArtifactDistributionState = {
+    streamId: `dist:${INSTALL_RELEASE_REF}`,
+    manifest: distribution,
+    sources: [source],
+    pins: [source.sourceId],
+    keyVersion: 1,
+    revokedKeyVersions: [],
+    yankedAtMs: null,
+    yankReason: null,
+    lastSequence: 1,
+  };
+  const store = memoryArtifactStore();
+  store.put({
+    contentHash: pkg.rootHash,
+    sizeBytes: pkg.totalSizeBytes,
+    contentType: 'application/octet-stream',
+  });
+  const provider: ArtifactProviderAdapter = {
+    providerId: 'memory',
+    fetchChunk: async ({ chunk }) => {
+      const start = chunk.index * pkg.chunkSizeBytes;
+      return INSTALL_BYTES.subarray(start, start + chunk.sizeBytes);
+    },
+  };
+  const runner: InstallRunnerDeps = {
+    resolveDistribution: () => state,
+    registry: createProviderRegistry([provider]),
+    apply: (input) => ({
+      releaseRef: input.releaseRef,
+      installedAtMs: NOW_MS,
+      contentHash: input.distribution.rootHash,
+    }),
+    revert: () => undefined,
+  };
+  const entitlements = projectLedgerEntitlements(ledger, {
+    releaseRefForProduct: (productId) =>
+      productId === 'prod-1' ? INSTALL_RELEASE_REF : null,
+    subjectForBuyer: (buyerId) => (buyerId === ORG_ID ? subject : null),
+  });
+
+  return {
+    loadReleaseChain: () => ({
+      releaseRef: INSTALL_RELEASE_REF,
+      graph: { edges: new Map([[INSTALL_RELEASE_REF, []]]) },
+      installed: new Map(),
+      entitlements,
+      signedPackage: {
+        manifest,
+        expected: { listingKind: 'plugin', listingRef: 'tools', releaseVersion: '1.0.0' },
+      },
+    }),
+    runner,
+    verify: { store, verifySignature: () => true },
+    nowMs: () => NOW_MS,
+  };
+}
+
 describe('journey: install door', () => {
   /**
    * PRODUCTION deps — `gateDeps` is deliberately NOT registered here, so the
@@ -660,35 +783,49 @@ describe('journey: install door', () => {
     expect(res.error).not.toBe('paid-listing-without-release-chain');
   });
 
-  /**
-   * The finding P-012 exists to surface.
-   *
-   * A settled purchase produces a ledger entitlement (`LedgerState.entitlements`,
-   * keyed by entitlementId, carrying orderId / productId / buyerId). The install
-   * door gates on a DIFFERENT projection (`EntitlementProjection` from
-   * `entitled-delivery`, keyed subject + releaseRef) folded from p2p
-   * `CommerceEvent`s. Nothing in production maps one onto the other —
-   * `projectEntitlements` has no non-test caller — and the ledger `Entitlement`
-   * carries no `releaseRef` for such a mapping to use.
-   *
-   * So the purchase leg and the install leg do not meet: paying in full does not
-   * open the install door. This asserts that disconnection against the REAL
-   * production deps, and is written to FAIL the day a bridge lands — which is
-   * the correct moment for someone to turn it into the positive assertion P-012
-   * wanted. A test that passed either way would let the gap ship unnoticed.
-   */
-  it('a fully paid ledger order does NOT by itself entitle an install', async () => {
+  it('a fully paid ledger order opens the managed install gate through the bridge', async () => {
     const { ledger } = await foldJourney(stripeCase(), [stripeCase().paid()]);
     expect(ledger.orders.get(ORDER_ID)?.state).toBe('paid');
-    // The ledger really did grant an entitlement for this purchase.
     expect(ledger.entitlements.size).toBeGreaterThan(0);
 
-    // Production deps again: the paid purchase above is in no way visible here.
-    configureInstallDoorSources({ loadListingFacts: () => ({ ok: true, listing: PAID_LISTING }) });
+    configureInstallDoorSources({
+      loadListingFacts: () => ({ ok: true, listing: PAID_LISTING }),
+      gateDeps: (context) => bridgedGateDeps(ledger, context.subject),
+    });
+
+    const decision = await gateInstallDoor({
+      idOrRef: 'lst-1',
+      kind: 'plugin',
+      subject: INSTALL_SUBJECT,
+    });
+
+    expect(decision.ok).toBe(true);
+    if (!decision.ok || decision.mode !== 'managed') {
+      throw new Error(`paid install did not enter the managed path: ${JSON.stringify(decision)}`);
+    }
+    expect(decision.releaseRef).toBe(INSTALL_RELEASE_REF);
+    expect(decision.run.operation).toBe('install');
+  });
+
+  it('a full refund revokes the bridged entitlement at the install door', async () => {
+    const { ledger } = await foldJourney(stripeCase(), [
+      stripeCase().paid(),
+      stripeCase().refunded(AMOUNT_MINOR),
+    ]);
+    expect(ledger.orders.get(ORDER_ID)?.state).toBe('refunded');
+    expect([...ledger.entitlements.values()]).toEqual([
+      expect.objectContaining({ state: 'revoked', revokeReason: 'refunded' }),
+    ]);
+
+    configureInstallDoorSources({
+      loadListingFacts: () => ({ ok: true, listing: PAID_LISTING }),
+      gateDeps: (context) => bridgedGateDeps(ledger, context.subject),
+    });
 
     const res = await callDoor('install-plugin', { listingId: 'lst-1', workspace: 'ws-p012' });
 
-    expect(res.ok, 'if this now passes, the ledger->delivery bridge landed — see the header').toBe(false);
-    expect(res.error).toBe('paid-listing-without-release-chain');
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('not-entitled');
+    expect(res.refusedBy).toBe('install-door-gate');
   });
 });
