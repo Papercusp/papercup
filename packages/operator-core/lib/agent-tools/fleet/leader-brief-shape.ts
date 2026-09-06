@@ -89,10 +89,68 @@ function compactMonitoringBlindAdvisory(value: unknown): unknown {
   return out;
 }
 
+/** Keep the shared agenda's action core + delivery receipt together. */
+function compactAgentObligations(value: unknown, emergency = false): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out =
+    pick(source, ['schemaVersion', 'evaluatedAt', 'sourceGeneration', 'detailRef'], emergency ? 100 : 220) ?? {};
+  const primary = Array.isArray(source.primary) ? source.primary : [];
+  out.primary = primary.slice(0, emergency ? 1 : 3).map((entry) => {
+    const obligation = asDict(entry);
+    if (!obligation) return entry;
+    const compact =
+      pick(
+        obligation,
+        ['id', 'family', 'status', 'title', 'priority', 'applicableDemand', 'dueAt', 'ageMs'],
+        emergency ? 80 : 160,
+      ) ?? {};
+    const action = pick(
+      obligation.action,
+      ['kind', 'summary', 'tool', 'targetRef', 'continuesCurrentWork'],
+      emergency ? 80 : 180,
+    );
+    if (action) compact.action = action;
+    return compact;
+  });
+  const projection = asDict(source.projection);
+  if (projection) {
+    out.projection = {
+      text: clip(projection.text, emergency ? 120 : 700) ?? projection.text,
+      receipt: pick(
+        projection.receipt,
+        [
+          'sink',
+          'mode',
+          'entriesAvailable',
+          'entriesDelivered',
+          'entriesOmitted',
+          'bodyDeliveredChars',
+          'estimatedTokens',
+          'bodyTruncated',
+          'refused',
+          'reason',
+        ],
+        100,
+      ),
+    };
+  }
+  const read = asDict(source.read);
+  if (read) {
+    out.read = {
+      ...(pick(read, ['elapsedMs'], 60) ?? {}),
+      ...(Array.isArray(read.degradedSources)
+        ? {
+            degradedSources: read.degradedSources.slice(0, emergency ? 1 : 3).map((entry) => clip(entry, 160) ?? entry),
+          }
+        : {}),
+    };
+  }
+  return out;
+}
+
 function compactAnnouncedGate(value: unknown): unknown {
-  return (
-    pick(value, ['event', 'note', 'scope', 'announcedBy', 'fired', 'firedAt', 'awaiters'], 180) ?? value
-  );
+  return pick(value, ['event', 'note', 'scope', 'announcedBy', 'fired', 'firedAt', 'awaiters'], 180) ?? value;
 }
 
 /** P-002 / D-004: compact the claimable aggregate as one atomic unit. The
@@ -111,11 +169,7 @@ function compactClaimableNow(value: unknown): unknown {
     const compactInterpretation = pick(interpretation, ['state'], 40) ?? {};
     const exactness = pick(interpretation.exactness, ['status', 'reason'], 180);
     if (exactness) compactInterpretation.exactness = exactness;
-    const evidence = pick(
-      interpretation.evidence,
-      ['fleetPaused', 'matchedByFilter', 'excluded'],
-      220,
-    );
+    const evidence = pick(interpretation.evidence, ['fleetPaused', 'matchedByFilter', 'excluded'], 220);
     if (evidence) compactInterpretation.evidence = evidence;
     out.interpretation = compactInterpretation;
   }
@@ -143,14 +197,16 @@ function compactClaimableNow(value: unknown): unknown {
 /** Keep the productive-headcount provenance beside the six numeric fields while
  * bounding it to the stable, machine-readable fields emitted by the store. */
 function compactHeadcountBasis(value: unknown): unknown {
-  return pick(
-    value,
-    // `executingMembers` is the population `current` is actually counted from
-    // (WI-2034624); dropping it would leave a leader reading the count with no
-    // way to see which population produced it.
-    ['kind', 'liveRosterMembers', 'executingMembers', 'transactionWorkerReadyMembers'],
-    120,
-  ) ?? value;
+  return (
+    pick(
+      value,
+      // `executingMembers` is the population `current` is actually counted from
+      // (WI-2034624); dropping it would leave a leader reading the count with no
+      // way to see which population produced it.
+      ['kind', 'liveRosterMembers', 'executingMembers', 'transactionWorkerReadyMembers'],
+      120,
+    ) ?? value
+  );
 }
 
 /** P-005: validate and keep this bounded aggregate atomically. Its metadata is
@@ -198,11 +254,23 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
     out.findings = source.findings.slice(0, rowCap).map((value) => {
       const row = asDict(value);
       if (!row) return value;
-      return pick(
-        row,
-        ['code', 'classification', 'confidence', 'nodes', 'edges', 'evidence', 'provenance', 'suggestedAction', 'suppressedBy'],
-        220,
-      ) ?? row;
+      return (
+        pick(
+          row,
+          [
+            'code',
+            'classification',
+            'confidence',
+            'nodes',
+            'edges',
+            'evidence',
+            'provenance',
+            'suggestedAction',
+            'suppressedBy',
+          ],
+          220,
+        ) ?? row
+      );
     });
   }
 
@@ -408,9 +476,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
         // Short form only: the marker a leader must see is that departure time is
         // UNMEASURED and which column answers it. The full rationale (D-003) rides
         // on the unshaped snapshot at full tier.
-        ...(timing
-          ? { timingStatus: timing.status, timingInsteadRead: 'coord_presence.last_active_at' }
-          : {}),
+        ...(timing ? { timingStatus: timing.status, timingInsteadRead: 'coord_presence.last_active_at' } : {}),
       };
     }
     out.populationLifecycle = compactLifecycle;
@@ -769,6 +835,7 @@ function buildProjection(
   if ('monitoringBlindAdvisory' in data) {
     out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
   }
+  if ('agentObligations' in data) out.agentObligations = compactAgentObligations(data.agentObligations);
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('dependencyBottlenecks' in data) {
     out.dependencyBottlenecks = compactDependencyBottlenecks(
@@ -866,7 +933,15 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   const attempts = [
     { caps: initial, campaignRecentRows: tier === 'trimmed' ? 1 : 2 },
     {
-      caps: { ...initial, memberVerdicts: 4, members: 2, advisories: 1, invariants: 1, announcedGates: 2, reservationMembers: 1 },
+      caps: {
+        ...initial,
+        memberVerdicts: 4,
+        members: 2,
+        advisories: 1,
+        invariants: 1,
+        announcedGates: 2,
+        reservationMembers: 1,
+      },
       campaignRecentRows: 1,
     },
     {
@@ -912,6 +987,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     ...(source.monitoringBlindAdvisory !== undefined
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),
+    ...(source.agentObligations !== undefined
+      ? { agentObligations: compactAgentObligations(source.agentObligations, true) }
+      : {}),
     ...(source.summary !== undefined ? { summary: emergencySummary } : {}),
     ...(source.dependencyBottlenecks !== undefined
       ? { dependencyBottlenecks: compactDependencyBottlenecks(source.dependencyBottlenecks, 1) }
@@ -919,9 +997,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     ...(source.leaderBlockerStall !== undefined
       ? { leaderBlockerStall: compactEmergencyLeaderBlockerStall(source.leaderBlockerStall) }
       : {}),
-    ...(source.fleetMetrics !== undefined
-      ? { fleetMetrics: compactFleetMetrics(source.fleetMetrics) }
-      : {}),
+    ...(source.fleetMetrics !== undefined ? { fleetMetrics: compactFleetMetrics(source.fleetMetrics) } : {}),
     leaderBriefProjection: {
       tier,
       emergency: true,

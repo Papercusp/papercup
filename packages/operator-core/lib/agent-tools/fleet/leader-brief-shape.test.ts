@@ -170,6 +170,54 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
 
+  it('keeps the shared obligation action core, omission receipt, and detail reference', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'large-fleet' },
+        agentObligations: {
+          schemaVersion: 'agent-obligations-v1',
+          evaluatedAt: '2026-09-05T20:00:00.000Z',
+          sourceGeneration: 'agenda-1',
+          primary: [
+            {
+              id: 'obl:owner-report:1',
+              family: 'owner-report',
+              status: 'due',
+              title: 'Owner report is due',
+              applicableDemand: 1,
+              action: { kind: 'report', summary: 'send the owner report now', tool: 'coord:send' },
+            },
+          ],
+          projection: {
+            text: '- [DUE] Owner report is due — send it now',
+            receipt: {
+              sink: 'fleet:leader-brief',
+              entriesAvailable: 4,
+              entriesDelivered: 1,
+              entriesOmitted: 3,
+              estimatedTokens: 11,
+              bodyTruncated: true,
+              refused: false,
+            },
+          },
+          detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+          read: { elapsedMs: 12, degradedSources: [] },
+        },
+      },
+      'trimmed',
+    ) as Record<string, any>;
+
+    expect(out.agentObligations).toMatchObject({
+      sourceGeneration: 'agenda-1',
+      primary: [{ family: 'owner-report', status: 'due', action: { kind: 'report', tool: 'coord:send' } }],
+      projection: { receipt: { entriesAvailable: 4, entriesDelivered: 1, entriesOmitted: 3, bodyTruncated: true } },
+      detailRef: 'fleet:leader-brief { payloadTier:"full" }',
+      read: { elapsedMs: 12, degradedSources: [] },
+    });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
   it('declares a bounded shaper and a ceiling below the result-door envelope', () => {
     expect((leaderBriefTool as { shape?: unknown }).shape).toBeDefined();
     expect((leaderBriefTool as { payloadTierCeilingChars?: number }).payloadTierCeilingChars).toBe(
@@ -390,17 +438,17 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       new Set(['su-a', 'su-b']),
       { measuredAt: '2026-09-05T20:00:00.000Z', scope: { fleet: 'fleet-a' } },
     );
-    const out = shapeLeaderBrief(
-      { ok: true, summary: { fleet: 'fleet-a', members: 3, headcount } },
-      'trimmed',
-    ) as { summary: { headcount: typeof headcount } };
+    const out = shapeLeaderBrief({ ok: true, summary: { fleet: 'fleet-a', members: 3, headcount } }, 'trimmed') as {
+      summary: { headcount: typeof headcount };
+    };
 
-    expect(out.summary.headcount.countEvidence.productive?.contract.population.id)
-      .toBe('live-roster-recent-execution-intersection');
-    expect(out.summary.headcount.countEvidence.liveRoster?.contract.population.id)
-      .toBe('fleet-live-launch-roster');
-    expect(out.summary.headcount.countEvidence.transactionWorkerReady?.contract.population.id)
-      .toBe('current-launch-transaction-worker-ready');
+    expect(out.summary.headcount.countEvidence.productive?.contract.population.id).toBe(
+      'live-roster-recent-execution-intersection',
+    );
+    expect(out.summary.headcount.countEvidence.liveRoster?.contract.population.id).toBe('fleet-live-launch-roster');
+    expect(out.summary.headcount.countEvidence.transactionWorkerReady?.contract.population.id).toBe(
+      'current-launch-transaction-worker-ready',
+    );
   });
 
   it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {

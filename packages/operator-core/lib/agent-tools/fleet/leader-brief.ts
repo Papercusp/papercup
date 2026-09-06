@@ -3283,6 +3283,7 @@ export default defineTool({
       notLeader: z.unknown().optional(),
       leadershipClaimed: z.unknown().optional(),
       leaderControl: z.unknown().optional(),
+      agentObligations: z.unknown().optional(),
       monitoringBlindAdvisory: z.unknown().optional(),
       blockedAt: z.unknown().optional(),
       summary: z.unknown().optional(),
@@ -3611,14 +3612,11 @@ export async function buildLeaderBrief(
   // WI-583276: exact turn provenance is a separate bounded leg. A failed read
   // remains UNKNOWN; an empty Set is a measured zero only when the query
   // completed successfully.
-  const agentOriginRead = await withBoundedTimeout(
-    executingOwnersSince(rosterEntries.map((entry) => entry.agentId)),
-    {
-      fallback: null,
-      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
-      label: 'leader-brief:agent-origin-calls',
-    },
-  );
+  const agentOriginRead = await withBoundedTimeout(executingOwnersSince(rosterEntries.map((entry) => entry.agentId)), {
+    fallback: null,
+    timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+    label: 'leader-brief:agent-origin-calls',
+  });
   const executionCollapseAlert = computeFleetExecutionCollapseAlert({
     roster: rosterEntries,
     agentOriginOwnerIds: agentOriginRead.value,
@@ -4400,6 +4398,41 @@ export async function buildLeaderBrief(
       }),
     undefined,
   );
+  // P-004 (shared-agent-obligations-and-briefs-2026-09-05): the SAME
+  // evaluation path used by automatic turn-start orientation, projected to the
+  // leader sink's wider budget. It is read-only and bounded per canonical
+  // source; existing fleet diagnostics remain independent and intact.
+  const agentObligations = ownerId
+    ? await boundedLeaderBriefRead(
+        'agent-obligations',
+        async () => {
+          const { readAgentObligationAgenda, projectAgentObligationBrief } =
+            await import('../../agent-obligation-reader');
+          const read = await readAgentObligationAgenda({
+            workspaceId,
+            ownerId,
+            planSlugs: leaderPlanSlug ? [leaderPlanSlug] : [],
+            fleetSlug: fleet,
+            launchCount: 1,
+            sourceTimeoutMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+          });
+          if (read.agenda.evaluations.length === 0) return null;
+          return {
+            ...projectAgentObligationBrief({
+              agenda: read.agenda,
+              sink: 'fleet:leader-brief',
+              detailRef: 'fleet:leader-brief { payloadTier:"full" } for complete obligation evidence',
+              maxEntries: 3,
+              maxChars: 1_600,
+              maxEstimatedTokens: 400,
+            }),
+            read: { elapsedMs: read.elapsedMs, degradedSources: read.degradedSources },
+          };
+        },
+        null,
+        1_800,
+      )
+    : null;
   // P-009: detector-only projection over P-006's existing graph/liveness/
   // progress rows. Do not re-read any of those sources here: one measured view
   // feeds both the ranked table and this tri-state alarm.
@@ -4556,6 +4589,7 @@ export async function buildLeaderBrief(
       ...(leadershipClaimed ? { leadershipClaimed } : {}),
       ...(leaderControl ? { leaderControl } : {}),
       ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
+      ...(agentObligations ? { agentObligations } : {}),
       // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
       // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
       // reading them in field order is what produced the inverted remedy this fixes.
