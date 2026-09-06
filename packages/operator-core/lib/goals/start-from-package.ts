@@ -67,6 +67,7 @@ import { validatePropertySchemaDeclaration } from '../typed-properties-db';
 import { startGoalById } from './start-goal-by-id';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal } from './drain-fleet-mint';
 import { killCriterionProblem } from './kill-criterion';
+import { readGoalPackageInstanceOverride } from '@papercusp/agent-mcp/goals';
 
 /**
  * The rolling-window default for a STANDING ceiling that declares none: one
@@ -311,7 +312,7 @@ export const DEFAULT_DEPS: StartGoalFromPackageDeps = {
         FROM harness_shared.goals
        WHERE workspace_id = ${workspaceId}
          AND metadata->>'goalPackageRef' = ${ref}
-       ORDER BY id`) as unknown as StubRow[];
+       ORDER BY updated_at DESC, id DESC`) as unknown as StubRow[];
   },
   adoptStub: async (sql, o) => {
     await sql`
@@ -474,6 +475,9 @@ export async function startGoalFromPackage(
         propertySchema: asObj(stub.property_schema),
       }
     : pkg;
+  const inheritedOverride = adopting
+    ? null
+    : rows.map((row) => readGoalPackageInstanceOverride(row.metadata)).find((override) => override !== null) ?? null;
 
   // ── 4. typed inputs (P-021) — the same gate goals:start consults. Runs
   // BEFORE the constructor on purpose: construct CONSUMES the validated typed
@@ -503,6 +507,22 @@ export async function startGoalFromPackage(
     }
     content = { ...staticContent, ...built.spec };
     constructedKeys = built.overriddenKeys;
+  }
+  // A direct edit to a packaged instance is a local contract amendment, not
+  // package live state. Apply it after construction so a later instance keeps
+  // the authored directive even when the package also has a constructor.
+  if (inheritedOverride) {
+    const inheritedContentOverride: Partial<GoalPackageContent> = {
+      ...(inheritedOverride.title !== undefined ? { title: inheritedOverride.title } : {}),
+      ...(inheritedOverride.body !== undefined ? { body: inheritedOverride.body } : {}),
+      ...(inheritedOverride.killCriterion !== undefined
+        ? { killCriterion: inheritedOverride.killCriterion }
+        : {}),
+      ...(inheritedOverride.tripwires === null || Array.isArray(inheritedOverride.tripwires)
+        ? { tripwires: inheritedOverride.tripwires as GoalPackageTripwire[] | null }
+        : {}),
+    };
+    content = { ...content, ...inheritedContentOverride };
   }
   const effective = effectiveGoalContent(content);
 
@@ -600,6 +620,7 @@ export async function startGoalFromPackage(
         packageVersion: pkg.version,
         startedFrom: 'package',
         startedBy,
+        ...(inheritedOverride ? { packageInstanceOverride: inheritedOverride } : {}),
         ...(constructedKeys.length > 0 ? { packageConstructedKeys: constructedKeys } : {}),
       },
     });

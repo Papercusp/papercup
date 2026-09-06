@@ -202,7 +202,12 @@ describe('GET /api/discovery/federation-status (G-004)', () => {
     // one harness with 2 rows captured ~2m ago, still undrained
     const oldTs = Date.now() - 120_000;
     M.sqlUnsafe.mockResolvedValue([
-      { workspace_id: 'ws-test', harness_slug: 'a', undrained: '2', oldest_ts: String(oldTs) },
+      {
+        workspace_id: 'ws-test',
+        harness_slug: 'a',
+        undrained: '2',
+        oldest_enqueued_at_ms: String(oldTs),
+      },
     ]);
 
     await call('http://127.0.0.1/api/discovery/federation-status');

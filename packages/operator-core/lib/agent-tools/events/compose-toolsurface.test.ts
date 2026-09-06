@@ -28,6 +28,9 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-compose', ownerLabel: 'c', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
+vi.mock('../coordination/event-subscriptions', () => ({
+  listMyEventKeySubscriptions: vi.fn(async () => []),
+}));
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
 }));

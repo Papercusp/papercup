@@ -21,6 +21,9 @@ import {
   editedPathsFrom,
   hunksFrom as hookHunksFrom,
   repairRadius as hookRepairRadius,
+  parseMcpToolResult,
+  recordOneHunk,
+  scratchUriToPath,
 } from '../../../../apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs';
 import { hunksFromToolCall } from './frozen-repair-edit-ledger';
 
@@ -94,6 +97,21 @@ describe('hook/module warning parity', () => {
   it('stays silent on a path outside the failing set', () => {
     expect(hookWarningFor(marker, 'packages/operator-core/lib/release/other.ts')).toBeNull();
     expect(frozenRepairEditWarning(marker, 'packages/operator-core/lib/release/other.ts')).toBeNull();
+    expect(
+      hookWarningFor(marker, 'packages/operator-core/lib/release/other.ts', { recorded: true }),
+    ).toBeNull();
+  });
+
+  it('reports an outside-radius recording failure without radius admission guidance', () => {
+    const warning =
+      hookWarningFor(marker, 'packages/operator-core/lib/release/other.ts', {
+        recorded: false,
+        detail: 'HTTP 404',
+      }) ?? '';
+    expect(warning).toContain('NOT recorded');
+    expect(warning).toContain('other.ts');
+    expect(warning).not.toContain('WILL NOT REACH THE GATE');
+    expect(warning).not.toContain('wholeBlob:true');
   });
 
   it('stays silent when nothing is frozen', () => {
@@ -231,6 +249,100 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     expect(unrecorded).toContain('NOT recorded');
     expect(unrecorded).toContain('wholeBlob:true');
     expect(unrecorded.toLowerCase()).not.toContain("op:'converge'");
+  });
+});
+
+describe('P-019 record-edit transport parsing and fallback', () => {
+  const rpcResult = (inner: unknown) =>
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { content: [{ type: 'text', text: JSON.stringify(inner) }] },
+    });
+
+  const recordArgs = {
+    token: 'token',
+    owner: 'owner-1',
+    marker,
+    path: 'packages/operator-core/lib/release/x.test.ts',
+    hunk: { kind: 'edit' as const, old: 'old', new: 'new', replaceAll: false },
+    toolUseId: 'tool-use-1',
+    editIndex: 0,
+    atMs: 7,
+  };
+
+  it('follows a reference output envelope to a spilled successful result', async () => {
+    const parsed = await parseMcpToolResult(
+      rpcResult({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        content: [{ kind: 'reference', uri: 'papercusp://scratch/result-door/result.json' }],
+      }),
+      {
+        env: { PAPERCUSP_SCRATCH_ROOT: '/tmp/papercusp-scratch' },
+        fileExists: (path) => path === '/tmp/papercusp-scratch/result-door/result.json',
+        readSpill: async () => ({
+          content: [
+            { type: 'text', text: 'advisory text before payload' },
+            { type: 'text', text: JSON.stringify({ ok: true, recorded: true, ledgerId: 22 }) },
+          ],
+        }),
+      },
+    );
+
+    expect(parsed).toEqual({
+      ok: true,
+      inner: { ok: true, recorded: true, ledgerId: 22 },
+    });
+    expect(
+      scratchUriToPath('papercusp://scratch/result-door/result.json', {
+        PAPERCUSP_SCRATCH_ROOT: '/tmp/papercusp-scratch',
+      }),
+    ).toBe('/tmp/papercusp-scratch/result-door/result.json');
+  });
+
+  it('falls back from a release unknown-op response to staging and records the hunk', async () => {
+    const calls: string[] = [];
+    const result = await recordOneHunk({
+      ...recordArgs,
+      operatorUrl: 'http://127.0.0.1:3070',
+      fetchImpl: async (url: string) => {
+        calls.push(url);
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            calls.length === 1
+              ? rpcResult({ ok: false, reason: 'unknown operation record-edit' })
+              : rpcResult({ ok: true, recorded: true, ledgerId: 23 }),
+        };
+      },
+    });
+
+    expect(result.recorded).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[0]).port).toBe('3070');
+    expect(new URL(calls[1]).port).toBe('3170');
+  });
+
+  it('does not fall back for an ordinary refusal', async () => {
+    const calls: string[] = [];
+    const result = await recordOneHunk({
+      ...recordArgs,
+      operatorUrl: 'http://127.0.0.1:3070',
+      fetchImpl: async (url: string) => {
+        calls.push(url);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => rpcResult({ ok: false, reason: 'unauthorized' }),
+        };
+      },
+    });
+
+    expect(result.recorded).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0]).port).toBe('3070');
   });
 });
 

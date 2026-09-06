@@ -252,6 +252,41 @@ describe('startGoalFromPackage — adopt vs mint', () => {
     );
   });
 
+  it('inherits a packaged instance contract override when minting the next instance', async () => {
+    const { deps } = makeDeps({
+      readInstances: vi.fn(async () => [
+        stubRow({
+          id: 'work-on-everything-live01',
+          status: 'paused',
+          metadata: {
+            goalPackageRef: REF,
+            agentOwnerId: 'su-old',
+            packageInstanceOverride: {
+              body: 'owner directive: keep this across instances',
+            },
+          },
+        }),
+      ]),
+    });
+
+    const res = await run(deps, { harness: 'papercusp', launcherOwnerId: 'su-me' });
+
+    expect(res).toMatchObject({ ok: true, adopted: false });
+    expect(deps.mintRow).toHaveBeenCalledWith(
+      SQL,
+      expect.objectContaining({
+        content: expect.objectContaining({
+          body: 'owner directive: keep this across instances',
+        }),
+        metadata: expect.objectContaining({
+          packageInstanceOverride: {
+            body: 'owner directive: keep this across instances',
+          },
+        }),
+      }),
+    );
+  });
+
   it('a paused stub an agent was ever attached to is NOT adoptable — minting then requires harness', async () => {
     const { deps } = makeDeps({
       readInstances: vi.fn(async () => [stubRow({ metadata: { goalPackageRef: REF, agentOwnerId: 'su-old' } })]),

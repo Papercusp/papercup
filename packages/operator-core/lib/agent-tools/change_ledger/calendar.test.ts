@@ -34,7 +34,14 @@ const DAY = 86_400_000;
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (
     calendarTool as unknown as {
-      handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+      handler: (a: unknown, c: unknown) => Promise<{
+        data: {
+          workspaceId: string;
+          rowsConsidered: number;
+          classes: unknown[];
+          overlapAdvisory: string | null;
+        };
+      }>;
     }
   ).handler(args, ctx);
 }
@@ -76,7 +83,7 @@ describe('change_ledger:calendar tool', () => {
       overlapAdvisory: 'two automated classes live',
     } as unknown as ReturnType<typeof computeMutationCalendar>);
     const res = await callTool({ workspace: 'ws-x' });
-    const body = JSON.parse(res.content[0].text);
+    const body = res.data;
     expect(body.workspaceId).toBe('ws-x');
     expect(body.rowsConsidered).toBe(2);
     expect(body.classes).toEqual([{ mutationClass: 'gym', count: 2, live: true }]);

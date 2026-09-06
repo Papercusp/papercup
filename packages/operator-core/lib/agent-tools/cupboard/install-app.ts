@@ -12,7 +12,7 @@
  * `latest_json_url`, or the desktop app-download UI).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -45,7 +45,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Proceed even when the review finds unresolved conflicts (default: blocked, nothing installed).'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.principal?.workspaceId);

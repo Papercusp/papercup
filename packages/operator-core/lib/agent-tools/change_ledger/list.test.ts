@@ -26,7 +26,9 @@ const NOW = 1_700_000_000_000;
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (
     listTool as unknown as {
-      handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+      handler: (a: unknown, c: unknown) => Promise<{
+        data: { workspaceId: string; count: number; changes: unknown[] };
+      }>;
     }
   ).handler(args, ctx);
 }
@@ -82,7 +84,7 @@ describe('change_ledger:list tool', () => {
     const rows = [{ id: 'c1' }, { id: 'c2' }];
     mockReadTicks(rows);
     const res = await callTool({ workspace: 'ws-x' });
-    const body = JSON.parse(res.content[0].text);
+    const body = res.data;
     expect(body).toEqual({ workspaceId: 'ws-x', count: 2, changes: rows });
   });
 });

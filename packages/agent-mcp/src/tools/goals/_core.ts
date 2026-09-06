@@ -201,6 +201,51 @@ export interface GoalRowInput {
   propertySchema?: Record<string, unknown> | null;
 }
 
+/** Contract edits made to one packaged instance and inherited by later starts.
+ * Live operational fields never belong here: the package remains the source
+ * for standing, budgets, launch settings, inputs, and properties. */
+export interface GoalPackageInstanceOverride {
+  title?: string;
+  body?: string | null;
+  killCriterion?: string | null;
+  tripwires?: unknown;
+}
+
+export const GOAL_PACKAGE_INSTANCE_OVERRIDE_KEY = 'packageInstanceOverride';
+
+/** Read the narrow, user-authored contract overlay carried in goal metadata. */
+export function readGoalPackageInstanceOverride(
+  metadata: Record<string, unknown> | null | undefined,
+): GoalPackageInstanceOverride | null {
+  const raw = metadata?.[GOAL_PACKAGE_INSTANCE_OVERRIDE_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  const next: GoalPackageInstanceOverride = {};
+  if (typeof source.title === 'string') next.title = source.title;
+  if (typeof source.body === 'string' || source.body === null) next.body = source.body;
+  if (typeof source.killCriterion === 'string' || source.killCriterion === null) {
+    next.killCriterion = source.killCriterion;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'tripwires')) {
+    next.tripwires = source.tripwires;
+  }
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+/** Merge a packaged-instance contract edit without replacing unrelated metadata. */
+export function withGoalPackageInstanceOverride(
+  metadata: Record<string, unknown>,
+  patch: GoalPackageInstanceOverride,
+): Record<string, unknown> {
+  return {
+    ...metadata,
+    [GOAL_PACKAGE_INSTANCE_OVERRIDE_KEY]: {
+      ...(readGoalPackageInstanceOverride(metadata) ?? {}),
+      ...patch,
+    },
+  };
+}
+
 /**
  * Write the goal row. Both writers go through here, so the column list has
  * exactly one home.
