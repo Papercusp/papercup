@@ -40,6 +40,35 @@ export interface CommercePeerLauncher {
 
 const CHILD_LOCAL = (): string => new URL('./commerce-peer-child.ts', import.meta.url).pathname;
 
+/**
+ * The parent's env MINUS every vitest marker.
+ *
+ * These children are the whole point of this rig: they must be REAL,
+ * production-shaped peer processes, and this repo's code deliberately branches
+ * on `process.env.VITEST` in the sync/swarm path. A plain `{ ...process.env }`
+ * spread therefore hands each "real peer" the test-runner's identity and it
+ * stops behaving like production — so the rig measures something other than the
+ * thing it claims to measure.
+ *
+ * MEASURED, not theorised (2026-09-06): identical code, one variable changed.
+ *   CLI:                 11/11 scenarios pass, probe propagates in 3008ms.
+ *   CLI + `VITEST=true`: mesh forms, then the probe is accepted on the EMITTER
+ *                        and never reaches the other peer in 120_000ms.
+ *   Under vitest:        same failure, reproducible 2/2.
+ * Stripping the markers is what makes the in-vitest run agree with the CLI.
+ *
+ * The ssh launcher below needs no equivalent: ssh does not forward the local
+ * environment, and it builds its remote command's env explicitly.
+ */
+function productionShapedEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === 'VITEST' || k.startsWith('VITEST_')) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 /** Local parity launcher: N peers as separate child processes on this box. */
 export function localCommercePeerLauncher(opts: {
   readonly count: number;
@@ -61,7 +90,7 @@ export function localCommercePeerLauncher(opts: {
         // that omits node's dir (the loop-launcher precedent).
         const proc = spawn(process.execPath, ['--import', 'tsx', childPath], {
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, COMMERCE_PEER: JSON.stringify(cfg), NODE_ENV: 'test' },
+          env: { ...productionShapedEnv(), COMMERCE_PEER: JSON.stringify(cfg), NODE_ENV: 'test' },
         });
         const h = new ClaimAgentHandle(i, proc, log);
         handles.push(h);
