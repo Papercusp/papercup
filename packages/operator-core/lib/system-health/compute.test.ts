@@ -86,7 +86,6 @@ vi.mock('node:os', async (importOriginal) => ({
 }));
 import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, deriveSystemHealthGitSyncStatus, collectDeploy, _resetSystemHealthCache, systemHealthGitSidecarEnabled, hostPressureSampleFromLiveHealth, publishGovernorStateSnapshot, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
-import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
@@ -512,46 +511,6 @@ describe('suIdeateVerdict — the su-ideate partition (WI-4465)', () => {
   });
 });
 
-describe('countLeadingZeroTokenWakes / queenPlacementStalled — Queen placement liveness (hive-loop-supervision 2026-06-21, D-009)', () => {
-  const z = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-  const nz = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 100, cacheCreationTokens: 0 };
-  it('counts leading consecutive 0-token wakes (newest-first), stopping at the first non-zero', () => {
-    expect(countLeadingZeroTokenWakes([z, z, z, nz, z])).toBe(3);
-    expect(countLeadingZeroTokenWakes([nz, z, z])).toBe(0);
-    expect(countLeadingZeroTokenWakes([])).toBe(0);
-  });
-  it('fires when ≥3 consecutive 0-token wakes + placeable frontier + not paused', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, paused: false })).toBe(true);
-  });
-  it('does NOT fire when frontier=0 (nothing to place)', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: 0, paused: false })).toBe(false);
-  });
-  it('does NOT fire when a recent wake spent tokens (leading-zero count < threshold)', () => {
-    const n = countLeadingZeroTokenWakes([nz, z, z, z]); // 0 — newest wake ran the LLM
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: n, frontier: 7, paused: false })).toBe(false);
-  });
-  it('does NOT fire when paused', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 5, frontier: 7, paused: true })).toBe(false);
-  });
-  it('does NOT fire below the consecutive threshold (one-off blip)', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 2, frontier: 7, paused: false })).toBe(false);
-  });
-  it('does NOT fire when the bee fleet is already full (no capacity)', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 5, frontier: 7, paused: false, beesBusy: 24, beesCap: 24 })).toBe(false);
-  });
-  // WI-3597: frontierStuck subtracts long-unplaced/gated items so an all-gated
-  // frontier reads as correct idle, not a placement stall.
-  it('does NOT fire when the ENTIRE frontier is long-stuck/gated (fresh=0)', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: 7, frontierStuck: 7, paused: false })).toBe(false);
-  });
-  it('STILL fires when some frontier is fresh (fresh>0) despite gated items present', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, frontierStuck: 5, paused: false })).toBe(true);
-  });
-  it('treats an absent frontierStuck as 0 (fresh=frontier — prior behaviour preserved)', () => {
-    expect(queenPlacementStalled({ consecutiveZeroTokenWakes: 3, frontier: 7, paused: false })).toBe(true);
-  });
-});
-
 describe('isLiveRigOnlyFrontierTitle / countStuckFrontier — live-rig/federation false-escalation guard (EI-15329)', () => {
   it('recognizes the actual live-incident titles as live-rig/federation-only', () => {
     expect(isLiveRigOnlyFrontierTitle('Federation peer loses gh auth across VM restart → stays local-only')).toBe(true);
@@ -568,11 +527,9 @@ describe('isLiveRigOnlyFrontierTitle / countStuckFrontier — live-rig/federatio
   it('countStuckFrontier still counts age-based stuck rows with no title (prior behaviour preserved)', () => {
     expect(countStuckFrontier([{ ageDays: 1 }, { ageDays: 0 }])).toBe(1);
   });
-  // EI-15329 GUARD: the exact false-escalation shape — a "fresh" (recently-touched)
-  // ready frontier that is ENTIRELY live-rig/federation-owned SU-lane work must read
-  // as correct idle (fresh=0), never a Mug placement stall / owner escalation, no
-  // matter how many consecutive 0-token wakes accompany it.
-  it('GUARD: an all-live-rig, age-fresh frontier does NOT read as a placement stall', () => {
+  // EI-15329 GUARD: a "fresh" (recently-touched) ready frontier that is ENTIRELY
+  // live-rig/federation-owned SU-lane work is counted as stuck, not fresh.
+  it('GUARD: an all-live-rig, age-fresh frontier is counted as stuck', () => {
     const frontier = [
       { ageDays: 0, title: 'Federation peer loses gh auth across VM restart → stays local-only' },
       { ageDays: 0.01, title: 'Federation: late-admitted owner core stalls on quiescent hives' },
@@ -580,9 +537,6 @@ describe('isLiveRigOnlyFrontierTitle / countStuckFrontier — live-rig/federatio
     ];
     const frontierStuck = countStuckFrontier(frontier);
     expect(frontierStuck).toBe(frontier.length); // every row excluded — none is genuinely fresh
-    expect(
-      queenPlacementStalled({ consecutiveZeroTokenWakes: 9, frontier: frontier.length, frontierStuck, paused: false }),
-    ).toBe(false);
   });
 });
 
