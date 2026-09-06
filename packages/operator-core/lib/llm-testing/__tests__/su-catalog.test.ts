@@ -97,6 +97,15 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     const find = SU_CATALOG.find((entry) => entry.name === 'tools:find')!;
     expect(find.description).toMatch(/before offering an execution route/i);
     expect(find.description).toMatch(/unavailable/i);
+    expect(find.description).toContain('tools:invoke');
+
+    const invoke = SU_CATALOG.find((entry) => entry.name === 'tools:invoke')!;
+    const invokeInput = invoke.input as { properties?: Record<string, unknown>; required?: string[] };
+    expect(invokeInput.properties).toMatchObject({
+      name: { type: 'string' },
+      args: { type: 'object', additionalProperties: true },
+    });
+    expect(invokeInput.required).toEqual(['name']);
     expect(names).toContain('agent_tools:list');
   });
 

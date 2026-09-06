@@ -477,9 +477,23 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
   {
     name: 'tools:find',
     description:
-      'Search the full live MCP catalog for a capability before offering an execution route. No matching ' +
-      'tool means that route is unavailable in this session; never promise it from memory.',
+      'Search the full live MCP catalog for a capability before offering an execution route. Take a hit\'s ' +
+      'exact name + arg schema to tools:invoke; no matching tool means that route is unavailable in this session.',
     input: obj({ query: { type: 'string' } }, ['query']),
+  },
+  {
+    name: 'tools:invoke',
+    description:
+      'Call any tool returned by tools:find under its exact colon-form name, even when that tool is not loaded ' +
+      'directly in the bounded SU catalog. The nested call keeps the target tool\'s real schema and gates.',
+    input: obj({
+      name: { type: 'string', description: 'Exact colon-form tool name returned by tools:find.' },
+      args: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'Arguments matching the target tool\'s argSchema. Defaults to {}.',
+      },
+    }, ['name']),
   },
   {
     name: 'repomix:pack',
