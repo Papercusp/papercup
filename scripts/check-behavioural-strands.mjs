@@ -383,7 +383,276 @@ export function increasedSeams(beforeText, afterText, fileName = 'file.ts') {
   return rows;
 }
 
-// ── the blast radius: downstream call-count assertions in OTHER workspaces ──────────────
+// ── the second trigger: a writer's output value changed ─────────────────────────────────
+
+/**
+ * Identifiers that commonly hold an object which is about to be returned or persisted.
+ * This is intentionally a vocabulary, not a claim that a variable named `data` is always
+ * durable. The detector is advisory and the downstream assertion/property join below is
+ * the precision step; keeping this list broad prevents a new writer spelling from silently
+ * becoming an unobserved blind spot.
+ */
+const OUTPUT_BINDING_TERMS_RE =
+  /(?:^|[\s_-])(?:patch|metadata|record|row|snapshot|payload|values|changes|update|output|result|data|state|settings|document|entry|fields|attributes|body)(?:$|[\s_-])/;
+
+/** Function/call names that indicate an object is being written or published. */
+const WRITER_TERMS_RE =
+  /(?:^|[\s_-])(?:insert|update|upsert|save|write|persist|patch|replace|put|set|values|create|record|store|snapshot|rollup|refresh|commit|publish)(?:$|[\s_-])/;
+
+function normaliseIdentifier(text) {
+  return String(text)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^A-Za-z0-9_$-]+/g, ' ')
+    .toLowerCase()
+    .trim();
+}
+
+function looksLikeOutputBinding(name) {
+  return OUTPUT_BINDING_TERMS_RE.test(normaliseIdentifier(name));
+}
+
+function looksLikeWriterName(name) {
+  return WRITER_TERMS_RE.test(normaliseIdentifier(name));
+}
+
+function terminalCallName(expression, sourceFile) {
+  let current = expression;
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    if (ts.isPropertyAccessExpression(current)) return current.name.text;
+    if (ts.isStringLiteral(current.argumentExpression)) return current.argumentExpression.text;
+    current = current.expression;
+  }
+  return ts.isIdentifier(current) ? current.text : current.getText(sourceFile);
+}
+
+function isWriterCall(call, sourceFile) {
+  return looksLikeWriterName(terminalCallName(call.expression, sourceFile));
+}
+
+function enclosingCallableName(node, sourceFile) {
+  let current = node.parent;
+  while (current) {
+    if (
+      (ts.isFunctionDeclaration(current) ||
+        ts.isFunctionExpression(current) ||
+        ts.isArrowFunction(current) ||
+        ts.isMethodDeclaration(current) ||
+        ts.isConstructorDeclaration(current)) &&
+      current.name
+    ) {
+      return current.name.getText(sourceFile);
+    }
+    current = current.parent;
+  }
+  return '';
+}
+
+/**
+ * Is this object literal plausibly an output object rather than an unrelated local? The
+ * positive contexts are deliberately structural: a returned object, a writer-call
+ * argument, an output-shaped binding (`patch`/`metadata`/`row`/…), or a function whose name
+ * says it writes. Nested object literals inherit the context from their enclosing object.
+ */
+function isLikelyOutputObject(objectLiteral, sourceFile) {
+  let current = objectLiteral;
+  while (current.parent) {
+    const parent = current.parent;
+    if (ts.isReturnStatement(parent)) return true;
+    if (ts.isArrowFunction(parent) && parent.body === current) return true;
+    if (ts.isCallExpression(parent) && parent.arguments.some((arg) => arg === current)) {
+      if (isWriterCall(parent, sourceFile)) return true;
+    }
+    if (ts.isVariableDeclaration(parent) && parent.initializer === current && ts.isIdentifier(parent.name)) {
+      if (looksLikeOutputBinding(parent.name.text)) return true;
+    }
+    current = parent;
+  }
+  return looksLikeWriterName(enclosingCallableName(objectLiteral, sourceFile));
+}
+
+function propertyNameText(name) {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    const expression = name.expression;
+    if (ts.isStringLiteral(expression) || ts.isNumericLiteral(expression)) return expression.text;
+  }
+  return null;
+}
+
+function normalisedExpressionText(node, sourceFile, fileName) {
+  const raw = node.getText(sourceFile);
+  let normalised = stripCommentsOnly(raw, fileName) || raw;
+  const nodeStart = node.getStart(sourceFile);
+  const literals = [];
+  const visit = (current) => {
+    if (ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)) {
+      literals.push({
+        start: current.getStart(sourceFile) - nodeStart,
+        end: current.getEnd() - nodeStart,
+        value: JSON.stringify(current.text),
+      });
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  for (const literal of literals.sort((a, b) => b.start - a.start)) {
+    normalised = normalised.slice(0, literal.start) + literal.value + normalised.slice(literal.end);
+  }
+  return normalised.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Collect output-object property values as `property -> values in source order`.
+ *
+ * The property name is the stable join key: the writer's expression can be completely
+ * rewritten (`rollup.potCents` -> a conditional) while a downstream test still reads
+ * `spentCents`. Shorthand properties are omitted because there is no expression in the
+ * object literal to diff; a later explicit assignment is still detected.
+ */
+export function collectOutputPropertyValues(sourceText, fileName = 'file.ts') {
+  let sourceFile;
+  try {
+    sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return new Map();
+  }
+
+  const values = new Map();
+  const visit = (node) => {
+    if (ts.isPropertyAssignment(node) && ts.isObjectLiteralExpression(node.parent)) {
+      const property = propertyNameText(node.name);
+      if (property && isLikelyOutputObject(node.parent, sourceFile)) {
+        const list = values.get(property) ?? [];
+        list.push(normalisedExpressionText(node.initializer, sourceFile, fileName));
+        values.set(property, list);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return values;
+}
+
+/**
+ * Output properties whose value expression changed between two versions of a writer.
+ * Only properties present in both versions are reported: a newly-added property has no
+ * pre-existing reader that could be stranded by this edit (the required-field guard owns
+ * the separate "new shape" case).
+ */
+export function diffOutputValues(beforeText, afterText, fileName = 'file.ts') {
+  const before = collectOutputPropertyValues(beforeText, fileName);
+  const after = collectOutputPropertyValues(afterText, fileName);
+  const changes = [];
+  for (const [property, afterValues] of after) {
+    const beforeValues = before.get(property) ?? [];
+    const shared = Math.min(beforeValues.length, afterValues.length);
+    for (let i = 0; i < shared; i += 1) {
+      if (beforeValues[i] !== afterValues[i]) {
+        changes.push({ property, before: beforeValues[i], after: afterValues[i], reason: 'value-changed' });
+      }
+    }
+  }
+  return changes.sort((a, b) => a.property.localeCompare(b.property) || a.before.localeCompare(b.before));
+}
+
+// Descriptive aliases keep the trigger vocabulary useful to callers without making the
+// CLI's implementation depend on one particular name.
+export const changedOutputValues = diffOutputValues;
+export const diffPersistedOutputValues = diffOutputValues;
+
+/** Does an AST node contain a property read/fixture key matching one of the changed outputs? */
+function nodeMentionsOutputProperty(node, wanted, sourceFile) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (ts.isPropertyAccessExpression(current) && wanted.has(current.name.text)) {
+      found = true;
+      return;
+    }
+    if (
+      ts.isElementAccessExpression(current) &&
+      (ts.isStringLiteral(current.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(current.argumentExpression)) &&
+      wanted.has(current.argumentExpression.text)
+    ) {
+      found = true;
+      return;
+    }
+    if (ts.isPropertyAssignment(current) || ts.isShorthandPropertyAssignment(current)) {
+      const property = propertyNameText(current.name);
+      if (property && wanted.has(property)) {
+        found = true;
+        return;
+      }
+    }
+    // `toHaveProperty('spentCents')` and similar matcher forms carry the join key as a
+    // string rather than a property node. This is scoped to an assertion call below, so a
+    // fixture's ordinary prose cannot make the whole test look relevant.
+    if (ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)) {
+      if (wanted.has(current.text)) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function containsExpectCall(node) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (ts.isCallExpression(current) && ts.isIdentifier(current.expression) && current.expression.text === 'expect') {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function isAssertionCall(node, sourceFile) {
+  if (!ts.isCallExpression(node)) return false;
+  if (ts.isIdentifier(node.expression) && node.expression.text === 'expect') return true;
+  if (containsExpectCall(node.expression)) return true;
+  const name = node.expression.getText(sourceFile);
+  return /(?:^|[.$])assert(?:$|[.$])/.test(name);
+}
+
+/**
+ * Does a test assert on one of the changed output properties? Covers property reads,
+ * element access, object-matchers, `toHaveProperty`, and assert.* calls while ignoring
+ * comments and setup-only fixture objects. A value assertion need not use any one matcher;
+ * the property join is the signal.
+ */
+export function hasValueAssertion(text, properties, fileName = 'test.ts') {
+  const wanted = new Set((properties ?? []).filter((property) => typeof property === 'string' && property.length > 0));
+  if (wanted.size === 0) return false;
+  let sourceFile;
+  try {
+    sourceFile = ts.createSourceFile(fileName, String(text), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  } catch {
+    return false;
+  }
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    if (isAssertionCall(node, sourceFile) && nodeMentionsOutputProperty(node, wanted, sourceFile)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  return found;
+}
+
+export const hasOutputValueAssertion = hasValueAssertion;
+
+// ── the blast radius: downstream assertions in OTHER workspaces ─────────────────────────
 
 /**
  * Does this test file contain an assertion whose truth depends on a call COUNT or ORDER?
@@ -472,12 +741,21 @@ export function reverseReachable({ seeds, files, readFile, byDir, byEntryDir }) 
 export function seamMemberNames(triggers) {
   const names = new Set();
   for (const t of triggers) {
-    for (const s of t.seams) {
+    for (const s of t.seams ?? []) {
       const member = s.seam.includes('.') ? s.seam.slice(s.seam.indexOf('.') + 1) : s.seam.replace(/\(\)$/, '');
       if (member && /^[A-Za-z_$][\w$]*$/.test(member)) names.add(member);
     }
   }
   return [...names];
+}
+
+/** The stable property-name anchors for writer output changes. */
+export function outputPropertyNames(triggers) {
+  return [
+    ...new Set(
+      triggers.flatMap((trigger) => (trigger.values ?? []).map((value) => value.property)),
+    ),
+  ];
 }
 
 /** Does `text` name any of `members` as a whole word? */
@@ -491,31 +769,66 @@ export function mentionsSeamMember(text, members) {
 
 const CLIP = 25;
 
-function formatFindings({ triggers, tests, wider, narrow, members, usedWide, clipped, baseNote, ran }) {
+function formatFindings({
+  triggers,
+  tests,
+  wider,
+  narrow,
+  members,
+  valueProperties,
+  usedWide,
+  clipped,
+  baseNote,
+  ran,
+}) {
   const lines = [];
-  lines.push('⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites.');
+  const hasCallTriggers = triggers.some((t) => (t.seams ?? []).length > 0);
+  const hasValueTriggers = triggers.some((t) => (t.values ?? []).length > 0);
+  lines.push(
+    hasCallTriggers && hasValueTriggers
+      ? '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites and a writer output value changed.'
+      : hasValueTriggers
+        ? '⚠ OUTPUT-VALUE STRAND RISK — a writer changed a persisted output value.'
+        : '⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites.',
+  );
   lines.push('');
   for (const t of triggers) {
     lines.push(`  ${t.file}`);
-    for (const s of t.seams) {
+    for (const s of t.seams ?? []) {
       lines.push(`    seam ${s.seam}: ${s.before} call site(s) -> ${s.after}`);
+    }
+    for (const v of t.values ?? []) {
+      lines.push(`    output ${v.property}: ${v.before} -> ${v.after}`);
     }
   }
   lines.push('');
-  lines.push(
-    'A downstream test in ANOTHER workspace that mocks this seam and asserts on how many',
-  );
-  lines.push(
-    'times it was called is now stale. `test:affected` cannot select those files (it maps',
-  );
-  lines.push('changed paths to workspaces) and `tsc` cannot see them (a stale count is well-typed).');
+  if (hasCallTriggers) {
+    lines.push(
+      'A downstream test in ANOTHER workspace that mocks this seam and asserts on how many',
+    );
+    lines.push(
+      'times it was called is now stale. `test:affected` cannot select those files (it maps',
+    );
+    lines.push('changed paths to workspaces) and `tsc` cannot see them (a stale count is well-typed).');
+  }
+  if (hasValueTriggers) {
+    lines.push(
+      'A downstream test in ANOTHER workspace that asserts on the changed output property',
+    );
+    lines.push(
+      'may still encode the old value. The property name is the stable join key; `tsc` and',
+    );
+    lines.push('`test:affected` cannot prove that a runtime value contract stayed compatible.');
+  }
   lines.push('');
   if (tests.length === 0) {
-    lines.push('No downstream call-count/order assertions reachable from this change. Nothing to run.');
+    lines.push('No downstream call-count/order or output-value assertions reachable from this change. Nothing to run.');
   } else {
     lines.push(
-      `Reachable test files in other workspaces asserting on call count or order: ${wider.length}` +
-        (members.length > 0 ? `; of those, ${narrow.length} also name a seam member (${members.join(', ')}).` : '.'),
+      `Reachable test files in other workspaces asserting on call count/order or changed output values: ${wider.length}` +
+        (members.length > 0 || valueProperties.length > 0
+          ? `; of those, ${narrow.length} also name a relevant anchor (${[...members, ...valueProperties].join(', ')}).`
+          : '.'),
     );
     lines.push(
       usedWide
@@ -624,7 +937,8 @@ function main() {
       continue;
     }
     const seams = increasedSeams(beforeText, afterText, file);
-    if (seams.length > 0) triggers.push({ file, seams });
+    const values = diffOutputValues(beforeText, afterText, file);
+    if (seams.length > 0 || values.length > 0) triggers.push({ file, seams, values });
   }
 
   const baseNote =
@@ -640,7 +954,7 @@ function main() {
         '  On this tree git-sync commits the working tree on a schedule, so a few minutes after an\n' +
         '  edit the default --base HEAD diff is EMPTY. Pin the pre-edit sha: --base "$C".\n' +
         '  This is NOT a clean bill.'
-      : `✓ no seam gained call sites (${examined.length} changed source file(s) examined vs '${requestedBase}')`;
+      : `✓ no behavioural seam or output value changed (${examined.length} changed source file(s) examined vs '${requestedBase}')`;
     if (wantJson) {
       console.log(
         JSON.stringify(
@@ -673,15 +987,24 @@ function main() {
   const seeds = triggers.map((t) => t.file);
   const reachable = reverseReachable({ seeds, files: allFiles, readFile, byDir, byEntryDir });
   const changedWorkspaces = new Set(seeds.map((f) => workspaceOf(f, packageDirs)));
+  const members = seamMemberNames(triggers);
+  const valueProperties = outputPropertyNames(triggers);
 
   const wider = [...reachable]
     .filter((f) => TEST_RE.test(f))
     .filter((f) => !changedWorkspaces.has(workspaceOf(f, packageDirs)))
-    .filter((f) => hasCountOrOrderAssertion(readFile(f)))
+    .filter(
+      (f) =>
+        hasCountOrOrderAssertion(readFile(f)) ||
+        hasValueAssertion(readFile(f), valueProperties, f),
+    )
     .sort();
 
-  const members = seamMemberNames(triggers);
-  const narrow = wider.filter((f) => mentionsSeamMember(readFile(f), members));
+  const narrow = wider.filter(
+    (f) =>
+      (members.length > 0 && mentionsSeamMember(readFile(f), members)) ||
+      (valueProperties.length > 0 && hasValueAssertion(readFile(f), valueProperties, f)),
+  );
   // The narrow set is a ranking, not a filter that may hide work: when it comes out empty
   // the wider band is what gets named, so this can never print "nothing to run" while
   // reachable tests with count assertions exist.
@@ -714,6 +1037,7 @@ function main() {
           identical,
           triggers,
           seamMembers: members,
+          outputProperties: valueProperties,
           tests,
           narrow,
           wider,
@@ -727,7 +1051,18 @@ function main() {
     );
   } else {
     console.log(
-      formatFindings({ triggers, tests, wider, narrow, members, usedWide, clipped: !wantAll, baseNote, ran }),
+      formatFindings({
+        triggers,
+        tests,
+        wider,
+        narrow,
+        members,
+        valueProperties,
+        usedWide,
+        clipped: !wantAll,
+        baseNote,
+        ran,
+      }),
     );
   }
   return exit;
