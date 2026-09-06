@@ -219,7 +219,9 @@ describe('POST /workspace-hosts/action destroy', () => {
   it('keeps the canary wrapper strict when canary evidence is supplied', async () => {
     const { dependencies, readTarget } = harness();
     const malformed = await post(dependencies, { ...destroyBody, canary: { runId: 'incomplete' } });
+    const unsupportedDisposition = await post(dependencies, { ...destroyBody, disposition: 'snapshot' });
     expect(malformed.status).toBe(400);
+    expect(unsupportedDisposition.status).toBe(422);
     expect(readTarget).not.toHaveBeenCalled();
   });
 

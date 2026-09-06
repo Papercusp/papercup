@@ -1619,6 +1619,9 @@ export async function runWorkspaceHostDestroy(
   nonEmpty(input.confirmation.confirmedBy, 'destroy confirmation confirmedBy');
   isoTimestamp(input.confirmation.confirmedAt, 'destroy confirmation confirmedAt');
   if (input.canary) validateDestroyCanaryEvidence(input.canary, workspaceId);
+  if (input.canary && input.disposition !== 'discard') {
+    throw new WorkspaceHostProvisioningRequestError(['canary destroy requires disposition=discard']);
+  }
 
   const target = await baseStore.readTarget(workspaceId, hostId);
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);

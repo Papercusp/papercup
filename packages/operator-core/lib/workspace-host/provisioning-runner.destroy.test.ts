@@ -338,6 +338,222 @@ describe('runWorkspaceHostDestroy', () => {
     }));
   });
 
+  it('persists a durable snapshot identity before deleting resources and projects it as the recovery point', async () => {
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    const snapshot: WorkspaceHostResourceRef = {
+      target: 'gcp',
+      kind: 'snapshot',
+      providerId: 'pc-destroy-host-1-data',
+      parentProviderId: 'project-1',
+    };
+    const preserveStep: WorkspaceHostPlanStep = {
+      id: 'preserve-disk-pc-host-data',
+      action: 'destroy',
+      resourceKind: 'snapshot',
+      dependsOn: [],
+      idempotencyKey: 'destroy:snapshot',
+      destructive: false,
+      input: { op: 'create-snapshot', resourceName: snapshot.providerId },
+    };
+    const destroySteps = steps().map((step) => ({
+      ...step,
+      dependsOn: [preserveStep.id, ...step.dependsOn],
+    }));
+    vi.mocked(provider.plan).mockResolvedValue({
+      planId: 'plan-destroy-1',
+      operationId: 'op-destroy-1',
+      target: 'gcp',
+      hostId: 'host-1',
+      generatedAt: NOW,
+      steps: [preserveStep, ...destroySteps],
+      warnings: [],
+    });
+    apply.mockImplementation(async (request) => {
+      if (request.step.id === preserveStep.id) {
+        return {
+          operationId: request.operationId,
+          stepId: request.step.id,
+          state: 'applied',
+          observedAt: LATER,
+          providerRequestId: 'operation:snapshot',
+          snapshot: {
+            target: 'gcp',
+            providerId: snapshot.providerId,
+            hostId: 'host-1',
+            createdAt: LATER,
+          },
+        };
+      }
+      const providerResourceId = String(request.step.input.resourceName);
+      return {
+        operationId: request.operationId,
+        stepId: request.step.id,
+        state: 'destroyed',
+        observedAt: LATER,
+        confirmation: {
+          hostId: 'host-1',
+          providerResourceId,
+          confirmedAbsentAt: LATER,
+          source: 'provider-read',
+          providerRequestId: `operation:${providerResourceId}`,
+        },
+      };
+    });
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot([{
+      resource: snapshot,
+      labels: {
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-1',
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: WORKSPACE_ID,
+      },
+      observedAt: LATER,
+    }]));
+    const { store, checkpoints, updateHostState } = storeHarness({ ...desired, labels: undefined });
+
+    const result = await runWorkspaceHostDestroy(ordinaryInput(provider, store, 'snapshot'));
+
+    expect(result.status).toBe('succeeded');
+    expect(checkpoints()).toHaveLength(resources.length + 1);
+    expect(checkpoints()).toContainEqual(expect.objectContaining({
+      logicalKey: preserveStep.id,
+      state: 'applied',
+      providerResource: expect.objectContaining({
+        target: 'gcp',
+        kind: 'snapshot',
+        providerId: snapshot.providerId,
+      }),
+      providerRequestId: 'operation:snapshot',
+    }));
+    const snapshotPersisted = vi.mocked(store.upsertCheckpoint).mock.calls.findIndex(
+      ([entry]) => entry.checkpoint.logicalKey === preserveStep.id && entry.checkpoint.state === 'applied',
+    );
+    const firstDelete = apply.mock.calls.findIndex(([request]) => request.step.destructive);
+    expect(vi.mocked(store.upsertCheckpoint).mock.invocationCallOrder[snapshotPersisted]).toBeLessThan(
+      apply.mock.invocationCallOrder[firstDelete] ?? 0,
+    );
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({
+      workspaceId: WORKSPACE_ID,
+      hostId: 'host-1',
+      state: 'absent',
+      recoverability: expect.objectContaining({
+        kind: 'snapshot',
+        label: snapshot.providerId,
+        updatedAt: expect.any(String),
+      }),
+    }));
+    expect(updateHostState).not.toHaveBeenLastCalledWith(expect.objectContaining({ discard: true }));
+  });
+
+  it('reconciles an ordinary ambiguous delete on replay without issuing the destructive request twice', async () => {
+    const { provider, apply } = providerHarness();
+    const reconcile = vi.mocked(provider.reconcile);
+    const { store, checkpoints, updateHostState } = storeHarness({ ...desired, labels: undefined });
+    apply.mockRejectedValueOnce(new Error('connection closed after delete request write'));
+    reconcile.mockResolvedValue({
+      operationId: 'op-destroy-1',
+      stepId: steps()[0]!.id,
+      state: 'destroyed',
+      observedAt: LATER,
+      providerRequestId: 'operation:pc-host-vm',
+      confirmation: {
+        hostId: 'host-1',
+        providerResourceId: 'pc-host-vm',
+        confirmedAbsentAt: LATER,
+        source: 'provider-read',
+        providerRequestId: 'operation:pc-host-vm',
+      },
+    });
+
+    const first = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(first).toMatchObject({ status: 'in-progress' });
+    expect(checkpoints().find((entry) => entry.logicalKey === steps()[0]!.id)).toMatchObject({
+      logicalKey: steps()[0]!.id,
+      state: 'failed',
+      retryClass: 'ambiguous',
+      error: 'connection closed after delete request write',
+    });
+
+    const replay = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(replay.status).toBe('succeeded');
+    expect(reconcile).toHaveBeenCalledOnce();
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'resume', step: expect.objectContaining({ id: steps()[0]!.id }) }),
+      expect.anything(),
+    );
+    expect(apply.mock.calls.filter(([request]) => request.step.id === steps()[0]!.id)).toHaveLength(1);
+    expect(checkpoints().every((entry) => entry.state === 'absent')).toBe(true);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it('resumes a partially completed ordinary teardown from persisted receipts without re-deleting confirmed resources', async () => {
+    const { provider, apply } = providerHarness();
+    const reconcile = vi.mocked(provider.reconcile);
+    const { store, checkpoints, updateHostState } = storeHarness({ ...desired, labels: undefined });
+    const [vmStep, diskStep, firewallStep] = steps();
+    apply
+      .mockResolvedValueOnce({
+        operationId: 'op-destroy-1',
+        stepId: vmStep!.id,
+        state: 'destroyed',
+        observedAt: LATER,
+        confirmation: {
+          hostId: 'host-1',
+          providerResourceId: 'pc-host-vm',
+          confirmedAbsentAt: LATER,
+          source: 'provider-read',
+        },
+      })
+      .mockResolvedValueOnce({
+        operationId: 'op-destroy-1',
+        stepId: diskStep!.id,
+        state: 'destroyed',
+        observedAt: LATER,
+        confirmation: {
+          hostId: 'host-1',
+          providerResourceId: 'pc-host-data',
+          confirmedAbsentAt: LATER,
+          source: 'provider-read',
+        },
+      })
+      .mockRejectedValueOnce(new Error('provider accepted firewall delete before socket reset'));
+    reconcile.mockResolvedValue({
+      operationId: 'op-destroy-1',
+      stepId: firewallStep!.id,
+      state: 'destroyed',
+      observedAt: LATER,
+      confirmation: {
+        hostId: 'host-1',
+        providerResourceId: 'pc-host-iap',
+        confirmedAbsentAt: LATER,
+        source: 'provider-read',
+      },
+    });
+
+    const partial = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(partial.status).toBe('in-progress');
+    expect(checkpoints()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ logicalKey: vmStep!.id, state: 'absent' }),
+      expect.objectContaining({ logicalKey: diskStep!.id, state: 'absent' }),
+      expect.objectContaining({ logicalKey: firewallStep!.id, state: 'failed', retryClass: 'ambiguous' }),
+    ]));
+
+    const recovered = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(recovered.status).toBe('succeeded');
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'resume', step: expect.objectContaining({ id: firewallStep!.id }) }),
+      expect.anything(),
+    );
+    expect(apply.mock.calls.filter(([request]) => request.step.id === vmStep!.id)).toHaveLength(1);
+    expect(apply.mock.calls.filter(([request]) => request.step.id === diskStep!.id)).toHaveLength(1);
+    expect(apply.mock.calls.filter(([request]) => request.step.id === firewallStep!.id)).toHaveLength(1);
+    expect(checkpoints().every((entry) => entry.state === 'absent')).toBe(true);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
   it('rejects missing disposition, cross-host ownership, and an unverified backup before provider planning', async () => {
     const { provider } = providerHarness();
     const { store } = storeHarness({ ...desired, labels: undefined });
@@ -352,6 +568,9 @@ describe('runWorkspaceHostDestroy', () => {
     })).rejects.toMatchObject({ problems: [expect.stringContaining('identity')] });
     await expect(runWorkspaceHostDestroy(ordinaryInput(provider, store, 'backup'))).rejects.toMatchObject({
       problems: [expect.stringContaining('recorded durable backup')],
+    });
+    await expect(runWorkspaceHostDestroy({ ...runInput(provider, store), disposition: 'snapshot' })).rejects.toMatchObject({
+      problems: [expect.stringContaining('canary destroy requires disposition=discard')],
     });
     expect(provider.plan).not.toHaveBeenCalled();
   });
@@ -412,7 +631,7 @@ describe('runWorkspaceHostDestroy', () => {
     const { store } = storeHarness();
     const input = runInput(provider, store);
     input.canary = {
-      ...input.canary,
+      ...input.canary!,
       costEvidence: [{ cents: 2_501, observedAt: LATER, providerEvidenceRef: 'gcp://billing/over-ceiling' }],
       lateObservedSpend: [],
     };

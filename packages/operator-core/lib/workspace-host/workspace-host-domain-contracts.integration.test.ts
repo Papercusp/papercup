@@ -31,6 +31,7 @@ const {
   readWorkspaceHostControl,
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostObservation,
+  updateWorkspaceHostLifecycleState,
   upsertWorkspaceHost,
   upsertWorkspaceHostConnection,
   upsertWorkspaceHostResourceCheckpoint,
@@ -333,6 +334,70 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       hostGeneration: 2,
       desiredRevision: 3,
       observedRevision: 2,
+    });
+  });
+
+  it('round-trips a fenced snapshot recovery point after the host becomes absent', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-snapshot-destroy';
+    const destroyAuthority = { controllerId: 'controller-destroy', fence: 2 } as const;
+    const recoverability = {
+      kind: 'snapshot' as const,
+      label: 'projects/project-1/global/snapshots/pc-destroy-host-snapshot-data',
+      updatedAt: '2026-09-06T12:00:00.000Z',
+    };
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredRevision: 1,
+      observedRevision: 1,
+      controllerAuthority: { controllerId: 'controller-provision', fence: 1 },
+    });
+    await beginWorkspaceHostOperation({
+      workspaceId,
+      operationId: 'operation-snapshot-destroy',
+      hostId,
+      action: 'destroy',
+      desiredRevision: 2,
+      controllerAuthority: destroyAuthority,
+      request: { disposition: 'snapshot' },
+    });
+
+    await updateWorkspaceHostLifecycleState({
+      workspaceId,
+      hostId,
+      state: 'absent',
+      observedAt: recoverability.updatedAt,
+      recoverability,
+      operationId: 'operation-snapshot-destroy',
+      controllerAuthority: destroyAuthority,
+    });
+
+    const [row] = await db.adminSql<{
+      desired_state: string;
+      observed_state: string;
+      recoverability_kind: string;
+      recoverability_label: string;
+      recoverability_updated_at: Date;
+    }[]>`
+      SELECT desired_state, observed_state, recoverability_kind, recoverability_label,
+             recoverability_updated_at
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(row).toMatchObject({
+      desired_state: 'absent',
+      observed_state: 'absent',
+      recoverability_kind: 'snapshot',
+      recoverability_label: recoverability.label,
+    });
+    expect(row?.recoverability_updated_at.toISOString()).toBe(recoverability.updatedAt);
+    await expect(readWorkspaceHostDestroyTarget(workspaceId, hostId)).resolves.toMatchObject({
+      id: hostId,
+      observedState: 'absent',
+      recoverability,
+      desiredRevision: 2,
+      controllerAuthority: destroyAuthority,
     });
   });
 

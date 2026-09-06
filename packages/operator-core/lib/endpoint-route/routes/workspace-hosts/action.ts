@@ -217,6 +217,9 @@ export function createWorkspaceHostActionRoute(
         }
         const canary = body.canary === undefined ? undefined : parseCanaryEvidence(body.canary);
         if (body.canary !== undefined && !canary) return requestError('destroy canary evidence is malformed');
+        if (canary && body.disposition !== 'discard') {
+          return requestError('canary destroy requires disposition=discard', 422);
+        }
         destroyAdmission = {
           disposition: body.disposition as DestroyDisposition,
           expectedHostId,
