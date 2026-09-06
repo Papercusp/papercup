@@ -171,11 +171,14 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
       };
       const rect = (el: Element) => el.getBoundingClientRect();
       const pane = q(".op-inbox--split");
+      const rail = q(".op-inbox--split .op-inbox__rail");
       const column = q(".op-inbox--split .op-inbox__column");
       const controls = q(".op-inbox__controls");
       const listEl = q(".op-inbox__list");
       const foot = q(".op-inbox__foot");
       const listRect = rect(listEl);
+      const railRect = rect(rail);
+      const columnRect = rect(column);
       const floor = parseFloat(
         getComputedStyle(pane).getPropertyValue("--op-inbox-list-floor"),
       );
@@ -195,7 +198,15 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
         rowsInside,
         controlsScrolls: controls.scrollHeight > controls.clientHeight + 1,
         controlsHeight: rect(controls).height,
-        footInsideColumn: rect(foot).bottom <= rect(column).bottom + 0.5,
+        footInsideColumn: rect(foot).bottom <= columnRect.bottom + 0.5,
+        // P-002: the rail is the FIRST grid column, 210px wide, and holds the
+        // scopes + facets; the masthead is gone from the list column.
+        railWidth: railRect.width,
+        railBeforeColumn: railRect.right <= columnRect.left + 0.5,
+        railHoldsScopes:
+          rail.contains(q('[data-testid="inbox-filter-needs"]')) &&
+          rail.contains(q('[data-testid="inbox-facet-smoke-fail"]')),
+        mastheadInColumn: column.querySelector(".op-inbox__masthead") !== null,
       };
     });
 
@@ -214,18 +225,32 @@ test("split /inbox keeps the row list above its floor at 1280×720", async ({
   // reading of it, not a promise about every title.)
   expect(at720.rowsInside).toBeGreaterThanOrEqual(2);
   expect(at720.footInsideColumn).toBe(true);
+  // ── The rail (P-002): the chrome that used to starve the list now has its
+  // own 210px column, first in the grid, and the masthead left the column.
+  expect(at720.railWidth).toBeCloseTo(210, 0);
+  expect(at720.railBeforeColumn).toBe(true);
+  expect(at720.railHoldsScopes).toBe(true);
+  expect(at720.mastheadInColumn).toBe(false);
 
-  // ── 1280×600: shorter still, so chrome + floor cannot fit — the shortfall
-  // must land on the chrome cap (the controls block scrolls), never the rows
-  // and never past the foot. At 720 the fixture's chrome happens to fit beside
-  // the floor, which is why the cap is asserted here and not above.
-  await page.setViewportSize({ width: 1280, height: 600 });
-  const at600 = await measure();
-  expect(at600.viewport).toEqual({ w: 1280, h: 600 });
-  expect(at600.paneBottom).toBeLessThanOrEqual(600 + 0.5);
-  expect(at600.listHeight).toBeGreaterThanOrEqual(at600.floor);
-  expect(at600.rowsInside).toBeGreaterThanOrEqual(2);
-  expect(at600.footInsideColumn).toBe(true);
-  expect(at600.controlsScrolls).toBe(true);
-  expect(at600.controlsHeight).toBeGreaterThanOrEqual(62);
+  // ── Squeezed: a viewport 16px too short for chrome + floor, so the
+  // shortfall must land on the chrome cap (the controls block scrolls), never
+  // the rows and never past the foot. The height is DERIVED from the 720
+  // reading rather than pinned, because the chrome it squeezes is whatever the
+  // list column currently carries (P-002 moved the scopes + facets + masthead
+  // out of it, and P-004 moves the window strip + foot): at 720 nothing is
+  // squeezed, so `720 - listHeight + floor` is exactly the height at which the
+  // list would sit ON its floor, and 16px less forces the cap to engage.
+  const squeezed = Math.round(720 - at720.listHeight + at720.floor - 16);
+  expect(squeezed).toBeLessThan(720);
+  expect(squeezed).toBeGreaterThanOrEqual(300);
+  await page.setViewportSize({ width: 1280, height: squeezed });
+  const atSqueezed = await measure();
+  expect(atSqueezed.viewport).toEqual({ w: 1280, h: squeezed });
+  expect(atSqueezed.paneBottom).toBeLessThanOrEqual(squeezed + 0.5);
+  expect(atSqueezed.listHeight).toBeGreaterThanOrEqual(atSqueezed.floor);
+  expect(atSqueezed.rowsInside).toBeGreaterThanOrEqual(2);
+  expect(atSqueezed.footInsideColumn).toBe(true);
+  expect(atSqueezed.controlsScrolls).toBe(true);
+  expect(atSqueezed.controlsHeight).toBeGreaterThanOrEqual(62);
+  expect(atSqueezed.railHoldsScopes).toBe(true);
 });
