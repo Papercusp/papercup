@@ -3722,16 +3722,15 @@ impl App {
             .collect()
     }
 
-    /// The Inbox under the current pot scope AND the plans filter (D-009) —
-    /// `inbox_sel` indexes this. With a filter on, only items attributed to a
-    /// selected plan show (an Inbox item without a plan is filtered out — the
-    /// strict rule for a plan-attributed list).
-    pub fn visible_inbox(&self) -> Vec<&AttentionItem> {
+    /// The complete attention feed under the current pot scope AND plans filter
+    /// (D-009), independent of which Inbox facet is currently selected. Overview
+    /// counters and tiles use this so changing the Inbox landing facet cannot
+    /// silently hide alerts or decisions elsewhere in the cockpit.
+    pub fn scope_visible_attention(&self) -> Vec<&AttentionItem> {
         let mut v: Vec<&AttentionItem> = self
             .inbox
             .iter()
             .filter(|i| self.in_scope(i.harness_slug.as_deref()))
-            .filter(|i| self.inbox_focus != InboxFocus::NeedsYou || i.is_needs_you())
             .filter(|i| {
                 self.plan_filter.is_empty()
                     || i.plan_slug
@@ -3743,6 +3742,17 @@ impl App {
         // tier-sections render in order and j/k navigates sequentially (D-006).
         // A stable sort preserves the server's within-tier importance order.
         v.sort_by_key(|i| i.tier_rank());
+        v
+    }
+
+    /// The Inbox list actually on screen — the complete scoped feed for All,
+    /// narrowed to actionable owner rows for the default Needs-you facet.
+    /// `inbox_sel` indexes this view.
+    pub fn visible_inbox(&self) -> Vec<&AttentionItem> {
+        let mut v = self.scope_visible_attention();
+        if self.inbox_focus == InboxFocus::NeedsYou {
+            v.retain(|item| item.is_needs_you());
+        }
         v
     }
 
@@ -16773,9 +16783,15 @@ mod tests {
         assert_eq!(act, Action::None);
         assert_eq!(a.tab, Tab::Inbox, "'d' is no longer a public switch key");
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(
+            a.inbox_focus,
+            InboxFocus::Attention,
+            "the landing Needs-you facet must cycle through All"
+        );
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert!(
             a.inbox_threads_focused(),
-            "Tab must reach the absorbed Threads sub-view"
+            "a second Tab must reach the absorbed Threads sub-view"
         );
         a.conversations_loading = true;
 

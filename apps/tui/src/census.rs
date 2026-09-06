@@ -223,6 +223,8 @@ fn attention(title: &str) -> AttentionItem {
         "source": "census",
         "title": title,
         "status": "open",
+        "needsHuman": true,
+        "tier": "decision",
     }))
 }
 
@@ -365,7 +367,10 @@ fn empty(app: &mut App, tab: Tab) -> Cell {
     match tab {
         Tab::Overview => ex("no alerts", "App::new() — no plans/inbox/roster"),
         Tab::Operator => ex("No messages yet", "App::new() — no chat history"),
-        Tab::Inbox => ex("Inbox empty", "App::new() — no attention items"),
+        Tab::Inbox => ex(
+            "Inbox facet empty",
+            "App::new() — default Needs-you facet, no attention items",
+        ),
         Tab::Plans => ex("No plans loaded.", "App::new() — no plans"),
         Tab::Fleet => ex("(no agents in the fleet)", "App::new() — empty roster"),
         Tab::Sessions => ex(" sessions ", "App::new() — empty session_browser.rows (header only: the list has NO explicit empty-state text — finding F-1)"),

@@ -3489,7 +3489,7 @@ fn now_epoch_ms() -> i64 {
 /// the live alert count. `+`/`-` continue to edit the hard fleet cap (P-005).
 fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
     let alerts = app
-        .visible_inbox()
+        .scope_visible_attention()
         .iter()
         .filter(|i| i.tier_rank() == 2)
         .count();
@@ -3706,7 +3706,7 @@ fn draw_overview_activity_tile(f: &mut Frame, app: &App, area: Rect, selected: b
 /// The inbox decisions tier (tier_rank 0), pot-scoped. Split out so the tile
 /// and tests share one definition.
 fn app_decisions(app: &App) -> Vec<&crate::models::AttentionItem> {
-    app.visible_inbox()
+    app.scope_visible_attention()
         .into_iter()
         .filter(|i| i.tier_rank() == 0)
         .collect()
