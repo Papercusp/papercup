@@ -2652,6 +2652,40 @@ pub struct MemoriesPayload {
     pub results: Vec<MemoryEntry>,
 }
 
+// ─── Command-palette tool discovery (PUI next-wave P-012) ───
+
+/// One live catalog match returned by `tools:find`.
+///
+/// The palette deliberately keeps the server's compact schema text instead of
+/// maintaining a second client-side catalog.  That makes each invocation use
+/// the same schema generation an agent would read through the MCP surface.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ToolPaletteHit {
+    #[serde(default, rename = "tool")]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default, rename = "argSchema")]
+    pub arg_schema: String,
+    #[serde(default)]
+    pub returns: Option<String>,
+    #[serde(default)]
+    pub via: Option<String>,
+}
+
+/// A reusable orchestration suggested beside tool matches by `recipes:search`.
+/// Suggestions are informational in v1: selecting a tool still follows the
+/// explicit schema prompt and audited `tools:invoke` path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ToolPaletteRecipe {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 // ─── Operator chat pane (tui-operator-surface-2026-06-04) ───
 
 /// How a tool call ENDED, as reported by the seam's `tool_result` frame.
