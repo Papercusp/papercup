@@ -40,7 +40,15 @@ const IDENT: OwnerHiveIdentity = {
   inviteSecret: INVITE_SECRET,
 };
 
-const MODULE_PATH = path.join(__dirname, '..', 'harness', 'papercusp-shared-identity-gist.ts');
+/**
+ * The prose subject. Overridable so `scripts/mutation-probe.sh` can point this guard at
+ * a HISTORICAL snapshot of the module (copy-out, zero tree mutation) and prove the
+ * assertion actually fails against the pre-fix source — a guard that has never failed is
+ * a guard nobody has tested.
+ */
+const MODULE_PATH =
+  process.env.PAPERCUSP_GIST_MODULE_PATH ??
+  path.join(__dirname, '..', 'harness', 'papercusp-shared-identity-gist.ts');
 
 /** A fetch that records every request and answers the two gist endpoints. */
 function recordingFetch(existingGistId: string | null) {
@@ -149,6 +157,23 @@ describe('doc-claim: no plaintext hive private key in a gist (WI-2147371)', () =
     bytes[0] ^= 0xff;
     const tampered = { ...sealed, ciphertext: bytes.toString('base64') };
     expect(openSealedOwnerHiveIdentity(tampered, PASSPHRASE)).toBeNull();
+  });
+
+  it('CONTROL: the pre-fix plaintext write DOES trip these assertions (the detector is not vacuous)', () => {
+    // A permanent deliberately-wrong implementation kept beside the real one. Without it,
+    // every "not.toContain" above would also pass if the constants were simply wrong —
+    // a green suite that measured nothing looks identical to a green suite that measured
+    // the right thing. This is the calibration case that tells them apart.
+    const preFixBody = JSON.stringify({
+      description: 'anything',
+      public: false,
+      files: { [__OWNER_GIST_FILENAME]: { content: JSON.stringify(IDENT, null, 2) } },
+    });
+    expect(preFixBody).toContain(PRIVATE_KEY_DER);
+    expect(preFixBody).toContain(INVITE_SECRET);
+    expect(preFixBody).toContain('privateKeyDer');
+    expect(preFixBody).toContain('inviteSecret');
+    expect(isSealedOwnerHiveIdentity(IDENT)).toBe(false);
   });
 
   it('the module prose no longer claims a secret gist is access-controlled', () => {
