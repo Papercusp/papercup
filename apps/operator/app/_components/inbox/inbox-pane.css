@@ -753,7 +753,9 @@
 }
 .op-inbox--split {
   display: grid;
-  grid-template-columns: minmax(380px, 37%) minmax(0, 1fr);
+  /* COLUMN 1 the rail (P-002) · COLUMN 2 the list · COLUMN 3 the aside. The
+     rail is the board's fixed 210px; the list keeps its 380px–37% band. */
+  grid-template-columns: 210px minmax(380px, 37%) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   padding: 0;
 }
@@ -765,6 +767,107 @@
   overflow: hidden;
   padding: 12px;
   border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+/* ── COLUMN 1 · the rail (inbox-three-column-resolver-states-2026-09-06 P-002;
+   split only, D-001) ─────────────────────────────────────────────────────
+   The masthead (collapsed to `Inbox` + count), the tier scopes, the kind
+   facets and — P-003 — the bulk card, OUT of the list's column: their height
+   used to be the shortfall that landed on the rows. Scrolls internally; never
+   grows the page. */
+.op-inbox__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 11px;
+  border-right: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: color-mix(
+    in srgb,
+    var(--bg-2, rgba(0, 0, 0, 0.18)) 40%,
+    transparent
+  );
+}
+.op-inbox__rail-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.op-inbox__rail-icon {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--accent, #38bdf8) 46%, transparent);
+  border-radius: 8px;
+  color: #bfdbfe;
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #1688ff 72%, transparent),
+    color-mix(in srgb, #0757b8 74%, transparent)
+  );
+}
+.op-inbox__rail-title {
+  color: var(--fg, #e7f7ff);
+  font-size: 14.5px;
+  font-weight: 700;
+}
+/* The count collapses from the masthead's 48×44 tile to a pill. */
+.op-inbox__rail .op-inbox__masthead-count {
+  margin-left: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 8px;
+  flex-direction: row;
+  gap: 4px;
+  border-radius: 999px;
+}
+.op-inbox__rail .op-inbox__masthead-count-value {
+  font-size: 11.5px;
+}
+.op-inbox__rail .op-inbox__masthead-count-label {
+  margin-top: 0;
+}
+.op-inbox__rail-label {
+  margin: 0 0 -6px;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 9px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+/* Scopes stack as full-width rows with the count on the right (the board's
+   `.f-sc`), not the sidebar's wrapped chip row. The active scope keeps the
+   chip's own filled treatment. */
+.op-inbox__rail .op-inbox__chips {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.op-inbox__rail .op-inbox__chip {
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  justify-content: flex-start;
+}
+.op-inbox__rail .op-inbox__chip:not(.is-active) {
+  border-color: transparent;
+}
+.op-inbox__rail .op-inbox__chip:not(.is-active):hover {
+  border-color: var(--border, rgba(255, 255, 255, 0.14));
+}
+.op-inbox__rail .op-inbox__chip-count {
+  margin-left: auto;
+  font-size: 10.5px;
+}
+.op-inbox__rail .op-inbox__facets {
+  gap: 5px;
 }
 .op-inbox__aside {
   display: flex;
@@ -830,10 +933,28 @@
 @media (max-width: 900px) {
   .op-inbox--split {
     grid-template-columns: minmax(0, 1fr);
+    /* The rail becomes a strip above the list; the list row takes the rest. */
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .op-inbox--split[data-has-selection] {
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .op-inbox--split .op-inbox__rail {
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  }
+  .op-inbox--split .op-inbox__rail .op-inbox__chips {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
   }
   .op-inbox--split .op-inbox__column {
     border-right: 0;
   }
+  /* With a selection the detail fills the page: the rail hides WITH the list
+     column, never on its own — it is the list's filter, not the detail's. */
+  .op-inbox--split[data-has-selection] .op-inbox__rail,
   .op-inbox--split[data-has-selection] .op-inbox__column {
     display: none;
   }
