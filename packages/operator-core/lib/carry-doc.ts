@@ -305,6 +305,7 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
   getTailFn?: (ownerId: string) => Promise<CarryDocTailTurn[]>;
+  getBackgroundTasksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocBackgroundTask[]>;
   /** Test seam for the live projected-tool catalog used by role-feasibility checks. */
   projectedToolsFn?: () => readonly ProjectedTool[];
 }
@@ -538,6 +539,14 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   // so a successor verifies against the fact instead of carrying it as undecided.
   const asks = flagAsksAgainstFacts(rawAsks, brief.facts);
 
+  // Wired at the BUILDER, not at one door: carry-respawn, session:request-compaction
+  // and maintenance-carry all reach the document through buildCarryDoc, and an
+  // orphaned job is equally invisible across every one of those boundaries.
+  const getBackgroundTasks = opts.getBackgroundTasksFn ?? defaultGetBackgroundTasks;
+  const backgroundTasks = await getBackgroundTasks(ownerId, ws).catch(
+    () => [] as CarryDocBackgroundTask[],
+  );
+
   const getTail = opts.getTailFn ? () => opts.getTailFn!(ownerId) : () => defaultGetTail(opts);
   const tail = (await getTail().catch(() => [] as CarryDocTailTurn[])).slice(-CARRY_DOC_MAX_TAIL_TURNS);
   const retractedContinuationRefs = detectRetractedContinuationRefs(tail);
@@ -567,6 +576,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     },
     planItems: planItems.slice(0, CARRY_DOC_MAX_PLAN_ITEMS),
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
+    backgroundTasks,
     tail,
     continuation: deriveContinuation(
       tail,
@@ -805,6 +815,11 @@ export const CARRY_DOC_SLOTS: readonly CarryDocSlotAudit[] = Object.freeze([
   { slot: 'continuation', kind: 'derived', boundedBy: 'derived from the tail (preview capped)' },
   { slot: 'retractionGuard', kind: 'snapshot', boundedBy: 'work-item ids from the bounded machine-turn tail' },
   { slot: 'brief', kind: 'top-k', boundedBy: 'carry-brief top-K legs; per-item text bounded by the budget fit' },
+  {
+    slot: 'backgroundTasks',
+    kind: 'top-k',
+    boundedBy: `CARRY_DOC_MAX_BACKGROUND_TASKS=${CARRY_DOC_MAX_BACKGROUND_TASKS} (overflow renders as a count)`,
+  },
 ]);
 
 /**
@@ -1098,6 +1113,66 @@ function renderIdentity(id: CarryDocIdentity): string {
   return `## Identity\n${lines.join('\n')}`;
 }
 
+/** Whole minutes, floored — enough resolution to tell "just launched" from
+ *  "has been burning capacity for an hour", which is the only judgement the
+ *  successor makes off this number. */
+function ageMinutes(fromMs: number, now: number): number {
+  return Math.max(0, Math.floor((now - fromMs) / 60_000));
+}
+
+/**
+ * The one carry slot describing something that is still SPENDING while unattended.
+ *
+ * Three deliberate choices, each of which the obvious version gets wrong:
+ *
+ *  1. `task_id`, never `bash_id`. A `bash_id` resolves only "in the original
+ *     launching context" — precisely the context a carry-respawn destroyed. It
+ *     is the handle that reads plausible and then fails at the moment of use,
+ *     so the durable one is the only one worth rendering.
+ *  2. The state shown is the LEDGER's, never derived from the job's output
+ *     bytes (see {@link CarryDocBackgroundTask.state}).
+ *  3. The lifetime is stated honestly. A `capability:bash` job outlives a
+ *     carry-respawn but is NOT restart-durable: the `systemd-run --scope`
+ *     monitor can take the payload down when :3070/:3170 restarts. Implying a
+ *     durable handle would make this section a NEW false-confidence surface —
+ *     the same class of bug it exists to fix — so it says "as of this document's
+ *     build stamp; re-verify" rather than asserting the job is running now.
+ *
+ * Returns `null` — not an empty header — when the agent owns nothing, so the
+ * section's mere presence is itself the signal.
+ */
+function renderBackgroundTasks(tasks: CarryDocBackgroundTask[] | undefined, now: number): string | null {
+  if (!tasks || tasks.length === 0) return null;
+  const shown = tasks.slice(0, CARRY_DOC_MAX_BACKGROUND_TASKS);
+  const overflow = tasks.length - shown.length;
+  const lines = [
+    '## Your still-running background tasks',
+    '> ⚠ YOUR OWN `capability:bash` background jobs, non-terminal in the task ledger as of this ' +
+      "document's build stamp. Unlike every other continuity surface here, these keep SPENDING " +
+      'shared machine capacity while unattended — adopt or kill each one deliberately. They ' +
+      'outlive a carry-respawn (that is why you can still see them) but are NOT restart-durable, ' +
+      'so re-verify before acting. State is the LEDGER\'s: never conclude a job died from an ' +
+      'empty output file.',
+  ];
+  for (const t of shown) {
+    const age = t.startedAtMs == null ? 'age unknown' : `${ageMinutes(t.startedAtMs, now)}m old`;
+    const deadline = t.deadlineAtMs == null ? 'no deadline' : `deadline ${new Date(t.deadlineAtMs).toISOString()}`;
+    lines.push(`- ${t.taskId} — ${t.state}, ${age}, ${deadline}`);
+    lines.push(`  cmd: ${cap(t.command, 160)}`);
+    lines.push(
+      `  read: capability:bash_output { task_id: '${t.taskId}' } · ` +
+        `kill: processes:kill { taskId: '${t.taskId}' }`,
+    );
+  }
+  if (overflow > 0) {
+    lines.push(
+      `- …and ${overflow} more — the full owner-scoped list is ` +
+        "processes:list { launchedBy: 'self', state: 'running' }.",
+    );
+  }
+  return lines.join('\n');
+}
+
 function renderSessionMode(
   sm: CarryDocSessionMode,
   hasLiveAwaits = false,
@@ -1309,6 +1384,7 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
   const roleSafety = doc.roleSafety ?? inspectCarryRoleSafety(doc.identity.role, doc.brief);
   const shedPointers = judgeSafe ? JUDGE_SAFE_SHED_POINTERS : SHED_POINTERS;
   const retractionGuard = renderRetractionGuard(doc.retractedContinuationRefs ?? []);
+  const backgroundTasks = renderBackgroundTasks(doc.backgroundTasks, now);
   const head = [
     '# Carry document (deterministic — assembled from the DB, no LLM)',
     `> ${REORIENT_BANNER}`,
@@ -1329,6 +1405,14 @@ export function renderCarryDoc(doc: CarryDoc, now: number = Date.now(), opts: Re
     renderSessionMode(doc.sessionMode, doc.brief.awaits.length > 0, doc.identity.role),
     ...(roleSafety ? [renderCarryRoleHandoff(roleSafety)] : []),
     ...(retractionGuard ? [retractionGuard] : []),
+    // ALWAYS-KEPT, never shed (EI-21600998523239527). It is a few lines, and it is
+    // a COST/SAFETY signal rather than an orientation convenience: the measured
+    // orphan burned 24,244 CPU-seconds and 18.5 GB RSS unnoticed while a
+    // fleet-blocking red gate needed the same capacity. A document that sheds this
+    // slot under budget pressure re-creates the exact bug it was added to fix —
+    // and budget pressure correlates with a busy session, which is when an orphan
+    // is most likely to exist.
+    ...(backgroundTasks ? [backgroundTasks] : []),
   ];
   // EI-18684357744098956: the carry doc (unlike the bare brief) also carries the
   // verbatim tail — the one place a held item's checkpoint write-time can be
