@@ -525,11 +525,11 @@ const tooManyEntriesMessage = (field: string, max: number, got: number) =>
   `of entries in the array, not on the length of any string inside them.`;
 
 /**
- * Refuse a wrong shape with a message that TEACHES the right one, while keeping the
- * strict member schema as the first union branch so the published JSON schema still
- * shows callers the real shape. Same trick as `messageBodyArg`: the bad branches exist
- * only to be caught. Order matters — the strict branch is tried first, so a valid value
- * never reaches the permissive catch-alls.
+ * Refuse a wrong shape with a message that TEACHES the right one, while publishing only
+ * the strict array schema. The `unknown()` guard sees every runtime value and emits the
+ * actionable refusal; the `pipe()` output is what Zod publishes as JSON Schema. This
+ * deliberately avoids a union whose string/unknown-array catch-alls would advertise
+ * invalid alternatives to callers.
  */
 function shapeTaughtArray<E>(
   field: string,
@@ -537,44 +537,25 @@ function shapeTaughtArray<E>(
   message: string,
   max = 20,
 ): z.ZodType<E[]> {
-  return z
-    .union([z.array(entry).max(max), z.string(), z.array(z.unknown())])
+  const guard = z
+    .unknown()
     .superRefine((value, ctx) => {
       if (typeof value === 'string' || !Array.isArray(value)) {
         ctx.addIssue({ code: 'custom', message });
         return;
       }
-      // The strict branch already enforces `max`; this only fires for a LONG array that
-      // fell through to the catch-all, which would otherwise be silently accepted.
       if (value.length > max) {
         ctx.addIssue({ code: 'custom', message: tooManyEntriesMessage(field, max, value.length) });
         return;
       }
       if (value.every((member) => entry.safeParse(member).success)) return;
       ctx.addIssue({ code: 'custom', message });
-    }) as unknown as z.ZodType<E[]>;
-  // ⚠ The cast is the RETURN TYPE, never a trailing `.transform()`.
-  //
-  // This used to end `.transform((value) => value as E[])` — a pure TYPE-level
-  // cast that does nothing at runtime, but which turns the schema into a
-  // ZodEffects whose output cannot be expressed in JSON Schema. That is FATAL
-  // AND FLEET-WIDE, not cosmetic: the conversion runs at tool registration, so
-  // the operator threw at boot and `papercup-staging-api` crash-looped until
-  // systemd gave up —
-  //   Error: Tool "coord:send": its `args` schema cannot be represented in JSON
-  //   Schema — Transforms cannot be represented in JSON Schema.
-  // It took the WHOLE tool catalogue with it (tools/list is converted
-  // unguarded), so every client loses discovery, not just coord:send. Caught
-  // 2026-08-10 the first time anything restarted after the commit that added it;
-  // nothing between commit and restart can catch it, which is what makes this
-  // worth a comment rather than a one-line fix.
-  //
-  // The superRefine above has ALREADY proven every member parses as `entry`, so
-  // narrowing the widened union output to `E[]` is sound — it just has to happen
-  // in the type system rather than in the schema. `messageBodyArg` below builds
-  // the same union+refine shape and stays representable for exactly this reason.
-  // If a runtime transform is ever genuinely needed here, terminate it with
-  // `.pipe(<schema>)` so the OUTPUT stays representable.
+    });
+
+  // `.pipe()` is intentional. A trailing `.transform()` makes the output impossible to
+  // represent in JSON Schema, while this pipeline publishes the strict array/member shape
+  // and still preserves the guard's custom refusal for malformed runtime values.
+  return guard.pipe(z.array(entry).max(max));
 }
 
 const youMayNotKnowEntrySchema = z.object({

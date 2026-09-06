@@ -4,8 +4,9 @@ import { compareGenerationVersion, isSignedProtocolContext, makeSignedProtocolCo
 import { acceptRefAnnouncement, refAnnounceSigningBytes, verifyRefAnnouncement, type SignedRefAnnouncement } from './ref-announce';
 import { acceptFetchedSigrefs, sigrefsSigningBytes, verifySigrefs, type SignedSigrefs } from './sigrefs';
 import { acceptStagingAdvance, signStagingAdvance, verifyStagingAdvance } from './staging-advance';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 
-const scope = { hive_id: 'stable-hive-public-key', repo_key: 'gh-1303510992' };
+const { scope, authority } = hiveEffectFixture('gh-1303510992');
 const generation = (ordinal: number, nonce = 'a') => `sg2-${ordinal}-${nonce.repeat(40)}`;
 const context = (ordinal = 1, nonce = 'a') => makeSignedProtocolContext(scope.hive_id, scope.repo_key, generation(ordinal, nonce));
 const key = generateEd25519KeypairDer();
@@ -54,7 +55,7 @@ describe('signed pot-git generation contract (P-513/F2)', () => {
   it('binds scope, device, generation and sequence in all three signatures', async () => {
     const ann = await announcement();
     const refs = await snapshot();
-    const advance = await signStagingAdvance({ devicePubkeyBase64: key.pubkeyBase64, epoch: 3, seq: 1, stagingSha: 'c'.repeat(40), nowMs: 1, context: context() }, sign);
+    const advance = await signStagingAdvance({ devicePubkeyBase64: key.pubkeyBase64, epoch: 3, seq: 1, stagingSha: 'c'.repeat(40), nowMs: 1, context: context(), authority }, sign);
     for (const change of [{ hive_id: 'different' }, { repo_key: 'other' }, { store_generation: generation(2) }, { device_pubkey: generateEd25519KeypairDer().pubkeyBase64 }]) {
       expect(verifyRefAnnouncement({ ...ann, ...change })).toBe(false);
       expect(verifySigrefs({ ...refs, ...change }, key.pubkeyBase64)).toBe(false);
@@ -85,7 +86,7 @@ describe('signed pot-git generation contract (P-513/F2)', () => {
   });
 
   it('requires staging generation acceptance as well as the independent authority fence', async () => {
-    const adv = await signStagingAdvance({ devicePubkeyBase64: key.pubkeyBase64, epoch: 3, seq: 100, stagingSha: 'c'.repeat(40), nowMs: 1, context: context() }, sign);
+    const adv = await signStagingAdvance({ devicePubkeyBase64: key.pubkeyBase64, epoch: 3, seq: 100, stagingSha: 'c'.repeat(40), nowMs: 1, context: context(), authority }, sign);
     const opts = { expectedContext: scope, expectedDevice: key.pubkeyBase64, maxGrantedEpoch: 3 };
     expect(acceptStagingAdvance(adv, null, { ...opts, knownStoreGenerations: {} })).toEqual({ ok: false, reason: 'unknown-generation' });
     expect(acceptStagingAdvance(adv, null, { ...opts, knownStoreGenerations: { [key.pubkeyBase64]: generation(2) } })).toEqual({ ok: false, reason: 'stale-generation' });

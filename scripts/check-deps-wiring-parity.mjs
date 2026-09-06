@@ -833,6 +833,13 @@ const FAIL_BASELINE = new Map([
   ['LockAuthorityDeps|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['LockAuthorityDeps|packages/operator-core/lib/shared-pot/suite/checks.ts|fetchPresenceRows', SCOPE_VARIANT_PAIR],
   ['PgRetryOpts|packages/operator-core/lib/pot/soak-report.ts|sleep', OVERRIDE_WITH_REAL_DEFAULT],
+  // 2026-09-06 (WI-2147619) — the SAME seam on the SAME interface as the soak-report row
+  // above, from the READ_RETRY const added by 391501e6e2. `sleep` is optional and its
+  // absence selects the real `defaultSleep` (pg-transient-retry.ts:89 `opts.sleep ??
+  // defaultSleep`), so this production read-retry config omitting it is the production
+  // path, not a skipped concern — the adjudication already written into
+  // OVERRIDE_WITH_REAL_DEFAULT, applied to a second call site rather than re-litigated.
+  ['PgRetryOpts|packages/operator-core/lib/operator-state-pg.ts|sleep', OVERRIDE_WITH_REAL_DEFAULT],
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice', HIVE_HOME_GUARD_REPAIRED],
   ['RegisterAllOpts|packages/operator-core/lib/sync/hyperbee/boot.ts|resolveAuthorDevice,resolveHomeLogKeyHex', HIVE_HOME_GUARD_REPAIRED],
   ['WireCrossHiveBoundaryDeps|packages/operator-core/lib/deployment/cross-hive-frame.ts|loadOutboundGrants', XHIVE_ROLE_ASYMMETRY],

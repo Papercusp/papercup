@@ -237,6 +237,52 @@ export function unverifiedAuthorityClaim(
 /** The renderer's prefix tag for a claim the platform could not verify. */
 export const UNVERIFIED_CLAIM_TAG = '[UNVERIFIED authority claim]';
 
+/** The renderer's prefix tag for a relay whose check RAN AND FAILED, on a line
+ *  whose text did not itself trip the authority-claim detector. */
+export const UNVERIFIED_RELAY_TAG = '[UNVERIFIED relay]';
+
+/**
+ * SHOULD THE FAILED RELAY CHECK BE HOISTED TO THE FRONT OF THE LINE?
+ *
+ * EI-21333924556090958 — the residue its twin (EI-21333824056510800) left behind.
+ * That fix made the text detector CORRECT; this one makes the line's EMPHASIS
+ * correct, which is a different property and the one the reporter actually named.
+ *
+ * The delivered line is `<glyph> <handle> <flags><summary> … ↪ <tier>`, so the
+ * loud half is caller-controlled free text and the authoritative half is a
+ * trailing suffix. When the two disagree the format gives the wrong half the
+ * emphasis. `detectAuthorityClaim` closes that ONLY for phrasings it enumerates,
+ * and free text is unbounded: measured against live traffic on 2026-09-06, of 99
+ * delivered messages carrying `tier:'unverified'`, 78 mention the owner and only
+ * 44 trip the detector — the 34-line remainder includes several blocking
+ * `⛔ OWNER STAND-DOWN` orders and one `OWNER AUTHORIZED containment` that lifts
+ * a stated safety boundary. Sharpest of all, the detector matches `owner
+ * verified` but not `verified owner`, so "VERIFIED OWNER PAUSE" and "Verified
+ * owner-turn relay" — agents sending a CORRECTION to back an earlier flagged
+ * claim — sailed through unflagged while themselves unverified.
+ *
+ * So the rule is deliberately NOT a wider regex (that is an arms race free text
+ * wins). It is structural and phrasing-independent: IF THE SENDER ATTEMPTED A
+ * RELAY AND THE PLATFORM'S CHECK FAILED, THE READER IS TOLD BEFORE THE CLAIM.
+ *
+ * Scope limit, stated so it is not mistaken for more: this hoists only when a
+ * stamp is PRESENT and failed. A message carrying no stamp at all made no relay
+ * claim for the platform to contradict, so it stays with the text detector.
+ *
+ * Bounded by construction: relay-stamped messages are 199 of 453,494 delivered
+ * lines, and the hoisted subset is 99 — 0.022% of the stream, far below the
+ * density at which a marker becomes wallpaper.
+ */
+export function hoistUnverifiedRelay(
+  relay: RelayProvenanceStamp | null | undefined,
+  claim: 'owner' | 'queen' | null,
+): boolean {
+  // The authority-claim flag is strictly more specific and already owns the
+  // front of the line; two stacked prefixes would dilute both.
+  if (claim) return false;
+  return relay != null && !isRelayVerified(relay);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Evidence band (P-010, agent-protocol-authority-semantics-2026-07-26)
 //

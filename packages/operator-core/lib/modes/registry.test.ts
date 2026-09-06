@@ -481,6 +481,10 @@ describe('GOAL mode', () => {
     expect(c).toContain('SETTINGS ARE DATA');
     expect(c).toMatch(/editable by\s*\n?the owner|goal's detail popup/i);
     expect(c).toMatch(/never hardcode a number/i);
+    expect(c).toMatch(/YOU choose each launch's count and role models/i);
+    expect(c).toMatch(/profiles are the current policy\/default layer/i);
+    expect(c).toMatch(/pass any deliberate override/i);
+    expect(c).toMatch(/Never delegate that choice to the child fleet\s*\n?leader/i);
     // a value remembered from an earlier wake is stale by construction
     expect(c).toMatch(/may have changed it while/i);
   });
@@ -499,6 +503,8 @@ describe('GOAL mode', () => {
     // becomes the leader) and this guard asserted THAT phrasing. D-012 bound P-009 to
     // replace the argument and the clause together; this is the tightened form.
     expect(c).toMatch(/leader:\s*'spawn'/);
+    expect(c).toMatch(/select the plan,\s*\n?\s*fleet width, and leader\/member model/i);
+    expect(c).toMatch(/spawned leader executes and\s*\n?\s*supervises.*does not choose/i);
     // The two-hop route must be GONE, not merely supplemented. A contract is re-injected
     // on every wake, so a superseded route left standing beside the current one is not
     // harmless redundancy — it is a second, WRONG answer carrying equal authority, and a
@@ -860,7 +866,17 @@ describe('AUDIT mode', () => {
     const c = audit!.contract;
     expect(c).toContain('Read-only toward the subject');
     expect(c).toContain('no drive-by fixes');
-    expect(c).toContain('never\n   executes remediation un-routed');
+    expect(c).toContain('AUDIT never executes remediation un-routed');
+  });
+
+  it('requires an explicit mode exit after delivery and before routed remediation', () => {
+    const c = audit!.contract;
+    expect(c).toContain("mode:set { mode:'audit', enabled:false");
+    expect(c).toContain('Delivery does NOT clear the durable mode row');
+    expect(c).toContain('that exit call is your FIRST action');
+    expect(c).toContain('never\n   begins until that exit call succeeds');
+    expect(c).toContain('standalone tool call');
+    expect(c).toContain('never batch it with any subject mutation');
   });
 
   it('keeps the anti-false-verdict rails a report is most likely to violate', () => {

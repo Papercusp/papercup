@@ -212,6 +212,9 @@ describe('projectFrozenRepairQueueRead — P-025', () => {
       status: 'unreadable',
       reason: 'schema-newer-than-reader',
       schemaVersion: 5,
+      candidate: 'a'.repeat(40),
+      repairHead: null,
+      phase: null,
     });
     expect(projected.freezeAndConverge).toMatchObject({
       state: 'unreadable',

@@ -617,6 +617,80 @@ describe('SessionChatModal', () => {
     expect(screen.queryByText(/A{100,}/)).toBeNull();
   });
 
+  it('loads and prepends older stable-owner pages until the beginning of retained history', async () => {
+    fetchMock.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      const body = url.includes('historyPage=1')
+        ? {
+            entries: [
+              { kind: 'prompt', text: 'prior epoch question', ts: '2026-08-01T00:00:00Z' },
+              { kind: 'text', text: 'prior epoch answer', ts: '2026-08-01T00:00:01Z' },
+            ],
+            hasMore: false,
+            cursor: null,
+          }
+        : url.includes('/api/admin/coordination/sessions/list')
+          ? { sessions: [{ source_kind: 'claude', session_id: 'claude-current', last_ts: null }] }
+          : {};
+      return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+    });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'prompt', text: 'current epoch question', ts: '2026-09-01T00:00:00Z' },
+        { kind: 'text', text: 'current epoch answer', ts: '2026-09-01T00:00:01Z' },
+      ]));
+    });
+    const conversation = within(screen.getByTestId('session-chat-conversation'));
+    expect(await conversation.findByText('current epoch question')).toBeTruthy();
+    act(() => {
+      captured!.handlers.history!(JSON.stringify({ hasMore: true, cursor: 'page-2' }));
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier messages' }));
+
+    expect(await conversation.findByText('prior epoch question')).toBeTruthy();
+    expect(conversation.getByText('current epoch question')).toBeTruthy();
+    expect(screen.getByText('Beginning of conversation')).toBeTruthy();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/adv/session/thinking?historyPage=1&historyOwner=su-live-1&historyCursor=page-2',
+      { headers: { accept: 'application/json' } },
+    );
+  });
+
+  it('makes every T# click target that turn answer, with the newest rapid click winning', async () => {
+    mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-turns', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+    await waitFor(() => expect(captured).not.toBeNull());
+    act(() => {
+      captured!.handlers.backfill!(JSON.stringify([
+        { kind: 'prompt', text: 'first question' },
+        { kind: 'text', text: 'first answer' },
+        { kind: 'prompt', text: 'second question' },
+        { kind: 'text', text: 'second answer' },
+        { kind: 'prompt', text: 'third question' },
+        { kind: 'text', text: 'third answer' },
+      ]));
+    });
+
+    const rail = await screen.findByTestId('turn-rail');
+    const rows = within(rail).getAllByTestId('turn-rail-row');
+    expect(rows.map((row) => row.getAttribute('data-turn'))).toEqual(['1', '2', '3']);
+    scrollToIndexSpy.mockClear();
+
+    fireEvent.click(rows[1]);
+    await waitFor(() => expect(scrollToIndexSpy).toHaveBeenCalledWith(3, { align: 'start' }));
+
+    // The owner-reported race: a second click on the same T# must still issue
+    // another request, and a rapid different click must supersede it.
+    const callsAfterFirst = scrollToIndexSpy.mock.calls.length;
+    fireEvent.click(rows[1]);
+    await waitFor(() => expect(scrollToIndexSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst));
+    fireEvent.click(rows[0]);
+    fireEvent.click(rows[2]);
+    await waitFor(() => expect(scrollToIndexSpy.mock.calls.at(-1)?.[0]).toBe(5));
+  });
+
   describe('P-012 identity chip', () => {
     function seedRoster(entries: Array<Record<string, unknown>>) {
       H.results['advRoster.list'] = {

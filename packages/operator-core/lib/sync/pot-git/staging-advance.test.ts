@@ -123,11 +123,13 @@ describe('staging-advance (G-5d epoch fencing, pure)', () => {
     });
   });
 
-  it('binds context in v2 and rejects a valid signature from another repository or legacy peer', async () => {
+  it('binds owner authority and context in v3 and rejects a valid signature from another repository or legacy peer', async () => {
     const kp = keypair();
-    const context = makeSignedProtocolContext('hive-a', 'gh-1', 'sg2-1-' + 'a'.repeat(40));
+    const owner = keypair();
+    const context = makeSignedProtocolContext(owner.pubkeyBase64, 'gh-1', 'sg2-1-' + 'a'.repeat(40));
+    const authority = { ...context, sign: owner.sign };
     const adv = await signStagingAdvance(
-      { devicePubkeyBase64: kp.pubkeyBase64, epoch: 1, seq: 1, stagingSha: SHA_A, nowMs: 1_000, context },
+      { devicePubkeyBase64: kp.pubkeyBase64, epoch: 1, seq: 1, stagingSha: SHA_A, nowMs: 1_000, context, authority },
       kp.sign,
     );
     expect(verifyStagingAdvance(adv)).toBe(true);
