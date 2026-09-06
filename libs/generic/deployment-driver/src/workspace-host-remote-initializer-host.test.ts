@@ -53,10 +53,24 @@ class RecordingSystem implements WorkspaceHostSystem {
   readonly commands: WorkspaceHostCommandInput[] = [];
   readonly present = new Set<string>();
   readonly files = new Map<string, Buffer>();
+  readonly results = new Map<string, { exitCode: number; stdout: string; stderr: string }>();
 
   async run(input: WorkspaceHostCommandInput) {
     this.commands.push(input);
+    const configured = this.results.get(input.args.join("\u0000"));
+    if (configured) return configured;
+    if (input.args[0] === "clone") {
+      const destination = input.args.at(-1);
+      if (destination) {
+        this.present.add(destination);
+        this.present.add(join(destination, ".git"));
+      }
+    }
     return { exitCode: 0, stdout: "", stderr: "" };
+  }
+
+  setResult(args: readonly string[], result: { exitCode: number; stdout: string; stderr: string }): void {
+    this.results.set(args.join("\u0000"), result);
   }
   async ensureDirectory(path: string) {
     this.present.add(path);

@@ -830,6 +830,89 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
         GIT_CONFIG_VALUE_2: "true",
       };
     }
+
+    // A previous initialization can have completed the clone step before the controller lost its
+    // response. Re-running with a fresh operation must reuse only a checkout we can prove is the
+    // same repository, clean, and already at the requested revision. Never delete or overwrite a
+    // non-empty destination: it may contain customer work, or it may be evidence of a different
+    // source that the caller must investigate.
+    if (await this.system.pathExists(destination)) {
+      const gitDirectory = join(destination, ".git");
+      if (!(await this.system.pathExists(gitDirectory))) {
+        throw new WorkspaceHostOperationError(
+          "cloneRepository.resume",
+          1,
+          `existing destination ${destination} is not a Git worktree`,
+        );
+      }
+      const worktree = await this.require("cloneRepository.resume.worktree", {
+        command: this.gitCommand,
+        args: ["-C", destination, "rev-parse", "--is-inside-work-tree"],
+      });
+      if (worktree.stdout.trim() !== "true") {
+        throw new WorkspaceHostOperationError(
+          "cloneRepository.resume",
+          1,
+          `existing destination ${destination} is not a Git worktree`,
+        );
+      }
+      const remote = await this.require("cloneRepository.resume.origin", {
+        command: this.gitCommand,
+        args: ["-C", destination, "remote", "get-url", "origin"],
+      });
+      if (remote.stdout.trim().replace(/\/+$/, "") !== input.repositoryUrl.trim().replace(/\/+$/, "")) {
+        throw new WorkspaceHostOperationError(
+          "cloneRepository.resume",
+          1,
+          `existing destination ${destination} has a different origin`,
+        );
+      }
+      const status = await this.require("cloneRepository.resume.status", {
+        command: this.gitCommand,
+        args: ["-C", destination, "status", "--porcelain=v1", "--untracked-files=all"],
+      });
+      if (status.stdout.trim() !== "") {
+        throw new WorkspaceHostOperationError(
+          "cloneRepository.resume",
+          1,
+          `existing destination ${destination} has uncommitted changes`,
+        );
+      }
+      if (input.revision) {
+        const requested = await this.require("cloneRepository.resume.revision", {
+          command: this.gitCommand,
+          args: ["-C", destination, "rev-parse", "--verify", `${input.revision}^{commit}`],
+        });
+        const head = await this.require("cloneRepository.resume.head", {
+          command: this.gitCommand,
+          args: ["-C", destination, "rev-parse", "HEAD"],
+        });
+        if (requested.stdout.trim() !== head.stdout.trim()) {
+          throw new WorkspaceHostOperationError(
+            "cloneRepository.resume",
+            1,
+            `existing destination ${destination} is not at requested revision ${input.revision}`,
+          );
+        }
+      }
+      await this.system.setOwnershipRecursively?.(
+        destination,
+        this.workspaceUser,
+        this.workspaceGroup,
+      );
+      return {
+        destination,
+        visibility: input.visibility,
+        cloned: false,
+        reused: true,
+        ...(input.revision ? { revision: input.revision } : {}),
+        ...(input.credentialChannel
+          ? { credentialChannel: input.credentialChannel }
+          : {}),
+        observedAt: this.now().toISOString(),
+      };
+    }
+
     await this.require("cloneRepository", {
       command: this.gitCommand,
       args: ["clone", "--quiet", input.repositoryUrl, destination],
