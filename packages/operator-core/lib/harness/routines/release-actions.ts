@@ -5624,7 +5624,11 @@ export async function dispatchReleaseFixer(
   const lf = rows[0]?.lf ?? null;
   const failingTestsMeasured = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
   const candidateSnapshot = parseCandidateSnapshot(rows[0]?.cs);
+  // The explicit null check is what lets TypeScript narrow `candidateSnapshot` for the
+  // `.identity` read below (TS18047 at tip, 2026-09-06); a missing snapshot cannot match a
+  // dispatch, so the skip branch is the same outcome the matcher already returns for null.
   if (
+    !candidateSnapshot ||
     !candidateSnapshotMatchesDispatch(candidateSnapshot, {
       candidate,
       failingTests,
