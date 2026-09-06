@@ -59,6 +59,7 @@ describe('scanOutboxHealth — quarantined-row exclusion (EI-21009625512310918)'
         key            TEXT   NOT NULL,
         row            JSONB,
         ts             BIGINT NOT NULL,
+        enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at     BIGINT,
         drained_log_key TEXT,
         quarantined_at BIGINT
@@ -163,6 +164,7 @@ describe('scanOutboxHealth — residentInProcess dormancy exception (EI-21096375
         key            TEXT   NOT NULL,
         row            JSONB,
         ts             BIGINT NOT NULL,
+        enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at     BIGINT,
         drained_log_key TEXT,
         quarantined_at BIGINT

@@ -66,6 +66,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
+        enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at   BIGINT
       );
 

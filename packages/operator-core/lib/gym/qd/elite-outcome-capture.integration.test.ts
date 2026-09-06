@@ -52,7 +52,9 @@ const SCHEMA_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.substrate_outbox (
     id bigint GENERATED ALWAYS AS IDENTITY,
     workspace_id text NOT NULL, harness_slug text NOT NULL, table_name text NOT NULL,
-    op text NOT NULL, key text NOT NULL, "row" jsonb, ts bigint NOT NULL, drained_at bigint, drained_log_key text
+    op text NOT NULL, key text NOT NULL, "row" jsonb, ts bigint NOT NULL,
+    enqueued_at_ms bigint NOT NULL DEFAULT ((extract(epoch from now()) * 1000)::bigint),
+    drained_at bigint, drained_log_key text
   );
   CREATE TABLE IF NOT EXISTS harness_shared.gym_qd_archive (
     workspace_id text NOT NULL, harness_slug text NOT NULL, niche_key text NOT NULL,

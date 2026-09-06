@@ -97,6 +97,7 @@ describe('outbox-drain re-key capture-wire (real PG)', () => {
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
+        enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at   BIGINT,
         -- mig 495 (WI-2136): the drain now stamps the own-log key it appended into
         drained_log_key TEXT

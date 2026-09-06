@@ -52,6 +52,7 @@ describe('sweepDrainedOutbox (EI-436, real PG)', () => {
         key          TEXT   NOT NULL,
         row          JSONB,
         ts           BIGINT NOT NULL,
+        enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at   BIGINT,
         drained_log_key TEXT
       );
