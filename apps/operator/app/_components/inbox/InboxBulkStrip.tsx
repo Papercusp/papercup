@@ -32,7 +32,7 @@ import { ChevronRight, Loader2, RotateCw, Sparkles } from "lucide-react";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import {
   deriveRunCounts,
-  useBulkRunOps,
+  useBulkRunActions,
   type BulkRun,
   type BulkRunItem,
   type BulkSeedItem,
@@ -97,13 +97,24 @@ export default function InboxBulkStrip({
   variant = "strip",
 }: InboxBulkStripProps) {
   const card = variant === "card";
-  const { start, stop, restart, resume, reclassify } = useBulkRunOps();
+  // The run's gestures — stop / restart / resume / reclassify, their busy
+  // flags and the notice line — are the shared hook's, so this strip and the
+  // aside's run views cannot drift on copy or behaviour (D-002). Only Start
+  // stays here: it needs the pane's visible set and the next-run settings.
+  const {
+    start,
+    stop,
+    restart: onRestart,
+    resume: onResume,
+    reclassify: onReclassify,
+    restarting,
+    resuming,
+    classifying,
+    notice,
+    setNotice,
+  } = useBulkRunActions(run, unreached);
   const resolverSettings = useBulkResolverSettings("inbox-resolve");
   const [starting, setStarting] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-  const [resuming, setResuming] = useState(false);
-  const [classifying, setClassifying] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const counts = deriveRunCounts(items, run);
 
   const onStart = useCallback(async () => {
@@ -141,28 +152,6 @@ export default function InboxBulkStrip({
     resolverSettings,
   ]);
 
-  const onRestart = useCallback(async () => {
-    if (!run || restarting) return;
-    setRestarting(true);
-    setNotice(null);
-    try {
-      const result = await restart(run.runId);
-      if (!result.ok) {
-        setNotice(result.error ?? "could not restart the resolver");
-      } else if (!result.launched) {
-        setNotice(
-          `resolver could not restart${result.launchError ? `: ${result.launchError}` : ""}`,
-        );
-      } else {
-        setNotice(
-          `Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? "" : "s"} preserved`,
-        );
-      }
-    } finally {
-      setRestarting(false);
-    }
-  }, [run, restart, restarting]);
-
   const openReview = useCallback(() => {
     if (!run) return;
     // The real gesture is the start boundary. InboxBulkReport ends this after
@@ -170,48 +159,6 @@ export default function InboxBulkStrip({
     beginInteraction(PERF_INTERACTIONS.inboxBulkReportOpen);
     onReview(run.runId);
   }, [onReview, run]);
-
-  const onResume = useCallback(async () => {
-    if (!run || resuming || unreached.length === 0) return;
-    const itemIds = unreached.map((item) => item.itemId);
-    setResuming(true);
-    setNotice(null);
-    try {
-      const result = await resume(run.runId, itemIds);
-      if (!result.ok) {
-        setNotice(result.error ?? "could not continue the remaining items");
-      } else if (!result.launched) {
-        setNotice(
-          `resolver could not continue${result.launchError ? `: ${result.launchError}` : ""}`,
-        );
-      } else {
-        const preserved = result.preservedOutcomes ?? 0;
-        setNotice(
-          `Continuing ${itemIds.length} remaining · ${preserved} prior outcome${preserved === 1 ? "" : "s"} preserved`,
-        );
-      }
-    } finally {
-      setResuming(false);
-    }
-  }, [resume, resuming, run, unreached]);
-
-  const onReclassify = useCallback(async () => {
-    if (!run || classifying) return;
-    setClassifying(true);
-    setNotice(null);
-    try {
-      const result = await reclassify(run.runId);
-      if (!result.ok) {
-        setNotice(result.error ?? "could not classify legacy skipped rows");
-      } else {
-        setNotice(
-          `Classified ${result.preservedOutcomes ?? 0} legacy rows; no outcomes changed`,
-        );
-      }
-    } finally {
-      setClassifying(false);
-    }
-  }, [classifying, reclassify, run]);
 
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
@@ -232,7 +179,7 @@ export default function InboxBulkStrip({
         }
         title={card ? "Resolving…" : "Papercup is resolving…"}
         stopTestId="inbox-bulk-stop"
-        onStop={() => void stop(run.runId)}
+        onStop={stop}
         progress={{
           percent: counts.percent,
           ariaLabel: `Bulk resolve progress: ${counts.decided} of ${counts.total} decided`,
