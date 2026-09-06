@@ -278,12 +278,14 @@ export interface PapercupChatProps {
   composerPlaceholder?: string;
   /** Host-injected per-turn actions (parity `op-action-bar`) — optional. */
   renderActionBar?: (turn: ChatTurn) => ReactNode;
+  /** Host-owned avatar/chip rendered before a committed turn. */
+  renderAvatar?: (turn: ChatTurn) => ReactNode;
   /** Host-injected trailing composer chrome: voice / audience / faces — optional. */
   composerChrome?: ReactNode;
   /** Host override for a tool call's card; return null to fall through. */
   renderToolCard?: (tool: ChatTurnToolCall, turn: ChatTurn, index: number) => ReactNode | null;
   /** Host override for a turn's report card (default: chat-cards ReportBlockCard). */
-  renderReport?: (report: ReportBlock) => ReactNode;
+  renderReport?: (report: ReportBlock, turn?: ChatTurn) => ReactNode;
   /** Client-side cards (the host's `askUserLocal` queue) — rendered by chat-cards' LocalCardHost. */
   localCards?: readonly OpenCardSnapshot[];
   onLocalCardResponse?: (response: CardResponse) => void;
@@ -292,6 +294,20 @@ export interface PapercupChatProps {
   onInputChange?: (value: string) => void;
   autoFocus?: boolean;
   className?: string;
+  /** Host chrome above the transcript (mode/error/unavailable banners). */
+  banner?: ReactNode;
+  /** Host-specific empty state. Defaults to the compact shared invitation. */
+  emptyState?: ReactNode;
+  /** Hide the composer when the counterparty cannot receive a message. */
+  composerDisabled?: boolean;
+  /** A streaming host with no abort seam keeps Send disabled instead of showing a dead Stop button. */
+  allowAbort?: boolean;
+  /** Open the transcript on an exact turn or a text anchor. */
+  focusIndex?: number | null;
+  focusAnchor?: string | null;
+  focusNonce?: number | null;
+  /** Report which committed turn is currently at the top of the viewport. */
+  onTopTurnIndex?: (index: number) => void;
   /** Rendered under the transcript, above the composer (a host's footer). */
   footer?: ReactNode;
 }
@@ -361,15 +377,17 @@ interface TurnRowProps {
   assistantLabel: string;
   userLabel: string;
   renderActionBar?: PapercupChatProps['renderActionBar'];
+  renderAvatar?: PapercupChatProps['renderAvatar'];
   renderToolCard?: PapercupChatProps['renderToolCard'];
-  renderReport: (report: ReportBlock) => ReactNode;
+  renderReport: (report: ReportBlock, turn?: ChatTurn) => ReactNode;
   answerPersistedCard: PapercupChatController['answerPersistedCard'];
   cardBusy: boolean;
+  focused: boolean;
 }
 
 const TurnRow = memo(function TurnRow(props: TurnRowProps) {
   const { row, index, start, measureElement, hostTrust, allowImages, harnessSlug, planSlug, onWorkRefActivate } = props;
-  const { assistantLabel, userLabel, renderActionBar, renderToolCard, renderReport, answerPersistedCard, cardBusy } = props;
+  const { assistantLabel, userLabel, renderActionBar, renderAvatar, renderToolCard, renderReport, answerPersistedCard, cardBusy, focused } = props;
   const isOwner = hostTrust === 'owner';
   const style = { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${start}px)` } as const;
 
@@ -457,10 +475,12 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
       data-index={index}
       data-turn={turn.id}
       data-role={turn.role}
+      data-focus-match={focused ? 'true' : undefined}
       ref={measureElement}
-      className={`pc-chat__turn pc-chat__turn--${turn.role}${turn.error ? ' pc-chat__turn--error' : ''}`}
+      className={`pc-chat__turn pc-chat__turn--${turn.role}${turn.error ? ' pc-chat__turn--error' : ''}${focused ? ' pc-chat__turn--focus-match' : ''}`}
       style={style}
     >
+      {renderAvatar ? <div className="pc-chat__avatar">{renderAvatar(turn)}</div> : null}
       <div className="pc-chat__turn-meta">
         <span className="pc-chat__role" data-role={turn.role}>
           {roleLabel(turn.role, assistantLabel, userLabel)}
@@ -469,7 +489,7 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
       </div>
       <ToolTags calls={tools} showInput={isOwner} />
       {turn.report ? (
-        <div className="pc-chat__report">{renderReport(turn.report)}</div>
+        <div className="pc-chat__report">{renderReport(turn.report, turn)}</div>
       ) : turn.error ? (
         <p className="pc-chat__turn-error" role="alert">
           {turn.text}
@@ -481,7 +501,7 @@ const TurnRow = memo(function TurnRow(props: TurnRowProps) {
             hostTrust={hostTrust}
             allowImages={allowImages}
             harnessSlug={harnessSlug}
-            planSlug={planSlug}
+              planSlug={turn.planSlug ?? planSlug}
             onWorkRefActivate={onWorkRefActivate}
           />
         </div>
@@ -519,6 +539,7 @@ export function PapercupChat(props: PapercupChatProps) {
     userLabel = 'You',
     composerPlaceholder = 'Ask Papercup…',
     renderActionBar,
+    renderAvatar,
     composerChrome,
     renderToolCard,
     renderReport = defaultRenderReport,
@@ -528,6 +549,14 @@ export function PapercupChat(props: PapercupChatProps) {
     onInputChange,
     autoFocus,
     className,
+    banner,
+    emptyState,
+    composerDisabled = false,
+    allowAbort = true,
+    focusIndex,
+    focusAnchor,
+    focusNonce,
+    onTopTurnIndex,
     footer,
   } = props;
   const isOwner = hostTrust === 'owner';
@@ -588,6 +617,30 @@ export function PapercupChat(props: PapercupChatProps) {
     };
     requestAnimationFrame(step);
   }, []);
+
+  const resolvedFocusIndex = useMemo(() => {
+    if (typeof focusIndex === 'number' && focusIndex >= 0 && focusIndex < chat.turns.length) return focusIndex;
+    if (!focusAnchor) return -1;
+    const needle = focusAnchor.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (needle.length < 8) return -1;
+    const hay = chat.turns.map((turn) => turn.text.replace(/\s+/g, ' ').trim().toLowerCase());
+    for (let len = needle.length; len >= 12; len = Math.floor(len / 2)) {
+      const part = needle.slice(0, len).trim();
+      if (part.length < 8) break;
+      const index = hay.findIndex((text) => text.includes(part));
+      if (index >= 0) return index;
+    }
+    return -1;
+  }, [chat.turns, focusAnchor, focusIndex]);
+
+  const focusKey = resolvedFocusIndex >= 0 ? `${resolvedFocusIndex}:${focusNonce ?? ''}` : null;
+  const focusedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusKey || resolvedFocusIndex < 0 || focusedForRef.current === focusKey) return;
+    focusedForRef.current = focusKey;
+    followRef.current = false;
+    virtualizer.scrollToIndex(resolvedFocusIndex, { align: 'start' });
+  }, [focusKey, resolvedFocusIndex, virtualizer]);
   const liveTextLength = chat.live?.text.length ?? 0;
   useEffect(() => {
     if (followRef.current) pinToBottom();
@@ -600,7 +653,11 @@ export function PapercupChat(props: PapercupChatProps) {
       return;
     }
     followRef.current = sc.scrollHeight - sc.clientHeight - sc.scrollTop < 24;
-  }, []);
+    if (onTopTurnIndex) {
+      const first = virtualizer.getVirtualItems()[0]?.index ?? (rows.length > 0 ? 0 : -1);
+      onTopTurnIndex(Math.min(first, chat.turns.length - 1));
+    }
+  }, [chat.turns.length, onTopTurnIndex, rows.length, virtualizer]);
 
   const submit = useCallback(
     (event?: FormEvent) => {
@@ -648,6 +705,7 @@ export function PapercupChat(props: PapercupChatProps) {
       data-state={surfaceState}
       data-testid="papercup-chat"
     >
+      {banner ? <div className="pc-chat__banner">{banner}</div> : null}
       {capabilityNotice ? (
         <p
           className="pc-chat__notice"
@@ -671,7 +729,7 @@ export function PapercupChat(props: PapercupChatProps) {
         ) : null}
         {placeholder ? (
           <p className="pc-chat__placeholder" data-placeholder={placeholder} role="status">
-            {placeholder === 'opening' ? 'Opening this conversation…' : 'Ask a question to start.'}
+            {placeholder === 'opening' ? 'Opening this conversation…' : (emptyState ?? 'Ask a question to start.')}
           </p>
         ) : null}
         <div className="pc-chat__list" style={{ height: totalSize, position: 'relative' }} role="log" aria-live="polite">
@@ -693,10 +751,12 @@ export function PapercupChat(props: PapercupChatProps) {
                 assistantLabel={assistantLabel}
                 userLabel={userLabel}
                 renderActionBar={renderActionBar}
+                renderAvatar={renderAvatar}
                 renderToolCard={renderToolCard}
                 renderReport={renderReport}
                 answerPersistedCard={chat.answerPersistedCard}
                 cardBusy={chat.cardBusy}
+                focused={row.kind === 'turn' && vi.index === resolvedFocusIndex}
               />
             );
           })}
@@ -736,7 +796,7 @@ export function PapercupChat(props: PapercupChatProps) {
 
       {footer}
 
-      <form className="pc-chat__composer" onSubmit={submit} data-testid="papercup-chat-composer">
+      {!composerDisabled ? <form className="pc-chat__composer" onSubmit={submit} data-testid="papercup-chat-composer">
         <textarea
           className="pc-chat__input"
           rows={1}
@@ -748,16 +808,16 @@ export function PapercupChat(props: PapercupChatProps) {
           onKeyDown={onKeyDown}
         />
         {composerChrome ? <div className="pc-chat__composer-chrome">{composerChrome}</div> : null}
-        {chat.streaming ? (
+        {chat.streaming && allowAbort ? (
           <button type="button" className="pc-chat__stop" onClick={chat.abort} aria-label="Stop">
             Stop
           </button>
         ) : (
-          <button type="submit" className="pc-chat__send" disabled={!text.trim()} aria-label="Send">
+          <button type="submit" className="pc-chat__send" disabled={!text.trim() || chat.streaming} aria-label="Send">
             Send
           </button>
         )}
-      </form>
+      </form> : null}
     </div>
   );
 }

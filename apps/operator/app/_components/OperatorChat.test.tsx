@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 /**
- * OperatorChat — thin wrapper over the shared <ChatConversation>. It owns the
+ * OperatorChat — operator-state adapter over the shared <PapercupChat>. It owns the
  * input draft state, the submit handler (trim → onSend → clear), the
  * passive/active empty-state copy, the quick-draft prompt buttons, the optional
  * "Generate ideas" composer button, and the PendingCardsBar gating. We stub
- * ChatConversation to surface the props OperatorChat computes (emptyState,
- * composerExtra, banner, transcriptTail, onSubmit) so we can assert its own logic without the
+ * PapercupChat mount is stubbed to surface the controller + host props so we can
+ * assert the adapter logic without the virtualized transcript. It renders the
+ * empty state, composer chrome, banner, footer, and a tiny controlled composer.
  * virtualized transcript. Heavy children (cards, logo, Tooltip) are stubbed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,28 +51,41 @@ vi.mock("nuqs", () => ({
 // root, and their render contract is asserted in that component's own test.
 // So there is deliberately nothing to stub here: this suite asserts only what
 // OperatorChat still owns, which is the param WRITE.
-// Capture the props OperatorChat hands ChatConversation, and render a tiny
-// controllable surface: the empty-state body, the banner, the transcript tail,
-// the composer extra,
-// and an input wired to onInputChange/onSubmit so we can drive submit().
+// Capture the props OperatorChat hands the shared component.
 let lastProps: Record<string, any> = {};
 let lastCardProps: Record<string, any> = {};
-vi.mock("./chat/ChatConversation", () => ({
-  ChatConversation: (props: Record<string, any>) => {
+vi.mock("@papercusp/operator-ui/papercup-chat", () => ({
+  EMPTY_TURN: {
+    text: "",
+    toolCalls: [],
+    provenance: null,
+    errorCode: null,
+    errorMessage: null,
+    retryAfterMs: null,
+    cards: [],
+    done: false,
+  },
+  PAPERCUP_CHAT_CSS: "",
+  PapercupChat: (props: Record<string, any>) => {
     lastProps = props;
+    const submit = () => {
+      const text = String(props.inputValue ?? "").trim();
+      if (!text) return;
+      props.onInputChange?.("");
+      void props.chat.send(text);
+    };
     return (
       <div data-testid="chat">
-        <div data-testid="empty-body">{props.emptyState?.body}</div>
-        <div data-testid="empty-extra">{props.emptyState?.extra}</div>
+        <div data-testid="empty-body">{props.emptyState}</div>
         <div data-testid="banner">{props.banner}</div>
-        <div data-testid="transcript-tail">{props.transcriptTail}</div>
-        <div data-testid="composer-extra">{props.composerExtra}</div>
+        <div data-testid="transcript-tail">{props.footer}</div>
+        <div data-testid="composer-extra">{props.composerChrome}</div>
         <input
           data-testid="input"
           value={props.inputValue}
           onChange={(e) => props.onInputChange?.(e.currentTarget.value)}
         />
-        <button data-testid="submit" onClick={() => props.onSubmit?.()}>
+        <button data-testid="submit" onClick={submit}>
           send
         </button>
       </div>
@@ -151,7 +165,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
       />,
     );
 
-    expect(lastProps.hideInput).toBe(true);
+    expect(lastProps.composerDisabled).toBe(true);
     expect(screen.getByTestId("empty-body").textContent).toContain(
       "session has ended",
     );
@@ -170,8 +184,9 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
 
   it('defaults the empty-state title + composer placeholder to "Papercup"', () => {
     render(<OperatorChat {...baseProps({ passive: false })} />);
-    expect(lastProps.emptyState.title).toBe("Papercup");
-    expect(lastProps.inputPlaceholder).toBe("Reply to Papercup…");
+    expect(screen.getByTestId("empty-body").textContent).toContain("Papercup");
+    expect(lastProps.composerPlaceholder).toBe("Reply to Papercup…");
+    expect(lastProps.hostTrust).toBe("owner");
   });
 
   it("agentName (owner-inbox-single-pane P-007) overrides the empty-state title + placeholder, active and passive", () => {
@@ -180,20 +195,19 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
         {...baseProps({ passive: false, agentName: "su · live-1" })}
       />,
     );
-    expect(lastProps.emptyState.title).toBe("su · live-1");
-    expect(lastProps.inputPlaceholder).toBe("Reply to su · live-1…");
+    expect(screen.getByTestId("empty-body").textContent).toContain("su · live-1");
+    expect(lastProps.composerPlaceholder).toBe("Reply to su · live-1…");
 
     rerender(
       <OperatorChat
         {...baseProps({ passive: true, agentName: "su · live-1" })}
       />,
     );
-    expect(lastProps.inputPlaceholder).toBe("Type to wake su · live-1…");
+    expect(lastProps.composerPlaceholder).toBe("Type to wake su · live-1…");
   });
 
   it('hides the Papercup-specific "Quick draft prompts" panel when agentName is overridden — those prompts are wrong for a different agent', () => {
     render(<OperatorChat {...baseProps({ agentName: "su · live-1" })} />);
-    expect(lastProps.emptyState.extra).toBeUndefined();
     expect(screen.queryByText("Scan workspaces")).toBeNull();
   });
 
@@ -206,29 +220,23 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
         })}
       />,
     );
-    expect(lastProps.emptyState.title).toBe("Papercup");
-    expect(lastProps.emptyState.body).toBe(
-      "Starting a discussion about WI-99…",
-    );
-    expect(lastProps.emptyState.extra).toBeUndefined();
+    expect(screen.getByTestId("empty-body").textContent).toContain("Papercup");
+    expect(screen.getByTestId("empty-body").textContent).toContain("Starting a discussion about WI-99…");
     expect(screen.queryByText("Scan workspaces")).toBeNull();
   });
 
-  it("WI-6503: paneIcon overrides the Papercup mark as the pane icon, and defaults to it when omitted", async () => {
-    const { OperatorLogoMark } = await import("./OperatorLogoMark");
-
-    // The one pane whose counterparty really IS Papercup keeps the brand mark.
-    const { rerender } = render(<OperatorChat {...baseProps()} />);
-    expect(lastProps.emptyState.icon).toBe(OperatorLogoMark);
-
-    // A caller whose counterparty is NOT Papercup supplies its own. This is the
-    // owner-reported defect: ChatConversation derives every message's
-    // `fallbackIcon` from this same icon, so a hard-coded Papercup mark branded
-    // each unstamped message in a non-Papercup conversation as Papercup.
-    const AgentMark = () => null;
-    rerender(<OperatorChat {...baseProps({ paneIcon: AgentMark })} />);
-    expect(lastProps.emptyState.icon).toBe(AgentMark);
-    expect(lastProps.emptyState.icon).not.toBe(OperatorLogoMark);
+  it("WI-6503: paneIcon remains the non-user avatar fallback on the shared renderer", () => {
+    const AgentMark = () => <span data-testid="agent-mark" />;
+    render(
+      <OperatorChat
+        {...baseProps({
+          paneIcon: AgentMark,
+          messages: [{ id: "a1", role: "assistant", content: "hi" }],
+        })}
+      />,
+    );
+    render(lastProps.renderAvatar(lastProps.chat.turns[0]));
+    expect(screen.getByTestId("agent-mark")).toBeTruthy();
   });
 
   it("quick-draft prompt buttons populate the composer input", () => {
@@ -236,7 +244,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
     // The empty-state extra panel renders the three starting-prompt rows.
     const scan = screen.getByText("Scan workspaces");
     fireEvent.click(scan.closest("button")!);
-    // setInput was called with the prompt → ChatConversation re-renders with it.
+    // setInput was called with the prompt → PapercupChat re-renders with it.
     expect(lastProps.inputValue).toMatch(/Scan my workspaces/i);
   });
 
@@ -273,10 +281,10 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
     expect(screen.queryByLabelText("Generate ideas")).toBeNull();
   });
 
-  it("forwards footer straight through to ChatConversation (gui-chat-session-controls-2026-07-25 P-007)", () => {
+  it("forwards footer through the shared PapercupChat host slot", () => {
     const footer = <div data-testid="session-footer">status</div>;
     render(<OperatorChat {...baseProps({ footer })} />);
-    expect(lastProps.footer).toBe(footer);
+    expect(screen.getByTestId("session-footer")).toBeTruthy();
   });
 
   it("renders PendingCardsBar at the transcript tail only when both ids are set (WI-40828)", () => {
@@ -301,7 +309,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
     render(<OperatorChat {...baseProps({ onAnswerChoice })} />);
     lastProps.renderToolCard(
       { name: "chat:ask_choice", input: { question: "Q", options: [] } },
-      { role: "assistant", content: "", seq: 42 },
+      { id: "t42", role: "assistant", text: "", createdAt: 0, seq: 42 },
       0,
     );
     lastCardProps.onAnswer({ picks: [], declined: true });
@@ -337,17 +345,17 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
       input: { question: "Q", options: [] },
     };
     const renderCardFor = (
-      msg: Record<string, any>,
+      turn: Record<string, any>,
       props: Record<string, any> = {},
     ) => {
       render(<OperatorChat {...baseProps(props)} />);
-      lastProps.renderToolCard(card, msg, 0);
+      lastProps.renderToolCard(card, turn, 0);
     };
 
     it("tells the user when the message has no seq yet (answer has nowhere to land)", () => {
       const onAnswerChoice = vi.fn();
       // seq undefined — the turn has not persisted yet.
-      renderCardFor({ role: "assistant", content: "" }, { onAnswerChoice });
+      renderCardFor({ id: "t", role: "assistant", text: "", createdAt: 0 }, { onAnswerChoice });
       lastCardProps.onAnswer({ picks: [{ option_id: "a", label: "A" }] });
       expect(onAnswerChoice).not.toHaveBeenCalled();
       expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
@@ -356,7 +364,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
     });
 
     it("tells the user when the surface has no answer handler at all", () => {
-      renderCardFor({ role: "assistant", content: "", seq: 42 }, {});
+      renderCardFor({ id: "t", role: "assistant", text: "", createdAt: 0, seq: 42 }, {});
       lastCardProps.onAnswer({ picks: [{ option_id: "a", label: "A" }] });
       expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
         expect.stringMatching(/interactive/i),
@@ -373,7 +381,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
           ),
         );
       renderCardFor(
-        { role: "assistant", content: "", seq: 42 },
+        { id: "t", role: "assistant", text: "", createdAt: 0, seq: 42 },
         { onAnswerChoice },
       );
       lastCardProps.onAnswer({ picks: [{ option_id: "a", label: "A" }] });
@@ -395,7 +403,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
           ),
         );
       renderCardFor(
-        { role: "assistant", content: "", seq: 42 },
+        { id: "t", role: "assistant", text: "", createdAt: 0, seq: 42 },
         { onAnswerChoice },
       );
       lastCardProps.onAnswer({ picks: [{ option_id: "a", label: "A" }] });
@@ -411,7 +419,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
         .fn()
         .mockRejectedValue(new Error("network exploded"));
       renderCardFor(
-        { role: "assistant", content: "", seq: 42 },
+        { id: "t", role: "assistant", text: "", createdAt: 0, seq: 42 },
         { onAnswerChoice },
       );
       lastCardProps.onAnswer({ picks: [{ option_id: "a", label: "A" }] });
@@ -422,7 +430,7 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
   });
 
   describe("ref-pill popup routing (chat-ref-pills-2026-07-26 P-008, D-002 seam)", () => {
-    it("forwards harnessSlug straight through to ChatConversation", () => {
+    it("forwards harnessSlug straight through to PapercupChat", () => {
       render(<OperatorChat {...baseProps({ harnessSlug: "papercusp" })} />);
       expect(lastProps.harnessSlug).toBe("papercusp");
     });
@@ -489,5 +497,34 @@ describe("OperatorChat (operator sidebar chat wrapper)", () => {
       expect(nuqs.wpop).toBeUndefined();
       expect(nuqsSetters.wpop).not.toHaveBeenCalled();
     });
+  });
+
+  it("projects provider messages and streaming state into the shared controller", () => {
+    const { rerender } = render(
+      <OperatorChat
+        {...baseProps({
+          messages: [{ id: "u1", role: "user", content: "hello", seq: 7, planSlug: "p" }],
+        })}
+      />,
+    );
+    expect(lastProps.chat.turns).toEqual([
+      expect.objectContaining({ id: "u1", role: "user", text: "hello", seq: 7, planSlug: "p" }),
+    ]);
+    expect(lastProps.chat.live).toBeNull();
+
+    rerender(
+      <OperatorChat
+        {...baseProps({
+          busy: true,
+          messages: [
+            { id: "u1", role: "user", content: "hello" },
+            { id: "opt-assistant-1", role: "assistant", content: "streaming" },
+          ],
+        })}
+      />,
+    );
+    expect(lastProps.chat.turns).toHaveLength(1);
+    expect(lastProps.chat.live).toEqual(expect.objectContaining({ text: "streaming", done: false }));
+    expect(lastProps.chat.streaming).toBe(true);
   });
 });

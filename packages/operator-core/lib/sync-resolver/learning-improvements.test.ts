@@ -464,6 +464,10 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
         // is not cosmetic: the client falls back to that window-derived set when the field
         // is ABSENT, so a stored v4 row would keep serving the defect this change removes.
         5: 'obj{autoEligible:arr<empty>,byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,title:string,trc:number}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},open:number,recurringSignatures:arr<empty>,returned:number,sourceOptions:arr<obj{count:number,value:string}>,tierReasonLegend:arr<string>,total:number,windowed:boolean}',
+        // v6: population truth and bounded-window rollups are explicitly separated
+        // into `census` and `window`. This is a wire-shape change, not a rename a v5
+        // snapshot can safely coast through.
+        6: 'obj{autoEligible:arr<empty>,census:obj{total:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,title:string,trc:number}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},recurringSignatures:arr<empty>,sourceOptions:arr<obj{count:number,value:string}>,tierReasonLegend:arr<string>,window:obj{byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},examined:number,open:number,windowed:boolean}}',
       },
     });
   });
@@ -550,8 +554,8 @@ describe('learning.improvements — digest.census.total is the corpus, not the w
     // merged idea half do not exist until classification/join, so applying any
     // of them before that stage would recreate the beyond-page blind spot.
     expect(projectImprovementItemsForBoundedRead.mock.calls[0][0]).toEqual({ loopOutputOnly: true });
-    expect(rows[0].returned).toBe(1);
-    expect(rows[0].total).toBe(1);
+    expect(rows[0].window.examined).toBe(1);
+    expect(rows[0].census.total).toBe(1);
   });
 
   it('degrades to the returned-row count when the corpus COUNT fails — never sinks the tab', async () => {
@@ -562,8 +566,8 @@ describe('learning.improvements — digest.census.total is the corpus, not the w
     const rows = await computeLearningImprovementsSnapshot({});
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].total).toBe(2);
-    expect(rows[0].windowed).toBe(false);
+    expect(rows[0].census.total).toBe(2);
+    expect(rows[0].window.windowed).toBe(false);
   });
 
   // ── WI-471938: the corpus SOURCE VOCABULARY, the same bug one dimension over ──

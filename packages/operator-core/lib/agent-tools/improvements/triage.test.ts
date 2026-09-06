@@ -80,26 +80,35 @@ describe('improvements:triage tool', () => {
   // buildDigest's return type (ImprovementDigest) has grown beyond the handful of
   // fields these tests assert on; a complete-shape helper keeps the mocks valid
   // without restating every field at each call site.
-  const mockDigest = (p: Partial<ImprovementDigest>): ImprovementDigest => ({
-    generatedAt: new Date(0).toISOString(),
-    census: { total: 0 },
-    window: {
-      examined: 0,
-      windowed: false,
-      open: 0,
-      byKind: { bug: 0, change: 0, feature: 0 },
-      bySeverity: {},
-      byState: {},
-    },
-    autoEligible: [],
-    humanQueue: [],
-    likelyDuplicates: [],
-    likelyDuplicatesScope: null,
-    recurringSignatures: [],
-    diagnosisClusters: { clusters: [], considered: 0, unshaped: 0, ritualExcluded: 0 },
-    headline: 'test digest',
-    ...p,
-  });
+  type MockDigestOverrides = Omit<Partial<ImprovementDigest>, 'census' | 'window'> & {
+    census?: Partial<ImprovementDigest['census']>;
+    window?: Partial<ImprovementDigest['window']>;
+  };
+
+  const mockDigest = (p: MockDigestOverrides): ImprovementDigest => {
+    const { census, window, ...rest } = p;
+    return {
+      generatedAt: new Date(0).toISOString(),
+      census: { total: 0, ...census },
+      window: {
+        examined: 0,
+        windowed: false,
+        open: 0,
+        byKind: { bug: 0, change: 0, feature: 0 },
+        bySeverity: {},
+        byState: {},
+        ...window,
+      },
+      autoEligible: [],
+      humanQueue: [],
+      likelyDuplicates: [],
+      likelyDuplicatesScope: null,
+      recurringSignatures: [],
+      diagnosisClusters: { clusters: [], considered: 0, unshaped: 0, ritualExcluded: 0 },
+      headline: 'test digest',
+      ...rest,
+    };
+  };
 
   // WI-1206660 — the window must never be reported as the corpus.
   //
@@ -141,7 +150,9 @@ describe('improvements:triage tool', () => {
     it('degrades to the prior behaviour when the corpus COUNT fails, rather than sinking the triage', async () => {
       mockReadImprovementItems.mockResolvedValue([mockItem({ id: '1' })] as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockRejectedValue(new Error('count blew up'));
-      mockBuildDigest.mockReturnValue(mockDigest({ total: 1, returned: 1, open: 1 }));
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ census: { total: 1 }, window: { examined: 1, open: 1 } }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'summary' }, ctx)) as any;
@@ -157,7 +168,11 @@ describe('improvements:triage tool', () => {
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockResolvedValue(900);
       mockBuildDigest.mockReturnValue(
-        mockDigest({ total: 900, returned: 2, windowed: true, open: 2, autoEligible: items }),
+        mockDigest({
+          census: { total: 900 },
+          window: { examined: 2, windowed: true, open: 2 },
+          autoEligible: items,
+        }),
       );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
@@ -184,7 +199,9 @@ describe('improvements:triage tool', () => {
       const items = [mockItem({ id: 'a' }), mockItem({ id: 'b' })];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockResolvedValue(2);
-      mockBuildDigest.mockReturnValue(mockDigest({ total: 2, returned: 2, open: 2, autoEligible: items }));
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ census: { total: 2 }, window: { examined: 2, open: 2 }, autoEligible: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'b'] }, ctx);
@@ -200,7 +217,9 @@ describe('improvements:triage tool', () => {
       const items = [mockItem({ id: 'a' }), mockItem({ id: 'b' })];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockResolvedValue(2);
-      mockBuildDigest.mockReturnValue(mockDigest({ total: 2, returned: 2, open: 2, autoEligible: items }));
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ census: { total: 2 }, window: { examined: 2, open: 2 }, autoEligible: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'b'] }, ctx)) as any;
@@ -220,7 +239,9 @@ describe('improvements:triage tool', () => {
       const items = [mockItem({ id: 'a' })];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockCountImprovementItems.mockResolvedValue(1);
-      mockBuildDigest.mockReturnValue(mockDigest({ total: 1, returned: 1, open: 1, autoEligible: items }));
+      mockBuildDigest.mockReturnValue(
+        mockDigest({ census: { total: 1 }, window: { examined: 1, open: 1 }, autoEligible: items }),
+      );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
       const result = (await triageTool.handler({ mode: 'retriage-all', ids: ['a', 'gone'] }, ctx)) as any;
@@ -271,7 +292,11 @@ describe('improvements:triage tool', () => {
       ];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockBuildDigest.mockReturnValue(
-        mockDigest({ total: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 }, humanQueue: items }),
+        mockDigest({
+          census: { total: 2 },
+          window: { examined: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 } },
+          humanQueue: items,
+        }),
       );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
@@ -292,7 +317,11 @@ describe('improvements:triage tool', () => {
       const items = [mockItem({ id: '1' })];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockBuildDigest.mockReturnValue(
-        mockDigest({ total: 1, open: 1, byKind: { bug: 0, change: 1, feature: 0 }, humanQueue: items }),
+        mockDigest({
+          census: { total: 1 },
+          window: { examined: 1, open: 1, byKind: { bug: 0, change: 1, feature: 0 } },
+          humanQueue: items,
+        }),
       );
 
       const ctx = { principalIdentity: 'test-agent' } as any;
@@ -313,7 +342,11 @@ describe('improvements:triage tool', () => {
       ];
       mockReadImprovementItems.mockResolvedValue(items as unknown as ImprovementCandidate[]);
       mockBuildDigest.mockReturnValue(
-        mockDigest({ total: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 }, humanQueue: items }),
+        mockDigest({
+          census: { total: 2 },
+          window: { examined: 2, open: 2, byKind: { bug: 0, change: 2, feature: 0 } },
+          humanQueue: items,
+        }),
       );
 
       const ctx = { principalIdentity: 'test-agent' } as any;

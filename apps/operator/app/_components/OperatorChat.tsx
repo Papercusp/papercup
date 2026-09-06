@@ -18,16 +18,25 @@
  * component already exposes.
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Lightbulb, UserRound, Wrench } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from "react";
+import { Lightbulb, UserRound } from "lucide-react";
 import { toast } from "sonner";
 import { parseAsString, useQueryState } from "nuqs";
+import type { ChatMessage } from "./chat/chat-types";
+import type { ChatTurn, ChatTurnToolCall, ReportBlock } from "@papercusp/chat-protocol";
 import {
-  ChatConversation,
-  type ChatIconComponent,
-  type ChatMessage,
-  type ChatToolCall,
-} from "./chat/ChatConversation";
+  EMPTY_TURN,
+  PAPERCUP_CHAT_CSS,
+  PapercupChat,
+  type PapercupChatController,
+} from "@papercusp/operator-ui/papercup-chat";
 import type { WorkRefKind } from "./chat/parse-work-refs";
 import {
   CHAT_PLAN_POPUP_PARAM,
@@ -49,6 +58,8 @@ import { FLAGS } from "@papercusp/flags";
 import { useFlag } from "@/lib/flag-hooks";
 import { ReportBlockCard } from "./chat/ReportBlockCard";
 import { useCurrentUserIdentity } from "./use-current-user";
+
+type ChatIconComponent = ComponentType<{ className?: string }>;
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -227,6 +238,31 @@ const STARTING_PROMPTS = [
   },
 ] as const;
 
+function messageTurnId(message: ChatMessage, index: number): string {
+  if (message.id) return message.id;
+  if (typeof message.seq === "number") return `operator-seq-${message.seq}`;
+  return `operator-turn-${index}`;
+}
+
+function messageCreatedAt(message: ChatMessage): number {
+  if (!message.ts) return 0;
+  const parsed = Date.parse(message.ts);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toChatTurn(message: ChatMessage, index: number): ChatTurn {
+  return {
+    id: messageTurnId(message, index),
+    ...(typeof message.seq === "number" ? { seq: message.seq } : {}),
+    role: message.role,
+    text: message.content,
+    createdAt: messageCreatedAt(message),
+    ...(message.tools ? { tools: message.tools } : {}),
+    ...(message.report ? { report: message.report } : {}),
+    ...(message.planSlug !== undefined ? { planSlug: message.planSlug } : {}),
+  };
+}
+
 export function OperatorChat({
   messages,
   busy,
@@ -302,46 +338,7 @@ export function OperatorChat({
     [harnessSlug, setOpenChatPlan, setOpenWorkItem],
   );
 
-  // WI-6503 [owner 2026-07-27, verbatim follow-up] "the chat box should disaply
-  // the users profile icon in their chat, not the papercup icon."
-  //
-  // The user's OWN messages used to fall through to the pane mark — which is
-  // the Papercup cup in the sidebar, and the counterparty AGENT's mark in
-  // SessionChatModal. Either way the owner's own turns wore someone else's
-  // branding. The `paneIcon` prop fixed only half the item (the pane no longer
-  // brands a non-papercup conversation as Papercup); this is the other half,
-  // and it is a SUBSTITUTION — rendering nothing would satisfy the item's
-  // original title and is explicitly NOT what was asked for.
-  //
-  // It lives HERE rather than at each call site on purpose: OperatorChat is the
-  // component every chat surface shares (OperatorChatSidebar + SessionChatModal),
-  // so one implementation covers "every chat surface sharing the component"
-  // without either caller having to remember. A caller's own `renderAvatar`
-  // still wins — SessionChatModal's roster identity chip is consulted first and
-  // only declines (returns null) for non-assistant turns.
   const currentUser = useCurrentUserIdentity();
-  const renderAvatarWithUser = useCallback(
-    (m: ChatMessage): ReactNode | null | undefined => {
-      const override = renderAvatar?.(m);
-      if (override) return override;
-      if (m.role !== "user") return override;
-      // Identity not resolved yet (or unresolvable) ⇒ a neutral person glyph.
-      // NEVER the papercup mark: that fallback is the reported bug.
-      return (
-        <span className="oracle-msg-avatar oracle-msg-avatar--user-identity">
-          <span className="pc-sr-only">
-            {currentUser ? `${currentUser.displayName} (you)` : "You"}
-          </span>
-          {currentUser ? (
-            <span aria-hidden="true">{currentUser.initial}</span>
-          ) : (
-            <UserRound className="oracle-msg-icon" aria-hidden="true" />
-          )}
-        </span>
-      );
-    },
-    [renderAvatar, currentUser],
-  );
 
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
@@ -365,14 +362,6 @@ export function OperatorChat({
     return () => window.removeEventListener(CHAT_SEED_EVENT, onSeed);
   }, []);
 
-  const submit = useCallback(() => {
-    if (composerDisabled) return;
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
-    onSend(text);
-  }, [composerDisabled, input, onSend]);
-
   const unavailableCopy =
     composerDisabledMessage ??
     "This session cannot receive messages. Relaunch or resume the agent to continue.";
@@ -382,7 +371,7 @@ export function OperatorChat({
   // onAnswer callback because the live-tail dispatch is consumer-
   // specific (Oracle handles it differently).
   const renderToolCard = useCallback(
-    (t: ChatToolCall, msg: ChatMessage, ti: number): ReactNode | null => {
+    (t: ChatTurnToolCall, turn: ChatTurn, ti: number): ReactNode | null => {
       return renderCard(t.name, {
         args: t.input ?? {},
         answered: t.answered,
@@ -399,7 +388,7 @@ export function OperatorChat({
             toast.error("This card isn't interactive here.");
             return;
           }
-          if (typeof msg.seq !== "number") {
+          if (typeof turn.seq !== "number") {
             // The message hasn't been assigned its persisted seq yet — the
             // answer has nowhere to land. Transient: it resolves once the turn
             // persists, so say "not yet", not "broken".
@@ -411,7 +400,7 @@ export function OperatorChat({
           // live-tail picks them up; we don't optimistically dispatch.
           void Promise.resolve(
             onAnswerChoice({
-              assistantSeq: msg.seq,
+              assistantSeq: turn.seq,
               toolIndex: ti,
               picks,
               ...(declined ? { declined: true } : {}),
@@ -448,15 +437,15 @@ export function OperatorChat({
   // (the clean kill-switch).
   const curatorCardsOn = useFlag(FLAGS.CURATOR_STATUS_CARDS);
   const renderReport = useCallback(
-    (msg: ChatMessage): ReactNode | null => {
-      if (!curatorCardsOn || !msg.report) return null;
+    (report: ReportBlock, turn?: ChatTurn): ReactNode | null => {
+      if (!curatorCardsOn) return null;
       return (
         <ReportBlockCard
-          report={msg.report}
+          report={report}
           onDrillIn={onDrillIn}
           canDrillIn={canDrillIn}
           harnessSlug={harnessSlug}
-          planSlug={msg.planSlug}
+          planSlug={turn?.planSlug}
           onWorkRefActivate={handleWorkRefActivate}
         />
       );
@@ -464,13 +453,165 @@ export function OperatorChat({
     [curatorCardsOn, onDrillIn, canDrillIn, harnessSlug, handleWorkRefActivate],
   );
 
+  const streamingMessage = useMemo(() => {
+    if (!busy) return null;
+    const last = messages[messages.length - 1];
+    return last?.role === "assistant" && last.id?.startsWith("opt-assistant-")
+      ? last
+      : null;
+  }, [busy, messages]);
+  const projectedMessages = useMemo(
+    () => (streamingMessage ? messages.slice(0, -1) : messages),
+    [messages, streamingMessage],
+  );
+  const turns = useMemo(
+    () => projectedMessages.map(toChatTurn),
+    [projectedMessages],
+  );
+  const sourceByTurnId = useMemo(
+    () =>
+      new Map(
+        projectedMessages.map((message, index) => [
+          messageTurnId(message, index),
+          message,
+        ]),
+      ),
+    [projectedMessages],
+  );
+  const live = useMemo(
+    () =>
+      busy || peerBusy
+        ? {
+            ...EMPTY_TURN,
+            text: streamingMessage?.content ?? "",
+            toolCalls: (streamingMessage?.tools ?? []) as ChatTurnToolCall[],
+          }
+        : null,
+    [busy, peerBusy, streamingMessage],
+  );
+  const send = useCallback(
+    async (text: string) => {
+      if (composerDisabled) return;
+      onSend(text);
+    },
+    [composerDisabled, onSend],
+  );
+  const loadEarlier = useCallback(async () => {
+    await onLoadEarlier?.();
+  }, [onLoadEarlier]);
+  const chat = useMemo<PapercupChatController>(
+    () => ({
+      conversationId: conversationId ?? null,
+      turns,
+      live,
+      streaming: busy || !!peerBusy,
+      busy: busy || !!peerBusy || !!loadingEarlier,
+      loadingHistory: !!loadingEarlier,
+      hasMoreEarlier: !!hasMoreEarlier,
+      pendingCards: [],
+      cardBusy: false,
+      cardError: null,
+      surfaceError: null,
+      unsentQuestion: "",
+      retryTarget: null,
+      send,
+      answerCard: async () => {},
+      answerPersistedCard: null,
+      retry: async () => {},
+      loadEarlier,
+      abort: () => {},
+      appendLocalTurns: () => {},
+    }),
+    [
+      busy,
+      conversationId,
+      hasMoreEarlier,
+      live,
+      loadEarlier,
+      loadingEarlier,
+      peerBusy,
+      send,
+      turns,
+    ],
+  );
+
+  const renderSharedAvatar = useCallback(
+    (turn: ChatTurn): ReactNode => {
+      const message = sourceByTurnId.get(turn.id) ?? {
+        role: turn.role,
+        content: turn.text,
+      };
+      const override = renderAvatar?.(message);
+      if (override) return override;
+      if (message.role === "user") {
+        return (
+          <span className="oracle-msg-avatar oracle-msg-avatar--user-identity">
+            <span className="pc-sr-only">
+              {currentUser ? `${currentUser.displayName} (you)` : "You"}
+            </span>
+            {currentUser ? (
+              <span aria-hidden="true">{currentUser.initial}</span>
+            ) : (
+              <UserRound className="oracle-msg-icon" aria-hidden="true" />
+            )}
+          </span>
+        );
+      }
+      const PaneIcon = paneIcon ?? OperatorLogoMark;
+      return (
+        <span className="oracle-msg-avatar" aria-hidden="true">
+          <PaneIcon className="oracle-msg-icon" />
+        </span>
+      );
+    },
+    [currentUser, paneIcon, renderAvatar, sourceByTurnId],
+  );
+
+  const emptyState = (
+    <div className="op-chat-empty-state" data-testid="operator-chat-empty-state">
+      <div className="op-chat-empty-state__title">{agentName}</div>
+      <div className="op-chat-empty-state__body">
+        {composerDisabled
+          ? unavailableCopy
+          : passive
+            ? "In passive mode. Type below to wake them."
+            : (emptyStateBody ?? "Tell me what you want to inspect, scan, or unblock.")}
+      </div>
+      {agentName === "Papercup" && showQuickDraftPrompts ? (
+        <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
+          <div className="op-chat-empty-panel-head">
+            <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
+            <div className="op-chat-empty-panel-label">Quick draft prompts</div>
+          </div>
+          <div className="op-chat-empty-panel-list">
+            {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
+              <button
+                key={title}
+                type="button"
+                className="op-chat-empty-row"
+                onClick={() => setInput(prompt)}
+                disabled={busy || composerDisabled}
+                aria-label={`${title}: ${hint}. Draft this prompt.`}
+              >
+                <span className="op-chat-empty-row-title">{title}</span>
+                <span className="op-chat-empty-row-hint">{hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <>
-      <ChatConversation
-        messages={messages}
-        busy={busy}
-        peerThinking={peerBusy}
-        error={error}
+      <style>{PAPERCUP_CHAT_CSS}</style>
+      <PapercupChat
+        chat={chat}
+        hostTrust="owner"
+        assistantLabel={agentName}
+        userLabel="You"
+        className="op-chat-shared"
         banner={
           <>
             {composerDisabled ? (
@@ -483,70 +624,23 @@ export function OperatorChat({
               </div>
             ) : null}
             {banner}
+            {error ? (
+              <div className="oracle-error" role="alert">
+                {error}
+              </div>
+            ) : null}
           </>
         }
-        transcriptTail={
-          conversationId && workspaceId ? (
-            <PendingCardsBar
-              conversationId={conversationId}
-              workspaceId={workspaceId}
-            />
-          ) : null
+        footer={
+          <>
+            {conversationId && workspaceId ? (
+              <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
+            ) : null}
+            {footer}
+          </>
         }
-        emptyState={{
-          title: agentName,
-          body: composerDisabled
-            ? unavailableCopy
-            : passive
-              ? "In passive mode. Type below to wake them."
-              : (emptyStateBody ??
-                "Tell me what you want to inspect, scan, or unblock."),
-          // WI-6503: the pane's own mark, not a hard-coded Papercup cup. See
-          // the `paneIcon` prop doc — ChatConversation also derives its
-          // per-message `fallbackIcon` from this, so overriding it here is
-          // what stops a non-Papercup conversation branding its messages
-          // (and its empty state) as Papercup.
-          icon: paneIcon ?? OperatorLogoMark,
-          // The starting prompts are Papercup-specific ("scan workspaces", "review
-          // blockers" — operator-scoped asks). A non-Papercup caller (SessionChatModal
-          // messaging an arbitrary su agent) has no business drafting these — they'd be
-          // actively misleading there, not just off-brand — so gate the whole panel on
-          // agentName rather than showing it unconditionally.
-          extra:
-            agentName === "Papercup" && showQuickDraftPrompts ? (
-              <div
-                className="op-chat-empty-panel"
-                aria-label="Quick draft prompts"
-              >
-                <div className="op-chat-empty-panel-head">
-                  <OperatorLogoMark
-                    variant="compact"
-                    className="op-chat-empty-panel-logo"
-                  />
-                  <div className="op-chat-empty-panel-label">
-                    Quick draft prompts
-                  </div>
-                </div>
-                <div className="op-chat-empty-panel-list">
-                  {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
-                    <button
-                      key={title}
-                      type="button"
-                      className="op-chat-empty-row"
-                      onClick={() => setInput(prompt)}
-                      disabled={busy || composerDisabled}
-                      aria-label={`${title}: ${hint}. Draft this prompt.`}
-                    >
-                      <span className="op-chat-empty-row-title">{title}</span>
-                      <span className="op-chat-empty-row-hint">{hint}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : undefined,
-        }}
-        labelForRole={NO_ROLE_LABEL}
-        inputPlaceholder={
+        emptyState={emptyState}
+        composerPlaceholder={
           composerDisabled
             ? unavailableCopy
             : passive
@@ -555,16 +649,11 @@ export function OperatorChat({
         }
         inputValue={input}
         onInputChange={setInput}
-        onSubmit={submit}
-        hideInput={composerDisabled}
-        composerExtra={
+        composerDisabled={composerDisabled}
+        allowAbort={false}
+        composerChrome={
           onGenerateIdeas ? (
             <Tooltip label="Generate ideas" side="top" align="center">
-              {/* EI-13109: never reuse the send button's class here — this button
-                  renders BEFORE the real submit, so `.oracle-send-button` lookups
-                  (and users) mistook it for Send and typed drafts went unsent.
-                  Disabled while a draft is pending: with text in the composer the
-                  only live affordance is Send, so a click can't discard the draft. */}
               <button
                 type="button"
                 aria-label="Generate ideas"
@@ -577,18 +666,13 @@ export function OperatorChat({
             </Tooltip>
           ) : undefined
         }
-        renderToolChip={renderOperatorToolChip}
         renderToolCard={renderToolCard}
         renderReport={renderReport}
-        renderAvatar={renderAvatarWithUser}
-        footer={footer}
-        onLoadEarlier={onLoadEarlier}
-        hasMoreEarlier={hasMoreEarlier}
-        loadingEarlier={loadingEarlier}
+        renderAvatar={renderSharedAvatar}
         focusAnchor={focusAnchor}
         focusIndex={focusIndex}
         focusNonce={focusNonce}
-        onTopMessageIndex={onTopMessageIndex}
+        onTopTurnIndex={onTopMessageIndex}
         harnessSlug={harnessSlug}
         onWorkRefActivate={handleWorkRefActivate}
       />
@@ -613,67 +697,4 @@ export function OperatorChat({
 // Keep the shared message type exported here so OperatorChatSidebar
 // + the (forthcoming) OperatorConversation provider don't need to
 // reach across the chat/ folder. Re-export, not redeclare.
-export type { ChatMessage as OperatorChatMessage } from "./chat/ChatConversation";
-
-/**
- * This pane draws its own role label into the avatar column, so ChatConversation
- * must not draw one. Module-level (not an inline `() => ''`) because it is a prop
- * of every transcript row: a fresh arrow each render re-renders every row on every
- * keystroke, which is half of WI-6502's typing lag. See the <ChatMessageRow> memo.
- */
-const NO_ROLE_LABEL = () => "";
-
-/**
- * Compact chip for an MCP/tool call the operator made during the preceding
- * turn. Keep the raw technical tool id in the title, but show a cleaned label
- * in the transcript so the left rail stays scannable.
- */
-function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
-  const input = (t.input ?? {}) as Record<string, unknown>;
-  const detail =
-    typeof input.role === "string"
-      ? input.role
-      : typeof input.spawnId === "string"
-        ? input.spawnId
-        : typeof input.featureId === "string"
-          ? input.featureId
-          : typeof input.scope === "string"
-            ? input.scope
-            : null;
-  const label = `${formatOperatorToolName(t.name)}${detail ? ` (${detail})` : ""}`;
-  const tooltip = (
-    <span className="op-chat-tool-tooltip">
-      <strong>
-        {t.name}
-        {detail ? ` (${detail})` : ""}
-      </strong>
-      <span>{JSON.stringify(input).slice(0, 240)}</span>
-    </span>
-  );
-
-  return (
-    <Tooltip key={i} label={tooltip} side="right" align="start">
-      <span
-        className="oracle-tool-chip"
-        tabIndex={0}
-        aria-label={`Tool call: ${label}. Raw id: ${t.name}`}
-      >
-        <Wrench size={12} />
-        <span>{label}</span>
-      </span>
-    </Tooltip>
-  );
-}
-
-function formatOperatorToolName(name: string): string {
-  const compact = name
-    .replace(/^mcp__agentmcp_/, "")
-    .replace(/^mcp__/, "")
-    .replace(/^agentmcp_/, "")
-    .replace(/^search_tool_/, "search_")
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return compact.length > 0 ? compact : name;
-}
+export type { ChatMessage as OperatorChatMessage } from "./chat/chat-types";

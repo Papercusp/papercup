@@ -2135,13 +2135,13 @@ function ImprovementsView({
     onDismissSelect: () => void setLsel(null),
   };
 
-  const resolved = digest?.byState?.resolved ?? 0;
+  const resolved = digest?.window.byState.resolved ?? 0;
   // A predicate-bearing zero result is still dashboard mode: the search,
   // filters, exact `0 of 0` evidence, and reset controls must remain mounted so
   // the user can recover from the empty result. Keying this only to the
   // FILTERED digest's `open` count made an exact zero unmount the very controls
   // that produced it (WI-40590 / EI-21160436085146708).
-  const showDashboard = serverPredicateActive || (digest?.open ?? 0) >= 4;
+  const showDashboard = serverPredicateActive || (digest?.window.open ?? 0) >= 4;
   // The badge reports whether the LOOP is healthy, not whether the pile is big.
   // The drift markers (single-lens collapse, budget-exhausted streak, grading
   // starvation) are server-evaluated against the blender-release-readiness
@@ -2161,7 +2161,7 @@ function ImprovementsView({
           ? health.status
           : !digest
             ? "neutral"
-            : digest.open === 0
+            : digest.window.open === 0
               ? "good"
               : "neutral",
     );
@@ -2181,11 +2181,11 @@ function ImprovementsView({
         icon={Sparkles}
         title="Improve"
         question="What the learning loop produced — each idea and the work it became. Grading an idea is what teaches the generator."
-        signal={digest ? `${digest.open} open` : undefined}
+        signal={digest ? `${digest.window.open} open` : undefined}
         tone={
           health.status !== "neutral"
             ? health.status
-            : digest && digest.open === 0
+            : digest && digest.window.open === 0
               ? "good"
               : "accent"
         }
@@ -2205,7 +2205,7 @@ function ImprovementsView({
           <span
             title={`${PIPELINE_STATES.approved.desc} Includes work already in flight.`}
           >
-            <strong>{digest.open}</strong> in the queue
+            <strong>{digest.window.open}</strong> in the queue
           </span>
         ) : null}
         {snap?.improveFunnel ? (
@@ -2260,7 +2260,7 @@ function ImprovementsView({
               // advertises a number the click will not deliver.
               const badge =
                 l === "all"
-                  ? (digest?.total ?? null)
+                  ? (digest?.census.total ?? null)
                   : l === "auto"
                     ? (digest?.autoEligible.length ?? null)
                     : (digest?.humanQueue.length ?? null);
@@ -2310,7 +2310,7 @@ function ImprovementsView({
             >
               <Radar size={11} aria-hidden />
               From the loop
-              {digest && scope === "loop" ? <em>{digest.total}</em> : null}
+              {digest && scope === "loop" ? <em>{digest.census.total}</em> : null}
             </button>
           </Tooltip>
           <Tooltip label="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists.">
@@ -2484,7 +2484,7 @@ function ImprovementsView({
         // pipeline breakdown, with Review the one accent (only when it needs eyes).
         <LearningStatLine
           stats={[
-            { label: "Captured", value: digest.total },
+            { label: "Captured", value: digest.census.total },
             { label: "Automatic", value: digest.autoEligible.length },
             {
               label: "Review",
@@ -2544,16 +2544,15 @@ function ImprovementsView({
                 ? `Exact server-authored match count over ${improveSummary.total} merged Improve rows; at most 500 rows cross the sync wire.`
                 : isFiltered
                   ? "The paired exact summary is updating; no page-local denominator is substituted."
-                  : digest?.windowed
+                  : digest?.window.windowed
                     ? // D-003 again, one level out: this tooltip ANNOTATES a number,
                       // so it may not describe a different population than the one
                       // rendered beside it. It used to say "the list holds the most
-                      // recent {returned} of {total} captured", which is false here:
-                      // `digest.returned` counts the work items the read projected
-                      // (learning-digest-snapshot.ts `digest.returned =
-                      // projectedItems.length`, and buildDigest's `returned =
-                      // candidates.length` on the unfiltered path — either way it
-                      // equals autoEligible + humanQueue on the wire), while `rows`
+                      // recent {examined} of {total} captured", which is false here:
+                      // `digest.window.examined` counts the work items the read
+                      // projected (buildDigest's bounded `candidates.length` on
+                      // the unfiltered path, equal to autoEligible + humanQueue on
+                      // the wire), while `rows`
                       // ALSO carries the routed ideas not yet filed as work that
                       // `allRows` appends when lane === 'all'.
                       //
@@ -2566,7 +2565,7 @@ function ImprovementsView({
                       // this very string claimed "the lane, source and rail
                       // selections narrow that set" — false about the branch it sits
                       // in, which is the same defect it was written to fix.
-                      `Rows listed: the ${digest.returned} most recent of ${digest.total} captured work items, plus any routed ideas not yet filed as work — so this count can exceed ${digest.returned}. Filters and counts here see only the loaded rows.`
+                      `Rows listed: the ${digest.window.examined} most recent of ${digest.census.total} captured work items, plus any routed ideas not yet filed as work — so this count can exceed ${digest.window.examined}. Filters and counts here see only the loaded rows.`
                     : "Rows in scope — ideas and the work they became."
             }
           >
@@ -2578,7 +2577,7 @@ function ImprovementsView({
                 // work items PLUS the idea-only rows the read never loaded as work,
                 // so calling it "loaded" made the visible number itself assert the
                 // tooltip's false claim.
-                `${rows.length}${digest?.windowed ? " listed" : " items"}`}
+                `${rows.length}${digest?.window.windowed ? " listed" : " items"}`}
           </span>
           <Tooltip label="Reload the improve feed">
             <button

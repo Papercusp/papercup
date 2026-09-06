@@ -9,6 +9,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { releaseWorkItem, setWorkItemClaimHold, getWorkItem, commentWorkItem } from '../../work-items';
@@ -23,7 +24,7 @@ import {
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { getWorkItemCheckpointWithMeta, setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
-import { readOutbox, type CoordEnvelope } from '../coordination/messages';
+import { readOutbox } from '../coordination/messages';
 import { listEscalations, type EscalationRecord } from '../coordination/escalations';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
