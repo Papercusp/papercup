@@ -148,6 +148,26 @@ export function armedLoopNeedsCarryNote(
 }
 
 /**
+ * Does a carry-note's FIRST next action describe this same self-compaction
+ * boundary?
+ *
+ * `countAgentToolCallsInWindow` deliberately stops before the current tool call
+ * is recorded. That means a successor whose next action is the carry-respawn
+ * itself has a truthful zero count at the compaction boundary. Treating that
+ * zero as evidence that it must run the carry-respawn first is a self-refusing
+ * loop; only the compaction boundary gets this narrow exception. A note that
+ * starts with an ordinary action (even if it mentions compaction later) still
+ * trips the guard.
+ */
+export function carryNoteStartsWithSelfCompaction(next: string): boolean {
+  const action = next.trim().replace(/^[-*]\s+/, '');
+  if (!action || /^(?:do not|don't|never|avoid)\b/i.test(action)) return false;
+  return /^(?:(?:call|invoke|request|queue|perform|run|trigger)\s+)?(?:session:request-compaction|carry[- ]respawn|self[- ]compact)\b/i.test(
+    action,
+  );
+}
+
+/**
  * The flush tripwires present at a boundary: missing/stale held-item checkpoints
  * (via {@link staleCheckpointWarnings}) plus an armed COLD loop carrying no
  * loop:checkpoint note ({@link armedLoopNeedsCarryNote}). Warm loops carry their
@@ -159,14 +179,17 @@ export function detectFlushTripwires(
   nowMs: number = Date.now(),
   /**
    * EI-21874665446367942: caller-resolved evidence (countAgentToolCallsInWindow)
-   * of how many real agent tool calls this owner made since its armed COLD
-   * loop's carry-note was last written. Only relevant to the
-   * 'cold-successor-no-progress' tripwire below. undefined/null means
-   * "evidence unavailable" and MUST NOT be read as zero — same fail-open
-   * discipline as every other best-effort signal on this boundary; a query
-   * failure must never manufacture a spurious refusal.
-   */
+ * of how many real agent tool calls this owner made since its armed COLD
+ * loop's carry-note was last written. Only relevant to the
+ * 'cold-successor-no-progress' tripwire below. undefined/null means
+ * "evidence unavailable" and MUST NOT be read as zero — same fail-open
+ * discipline as every other best-effort signal on this boundary; a query
+ * failure must never manufacture a spurious refusal. `boundary` is optional
+ * for callers that only need the pure historical detector; the IO boundary
+ * passes it so a carry-respawn next action does not self-refuse.
+  */
   agentToolCallsSinceNote?: number | null,
+  boundary?: GateBoundary,
 ): FlushTripwire[] {
   if (!brief) return [];
   const out: FlushTripwire[] = [];
@@ -220,7 +243,9 @@ export function detectFlushTripwires(
     agentToolCallsSinceNote === 0
   ) {
     const next = parseCarryNote(brief.loop.carryNote ?? '').next?.trim();
-    if (next) {
+    const currentCompactionIsNextAction =
+      boundary === 'compaction' && next && carryNoteStartsWithSelfCompaction(next);
+    if (next && !currentCompactionIsNextAction) {
       out.push({
         kind: 'cold-successor-no-progress',
         subject: brief.loop.harness,

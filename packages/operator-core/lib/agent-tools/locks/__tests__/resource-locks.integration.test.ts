@@ -16,6 +16,7 @@ import {
   ensureBootstrap,
   getTxPool,
   _resetForTests,
+  runBackgroundJanitorOnce,
   tryAcquireResource,
   tryReleaseResource,
   tryHeartbeatResource,
@@ -315,6 +316,44 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     `;
     expect(waiterRowsAfterRelease).toEqual([]);
     await rel(ws, 'C', q.holders.find((holder) => holder.owner === 'C')!.lock_id);
+  });
+
+  it.skipIf(!live)('keeps expired resource waiters off the hot path and janitor-cleans them', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const sql = getTxPool();
+
+    // An abandoned notification waiter is not part of resource admission.
+    // The acquire hot path must leave it alone; only the background janitor
+    // should pay the cleanup write.
+    await sql`
+      INSERT INTO agent_resource_waiters
+        (coordination_domain, resource, owner, owner_label, expires_ts)
+      VALUES
+        (${ws}, 'dev-server', 'expired-waiter', 'expired',
+         clock_timestamp() - interval '1 second')
+    `;
+
+    const acquired = await acq(ws, 'fresh-owner', 'dev-server', 'shared');
+    expect(acquired.ok).toBe(true);
+    const afterHotPath = await sql<Array<{ owner: string }>>`
+      SELECT owner
+        FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws}
+         AND owner = 'expired-waiter'
+    `;
+    expect(afterHotPath).toEqual([{ owner: 'expired-waiter' }]);
+
+    await runBackgroundJanitorOnce();
+    const afterJanitor = await sql<Array<{ owner: string }>>`
+      SELECT owner
+        FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws}
+         AND owner = 'expired-waiter'
+    `;
+    expect(afterJanitor).toEqual([]);
+
+    if (acquired.ok) await rel(ws, 'fresh-owner', acquired.lock_id);
   });
 
   it.skipIf(!live)('refuses an in-place upgrade: a shared holder requesting exclusive gets holds_shared', async () => {

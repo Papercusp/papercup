@@ -104,6 +104,7 @@ describe('boundedOrgTxn', () => {
    */
   it('folds a head-blocker diagnosis into the thrown error on a contention timeout', async () => {
     let calls = 0;
+    let diagnosticSql = '';
     const client = {
       begin: async (cb: (tx: unknown) => Promise<unknown>) => {
         calls++;
@@ -124,7 +125,12 @@ describe('boundedOrgTxn', () => {
           },
           { pid: 1671608, age_s: 80, q: 'LOCK TABLE harness_shared.harness_features', unblocked: false },
         ];
-        const tx = { unsafe: async () => rows };
+        const tx = {
+          unsafe: async (sql: string) => {
+            diagnosticSql = sql;
+            return rows;
+          },
+        };
         return cb(tx);
       },
     } as never;
@@ -140,6 +146,8 @@ describe('boundedOrgTxn', () => {
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('SELECT id, confidence');
     expect((err as OrgTxnTimeoutError).message).toContain('likely blocked by pid 1644480');
     expect((err as OrgTxnTimeoutError).message).toContain('1 other backend(s) also waiting');
+    expect(diagnosticSql).toContain('a.datname = current_database()');
+    expect(diagnosticSql).toContain('b.datname = current_database()');
   });
 
   it('leaves blockerHint undefined (and the base message unchanged) when the diagnostic query itself fails', async () => {

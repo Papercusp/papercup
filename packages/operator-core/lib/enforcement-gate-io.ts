@@ -338,7 +338,7 @@ async function runFlushGateInner(input: {
     nowMs,
     input.countAgentToolCallsFn,
   );
-  const rawTripwires = detectFlushTripwires(brief, nowMs, agentToolCallsSinceNote);
+  const rawTripwires = detectFlushTripwires(brief, nowMs, agentToolCallsSinceNote, input.boundary);
   const heldItemHarness = new Map<string, string | null>(
     (brief?.heldItems ?? []).map((h) => [h.id, h.harness ?? null]),
   );

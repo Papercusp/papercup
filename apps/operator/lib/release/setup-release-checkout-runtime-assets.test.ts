@@ -58,6 +58,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = resolve(__dirname, '../../bin/release/setup-release-checkout.sh');
@@ -84,6 +85,49 @@ function extractBlock(): string {
 }
 
 const BLOCK = extractBlock();
+
+describe('setup-release-checkout.sh 3c — pinned WSL rootfs', () => {
+  function runRootfs({ mismatch = false, copyRace = false } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'release-rootfs-'));
+    const integration = join(root, 'integration');
+    const release = join(root, '.papercusp/worktrees/cut');
+    const relative = 'papercusp-desktop/src-tauri/resources';
+    const target = join(release, relative, 'papercup-runtime.tar.gz');
+    try {
+      mkdirSync(join(integration, relative), { recursive: true });
+      mkdirSync(join(release, relative), { recursive: true });
+      writeFileSync(join(integration, relative, 'papercup-runtime.tar.gz'), mismatch ? 'wrong rootfs' : 'trusted rootfs');
+      writeFileSync(join(release, relative, '.rootfs-build-stamp'), JSON.stringify({
+        rootfsSha256: createHash('sha256').update('trusted rootfs').digest('hex'),
+      }));
+      const source = readFileSync(SCRIPT, 'utf8');
+      const start = source.indexOf('# 3c. Checksum-pinned desktop rootfs');
+      const end = source.indexOf('# 4. SPA dist', start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const race = copyRace ? 'cp() { command cp "$@"; printf corrupted > "$2"; };\n' : '';
+      const result = spawnSync('bash', ['-c', 'set -euo pipefail\nlog() { printf "%s\\n" "$*"; };\n' + race + source.slice(start, end)], {
+        encoding: 'utf8', env: { ...process.env, INTEGRATION_ROOT: integration, RELEASE_ROOT: release },
+      });
+      return { ...result, target: existsSync(target) ? readFileSync(target, 'utf8') : null };
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+
+  it('hydrates a nested checkout from the integration donor with the exact release stamp', () => {
+    const result = runRootfs();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.target).toBe('trusted rootfs');
+  });
+  it('never copies a donor from a different rootfs generation', () => {
+    expect(runRootfs({ mismatch: true }).target).toBeNull();
+  });
+  it('rechecks copied bytes and refuses a donor changed during the copy', () => {
+    const result = runRootfs({ copyRace: true });
+    expect(result.status).not.toBe(0);
+    expect(result.target).toBeNull();
+    expect(result.stdout).toContain('refusing unverified input');
+  });
+});
 
 function git(cwd: string, ...args: string[]) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });

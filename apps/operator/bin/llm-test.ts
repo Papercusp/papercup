@@ -29,6 +29,7 @@ import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets';
 import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/operator-core/lib/llm-testing/promotion/candidates';
 import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
+import { validateSuContracts } from '@papercusp/operator-core/lib/llm-testing/targets/su-contracts';
 import {
   LLM_TEST_EXIT_NOTHING_RAN,
   llmTestExitCode,
@@ -264,7 +265,7 @@ async function main(): Promise<void> {
       : args.targetId
         ? SCENARIOS.filter((s) => s.target === args.targetId)
         : [...SCENARIOS];
-    const violations = lintScenarios(scope, {
+    const genericViolations = lintScenarios(scope, {
       fileExists: (p) => existsSync(p),
       fixtureRoot: resolve(__dirname, '../lib/llm-testing'),
       // The lib lint skips the target-registration check when this is absent;
@@ -272,6 +273,7 @@ async function main(): Promise<void> {
       // (matches the pre-P-073 behavior, which imported listTargets directly).
       registeredTargets: listTargets(),
     });
+    const violations = [...genericViolations, ...await validateSuContracts(scope)];
     console.log(formatViolations(violations));
     process.exit(violations.some((v) => v.severity === 'error') ? 1 : 0);
   }

@@ -17,9 +17,15 @@ const MIGRATION = join(
   REPO_ROOT,
   'libs/papercusp/libs/db/sql/1114-activity-report-session-lookup-index.sql',
 );
+const ADV_MIGRATION = join(
+  REPO_ROOT,
+  'libs/papercusp/libs/db/sql/1136-tool-invocations-adv-session-lookup-index.sql',
+);
 const SOURCE = join(REPO_ROOT, 'packages/operator-core/lib/conversation-context-projection.ts');
 const INDEX = 'tool_invocations_activity_session_lookup_idx';
 const SESSION_EXPRESSION = "COALESCE(args_json->>'session_id', args_json->>'sessionId')";
+const ADV_INDEX = 'tool_invocations_activity_adv_session_lookup_idx';
+const ADV_EXPRESSION = "args_json->>'adv_session_id'";
 
 function stripComments(source: string): string {
   return source
@@ -45,5 +51,14 @@ describe('P-003 activity-report session lookup contract', () => {
     expect(toolPredicate).toBeGreaterThan(-1);
     expect(keyPredicate).toBeGreaterThan(toolPredicate);
     expect(expression).toBeGreaterThan(keyPredicate);
+  });
+
+  it('keeps the numeric adv_session_id migration access path selective', () => {
+    const sql = stripComments(readFileSync(ADV_MIGRATION, 'utf8')).replace(/\s+/g, ' ');
+    expect(sql).toContain(ADV_INDEX);
+    expect(sql).toContain(ADV_EXPRESSION);
+    expect(sql).toMatch(/WHERE tool_name IN \('activity:report', 'activity_report'\)/i);
+    expect(sql).toMatch(/\(args_json \? 'adv_session_id'\)/i);
+    expect(sql).toMatch(/invoked_at DESC,\s*id DESC/i);
   });
 });

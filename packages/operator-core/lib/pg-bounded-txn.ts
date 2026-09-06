@@ -145,10 +145,13 @@ async function describeContentionAtFailure(client: OrgSql, pool?: string): Promi
                     left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160) AS q,
                     cardinality(pg_blocking_pids(a.pid)) = 0 AS unblocked
                FROM pg_stat_activity a
-              WHERE a.state <> 'idle' AND a.pid <> pg_backend_pid()
+              WHERE a.datname = current_database()
+                AND a.state <> 'idle' AND a.pid <> pg_backend_pid()
                 AND (a.wait_event_type = 'Lock' OR EXISTS (
                       SELECT 1 FROM pg_stat_activity b
-                       WHERE b.pid <> a.pid AND a.pid = ANY (pg_blocking_pids(b.pid))
+                       WHERE b.datname = current_database()
+                         AND b.pid <> a.pid
+                         AND a.pid = ANY (pg_blocking_pids(b.pid))
                     ))
               ORDER BY a.xact_start NULLS LAST
               LIMIT 25`,
