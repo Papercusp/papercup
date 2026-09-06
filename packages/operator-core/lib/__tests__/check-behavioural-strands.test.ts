@@ -22,6 +22,9 @@ import { describe, expect, it } from 'vitest';
 import {
   seamCallCounts,
   increasedSeams,
+  collectOutputPropertyValues,
+  diffOutputValues,
+  hasValueAssertion,
   hasCountOrOrderAssertion,
   mentionsSeamMember,
   seamMemberNames,
@@ -44,6 +47,19 @@ const SHARED_LIB_AFTER = `
     // The added call — correct engine behaviour, and the whole trap.
     const graded = await source.lexical({ ...params, lexicalMode: 'coverage-graded' });
     return graded;
+  }
+`;
+
+const WRITER_BEFORE = `
+  export function writeGoalSpendSnapshot(rollup) {
+    const patch = { spentCents: rollup.potCents };
+    return patch;
+  }
+`;
+const WRITER_AFTER = `
+  export function writeGoalSpendSnapshot(rollup) {
+    const patch = { spentCents: rollup.pot.samples > 0 ? rollup.potCents : null };
+    return patch;
   }
 `;
 
@@ -139,6 +155,62 @@ describe('the downstream assertion — anchored on the PROPERTY, not one spellin
 
   it('does NOT flag a count assertion that exists only in a COMMENT', () => {
     expect(hasCountOrOrderAssertion('// expect(searchDocs).toHaveBeenCalledTimes(1);')).toBe(false);
+  });
+});
+
+describe('the second trigger: a writer output value changed', () => {
+  it('collects and diffs a persisted property even when its expression is completely rewritten', () => {
+    expect([...collectOutputPropertyValues(WRITER_BEFORE)]).toEqual([['spentCents', ['rollup.potCents']]]);
+    expect(diffOutputValues(WRITER_BEFORE, WRITER_AFTER, 'spend-rollup.ts')).toEqual([
+      {
+        property: 'spentCents',
+        before: 'rollup.potCents',
+        after: 'rollup.pot.samples > 0 ? rollup.potCents : null',
+        reason: 'value-changed',
+      },
+    ]);
+  });
+
+  it('also recognizes an object passed directly to a writer call', () => {
+    const before = `await db.update(goals).set({ spentCents: rollup.potCents });`;
+    const after = `await db.update(goals).set({ spentCents: rollup.pot.samples > 0 ? rollup.potCents : null });`;
+    expect(diffOutputValues(before, after, 'spend-rollup.ts').map(({ property }) => property)).toEqual(['spentCents']);
+  });
+
+  it('stays silent on formatting/comments and on an unrelated local object', () => {
+    const formatted = `export function writeGoalSpendSnapshot(rollup) {
+      // same persisted value, only presentation changed
+      const patch = {\n        spentCents: rollup.potCents,\n      };\n      return patch;
+    }`;
+    expect(diffOutputValues(WRITER_BEFORE, formatted, 'spend-rollup.ts')).toEqual([]);
+    expect(diffOutputValues('const options = { limit: 1 };', 'const options = { limit: 2 };', 'options.ts')).toEqual([]);
+  });
+
+  it('stays silent when only equivalent string-literal spelling changes', () => {
+    expect(
+      diffOutputValues(
+        `export function write() { return { status: 'ok' }; }`,
+        `export function write() { return { status: "ok" }; }`,
+        'status.ts',
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([
+    'expect(md?.spentCents).toBe(0);',
+    "expect(md['spentCents']).toBe(0);",
+    'expect(md).toMatchObject({ spentCents: null });',
+    "expect(md).toHaveProperty('spentCents', null);",
+    'assert.equal(md.spentCents, 0);',
+  ])('detects a property assertion regardless of the assertion spelling: %s', (line) => {
+    expect(hasValueAssertion(line, ['spentCents'])).toBe(true);
+  });
+
+  it('ignores setup-only property objects, comments, and unrelated call-count assertions', () => {
+    expect(hasValueAssertion('const fixture = { spentCents: 0 };', ['spentCents'])).toBe(false);
+    expect(hasValueAssertion('// expect(md?.spentCents).toBe(0);', ['spentCents'])).toBe(false);
+    expect(hasValueAssertion('expect(searchDocs).toHaveBeenCalledTimes(1);', ['spentCents'])).toBe(false);
+    expect(hasValueAssertion('expect(md).toEqual({ other: 0 });', ['spentCents'])).toBe(false);
   });
 });
 
