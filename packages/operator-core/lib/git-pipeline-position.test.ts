@@ -494,6 +494,49 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
 });
 
 describe('gitPipelinePosition (P-002)', () => {
+  it('WI-2146319: always emits a stable candidateFailures object when no queue is present', async () => {
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      { git: fakeGit({}), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.gate.candidateFailures).toMatchObject({
+      candidateSha: null,
+      repairHeadSha: null,
+      assessment: 'no-frozen-candidate',
+    });
+    expect(res.gate.candidateFailures?.unavailable).toMatch(/not "zero failures"/);
+    expect(res.gate.candidateFailures?.nonTestLegs).toBeDefined();
+  });
+
+  it('WI-2146319: preserves an unreadable queue identity and marks candidate failures unmeasured', async () => {
+    const queueRead = {
+      status: 'unreadable' as const,
+      reason: 'schema-newer-than-reader' as const,
+      schemaVersion: 5,
+      candidate: 'c'.repeat(40),
+      repairHead: 'd'.repeat(40),
+      phase: 'ready-to-verify',
+    };
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git: fakeGit({}),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({ repairQueueRead: queueRead }),
+      },
+    );
+
+    expect(res.gate.repairQueueRead).toEqual(queueRead);
+    expect(res.gate.candidateFailures).toMatchObject({
+      candidateSha: queueRead.candidate,
+      repairHeadSha: queueRead.repairHead,
+      assessment: 'unmeasured',
+      unavailable: expect.stringContaining('phase ready-to-verify'),
+    });
+    expect(res.gate.candidateFailures?.unavailable).toMatch(/candidate cccccccccccc/);
+  });
+
   it('a fully-promoted+deployed superproject path reads committed→staging→main→deployed (live)', async () => {
     const git = fakeGit({
       pathCommit: 'abc1234567',
