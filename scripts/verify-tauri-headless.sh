@@ -257,7 +257,9 @@
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
 #                               seconds between DOM assertion attempts (default 1)
 #   VERIFY_TAURI_SETTLE_TIMEOUT seconds VERIFY_TAURI_SETTLE waits for the page to
-#                               go idle before giving up (default 20)
+#                               go idle before giving up (default: the guarded
+#                               VERIFY_TAURI_DOM_TIMEOUT, otherwise 20; an
+#                               explicit settle timeout still wins)
 #   VERIFY_TAURI_SETTLE_QUIET_MS
 #                               ms the DOM must stay unchanged, with the sync gate
 #                               idle, before the page counts as settled (default 400)
