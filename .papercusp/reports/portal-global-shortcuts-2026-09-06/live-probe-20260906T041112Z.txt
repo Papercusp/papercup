@@ -1,0 +1,51 @@
+PROBE_START 20260906T041112Z base=http://127.0.0.1:3081 mod=Control
+backend-3801 pid=4069092 release=releases/W3cjJPhObD2WSHvgxfQQv-20260906041004645-3941054-0dd1daef
+health-3081: 200
+S0 home: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== B shift+/ opens the cheat sheet (.kbd-cheat); Escape closes it
+B open: {"q":"?app=home&shortcuts=true","cheat":true,"find":false,"gsearch":false,"quick":false,"dialogs":1,"focus":"DIV"}
+B rows: {"label":"Keyboard shortcuts","keys":66,"quickPanel":true,"settings":true,"bg":"rgba(0, 0, 0, 0)","pos":"fixed"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-cheat-sheet.png
+B esc: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== C mod+comma → Settings surface
+C url: http://127.0.0.1:3081/?app=settings
+=== D g > b sequence → Brainstorm
+D url: http://127.0.0.1:3081/?app=brainstorm&scope=all
+=== E mod+f → find bar (.pc-find); Escape closes
+E open: {"q":"?app=home&find=true","cheat":false,"find":true,"gsearch":false,"quick":false,"dialogs":0,"focus":"INPUT"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-find-bar.png
+E esc: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== F mod+shift+f → global search dialog; Escape closes
+F open: {"q":"?app=home&gsearch=true","cheat":false,"find":false,"gsearch":true,"quick":false,"dialogs":1,"focus":"INPUT"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-global-search.png
+F esc: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== G mod+k / mod+p toggle the launcher panel (one exclusive slot)
+G mod+k: http://127.0.0.1:3081/?app=home&panel=launcher
+G mod+k again: http://127.0.0.1:3081/?app=home
+G mod+p: http://127.0.0.1:3081/?app=home&panel=launcher
+G mod+p again: http://127.0.0.1:3081/?app=home
+=== H mod+j toggles the quick panel; from the launcher it SWITCHES
+H mod+j: http://127.0.0.1:3081/?app=home&panel=quick quick=true
+H mod+j again: http://127.0.0.1:3081/?app=home
+H mod+k: http://127.0.0.1:3081/?app=home&panel=launcher
+H switch mod+j: http://127.0.0.1:3081/?app=home&panel=quick
+H esc: http://127.0.0.1:3081/?app=home
+=== I alt+ArrowDown / alt+ArrowUp cycle the visible rail
+I rail: []
+I down: http://127.0.0.1:3081/?app=mail
+I down2: http://127.0.0.1:3081/?app=calendar
+I up: http://127.0.0.1:3081/?app=mail
+=== J mod+i → Inbox
+J url: http://127.0.0.1:3081/?app=inbox
+=== K mod+u toggles the agents panel
+K mod+u: http://127.0.0.1:3081/?app=inbox&panel=agents
+K mod+u again: http://127.0.0.1:3081/?app=inbox
+=== L alt+ArrowLeft → history back (navigation.back)
+L before: http://127.0.0.1:3081/?app=settings
+L back: http://127.0.0.1:3081/?app=inbox
+=== M mod+shift+n → Overview + create=1 (harness.create root fallback)
+M url: http://127.0.0.1:3081/?app=overview&create=true
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-create-pot.png
+=== console
+No console messages.
+PROBE_END 20260906T041549Z

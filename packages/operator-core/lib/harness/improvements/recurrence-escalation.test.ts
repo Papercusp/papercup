@@ -6,6 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   CANDIDATE_DRAFT_MAX_CHARS,
+  RECURRENCE_ESCALATION_THRESHOLD,
   RECURRING_SIGNATURE_SCAN_CAP,
   RECURRING_MEMBER_HYDRATION_CAP,
   planRecurrenceEscalation,

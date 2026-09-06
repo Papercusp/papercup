@@ -31,7 +31,7 @@ log "S0 home: $(js "$state")"
 log "=== B shift+/ opens the cheat sheet (.kbd-cheat); Escape closes it"
 focus_body; press "Shift+Slash" 1500
 log "B open: $(js "$state")"
-log "B rows: $(js '(()=>{const d=document.querySelector(".kbd-cheat");if(!d)return "NO-CHEAT";const t=d.textContent;return JSON.stringify({label:d.getAttribute("aria-label"),kbd:d.querasdf}) })()' 10 >/dev/null; js '(()=>{const d=document.querySelector(".kbd-cheat");if(!d)return "NO-CHEAT";const t=d.textContent;return JSON.stringify({label:d.getAttribute("aria-label"),keys:d.querySelectorAll("kbd").length,quickPanel:/quick panel/i.test(t),settings:/settings/i.test(t),bg:getComputedStyle(d).backgroundColor,pos:getComputedStyle(d).position})})()')"
+log "B rows: $(js '(()=>{const d=document.querySelector(".kbd-cheat");if(!d)return "NO-CHEAT";const t=d.textContent;return JSON.stringify({label:d.getAttribute("aria-label"),keys:d.querySelectorAll("kbd").length,quickPanel:/quick panel/i.test(t),settings:/settings/i.test(t),bg:getComputedStyle(d).backgroundColor,pos:getComputedStyle(d).position})})()')"
 shot screenshot-cheat-sheet.png
 press Escape 1200
 log "B esc: $(js "$state")"

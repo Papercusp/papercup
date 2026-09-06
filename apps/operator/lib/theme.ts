@@ -231,7 +231,17 @@ export function readCachedThemeCatalog(): CustomTheme[] {
  * the pre-paint CSS with an empty catalog. Once a real result arrives, a stale
  * active custom id falls back through the canonical preference writer. */
 export function useThemeCatalog(): { themes: CustomTheme[]; error: unknown; invalidate: () => void } {
-  const query = useSyncQuery({ queryName: 'themes.catalog', args: {} });
+  const query = useSyncQuery({
+    queryName: 'themes.catalog',
+    args: {},
+    // The theme runtime already owns a workspace-scoped last-known-good cache
+    // containing the catalog, CSS, and base/scheme metadata. A second generic
+    // persisted-query snapshot can lag a just-committed update across reload
+    // and briefly look authoritative. Always revalidate this tiny local-file
+    // catalog on mount and keep the dedicated cache as the only offline source.
+    staleTime: 0,
+    persist: false,
+  });
   // `useSyncQuery` exposes `data: []` during its initial load (and can expose a
   // persisted stale array while a refetch is active). Neither is an
   // authoritative declaration that the catalog is empty. Treat only a

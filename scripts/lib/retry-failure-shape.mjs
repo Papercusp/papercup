@@ -23,15 +23,30 @@
 //   • nothing parseable (no failed files) ⇒ retry the workspace as before: an unattributable
 //     failure is an infrastructure shape until proven otherwise.
 
+import { stripVitestAnsi, vitestSuiteFailRow } from "./vitest-summary.mjs";
+
 /**
  * Signatures of the failure classes a fresh-process re-run can plausibly absorb. Each is named
  * so the log line says WHICH class earned the retry — a reader can then judge whether the
  * absorption was legitimate.
+ *
+ * ⚠ These are matched against the FAILURE REPORT only (see {@link vitestFailureReport}), never
+ * the whole capture. P-006's replay of gate run e70cd139 measured why: the first pass's stdout
+ * carries every PASSING test's title and console output too, and that text matched
+ * `connection` (a mocked-pool message printing ECONNREFUSED under a green test) and
+ * `worker-crash` (green titles reading "…it used to SIGKILL and leak" / "native SIGABRT").
+ * Scanned whole, a 16-file deterministic red classified as
+ * `flake-class:connection+worker-crash(broad)` and re-ran the whole workspace — the exact
+ * 34-minute pass P-003 exists to skip.
  */
 export const RETRY_FLAKE_CLASSES = Object.freeze([
   {
     id: "test-timeout",
-    re: /\b(?:Test|Hook) timed out in \d+ms\b|\btimed out (?:after|in) \d+\s*ms\b|Timeout - Async callback/i,
+    // Vitest's own test/hook timeout error, or jest's. NOT the bare `timed out after Nms`: vitest
+    // prints `close timed out after 10000ms` / "something prevents Vite server from exiting"
+    // as a TEARDOWN note after a run whose tests already finished (measured in every e70cd139
+    // lane), and that is not a failure a re-run can absorb.
+    re: /\b(?:Test|Hook) timed out (?:in|after) \d+\s*ms\b|Timeout - Async callback/i,
   },
   {
     id: "connection",
@@ -60,15 +75,135 @@ export const RETRY_FLAKE_CLASSES = Object.freeze([
 export const RETRY_SMALL_RED_FILES = 3;
 
 /**
- * Which flake classes appear in the captured output.
+ * The divider vitest's default reporter prints before its failure report. Everything from the
+ * first of these to the end of the capture is the ERROR of every failed test/suite (or an
+ * unhandled error) — the thrown error, its message, its stack. Passing tests never appear
+ * there, and neither does anyone's console output. Measured on vitest 4.1.8 (gate run
+ * e70cd139): `⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯`, `⎯⎯⎯⎯⎯⎯ Failed Tests 128 ⎯⎯⎯⎯⎯⎯`; the unhandled
+ * forms are vitest's `⎯⎯ Unhandled Errors ⎯⎯` / "Vitest caught N unhandled error(s)".
+ */
+export const VITEST_FAILURE_REPORT_DIVIDER =
+  /Failed (?:Tests|Suites) \d+|Unhandled (?:Errors?|Rejections?)|Vitest caught \d+ unhandled/;
+
+/**
+ * The slice of a captured run the flake classifier is allowed to read.
+ *
+ * `scripts/affected-tests.mjs` captures a task as stdout followed by stderr. Vitest writes its
+ * tree (one row per test, passing ones included) and any captured console output to stdout,
+ * and the failure report to stderr — so in the capture the report is the TAIL, and the text
+ * before the divider is exactly the noise the classes above must not read. ANSI is stripped
+ * first: the reporter colours its tokens, and `\x1b[31mECONNREFUSED\x1b[39m` does not satisfy
+ * `\bECONNREFUSED\b` (the `m` closing the escape is a word character).
+ *
+ * When no divider is present the WHOLE capture is scanned — a spawn error, a pool crash before
+ * any report, or a non-vitest runner has no report to scope to, and the fail-safe direction
+ * for the retry (never let a genuine load flake hold the gate red) is to look everywhere.
+ *
+ * @param {string} output
+ * @returns {{ report: string, scope: 'failure-report' | 'whole-output' }}
+ */
+export function vitestFailureReport(output) {
+  const plain = stripVitestAnsi(typeof output === "string" ? output : "");
+  const m = VITEST_FAILURE_REPORT_DIVIDER.exec(plain);
+  if (!m) return { report: plain, scope: "whole-output" };
+  // From the START of the divider's line, so the report reads as vitest printed it.
+  return { report: plain.slice(plain.lastIndexOf("\n", m.index) + 1), scope: "failure-report" };
+}
+
+/**
+ * Which flake classes appear in the captured output's failure report.
  *
  * @param {string} output
  * @returns {string[]} class ids, in RETRY_FLAKE_CLASSES order
  */
 export function matchRetryFlakeClasses(output) {
-  const text = typeof output === "string" ? output : "";
+  return classifyRetryFlakes(output).flakeClasses;
+}
+
+/** @param {string} text an already-scoped, ANSI-stripped slice of the failure report */
+function flakeClassesIn(text) {
   if (!text) return [];
   return RETRY_FLAKE_CLASSES.filter(({ re }) => re.test(text)).map(({ id }) => id);
+}
+
+/** The `⎯⎯⎯[k/N]⎯` rule vitest prints after every failure entry. */
+const VITEST_FAILURE_ENTRY_RULE = /^\s*⎯+\[\d+\/\d+\]⎯*\s*$/;
+
+/**
+ * Split an ANSI-stripped failure report into its per-file entries.
+ *
+ * vitest 4 opens each entry with `FAIL <file> > suite > test` (a failed SUITE reads
+ * `FAIL <file> [ <file> ]`) and closes it with a `⎯⎯[k/N]⎯` rule; the entry's text is the
+ * thrown error, its message and its stack. Text outside every entry — the divider, an
+ * `Unhandled Errors` block, vitest's teardown notes — comes back as `unattributed`, so a
+ * caller can tell a signature it can pin to a file from one it cannot.
+ *
+ * @param {string} report
+ * @returns {{ entries: Array<{ file: string, text: string }>, unattributed: string }}
+ */
+export function vitestFailureEntries(report) {
+  const entries = [];
+  const unattributed = [];
+  let current = null;
+  for (const line of String(report ?? "").split("\n")) {
+    const head = vitestSuiteFailRow().exec(line);
+    if (head) {
+      if (current) entries.push(current);
+      current = { file: head[1], text: line };
+      continue;
+    }
+    if (VITEST_FAILURE_ENTRY_RULE.test(line)) {
+      if (current) entries.push(current);
+      current = null;
+      continue;
+    }
+    if (current) current.text += `\n${line}`;
+    else unattributed.push(line);
+  }
+  if (current) entries.push(current);
+  return { entries, unattributed: unattributed.join("\n") };
+}
+
+/**
+ * The flake signatures in a capture, attributed to the FILES whose failure entries carry them.
+ *
+ * P-006's replay of gate run e70cd139 is why attribution matters: after scoping to the report,
+ * each operator-core lane still carried ONE signature — a `Test timed out in 180000ms` inside
+ * launch-on-plan.test.ts's entries, a fail-on-console entry from a quarantined hyperbee file —
+ * beside 15–17 files of plain assertion diffs. Under a file-blind rule that one entry re-ran
+ * the whole workspace (~20 minutes a lane); attributed, it re-runs one file.
+ *
+ * `unattributedClasses` are signatures found OUTSIDE every entry (a worker crash reported as an
+ * unhandled error, a capture with no report at all). They cannot be pinned to a file, so the
+ * decision falls back to the file-blind rule for them — the fail-safe direction.
+ *
+ * @param {string} output
+ * @returns {{
+ *   scope: 'failure-report' | 'whole-output',
+ *   flakeClasses: string[],
+ *   flakeFiles: string[],
+ *   unattributedClasses: string[],
+ * }}
+ */
+export function classifyRetryFlakes(output) {
+  const { report, scope } = vitestFailureReport(output);
+  if (scope !== "failure-report") {
+    const unattributedClasses = flakeClassesIn(report);
+    return { scope, flakeClasses: unattributedClasses, flakeFiles: [], unattributedClasses };
+  }
+  const { entries, unattributed } = vitestFailureEntries(report);
+  const seen = new Set();
+  const flakeFiles = [];
+  for (const { file, text } of entries) {
+    const classes = flakeClassesIn(text);
+    if (classes.length === 0) continue;
+    for (const id of classes) seen.add(id);
+    if (!flakeFiles.includes(file)) flakeFiles.push(file);
+  }
+  const unattributedClasses = flakeClassesIn(unattributed);
+  for (const id of unattributedClasses) seen.add(id);
+  const flakeClasses = RETRY_FLAKE_CLASSES.map(({ id }) => id).filter((id) => seen.has(id));
+  return { scope, flakeClasses, flakeFiles, unattributedClasses };
 }
 
 /**
@@ -84,6 +219,7 @@ export function matchRetryFlakeClasses(output) {
  *   mode: 'fresh-files' | 'whole-workspace' | 'none',
  *   reason: string,
  *   flakeClasses: string[],
+ *   flakeScope: 'failure-report' | 'whole-output',
  *   failedFileCount: number,
  * }}
  */
@@ -94,9 +230,10 @@ export function decideRetry({
   smallRedFiles = RETRY_SMALL_RED_FILES,
 }) {
   const files = Array.isArray(failedFiles) ? failedFiles : [];
-  const flakeClasses = matchRetryFlakeClasses(output);
+  const { report, scope: flakeScope } = vitestFailureReport(output);
+  const flakeClasses = flakeClassesIn(report);
   const failedFileCount = files.length;
-  const base = { flakeClasses, failedFileCount };
+  const base = { flakeClasses, flakeScope, failedFileCount };
 
   if (failedFileCount === 0) {
     // Nothing parsed: a non-vitest failure mode (spawn error, collection crash, a guard).
@@ -143,7 +280,7 @@ export function formatRetryDecisionLine(workspace, decision) {
   return (
     `${tag} ws=${workspace} retry=${decision.retry ? 1 : 0} mode=${decision.mode} ` +
     `failedFiles=${decision.failedFileCount} flakeClasses=${decision.flakeClasses.join(",") || "none"} ` +
-    `reason=${decision.reason}`
+    `flakeScope=${decision.flakeScope} reason=${decision.reason}`
   );
 }
 

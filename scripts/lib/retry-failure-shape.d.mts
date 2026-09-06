@@ -2,12 +2,79 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/retry-failure-shape.mjs and regenerate.
 /**
- * Which flake classes appear in the captured output.
+ * The slice of a captured run the flake classifier is allowed to read.
+ *
+ * `scripts/affected-tests.mjs` captures a task as stdout followed by stderr. Vitest writes its
+ * tree (one row per test, passing ones included) and any captured console output to stdout,
+ * and the failure report to stderr — so in the capture the report is the TAIL, and the text
+ * before the divider is exactly the noise the classes above must not read. ANSI is stripped
+ * first: the reporter colours its tokens, and `\x1b[31mECONNREFUSED\x1b[39m` does not satisfy
+ * `\bECONNREFUSED\b` (the `m` closing the escape is a word character).
+ *
+ * When no divider is present the WHOLE capture is scanned — a spawn error, a pool crash before
+ * any report, or a non-vitest runner has no report to scope to, and the fail-safe direction
+ * for the retry (never let a genuine load flake hold the gate red) is to look everywhere.
+ *
+ * @param {string} output
+ * @returns {{ report: string, scope: 'failure-report' | 'whole-output' }}
+ */
+export function vitestFailureReport(output: string): {
+    report: string;
+    scope: "failure-report" | "whole-output";
+};
+/**
+ * Which flake classes appear in the captured output's failure report.
  *
  * @param {string} output
  * @returns {string[]} class ids, in RETRY_FLAKE_CLASSES order
  */
 export function matchRetryFlakeClasses(output: string): string[];
+/**
+ * Split an ANSI-stripped failure report into its per-file entries.
+ *
+ * vitest 4 opens each entry with `FAIL <file> > suite > test` (a failed SUITE reads
+ * `FAIL <file> [ <file> ]`) and closes it with a `⎯⎯[k/N]⎯` rule; the entry's text is the
+ * thrown error, its message and its stack. Text outside every entry — the divider, an
+ * `Unhandled Errors` block, vitest's teardown notes — comes back as `unattributed`, so a
+ * caller can tell a signature it can pin to a file from one it cannot.
+ *
+ * @param {string} report
+ * @returns {{ entries: Array<{ file: string, text: string }>, unattributed: string }}
+ */
+export function vitestFailureEntries(report: string): {
+    entries: Array<{
+        file: string;
+        text: string;
+    }>;
+    unattributed: string;
+};
+/**
+ * The flake signatures in a capture, attributed to the FILES whose failure entries carry them.
+ *
+ * P-006's replay of gate run e70cd139 is why attribution matters: after scoping to the report,
+ * each operator-core lane still carried ONE signature — a `Test timed out in 180000ms` inside
+ * launch-on-plan.test.ts's entries, a fail-on-console entry from a quarantined hyperbee file —
+ * beside 15–17 files of plain assertion diffs. Under a file-blind rule that one entry re-ran
+ * the whole workspace (~20 minutes a lane); attributed, it re-runs one file.
+ *
+ * `unattributedClasses` are signatures found OUTSIDE every entry (a worker crash reported as an
+ * unhandled error, a capture with no report at all). They cannot be pinned to a file, so the
+ * decision falls back to the file-blind rule for them — the fail-safe direction.
+ *
+ * @param {string} output
+ * @returns {{
+ *   scope: 'failure-report' | 'whole-output',
+ *   flakeClasses: string[],
+ *   flakeFiles: string[],
+ *   unattributedClasses: string[],
+ * }}
+ */
+export function classifyRetryFlakes(output: string): {
+    scope: "failure-report" | "whole-output";
+    flakeClasses: string[];
+    flakeFiles: string[];
+    unattributedClasses: string[];
+};
 /**
  * Decide whether — and how — to retry a failed task.
  *
@@ -21,6 +88,7 @@ export function matchRetryFlakeClasses(output: string): string[];
  *   mode: 'fresh-files' | 'whole-workspace' | 'none',
  *   reason: string,
  *   flakeClasses: string[],
+ *   flakeScope: 'failure-report' | 'whole-output',
  *   failedFileCount: number,
  * }}
  */
@@ -34,6 +102,7 @@ export function decideRetry({ failedFiles, output, maxFiles, smallRedFiles, }: {
     mode: "fresh-files" | "whole-workspace" | "none";
     reason: string;
     flakeClasses: string[];
+    flakeScope: "failure-report" | "whole-output";
     failedFileCount: number;
 };
 /**
@@ -109,6 +178,15 @@ export function formatRetryPoolLine({ phase, tasks, budgetSumMs, wallMs, settled
  * Signatures of the failure classes a fresh-process re-run can plausibly absorb. Each is named
  * so the log line says WHICH class earned the retry — a reader can then judge whether the
  * absorption was legitimate.
+ *
+ * ⚠ These are matched against the FAILURE REPORT only (see {@link vitestFailureReport}), never
+ * the whole capture. P-006's replay of gate run e70cd139 measured why: the first pass's stdout
+ * carries every PASSING test's title and console output too, and that text matched
+ * `connection` (a mocked-pool message printing ECONNREFUSED under a green test) and
+ * `worker-crash` (green titles reading "…it used to SIGKILL and leak" / "native SIGABRT").
+ * Scanned whole, a 16-file deterministic red classified as
+ * `flake-class:connection+worker-crash(broad)` and re-ran the whole workspace — the exact
+ * 34-minute pass P-003 exists to skip.
  */
 export const RETRY_FLAKE_CLASSES: readonly {
     id: string;
@@ -116,6 +194,15 @@ export const RETRY_FLAKE_CLASSES: readonly {
 }[];
 /** Below this many failed files a retry costs seconds; above `maxFiles` it costs the suite. */
 export const RETRY_SMALL_RED_FILES: 3;
+/**
+ * The divider vitest's default reporter prints before its failure report. Everything from the
+ * first of these to the end of the capture is the ERROR of every failed test/suite (or an
+ * unhandled error) — the thrown error, its message, its stack. Passing tests never appear
+ * there, and neither does anyone's console output. Measured on vitest 4.1.8 (gate run
+ * e70cd139): `⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯`, `⎯⎯⎯⎯⎯⎯ Failed Tests 128 ⎯⎯⎯⎯⎯⎯`; the unhandled
+ * forms are vitest's `⎯⎯ Unhandled Errors ⎯⎯` / "Vitest caught N unhandled error(s)".
+ */
+export const VITEST_FAILURE_REPORT_DIVIDER: RegExp;
 /** No retry, however short its reference, gets less than this. */
 export const RETRY_BUDGET_FLOOR_MS: 60000;
 /** No retry, however long its reference, gets more than this (e70cd139's retry took 34m). */

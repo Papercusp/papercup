@@ -32,12 +32,7 @@ export interface GoalOwnerReportParseResult {
   duplicate: GoalOwnerReportField[];
 }
 
-export type GoalOwnerReportTextInput =
-  | string
-  | readonly string[]
-  | readonly { text?: unknown }[]
-  | null
-  | undefined;
+export type GoalOwnerReportTextInput = string | readonly string[] | readonly { text?: unknown }[] | null | undefined;
 
 const LABEL_TO_FIELD: Readonly<Record<string, GoalOwnerReportField>> = {
   MOVED: 'moved',
@@ -54,13 +49,10 @@ const LABEL_TO_FIELD: Readonly<Record<string, GoalOwnerReportField>> = {
  * satisfy them. Modern writes never depend on these regexes: they carry the
  * server-authored stamp above.
  */
-export const GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS: Readonly<
-  Record<GoalOwnerReportField, string>
-> = Object.freeze({
+export const GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS: Readonly<Record<GoalOwnerReportField, string>> = Object.freeze({
   moved:
     '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?MOVED([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
-  cost:
-    '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?COST([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
+  cost: '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?COST([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
   ownerWalled:
     '(^|\\n)[[:space:]#>*+-]*(\\*\\*|__)?OWNER[[:space:]_-]*WALLED([[:space:]]*[:：])?(\\*\\*|__)?[[:space:]]*(:|—|–|-)[[:space:]]*[^[:space:]\\n]',
   killed:
@@ -94,9 +86,7 @@ function reportHeading(raw: string): { field: GoalOwnerReportField; remainder: s
   const line = normalizeHeadingLine(raw);
   // A value on the heading line needs punctuation. Without that constraint,
   // ordinary prose such as "moved the build" becomes a report attempt.
-  const match = line.match(
-    /^(MOVED|COST|OWNER(?:[\s_-]+)?WALLED|KILLED)(?:[ \t]*(?::|：|—|–|-)[ \t]*(.*)|[ \t]*)$/i,
-  );
+  const match = line.match(/^(MOVED|COST|OWNER(?:[\s_-]+)?WALLED|KILLED)(?:[ \t]*(?::|：|—|–|-)[ \t]*(.*)|[ \t]*)$/i);
   if (!match) return null;
   const field = normalizeLabel(match[1]!);
   return field ? { field, remainder: (match[2] ?? '').trim() } : null;
@@ -163,8 +153,7 @@ export function parseGoalOwnerReport(input: GoalOwnerReportTextInput): GoalOwner
 
   return {
     attempted,
-    complete:
-      attempted && missing.length === 0 && empty.length === 0 && duplicate.length === 0,
+    complete: attempted && missing.length === 0 && empty.length === 0 && duplicate.length === 0,
     fields,
     missing,
     empty,
@@ -172,10 +161,7 @@ export function parseGoalOwnerReport(input: GoalOwnerReportTextInput): GoalOwner
   };
 }
 
-export function stampGoalOwnerReport(
-  goalId: string,
-  parsed: GoalOwnerReportParseResult,
-): GoalOwnerReportStamp {
+export function stampGoalOwnerReport(goalId: string, parsed: GoalOwnerReportParseResult): GoalOwnerReportStamp {
   const id = goalId.trim();
   if (!id) throw new Error('goal owner report stamp requires a goal id');
   if (!parsed.complete) throw new Error('cannot stamp an incomplete goal owner report');
@@ -189,10 +175,7 @@ export function stampGoalOwnerReport(
   };
 }
 
-export function isGoalOwnerReportStamp(
-  value: unknown,
-  goalId?: string,
-): value is GoalOwnerReportStamp {
+export function isGoalOwnerReportStamp(value: unknown, goalId?: string): value is GoalOwnerReportStamp {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const stamp = value as Partial<Record<keyof GoalOwnerReportStamp, unknown>>;
   if (stamp.schemaVersion !== GOAL_OWNER_REPORT_SCHEMA_VERSION) return false;
@@ -209,14 +192,10 @@ export function isGoalOwnerReportStamp(
  * values AND name the exact goal in its body; this preserves the old subject
  * rule without letting a wrong-goal report clear a new window.
  */
-export function envelopeHasCompleteGoalOwnerReport(
-  envelope: unknown,
-  goalId: string,
-): boolean {
+export function envelopeHasCompleteGoalOwnerReport(envelope: unknown, goalId: string): boolean {
   if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) return false;
   const record = envelope as Record<string, unknown>;
   if (isGoalOwnerReportStamp(record[GOAL_OWNER_REPORT_FIELD], goalId)) return true;
   if (typeof record.body !== 'string' || !record.body.includes(goalId)) return false;
   return parseGoalOwnerReport(record.body).complete;
 }
-

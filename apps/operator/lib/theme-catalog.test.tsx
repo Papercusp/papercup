@@ -10,16 +10,20 @@ const h = vi.hoisted(() => ({
   error: null as unknown,
   invalidate: vi.fn(),
   writeProfile: vi.fn(),
+  queryOptions: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({
+  useSyncQuery: (options: Record<string, unknown>) => {
+    h.queryOptions = options;
+    return {
     data: h.data,
     loading: h.loading,
     fetching: h.fetching,
     error: h.error,
     invalidate: h.invalidate,
-  }),
+    };
+  },
 }));
 vi.mock('@papercusp/operator-core/lib/profile-pref', () => ({
   injectedPref: () => null,
@@ -69,6 +73,7 @@ beforeEach(() => {
   h.error = null;
   h.invalidate.mockClear();
   h.writeProfile.mockClear();
+  h.queryOptions = null;
 });
 
 afterEach(cleanup);
@@ -119,16 +124,17 @@ describe('useThemeCatalog recovery', () => {
     expect(window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY))).toBe('frost');
   });
 
-  it('does not erase an injected custom selection while the initial catalog is still loading', async () => {
+  it('does not erase an injected custom selection while a stale persisted result is refetching', async () => {
     window.localStorage.setItem(wsLocalKey(THEME_STORAGE_KEY), 'custom:installed:abc');
     window.localStorage.setItem(wsLocalKey(CUSTOM_THEMES_CATALOG_KEY), JSON.stringify([cachedTheme]));
     h.data = [];
-    h.loading = true;
+    h.loading = false;
     h.fetching = true;
 
     const { result, rerender } = renderHook(() => useThemeCatalog());
 
     expect(result.current.themes).toEqual([cachedTheme]);
+    expect(h.queryOptions).toMatchObject({ staleTime: 0, persist: false });
     expect(h.writeProfile).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY))).toBe('custom:installed:abc');
 

@@ -45,14 +45,17 @@ export default [
     auth: 'public',
     async handler() {
       const cfg = await readAgentConfig();
-      const { listResumableSessions } = await import('../../../adv-sessions');
+      const { latestResumableSessionForAgentCached } = await import('../../../latest-agent-session-memo');
       const { readCodexHomeDiagnostics } = await import('../../../codex-home-diagnostics');
-      // `.find(agent === 'codex')` relies on listResumableSessions' PER-AGENT FLOOR to include
-      // codex rows at all. Before that floor existed this silently reported `codexDiagnostics:
-      // null` whenever claude happened to fill the window — a "no codex session exists" answer
-      // to what was really "the window was full" (WI-38226). The list is activity-ordered, so
-      // the first hit is the most recently ACTIVE codex session, not the most recently launched.
-      const latestCodexSession = (await listResumableSessions(50)).find((s) => s.agent === 'codex') ?? null;
+      // The memo wraps listResumableSessions(50).find(agent === 'codex') unchanged — that
+      // `.find` relies on listResumableSessions' PER-AGENT FLOOR to include codex rows at all.
+      // Before that floor existed this silently reported `codexDiagnostics: null` whenever
+      // claude happened to fill the window — a "no codex session exists" answer to what was
+      // really "the window was full" (WI-38226). The list is activity-ordered, so the first hit
+      // is the most recently ACTIVE codex session, not the most recently launched.
+      // Memoized (≤30s) because that activity-scored listing measured ~410ms of this route's
+      // ~800ms and was paid on EVERY config read purely for this diagnostics field (WI-2147549).
+      const latestCodexSession = await latestResumableSessionForAgentCached('codex');
       return Response.json({
         config: cfg,
         // The committed default tier menu — the EFFECTIVE workspace baseline when

@@ -44,12 +44,7 @@ describe('parseGoalOwnerReport', () => {
   });
 
   it('reports missing, empty, and duplicate fields instead of choosing silently', () => {
-    const parsed = parseGoalOwnerReport([
-      'MOVED: first',
-      'MOVED: second',
-      'COST:',
-      'KILLED: none',
-    ]);
+    const parsed = parseGoalOwnerReport(['MOVED: first', 'MOVED: second', 'COST:', 'KILLED: none']);
     expect(parsed).toMatchObject({
       attempted: true,
       complete: false,
@@ -66,9 +61,7 @@ describe('parseGoalOwnerReport', () => {
 });
 
 describe('goal owner report evidence', () => {
-  const complete = parseGoalOwnerReport(
-    'MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: stale plan',
-  );
+  const complete = parseGoalOwnerReport('MOVED: P-006\nCOST: 3c\nOWNER-WALLED: none\nKILLED: stale plan');
 
   it('stamps the server-resolved goal and validates every normalized field', () => {
     const stamp = stampGoalOwnerReport(GOAL, complete);
@@ -95,17 +88,10 @@ describe('goal owner report evidence', () => {
     ).toBe(true);
     expect(envelopeHasCompleteGoalOwnerReport({ body: `Status for ${GOAL}: still working.` }, GOAL)).toBe(false);
     expect(
-      envelopeHasCompleteGoalOwnerReport(
-        { body: `Goal ${GOAL}\nMOVED: P-006\nCOST: 3c\nOWNER-WALLED: none` },
-        GOAL,
-      ),
+      envelopeHasCompleteGoalOwnerReport({ body: `Goal ${GOAL}\nMOVED: P-006\nCOST: 3c\nOWNER-WALLED: none` }, GOAL),
     ).toBe(false);
     expect(
-      envelopeHasCompleteGoalOwnerReport(
-        { [GOAL_OWNER_REPORT_FIELD]: { ...stamp, goalId: 'wrong-goal' } },
-        GOAL,
-      ),
+      envelopeHasCompleteGoalOwnerReport({ [GOAL_OWNER_REPORT_FIELD]: { ...stamp, goalId: 'wrong-goal' } }, GOAL),
     ).toBe(false);
   });
 });
-

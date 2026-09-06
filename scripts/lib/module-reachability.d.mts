@@ -147,6 +147,28 @@ export function findUnreachableModules({ population, importers, pathMentions, ex
     rounds: number;
 };
 /**
+ * @typedef {{
+ *   module: string,
+ *   dead: boolean,
+ *   productionImporters?: string[],
+ *   testImporters?: string[],
+ *   testedButUnwired?: boolean,
+ * }} ShipmentReachabilityRow
+ *
+ * @typedef {{
+ *   status: 'classified' | 'unclassified',
+ *   kind?: string,
+ *   citation?: {kind: string, path: string},
+ *   decision?: string,
+ *   test?: string,
+ *   action?: string,
+ *   reason?: string,
+ *   errors?: string[],
+ * }} ShipmentDisposition
+ *
+ * @typedef {ShipmentReachabilityRow & {shipmentDisposition: ShipmentDisposition}} ShipmentDispositionInventoryRow
+ */
+/**
  * Turn the measured graph into the shipment-facing module inventory.
  *
  * A module with a live non-test importer is automatically classified as `wired`, and
@@ -156,25 +178,20 @@ export function findUnreachableModules({ population, importers, pathMentions, ex
  * attestations remain visible as unclassified rows instead of silently becoming an
  * allowlist entry.
  *
- * @param {{rows: Array<{module:string, dead:boolean, productionImporters?:string[], testImporters?:string[]}>, dispositions?: Map<string, object|string>}} args
- * @returns {Array<object>} generated shipment inventory rows
+ * @param {{rows: ShipmentReachabilityRow[], dispositions?: Map<string, object|string>}} args
+ * @returns {ShipmentDispositionInventoryRow[]} generated shipment inventory rows
  */
 export function buildShipmentDispositionInventory({ rows, dispositions }: {
-    rows: Array<{
-        module: string;
-        dead: boolean;
-        productionImporters?: string[];
-        testImporters?: string[];
-    }>;
+    rows: ShipmentReachabilityRow[];
     dispositions?: Map<string, object | string>;
-}): Array<object>;
+}): ShipmentDispositionInventoryRow[];
 /**
  * Find modules whose generated inventory has no valid shipment disposition.
  *
- * @param {Array<object>} inventory
- * @returns {Array<object>}
+ * @param {ShipmentDispositionInventoryRow[]} inventory
+ * @returns {ShipmentDispositionInventoryRow[]}
  */
-export function findUnclassifiedShipmentModules(inventory: Array<object>): Array<object>;
+export function findUnclassifiedShipmentModules(inventory: ShipmentDispositionInventoryRow[]): ShipmentDispositionInventoryRow[];
 /**
  * The instrument's positive control. Answers "did this probe actually SEE the tree?"
  * before any verdict derived from it is believed.
@@ -311,3 +328,26 @@ export function findInaccurateAcknowledgements({ rows, acknowledgements }: {
  * intermediate state of a peer's in-flight work, several times a day, for everybody.
  */
 export const NEW_MODULE_GRACE_DAYS: 7;
+export type ShipmentReachabilityRow = {
+    module: string;
+    dead: boolean;
+    productionImporters?: string[];
+    testImporters?: string[];
+    testedButUnwired?: boolean;
+};
+export type ShipmentDisposition = {
+    status: "classified" | "unclassified";
+    kind?: string;
+    citation?: {
+        kind: string;
+        path: string;
+    };
+    decision?: string;
+    test?: string;
+    action?: string;
+    reason?: string;
+    errors?: string[];
+};
+export type ShipmentDispositionInventoryRow = ShipmentReachabilityRow & {
+    shipmentDisposition: ShipmentDisposition;
+};
