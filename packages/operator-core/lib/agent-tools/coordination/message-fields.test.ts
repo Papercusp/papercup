@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import {
   classifyPremiseRef,
   participatesInCouplingDivergence,
@@ -633,6 +634,27 @@ describe('structured section fields refuse a wrong shape by TEACHING it (EI-2002
       if (r.success) expect(r.data[field]).toBeUndefined();
     },
   );
+
+  it('publishes only the strict array shape for taught fields', () => {
+    const schema = z.toJSONSchema(messageSectionSchema) as {
+      properties?: Record<
+        string,
+        {
+          anyOf?: unknown[];
+          items?: unknown;
+          maxItems?: number;
+          type?: string;
+        }
+      >;
+    };
+
+    for (const field of ['premises', 'youMayNotKnow', 'couldNotDetermine']) {
+      const published = schema.properties?.[field];
+      expect(published).toMatchObject({ type: 'array', maxItems: 20 });
+      expect(published).not.toHaveProperty('anyOf');
+      expect(published?.items).not.toEqual({});
+    }
+  });
 
   /**
    * THE RULING THIS PINS (owner 2026-07-28, interactive, for `body`; applied here):
