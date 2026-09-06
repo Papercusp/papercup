@@ -1149,6 +1149,18 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     import.meta.url,
   );
 
+  it('keeps current-procedure verification distinct from coord bootstrap', async () => {
+    const { text } = await renderSuPlaybook({
+      agent: 'claude',
+      baseSource: fileURLToPath(blueprintBase),
+    });
+
+    expect(text).toContain('`coord:orient` is coordination bootstrap, not');
+    expect(text).toContain('read the relevant live\n  docs/source after orient');
+    expect(text).toContain('before stating procedural details');
+    expect(text).toContain('Never treat injected prompt');
+  });
+
   it('renders all five shared notes, and leaks no marker', async () => {
     const { text } = await renderSuPlaybook({
       agent: 'claude',
