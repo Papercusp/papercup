@@ -1,12 +1,12 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { toast } from 'sonner';
-import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
+import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
+import { canUseContentOriginDesktopActions } from "@/lib/ipc-status-tauri";
 
 /** Hostnames that ARE the app itself (any port) — never externalized. */
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
 
 /**
  * Whether a clicked link points OUT of the app and should open in the OS default
@@ -26,7 +26,7 @@ export function isExternalWebUrl(href: string, currentHref: string): boolean {
   } catch {
     return false;
   }
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') return false;
+  if (target.protocol !== "http:" && target.protocol !== "https:") return false;
   if (LOCAL_HOSTS.has(target.hostname)) return false;
   return target.origin !== current.origin;
 }
@@ -39,7 +39,7 @@ export function isOAuthStartUrl(href: string, currentHref: string): boolean {
     return (
       target.protocol === current.protocol &&
       target.host === current.host &&
-      target.pathname === '/api/oauth/start'
+      target.pathname === "/api/oauth/start"
     );
   } catch {
     return false;
@@ -52,7 +52,7 @@ export function isOAuthStartUrl(href: string, currentHref: string): boolean {
  * seam so browser launches cannot drift into separate command spellings.
  */
 export async function openExternalWebUrl(href: string): Promise<void> {
-  await invoke('plugin:shell|open', { path: href });
+  await invoke("plugin:shell|open", { path: href });
 }
 
 /**
@@ -66,24 +66,33 @@ export async function openOAuthStartInSystemBrowser(
   currentHref: string,
 ): Promise<void> {
   const start = new URL(href, currentHref);
-  start.searchParams.set('response', 'json');
-  const response = await fetch(start.pathname + start.search, { cache: 'no-store' });
+  start.searchParams.set("response", "json");
+  const response = await fetch(start.pathname + start.search, {
+    cache: "no-store",
+  });
   const payload = (await response.json().catch(() => ({}))) as {
     ok?: boolean;
     authorizationUrl?: unknown;
     error?: unknown;
   };
-  if (!response.ok || payload.ok === false || typeof payload.authorizationUrl !== 'string') {
-    const detail = typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`;
+  if (
+    !response.ok ||
+    payload.ok === false ||
+    typeof payload.authorizationUrl !== "string"
+  ) {
+    const detail =
+      typeof payload.error === "string"
+        ? payload.error
+        : `HTTP ${response.status}`;
     throw new Error(detail);
   }
 
   const authorizationUrl = new URL(payload.authorizationUrl);
   if (
-    authorizationUrl.protocol !== 'https:' ||
+    authorizationUrl.protocol !== "https:" ||
     !isExternalWebUrl(authorizationUrl.toString(), currentHref)
   ) {
-    throw new Error('OAuth server returned an unsafe authorization URL');
+    throw new Error("OAuth server returned an unsafe authorization URL");
   }
   await openExternalWebUrl(authorizationUrl.toString());
 }
@@ -112,15 +121,17 @@ export default function ExternalLinkProvider() {
     function handleClickCapture(event: MouseEvent) {
       // Let modified / non-primary clicks and already-handled events through.
       if (event.defaultPrevented || event.button !== 0) return;
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+        return;
 
       const target = event.target;
       if (!(target instanceof Element)) return;
-      const anchor = target.closest<HTMLAnchorElement>('a[href]');
+      const anchor = target.closest<HTMLAnchorElement>("a[href]");
       // `anchor.href` is always the resolved ABSOLUTE url for an <a href>.
-      if (!anchor || anchor.hasAttribute('download')) return;
+      if (!anchor || anchor.hasAttribute("download")) return;
       const oauthStart = isOAuthStartUrl(anchor.href, window.location.href);
-      if (!oauthStart && !isExternalWebUrl(anchor.href, window.location.href)) return;
+      if (!oauthStart && !isExternalWebUrl(anchor.href, window.location.href))
+        return;
 
       // Keep the SPA put; hand the URL to the OS browser instead.
       event.preventDefault();
@@ -128,7 +139,7 @@ export default function ExternalLinkProvider() {
         ? openOAuthStartInSystemBrowser(anchor.href, window.location.href)
         : openExternalWebUrl(anchor.href);
       void opening.catch((err: unknown) => {
-        console.error('[ExternalLinkProvider] shell open failed', err);
+        console.error("[ExternalLinkProvider] shell open failed", err);
         if (oauthStart) {
           toast.error(
             `Couldn’t open provider sign-in: ${err instanceof Error ? err.message : String(err)}`,
@@ -139,12 +150,15 @@ export default function ExternalLinkProvider() {
 
     void canUseContentOriginDesktopActions().then((allowed) => {
       if (cancelled || !allowed) return;
-      document.addEventListener('click', handleClickCapture, { capture: true });
+      document.addEventListener("click", handleClickCapture, { capture: true });
       listening = true;
     });
     return () => {
       cancelled = true;
-      if (listening) document.removeEventListener('click', handleClickCapture, { capture: true });
+      if (listening)
+        document.removeEventListener("click", handleClickCapture, {
+          capture: true,
+        });
     };
   }, []);
 
