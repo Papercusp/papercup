@@ -31,9 +31,10 @@
  * first (via the same reader path a future pickup uses) and joins the new text onto it
  * with a `---` separator, instead of overwriting it — so an incremental progress note
  * can never silently discard a detailed prior record. Still bounded to the 32000-char
- * cap: if the join would exceed it, the OLDEST content is trimmed (with a visible
- * `[older checkpoint content truncated]` marker) so the newest addendum is never the
- * part that gets cut. `append: true` with a blank/omitted checkpoint text is rejected
+ * cap: if the join would exceed it, the superseded tail of the prior content is
+ * trimmed (with a visible `[older checkpoint content truncated]` marker) so the
+ * oldest baseline and newest addendum stay visible whenever they fit. `append: true`
+ * with a blank/omitted checkpoint text is rejected
  * (append + clear is a contradiction) unless `checks` is supplied as an additive,
  * body-preserving patch.
  *
@@ -359,8 +360,9 @@ function mergeChecksPreservingCarried(
  * Make enough room for a concise append body when a legacy note's carried checks
  * already consume the whole checkpoint cap.
  *
- * The normal append path trims old narrative bytes from the front, which preserves
- * the new addendum. That cannot help when the CHECKS section alone is over-cap:
+ * The normal append path trims superseded prior narrative bytes from the tail, which
+ * preserves the old baseline and the new addendum. That cannot help when the CHECKS
+ * section alone is over-cap:
  * there is no room left for any body, so appendBodyPreservationGuard would refuse
  * the write and strand progress indefinitely. Legacy rows predate today's field and
  * row caps, so bound their fields first, then evict the cheapest-to-reproduce rows
@@ -620,15 +622,26 @@ function retireIdsSpec() {
 }
 
 /** EI-9036: join an addendum onto the prior checkpoint text, bounded to CHECKPOINT_CAP.
- *  Trims from the FRONT (oldest content) when the join would overflow, so the newest
- *  addendum — the part the caller just wrote and cares most about right now — is never
- *  the part that gets cut. */
+ * When the join overflows, retain the oldest prefix of the prior note and the newest
+ * addendum, trimming only the superseded prior tail when the addendum fits. If the
+ * addendum itself is too large to fit alongside the marker, retain its newest suffix
+ * because the helper cannot preserve both complete inputs within the hard cap. */
 function joinCheckpoint(prior: string | null, addendum: string): string {
-  const joined = prior && prior.length > 0 ? `${prior}\n\n---\n${addendum}` : addendum;
+  const separator = prior && prior.length > 0 ? '\n\n---\n' : '';
+  const joined = prior && prior.length > 0 ? `${prior}${separator}${addendum}` : addendum;
   if (joined.length <= CHECKPOINT_CAP) return joined;
-  const keep = CHECKPOINT_CAP - TRUNCATION_MARKER.length;
-  // keep <= 0 only if CHECKPOINT_CAP is absurdly small; guard against a negative slice.
-  return TRUNCATION_MARKER + joined.slice(joined.length - Math.max(keep, 0));
+
+  // Keep the two semantically valuable ends of the append: the oldest baseline
+  // (the beginning of the prior note) and the newest progress (the end of the
+  // addendum). Prefer preserving the complete addendum whenever it fits, then use
+  // the remaining budget for the prior prefix. The marker stands in for the
+  // superseded middle/tail bytes and keeps the loss visible to the successor.
+  const contentBudget = Math.max(CHECKPOINT_CAP - TRUNCATION_MARKER.length - separator.length, 0);
+  const addendumLength = Math.min(addendum.length, contentBudget);
+  const priorLength = Math.min(prior?.length ?? 0, contentBudget - addendumLength);
+  const retainedPrior = prior ? prior.slice(0, priorLength) : '';
+  const retainedAddendum = addendum.slice(addendum.length - addendumLength);
+  return `${retainedPrior}${TRUNCATION_MARKER}${separator}${retainedAddendum}`;
 }
 
 /**
@@ -870,8 +883,8 @@ const itemSpec = z.object({
       'rather than replacing it (EI-19944669306930709). Reads the current checkpoint first via the same path a ' +
       'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
       'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
-      'treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would ' +
-      `overflow it. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
+      'treated as a clear). Bounded to the 32000-char cap: the superseded tail of the prior content is trimmed first if the join would ' +
+      `overflow it, preserving the oldest baseline and newest addendum whenever they fit. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
       'rows, and reports supplied rows that did not fit; a checks-only overflow refuses. Retire stale rows with a ' +
       'plain replace first or omit `checks`.',
   ),

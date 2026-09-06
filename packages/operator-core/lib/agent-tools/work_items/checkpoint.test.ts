@@ -753,18 +753,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.error).toContain('append:true requires a non-blank');
     });
 
-    it('append:true truncates the OLDEST content (front) with a marker when the join would exceed the 32000-char cap', async () => {
+    it('append:true trims superseded prior tail while preserving the oldest baseline and newest addendum at the 32000-char cap', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      const prior = 'P'.repeat(31990);
-      const addendum = 'A'.repeat(50);
+      const prior = '## MEASURED BASELINE\n' + 'P'.repeat(31970);
+      const addendum = '## LATEST PROGRESS\n' + 'A'.repeat(40);
       getWorkItemCheckpoint.mockResolvedValueOnce(prior);
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       const r = await one({ id: 'WI-7', checkpoint: addendum, append: true });
       expect(r.ok).toBe(true);
       const [, storedArg] = setWorkItemCheckpoint.mock.calls[0] as [unknown, string];
       expect(storedArg.length).toBeLessThanOrEqual(32000);
-      expect(storedArg.startsWith('…[older checkpoint content truncated]…')).toBe(true);
-      // The newest addendum — the part the caller just wrote — is never the part cut.
+      // The measured baseline at the head survives; only superseded prior bytes are
+      // represented by the visible marker before the new addendum.
+      expect(storedArg.startsWith('## MEASURED BASELINE\n')).toBe(true);
+      expect(storedArg).toContain('…[older checkpoint content truncated]…');
+      // The newest addendum — the part the caller just wrote — remains complete.
       expect(storedArg.endsWith(addendum)).toBe(true);
     });
 
@@ -3006,8 +3009,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
           expect(r.ok).toBe(true);
           expect(r.errorCode).toBeUndefined();
-          expect(readCurrent()).toContain(addendum);
-          expect(readCurrent().length).toBeLessThanOrEqual(32000);
+          const current = readCurrent();
+          expect(current).toContain(addendum);
+          if (current === null) throw new Error('legacy checkpoint write unexpectedly cleared');
+          expect(current.length).toBeLessThanOrEqual(32000);
           expect(r.checksDropped?.length).toBeGreaterThan(0);
           expect(r.checksDroppedNote).toContain('LEGACY BYTE NORMALIZATION');
           // This fixture exceeds the byte cap through row count/serialized evidence,
