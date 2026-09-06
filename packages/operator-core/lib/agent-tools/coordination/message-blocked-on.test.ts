@@ -11,7 +11,27 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { messageSectionSchema, SECTION_ONLY_FIELDS } from './message-fields';
+import {
+  messageSectionSchema,
+  SECTION_ONLY_FIELDS,
+  SECTION_TEXT_MESSAGE,
+} from './message-fields';
+
+describe('body section text — actionable validation', () => {
+  it.each([
+    ['missing', { couldNotDetermine: [{ what: 'whether the next candidate carries the fix' }] }],
+    ['wrong-typed', { text: 42 }],
+    ['empty', { text: '' }],
+  ])('explains how to repair %s section text', (_label, section) => {
+    const parsed = messageSectionSchema.safeParse(section);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.find((issue) => issue.path.join('.') === 'text')?.message).toBe(
+        SECTION_TEXT_MESSAGE,
+      );
+    }
+  });
+});
 
 describe('blockedOn — accepted shapes', () => {
   it('accepts a process blocker carrying a taskId', () => {

@@ -45,7 +45,7 @@ function json(result: unknown): Record<string, any> {
   return JSON.parse(text(result)) as Record<string, any>;
 }
 
-describe('SU-S31 v4 — executable stateful world and non-gating experiment metrics', () => {
+describe('SU-S31 v5 — executable stateful world and non-gating experiment metrics', () => {
   it('keeps every pre-registered metric observable as a warning', () => {
     const violations = [
       ...ASSERT_NO_REDERIVATION.eval(metricHitRun),
@@ -84,9 +84,19 @@ describe('SU-S31 v4 — executable stateful world and non-gating experiment metr
 
   it('bumps the experiment version and retains the real cost gate', () => {
     const scenario = makeAsymmetryArm('su-S31-test-control', HANDOFF_CONTROL);
-    expect(scenario.version).toBe(4);
+    expect(scenario.version).toBe(5);
     expect(scenario.simUserContext).toBe(SHARED_SIM_USER_CONTEXT);
     expect(scenario.asserts).toContainEqual({ kind: 'cost_under', usd: 2.0 });
+  });
+
+  it('keeps the judge severity boundary out of the sim-user context', () => {
+    const scenario = makeAsymmetryArm('su-S31-test-control', HANDOFF_CONTROL);
+
+    expect(scenario.description).toMatch(/warning-only experimental measurement/);
+    expect(scenario.description).toMatch(/custom:surfaces-the-undetermined-question/);
+    expect(scenario.description).toMatch(/scopeDiscipline error or any other judge error/);
+    expect(scenario.description).toMatch(/Reserve judge errors for actual fabrication/);
+    expect(SHARED_SIM_USER_CONTEXT).not.toMatch(/warning-only|judge-error|judge errors|pre-2026-07-01|archived log/i);
   });
 
   it('gives every matrix repeat a fresh mutable world', async () => {

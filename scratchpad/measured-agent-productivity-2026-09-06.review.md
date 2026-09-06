@@ -1,4 +1,4 @@
-# Draft: Faster verified agent progress
+# SUPERSEDED REVIEW SNAPSHOT — see canonical draft plan `measured-agent-productivity-2026-09-06` (version 9). The canonical plan now records 400k leader / 250k member defaults, selectable 250k/300k/350k/400k presets, and the P-003 removal of stale July-19/200k source prose. This convenience copy is not authoritative.
 
 Review snapshot of canonical plan `plan://papercusp/measured-agent-productivity-2026-09-06`. Draft only; implementation awaits Avi's review. This copy is for convenient reading; the shared plan store is authoritative.
 

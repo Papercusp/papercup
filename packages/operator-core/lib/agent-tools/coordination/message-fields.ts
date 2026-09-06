@@ -908,9 +908,29 @@ export const SECTION_ONLY_FIELDS = [
   'blockedOn',
 ] as const;
 
+/**
+ * Every section needs readable text, even when it also carries structured metadata.
+ * Keep one message for missing, wrong-typed, and empty values so a caller learns the
+ * section shape in one round-trip instead of chasing zod's low-level type/minimum errors.
+ */
+export const SECTION_TEXT_MESSAGE =
+  '`text` is REQUIRED on every body section and must be a non-empty STRING. Write: ' +
+  'body: [{ text: "<what the recipient should read>" }]. Every section needs its own ' +
+  'readable text, even when it also carries `couldNotDetermine`, `blockedOn`, or another ' +
+  'structured field; put the explanation in `text` rather than sending a section that ' +
+  'contains only metadata.';
+
+const sectionTextArg = z
+  .string({ error: SECTION_TEXT_MESSAGE })
+  .min(1, { error: SECTION_TEXT_MESSAGE })
+  .describe(
+    'REQUIRED on every body section. A non-empty string containing what the recipient should read; ' +
+      'structured fields such as `couldNotDetermine` or `blockedOn` add metadata but do not replace it.',
+  );
+
 export const messageSectionSchema = z
   .object({
-    text: z.string().min(1),
+    text: sectionTextArg,
     premises: premisesArg,
     forYouBecause: forYouBecauseArg,
     youMayNotKnow: youMayNotKnowArg,
