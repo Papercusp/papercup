@@ -112,6 +112,9 @@ describe('scorecards:emit acceptance-author refusal — rebind-identity recovery
     expect(result.error).toContain("acceptance must be recorded by the acceptance-rubric author ('su-dead-author')");
     expect(result.error).toContain('coord:rebind-identity');
     expect(result.error).toContain("from: 'su-dead-author'");
+    expect(result.error).toContain(
+      "payload.acceptanceDrainPlan = 'ws-test/papercusp/some-plan-2026-08-30'",
+    );
   });
 
   it('also hints for a "suspect" verdict — REBIND_BLOCKING_SESSION_STATES deliberately excludes it too', async () => {
