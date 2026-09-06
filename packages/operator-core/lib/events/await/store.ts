@@ -735,21 +735,39 @@ export interface OperatorCancelledAwait {
   cancelledAt: string;
 }
 
-/** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's).
+export interface CancelAwaitResult {
+  awaitId: number;
+  cancelled: boolean;
+  eventKey?: string;
+  once?: boolean;
+  expiresTs?: string | null;
+  droppedDeliveries: number;
+  inFlightDeliveries: number;
+  error?: 'standing_watch_requires_confirmation';
+}
+
+/**
+ * Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's) and
+ * report the collateral wake-delivery state.
+ *
  * `source:'operator'` is reserved for the explicit events:cancel surface;
- * internal cleanup callers intentionally omit it and do not create a suppression. */
-export async function cancelAwait(input: {
+ * internal cleanup callers intentionally omit it and do not create a suppression.
+ * Public cancellation also requires `confirmStanding:true` for a standing
+ * (`once:false`) watch. A one-word `await_id` slip must not silently disable a
+ * recurring wake source.
+ */
+export async function cancelAwaitDetailed(input: {
   awaitId: number;
   subscriberId: string;
   source?: AwaitCancellationSource;
-}): Promise<boolean> {
+  confirmStanding?: boolean;
+}): Promise<CancelAwaitResult> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const cancelReason = input.source === 'operator' ? 'operator' : null;
   return sql.begin(async (tx) => {
-    const rows = await tx`
-      UPDATE harness_shared.event_awaits
-         SET cancelled_at = now(), cancel_reason = ${cancelReason}
+    const candidates = await tx`
+      SELECT id, event_key, once, expires_ts
+        FROM harness_shared.event_awaits
        WHERE workspace_id = ${ws} AND id = ${input.awaitId}
          AND subscriber_id = ${input.subscriberId}
          -- Announcements share this table but are declarations, not awaits. They
@@ -757,17 +775,85 @@ export async function cancelAwait(input: {
          -- one here lets an await_id teardown silently retire a gate declaration.
          AND policy <> 'announce'
          AND fired_at IS NULL AND cancelled_at IS NULL
+       FOR UPDATE
+    `;
+    if (candidates.length === 0) {
+      return {
+        awaitId: input.awaitId,
+        cancelled: false,
+        droppedDeliveries: 0,
+        inFlightDeliveries: 0,
+      };
+    }
+
+    const candidate = candidates[0] as any;
+    const once = candidate.once !== false;
+    const expiresTs = candidate.expires_ts == null ? null : new Date(candidate.expires_ts).toISOString();
+    const base = {
+      awaitId: input.awaitId,
+      eventKey: String(candidate.event_key),
+      once,
+      expiresTs,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+    };
+    if (input.source === 'operator' && !once && input.confirmStanding !== true) {
+      return {
+        ...base,
+        cancelled: false,
+        error: 'standing_watch_requires_confirmation',
+      };
+    }
+
+    const rows = await tx`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now(), cancel_reason = ${input.source === 'operator' ? 'operator' : null}
+       WHERE workspace_id = ${ws} AND id = ${input.awaitId}
+         AND subscriber_id = ${input.subscriberId}
+         AND policy <> 'announce'
+         AND fired_at IS NULL AND cancelled_at IS NULL
       RETURNING id
     `;
-    await settleQueuedDeliveriesForCancelledAwaits(
+    if (rows.length === 0) {
+      return {
+        awaitId: input.awaitId,
+        cancelled: false,
+        droppedDeliveries: 0,
+        inFlightDeliveries: 0,
+      };
+    }
+
+    const droppedDeliveries = await settleQueuedDeliveriesForCancelledAwaits(
       rows.map((row: any) => Number(row.id)),
       input.source === 'operator'
         ? 'await cancelled by subscriber via events:cancel'
         : 'await cancelled by internal lifecycle cleanup',
       { client: tx },
     );
-    return rows.length > 0;
+    const inFlightRows = await tx`
+      SELECT count(*)::int AS count
+        FROM harness_shared.event_wake_deliveries
+       WHERE workspace_id = ${ws}
+         AND await_id = ${input.awaitId}
+         AND status = 'delivering'
+    `;
+    return {
+      ...base,
+      cancelled: true,
+      droppedDeliveries,
+      inFlightDeliveries: Number(inFlightRows[0]?.count ?? 0),
+    };
   });
+}
+
+/** Boolean compatibility wrapper for internal cleanup callers. */
+export async function cancelAwait(input: {
+  awaitId: number;
+  subscriberId: string;
+  source?: AwaitCancellationSource;
+  confirmStanding?: boolean;
+}): Promise<boolean> {
+  return (await cancelAwaitDetailed(input)).cancelled;
 }
 
 export type RetireAnnouncementReason =
@@ -2371,11 +2457,13 @@ export async function wakeMeter(
   input: {
     sinceHours?: number;
   } = {},
-): Promise<Array<{ subscriberId: string; status: string; channel: string | null; count: number }>> {
+): Promise<Array<{ subscriberId: string; status: string; channel: string | null; turnInvoked: boolean; count: number }>> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
-    SELECT subscriber_id, status, channel, count(*)::int AS count
+    SELECT subscriber_id, status, channel,
+           COALESCE(channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}), false) AS turn_invoked,
+           count(*)::int AS count
       FROM harness_shared.event_wake_deliveries
      WHERE workspace_id = ${ws}
        AND created_at > now() - make_interval(hours => ${input.sinceHours ?? 24})
@@ -2387,6 +2475,7 @@ export async function wakeMeter(
     subscriberId: r.subscriber_id,
     status: r.status,
     channel: r.channel ?? null,
+    turnInvoked: r.turn_invoked === true,
     count: Number(r.count),
   }));
 }

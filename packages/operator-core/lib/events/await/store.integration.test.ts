@@ -35,6 +35,7 @@ const {
   cancelInboxWakeAwaits,
   cancelClaimableAwaits,
   cancelAwait,
+  cancelAwaitDetailed,
   listOperatorCancelledAwaits,
   clearOperatorCancelledAwaits,
   cancelAwaitsForSubscribersOnKeys,
@@ -795,7 +796,20 @@ describe('await-event store (PG)', () => {
       delivering: 1,
       fromCancelledAwaits: 0,
     });
-    expect(await cancelAwait({ awaitId: a.id, subscriberId: 'owner', source: 'operator' })).toBe(true);
+    expect(await cancelAwaitDetailed({
+      awaitId: a.id,
+      subscriberId: 'owner',
+      source: 'operator',
+      confirmStanding: true,
+    })).toMatchObject({
+      awaitId: a.id,
+      cancelled: true,
+      eventKey: 'fleet:context-critical:f1',
+      once: false,
+      expiresTs: null,
+      droppedDeliveries: 2,
+      inFlightDeliveries: 1,
+    });
 
     const afterCancel = await rootSql<Array<{ id: number; status: string }>>`
       SELECT id, status FROM harness_shared.event_wake_deliveries ORDER BY id`;
@@ -814,6 +828,39 @@ describe('await-event store (PG)', () => {
 
     expect(await settleCancelledAwaitDeliveries([{ id: delivering }])).toEqual([delivering]);
     expect(await deliveryBacklogSummary('owner')).toMatchObject({ total: 0, fromCancelledAwaits: 0 });
+  });
+
+  it('refuses an unconfirmed standing operator cancellation without dropping its backlog', async () => {
+    const a = await registerAwait({ subscriberId: 'standing-guard', eventKey: 'standing:guard', once: false });
+    await insertDeliveries({ awaits: [a], summary: 'must-survive' });
+
+    await expect(cancelAwaitDetailed({
+      awaitId: a.id,
+      subscriberId: 'standing-guard',
+      source: 'operator',
+    })).resolves.toMatchObject({
+      awaitId: a.id,
+      cancelled: false,
+      eventKey: 'standing:guard',
+      once: false,
+      expiresTs: null,
+      droppedDeliveries: 0,
+      inFlightDeliveries: 0,
+      error: 'standing_watch_requires_confirmation',
+    });
+    expect(await listActiveAwaits('standing-guard')).toHaveLength(1);
+    expect(await deliveryBacklogSummary('standing-guard')).toMatchObject({ total: 1, pending: 1 });
+
+    await expect(cancelAwaitDetailed({
+      awaitId: a.id,
+      subscriberId: 'standing-guard',
+      source: 'operator',
+      confirmStanding: true,
+    })).resolves.toMatchObject({
+      cancelled: true,
+      droppedDeliveries: 1,
+      inFlightDeliveries: 0,
+    });
   });
 
   it('never exposes or cancels an announcement through ordinary await ids', async () => {
@@ -843,7 +890,12 @@ describe('await-event store (PG)', () => {
     const operatorCancelled = await registerAwait({ subscriberId: 'leader', eventKey: key, once: false });
     const internalCancelled = await registerAwait({ subscriberId: 'leader', eventKey: 'fleet:drained:alpha', once: false });
 
-    expect(await cancelAwait({ awaitId: operatorCancelled.id, subscriberId: 'leader', source: 'operator' })).toBe(true);
+    expect(await cancelAwait({
+      awaitId: operatorCancelled.id,
+      subscriberId: 'leader',
+      source: 'operator',
+      confirmStanding: true,
+    })).toBe(true);
     expect(await cancelAwait({ awaitId: internalCancelled.id, subscriberId: 'leader' })).toBe(true);
     expect(await listOperatorCancelledAwaits('leader', [key, 'fleet:drained:alpha'])).toMatchObject([
       { id: operatorCancelled.id, subscriberId: 'leader', eventKey: key },
