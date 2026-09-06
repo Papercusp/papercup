@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = resolve(__dirname, "../../../..");
 const SCRIPT = join(ROOT, "apps/operator/scripts/systemd/deploy-cloud-portal.sh");
 const TEMPLATE = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-portal.service.in");
+const PROXY_SCRIPT = join(ROOT, "apps/operator/scripts/systemd/papercusp-cloud-portal-proxy.mjs");
 const README = join(ROOT, "apps/operator/scripts/systemd/README.md");
 
 interface Fixture {
@@ -83,6 +84,7 @@ function envFor(files: Fixture): NodeJS.ProcessEnv {
     PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC: "0",
     PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE: "/bin/true",
     PAPERCUSP_CLOUD_PORTAL_PROC_ROOT: files.procRoot,
+    PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL: join(files.binDir, "papercusp-cloud-portal-proxy.mjs"),
   };
 }
 
@@ -245,6 +247,9 @@ esac
       expect(readdirSync(files.unitDir)).toEqual(["papercusp-cloud-portal.service"]);
       expect(readdirSync(join(files.dir, "tmp"))).toEqual([]);
       expect(readFileSync(files.analyzeLogPath, "utf8")).toMatch(/\.service\n$/);
+      expect(readFileSync(join(files.binDir, "papercusp-cloud-portal-proxy.mjs"), "utf8")).toBe(
+        readFileSync(PROXY_SCRIPT, "utf8"),
+      );
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
     }

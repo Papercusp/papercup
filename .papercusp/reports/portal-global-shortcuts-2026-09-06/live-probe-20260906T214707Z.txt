@@ -1,0 +1,14 @@
+PROBE_START 20260906T214707Z base=http://127.0.0.1:3081 mod=Control
+backend-3801 pid=387887 release=releases/PnRju1EfKfM0bo192lRnM-20260906213142870-3551996-469460c6
+health-3081: 200
+S0 home: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== B shift+/ opens the cheat sheet (.kbd-cheat); Escape closes it
+B open: {"q":"?app=home&shortcuts=true","cheat":true,"find":false,"gsearch":false,"quick":false,"dialogs":1,"focus":"DIV"}
+B rows: {"label":"Keyboard shortcuts","keys":66,"quickPanel":true,"settings":true,"bg":"rgba(0, 0, 0, 0)","pos":"fixed"}
+screenshot: /home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/portal-global-shortcuts-2026-09-06/screenshot-cheat-sheet.png
+B esc: {"q":"?app=home","cheat":false,"find":false,"gsearch":false,"quick":false,"dialogs":0,"focus":"BODY"}
+=== C mod+comma → Settings surface
+C url: http://127.0.0.1:3081/?app=settings
+=== D g > b sequence → Brainstorm
+D url: http://127.0.0.1:3081/?app=brainstorm&scope=all
+=== E mod+f → find bar (.pc-find); Escape closes

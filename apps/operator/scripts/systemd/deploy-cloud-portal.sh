@@ -4,11 +4,13 @@
 # The portal is a separate, user-owned checkout. This helper is the only
 # supported path for turning the checked-in unit template into a user service:
 # it validates the checkout and executable, verifies the rendered unit, writes
-# it with an atomic rename, and never touches the separate :3081 proxy unit.
+# it with an atomic rename, refreshes the versioned :3081 proxy program, and
+# never stops or restarts the separate :3081 proxy unit.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${PAPERCUSP_CLOUD_PORTAL_TEMPLATE:-$SCRIPT_DIR/papercusp-cloud-portal.service.in}"
+PROXY_SOURCE="${PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE:-$SCRIPT_DIR/papercusp-cloud-portal-proxy.mjs}"
 
 : "${HOME:?HOME must be set for the user-service deployment}"
 
@@ -36,6 +38,7 @@ HEALTH_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC:-60}"
 CURL_TIMEOUT_SEC="${PAPERCUSP_CLOUD_PORTAL_CURL_TIMEOUT_SEC:-5}"
 PORT_RELEASE_WAIT_SEC="${PAPERCUSP_CLOUD_PORTAL_PORT_RELEASE_WAIT_SEC:-30}"
 FALLBACK_LOG="${PAPERCUSP_CLOUD_PORTAL_FALLBACK_LOG:-$HOME/.papercusp/logs/cloud-portal-legacy.log}"
+PROXY_INSTALL="${PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL:-$HOME/.local/bin/papercusp-cloud-portal-proxy.mjs}"
 PROC_ROOT="${PAPERCUSP_CLOUD_PORTAL_PROC_ROOT:-/proc}"
 
 MODE="install"
@@ -69,7 +72,8 @@ Environment overrides:
   PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL, PAPERCUSP_CLOUD_PORTAL_SYSTEMD_ANALYZE,
   PAPERCUSP_CLOUD_PORTAL_CURL, PAPERCUSP_CLOUD_PORTAL_HEALTH_PATH,
   PAPERCUSP_CLOUD_PORTAL_HEALTH_WAIT_SEC, PAPERCUSP_CLOUD_PORTAL_GIT,
-  PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE
+  PAPERCUSP_CLOUD_PORTAL_ALLOW_STALE_RELEASE,
+  PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE, PAPERCUSP_CLOUD_PORTAL_PROXY_INSTALL
 EOF
 }
 
@@ -102,7 +106,10 @@ validate_inputs() {
   require_absolute UNIT_DIR "$UNIT_DIR"
   require_absolute TEMP_DIR "$TEMP_DIR"
   require_absolute PROC_ROOT "$PROC_ROOT"
+  require_absolute PROXY_SOURCE "$PROXY_SOURCE"
+  require_absolute PROXY_INSTALL "$PROXY_INSTALL"
   [[ -f "$TEMPLATE" ]] || die "unit template is missing: $TEMPLATE"
+  [[ -f "$PROXY_SOURCE" ]] || die "portal proxy source is missing: $PROXY_SOURCE"
   [[ -d "$PORTAL_ROOT" ]] || die "portal root is not a directory: $PORTAL_ROOT"
   [[ -f "$PORTAL_ROOT/package.json" ]] || die "portal package.json is missing: $PORTAL_ROOT/package.json"
   [[ -x "$NODE_BIN" ]] || die "Node executable is not executable: $NODE_BIN"
@@ -128,7 +135,7 @@ validate_inputs() {
 
   # These values become systemd syntax. Reject control bytes and specifier
   # markers rather than allowing a path to alter a unit's meaning.
-  for value in "$PORTAL_ROOT" "$PORTAL_RUNTIME_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR"; do
+  for value in "$PORTAL_ROOT" "$PORTAL_RUNTIME_ROOT" "$NODE_BIN" "$NEXT_BIN" "$START_WEB" "$CURRENT_RELEASE_LINK" "$NODE_DIR" "$PROXY_SOURCE" "$PROXY_INSTALL"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* ]] ||
       die "portal paths may not contain newlines or systemd '%' specifiers"
   done
@@ -180,6 +187,20 @@ cleanup_temp() {
 }
 trap cleanup_temp EXIT
 
+install_proxy_script() {
+  local proxy_dir proxy_tmp
+  proxy_dir="$(dirname -- "$PROXY_INSTALL")"
+  mkdir -p -- "$proxy_dir"
+  if [[ -f "$PROXY_INSTALL" ]] && cmp -s -- "$PROXY_SOURCE" "$PROXY_INSTALL"; then
+    return 0
+  fi
+  proxy_tmp="$(mktemp "$proxy_dir/.papercusp-cloud-portal-proxy.XXXXXX.mjs")"
+  cp -- "$PROXY_SOURCE" "$proxy_tmp"
+  chmod 0755 "$proxy_tmp"
+  mv -f -- "$proxy_tmp" "$PROXY_INSTALL"
+  log "installed portal proxy program at $PROXY_INSTALL (restart papercusp-cloud-portal-3081.service to activate a changed program)"
+}
+
 install_unit() {
   mkdir -p -- "$UNIT_DIR"
   if [[ ! -d "$TEMP_DIR" ]]; then
@@ -209,6 +230,7 @@ install_unit() {
   verify_unit_path "$TEMP_PATH"
   mv -f -- "$TEMP_PATH" "$UNIT_DIR/$UNIT_NAME"
   TEMP_PATH=""
+  install_proxy_script
 }
 
 systemctl_user() {

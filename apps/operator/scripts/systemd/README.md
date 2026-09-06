@@ -271,9 +271,13 @@ The helper validates the listener's PID, user, Portal cwd, and `next dev`
 lineage before sending SIGTERM to its process group. Because both generations
 must bind the same TCP port, the cutover has a bounded outage window; the
 helper health-checks the new unit and restores the prior command if startup or
-health fails. It never stops or restarts `papercusp-cloud-portal-3081.service`,
-the persistent front-door proxy. Re-running handoff against a healthy managed
-unit is idempotent.
+health fails. It atomically refreshes the versioned
+`papercusp-cloud-portal-proxy.mjs` program in `$HOME/.local/bin`, but never stops
+or restarts `papercusp-cloud-portal-3081.service`, the persistent front-door
+proxy. The proxy holds safe GET/HEAD requests through the bounded backend gap;
+state-changing requests are never replayed. After the proxy program itself
+changes, restart that proxy unit once to activate it. Re-running handoff against
+a healthy managed backend is idempotent.
 
 The helper stages the unit in a same-filesystem temporary directory before the
 atomic rename. It uses `$TMPDIR` (or `/tmp`) by default and automatically falls
