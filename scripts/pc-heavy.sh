@@ -436,10 +436,14 @@ _exclusive_describe_holders() {
   local _fd_number='' _owns=0 _cmd='' _out=''
   [ -n "$_file" ] || return 0
   command -v fuser >/dev/null 2>&1 || return 0
+  command -v timeout >/dev/null 2>&1 || return 0
   [ -e "$_file" ] || return 0
   _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
   [ -n "$_target" ] || return 0
-  _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
+  # Holder names are diagnostic-only. Never let fuser's whole-process-table
+  # scan become the thing that wedges a queued heavy command.
+  _pids="$(timeout --signal=TERM --kill-after=1s "${PC_HEAVY_FUSER_TIMEOUT_SEC:-2}" \
+    fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
   [ -n "$_pids" ] || return 0
   for _pid in $_pids; do
     _owns=0
